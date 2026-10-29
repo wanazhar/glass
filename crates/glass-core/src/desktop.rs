@@ -1456,10 +1456,327 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
 mod tests {
     use super::*;
     use std::{
+        collections::BTreeMap,
         process::{Command, Stdio},
         sync::atomic::{AtomicUsize, Ordering},
         thread,
     };
+
+    const MAX_BROWSER_ACCEPTANCE_ROUTES: usize = 64;
+    const MAX_BROWSER_ACCEPTANCE_VALUES: usize = 32;
+    const MAX_BROWSER_ACCEPTANCE_SNAPSHOTS: usize = 8;
+    const MAX_BROWSER_ACCEPTANCE_TRACE_BYTES: usize = 64 * 1024;
+    const BROWSER_MODEL_MAX_ROUNDS: usize = 64;
+
+    #[derive(Default)]
+    struct BrowserAcceptanceTrace {
+        tool_calls: usize,
+        routes: Vec<String>,
+        observations: usize,
+        errors: usize,
+        error_categories: BTreeMap<String, usize>,
+        browser_seen: bool,
+        home_seen: bool,
+        ownership_seen: bool,
+        references_seen: bool,
+        slices_seen: bool,
+        slice_page_seen: bool,
+        two_tab_snapshot_seen: bool,
+        url_values: Vec<String>,
+        page_sequence: Vec<(String, String)>,
+        tab_snapshots: Vec<Vec<String>>,
+        tab_names: Vec<String>,
+        window_names: Vec<String>,
+        known_deep_link_text_attempted: bool,
+    }
+
+    impl BrowserAcceptanceTrace {
+        fn record_route(&mut self, route: String) {
+            self.tool_calls = self.tool_calls.saturating_add(1);
+            if self.routes.len() < MAX_BROWSER_ACCEPTANCE_ROUTES {
+                self.routes.push(route);
+            }
+        }
+
+        fn record_tool_error(&mut self, tool_name: &str, error: &str) {
+            self.errors = self.errors.saturating_add(1);
+            let tool_name = match tool_name {
+                "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app" => {
+                    tool_name
+                }
+                _ => "unknown_tool",
+            };
+            let category = format!(
+                "{tool_name}:{}",
+                desktop_tool_error_category(tool_name, error)
+            );
+            let count = self.error_categories.entry(category).or_default();
+            *count = count.saturating_add(1);
+        }
+
+        fn record_unique(values: &mut Vec<String>, value: String) {
+            if values.len() < MAX_BROWSER_ACCEPTANCE_VALUES && !values.contains(&value) {
+                values.push(value);
+            }
+        }
+
+        fn report(&self, outcome: &str, accepted: bool, elapsed_ms: u128) -> Value {
+            json!({
+                "outcome": outcome,
+                "acceptanceComplete": accepted,
+                "elapsedMs": elapsed_ms,
+                "provider": "openai",
+                "model": "kilo-auto/free",
+                "endpointHost": "127.0.0.1",
+                "endpointPort": 20128,
+                "roundLimit": BROWSER_MODEL_MAX_ROUNDS,
+                "toolCalls": self.tool_calls,
+                "routesTruncated": self.tool_calls > self.routes.len(),
+                "observations": self.observations,
+                "toolErrors": self.errors,
+                "toolErrorCategories": self.error_categories,
+                "routes": self.routes,
+                "windowNames": self.window_names,
+                "tabNames": self.tab_names,
+                "tabSnapshots": self.tab_snapshots,
+                "observedUrls": self.url_values,
+                "pageSequence": self.page_sequence.iter().map(|(window_title, url)| json!({
+                    "windowTitle": window_title,
+                    "url": url
+                })).collect::<Vec<_>>(),
+                "browserSeen": self.browser_seen,
+                "homeSeen": self.home_seen,
+                "ownershipSeen": self.ownership_seen,
+                "referencesSeen": self.references_seen,
+                "slicesSeen": self.slices_seen,
+                "slicePageSeen": self.slice_page_seen,
+                "twoTabSnapshotSeen": self.two_tab_snapshot_seen
+                ,"knownDeepLinkTextAttempted": self.known_deep_link_text_attempted
+            })
+        }
+    }
+
+    fn provider_error_category(error: &crate::provider::Error) -> &'static str {
+        match error {
+            crate::provider::Error::Status(429, _) => "provider_rate_limited",
+            crate::provider::Error::Status(401 | 403, _) => "provider_auth_rejected",
+            crate::provider::Error::Status(500..=599, _) => "provider_server_error",
+            crate::provider::Error::Status(_, _) => "provider_http_error",
+            crate::provider::Error::Transport(_) => "provider_transport_error",
+            crate::provider::Error::Config(_) => "provider_configuration_error",
+        }
+    }
+
+    fn desktop_tool_error_category(tool_name: &str, error: &str) -> &'static str {
+        let error = error
+            .chars()
+            .take(512)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if error.contains("lease") || error.contains("session changed") {
+            "session_or_lease_rejected"
+        } else if error.contains("stale") || error.contains("revision") {
+            "stale_observation"
+        } else if error.contains("ambiguous")
+            || error.contains("exactly one")
+            || error.contains("two targets")
+            || error.contains("multiple targets")
+        {
+            "ambiguous_match"
+        } else if error.contains("truncated") || error.contains("incomplete") {
+            "incomplete_observation"
+        } else if error.contains("unsupported accessibility action")
+            || error.contains("not support this action")
+            || error.contains("unsupported action")
+            || error.contains("no recognized accessibility click action")
+        {
+            "unsupported_action"
+        } else if error.contains("offscreen")
+            || error.contains("onscreen")
+            || error.contains("no target")
+            || error.contains("targetid")
+        {
+            "target_not_actionable"
+        } else if tool_name == "desktop_launch_app" {
+            "launch_rejected"
+        } else if tool_name == "desktop_input" {
+            "input_rejected"
+        } else {
+            "tool_error"
+        }
+    }
+
+    fn safe_rust_book_url(value: &str) -> Option<String> {
+        let value = if value.starts_with("doc.rust-lang.org/") {
+            format!("https://{value}")
+        } else {
+            value.to_owned()
+        };
+        let mut url = url::Url::parse(&value).ok()?;
+        if url.scheme() != "https"
+            || url.host_str() != Some("doc.rust-lang.org")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || !(matches!(url.path(), "/book" | "/book/") && url.fragment().is_none()
+                || (url.path() == "/book/ch04-00-understanding-ownership.html"
+                    && url.fragment().is_none())
+                || (url.path() == "/book/ch04-02-references-and-borrowing.html"
+                    && matches!(url.fragment(), None | Some("references-and-borrowing")))
+                || (url.path() == "/book/ch04-03-slices.html"
+                    && matches!(url.fragment(), None | Some("string-slices"))))
+        {
+            return None;
+        }
+        url.set_query(None);
+        if url.as_str().len() > 512 {
+            return None;
+        }
+        Some(url.to_string())
+    }
+
+    fn persist_browser_acceptance_trace(report: &Value) -> Result<PathBuf, &'static str> {
+        let bytes = serde_json::to_vec(report).map_err(|_| "serialize_failed")?;
+        if bytes.len() > MAX_BROWSER_ACCEPTANCE_TRACE_BYTES {
+            return Err("trace_too_large");
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "clock_unavailable")?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "glass-browser-acceptance-{}-{nonce}.json",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut file = options.open(&path).map_err(|_| "create_failed")?;
+        if file.write_all(&bytes).is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err("write_failed");
+        }
+        Ok(path)
+    }
+
+    fn safe_browser_trace_title(value: &str) -> Option<&'static str> {
+        let value = value.to_ascii_lowercase();
+        if value.contains("understanding ownership") {
+            Some("Understanding Ownership")
+        } else if value.contains("references and borrowing") {
+            Some("References and Borrowing")
+        } else if value.contains("the slice type") {
+            Some("The Slice Type")
+        } else if value.contains("the rust programming language") {
+            Some("The Rust Programming Language")
+        } else {
+            None
+        }
+    }
+
+    fn trace_route_label(tool_name: &str, action: &str) -> String {
+        let tool_name = match tool_name {
+            "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app" => tool_name,
+            _ => "other_tool",
+        };
+        let action = match (tool_name, action) {
+            ("desktop_act", "click" | "focus" | "set_text") => action,
+            (
+                "desktop_input",
+                "pointer-move" | "pointer-click" | "scroll" | "key" | "key-tap" | "key-chord"
+                | "text",
+            ) => action,
+            ("desktop_launch_app", "list" | "launch") => action,
+            _ => "other",
+        };
+        if action == "other" {
+            tool_name.to_owned()
+        } else {
+            format!("{tool_name}:{action}")
+        }
+    }
+
+    fn contains_rust_book_deep_link(value: &str) -> bool {
+        // Inspect one text payload transiently; retain only the boolean below.
+        let value = value.to_ascii_lowercase();
+        [
+            "/book/ch",
+            "ch04-00-understanding-ownership.html",
+            "ch04-02-references-and-borrowing.html",
+            "ch04-03-slices.html",
+            "#references-and-borrowing",
+            "#string-slices",
+        ]
+        .iter()
+        .any(|pattern| value.contains(pattern))
+    }
+
+    fn browser_workflow_acceptance_failure(
+        trace: &BrowserAcceptanceTrace,
+        output: &str,
+        stop: &crate::agent::Stop,
+    ) -> Option<&'static str> {
+        if *stop != crate::agent::Stop::Finished || output.trim().is_empty() {
+            return Some("provider_turn_incomplete");
+        }
+        if trace
+            .routes
+            .iter()
+            .any(|route| !route.starts_with("desktop_"))
+        {
+            return Some("unexpected_tool_route");
+        }
+        if !trace.browser_seen || !trace.home_seen {
+            return Some("browser_home_unverified");
+        }
+        if trace.known_deep_link_text_attempted {
+            return Some("known_deep_link_typed_directly");
+        }
+        if !trace.ownership_seen || !trace.references_seen || !trace.slices_seen {
+            return Some("required_page_unverified");
+        }
+        if !trace.slice_page_seen
+            || !trace
+                .url_values
+                .iter()
+                .any(|url| url.contains("ch04-00-understanding-ownership"))
+            || !trace
+                .url_values
+                .iter()
+                .any(|url| url.contains("ch04-03-slices"))
+        {
+            return Some("required_url_unverified");
+        }
+        if trace.tab_names.len() < 2 || !trace.two_tab_snapshot_seen {
+            return Some("two_tab_state_unverified");
+        }
+        if trace.window_names.len() < 2 {
+            return Some("tab_switch_unverified");
+        }
+        if !trace.page_sequence.windows(4).any(|pages| {
+            pages.iter().all(|(title, _)| title == "The Slice Type")
+                && pages[0].1.contains("ch04-03-slices")
+                && pages[1].1.contains("#string-slices")
+                && pages[2].1.contains("ch04-03-slices")
+                && !pages[2].1.contains("#string-slices")
+                && pages[3].1.contains("#string-slices")
+        }) {
+            return Some("back_forward_unverified");
+        }
+        if !trace.page_sequence.last().is_some_and(|(title, url)| {
+            title == "References and Borrowing"
+                && (url.ends_with("/book/ch04-02-references-and-borrowing.html")
+                    || url.ends_with(
+                        "/book/ch04-02-references-and-borrowing.html#references-and-borrowing",
+                    ))
+        }) {
+            return Some("first_tab_preservation_unverified");
+        }
+        None
+    }
 
     #[test]
     fn coordinate_mapping_bounds_to_managed_framebuffer() {
@@ -1696,6 +2013,262 @@ mod tests {
             require_lease(Lease::Human, Lease::Agent),
             Err(InputError::LeaseConflict("agent"))
         ));
+    }
+
+    #[test]
+    fn browser_model_error_categories_never_retain_error_text() {
+        let canary = "private typed text CANARY-9841";
+        assert_eq!(
+            desktop_tool_error_category(
+                "desktop_act",
+                &format!("target revision is stale: {canary}")
+            ),
+            "stale_observation"
+        );
+        assert_eq!(
+            desktop_tool_error_category("desktop_act", "query matched two targets"),
+            "ambiguous_match"
+        );
+        assert_eq!(
+            desktop_tool_error_category("desktop_observe", "tree is truncated"),
+            "incomplete_observation"
+        );
+        assert_eq!(
+            desktop_tool_error_category("desktop_input", "The human currently holds the lease"),
+            "session_or_lease_rejected"
+        );
+        assert_eq!(
+            desktop_tool_error_category(
+                "desktop_act",
+                "Target reports no recognized accessibility click action"
+            ),
+            "unsupported_action"
+        );
+        assert!(contains_rust_book_deep_link(
+            "https://doc.rust-lang.org/book/ch04-03-slices.html"
+        ));
+        assert!(contains_rust_book_deep_link(
+            "/book/ch04-02-references-and-borrowing.html"
+        ));
+        assert!(contains_rust_book_deep_link("ch04-03-slices.html"));
+        assert!(contains_rust_book_deep_link("#string-slices"));
+        assert!(!contains_rust_book_deep_link(
+            "https://doc.rust-lang.org/book/"
+        ));
+
+        let mut trace = BrowserAcceptanceTrace::default();
+        trace.record_tool_error("desktop_act", &format!("unsupported action: {canary}"));
+        let report = trace.report("acceptance_failed", false, 10);
+        let serialized = report.to_string();
+        assert!(serialized.contains("unsupported_action"));
+        assert!(!serialized.contains(canary));
+        let mut unknown = BrowserAcceptanceTrace::default();
+        unknown.record_tool_error("tool-with-private-identifier", "failed");
+        assert!(
+            unknown
+                .report("failed", false, 0)
+                .to_string()
+                .contains("unknown_tool:tool_error")
+        );
+    }
+
+    #[test]
+    fn browser_model_trace_persists_only_bounded_private_evidence() {
+        let mut trace = BrowserAcceptanceTrace::default();
+        for _ in 0..=MAX_BROWSER_ACCEPTANCE_ROUTES {
+            trace.record_route("desktop_observe".to_owned());
+        }
+        trace.record_tool_error("desktop_input", "invalid text: NEVER-PERSIST-CANARY-5628");
+        trace
+            .url_values
+            .push("https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices".to_owned());
+        trace.tab_names.push("The Slice Type".to_owned());
+        let report = trace.report("provider_turn_stopped", false, 2500);
+        let path = persist_browser_acceptance_trace(&report).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.len() <= MAX_BROWSER_ACCEPTANCE_TRACE_BYTES);
+        assert!(contents.contains("ch04-03-slices.html#string-slices"));
+        assert!(contents.contains("The Slice Type"));
+        assert!(contents.contains("input_rejected"));
+        assert!(!contents.contains("NEVER-PERSIST-CANARY-5628"));
+        assert_eq!(
+            report["routes"].as_array().unwrap().len(),
+            MAX_BROWSER_ACCEPTANCE_ROUTES
+        );
+        assert_eq!(report["toolCalls"], MAX_BROWSER_ACCEPTANCE_ROUTES + 1);
+        assert_eq!(report["routesTruncated"], true);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn browser_model_trace_cannot_mark_an_unverified_workflow_accepted() {
+        let trace = BrowserAcceptanceTrace::default();
+        let failure = browser_workflow_acceptance_failure(
+            &trace,
+            "some provider response",
+            &crate::agent::Stop::Finished,
+        );
+        assert_eq!(failure, Some("browser_home_unverified"));
+        assert_eq!(
+            browser_workflow_acceptance_failure(
+                &trace,
+                "some provider response",
+                &crate::agent::Stop::ToolBudget,
+            ),
+            Some("provider_turn_incomplete")
+        );
+        assert_eq!(
+            trace.report(failure.unwrap(), false, 10)["acceptanceComplete"],
+            false
+        );
+
+        let mut completed = BrowserAcceptanceTrace {
+            routes: vec!["desktop_observe".to_owned()],
+            browser_seen: true,
+            home_seen: true,
+            ownership_seen: true,
+            references_seen: true,
+            slices_seen: true,
+            slice_page_seen: true,
+            two_tab_snapshot_seen: true,
+            url_values: vec![
+                "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html".to_owned(),
+                "https://doc.rust-lang.org/book/ch04-03-slices.html".to_owned(),
+            ],
+            page_sequence: vec![
+                (
+                    "The Slice Type".to_owned(),
+                    "https://doc.rust-lang.org/book/ch04-03-slices.html".to_owned(),
+                ),
+                (
+                    "The Slice Type".to_owned(),
+                    "https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices".to_owned(),
+                ),
+                (
+                    "The Slice Type".to_owned(),
+                    "https://doc.rust-lang.org/book/ch04-03-slices.html".to_owned(),
+                ),
+                (
+                    "The Slice Type".to_owned(),
+                    "https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices".to_owned(),
+                ),
+                (
+                    "References and Borrowing".to_owned(),
+                    "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
+                        .to_owned(),
+                ),
+            ],
+            tab_names: vec![
+                "References and Borrowing".to_owned(),
+                "The Slice Type".to_owned(),
+            ],
+            window_names: vec![
+                "References and Borrowing".to_owned(),
+                "The Slice Type".to_owned(),
+            ],
+            ..BrowserAcceptanceTrace::default()
+        };
+        completed.tool_calls = 1;
+        assert_eq!(
+            browser_workflow_acceptance_failure(
+                &completed,
+                "verified",
+                &crate::agent::Stop::Finished,
+            ),
+            None
+        );
+        assert_eq!(
+            completed.report("accepted", true, 10)["acceptanceComplete"],
+            true
+        );
+        completed.page_sequence[4].1 =
+            "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html#references-and-borrowing"
+                .to_owned();
+        assert_eq!(
+            browser_workflow_acceptance_failure(
+                &completed,
+                "verified",
+                &crate::agent::Stop::Finished,
+            ),
+            Some("first_tab_preservation_unverified")
+        );
+        completed.page_sequence[4] = (
+            "References and Borrowing".to_owned(),
+            "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html".to_owned(),
+        );
+        completed.known_deep_link_text_attempted = true;
+        assert_eq!(
+            browser_workflow_acceptance_failure(
+                &completed,
+                "verified",
+                &crate::agent::Stop::Finished,
+            ),
+            Some("known_deep_link_typed_directly")
+        );
+    }
+
+    #[test]
+    fn browser_model_trace_urls_are_public_rust_book_paths_without_query_strings() {
+        assert_eq!(
+            safe_rust_book_url(
+                "https://doc.rust-lang.org/book/ch04-03-slices.html?token=private#string-slices"
+            ),
+            Some("https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices".to_owned())
+        );
+        assert_eq!(
+            safe_rust_book_url("doc.rust-lang.org/book/"),
+            Some("https://doc.rust-lang.org/book/".to_owned())
+        );
+        assert_eq!(
+            safe_rust_book_url("https://doc.rust-lang.org/book"),
+            Some("https://doc.rust-lang.org/book".to_owned())
+        );
+        assert_eq!(
+            safe_rust_book_url("https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices"),
+            Some("https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices".to_owned())
+        );
+        assert_eq!(
+            safe_rust_book_url("https://doc.rust-lang.org/book/ch04-03-slices.html#private-value"),
+            None
+        );
+        assert_eq!(
+            safe_rust_book_url("https://doc.rust-lang.org/book/#private-value"),
+            None
+        );
+        assert_eq!(safe_rust_book_url("https://example.com/book/"), None);
+        assert_eq!(safe_rust_book_url("https://doc.rust-lang.org/login"), None);
+        assert_eq!(safe_browser_trace_title("private page title"), None);
+        assert_eq!(
+            safe_browser_trace_title("The Slice Type - The Rust Programming Language"),
+            Some("The Slice Type")
+        );
+        assert_eq!(
+            trace_route_label("desktop_input", "text"),
+            "desktop_input:text"
+        );
+        assert_eq!(
+            trace_route_label("desktop_input", "private typed value"),
+            "desktop_input"
+        );
+        assert_eq!(
+            trace_route_label("tool_with_user_text", "anything"),
+            "other_tool"
+        );
+    }
+
+    #[test]
+    fn browser_model_prompt_has_one_sequential_tab_and_progress_contract() {
+        let prompt = browser_model_workflow_prompt("test-session");
+        assert!(prompt.contains("query `Chrome address`"));
+        assert!(prompt.contains("scroll down by 120 pixels once"));
+        assert!(prompt.contains("at most six steps"));
+        assert!(prompt.contains("Control+Enter to open it in a second tab"));
+        assert!(prompt.contains("Control+Shift+Tab"));
+        assert!(prompt.contains("Never type a chapter or section URL directly"));
+        assert!(prompt.contains("If tabs or address values are not exposed, say so"));
+        assert!(browser_model_system_prompt().len() < prompt.len());
     }
 
     #[test]
@@ -2165,6 +2738,20 @@ mod tests {
             .collect()
     }
 
+    fn browser_model_workflow_prompt(session_id: &str) -> String {
+        format!(
+            r#"Work only in managed session {session_id}. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. First list apps and launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so observe the Chrome window before interacting. Navigate to the public Rust Book homepage only with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Never type a chapter or section URL directly. After each navigation, query `Chrome address` and the page heading before proceeding; keep the latest matching Chrome windowId when available. Use focused queries, one target per action, and do not repeat a click unless a fresh observation shows the page did not change. If an action is unsupported, reobserve the exact link and use its fresh pointerTarget only when onscreen:true, complete, and unique.
+
+The homepage table of contents starts collapsed. Query `Chrome Toggle Table of Contents label`; click only a fresh result with pointerFallback:true, onscreen:true, queryAmbiguous:false, and truncated:false. Then follow the observed `Understanding Ownership` link and verify its address and heading. Follow the observed `References and Borrowing` link and verify its address and heading. On that References page, observe the exact `The Slice Type` link. If it is onscreen:false, scroll down by 120 pixels once and repeat that exact query; repeat only when the fresh result changes, at most six steps. Stop if the candidate disappears or does not progress. Focus the fresh visible link and press Control+Enter to open it in a second tab without navigating the References tab away.
+
+Switch to the second tab with Control+Tab. Query `Chrome address` and the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and query the address; then Alt+ArrowRight and query it again. Switch to the first tab with Control+Shift+Tab and verify the References and Borrowing address/heading. Query `Chrome tab` and report both tabs only if one fresh observation shows both. If tabs or address values are not exposed, say so and do not infer them. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, tabs, URLs, and steps observed."#
+        )
+    }
+
+    fn browser_model_system_prompt() -> &'static str {
+        "Use only the exposed managed desktop tools. Act on fresh observations and report only results you observed."
+    }
+
     fn run_live_browser_workflow(desktop: &Desktop, root: &Path, session_id: &str) {
         assert_eq!(
             desktop.status()["sessionId"].as_str(),
@@ -2216,33 +2803,13 @@ mod tests {
         };
         write_test_browser_entry(&managed_home, &browser_binary, &browser_profile)
             .expect("a private managed Chromium desktop entry should be created");
-        session.append(crate::session::Record::User(
-            r#"Use only desktop tools in this isolated managed desktop. First call desktop_launch_app list with this sessionId, then launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so confirm the browser window with desktop_observe query Chrome. Navigate to the public Rust Book homepage with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Use desktop_observe query Chrome for browser observations and desktop_input key names Control, Enter, ArrowLeft, and ArrowRight; desktop_input is bound to this session and takes no sessionId. The Rust Book homepage's table of contents is collapsed. Query `Chrome Toggle Table of Contents label`; only if the fresh result has pointerFallback:true, onscreen:true, targetId:null, queryAmbiguous:false, and truncated:false, use its pointerTarget in one pointer-click. Then query `Chrome The Rust Programming Language Understanding Ownership link` and choose only the exact Understanding Ownership link in the observed Rust Book window. If desktop_act rejects that link because it has no accessibility click action, repeat the exact query and use only a fresh pointerTarget from a complete, unique, onscreen result. After it opens, call desktop_observe query Chrome References and Borrowing link and click only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use that exact result. Verify the heading and current address/title. From that observed page, find the The Slice Type link, focus it with desktop_act using its current sessionId/revision/targetId, then immediately use Control+Enter to open it in a second tab. Verify both tabs appear together and have distinct titles/addresses, with the original References page still present. In the Slice tab call desktop_observe query Chrome String slices link and follow only that exact returned link; verify the #string-slices address. Then use Alt+ArrowLeft and Alt+ArrowRight and verify the address returns to the base slice URL and then the #string-slices URL. Switch back with Control+Shift+Tab and verify References and Borrowing is still open in the first tab. Never type a deep-link URL directly; each chapter and section route must come from an observed link. Target IDs are bound to the latest observation revision; desktop_act requires sessionId, revision, and targetId from that same snapshot. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific automation, or any other desktop. Report only pages, tabs, and navigation steps actually verified."#
-                .into(),
-        ));
+        session.append(crate::session::Record::User(browser_model_workflow_prompt(
+            session_id,
+        )));
         let mut state = crate::tools::State::new();
         let mods = Vec::new();
         let mut extensions = crate::ext::Registry::empty();
-        #[derive(Default)]
-        struct Trace {
-            routes: Vec<String>,
-            observations: usize,
-            errors: usize,
-            browser_seen: bool,
-            home_seen: bool,
-            ownership_seen: bool,
-            references_seen: bool,
-            slices_seen: bool,
-            slice_page_seen: bool,
-            two_tab_snapshot_seen: bool,
-            url_values: Vec<String>,
-            url_sequence: Vec<String>,
-            tab_snapshots: Vec<Vec<String>>,
-            tab_names: Vec<String>,
-            window_names: Vec<String>,
-            browser_node_inventory: Vec<String>,
-        }
-        let trace = Arc::new(Mutex::new(Trace::default()));
+        let trace = Arc::new(Mutex::new(BrowserAcceptanceTrace::default()));
         let action_trace = Arc::clone(&trace);
         let desktop_ref = desktop;
         let started_at = Instant::now();
@@ -2254,277 +2821,220 @@ mod tests {
             &mut extensions,
             &session_dir,
         )
-        .with_prompt(format!(
-            r#"Work only in managed session {session_id}. Call desktop_launch_app list with that sessionId and launch the listed Managed Chromium (Glass acceptance) entry. Launch is unverified: confirm the browser window with desktop_observe query Chrome. Use Control+L, type https://doc.rust-lang.org/book/, then key-tap Enter. desktop_input is bound to this session and takes no sessionId. Use only desktop_observe query Chrome for browser observations. The homepage's table of contents is collapsed. Query `Chrome Toggle Table of Contents label`; only if the fresh result has pointerFallback:true, onscreen:true, targetId:null, queryAmbiguous:false, and truncated:false, use its pointerTarget in one pointer-click. Then query `Chrome The Rust Programming Language Understanding Ownership link` and choose only the exact Ownership link in the observed Rust Book window. If desktop_act rejects that link because it has no accessibility click action, repeat the exact query and use only a fresh pointerTarget from a complete, unique, onscreen result. After reaching Ownership, call desktop_observe query Chrome References and Borrowing link and follow only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use only that exact result. Verify the current title/address. On the References page, use the observed The Slice Type link: focus it with desktop_act using its current sessionId/revision/targetId, then press Control+Enter to open it in a second tab. Verify both distinct tabs appear in one observation and the original References page remains open. In the Slice tab call desktop_observe query Chrome String slices link and follow only the exact returned link. Verify the #string-slices address, then use Alt+ArrowLeft and Alt+ArrowRight to verify the base slice URL and return to #string-slices. Switch back with Control+Shift+Tab and verify the first tab remains on References and Borrowing. Never type a deep-link URL directly; navigate deep pages only through observed links. Target IDs require sessionId/revision from the same latest snapshot. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific tools, or another desktop. Report only verified pages and tabs."#
-        ), None, None)
-        .with_limits(8192, None, 64)
-        .with_host_tools(live_desktop_tools(), Box::new(move |call, _, _| {
-            let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or_default();
-            let action = args["action"].as_str().unwrap_or_default();
-            action_trace.lock().unwrap().routes.push(if action.is_empty() {
-                call.name.clone()
-            } else {
-                format!("{}:{action}", call.name)
-            });
-            let result = match call.name.as_str() {
-                "desktop_observe" => desktop_ref
-                    .observe_accessibility(
-                        args["sessionId"].as_str(),
-                        args["query"].as_str(),
-                    )
-                    .map(|value| {
-                        let active_app = value["focusedWindow"]["application"]
-                            .as_str()
-                            .map(str::to_ascii_lowercase)
-                            .unwrap_or_default();
-                        let focused_name = value["focusedWindow"]["name"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_owned();
-                        let mut trace = action_trace.lock().unwrap();
-                        trace.observations += 1;
-                        if active_app.contains("chrome") {
-                            trace.browser_seen = true;
-                            if !focused_name.is_empty()
-                                && !trace.window_names.iter().any(|old| old == &focused_name)
-                            {
-                                trace.window_names.push(focused_name.clone());
-                            }
-                            let title = focused_name.to_ascii_lowercase();
-                            trace.home_seen |= title.contains("the rust programming language");
-                            trace.ownership_seen |= title.contains("understanding ownership");
-                            trace.references_seen |= title.contains("references and borrowing");
-                            trace.slice_page_seen |= title.contains("the slice type");
-                        }
-                        if let Some(nodes) = value["nodes"].as_array() {
-                            let mut current_tabs = Vec::new();
-                            let mut current_urls = Vec::new();
-                            for node in nodes {
-                                let name = node["name"].as_str().unwrap_or_default();
-                                let value_text = node["value"].as_str().unwrap_or_default();
-                                let text = format!("{name} {value_text}").to_ascii_lowercase();
-                                let role = node["role"].as_str().unwrap_or_default();
-                                if matches!(
-                                    role,
-                                    "link"
-                                        | "heading"
-                                        | "paragraph"
-                                        | "document web"
-                                        | "page tab"
-                                        | "combo box"
-                                        | "text entry"
-                                ) && trace.browser_node_inventory.len() < 80
-                                {
-                                    let item = format!(
-                                        "{role}: {}",
-                                        name.chars().take(120).collect::<String>()
+        .with_prompt(browser_model_system_prompt().to_owned(), None, None)
+        .with_limits(8192, None, BROWSER_MODEL_MAX_ROUNDS)
+        .with_host_tools(
+            live_desktop_tools(),
+            Box::new(move |call, _, _| {
+                let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or_default();
+                let action = args["action"].as_str().unwrap_or_default();
+                if (call.name == "desktop_input" && action == "text")
+                    || (call.name == "desktop_act" && action == "set_text")
+                {
+                    action_trace.lock().unwrap().known_deep_link_text_attempted |= args["text"]
+                        .as_str()
+                        .is_some_and(contains_rust_book_deep_link);
+                }
+                let route = trace_route_label(&call.name, action);
+                action_trace.lock().unwrap().record_route(route);
+                let result = match call.name.as_str() {
+                    "desktop_observe" => desktop_ref
+                        .observe_accessibility_scoped(
+                            args["sessionId"].as_str(),
+                            args["query"].as_str(),
+                            args["windowId"].as_str(),
+                        )
+                        .map(|value| {
+                            let active_app = value["focusedWindow"]["application"]
+                                .as_str()
+                                .map(str::to_ascii_lowercase)
+                                .unwrap_or_default();
+                            let focused_name = value["focusedWindow"]["name"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned();
+                            let focused_title = safe_browser_trace_title(&focused_name);
+                            let complete_observation =
+                                value["truncated"] == false && value["queryAmbiguous"] == false;
+                            let browser_observation =
+                                complete_observation && active_app.contains("chrome");
+                            let mut trace = action_trace.lock().unwrap();
+                            trace.observations += 1;
+                            if browser_observation {
+                                trace.browser_seen = true;
+                                if let Some(title) = focused_title {
+                                    BrowserAcceptanceTrace::record_unique(
+                                        &mut trace.window_names,
+                                        title.to_owned(),
                                     );
-                                    if !trace.browser_node_inventory.contains(&item) {
-                                        trace.browser_node_inventory.push(item);
-                                    }
                                 }
-                                trace.home_seen |= text.contains("the rust programming language");
-                                trace.ownership_seen |= text.contains("understanding ownership");
-                                trace.references_seen |= text.contains("references and borrowing");
-                                trace.slices_seen |= node["role"] == "heading"
-                                    && (text.contains("the slice type")
-                                        || text.contains("string slices"));
-                                if matches!(
-                                    role,
-                                    "combo box" | "text entry" | "text box"
-                                ) && ["address", "search"]
-                                    .iter()
-                                    .any(|part| name.to_ascii_lowercase().contains(part))
-                                    && !value_text.is_empty()
-                                {
-                                    let observed_url = if value_text.starts_with("doc.rust-lang.org/") {
-                                        format!("https://{value_text}")
-                                    } else if value_text.starts_with("https://doc.rust-lang.org/book/") {
-                                        value_text.to_owned()
-                                    } else {
-                                        String::new()
-                                    };
-                                    if !observed_url.is_empty() {
+                                let title = focused_name.to_ascii_lowercase();
+                                trace.home_seen |= title.contains("the rust programming language");
+                                trace.ownership_seen |= title.contains("understanding ownership");
+                                trace.references_seen |= title.contains("references and borrowing");
+                                trace.slice_page_seen |= title.contains("the slice type");
+                            }
+                            if let Some(nodes) = value["nodes"].as_array() {
+                                let mut current_tabs = Vec::new();
+                                let mut current_urls = Vec::new();
+                                for node in nodes {
+                                    let name = node["name"].as_str().unwrap_or_default();
+                                    let value_text = node["value"].as_str().unwrap_or_default();
+                                    let text = format!("{name} {value_text}").to_ascii_lowercase();
+                                    let role = node["role"].as_str().unwrap_or_default();
+                                    if browser_observation {
+                                        trace.home_seen |=
+                                            text.contains("the rust programming language");
+                                        trace.ownership_seen |=
+                                            text.contains("understanding ownership");
+                                        trace.references_seen |=
+                                            text.contains("references and borrowing");
+                                        trace.slices_seen |= node["role"] == "heading"
+                                            && (text.contains("the slice type")
+                                                || text.contains("string slices"));
+                                    }
+                                    if browser_observation
+                                        && matches!(role, "combo box" | "text entry" | "text box")
+                                        && ["address", "search"]
+                                            .iter()
+                                            .any(|part| name.to_ascii_lowercase().contains(part))
+                                        && !value_text.is_empty()
+                                        && let Some(observed_url) = safe_rust_book_url(value_text)
+                                        && node["owningWindow"]["application"].as_str().is_some_and(
+                                            |app| app.to_ascii_lowercase().contains("chrome"),
+                                        )
+                                        && node["owningWindow"]["name"]
+                                            .as_str()
+                                            .and_then(safe_browser_trace_title)
+                                            == focused_title
+                                        && current_urls.len() < MAX_BROWSER_ACCEPTANCE_VALUES
+                                    {
                                         current_urls.push(observed_url.clone());
-                                        trace.url_sequence.push(observed_url.clone());
-                                        trace.home_seen |= observed_url
-                                            == "https://doc.rust-lang.org/book/";
-                                        trace.ownership_seen |= observed_url
-                                            .contains("ch04-00-understanding-ownership");
-                                        trace.references_seen |= observed_url
-                                            .contains("ch04-02-references-and-borrowing");
-                                        trace.slice_page_seen |=
-                                            observed_url.contains("ch04-03-slices");
-                                        if !trace.url_values.iter().any(|url| url == &observed_url) {
-                                            trace.url_values.push(observed_url);
+                                    }
+                                    if browser_observation
+                                        && matches!(node["role"].as_str(), Some("page tab" | "tab"))
+                                        && let Some(name) = safe_browser_trace_title(name)
+                                    {
+                                        let name = name.to_owned();
+                                        BrowserAcceptanceTrace::record_unique(
+                                            &mut trace.tab_names,
+                                            name.clone(),
+                                        );
+                                        if current_tabs.len() < 8 && !current_tabs.contains(&name) {
+                                            current_tabs.push(name);
                                         }
                                     }
                                 }
-                                if matches!(node["role"].as_str(), Some("page tab" | "tab"))
-                                    && !name.is_empty()
+                                if browser_observation
+                                    && current_urls.len() == 1
+                                    && let Some(observed_url) = current_urls.pop()
+                                    && let Some(window_title) = focused_title
                                 {
-                                    if !trace.tab_names.iter().any(|tab| tab == name) {
-                                        trace.tab_names.push(name.to_owned());
+                                    if trace.page_sequence.len() < MAX_BROWSER_ACCEPTANCE_ROUTES {
+                                        trace
+                                            .page_sequence
+                                            .push((window_title.to_owned(), observed_url.clone()));
                                     }
-                                    if !current_tabs.iter().any(|tab| tab == name) {
-                                        current_tabs.push(name.to_owned());
+                                    trace.home_seen |= observed_url
+                                        == "https://doc.rust-lang.org/book/"
+                                        || observed_url == "https://doc.rust-lang.org/book";
+                                    trace.ownership_seen |=
+                                        observed_url.contains("ch04-00-understanding-ownership");
+                                    trace.references_seen |=
+                                        observed_url.contains("ch04-02-references-and-borrowing");
+                                    trace.slice_page_seen |=
+                                        observed_url.contains("ch04-03-slices");
+                                    BrowserAcceptanceTrace::record_unique(
+                                        &mut trace.url_values,
+                                        observed_url,
+                                    );
+                                }
+                                let has_references = current_tabs.iter().any(|tab| {
+                                    tab.to_ascii_lowercase()
+                                        .contains("references and borrowing")
+                                });
+                                let has_slice = current_tabs
+                                    .iter()
+                                    .any(|tab| tab.to_ascii_lowercase().contains("slice type"));
+                                if browser_observation {
+                                    trace.two_tab_snapshot_seen |=
+                                        current_tabs.len() >= 2 && has_references && has_slice;
+                                    if trace.tab_snapshots.len() < MAX_BROWSER_ACCEPTANCE_SNAPSHOTS
+                                    {
+                                        trace.tab_snapshots.push(current_tabs);
                                     }
                                 }
+                                if let Some(url) = trace.url_values.last()
+                                    && url.contains("ch04-03-slices")
+                                {
+                                    trace.slice_page_seen = true;
+                                }
                             }
-                            let has_references = current_tabs
-                                .iter()
-                                .any(|tab| tab.to_ascii_lowercase().contains("references and borrowing"));
-                            let has_slice = current_tabs
-                                .iter()
-                                .any(|tab| tab.to_ascii_lowercase().contains("slice type"));
-                            trace.two_tab_snapshot_seen |= current_tabs.len() >= 2
-                                && has_references
-                                && has_slice;
-                            trace.tab_snapshots.push(current_tabs);
-                            if let Some(url) = current_urls.last()
-                                && url.contains("ch04-03-slices")
-                            {
-                                trace.slice_page_seen = true;
-                            }
-                        }
-                        value.to_string()
-                    }),
-                "desktop_act" => desktop_ref
-                    .act_accessibility(&args)
-                    .map(|value| value.to_string()),
-                "desktop_launch_app" => desktop_ref
-                    .launch_app(&args)
-                    .map(|value| value.to_string()),
-                "desktop_input" => desktop_ref
-                    .input(Lease::Agent, &args)
-                    .map(|value| value.to_string())
-                    .map_err(|error| error.message().to_owned()),
-                _ => Err("the test host exposes only managed desktop tools".to_owned()),
-            };
-            if result.is_err() {
-                action_trace.lock().unwrap().errors += 1;
-            }
-            crate::agent::HostToolOutcome::plain(match result {
-                Ok(output) => crate::tools::Outcome::ok(output),
-                Err(error) => crate::tools::Outcome::err(error),
-            })
-        }));
+                            value.to_string()
+                        }),
+                    "desktop_act" => desktop_ref
+                        .act_accessibility(&args)
+                        .map(|value| value.to_string()),
+                    "desktop_launch_app" => {
+                        desktop_ref.launch_app(&args).map(|value| value.to_string())
+                    }
+                    "desktop_input" => desktop_ref
+                        .input(Lease::Agent, &args)
+                        .map(|value| value.to_string())
+                        .map_err(|error| error.message().to_owned()),
+                    _ => Err("the test host exposes only managed desktop tools".to_owned()),
+                };
+                if let Err(error) = &result {
+                    action_trace
+                        .lock()
+                        .unwrap()
+                        .record_tool_error(&call.name, error);
+                }
+                crate::agent::HostToolOutcome::plain(match result {
+                    Ok(output) => crate::tools::Outcome::ok(output),
+                    Err(error) => crate::tools::Outcome::err(error),
+                })
+            }),
+        );
         let turn = agent.run_turn(|_| {});
         if let Err(error) = &turn {
             let trace = trace.lock().unwrap();
+            let error_category = provider_error_category(error);
+            let report = trace.report("provider_error", false, started_at.elapsed().as_millis());
+            let trace_file = match persist_browser_acceptance_trace(&report) {
+                Ok(path) => json!(path.display().to_string()),
+                Err(code) => json!({"persisted":false,"failureCode":code}),
+            };
             eprintln!(
                 "GLASS_DESKTOP_BROWSER_MODEL_FAILURE {}",
                 json!({
-                    "error": error.to_string(),
-                    "toolCalls": trace.routes.len(),
-                    "observations": trace.observations,
-                    "toolErrors": trace.errors,
-                    "routes": trace.routes,
-                    "windowNames": trace.window_names,
-                    "tabNames": trace.tab_names,
-                    "tabSnapshots": trace.tab_snapshots,
-                    "urlSequence": trace.url_sequence,
-                    "observedUrls": trace.url_values,
-                    "browserNodeInventory": trace.browser_node_inventory
+                    "providerErrorCategory": error_category,
+                    "traceFile": trace_file,
+                    "trace": report
                 })
             );
             panic!("configured free-model browser task must finish");
         }
         let (output, stop) = turn.unwrap();
-        {
-            let trace = trace.lock().unwrap();
-            eprintln!(
-                "GLASS_DESKTOP_BROWSER_MODEL_TRACE {}",
-                json!({
-                    "stop": format!("{stop:?}"),
-                    "toolCalls": trace.routes.len(),
-                    "observations": trace.observations,
-                    "toolErrors": trace.errors,
-                    "routes": trace.routes,
-                    "windowNames": trace.window_names,
-                    "tabNames": trace.tab_names,
-                    "tabSnapshots": trace.tab_snapshots,
-                    "observedUrls": trace.url_values,
-                    "urlSequence": trace.url_sequence,
-                    "browserNodeInventory": trace.browser_node_inventory,
-                    "slicePageSeen": trace.slice_page_seen,
-                    "twoTabSnapshotSeen": trace.two_tab_snapshot_seen
-                })
-            );
-        }
-        assert_eq!(stop, crate::agent::Stop::Finished);
-        assert!(!output.text.trim().is_empty());
         let trace = trace.lock().unwrap();
-        assert!(
-            trace
-                .routes
-                .iter()
-                .all(|route| route.starts_with("desktop_"))
+        let acceptance_failure = browser_workflow_acceptance_failure(&trace, &output.text, &stop);
+        let report = trace.report(
+            acceptance_failure.unwrap_or("accepted"),
+            acceptance_failure.is_none(),
+            started_at.elapsed().as_millis(),
+        );
+        let trace_file = match persist_browser_acceptance_trace(&report) {
+            Ok(path) => json!(path.display().to_string()),
+            Err(code) => json!({"persisted":false,"failureCode":code}),
+        };
+        eprintln!(
+            "GLASS_DESKTOP_BROWSER_MODEL_TRACE {}",
+            json!({"traceFile":trace_file,"trace":report})
         );
         assert!(
-            trace.browser_seen,
-            "the model should use the managed browser"
-        );
-        assert!(
-            trace.home_seen,
-            "the model should observe the Rust Book homepage"
-        );
-        assert!(
-            trace.ownership_seen,
-            "the ownership chapter link should be observed"
-        );
-        assert!(trace.references_seen, "the section link should be observed");
-        assert!(trace.slices_seen, "the slice chapter should be observed");
-        assert!(
-            trace.slice_page_seen,
-            "the slice chapter page should be open"
-        );
-        assert!(
-            trace
-                .url_values
-                .iter()
-                .any(|url| url.contains("ch04-00-understanding-ownership"))
-                && trace
-                    .url_values
-                    .iter()
-                    .any(|url| url.contains("ch04-03-slices")),
-            "distinct chapter and slice URLs must appear in the visible address field: {:?}",
-            trace.url_values
-        );
-        assert!(
-            trace.tab_names.len() >= 2,
-            "both tabs should be observable: {:?}",
-            trace.tab_names
-        );
-        assert!(
-            trace.two_tab_snapshot_seen,
-            "a single observation should show both the References and Slice tabs: {:?}",
-            trace.tab_snapshots
-        );
-        assert!(
-            trace.window_names.len() >= 2,
-            "switching tabs should change the browser title: {:?}",
-            trace.window_names
-        );
-        assert!(
-            trace.url_sequence.windows(4).any(|urls| {
-                urls[0].contains("ch04-03-slices")
-                    && urls[1].contains("#string-slices")
-                    && urls[2].contains("ch04-03-slices")
-                    && !urls[2].contains("#string-slices")
-                    && urls[3].contains("#string-slices")
-            }),
-            "Back then Forward should traverse the slice-section URL in order: {:?}",
-            trace.url_sequence
-        );
-        assert!(
-            trace
-                .url_sequence
-                .last()
-                .is_some_and(|url| url.contains("ch04-00-understanding-ownership")
-                    && url.contains("#references-and-borrowing")),
-            "the first tab should remain on the References and Borrowing section after returning from the slice tab: {:?}",
-            trace.url_sequence
+            acceptance_failure.is_none(),
+            "browser workflow acceptance failed: {}",
+            acceptance_failure.unwrap_or("unknown")
         );
         eprintln!(
             "GLASS_DESKTOP_BROWSER_MODEL_WORKFLOW {}",
@@ -2533,7 +3043,7 @@ mod tests {
                 "model": config.model,
                 "endpointHost": endpoint.host_str(),
                 "endpointPort": endpoint.port(),
-                "toolCalls": trace.routes.len(),
+            "toolCalls": trace.tool_calls,
                 "observations": trace.observations,
                 "toolErrors": trace.errors,
                 "elapsedMs": started_at.elapsed().as_millis(),
@@ -2541,8 +3051,7 @@ mod tests {
                 "windowNames": trace.window_names,
                 "tabNames": trace.tab_names,
                 "observedUrls": trace.url_values,
-                "urlSequence": trace.url_sequence,
-                "browserNodeInventory": trace.browser_node_inventory,
+                "pageSequence": trace.page_sequence,
                 "homeSeen": trace.home_seen,
                 "ownershipSeen": trace.ownership_seen,
                 "referencesSeen": trace.references_seen,

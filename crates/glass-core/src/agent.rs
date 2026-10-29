@@ -2472,6 +2472,11 @@ impl<'a> Agent<'a> {
     ) {
         let inner = call.clone();
         let workspace = self.workspace.to_path_buf();
+        let steer_wait = if call.name == "desktop_launch_app" {
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_secs(3)
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(crate::desktop::execute_tool(&inner, &workspace));
@@ -2494,7 +2499,7 @@ impl<'a> Agent<'a> {
                     if self.steer.is_some() {
                         // Desktop events are short, atomic operations. Finish the
                         // request before honoring a steer so its result is recorded.
-                        if let Ok(result) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+                        if let Ok(result) = rx.recv_timeout(steer_wait) {
                             self.finish_tool(call, result);
                         } else {
                             self.finish_tool(
@@ -3533,7 +3538,7 @@ fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) 
     let tool_names = if read_only {
         "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
     } else {
-        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`"
+        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"
     };
     let state = match status {
         None => "Connect is running, but the managed desktop status could not be refreshed. Call `desktop_status` before acting.".to_string(),
@@ -3558,7 +3563,7 @@ fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) 
     let input = if read_only {
         "Plan/read-only mode offers no desktop input tool."
     } else {
-        "Use `desktop_act` for revision-bound accessible targets; it rejects stale IDs and respects the lease. Its result includes a fresh observation when available; verify the expected UI change there before continuing. Use `desktop_input` only as a fallback for controls missing from accessibility and only when the lease is `agent`; the human changes the lease in Connect, and the agent cannot take it implicitly."
+        "Use `desktop_launch_app` to list installed desktop applications and launch one by an exact listed desktopEntryId when the app is not already open; it accepts no command line or arguments and reports verified=false until you confirm a window with `desktop_observe`. Use `desktop_act` for revision-bound accessible targets; it requires the sessionId, revision, and targetId from the same latest observation, rejects stale IDs, and respects the lease. Its result includes a fresh observation when available; verify the expected UI change there before continuing. `desktop_input` is already bound to the current Connect session and does not accept sessionId; it requires the agent lease. Use exact key names from its schema: modifiers are Control/Alt/Shift/Meta (not Ctrl), Enter is the key name (not Return), and PageDown is the key name. Use it only as a fallback for controls missing from accessibility; the human changes the lease in Connect, and the agent cannot take it implicitly."
     };
     format!(
         "Connect manages a separate desktop shared with the human. {state} Available tools this request: {tool_names}. `desktop_observe` returns a compact bounded tree with revision-bound targets; password values are never returned. `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`; it does not edit project files. {input} These tools exist only while Connect manages a desktop; do not assume desktop access in standalone Core or other hosts."
@@ -3991,7 +3996,8 @@ mod warm_integration {
         let writable = connect_desktop_context(Some(&status), false);
         assert!(writable.contains("desktop-session-1"));
         assert!(writable.contains("input control lease is `human`"));
-        assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`"));
+        assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"));
+        assert!(writable.contains("exact listed desktopEntryId"));
         assert!(writable.contains("revision-bound accessible targets"));
         assert!(writable.contains("cannot take it implicitly"));
 
@@ -3999,6 +4005,7 @@ mod warm_integration {
         assert!(readonly.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`"));
         assert!(!readonly.contains("`desktop_input`"));
         assert!(!readonly.contains("`desktop_act`"));
+        assert!(!readonly.contains("`desktop_launch_app`"));
         assert!(readonly.contains("generated artifact"));
     }
 
@@ -4011,7 +4018,7 @@ mod warm_integration {
         });
         let context = connect_desktop_context(Some(&status), false);
         assert!(context.contains("no active managed desktop session"));
-        assert!(context.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`"));
+        assert!(context.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"));
     }
 
     #[test]
@@ -4063,6 +4070,18 @@ mod warm_integration {
             panic!("read-only mode must not dispatch accessibility actions")
         });
         assert!(outcome.exit_code.is_none());
+
+        let launch = ToolCall {
+            id: "launch".into(),
+            name: "desktop_launch_app".into(),
+            arguments: r#"{"action":"launch","sessionId":"s","desktopEntryId":"org.example.App"}"#
+                .into(),
+        };
+        let outcome = run_read_only_tool(&launch, workspace, |_, _| {
+            panic!("read-only mode must not dispatch application launches")
+        });
+        assert!(outcome.exit_code.is_none());
+        assert!(outcome.body.contains("read-only"));
     }
 
     #[test]
@@ -4124,6 +4143,7 @@ mod warm_integration {
         assert!(mixed_names.contains(&"desktop_observe".to_string()));
         assert!(mixed_names.contains(&"desktop_act".to_string()));
         assert!(mixed_names.contains(&"desktop_input".to_string()));
+        assert!(mixed_names.contains(&"desktop_launch_app".to_string()));
         let standalone_names = mixed
             .tool_set_for_connect(false)
             .into_iter()

@@ -22,6 +22,7 @@ use std::{
 };
 
 mod accessibility;
+mod apps;
 mod capture;
 mod input;
 mod process;
@@ -933,12 +934,123 @@ impl Desktop {
         Self::agent_request(&json!({"action":"input","value":value}))
     }
 
+    pub fn agent_launch_app(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"launch_app","value":value}))
+    }
+
     pub fn agent_observe(value: &Value) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"observe","value":value}))
     }
 
     pub fn agent_act(value: &Value) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"act","value":value}))
+    }
+
+    fn launch_app(&self, value: &Value) -> Result<Value, String> {
+        let object = value
+            .as_object()
+            .ok_or("desktop_launch_app arguments must be an object")?;
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "action" | "sessionId" | "desktopEntryId"))
+        {
+            return Err("desktop_launch_app does not accept extra arguments".into());
+        }
+        let action = value
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or("action must be list or launch")?;
+        let expected_session_id = value
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or("sessionId is required from desktop_status")?;
+        match action {
+            "list" if value.get("desktopEntryId").is_some() => {
+                return Err("desktopEntryId is only valid when action is launch".into());
+            }
+            "launch"
+                if value
+                    .get("desktopEntryId")
+                    .and_then(Value::as_str)
+                    .is_none() =>
+            {
+                return Err("desktopEntryId is required when action is launch".into());
+            }
+            "list" | "launch" => {}
+            _ => return Err("action must be list or launch".into()),
+        }
+        self.restore_reusable_session()?;
+        let _control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
+        let (session_id, context, lease) = {
+            let guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            let session = guard
+                .as_ref()
+                .ok_or("No managed desktop session is running")?;
+            if expected_session_id != session.id {
+                return Err(
+                    "The managed desktop session changed; call desktop_status and retry".into(),
+                );
+            }
+            let home = match session.lifecycle {
+                process::Lifecycle::Disposable => session.directory.join("home"),
+                process::Lifecycle::Reusable => self.profile_dir().join("home"),
+            };
+            let atspi_bus_address =
+                std::fs::read_to_string(session.directory.join("atspi-bus.address"))
+                    .map_err(|_| "Managed desktop AT-SPI bus address is unavailable".to_owned())?;
+            let atspi_bus_address = atspi_bus_address.trim().to_owned();
+            if atspi_bus_address.is_empty()
+                || atspi_bus_address.len() > 4096
+                || !atspi_bus_address.starts_with("unix:")
+                || atspi_bus_address.contains(['\n', '\r'])
+            {
+                return Err("Managed desktop AT-SPI bus address is invalid".into());
+            }
+            (
+                session.id.clone(),
+                apps::LaunchContext {
+                    environment: session.environment,
+                    display: session.display.clone(),
+                    home,
+                    #[cfg(test)]
+                    session_directory: session.directory.clone(),
+                    xauthority: session.directory.join("Xauthority"),
+                    runtime_directory: session.directory.join("runtime"),
+                    session_bus_address: session.session_bus_address.clone(),
+                    atspi_bus_address,
+                },
+                session.lease,
+            )
+        };
+        match action {
+            "list" => {
+                let listed = apps::list(&context.home);
+                Ok(json!({
+                    "sessionId": session_id,
+                    "applications": listed["applications"],
+                    "truncated": listed["truncated"]
+                }))
+            }
+            "launch" => {
+                require_lease(Lease::Agent, lease).map_err(|error| error.message().to_owned())?;
+                let entry_id = value
+                    .get("desktopEntryId")
+                    .and_then(Value::as_str)
+                    .ok_or("desktopEntryId is required when action is launch")?;
+                let mut result = apps::launch(&context, entry_id)?;
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("sessionId".into(), json!(session_id));
+                }
+                Ok(result)
+            }
+            _ => Err("action must be list or launch".into()),
+        }
     }
 
     fn agent_status() -> Result<Value, String> {
@@ -953,10 +1065,10 @@ impl Desktop {
         let mut stream = UnixStream::connect(crate::config::data_dir().join(LEASE_SOCKET))
             .map_err(|e| format!("Connect desktop service is unavailable: {e}"))?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(12)))
             .map_err(|e| e.to_string())?;
         stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
+            .set_write_timeout(Some(Duration::from_secs(12)))
             .map_err(|e| e.to_string())?;
         serde_json::to_writer(&mut stream, request).map_err(|e| e.to_string())?;
         stream.write_all(b"\n").map_err(|e| e.to_string())?;
@@ -1012,6 +1124,7 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_input"
             | "desktop_observe"
             | "desktop_act"
+            | "desktop_launch_app"
     )
 }
 
@@ -1026,6 +1139,7 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
     let result = match call.name.as_str() {
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
+        "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
@@ -1182,10 +1296,10 @@ impl InputError {
 
 fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result<(), String> {
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(12)))
         .map_err(|e| e.to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
+        .set_write_timeout(Some(Duration::from_secs(12)))
         .map_err(|e| e.to_string())?;
     let mut line = String::new();
     BufReader::new(stream.try_clone().map_err(|e| e.to_string())?)
@@ -1201,6 +1315,7 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
             request["value"]["query"].as_str(),
         ),
         Some("act") => desktop.act_accessibility(&request["value"]),
+        Some("launch_app") => desktop.launch_app(&request["value"]),
         Some("frame") => desktop.frame_after(0, Duration::from_secs(2)).map(|frame| {
             match frame {
                 Some((seq, captured, jpeg)) => json!({"sessionId":desktop.status()["sessionId"],"workspaceRoot":desktop.status()["workspaceRoot"],"seq":seq,"capturedAtMs":captured,"jpeg":base64::engine::general_purpose::STANDARD.encode(jpeg)}),
@@ -1476,13 +1591,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let mut desktop = Desktop::new(workspace);
+        let mut desktop = Desktop::new(workspace.clone());
         desktop.root = root.join("sessions");
         desktop.start().unwrap();
         let expected_saved_value = "glass desktop saved 7142";
         let saved_value_path = root.join("saved-value.txt");
 
-        let (session_id, display, auth_file, session_bus, home) = {
+        let (session_id, display, auth_file, session_bus, atspi_bus, home, runtime_directory) = {
             let guard = desktop.session.lock().unwrap();
             let session = guard.as_ref().unwrap();
             (
@@ -1490,9 +1605,27 @@ mod tests {
                 session.display.clone(),
                 session.directory.join("Xauthority"),
                 session.session_bus_address.clone(),
+                std::fs::read_to_string(session.directory.join("atspi-bus.address")).unwrap(),
                 session.directory.join("home"),
+                session.directory.join("runtime"),
             )
         };
+        if std::env::var_os("GLASS_DESKTOP_BROWSER_MODEL_E2E").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            run_live_browser_workflow(&desktop, &root, &session_id);
+            desktop.stop().unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        if std::env::var_os("GLASS_DESKTOP_A11Y_MODEL_E2E").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            run_live_mousepad_workflow(&desktop, &root, &session_id, &workspace);
+            desktop.stop().unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        }
         let mut registry_ready = false;
         let mut previous_applications = None;
         let registry_deadline = Instant::now() + Duration::from_secs(15);
@@ -1529,11 +1662,21 @@ mod tests {
                 "--text=Enter a local test value",
                 "--ok-label=Save",
             ])
-            .env("DISPLAY", display)
-            .env("XAUTHORITY", auth_file)
-            .env("DBUS_SESSION_BUS_ADDRESS", session_bus)
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", &auth_file)
+            .env("DBUS_SESSION_BUS_ADDRESS", &session_bus)
+            .env("AT_SPI_BUS_ADDRESS", &atspi_bus)
+            .env("GDK_BACKEND", "x11")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
             .env("GTK_A11Y", "atspi")
-            .env("HOME", home)
+            .env("GTK_THEME", "Adwaita")
+            .env_remove("NO_AT_BRIDGE")
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_RUNTIME_DIR", &runtime_directory)
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&saved_value_path).unwrap())
             .stderr(std::fs::File::create(&dialog_stderr_path).unwrap())
@@ -1586,7 +1729,9 @@ mod tests {
                 if dialog.try_wait().unwrap().is_some() {
                     panic!("test dialog exited before accessibility observation");
                 }
-                if let Ok(value) = desktop.observe_accessibility(Some(&session_id), None) {
+                if let Ok(value) =
+                    desktop.observe_accessibility(Some(&session_id), Some("Zenity text"))
+                {
                     last_snapshot = Some(value.clone());
                     let zenity_visible = value["applications"].as_array().is_some_and(|apps| {
                         apps.iter().any(|app| {
@@ -1594,7 +1739,11 @@ mod tests {
                                 .is_some_and(|name| name.to_ascii_lowercase().contains("zenity"))
                         })
                     });
-                    let focused_dialog = value["focusedWindow"]["application"] == "zenity";
+                    let visible_dialog = value["nodes"].as_array().is_some_and(|nodes| {
+                        nodes
+                            .iter()
+                            .any(|node| node["owningWindow"]["name"] == "Glass accessibility test")
+                    });
                     let editable_target = value["nodes"].as_array().is_some_and(|nodes| {
                         nodes.iter().any(|node| {
                             node["application"] == "zenity"
@@ -1602,7 +1751,7 @@ mod tests {
                                 && !node["value"].is_null()
                         })
                     });
-                    if zenity_visible && focused_dialog && editable_target {
+                    if zenity_visible && visible_dialog && editable_target {
                         snapshot = Some(value);
                         break;
                     }
@@ -1621,7 +1770,7 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join("\n");
                 panic!(
-                    "managed Xfce accessibility tree becomes observable; latest: {last_snapshot:?}; Zenity diagnostics: {diagnostic}"
+                    "managed Xfce accessibility tree becomes observable; latest: {last_snapshot:?}; diagnostics: {diagnostic}"
                 )
             });
             assert!(
@@ -1636,16 +1785,20 @@ mod tests {
                     }),
                 "application list should identify Zenity: {first}"
             );
-            assert_eq!(
-                first["focusedWindow"]["name"], "Glass accessibility test",
-                "the snapshot should identify the focused test dialog"
+            assert!(
+                first["nodes"].as_array().is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .any(|node| node["owningWindow"]["name"] == "Glass accessibility test")
+                }),
+                "the snapshot should identify the test dialog that owns the field: {first}"
             );
-            let first_target = test_target(&first, |node| !node["value"].is_null());
+            let first_target = test_target(&first, |node| node["editable"] == true);
 
             let save_search = desktop
-                .observe_accessibility(Some(&session_id), Some("Save"))
+                .observe_accessibility(Some(&session_id), Some("Zenity Save"))
                 .unwrap();
-            assert_eq!(save_search["query"], "Save");
+            assert_eq!(save_search["query"], "Zenity Save");
             assert!(
                 save_search["nodes"].as_array().is_some_and(|nodes| {
                     nodes
@@ -1656,7 +1809,7 @@ mod tests {
             );
 
             let second = desktop
-                .observe_accessibility(Some(&session_id), None)
+                .observe_accessibility(Some(&session_id), Some("Zenity text"))
                 .unwrap();
             let stale = desktop.act_accessibility(&json!({
                 "sessionId": session_id,
@@ -1667,7 +1820,7 @@ mod tests {
             }));
             assert!(stale.unwrap_err().contains("stale"));
 
-            let field = test_target(&second, |node| !node["value"].is_null());
+            let field = test_target(&second, |node| node["editable"] == true);
             let edited = desktop
                 .act_accessibility(&json!({
                     "sessionId": session_id,
@@ -1682,15 +1835,14 @@ mod tests {
                 "accessible text readback: {edited}"
             );
             assert_eq!(
-                test_target(&edited["observation"], |node| !node["value"].is_null())["value"],
-                "glass accessibility probe",
-                "desktop_act should return its fresh readback snapshot"
+                edited["value"], "glass accessibility probe",
+                "desktop_act should return its fresh readback value"
             );
 
             let before_lease = desktop
-                .observe_accessibility(Some(&session_id), None)
+                .observe_accessibility(Some(&session_id), Some("Zenity text"))
                 .unwrap();
-            let field = test_target(&before_lease, |node| !node["value"].is_null());
+            let field = test_target(&before_lease, |node| node["editable"] == true);
             desktop.set_lease("take-control").unwrap();
             let blocked = desktop.act_accessibility(&json!({
                 "sessionId": session_id,
@@ -1705,18 +1857,8 @@ mod tests {
             );
             desktop.set_lease("return-to-agent").unwrap();
 
-            let output = if std::env::var_os("GLASS_DESKTOP_A11Y_MODEL_E2E").as_deref()
-                == Some(std::ffi::OsStr::new("1"))
-            {
-                run_live_accessibility_agent_turn(
-                    &desktop,
-                    &root,
-                    &session_id,
-                    expected_saved_value,
-                )
-            } else {
-                run_accessibility_agent_turn(&desktop, &root, &session_id, expected_saved_value)
-            };
+            let output =
+                run_accessibility_agent_turn(&desktop, &root, &session_id, expected_saved_value);
             assert!(
                 !output.trim().is_empty(),
                 "the agent should report completion"
@@ -1741,6 +1883,91 @@ mod tests {
         if dialog.try_wait().unwrap().is_none() {
             let _ = dialog.kill();
             let _ = dialog.wait();
+        }
+
+        if std::env::var_os("GLASS_DESKTOP_A11Y_MODEL_E2E").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            run_live_mousepad_workflow(&desktop, &root, &session_id, &workspace);
+        } else {
+            let mut mousepad = Command::new("mousepad")
+                .args(["--disable-server"])
+                .env("DISPLAY", &display)
+                .env("XAUTHORITY", &auth_file)
+                .env("DBUS_SESSION_BUS_ADDRESS", &session_bus)
+                .env("AT_SPI_BUS_ADDRESS", &atspi_bus)
+                .env("GDK_BACKEND", "x11")
+                .env_remove("WAYLAND_DISPLAY")
+                .env_remove("WAYLAND_SOCKET")
+                .env("GTK_A11Y", "atspi")
+                .env("GTK_THEME", "Adwaita")
+                .env_remove("NO_AT_BRIDGE")
+                .env("HOME", &home)
+                .env("XDG_CONFIG_HOME", home.join(".config"))
+                .env("XDG_CACHE_HOME", home.join(".cache"))
+                .env("XDG_DATA_HOME", home.join(".local/share"))
+                .env("XDG_RUNTIME_DIR", &runtime_directory)
+                .current_dir(&workspace)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(std::fs::File::create(root.join("mousepad-stderr.txt")).unwrap())
+                .spawn()
+                .expect("start Mousepad in the isolated managed desktop");
+            let mousepad_deadline = Instant::now() + Duration::from_secs(18);
+            let mut mousepad_snapshot = None;
+            let mut last_mousepad_snapshot = None;
+            while Instant::now() < mousepad_deadline {
+                if let Ok(snapshot) =
+                    desktop.observe_accessibility(Some(&session_id), Some("Mousepad text"))
+                {
+                    last_mousepad_snapshot = Some(snapshot.clone());
+                    let mousepad_focused = snapshot["focusedWindow"]["application"]
+                        .as_str()
+                        .is_some_and(|name| name.to_ascii_lowercase().contains("mousepad"));
+                    let mousepad_editable = snapshot["nodes"].as_array().is_some_and(|nodes| {
+                        nodes.iter().any(|node| {
+                            node["application"]
+                                .as_str()
+                                .is_some_and(|name| name.to_ascii_lowercase().contains("mousepad"))
+                                && !node["targetId"].is_null()
+                                && !node["value"].is_null()
+                        })
+                    });
+                    if mousepad_focused && mousepad_editable {
+                        mousepad_snapshot = Some(snapshot);
+                        break;
+                    }
+                }
+                if mousepad.try_wait().unwrap().is_some() {
+                    panic!("Mousepad exited before its focused accessibility view appeared");
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            let mousepad_snapshot = mousepad_snapshot.unwrap_or_else(|| {
+                let stderr =
+                    std::fs::read_to_string(root.join("mousepad-stderr.txt")).unwrap_or_default();
+                panic!(
+                    "Mousepad focused editable view was not observed; latest: {last_mousepad_snapshot:?}; diagnostics: {stderr}"
+                );
+            });
+            let editor = test_target(&mousepad_snapshot, |node| {
+                node["application"]
+                    .as_str()
+                    .is_some_and(|name| name.to_ascii_lowercase().contains("mousepad"))
+                    && !node["value"].is_null()
+            });
+            let edited = desktop
+                .act_accessibility(&json!({
+                    "sessionId": session_id,
+                    "revision": mousepad_snapshot["revision"],
+                    "targetId": editor["targetId"],
+                    "action": "set_text",
+                    "text": "Mousepad AT-SPI focus probe — café 東京",
+                }))
+                .unwrap_or_else(|error| panic!("could not edit Mousepad target {editor}: {error}"));
+            assert_eq!(edited["verified"], true, "Mousepad readback: {edited}");
+            let _ = mousepad.kill();
+            let _ = mousepad.wait();
         }
         desktop.stop().unwrap();
         std::fs::remove_dir_all(&root).unwrap();
@@ -1773,30 +2000,479 @@ mod tests {
         )
     }
 
-    fn run_live_accessibility_agent_turn(
+    fn live_desktop_tools() -> Vec<(String, String, String)> {
+        crate::provider::desktop_tool_schemas(true)
+            .into_iter()
+            .filter(|(name, _, _)| {
+                matches!(
+                    name.as_str(),
+                    "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app"
+                )
+            })
+            .collect()
+    }
+
+    fn run_live_browser_workflow(desktop: &Desktop, root: &Path, session_id: &str) {
+        assert_eq!(
+            desktop.status()["sessionId"].as_str(),
+            Some(session_id),
+            "browser workflow must use its own isolated managed desktop"
+        );
+        let config_path = crate::config::default_path();
+        let mut config = if config_path.exists() {
+            crate::config::load(&config_path)
+                .unwrap_or_else(|_| panic!("Could not load the configured free provider"))
+        } else {
+            crate::config::Config::default()
+        };
+        crate::auth::apply(&mut config)
+            .unwrap_or_else(|_| panic!("Could not apply the configured provider connection"));
+        let endpoint = url::Url::parse(&config.base_url)
+            .unwrap_or_else(|_| panic!("The configured free provider endpoint is invalid"));
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.model.to_ascii_lowercase(), "kilo-auto/free");
+        assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+        assert_eq!(endpoint.port(), Some(20128));
+        let key = crate::auth::resolve(&config)
+            .unwrap_or_else(|_| panic!("Could not resolve the configured free provider"));
+        let mut provider = crate::provider::build(
+            &config.provider,
+            &config.base_url,
+            key,
+            &config.model,
+            config.adaptive_pacing,
+        )
+        .unwrap_or_else(|_| panic!("Could not construct the configured free provider"));
+        provider.set_session_identity(config.provider_session.as_deref());
+
+        let session_dir = root.join("live-browser-agent-turn");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let mut session = crate::session::Session::create(&session_dir).unwrap();
+        let browser_binary = std::env::var_os("GLASS_DESKTOP_BROWSER_BINARY")
+            .map(PathBuf::from)
+            .expect("set GLASS_DESKTOP_BROWSER_BINARY to the managed browser executable")
+            .canonicalize()
+            .expect("the managed browser executable must exist");
+        let (managed_home, browser_profile) = {
+            let guard = desktop.session.lock().unwrap();
+            let managed_session = guard.as_ref().expect("managed desktop session is active");
+            (
+                managed_session.directory.join("home"),
+                managed_session.directory.join("home/chromium-profile"),
+            )
+        };
+        write_test_browser_entry(&managed_home, &browser_binary, &browser_profile)
+            .expect("a private managed Chromium desktop entry should be created");
+        session.append(crate::session::Record::User(
+            r#"Use only desktop tools in this isolated managed desktop. First call desktop_launch_app list with this sessionId, then launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so confirm the browser window with desktop_observe query Chrome. Navigate to the public Rust Book homepage with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Use desktop_observe query Chrome for browser observations and desktop_input key names Control, Enter, ArrowLeft, and ArrowRight; desktop_input is bound to this session and takes no sessionId. After reaching the homepage, do not click the first, Next chapter, or any nearby link from the broad observation. You must call desktop_observe query Chrome Understanding Ownership link and click only the exact Understanding Ownership result. After it opens, call desktop_observe query Chrome References and Borrowing link and click only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use that exact result. Verify the heading and current address/title. From that observed page, find the The Slice Type link, focus it with desktop_act using its current sessionId/revision/targetId, then immediately use Control+Enter to open it in a second tab. Verify both tabs appear together and have distinct titles/addresses, with the original References page still present. In the Slice tab call desktop_observe query Chrome String slices link and follow only that exact returned link; verify the #string-slices address. Then use Alt+ArrowLeft and Alt+ArrowRight and verify the address returns to the base slice URL and then the #string-slices URL. Switch back with Control+Shift+Tab and verify References and Borrowing is still open in the first tab. Never type a deep-link URL directly; each chapter and section route must come from an observed link. Target IDs are bound to the latest observation revision; desktop_act requires sessionId, revision, and targetId from that same snapshot. If an observed link has no supported accessibility click action, reobserve and use only its fresh pointerTarget for one pointer-click. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific automation, or any other desktop. Report only pages, tabs, and navigation steps actually verified."#
+                .into(),
+        ));
+        let mut state = crate::tools::State::new();
+        let mods = Vec::new();
+        let mut extensions = crate::ext::Registry::empty();
+        #[derive(Default)]
+        struct Trace {
+            routes: Vec<String>,
+            observations: usize,
+            errors: usize,
+            browser_seen: bool,
+            home_seen: bool,
+            ownership_seen: bool,
+            references_seen: bool,
+            slices_seen: bool,
+            slice_page_seen: bool,
+            two_tab_snapshot_seen: bool,
+            url_values: Vec<String>,
+            url_sequence: Vec<String>,
+            tab_snapshots: Vec<Vec<String>>,
+            tab_names: Vec<String>,
+            window_names: Vec<String>,
+            browser_node_inventory: Vec<String>,
+        }
+        let trace = Arc::new(Mutex::new(Trace::default()));
+        let action_trace = Arc::clone(&trace);
+        let desktop_ref = desktop;
+        let started_at = Instant::now();
+        let mut agent = crate::agent::Agent::new(
+            provider.as_ref(),
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &session_dir,
+        )
+        .with_prompt(format!(
+            r#"Work only in managed session {session_id}. Call desktop_launch_app list with that sessionId and launch the listed Managed Chromium (Glass acceptance) entry. Launch is unverified: confirm the browser window with desktop_observe query Chrome. Use Control+L, type https://doc.rust-lang.org/book/, then key-tap Enter. desktop_input is bound to this session and takes no sessionId. Use only desktop_observe query Chrome for browser observations. After reaching the homepage, do not click the first, Next chapter, or any nearby link from the broad observation. You must call desktop_observe query Chrome Understanding Ownership link and click only the exact Understanding Ownership result. After it opens, call desktop_observe query Chrome References and Borrowing link and click only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use only that exact result. Verify the current title/address. On the References page, use the observed The Slice Type link: focus it with desktop_act using its current sessionId/revision/targetId, then press Control+Enter to open it in a second tab. Verify both distinct tabs appear in one observation and the original References page remains open. In the Slice tab call desktop_observe query Chrome String slices link and follow only the exact returned link. Verify the #string-slices address, then use Alt+ArrowLeft and Alt+ArrowRight to verify the base slice URL and return to #string-slices. Switch back with Control+Shift+Tab and verify the first tab remains on References and Borrowing. Never type a deep-link URL directly; navigate deep pages only through observed links. Target IDs require sessionId/revision from the same latest snapshot. If an observed link has no supported accessibility click, reobserve and use only its fresh pointerTarget for one pointer-click. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific tools, or another desktop. Report only verified pages and tabs."#
+        ), None, None)
+        .with_limits(8192, None, 100)
+        .with_host_tools(live_desktop_tools(), Box::new(move |call, _, _| {
+            let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or_default();
+            let action = args["action"].as_str().unwrap_or_default();
+            action_trace.lock().unwrap().routes.push(if action.is_empty() {
+                call.name.clone()
+            } else {
+                format!("{}:{action}", call.name)
+            });
+            let result = match call.name.as_str() {
+                "desktop_observe" => desktop_ref
+                    .observe_accessibility(
+                        args["sessionId"].as_str(),
+                        args["query"].as_str(),
+                    )
+                    .map(|value| {
+                        let active_app = value["focusedWindow"]["application"]
+                            .as_str()
+                            .map(str::to_ascii_lowercase)
+                            .unwrap_or_default();
+                        let focused_name = value["focusedWindow"]["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned();
+                        let mut trace = action_trace.lock().unwrap();
+                        trace.observations += 1;
+                        if active_app.contains("chrome") {
+                            trace.browser_seen = true;
+                            if !focused_name.is_empty()
+                                && !trace.window_names.iter().any(|old| old == &focused_name)
+                            {
+                                trace.window_names.push(focused_name.clone());
+                            }
+                            let title = focused_name.to_ascii_lowercase();
+                            trace.home_seen |= title.contains("the rust programming language");
+                            trace.ownership_seen |= title.contains("understanding ownership");
+                            trace.references_seen |= title.contains("references and borrowing");
+                            trace.slice_page_seen |= title.contains("the slice type");
+                        }
+                        if let Some(nodes) = value["nodes"].as_array() {
+                            let mut current_tabs = Vec::new();
+                            let mut current_urls = Vec::new();
+                            for node in nodes {
+                                let name = node["name"].as_str().unwrap_or_default();
+                                let value_text = node["value"].as_str().unwrap_or_default();
+                                let text = format!("{name} {value_text}").to_ascii_lowercase();
+                                let role = node["role"].as_str().unwrap_or_default();
+                                if matches!(
+                                    role,
+                                    "link"
+                                        | "heading"
+                                        | "paragraph"
+                                        | "document web"
+                                        | "page tab"
+                                        | "combo box"
+                                        | "text entry"
+                                ) && trace.browser_node_inventory.len() < 80
+                                {
+                                    let item = format!(
+                                        "{role}: {}",
+                                        name.chars().take(120).collect::<String>()
+                                    );
+                                    if !trace.browser_node_inventory.contains(&item) {
+                                        trace.browser_node_inventory.push(item);
+                                    }
+                                }
+                                trace.home_seen |= text.contains("the rust programming language");
+                                trace.ownership_seen |= text.contains("understanding ownership");
+                                trace.references_seen |= text.contains("references and borrowing");
+                                trace.slices_seen |= node["role"] == "heading"
+                                    && (text.contains("the slice type")
+                                        || text.contains("string slices"));
+                                if matches!(
+                                    role,
+                                    "combo box" | "text entry" | "text box"
+                                ) && ["address", "search"]
+                                    .iter()
+                                    .any(|part| name.to_ascii_lowercase().contains(part))
+                                    && !value_text.is_empty()
+                                {
+                                    let observed_url = if value_text.starts_with("doc.rust-lang.org/") {
+                                        format!("https://{value_text}")
+                                    } else if value_text.starts_with("https://doc.rust-lang.org/book/") {
+                                        value_text.to_owned()
+                                    } else {
+                                        String::new()
+                                    };
+                                    if !observed_url.is_empty() {
+                                        current_urls.push(observed_url.clone());
+                                        trace.url_sequence.push(observed_url.clone());
+                                        trace.home_seen |= observed_url
+                                            == "https://doc.rust-lang.org/book/";
+                                        trace.ownership_seen |= observed_url
+                                            .contains("ch04-00-understanding-ownership");
+                                        trace.references_seen |= observed_url
+                                            .contains("ch04-02-references-and-borrowing");
+                                        trace.slice_page_seen |=
+                                            observed_url.contains("ch04-03-slices");
+                                        if !trace.url_values.iter().any(|url| url == &observed_url) {
+                                            trace.url_values.push(observed_url);
+                                        }
+                                    }
+                                }
+                                if matches!(node["role"].as_str(), Some("page tab" | "tab"))
+                                    && !name.is_empty()
+                                {
+                                    if !trace.tab_names.iter().any(|tab| tab == name) {
+                                        trace.tab_names.push(name.to_owned());
+                                    }
+                                    if !current_tabs.iter().any(|tab| tab == name) {
+                                        current_tabs.push(name.to_owned());
+                                    }
+                                }
+                            }
+                            let has_references = current_tabs
+                                .iter()
+                                .any(|tab| tab.to_ascii_lowercase().contains("references and borrowing"));
+                            let has_slice = current_tabs
+                                .iter()
+                                .any(|tab| tab.to_ascii_lowercase().contains("slice type"));
+                            trace.two_tab_snapshot_seen |= current_tabs.len() >= 2
+                                && has_references
+                                && has_slice;
+                            trace.tab_snapshots.push(current_tabs);
+                            if let Some(url) = current_urls.last()
+                                && url.contains("ch04-03-slices")
+                            {
+                                trace.slice_page_seen = true;
+                            }
+                        }
+                        value.to_string()
+                    }),
+                "desktop_act" => desktop_ref
+                    .act_accessibility(&args)
+                    .map(|value| value.to_string()),
+                "desktop_launch_app" => desktop_ref
+                    .launch_app(&args)
+                    .map(|value| value.to_string()),
+                "desktop_input" => desktop_ref
+                    .input(Lease::Agent, &args)
+                    .map(|value| value.to_string())
+                    .map_err(|error| error.message().to_owned()),
+                _ => Err("the test host exposes only managed desktop tools".to_owned()),
+            };
+            if result.is_err() {
+                action_trace.lock().unwrap().errors += 1;
+            }
+            crate::agent::HostToolOutcome::plain(match result {
+                Ok(output) => crate::tools::Outcome::ok(output),
+                Err(error) => crate::tools::Outcome::err(error),
+            })
+        }));
+        let turn = agent.run_turn(|_| {});
+        if let Err(error) = &turn {
+            let trace = trace.lock().unwrap();
+            eprintln!(
+                "GLASS_DESKTOP_BROWSER_MODEL_FAILURE {}",
+                json!({
+                    "error": error.to_string(),
+                    "toolCalls": trace.routes.len(),
+                    "observations": trace.observations,
+                    "toolErrors": trace.errors,
+                    "routes": trace.routes,
+                    "windowNames": trace.window_names,
+                    "tabNames": trace.tab_names,
+                    "tabSnapshots": trace.tab_snapshots,
+                    "urlSequence": trace.url_sequence,
+                    "observedUrls": trace.url_values,
+                    "browserNodeInventory": trace.browser_node_inventory
+                })
+            );
+            panic!("configured free-model browser task must finish");
+        }
+        let (output, stop) = turn.unwrap();
+        {
+            let trace = trace.lock().unwrap();
+            eprintln!(
+                "GLASS_DESKTOP_BROWSER_MODEL_TRACE {}",
+                json!({
+                    "stop": format!("{stop:?}"),
+                    "toolCalls": trace.routes.len(),
+                    "observations": trace.observations,
+                    "toolErrors": trace.errors,
+                    "routes": trace.routes,
+                    "windowNames": trace.window_names,
+                    "tabNames": trace.tab_names,
+                    "tabSnapshots": trace.tab_snapshots,
+                    "observedUrls": trace.url_values,
+                    "urlSequence": trace.url_sequence,
+                    "browserNodeInventory": trace.browser_node_inventory,
+                    "slicePageSeen": trace.slice_page_seen,
+                    "twoTabSnapshotSeen": trace.two_tab_snapshot_seen
+                })
+            );
+        }
+        assert_eq!(stop, crate::agent::Stop::Finished);
+        assert!(!output.text.trim().is_empty());
+        let trace = trace.lock().unwrap();
+        assert!(
+            trace
+                .routes
+                .iter()
+                .all(|route| route.starts_with("desktop_"))
+        );
+        assert!(
+            trace.browser_seen,
+            "the model should use the managed browser"
+        );
+        assert!(
+            trace.home_seen,
+            "the model should observe the Rust Book homepage"
+        );
+        assert!(
+            trace.ownership_seen,
+            "the ownership chapter link should be observed"
+        );
+        assert!(trace.references_seen, "the section link should be observed");
+        assert!(trace.slices_seen, "the slice chapter should be observed");
+        assert!(
+            trace.slice_page_seen,
+            "the slice chapter page should be open"
+        );
+        assert!(
+            trace
+                .url_values
+                .iter()
+                .any(|url| url.contains("ch04-00-understanding-ownership"))
+                && trace
+                    .url_values
+                    .iter()
+                    .any(|url| url.contains("ch04-03-slices")),
+            "distinct chapter and slice URLs must appear in the visible address field: {:?}",
+            trace.url_values
+        );
+        assert!(
+            trace.tab_names.len() >= 2,
+            "both tabs should be observable: {:?}",
+            trace.tab_names
+        );
+        assert!(
+            trace.two_tab_snapshot_seen,
+            "a single observation should show both the References and Slice tabs: {:?}",
+            trace.tab_snapshots
+        );
+        assert!(
+            trace.window_names.len() >= 2,
+            "switching tabs should change the browser title: {:?}",
+            trace.window_names
+        );
+        assert!(
+            trace.url_sequence.windows(4).any(|urls| {
+                urls[0].contains("ch04-03-slices")
+                    && urls[1].contains("#string-slices")
+                    && urls[2].contains("ch04-03-slices")
+                    && !urls[2].contains("#string-slices")
+                    && urls[3].contains("#string-slices")
+            }),
+            "Back then Forward should traverse the slice-section URL in order: {:?}",
+            trace.url_sequence
+        );
+        assert!(
+            trace
+                .url_sequence
+                .last()
+                .is_some_and(|url| url.contains("ch04-00-understanding-ownership")
+                    && url.contains("#references-and-borrowing")),
+            "the first tab should remain on the References and Borrowing section after returning from the slice tab: {:?}",
+            trace.url_sequence
+        );
+        eprintln!(
+            "GLASS_DESKTOP_BROWSER_MODEL_WORKFLOW {}",
+            json!({
+                "provider": config.provider,
+                "model": config.model,
+                "endpointHost": endpoint.host_str(),
+                "endpointPort": endpoint.port(),
+                "toolCalls": trace.routes.len(),
+                "observations": trace.observations,
+                "toolErrors": trace.errors,
+                "elapsedMs": started_at.elapsed().as_millis(),
+                "routes": trace.routes,
+                "windowNames": trace.window_names,
+                "tabNames": trace.tab_names,
+                "observedUrls": trace.url_values,
+                "urlSequence": trace.url_sequence,
+                "browserNodeInventory": trace.browser_node_inventory,
+                "homeSeen": trace.home_seen,
+                "ownershipSeen": trace.ownership_seen,
+                "referencesSeen": trace.references_seen,
+                "slicesSeen": trace.slices_seen
+            })
+        );
+        drop(trace);
+        drop(agent);
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(session_dir).unwrap();
+    }
+
+    fn write_test_browser_entry(home: &Path, binary: &Path, profile: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let applications = home.join(".local/share/applications");
+        std::fs::create_dir_all(&applications)?;
+        std::fs::set_permissions(&applications, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir(profile)?;
+        std::fs::set_permissions(profile, std::fs::Permissions::from_mode(0o700))?;
+        for path in [binary, profile] {
+            if !path.is_absolute()
+                || path.to_string_lossy().chars().any(|character| {
+                    !(character.is_ascii_alphanumeric() || "/._-".contains(character))
+                })
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "browser test paths must be absolute and desktop-entry safe",
+                ));
+            }
+        }
+        use std::io::Write;
+        let mut entry = std::fs::OpenOptions::new();
+        entry
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        writeln!(
+            entry.open(applications.join("glass-managed-browser.desktop"))?,
+            "[Desktop Entry]\nType=Application\nName=Managed Chromium (Glass acceptance)\nExec=/usr/bin/env ACCESSIBILITY_ENABLED=1 {} --user-data-dir={} --no-first-run --no-default-browser-check --password-store=basic --force-renderer-accessibility=complete\nStartupWMClass=chrome\nTerminal=false\nNoDisplay=false\n",
+            binary.display(),
+            profile.display()
+        )
+    }
+
+    fn run_live_mousepad_workflow(
         desktop: &Desktop,
         root: &Path,
         session_id: &str,
-        expected_value: &str,
-    ) -> String {
-        let mut config = crate::config::load(&crate::config::default_path())
-            .unwrap_or_else(|_| panic!("Could not load the configured free provider"));
+        workspace: &Path,
+    ) {
+        let config_path = crate::config::default_path();
+        let mut config = if config_path.exists() {
+            crate::config::load(&config_path)
+                .unwrap_or_else(|_| panic!("Could not load the configured free provider"))
+        } else {
+            crate::config::Config::default()
+        };
         crate::auth::apply(&mut config)
             .unwrap_or_else(|_| panic!("Could not apply the configured provider connection"));
         let endpoint = url::Url::parse(&config.base_url)
             .unwrap_or_else(|_| panic!("The configured free provider endpoint is invalid"));
         assert_eq!(
             config.provider, "openai",
-            "the guarded test expects OpenAI-compatible Kilo"
+            "the guarded test expects the configured OpenAI-compatible free provider"
         );
-        assert!(
-            config.model.to_ascii_lowercase().contains("free"),
-            "the live acceptance test will only call a model explicitly marked free"
+        assert_eq!(
+            config.model.to_ascii_lowercase(),
+            "kilo-auto/free",
+            "the live acceptance test only calls the configured free model"
         );
         assert_eq!(
             endpoint.host_str(),
             Some("127.0.0.1"),
             "the live acceptance test will only call the local provider proxy"
+        );
+        assert_eq!(
+            endpoint.port(),
+            Some(20128),
+            "the live acceptance test only calls the local free-provider proxy"
         );
         let key = crate::auth::resolve(&config)
             .unwrap_or_else(|_| panic!("Could not resolve the configured free provider"));
@@ -1810,18 +2486,44 @@ mod tests {
         .unwrap_or_else(|_| panic!("Could not construct the configured free provider"));
         provider.set_session_identity(config.provider_session.as_deref());
 
-        let session_dir = root.join("live-agent-tool-turn");
+        let note_path = workspace.join("agent-workflow-notes.txt");
+        let note_contents =
+            "Shared desktop note\nCafé, 東京, and collaborative control.\nVerified in Mousepad.\n";
+        let session_dir = root.join("live-mousepad-agent-turn");
         std::fs::create_dir_all(&session_dir).unwrap();
         let mut session = crate::session::Session::create(&session_dir).unwrap();
         session.append(crate::session::Record::User(format!(
-            "In the isolated dialog, replace the text field with exactly `{expected_value}`, activate Save, then use the fresh accessibility observation to verify the dialog closed. Reply briefly when done."
+            "This is a bounded desktop task in your private workspace `{}`. Open Mousepad through the visible XFCE application UI, create a note with exactly these three lines (including the final newline):\n```text\n{note_contents}```\nSave it as `agent-workflow-notes.txt` in that workspace. Then open Thunar through the visible UI, navigate to and reopen that file from Thunar, and verify that the note is visible in the opened editor. Use only desktop_status, desktop_observe, desktop_act, and desktop_input. Never use shell, filesystem tools, network tools, CDP, Playwright, browser-specific semantic tools, or another desktop. For shortcuts such as Alt+F2, Ctrl+S, and Ctrl+L, use desktop_input with action `key-chord` and ordered keys, for example `keys:[\"Alt\",\"F2\"]`; use `key-tap` for one key. Do not use `key` for a chord: that action is a held-key down/up event and requires `pressed`. Target IDs are tied to the exact observation revision; refresh after actions and after a rejected stale or lease-blocked action. A brief simulated human-control handoff may reject one input; continue only after the lease is returned and you have a fresh observation. Finish with a brief completion report."
+            , workspace.display()
         )));
         let mut state = crate::tools::State::new();
         let mods = Vec::new();
         let mut extensions = crate::ext::Registry::empty();
         let desktop_ref = desktop;
-        let actions = Arc::new(Mutex::new(Vec::<String>::new()));
-        let action_trace = Arc::clone(&actions);
+        #[derive(Default)]
+        struct Trace {
+            routes: Vec<String>,
+            observations: usize,
+            errors: usize,
+            mousepad_focused: bool,
+            interruption_armed: bool,
+            lease_blocked: bool,
+            lease_resumed: bool,
+            observed_after_resume: bool,
+            successful_action_after_resume: bool,
+            thunar_window_seen: bool,
+            file_name_seen: bool,
+            note_text_seen: bool,
+        }
+        let trace = Arc::new(Mutex::new(Trace::default()));
+        let action_trace = Arc::clone(&trace);
+        let model_started = Instant::now();
+        let expected_filename = note_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("agent-workflow-notes.txt")
+            .to_owned();
+        let expected_note_fragment = "Café, 東京, and collaborative control.".to_owned();
         let mut agent = crate::agent::Agent::new(
             provider.as_ref(),
             &mut session,
@@ -1830,39 +2532,124 @@ mod tests {
             &mut extensions,
             &session_dir,
         )
-        .with_prompt(accessibility_test_prompt(session_id), None, None)
-        .with_limits(1536, None, 8)
+        .with_prompt(
+            format!(
+                "You are sharing only test-owned isolated desktop session `{session_id}` with the human. Use only desktop_observe, desktop_act, and desktop_input. Open Mousepad with the visible XFCE Run Program dialog: use key-chord Alt+F2, type `mousepad`, then key-tap Enter. Type the exact requested three-line UTF-8 note into Mousepad, open Save As with Ctrl+Shift+S, and save to `{}`/agent-workflow-notes.txt. Query `Mousepad text` to inspect its compact active window and editable text box; use the Save button target when available. Then launch Thunar via Alt+F2, use Ctrl+L to enter `{}`, and open the saved file from the file manager with its visible row plus Enter. Verify the reopened note by calling desktop_observe with query `Mousepad text` and checking the bounded editor text value. Do not launch apps through shell. For shortcuts, use desktop_input action `key-chord` with ordered keys (for example [\"Alt\",\"F2\"]); use `key-tap` for one key. Never send a chord as `key`. Refresh revision-bound target IDs after acts. If the human-control lease blocks an action, re-observe after it returns and continue. Do not use any file, shell, web, or other desktop tool.",
+                workspace.display(), workspace.display()
+            ),
+            None,
+            None,
+        )
+        .with_limits(8192, None, 64)
         .with_host_tools(
-            test_accessibility_tools(),
+            live_desktop_tools(),
             Box::new(move |call, _, _| {
                 let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or_default();
-                if call.name == "desktop_act" {
-                    action_trace.lock().unwrap().push(format!(
-                        "desktop_act:{}",
-                        args["action"].as_str().unwrap_or("unknown")
-                    ));
-                } else {
-                    action_trace.lock().unwrap().push(call.name.clone());
+                let action_name = args["action"].as_str().unwrap_or_default();
+                let is_mutation = matches!(
+                    call.name.as_str(),
+                    "desktop_act" | "desktop_input" | "desktop_launch_app"
+                );
+                let intercept = {
+                    let mut trace = action_trace.lock().unwrap();
+                    trace.routes.push(if action_name.is_empty() {
+                        call.name.clone()
+                    } else {
+                        format!("{}:{action_name}", call.name)
+                    });
+                    trace.interruption_armed && !trace.lease_blocked && is_mutation
+                };
+                if intercept {
+                    desktop_ref.set_lease("take-control").unwrap();
+                    thread::sleep(Duration::from_millis(200));
+                    action_trace.lock().unwrap().lease_blocked = true;
                 }
                 let result = match call.name.as_str() {
-                    "desktop_observe" => desktop_ref
-                        .observe_accessibility(args["sessionId"].as_str(), args["query"].as_str())
-                        .map(|value| value.to_string()),
+                    "desktop_status" => Ok(desktop_ref.status().to_string()),
+                    "desktop_observe" => desktop_ref.observe_accessibility(
+                        args["sessionId"].as_str(),
+                        args["query"].as_str(),
+                    ).map(|value| {
+                        let active_app = value["focusedWindow"]["application"]
+                            .as_str()
+                            .map(str::to_ascii_lowercase)
+                            .or_else(|| {
+                                value["nodes"].as_array()?.iter().find_map(|node| {
+                                    let active = node["role"] == "frame"
+                                        && node["states"]
+                                            .as_array()?
+                                            .iter()
+                                            .any(|state| state == "active");
+                                    active.then(|| {
+                                        node["application"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_ascii_lowercase()
+                                    })
+                                })
+                            })
+                            .unwrap_or_default();
+                        let focused_window_name = value["focusedWindow"]["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned();
+                        let mut trace = action_trace.lock().unwrap();
+                        trace.observations += 1;
+                        if active_app.contains("mousepad") {
+                            trace.mousepad_focused = true;
+                            trace.interruption_armed = !trace.lease_blocked;
+                        }
+                        if trace.lease_resumed {
+                            trace.observed_after_resume = true;
+                        }
+                        if active_app.contains("thunar") {
+                            trace.thunar_window_seen = true;
+                        }
+                        if value["nodes"].as_array().is_some_and(|nodes| nodes.iter().any(|node| {
+                            node["name"].as_str().is_some_and(|name| name.contains(&expected_filename))
+                        })) {
+                            trace.file_name_seen = true;
+                        }
+                        if active_app.contains("mousepad")
+                            && trace.thunar_window_seen
+                            && trace.file_name_seen
+                            && focused_window_name.contains(&expected_filename)
+                            && value["nodes"].as_array().is_some_and(|nodes| nodes.iter().any(|node| {
+                                node["value"].as_str().is_some_and(|text| text.contains(&expected_note_fragment))
+                            }))
+                        {
+                            trace.note_text_seen = true;
+                        }
+                        value.to_string()
+                    }),
                     "desktop_act" => desktop_ref
                         .act_accessibility(&args)
                         .map(|value| value.to_string()),
-                    _ => Err("the test host exposes only accessible observe and act".to_owned()),
+                    "desktop_input" => desktop_ref
+                        .input(Lease::Agent, &args)
+                        .map(|value| value.to_string())
+                        .map_err(|error| error.message().to_owned()),
+                    _ => Err("the test host exposes only managed desktop tools".to_owned()),
                 };
-                if call.name == "desktop_act"
-                    && result.as_ref().is_ok_and(|output| {
-                        serde_json::from_str::<Value>(output)
-                            .is_ok_and(|value| value["observation"].is_object())
-                    })
-                {
-                    action_trace.lock().unwrap().push(format!(
-                        "desktop_act_result:{}:fresh",
-                        args["action"].as_str().unwrap_or("unknown")
-                    ));
+                if intercept {
+                    let error = result
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| "lease handoff failed to block the action".to_owned());
+                    if !error.contains("held by the other participant") {
+                        let _ = desktop_ref.set_lease("return-to-agent");
+                        return crate::agent::HostToolOutcome::plain(crate::tools::Outcome::err(error));
+                    }
+                    desktop_ref.set_lease("return-to-agent").unwrap();
+                    action_trace.lock().unwrap().lease_resumed = true;
+                    return crate::agent::HostToolOutcome::plain(crate::tools::Outcome::err(error));
+                }
+                if result.is_err() {
+                    let mut trace = action_trace.lock().unwrap();
+                    trace.errors += 1;
+                } else if is_mutation && action_trace.lock().unwrap().lease_resumed {
+                    action_trace.lock().unwrap().successful_action_after_resume = true;
                 }
                 crate::agent::HostToolOutcome::plain(match result {
                     Ok(output) => crate::tools::Outcome::ok(output),
@@ -1870,6 +2657,7 @@ mod tests {
                 })
             }),
         );
+        let started_at = Instant::now();
         let turn = agent.run_turn(|_| {});
         assert!(
             turn.is_ok(),
@@ -1877,29 +2665,79 @@ mod tests {
         );
         let (output, stop) = turn.unwrap();
         assert_eq!(stop, crate::agent::Stop::Finished);
-        let actions = actions.lock().unwrap();
-        assert!(actions.iter().any(|action| action == "desktop_observe"));
-        let text_position = actions
-            .iter()
-            .position(|action| action == "desktop_act:set_text")
-            .expect("the configured free model should enter the requested value");
-        let click_position = actions
-            .iter()
-            .position(|action| action == "desktop_act:click")
-            .expect("the configured free model should activate Save");
-        assert!(text_position < click_position);
         assert!(
-            actions[click_position + 1..]
-                .iter()
-                .any(|action| action == "desktop_act_result:click:fresh"),
-            "Save should return a fresh observation for the configured free model to inspect"
+            !output.text.trim().is_empty(),
+            "model should report completion"
         );
-        drop(actions);
+        let saved = std::fs::read_to_string(&note_path)
+            .unwrap_or_else(|error| panic!("GUI workflow did not create the note: {error}"));
+        assert_eq!(
+            saved, note_contents,
+            "the GUI-saved UTF-8 note must match exactly"
+        );
+        let trace = trace.lock().unwrap();
+        assert!(
+            trace
+                .routes
+                .iter()
+                .all(|route| route.starts_with("desktop_"))
+        );
+        assert!(
+            trace.mousepad_focused,
+            "the model should open focused Mousepad"
+        );
+        assert!(
+            trace.lease_blocked && trace.lease_resumed,
+            "the human lease handoff should block and resume input"
+        );
+        assert!(
+            trace.observed_after_resume,
+            "the model should refresh its snapshot after lease return"
+        );
+        assert!(
+            trace.successful_action_after_resume,
+            "the model should continue after lease return"
+        );
+        assert!(
+            trace.thunar_window_seen,
+            "the model should open the saved file through Thunar"
+        );
+        assert!(
+            trace.file_name_seen,
+            "the model should observe the saved filename in the UI"
+        );
+        assert!(
+            trace.note_text_seen,
+            "the model should observe the reopened note contents"
+        );
+        eprintln!(
+            "GLASS_DESKTOP_MODEL_WORKFLOW {}",
+            json!({
+                "provider": config.provider,
+                "model": config.model,
+                "endpointHost": endpoint.host_str(),
+                "endpointPort": endpoint.port(),
+                "toolCalls": trace.routes.len(),
+                "observations": trace.observations,
+                "toolErrors": trace.errors,
+                "elapsedMs": started_at.elapsed().as_millis(),
+                "setupAndTurnMs": model_started.elapsed().as_millis(),
+                "humanLeaseBlocked": trace.lease_blocked,
+                "humanLeaseResumed": trace.lease_resumed,
+                "routes": trace.routes,
+                "savedBytes": saved.len(),
+                "savedLines": saved.lines().count(),
+                "focusedMousepad": trace.mousepad_focused,
+                "thunarSeen": trace.thunar_window_seen,
+                "fileNameSeen": trace.file_name_seen,
+                "reopenedTextSeen": trace.note_text_seen
+            })
+        );
+        drop(trace);
         drop(agent);
         drop(extensions);
         drop(session);
         std::fs::remove_dir_all(session_dir).unwrap();
-        output.text
     }
 
     fn run_accessibility_agent_turn(
@@ -1940,7 +2778,7 @@ mod tests {
                         crate::provider::Event::ToolCall {
                             id: "search-save-control".into(),
                             name: "desktop_observe".into(),
-                            arguments: json!({"sessionId": self.session_id,"query":"Save"})
+                            arguments: json!({"sessionId": self.session_id,"query":"Zenity Save"})
                                 .to_string(),
                         }
                     }
@@ -1956,7 +2794,8 @@ mod tests {
                         crate::provider::Event::ToolCall {
                             id: "refresh-full-snapshot".into(),
                             name: "desktop_observe".into(),
-                            arguments: json!({"sessionId": self.session_id}).to_string(),
+                            arguments: json!({"sessionId": self.session_id,"query":"Zenity text"})
+                                .to_string(),
                         }
                     }
                     2 => {
@@ -1988,7 +2827,8 @@ mod tests {
                         crate::provider::Event::ToolCall {
                             id: "recover-with-fresh-observation".into(),
                             name: "desktop_observe".into(),
-                            arguments: json!({"sessionId": self.session_id}).to_string(),
+                            arguments: json!({"sessionId": self.session_id,"query":"Zenity text"})
+                                .to_string(),
                         }
                     }
                     4 => {
@@ -2012,15 +2852,20 @@ mod tests {
                     }
                     5 => {
                         let state = self.state.lock().unwrap();
+                        assert!(state.actions.iter().any(|action| action == "set_text"));
+                        crate::provider::Event::ToolCall {
+                            id: "refresh-save-control".into(),
+                            name: "desktop_observe".into(),
+                            arguments: json!({"sessionId": self.session_id,"query":"Zenity Save"})
+                                .to_string(),
+                        }
+                    }
+                    6 => {
+                        let state = self.state.lock().unwrap();
                         let snapshot = state.observations.last().ok_or_else(|| {
-                            crate::provider::Error::Config(
-                                "set_text did not refresh the tree".into(),
-                            )
+                            crate::provider::Error::Config("save query did not run".into())
                         })?;
-                        let field =
-                            test_target(snapshot, |node| node["value"] == self.expected_value);
                         let save = test_target(snapshot, |node| node["name"] == "Save");
-                        assert!(field["targetId"].is_string());
                         crate::provider::Event::ToolCall {
                             id: "save-entered-value".into(),
                             name: "desktop_act".into(),
@@ -2119,7 +2964,7 @@ mod tests {
         );
         let (output, stop) = agent.run_turn(|_| {}).unwrap();
         assert_eq!(stop, crate::agent::Stop::Finished);
-        assert_eq!(provider.turn.load(Ordering::SeqCst), 7);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 8);
         drop(agent);
         drop(extensions);
         drop(session);

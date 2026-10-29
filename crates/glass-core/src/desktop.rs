@@ -1749,9 +1749,26 @@ mod tests {
         if std::env::var_os("GLASS_DESKTOP_BROWSER_MODEL_E2E").as_deref()
             == Some(std::ffi::OsStr::new("1"))
         {
-            run_live_browser_workflow(&desktop, &root, &session_id);
-            desktop.stop().unwrap();
-            std::fs::remove_dir_all(&root).unwrap();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_live_browser_workflow(&desktop, &root, &session_id)
+            }));
+            let stop = desktop.stop().map_err(|error| error.to_string());
+            let cleanup = if stop.is_ok() {
+                std::fs::remove_dir_all(&root).map_err(|error| error.to_string())
+            } else {
+                Err("kept isolated test files because desktop.stop failed".to_owned())
+            };
+            if let Err(panic) = outcome {
+                if let Err(error) = &stop {
+                    eprintln!("managed browser test desktop cleanup failed: {error}");
+                }
+                if let Err(error) = &cleanup {
+                    eprintln!("managed browser test file cleanup failed: {error}");
+                }
+                std::panic::resume_unwind(panic);
+            }
+            stop.unwrap_or_else(|error| panic!("stopping managed browser test desktop: {error}"));
+            cleanup.unwrap_or_else(|error| panic!("removing managed browser test files: {error}"));
             return;
         }
         if std::env::var_os("GLASS_DESKTOP_A11Y_MODEL_E2E").as_deref()
@@ -2240,7 +2257,7 @@ mod tests {
         .with_prompt(format!(
             r#"Work only in managed session {session_id}. Call desktop_launch_app list with that sessionId and launch the listed Managed Chromium (Glass acceptance) entry. Launch is unverified: confirm the browser window with desktop_observe query Chrome. Use Control+L, type https://doc.rust-lang.org/book/, then key-tap Enter. desktop_input is bound to this session and takes no sessionId. Use only desktop_observe query Chrome for browser observations. The homepage's table of contents is collapsed. Query `Chrome Toggle Table of Contents label`; only if the fresh result has pointerFallback:true, onscreen:true, targetId:null, queryAmbiguous:false, and truncated:false, use its pointerTarget in one pointer-click. Then query `Chrome The Rust Programming Language Understanding Ownership link` and choose only the exact Ownership link in the observed Rust Book window. If desktop_act rejects that link because it has no accessibility click action, repeat the exact query and use only a fresh pointerTarget from a complete, unique, onscreen result. After reaching Ownership, call desktop_observe query Chrome References and Borrowing link and follow only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use only that exact result. Verify the current title/address. On the References page, use the observed The Slice Type link: focus it with desktop_act using its current sessionId/revision/targetId, then press Control+Enter to open it in a second tab. Verify both distinct tabs appear in one observation and the original References page remains open. In the Slice tab call desktop_observe query Chrome String slices link and follow only the exact returned link. Verify the #string-slices address, then use Alt+ArrowLeft and Alt+ArrowRight to verify the base slice URL and return to #string-slices. Switch back with Control+Shift+Tab and verify the first tab remains on References and Borrowing. Never type a deep-link URL directly; navigate deep pages only through observed links. Target IDs require sessionId/revision from the same latest snapshot. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific tools, or another desktop. Report only verified pages and tabs."#
         ), None, None)
-        .with_limits(8192, None, 100)
+        .with_limits(8192, None, 64)
         .with_host_tools(live_desktop_tools(), Box::new(move |call, _, _| {
             let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or_default();
             let action = args["action"].as_str().unwrap_or_default();

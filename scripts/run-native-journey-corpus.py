@@ -274,8 +274,9 @@ def safe_image_diagnostics(value: object) -> dict | None:
 
 
 def summarize_native_trace(lines) -> dict:
-    """Summarize bounded trace timing and open phases without trace payloads."""
+    """Summarize bounded wall timing, process CPU, and open phases."""
     completed_us = {}
+    completed_cpu_us = {}
     starts = {}
     finishes = {}
     for line in lines:
@@ -302,11 +303,24 @@ def summarize_native_trace(lines) -> dict:
         phase = event.get("phase")
         if phase == "start":
             starts[trace_key] = starts.get(trace_key, 0) + 1
-        elif phase == "complete":
-            finishes[trace_key] = finishes.get(trace_key, 0) + 1
+        elif phase in {"complete", "error", "incomplete"}:
+            if phase == "complete":
+                finishes[trace_key] = finishes.get(trace_key, 0) + 1
             elapsed = event.get("elapsed_us")
-            if isinstance(elapsed, int) and not isinstance(elapsed, bool) and elapsed >= 0:
+            if (
+                phase == "complete"
+                and isinstance(elapsed, int)
+                and not isinstance(elapsed, bool)
+                and elapsed > 0
+            ):
                 completed_us[stage] = max(completed_us.get(stage, 0), elapsed)
+            cpu_elapsed = event.get("cpu_elapsed_us")
+            if (
+                isinstance(cpu_elapsed, int)
+                and not isinstance(cpu_elapsed, bool)
+                and cpu_elapsed > 0
+            ):
+                completed_cpu_us[stage] = max(completed_cpu_us.get(stage, 0), cpu_elapsed)
 
     unfinished_by_stage = {}
     for trace_key, count in starts.items():
@@ -323,8 +337,13 @@ def summarize_native_trace(lines) -> dict:
         stage: round(elapsed / 1000, 2)
         for stage, elapsed in sorted(completed_us.items(), key=lambda item: (-item[1], item[0]))[:12]
     }
+    max_stage_cpu_ms = {
+        stage: round(elapsed / 1000, 2)
+        for stage, elapsed in sorted(completed_cpu_us.items(), key=lambda item: (-item[1], item[0]))[:12]
+    }
     return {
         "maxStageMs": max_stage_ms,
+        "maxStageCpuMs": max_stage_cpu_ms,
         "unfinishedStages": unfinished[:16],
         "unfinishedStageCount": min(10_000, sum(item["openCount"] for item in unfinished)),
     }

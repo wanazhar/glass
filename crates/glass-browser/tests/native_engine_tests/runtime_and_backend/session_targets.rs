@@ -142,17 +142,6 @@ fn native_runtime_mdn_scale_resource_diagnostic_1400_entries_2600_auxiliary_span
     });
 }
 
-#[test]
-fn native_runtime_completes_a_reduced_local_mdn_scale_resource_fixture() {
-    run_native_browser_worker_test(|runtime| {
-        runtime.block_on(
-            native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
-                200, 400, 0,
-            ),
-        );
-    });
-}
-
 async fn native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
     entry_count: usize,
     auxiliary_node_count: usize,

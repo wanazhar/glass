@@ -28,10 +28,15 @@ impl NativeDocument {
                 "document_wire_computed_styles",
             )
         });
+        let style_diagnostics_enabled = style_stage.is_some();
         let mut computed_style_table = Vec::new();
         let mut computed_style_indices = Vec::with_capacity(self.nodes.len());
         let mut computed_style_lookup = HashMap::<Vec<u8>, u32>::new();
         let mut recent_style_indices = std::collections::VecDeque::<u32>::with_capacity(16);
+        let mut recent_style_cache_hits = 0usize;
+        let mut serialized_style_keys = 0usize;
+        let mut fallback_style_map_hits = 0usize;
+        let mut new_style_table_entries = 0usize;
         for index in 0..self.nodes.len() {
             let style = self.computed_style_for_layout(NativeNodeId {
                 generation: self.generation,
@@ -49,13 +54,25 @@ impl NativeDocument {
                     .is_some_and(|candidate| *candidate == style)
             });
             let style_index = if let Some(recent_style) = recent_style {
+                if style_diagnostics_enabled {
+                    recent_style_cache_hits = recent_style_cache_hits.saturating_add(1);
+                }
                 recent_style
             } else {
+                if style_diagnostics_enabled {
+                    serialized_style_keys = serialized_style_keys.saturating_add(1);
+                }
                 let style_key = serde_json::to_vec(&style)
                     .unwrap_or_else(|_| format!("serialization-error:{style:?}").into_bytes());
                 if let Some(existing) = computed_style_lookup.get(&style_key) {
+                    if style_diagnostics_enabled {
+                        fallback_style_map_hits = fallback_style_map_hits.saturating_add(1);
+                    }
                     *existing
                 } else {
+                    if style_diagnostics_enabled {
+                        new_style_table_entries = new_style_table_entries.saturating_add(1);
+                    }
                     let style_index = u32::try_from(computed_style_table.len()).unwrap_or(u32::MAX);
                     computed_style_table.push(style);
                     computed_style_lookup.insert(style_key, style_index);
@@ -71,6 +88,28 @@ impl NativeDocument {
         }
         if let Some(stage) = style_stage {
             stage.finish(Some(self.nodes.len()));
+        }
+        if style_diagnostics_enabled {
+            crate::native_engine::content_process::record_content_load_measurement(
+                "document_wire_recent_style_cache_hits",
+                0,
+                recent_style_cache_hits,
+            );
+            crate::native_engine::content_process::record_content_load_measurement(
+                "document_wire_style_key_serializations",
+                0,
+                serialized_style_keys,
+            );
+            crate::native_engine::content_process::record_content_load_measurement(
+                "document_wire_fallback_style_map_hits",
+                0,
+                fallback_style_map_hits,
+            );
+            crate::native_engine::content_process::record_content_load_measurement(
+                "document_wire_new_style_table_entries",
+                0,
+                new_style_table_entries,
+            );
         }
         let node_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
             crate::native_engine::content_process::ContentLoadStage::begin(0, "document_wire_nodes")

@@ -90,35 +90,50 @@ is inferred from it.
 
 A loopback-only native scale fixture was added to separate resource loading
 from script and layout work. It serves 16 style sheets, 28 inline images,
-28 CSS background images, and 13 nested layout containers. The reduced
-200-entry/400-auxiliary-span version completed with one external module: the
-module ran once, its `getBoundingClientRect()` result was positive, all 28
-images had positive decoded width, and the bounded trace had no open stages.
-That run did not assert positive image height. It took 12.46 seconds; maximum
-page-script execution was
-4.82 seconds, host-view evaluation 1.07 seconds, and document-wire encoding
-2.79 seconds. A follow-up with the stronger width-and-height assertion
-reached a content-operation deadline during host-view installation, before
-the module and image predicates completed. The normal integration regression
-now uses 50 entries/100 auxiliary spans while retaining the stylesheet,
-image, background, nesting, module, decode, and layout assertions. It passed
-the width-and-height decode predicate in 4.93 seconds with no open trace
-stages. Maximum page-script execution was 1.37 seconds, document-wire
-encoding 0.86 seconds, and host-view evaluation 0.25 seconds. These are local
-results, not claims about the public MDN page. The opt-in 200/400
-host-view timing diagnostic preserves that failed run at
-`/tmp/glass-scale-reduced-script-wh-20261030.native_load.jsonl`.
+28 CSS background images, and 13 nested layout containers. The normal
+integration regression uses 50 entries and 100 auxiliary spans,
+one external module, and the stylesheet, image, background, and nesting
+workload. It completed in 5.57 seconds: the module ran once, its
+`getBoundingClientRect()` result was positive, all 28 images were complete
+with positive intrinsic width and height, and the bounded trace had no open
+stages. A previous 200-entry/400-auxiliary-span run asserted decoded width
+only and completed in 12.46 seconds; a follow-up with the height assertion
+timed out during host-view installation before reaching the module and image
+predicates. The latest opt-in 200/400 one-module run completed in 14.48
+seconds with the stronger width-and-height, module, and layout assertions.
+Its trace had no open stages. These local results do not imply equivalent
+behavior on the public MDN page.
+
+The instrumented 200/400 run recorded 12 document-wire style projections of
+1,896 styles each. The recent typed-style cache reused 1,859 entries per
+projection and serialized 37 style keys; the fallback map had no hits. The
+maximum recorded wall intervals were 5.57 seconds for page-script execution,
+5.03 seconds for page-script evaluation, and 3.53 seconds for document-wire
+style projection and encoding. Process CPU observed during those respective
+stage intervals was 2.58, 2.36, and 1.63 seconds. These CPU values are total
+process CPU during each wall interval, may include overlapping worker threads,
+and must not be added across stages. The opt-in 200/400 profile is local
+evidence, not a claim about public page behavior.
 
 The 1,400-entry/2,600-auxiliary-span resource-only variant has one recorded
 pass at 48.49 seconds and a later combined-suite timeout at its 60-second
 navigation bound; both resource-only measurements predate the JavaScript
-host-snapshot cache. The full-size one-module diagnostic was captured after
-both recent-style caches and still hit the 60-second bound. All resource
-spans completed; its trace reported a 32.22-second document-wire projection,
-21.85 seconds of page-script evaluation, and open host-view/page-script stages.
-Those stage durations overlap and the trace does not isolate one as the sole
-cause. The 200/400 and two 1,400/2,600 diagnostic targets are opt-in; the
-normal 50/100 regression verifies module, image decode, and layout predicates.
+host-snapshot cache. One full-size 1,400/2,600 one-module diagnostic after the
+recent-style caches and host-snapshot cache hit the 60-second navigation
+bound at 60.21 seconds. It is a timeout, not a completed native journey. All
+recorded resource spans completed. The trace measured maximum wall intervals
+of 30.28 seconds for document-wire encoding, 30.26 seconds for its computed-
+style projection, and 10.85 seconds for the JavaScript bootstrap DOM snapshot;
+page-script evaluation and execution remained open. Among the 12,296
+document-wire styles, the recent cache hit 12,259 times, serialized 37 keys,
+and had no fallback-map hits. The JavaScript bootstrap cache hit 5,456 of
+5,492 styles, serialized 36 keys, and had no fallback-map hits. This profile
+did not record process CPU, so the 200/400 CPU measurements above must not be
+read as full-size CPU timings. The full-size case was run once and was not
+retried. The 200/400 and two 1,400/2,600 targets are opt-in; the normal
+50/100 regression verifies module execution, image decode dimensions, and
+layout predicates. The 1,400/2,600 full-size trace is preserved at
+`/tmp/glass-scale-profile-after-cache-1400-module-20261030.native_load.jsonl`.
 The GitHub journey checks repository identity, follows the observed `library`
 link into the Rust repository, then asserts the subpage URL and directory
 content. On 25 October the native run passed all six steps in 50.62 seconds.

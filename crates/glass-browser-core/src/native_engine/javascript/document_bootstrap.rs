@@ -103,6 +103,12 @@ pub(super) fn document_bootstrap(
                 reason: "native JavaScript host view could not be compacted".into(),
             })?;
     let mut computed_style_count = 0;
+    let style_diagnostics_enabled =
+        crate::native_engine::content_process::runtime_diagnostic_trace_enabled();
+    let mut recent_style_cache_hits = 0usize;
+    let mut serialized_style_keys = 0usize;
+    let mut fallback_style_map_hits = 0usize;
+    let mut new_style_table_entries = 0usize;
     if let Some(state) = state.as_mut() {
         let mut computed_styles = Vec::new();
         let mut style_indices = std::collections::HashMap::<Vec<u8>, u32>::new();
@@ -137,8 +143,14 @@ pub(super) fn document_bootstrap(
                             .is_some_and(|candidate| candidate == &computed_style)
                     });
                     let style_index = if let Some(recent_style) = recent_style {
+                        if style_diagnostics_enabled {
+                            recent_style_cache_hits = recent_style_cache_hits.saturating_add(1);
+                        }
                         recent_style
                     } else {
+                        if style_diagnostics_enabled {
+                            serialized_style_keys = serialized_style_keys.saturating_add(1);
+                        }
                         let style_key = serde_json::to_vec(&computed_style).map_err(|_| {
                             NativeEngineError::Worker {
                                 operation: "compact JavaScript computed style".into(),
@@ -147,8 +159,14 @@ pub(super) fn document_bootstrap(
                         })?;
                         style_key_bytes = style_key_bytes.saturating_add(style_key.len());
                         if let Some(index) = style_indices.get(&style_key) {
+                            if style_diagnostics_enabled {
+                                fallback_style_map_hits = fallback_style_map_hits.saturating_add(1);
+                            }
                             *index
                         } else {
+                            if style_diagnostics_enabled {
+                                new_style_table_entries = new_style_table_entries.saturating_add(1);
+                            }
                             let index = u32::try_from(computed_styles.len()).map_err(|_| {
                                 NativeEngineError::limit(
                                     "native computed style table",
@@ -184,6 +202,28 @@ pub(super) fn document_bootstrap(
         }
     }
     style_dedup_stage.finish(Some(computed_style_count));
+    if style_diagnostics_enabled {
+        for (name, count) in [
+            (
+                "javascript_bootstrap_recent_style_cache_hits",
+                recent_style_cache_hits,
+            ),
+            (
+                "javascript_bootstrap_style_key_serializations",
+                serialized_style_keys,
+            ),
+            (
+                "javascript_bootstrap_fallback_style_map_hits",
+                fallback_style_map_hits,
+            ),
+            (
+                "javascript_bootstrap_new_style_table_entries",
+                new_style_table_entries,
+            ),
+        ] {
+            crate::native_engine::content_process::record_content_load_measurement(name, 0, count);
+        }
+    }
     let serialization_stage = crate::native_engine::content_process::ContentLoadStage::begin(
         0,
         "javascript_bootstrap_host_serialize",

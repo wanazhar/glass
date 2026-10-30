@@ -9,15 +9,16 @@ pub(crate) fn runtime_diagnostic_trace_enabled() -> bool {
 
 /// Opt-in, privacy-safe timings for the content-process load pipeline. The
 /// trace intentionally records only the local IPC request number, fixed stage
-/// names, item counts and elapsed time; it never records a URL, response body,
-/// cookie, selector or script text. Keeping this inside the child process lets
-/// us distinguish network waits from native parsing without routing diagnostics
-/// through the interactive TUI.
+/// names, item counts, wall elapsed time, and process CPU deltas; it never
+/// records a URL, response body, cookie, selector, or script text. Keeping this
+/// inside the child process lets us distinguish network waits from native
+/// parsing without routing diagnostics through the interactive TUI.
 fn trace_content_load_stage(
     request_id: u64,
     stage: &'static str,
     phase: &'static str,
     elapsed_us: Option<u128>,
+    cpu_elapsed_us: Option<u128>,
     items: Option<usize>,
     ordinal: Option<usize>,
     resource_type: Option<&'static str>,
@@ -53,6 +54,9 @@ fn trace_content_load_stage(
     if let Some(items) = items {
         record["items"] = serde_json::json!(items);
     }
+    if let Some(cpu_elapsed_us) = cpu_elapsed_us {
+        record["cpu_elapsed_us"] = serde_json::json!(cpu_elapsed_us);
+    }
     if let Some(ordinal) = ordinal {
         record["ordinal"] = serde_json::json!(ordinal);
     }
@@ -71,6 +75,7 @@ pub(crate) fn record_content_load_measurement(name: &'static str, elapsed_us: u1
         name,
         "complete",
         Some(elapsed_us),
+        None,
         Some(items),
         None,
         None,
@@ -81,6 +86,7 @@ pub(crate) struct ContentLoadStage {
     request_id: u64,
     name: &'static str,
     started: std::time::Instant,
+    cpu_started_us: Option<u128>,
     completed: bool,
     ordinal: Option<usize>,
     resource_type: Option<&'static str>,
@@ -112,6 +118,7 @@ impl ContentLoadStage {
             "start",
             None,
             None,
+            None,
             ordinal,
             resource_type,
         );
@@ -119,6 +126,9 @@ impl ContentLoadStage {
             request_id,
             name,
             started: std::time::Instant::now(),
+            cpu_started_us: runtime_diagnostic_trace_enabled()
+                .then(process_cpu_time_us)
+                .flatten(),
             completed: false,
             ordinal,
             resource_type,
@@ -139,6 +149,9 @@ impl ContentLoadStage {
             self.name,
             phase,
             Some(self.started.elapsed().as_micros()),
+            self.cpu_started_us.and_then(|started| {
+                process_cpu_time_us().map(|finished| finished.saturating_sub(started))
+            }),
             items,
             self.ordinal,
             self.resource_type,
@@ -155,11 +168,38 @@ impl Drop for ContentLoadStage {
                 self.name,
                 "incomplete",
                 Some(self.started.elapsed().as_micros()),
+                self.cpu_started_us.and_then(|started| {
+                    process_cpu_time_us().map(|finished| finished.saturating_sub(started))
+                }),
                 None,
                 self.ordinal,
                 self.resource_type,
             );
         }
+    }
+}
+
+fn process_cpu_time_us() -> Option<u128> {
+    #[cfg(unix)]
+    {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        // SAFETY: `usage` is valid writable storage and getrusage initializes
+        // it when the call succeeds.
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: getrusage returned success and initialized the struct.
+        let usage = unsafe { usage.assume_init() };
+        let micros = |time: libc::timeval| {
+            (time.tv_sec as u128)
+                .saturating_mul(1_000_000)
+                .saturating_add(time.tv_usec as u128)
+        };
+        Some(micros(usage.ru_utime).saturating_add(micros(usage.ru_stime)))
+    }
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 

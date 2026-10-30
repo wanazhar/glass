@@ -957,7 +957,8 @@ pub fn animation(keys: &KeyReader) -> Option<usize> {
     }
 }
 
-/// Ctrl-D confirmation preserves the caller's composer and conversation.
+/// Idle Ctrl-C and Ctrl-D share this confirmation; cancelling preserves the
+/// caller's composer and conversation.
 pub fn confirm_exit(keys: &KeyReader, editor: &glass_tui::Editor, busy: bool) -> bool {
     take_back();
     let managed = crate::surface::managed();
@@ -1024,19 +1025,9 @@ fn exit_dialog(width: usize, height: usize) -> ExitDialog {
         .clamp(1, 64);
     let inner = span.saturating_sub(4).max(1);
     let lines = if span >= 28 {
-        vec![
-            "Quit glass-core?",
-            "Saved conversation stays.",
-            "Unsent draft is discarded.",
-            "Enter quit · Esc stay",
-        ]
+        vec!["QUIT?", "Enter quit · Esc stay"]
     } else {
-        vec![
-            "Quit glass-core?",
-            "Saved chat stays",
-            "Draft is lost",
-            "↵ exit · Esc back",
-        ]
+        vec!["QUIT?", "↵ quit · Esc stay"]
     };
     let mut rows = Vec::new();
     if span >= 6 && height >= 6 {
@@ -1072,6 +1063,7 @@ fn exit_dialog(width: usize, height: usize) -> ExitDialog {
 #[cfg(test)]
 mod exit_tests {
     use super::*;
+    use glass_tui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     #[test]
     fn confirmation_is_compact_centered_and_bounded() {
         for (w, h) in [(80, 30), (40, 24), (20, 8), (8, 3), (1, 1)] {
@@ -1085,10 +1077,39 @@ mod exit_tests {
             );
             assert!(panel.top + panel.rows.len() <= h);
             if w >= 40 {
-                assert!(panel.rows.join(" ").contains("Enter quit · Esc stay"));
+                let text = panel.rows.join(" ");
+                assert!(text.contains("QUIT?"));
+                assert!(text.contains("Enter quit · Esc stay"));
+                assert_eq!(
+                    panel
+                        .rows
+                        .iter()
+                        .filter(|row| row.contains("QUIT?"))
+                        .count(),
+                    1
+                );
                 assert!(panel.rows.len() < h);
             }
         }
+    }
+
+    #[test]
+    fn escape_keeps_the_composer_and_enter_confirms_without_mutating_it() {
+        let mut editor = glass_tui::Editor::new();
+        editor.set_text("unsent follow-up");
+        let cancel = crate::input::KeyReader::from_test_events([Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        ))]);
+        assert!(!confirm_exit(&cancel, &editor, false));
+        assert_eq!(editor.text(), "unsent follow-up");
+
+        let confirm = crate::input::KeyReader::from_test_events([Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))]);
+        assert!(confirm_exit(&confirm, &editor, false));
+        assert_eq!(editor.text(), "unsent follow-up");
     }
 }
 

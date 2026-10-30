@@ -30,6 +30,7 @@ mod desktop;
 mod diagnostic_bundle;
 mod diagnostics;
 mod doctor;
+mod draft;
 mod durable;
 mod egress;
 mod executable;
@@ -1671,7 +1672,106 @@ fn headless(
 }
 
 fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Command> {
-    actions::commands(extensions)
+    let mut commands = actions::commands(extensions);
+    if !commands.iter().any(|command| command.name == "desktop") {
+        commands.push(glass_tui::palette::Command {
+            name: "desktop".into(),
+            hint: "start local session".into(),
+            description: "Start or attach to this workspace's local desktop".into(),
+            label: "desktop".into(),
+            keywords: "browser local connect session".into(),
+            ..Default::default()
+        });
+    }
+    commands
+}
+
+fn desktop_status_message(status: &serde_json::Value) -> String {
+    let session = status["sessionId"].as_str().unwrap_or("starting");
+    let environment = match status["environment"].as_str() {
+        Some("gnome") => "GNOME",
+        Some("xfce") => "XFCE",
+        _ => "managed desktop",
+    };
+    let lifecycle = match status["lifecycle"].as_str() {
+        Some("reusable") => "reusable",
+        Some("disposable") => "disposable",
+        _ => "not reported",
+    };
+    let available = status["available"].as_bool().unwrap_or(false);
+    let manager = if status["managerStarted"].as_bool().unwrap_or(false) {
+        "started"
+    } else {
+        "attached"
+    };
+    let mode = match status["connectionMode"].as_str() {
+        Some("local") => "local",
+        Some("remote") => "existing remote",
+        _ => "unknown",
+    };
+    let session_state = if status["sessionStarted"].as_bool().unwrap_or(false) {
+        "started"
+    } else {
+        "attached"
+    };
+    let lease = match status["lease"].as_str() {
+        Some("human") => "with you",
+        Some("agent") => "with the agent",
+        _ => "not reported",
+    };
+    format!(
+        "Desktop session {}.\nManager: {manager} ({mode})\nSession: {session} ({session_state})\nEnvironment: {environment}\nLifecycle: {lifecycle}\nInput: {} · lease {lease}\n\nUse `gc connect status` to view or share its access details.",
+        if available { "is ready" } else { "is starting" },
+        if available {
+            "available"
+        } else {
+            "not yet available"
+        }
+    )
+}
+
+fn idle_quit_request(
+    code: glass_tui::crossterm::event::KeyCode,
+    modifiers: glass_tui::crossterm::event::KeyModifiers,
+) -> bool {
+    use glass_tui::crossterm::event::{KeyCode, KeyModifiers};
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c' | 'd'))
+}
+
+const BUSY_INTERRUPT_NOTICE: &str =
+    "Cancelled the current turn; partial output is saved. The follow-up draft is kept.";
+
+fn prepare_busy_interrupt(
+    palette: &mut glass_tui::palette::Palette,
+    editor: &mut glass_tui::Editor,
+) -> &'static str {
+    palette.cancel(editor);
+    BUSY_INTERRUPT_NOTICE
+}
+
+fn suspend_palette_for_quit(
+    palette: &mut glass_tui::palette::Palette,
+    editor: &mut glass_tui::Editor,
+) -> Option<glass_tui::palette::Bookmark> {
+    if !palette.active() {
+        return None;
+    }
+    let bookmark = palette.bookmark(editor);
+    palette.cancel(editor);
+    Some(bookmark)
+}
+
+fn restore_palette_after_cancel(
+    palette: &mut glass_tui::palette::Palette,
+    editor: &mut glass_tui::Editor,
+    bookmark: Option<glass_tui::palette::Bookmark>,
+) -> Result<(), String> {
+    if let Some(bookmark) = bookmark {
+        palette
+            .restore_managed(editor, bookmark)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Build a metered provider for `cfg`, optionally overriding the model.
@@ -1850,6 +1950,14 @@ fn repl(
         }
     }
     let mut editor = Editor::new();
+    let saved_draft_error = match draft::load(&session) {
+        Ok(Some(saved)) => {
+            editor.set_text(&saved);
+            None
+        }
+        Ok(None) => None,
+        Err(error) => Some(error),
+    };
     // Recall survives the process: the prompts of every
     // session are the ones most likely to be repeated.
     editor.set_history(crate::history::load(&config::data_dir()));
@@ -1866,6 +1974,9 @@ fn repl(
 
     let mut keys = input::KeyReader::spawn();
     let mut palette = glass_tui::palette::Palette::new(command_catalogue(extensions));
+    if let Some(error) = saved_draft_error {
+        modal::info(&keys, "Saved draft", &error);
+    }
 
     // Workspace trust: repository-controlled instruction text is a decision,
     // not a surprise. Asked once per workspace and content hash; changed
@@ -1993,7 +2104,10 @@ fn repl(
     crate::status::set("idle", "");
     loop {
         if EXIT_REQUESTED.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            return Ok(());
+            match draft::save(&session, editor.text()) {
+                Ok(()) => return Ok(()),
+                Err(error) => modal::info(&keys, "Draft not saved", &error),
+            }
         }
         if team_owner != session.id {
             team_guard.take();
@@ -2219,12 +2333,28 @@ fn repl(
                         }
                         continue;
                     }
-                    glass_tui::crossterm::event::KeyCode::Char('d') => {
+                    code if idle_quit_request(code, key.modifiers) => {
+                        let bookmark = suspend_palette_for_quit(&mut palette, &mut editor);
                         if modal::confirm_exit(&keys, &editor, false) {
-                            palette.close();
-                            ui_println!("\nbye");
-                            return Ok(());
+                            match draft::save(&session, editor.text()) {
+                                Ok(()) => {
+                                    palette.close();
+                                    ui_println!("\nbye");
+                                    return Ok(());
+                                }
+                                Err(error) => {
+                                    modal::info(&keys, "Draft not saved", &error);
+                                    restore_palette_after_cancel(
+                                        &mut palette,
+                                        &mut editor,
+                                        bookmark,
+                                    )?;
+                                    surface::overlay(palette.active()).ok();
+                                    continue;
+                                }
+                            }
                         }
+                        restore_palette_after_cancel(&mut palette, &mut editor, bookmark)?;
                         surface::overlay(palette.active()).ok();
                         continue;
                     }
@@ -2247,12 +2377,6 @@ fn repl(
                     glass_tui::crossterm::event::KeyCode::Char('g') => {
                         palette.cancel(&mut editor);
                         view_transcript(&session, &loaded_mods, &keys, false)?;
-                        continue;
-                    }
-                    glass_tui::crossterm::event::KeyCode::Char('c') => {
-                        palette.close();
-                        editor.clear();
-                        ui_println!("^C");
                         continue;
                     }
                     _ => {}
@@ -2789,6 +2913,15 @@ fn repl(
             modal::info(&keys, "Connection and session", &detail);
             continue;
         }
+        if text == "/desktop" {
+            match connect::start_local_desktop_for_tui(cfg.clone()) {
+                Ok(status) => {
+                    modal::info(&keys, "Desktop session", &desktop_status_message(&status))
+                }
+                Err(error) => modal::info(&keys, "Desktop session", &error),
+            }
+            continue;
+        }
         if text == "/tools" {
             let labels = vec![
                 "Expanded · command and output preview".into(),
@@ -2843,7 +2976,7 @@ fn repl(
                     &keys,
                     &format!("/{}", c.name),
                     &format!(
-                        "{}\n\n/{} {}\n\nSelect it from / or Ctrl+P to start its guided flow.\nEscape closes a modal. Ctrl+G opens the transcript.\nCtrl+C clears input; Ctrl+D exits.",
+                        "{}\n\n/{} {}\n\nSelect it from / or Ctrl+P to start its guided flow.\nEscape closes a modal. Ctrl+G opens the transcript.\nWhen idle, Ctrl+C or Ctrl+D opens quit confirmation and saves the composer for resume. During a turn, Ctrl+C interrupts and keeps the follow-up draft.",
                         c.description, c.name, c.hint
                     ),
                 );
@@ -3766,6 +3899,9 @@ fn repl(
                 editor.set_text(&text);
                 continue;
             }
+            if let Err(error) = draft::clear(&session) {
+                modal::info(&keys, "Saved draft", &error);
+            }
         }
         // The typed prompt is still on the prompt row. Clear those
         // rows and print the prompt once, whole: a prompt must be
@@ -4121,12 +4257,14 @@ fn drain_input(
     while let Some(ev) = keys.try_next() {
         if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('d'))
         {
+            let bookmark = suspend_palette_for_quit(palette, editor);
             if modal::confirm_exit(keys, editor, true) {
                 EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
                 palette.close();
                 surface::overlay(false).ok();
                 return Some(String::new());
             }
+            let _ = restore_palette_after_cancel(palette, editor, bookmark);
             surface::overlay(palette.active()).ok();
             dirty = true;
             continue;
@@ -4135,13 +4273,11 @@ fn drain_input(
         if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c'))
         {
             painter.live.borrow_mut().close().ok();
-            palette.close();
+            // A busy palette temporarily owns the composer. Restore its saved
+            // follow-up draft before returning to the idle prompt.
+            let notice = prepare_busy_interrupt(palette, editor);
             surface::overlay(false).ok();
-            editor.clear();
-            painter.append_live_entry(
-                glass_tui::Role::System,
-                "Cancelled the current turn; partial output is saved.",
-            );
+            painter.append_live_entry(glass_tui::Role::System, notice);
             ui_println!("\r\x1b[2K\x1b[33m⚡ interrupt\x1b[0m");
             return Some(String::new());
         }
@@ -5184,7 +5320,7 @@ fn print_banner(
                 exts.names().len(),
                 session.id
             ),
-            "/dashboard overview · / commands · ctrl-g transcript · ctrl-d quit".into(),
+            "/dashboard overview · / commands · ctrl-g transcript · ctrl-c/d quit".into(),
         ]
     };
     for row in rows {
@@ -5656,5 +5792,79 @@ mod budget_context_tests {
             budget_context_snapshot(&context),
             Err(message) if message == "budget context lock poisoned"
         ));
+    }
+}
+
+#[cfg(test)]
+mod quit_and_desktop_tests {
+    use super::*;
+    use glass_tui::crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn idle_ctrl_c_and_ctrl_d_both_request_quit_confirmation() {
+        assert!(idle_quit_request(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(idle_quit_request(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert!(!idle_quit_request(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(!idle_quit_request(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL
+        ));
+    }
+
+    #[test]
+    fn busy_palette_cancel_restores_the_follow_up_draft() {
+        let mut editor = glass_tui::Editor::new();
+        editor.set_text("follow-up draft");
+        let mut palette = glass_tui::palette::Palette::new(Vec::new());
+        palette.open_managed(&mut editor).unwrap();
+        editor.set_text("/work");
+
+        let notice = prepare_busy_interrupt(&mut palette, &mut editor);
+
+        assert!(!palette.active());
+        assert_eq!(editor.text(), "follow-up draft");
+        assert!(notice.contains("partial output is saved"));
+    }
+
+    #[test]
+    fn desktop_is_discoverable_and_status_message_is_human_local() {
+        let commands = command_catalogue(&ext::Registry::empty());
+        assert!(commands.iter().any(|command| command.name == "desktop"));
+
+        let message = desktop_status_message(&serde_json::json!({
+            "managerStarted": true,
+            "connectionMode": "local",
+            "sessionStarted": true,
+            "sessionId": "session-123",
+            "environment": "xfce",
+            "lifecycle": "disposable",
+            "available": true,
+            "lease": "human"
+        }));
+        assert!(message.contains("Desktop session is ready."));
+        assert!(message.contains("Manager: started (local)"));
+        assert!(message.contains("Session: session-123 (started)"));
+        assert!(message.contains("lease with you"));
+        assert!(message.contains("gc connect status"));
+        let remote = desktop_status_message(&serde_json::json!({
+            "connectionMode": "remote",
+            "available": true,
+            "environment": "unexpected"
+        }));
+        assert!(remote.contains("Manager: attached (existing remote)"));
+        assert!(remote.contains("Environment: managed desktop"));
+        let unknown = desktop_status_message(&serde_json::json!({}));
+        assert!(unknown.contains("Desktop session is starting."));
+    }
+
+    #[test]
+    fn busy_ctrl_c_keeps_follow_up_draft_and_reports_saved_partial_output() {
+        let mut editor = glass_tui::Editor::new();
+        editor.set_text("follow-up draft");
+        let mut palette = glass_tui::palette::Palette::new(Vec::new());
+        let notice = prepare_busy_interrupt(&mut palette, &mut editor);
+        assert_eq!(editor.text(), "follow-up draft");
+        assert!(notice.contains("partial output is saved"));
+        assert!(notice.contains("follow-up draft is kept"));
     }
 }

@@ -213,12 +213,18 @@ const KEYS: &[Item] = &[
         "Alt+A / /agents",
         "Review teammates and their interactions.",
     ),
-    ("Ctrl+C", "Interrupt the current turn."),
+    (
+        "Ctrl+C",
+        "When idle, open quit confirmation and save the composer for resume; during a turn, interrupt it and keep the follow-up draft.",
+    ),
     ("Ctrl+R", "Search prompt history."),
     ("Ctrl+X", "Edit your draft in VISUAL or EDITOR."),
     ("Tab", "Search project file paths."),
     ("Alt+Enter", "Insert a newline."),
-    ("Ctrl+D", "Confirm exit; Enter quits and Esc stays."),
+    (
+        "Ctrl+D",
+        "Open quit confirmation; Enter quits and Esc stays. The composer draft is saved for resume (same as idle Ctrl+C).",
+    ),
 ];
 const RUN: &[Item] = &[
     (

@@ -962,6 +962,11 @@ impl Session {
         })
     }
 
+    /// Byte length captured when this read-only snapshot was opened.
+    pub(crate) fn snapshot_bytes(&self) -> u64 {
+        self.raw_stamp.borrow().0
+    }
+
     /// Open a new session file under the state directory.
     pub fn create(dir: &Path) -> std::io::Result<Self> {
         fs::create_dir_all(dir)?;

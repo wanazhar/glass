@@ -104,10 +104,13 @@ fn reader(path: &Path, cursor: u64) -> Result<BufReader<File>, String> {
     Ok(BufReader::new(file))
 }
 fn next(reader: &mut impl BufRead) -> Result<Option<(Value, u64)>, String> {
+    next_bounded(reader, (FRAME + 1) as u64)
+}
+fn next_bounded(reader: &mut impl BufRead, max_bytes: u64) -> Result<Option<(Value, u64)>, String> {
     let mut line = Vec::new();
     let n = reader
         .by_ref()
-        .take((FRAME + 1) as u64)
+        .take(max_bytes.min((FRAME + 1) as u64))
         .read_until(b'\n', &mut line)
         .map_err(|e| e.to_string())?;
     if n == 0 {
@@ -115,6 +118,12 @@ fn next(reader: &mut impl BufRead) -> Result<Option<(Value, u64)>, String> {
     }
     if n > FRAME {
         return Err("journal record exceeds runtime frame limit".into());
+    }
+    // Session writers append complete newline-terminated records. A snapshot
+    // can capture the file while a concurrent append is still in progress;
+    // don't parse or expose that incomplete trailing fragment.
+    if line.last() != Some(&b'\n') {
+        return Ok(None);
     }
     let v = serde_json::from_slice(&line).map_err(|e| format!("invalid journal record: {e}"))?;
     Ok(Some((v, n as u64)))
@@ -139,6 +148,21 @@ fn preview(mut v: Value) -> (Value, Vec<Value>) {
     (v, clipped)
 }
 pub fn entries(session: &Session, p: &Value) -> Result<Value, String> {
+    entries_with_bound(session, p, None)
+}
+
+/// Read entries only through the byte boundary captured by a read-only
+/// session snapshot. This keeps a child viewer from accidentally including a
+/// record appended after its snapshot was opened.
+pub fn entries_snapshot(session: &Session, p: &Value) -> Result<Value, String> {
+    entries_with_bound(session, p, Some(session.snapshot_bytes()))
+}
+
+fn entries_with_bound(
+    session: &Session,
+    p: &Value,
+    snapshot_bytes: Option<u64>,
+) -> Result<Value, String> {
     let mut cursor = p.get("cursor").and_then(Value::as_u64).unwrap_or(0);
     let limit = p
         .get("limit")
@@ -146,10 +170,21 @@ pub fn entries(session: &Session, p: &Value) -> Result<Value, String> {
         .unwrap_or(25)
         .clamp(1, 100) as usize;
     let mut reader = reader(&session.path, cursor)?;
+    let total = match snapshot_bytes {
+        Some(bytes) => bytes,
+        None => std::fs::metadata(&session.path)
+            .map_err(|e| e.to_string())?
+            .len(),
+    };
+    if cursor > total {
+        return Err("cursor exceeds journal snapshot".into());
+    }
     let mut entries = Vec::new();
     let mut bytes = 0;
-    while entries.len() < limit {
-        let Some((record, len)) = next(&mut reader)? else {
+    let mut complete_snapshot_tail = true;
+    while entries.len() < limit && cursor < total {
+        let Some((record, len)) = next_bounded(&mut reader, total - cursor)? else {
+            complete_snapshot_tail = false;
             break;
         };
         let (record, truncated) = preview(record);
@@ -163,12 +198,25 @@ pub fn entries(session: &Session, p: &Value) -> Result<Value, String> {
         cursor += len;
         entries.push(entry);
     }
-    let total = std::fs::metadata(&session.path)
-        .map_err(|e| e.to_string())?
-        .len();
-    Ok(json!({"entries":entries,"cursor":cursor,"hasMore":cursor<total,"journalBytes":total}))
+    Ok(
+        json!({"entries":entries,"cursor":cursor,"hasMore":cursor<total && complete_snapshot_tail,"journalBytes":total}),
+    )
 }
 pub fn entry(session: &Session, p: &Value) -> Result<Value, String> {
+    entry_with_bound(session, p, None)
+}
+
+/// Read a full field chunk from a read-only snapshot without crossing the
+/// byte boundary captured when that child session was opened.
+pub fn entry_snapshot(session: &Session, p: &Value) -> Result<Value, String> {
+    entry_with_bound(session, p, Some(session.snapshot_bytes()))
+}
+
+fn entry_with_bound(
+    session: &Session,
+    p: &Value,
+    snapshot_bytes: Option<u64>,
+) -> Result<Value, String> {
     let id = super::string(p, "entryId")?;
     let prefix = format!("{}@", session.id);
     let cursor = id
@@ -176,7 +224,17 @@ pub fn entry(session: &Session, p: &Value) -> Result<Value, String> {
         .ok_or("entryId belongs to another session")?
         .parse::<u64>()
         .map_err(|_| "invalid entryId")?;
-    let (value, _) = next(&mut reader(&session.path, cursor)?)?.ok_or("entry does not exist")?;
+    let total = match snapshot_bytes {
+        Some(bytes) => bytes,
+        None => std::fs::metadata(&session.path)
+            .map_err(|error| error.to_string())?
+            .len(),
+    };
+    if cursor > total {
+        return Err("entry cursor exceeds journal snapshot".into());
+    }
+    let (value, _) = next_bounded(&mut reader(&session.path, cursor)?, total - cursor)?
+        .ok_or("entry does not exist")?;
     let field = p.get("field").and_then(Value::as_str).unwrap_or("t");
     let text = value
         .get(field)
@@ -198,6 +256,8 @@ pub fn entry(session: &Session, p: &Value) -> Result<Value, String> {
     }
     Ok(
         json!({"entryId":id,"field":field,"text":&text[offset..end],"fieldBytes":text.len(),
+        "recordKind":value.get("k"),"customKind":value.get("c"),
+        "callId":value.get("id"),"toolName":value.get("name"),
         "nextOffset":if end<text.len(){Some(end)}else{None}}),
     )
 }

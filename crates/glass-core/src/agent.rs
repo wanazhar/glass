@@ -1328,11 +1328,12 @@ impl<'a> Agent<'a> {
                 Event::Text(t) => {
                     // Emit before accumulating so the UI can paint the delta
                     // as it arrives rather than after the whole turn.
+                    let text = self.session.secrets.redact(&t);
                     if let Some(live) = self.live.as_mut() {
-                        live.text(&t);
+                        live.text(&text);
                     }
-                    self.emit(Progress::Text(&t));
-                    out.text.push_str(&t);
+                    self.emit(Progress::Text(&text));
+                    out.text.push_str(&text);
                 }
                 // Reasoning is captured but not rendered by default: it is
                 // noise in a terminal and costs context to replay.
@@ -6044,6 +6045,77 @@ mod recovery_tests {
         let diagnostics =
             std::fs::read_to_string(dir.join(".glass/diagnostics.jsonl")).unwrap_or_default();
         assert!(!diagnostics.contains(sentinel));
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn streamed_assistant_text_is_redacted_before_progress_and_transcript() {
+        struct Echo(String);
+        impl Provider for Echo {
+            fn id(&self) -> &str {
+                "echo"
+            }
+            fn stream(
+                &self,
+                _: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                Ok(Box::new(
+                    vec![Event::Text(self.0.clone()), Event::Done].into_iter(),
+                ))
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+        }
+
+        let dir = scratch("stream-text-redaction");
+        let mut session = Session::create(&dir).unwrap();
+        let sentinel = "streamed-child-secret-sentinel";
+        session
+            .secrets
+            .issue_zeroizing(
+                crate::secrets::SecretScope {
+                    session_id: session.id.clone(),
+                    tool_name: "web_secret_request".into(),
+                    operation: "create token".into(),
+                    destination: "https://api.example.test".into(),
+                },
+                zeroize::Zeroizing::new(sentinel.to_owned()),
+            )
+            .unwrap();
+        session.append(Record::User("continue the task".into()));
+        let provider = Echo(format!("provider echoed {sentinel}"));
+        let mut state = State::new();
+        let mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = Registry::empty();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_for_progress = Arc::clone(&observed);
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_progress(move |event| {
+            if let Progress::Text(text) = event {
+                observed_for_progress.lock().unwrap().push(text.to_owned());
+            }
+        });
+
+        let (output, stop) = agent.run_turn(|_| {}).unwrap();
+        assert_eq!(stop, Stop::Finished);
+        assert!(!output.text.contains(sentinel));
+        assert!(output.text.contains("[redacted secret]"));
+        let progress = observed.lock().unwrap().join("");
+        assert!(!progress.contains(sentinel));
+        assert!(progress.contains("[redacted secret]"));
+        let history = agent.session.history_records();
+        assert!(!format!("{history:?}").contains(sentinel));
+        drop(agent);
         drop(extensions);
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();

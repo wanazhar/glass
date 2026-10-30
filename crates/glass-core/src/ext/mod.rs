@@ -11,7 +11,7 @@ use std::path::Path;
 
 pub use host::{CallOutcome, CallScope, CallStop, Cancel, CancelPath, ShutdownOutcome};
 
-use host::{Extension, HostInputFn, HostToolBridge, SubagentFn};
+use host::{Extension, HostInputFn, HostToolBridge, SubagentEventFn, SubagentFn};
 use protocol::{ExtConcurrency, ToolSpec, tool_triple};
 
 /// Every loaded extension.
@@ -20,6 +20,7 @@ pub struct Registry {
     failures: Vec<String>,
     sources: std::collections::BTreeMap<String, String>,
     runner_factory: Option<Box<dyn Fn() -> SubagentFn + Send>>,
+    event_runner_factory: Option<Box<dyn Fn() -> SubagentEventFn + Send>>,
     /// The tool list declared to the model, frozen after the
     /// first turn. See [`Registry::declared_tools`].
     frozen_tools: Option<Vec<(String, String, String)>>,
@@ -54,6 +55,7 @@ impl Registry {
             failures: Vec::new(),
             sources: std::collections::BTreeMap::new(),
             runner_factory: None,
+            event_runner_factory: None,
             frozen_tools: None,
             freeze_noted: false,
             deferred: std::env::var("GC_DEFER_TOOLS").as_deref() == Ok("1"),
@@ -106,6 +108,21 @@ impl Registry {
             ext.set_subagent(make());
         }
         self.runner_factory = Some(Box::new(make));
+        self.event_runner_factory = None;
+    }
+
+    /// Install a context-aware subagent runner on every extension. Runtime
+    /// hosts use this variant to publish real child session events while the
+    /// legacy CLI callback remains unchanged.
+    pub fn set_subagent_with_events(
+        &mut self,
+        make: impl Fn() -> SubagentEventFn + Send + 'static,
+    ) {
+        for ext in self.exts.iter_mut() {
+            ext.set_subagent_with_events(make());
+        }
+        self.runner_factory = None;
+        self.event_runner_factory = Some(Box::new(make));
     }
 
     /// Drain entries queued by deferred extension implementations.
@@ -256,6 +273,9 @@ impl Registry {
         }
         if let Some(make) = &self.runner_factory {
             extension.set_subagent(make());
+        }
+        if let Some(make) = &self.event_runner_factory {
+            extension.set_subagent_with_events(make());
         }
         self.sources
             .insert(extension.manifest.name.clone(), spec.into());
@@ -921,7 +941,7 @@ for line in sys.stdin:
         send({"id":i,"protocol":PROTO,"name":"batch","version":"1",
               "tools":[{"name":"batch","description":"d","schema":{"type":"object"}}]})
     elif t=="run_tool":
-        send({"type":"run_subagents","tasks":[{"task":"one"},{"task":"two"}]})
+        send({"type":"run_subagents","call_id":"batch-call","tasks":[{"task":"one"},{"task":"two"}]})
         while True:
             rep=json.loads(sys.stdin.readline())
             if rep.get("type")=="subagents_result":
@@ -955,6 +975,38 @@ for line in sys.stdin:
         assert!(
             joined.contains("<subagent-report>\ndone:two\n</subagent-report>"),
             "the second report must come back framed: {joined}"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn event_aware_subagent_runner_receives_the_parent_extension_call_id() {
+        let Some(py) = python() else { return };
+        let p = echo_ext(&BATCH_HELPER.replace("PROTO", &PROTOCOL_VERSION.to_string()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_for_runner = std::sync::Arc::clone(&calls);
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        reg.set_subagent_with_events(move || {
+            let calls = std::sync::Arc::clone(&calls_for_runner);
+            Box::new(move |tasks, call_id| {
+                calls.lock().unwrap().push(call_id.clone());
+                tasks
+                    .iter()
+                    .map(|task| format!("done:{}", task.task))
+                    .collect()
+            })
+        });
+        let mut nohost = |_name: &str, _args: &str| String::new();
+        let joined = reg.run_tool("batch", "{}", &mut nohost).unwrap_or_default();
+        assert!(joined.contains("done:one"));
+        assert!(joined.contains("done:two"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![serde_json::json!("batch-call")]
         );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }

@@ -10,6 +10,7 @@
 //! while a read-only task gets inspection tools, because anything else would be the parent conversation
 //! leaking into a context that is supposed to be isolated.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,16 +40,31 @@ pub fn run_batch(
     cap: usize,
     f: impl Fn(&SubagentTask) -> String + Sync,
 ) -> Vec<String> {
+    run_batch_with_index(tasks, cap, |_, task| f(task))
+}
+
+/// Indexed variant used by the runtime child feed. Task indices are stable
+/// within the extension request and reports remain in request order.
+pub fn run_batch_with_index(
+    tasks: &[SubagentTask],
+    cap: usize,
+    f: impl Fn(usize, &SubagentTask) -> String + Sync,
+) -> Vec<String> {
     let cap = cap.max(1);
     let mut out = Vec::with_capacity(tasks.len());
-    for wave in tasks.chunks(cap) {
+    for (wave_index, wave) in tasks.chunks(cap).enumerate() {
+        let start = wave_index * cap;
         if wave.len() == 1 {
-            out.push(f(&wave[0]));
+            out.push(f(start, &wave[0]));
             continue;
         }
         let mut results: Vec<String> = std::thread::scope(|scope| {
             let f = &f;
-            let handles: Vec<_> = wave.iter().map(|t| scope.spawn(move || f(t))).collect();
+            let handles: Vec<_> = wave
+                .iter()
+                .enumerate()
+                .map(|(offset, task)| scope.spawn(move || f(start + offset, task)))
+                .collect();
             handles
                 .into_iter()
                 .map(|h| {
@@ -60,6 +76,422 @@ pub fn run_batch(
         out.append(&mut results);
     }
     out
+}
+
+/// Durable relationship between one delegated task and its actual child
+/// session. The parent call ID comes from the extension protocol, while both
+/// session IDs are assigned by Core.
+#[derive(Clone, Debug)]
+pub struct ChildLink {
+    pub task_id: String,
+    pub parent_session_id: String,
+    pub parent_turn_id: serde_json::Value,
+    pub parent_call_id: String,
+    pub task_index: usize,
+    pub task_count: usize,
+    pub read_only: bool,
+}
+
+/// Event emitted for one actual child session. `data` is intentionally kept
+/// opaque here; the runtime adds the stable IDs and monotonically increasing
+/// sequence before placing it in the parent event stream.
+pub struct ChildEvent {
+    pub data: serde_json::Value,
+}
+
+const CHILD_LINK_DIR: &str = "subagent-links";
+
+/// Persist the Core-owned parent/child relationship separately from the child
+/// conversation. This small sidecar keeps snapshots cheap even when a child
+/// transcript has grown large; the transcript itself remains ordinary
+/// session data.
+pub fn persist_child_link(
+    scratch: &Path,
+    link: &ChildLink,
+    child_session_id: &str,
+    state: &str,
+    started_at_ms: u64,
+    finished_at_ms: Option<u64>,
+    last_seq: u64,
+) -> Result<(), String> {
+    if !valid_session_id(child_session_id)
+        || !valid_session_id(&link.task_id)
+        || !valid_session_id(&link.parent_session_id)
+        || link.parent_call_id.is_empty()
+        || link.parent_call_id.len() > 128
+        || link.parent_call_id.chars().any(char::is_control)
+        || link.task_count == 0
+        || link.task_index >= link.task_count
+        || !matches!(state, "running" | "completed" | "failed" | "cancelled")
+    {
+        return Err("invalid child link identifier".into());
+    }
+    let directory = scratch.join(CHILD_LINK_DIR);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("cannot create child link directory: {error}"))?;
+    let metadata = std::fs::symlink_metadata(&directory)
+        .map_err(|error| format!("cannot inspect child link directory: {error}"))?;
+    if !metadata.file_type().is_dir() {
+        return Err("child link path is not a real directory".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("cannot protect child link directory: {error}"))?;
+    }
+    let value = serde_json::json!({
+        "taskId":link.task_id,
+        "parentSessionId":link.parent_session_id,
+        "parentTurnId":link.parent_turn_id,
+        "parentCallId":link.parent_call_id,
+        "taskIndex":link.task_index,
+        "taskCount":link.task_count,
+        "childSessionId":child_session_id,
+        "readOnly":link.read_only,
+        "state":state,
+        "startedAtMs":started_at_ms,
+        "finishedAtMs":finished_at_ms,
+        "lastSeq":last_seq,
+    });
+    let destination = directory.join(format!("{child_session_id}.json"));
+    let temporary = directory.join(format!(".{}.{}.tmp", link.task_id, unique_id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|error| format!("cannot create child link record: {error}"))?;
+    let write_result = (|| {
+        serde_json::to_writer(&mut file, &value)?;
+        file.write_all(b"\n")?;
+        file.sync_all()
+    })();
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("cannot write child link record: {error}"));
+    }
+    if let Err(error) = std::fs::rename(&temporary, &destination) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("cannot publish child link record: {error}"));
+    }
+    Ok(())
+}
+
+/// Return only child sessions whose durable link names `parent_session_id`.
+/// The sidecar's file name and embedded child ID must agree; this
+/// prevents a stale or copied link from turning into a row for another log.
+pub fn list_linked_children(
+    scratch: &Path,
+    parent_session_id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let links = scratch.join(CHILD_LINK_DIR);
+    match std::fs::symlink_metadata(&links) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("child link path is not a real directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("cannot inspect child link directory: {error}")),
+    }
+    let entries = match std::fs::read_dir(&links) {
+        Ok(entries) => entries,
+        Err(error) => return Err(format!("cannot list child sessions: {error}")),
+    };
+    let mut children = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot list child sessions: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect child session: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(child_id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !valid_session_id(child_id) {
+            continue;
+        }
+        let Some(link) = read_child_link(scratch, child_id)? else {
+            continue;
+        };
+        if link["parentSessionId"].as_str() != Some(parent_session_id)
+            || link["childSessionId"].as_str() != Some(child_id)
+            || !link["taskId"].as_str().is_some_and(valid_session_id)
+            || !link["parentCallId"].as_str().is_some_and(|id| {
+                !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+            })
+            || !matches!(
+                link["state"].as_str(),
+                Some("running" | "completed" | "failed" | "cancelled")
+            )
+            || link["taskIndex"].as_u64().is_none()
+            || link["taskCount"].as_u64().is_none()
+            || link["taskCount"].as_u64() == Some(0)
+            || link["taskIndex"].as_u64().unwrap_or(u64::MAX)
+                >= link["taskCount"].as_u64().unwrap_or(0)
+            || link["readOnly"].as_bool().is_none()
+            || link["startedAtMs"].as_u64().is_none()
+            || link["lastSeq"].as_u64().is_none()
+        {
+            continue;
+        }
+        children.push(link);
+    }
+    children.sort_by(|left, right| {
+        left["startedAtMs"]
+            .as_u64()
+            .cmp(&right["startedAtMs"].as_u64())
+            .then_with(|| {
+                left["parentCallId"]
+                    .as_str()
+                    .cmp(&right["parentCallId"].as_str())
+            })
+            .then_with(|| left["taskIndex"].as_u64().cmp(&right["taskIndex"].as_u64()))
+            .then_with(|| left["taskId"].as_str().cmp(&right["taskId"].as_str()))
+    });
+    if children.len() > 100 {
+        children.drain(..children.len() - 100);
+    }
+    Ok(children)
+}
+
+fn read_child_link(
+    scratch: &Path,
+    child_session_id: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    if !valid_session_id(child_session_id) {
+        return Ok(None);
+    }
+    let directory = scratch.join(CHILD_LINK_DIR);
+    match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("child link path is not a real directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot inspect child link directory: {error}")),
+    }
+    let path = scratch
+        .join(CHILD_LINK_DIR)
+        .join(format!("{child_session_id}.json"));
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => metadata,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot inspect child link: {error}")),
+    };
+    if metadata.len() > 16 * 1024 {
+        return Err("child link record exceeds size limit".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("cannot read child link: {error}"))?;
+    let value =
+        serde_json::from_slice(&bytes).map_err(|_| "child link record is malformed".to_string())?;
+    Ok(Some(value))
+}
+
+/// Open a child log only after verifying its durable parent/session/task link.
+pub fn open_linked_child(
+    scratch: &Path,
+    parent_session_id: &str,
+    parent_call_id: &str,
+    task_id: &str,
+    child_session_id: &str,
+) -> Result<Session, String> {
+    if !valid_session_id(child_session_id) {
+        return Err("invalid child session ID".into());
+    }
+    let linked = read_child_link(scratch, child_session_id)?.is_some_and(|child| {
+        child["parentSessionId"].as_str() == Some(parent_session_id)
+            && child["taskId"].as_str() == Some(task_id)
+            && child["parentCallId"].as_str() == Some(parent_call_id)
+            && child["childSessionId"].as_str() == Some(child_session_id)
+    });
+    if !linked {
+        return Err("child session is not linked to this parent".into());
+    }
+    let session_path = scratch.join(format!("{child_session_id}.jsonl"));
+    match std::fs::symlink_metadata(&session_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Err("child session path is not a regular file".into()),
+        Err(error) => return Err(format!("cannot inspect child session: {error}")),
+    }
+    Session::open_readonly(scratch, child_session_id)
+        .map_err(|error| format!("cannot open child session: {error}"))
+}
+
+fn valid_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// Run one delegated task and report its real child session lifecycle and
+/// child Agent progress to an observer. The returned report remains the
+/// extension tool result; the observer receives only read-only feed events.
+pub fn run_task_observed(
+    task: &SubagentTask,
+    workspace: &Path,
+    scratch: &Path,
+    make_provider: &MakeProvider<'_>,
+    parent_prompt: Option<&str>,
+    link: ChildLink,
+    observer: &(dyn Fn(ChildEvent) + Sync),
+) -> String {
+    let mut session = match Session::create(scratch) {
+        Ok(session) => session,
+        Err(error) => return format!("subagent failed: {error}"),
+    };
+    let child_session_id = session.id.clone();
+    let now = unix_millis();
+    if persist_child_link(scratch, &link, &child_session_id, "running", now, None, 1).is_err() {
+        let report = "subagent failed: child session relationship could not be recorded";
+        observer(ChildEvent {
+            data: serde_json::json!({
+                "kind":"finished",
+                "taskId":link.task_id,
+                "parentCallId":link.parent_call_id,
+                "taskIndex":link.task_index,
+                "taskCount":link.task_count,
+                "childSessionId":child_session_id,
+                "seq":1,
+                "state":"failed",
+                "error":"child session relationship could not be recorded",
+            }),
+        });
+        return report.into();
+    }
+    let sequence = std::cell::Cell::new(0_u64);
+    let emit = |kind: &'static str, mut data: serde_json::Value| {
+        let seq = sequence.get().saturating_add(1);
+        sequence.set(seq);
+        if !data.is_object() {
+            data = serde_json::json!({"value":data});
+        }
+        data["kind"] = serde_json::json!(kind);
+        data["taskId"] = serde_json::json!(link.task_id);
+        data["parentCallId"] = serde_json::json!(link.parent_call_id);
+        data["taskIndex"] = serde_json::json!(link.task_index);
+        data["taskCount"] = serde_json::json!(link.task_count);
+        data["childSessionId"] = serde_json::json!(child_session_id);
+        data["seq"] = serde_json::json!(seq);
+        observer(ChildEvent { data });
+    };
+    emit(
+        "started",
+        serde_json::json!({
+            "state":"running",
+            "readOnly":link.read_only,
+            "startedAtMs":now,
+        }),
+    );
+    session.append(Record::User(task.task.clone()));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        (|| -> Result<(String, &'static str), String> {
+            if session.write_error().is_some() {
+                return Err("child task could not be recorded".into());
+            }
+            let provider = make_provider(task.model.as_deref())?;
+            let (run_workspace, note) = if task.worktree {
+                let dir = worktree(workspace, &scratch.join("worktrees"), &unique_id())?;
+                let note = format!("\n\n[isolated worktree: {}]", dir.display());
+                (dir, note)
+            } else {
+                (workspace.to_path_buf(), String::new())
+            };
+            let mut state = tools::State::new();
+            let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
+            let mut registry = ext::Registry::empty();
+            let base = task_prompt(task, parent_prompt);
+            let mut agent = Agent::new(
+                provider.as_ref(),
+                &mut session,
+                &mut state,
+                &mods,
+                &mut registry,
+                &run_workspace,
+            )
+            .with_task_context(base, task.read_only)
+            .with_progress(|progress| match progress {
+                crate::agent::Progress::Text(text) => {
+                    emit("text", serde_json::json!({"text":text}));
+                }
+                crate::agent::Progress::ToolStart { call_id, name, .. } => emit(
+                    "tool_start",
+                    serde_json::json!({"callId":call_id,"toolName":name}),
+                ),
+                crate::agent::Progress::ToolEnd {
+                    call_id,
+                    summary,
+                    output,
+                } => emit(
+                    "tool_end",
+                    serde_json::json!({
+                        "callId":call_id,
+                        "summary":summary,
+                        "text":output,
+                        "isError":output.starts_with("error:")
+                            || (output.starts_with("[exit ") && !output.starts_with("[exit 0]")),
+                    }),
+                ),
+                _ => {}
+            });
+            match agent.run_turn(|_| {}) {
+                Ok((out, crate::agent::Stop::Cancelled)) => {
+                    Ok((format!("{}{note}", out.text), "cancelled"))
+                }
+                Ok((out, crate::agent::Stop::Finished | crate::agent::Stop::ToolBudget)) => {
+                    Ok((format!("{}{note}", out.text), "completed"))
+                }
+                Ok((_, crate::agent::Stop::Steered)) => Err("subagent turn was interrupted".into()),
+                Err(error) => Err(error.to_string()),
+            }
+        })()
+    }))
+    .unwrap_or_else(|_| Err("subagent worker panicked".into()));
+
+    let (status, report) = match result {
+        Ok((report, status)) => (status, report),
+        Err(error) => ("failed", format!("subagent failed: {error}")),
+    };
+    let finished = unix_millis();
+    let status_persisted = persist_child_link(
+        scratch,
+        &link,
+        &child_session_id,
+        status,
+        now,
+        Some(finished),
+        sequence.get().saturating_add(1),
+    )
+    .is_ok();
+    let report = session.secrets.redact(&report);
+    emit(
+        "finished",
+        serde_json::json!({
+            "state":if status_persisted {status} else {"failed"},
+            "finishedAtMs":finished,
+            "error":(!status_persisted).then_some("child session status could not be recorded"),
+        }),
+    );
+    report
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(duration_millis_u64)
+        .unwrap_or(0)
 }
 
 /// Builds one metered provider, optionally for a named model.
@@ -203,6 +635,11 @@ fn unique_id() -> String {
     format!("{millis:x}-{:x}", SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
+/// Allocate a Core-owned opaque task identifier for the subagent event feed.
+pub fn new_task_id() -> String {
+    unique_id()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +672,13 @@ mod tests {
             t.task.clone()
         });
         assert_eq!(out, vec!["t0", "t1", "t2", "t3"]);
+    }
+
+    #[test]
+    fn indexed_batch_keeps_global_task_indices_across_waves() {
+        let tasks: Vec<SubagentTask> = (0..5).map(|i| task(&format!("t{i}"))).collect();
+        let out = run_batch_with_index(&tasks, 2, |index, task| format!("{index}:{}", task.task));
+        assert_eq!(out, ["0:t0", "1:t1", "2:t2", "3:t3", "4:t4"]);
     }
 
     #[test]
@@ -388,16 +832,189 @@ mod tests {
         let got = seen.lock().unwrap().clone();
         assert!(!got.is_empty(), "the subagent must have made a request");
         assert!(
-            got.iter().all(|s| s
-                == &crate::permissions::model_context(
+            got.iter()
+                .all(|s| s.starts_with(&crate::permissions::model_context(
                     crate::guidance::teammate_context(
                         crate::guidance::model_context(parent.into()),
                         false
                     ),
                     false
-                )),
+                ))),
             "every request must preserve the inherited prefix with one shared workflow protocol, got: {got:?}"
         );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn observed_child_events_and_snapshots_follow_the_durable_parent_link() {
+        let scratch = std::env::temp_dir().join(format!("gc-child-feed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let event_sink = std::sync::Arc::clone(&events);
+        let observer = move |event: ChildEvent| {
+            event_sink.lock().unwrap().push(event.data);
+        };
+        let make = |_: Option<&str>| -> Result<Box<dyn Provider>, String> {
+            Ok(Box::new(SystemSpy {
+                seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            }))
+        };
+        let link = ChildLink {
+            task_id: "task-1".into(),
+            parent_session_id: "parent-session".into(),
+            parent_turn_id: serde_json::json!("turn-1"),
+            parent_call_id: "extension-call-1".into(),
+            task_index: 0,
+            task_count: 1,
+            read_only: true,
+        };
+        let report = run_task_observed(
+            &task("inspect the fixture"),
+            &scratch,
+            &scratch,
+            &make,
+            None,
+            link,
+            &observer,
+        );
+        assert!(report.contains("done"), "{report}");
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.first().unwrap()["kind"], "started");
+        assert_eq!(events.last().unwrap()["kind"], "finished");
+        assert_eq!(events.last().unwrap()["state"], "completed");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            (1..=events.len() as u64).collect::<Vec<_>>(),
+        );
+        assert!(events.iter().any(|event| event["kind"] == "text"));
+        assert!(events.iter().all(|event| {
+            event["taskId"] == "task-1"
+                && event["parentCallId"] == "extension-call-1"
+                && event["childSessionId"].as_str().is_some()
+        }));
+        let child_id = events[0]["childSessionId"].as_str().unwrap().to_string();
+        drop(events);
+
+        let children = list_linked_children(&scratch, "parent-session").unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["taskId"], "task-1");
+        assert_eq!(children[0]["parentCallId"], "extension-call-1");
+        assert_eq!(children[0]["childSessionId"], child_id);
+        assert_eq!(children[0]["state"], "completed");
+        assert!(
+            list_linked_children(&scratch, "another-parent")
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut child = open_linked_child(
+            &scratch,
+            "parent-session",
+            "extension-call-1",
+            "task-1",
+            &child_id,
+        )
+        .unwrap();
+        child.append(Record::User("must not persist".into()));
+        assert!(
+            child.write_error().is_some(),
+            "viewer snapshots are read-only"
+        );
+        assert!(
+            open_linked_child(
+                &scratch,
+                "another-parent",
+                "extension-call-1",
+                "task-1",
+                &child_id,
+            )
+            .is_err()
+        );
+        assert!(
+            open_linked_child(
+                &scratch,
+                "parent-session",
+                "different-call",
+                "task-1",
+                &child_id,
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn observed_child_records_provider_setup_failure_as_a_terminal_child() {
+        let scratch = std::env::temp_dir().join(format!("gc-child-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let events = std::sync::Mutex::new(Vec::new());
+        let observer = |event: ChildEvent| events.lock().unwrap().push(event.data);
+        let make = |_: Option<&str>| -> Result<Box<dyn Provider>, String> {
+            Err("provider unavailable".into())
+        };
+        let report = run_task_observed(
+            &task("offline task"),
+            &scratch,
+            &scratch,
+            &make,
+            None,
+            ChildLink {
+                task_id: "task-failed".into(),
+                parent_session_id: "parent-session".into(),
+                parent_turn_id: serde_json::json!("turn-1"),
+                parent_call_id: "call-1".into(),
+                task_index: 0,
+                task_count: 1,
+                read_only: true,
+            },
+            &observer,
+        );
+        assert!(report.contains("subagent failed"));
+        let events = events.lock().unwrap();
+        assert_eq!(events.first().unwrap()["kind"], "started");
+        assert_eq!(events.last().unwrap()["state"], "failed");
+        let children = list_linked_children(&scratch, "parent-session").unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["state"], "failed");
+        assert_eq!(children[0]["lastSeq"], events.last().unwrap()["seq"]);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn child_link_store_preserves_running_state_for_runtime_liveness_check() {
+        let scratch = std::env::temp_dir().join(format!("gc-child-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let child = Session::create(&scratch).unwrap();
+        let child_id = child.id.clone();
+        persist_child_link(
+            &scratch,
+            &ChildLink {
+                task_id: "task-stale".into(),
+                parent_session_id: "parent-session".into(),
+                parent_turn_id: serde_json::json!("turn-1"),
+                parent_call_id: "call-1".into(),
+                task_index: 0,
+                task_count: 1,
+                read_only: true,
+            },
+            &child_id,
+            "running",
+            10,
+            None,
+            1,
+        )
+        .unwrap();
+        let listed = list_linked_children(&scratch, "parent-session").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["state"], "running");
+        assert_eq!(listed[0]["lastSeq"], 1);
         let _ = std::fs::remove_dir_all(&scratch);
     }
 

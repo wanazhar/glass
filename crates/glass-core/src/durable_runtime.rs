@@ -685,10 +685,16 @@ impl Host {
                 });
             }
         }
+        let mut extensions =
+            crate::ext::Registry::load(&settings.extensions, &settings.workspace, &settings.model);
+        if let Ok(records) = Session::raw_records(&session.path) {
+            extensions.seed_custom(&records);
+        }
         let mut conversation = Conversation {
             session,
             cfg: settings,
             state,
+            extensions,
             tools: host_tools,
             tool_mode,
             instructions,

@@ -165,6 +165,7 @@ fn runtime_frame_class(value: &Value) -> &'static str {
             Some("tool_end") => "event:tool_end",
             Some("tool_progress") => "event:tool_progress",
             Some("turn_start") => "event:turn_start",
+            Some("subagent") => "event:subagent",
             _ => "event:other",
         },
         Some("tool/execute") => "host_tool_request",
@@ -364,6 +365,138 @@ fn mixed_schemas(
     }
     Ok(registered)
 }
+
+fn subagent_read_request(
+    method: &str,
+    scratch: &std::path::Path,
+    parent_session_id: &str,
+    params: &Value,
+    active_children: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+) -> Result<Value, String> {
+    match method {
+        "runtime/subagents/list" => {
+            let mut children = crate::subagent::list_linked_children(scratch, parent_session_id)?;
+            let active = active_children
+                .lock()
+                .map_err(|_| "subagent activity state is unavailable".to_string())?;
+            for child in &mut children {
+                if child["state"].as_str() == Some("running") {
+                    let seq = child["taskId"]
+                        .as_str()
+                        .and_then(|task| active.get(task))
+                        .copied();
+                    if let Some(seq) = seq {
+                        let durable_seq = child["lastSeq"].as_u64().unwrap_or(0);
+                        child["lastSeq"] = json!(durable_seq.max(seq));
+                    } else {
+                        child["state"] = json!("interrupted");
+                    }
+                }
+            }
+            Ok(json!({"parentSessionId":parent_session_id,"children":children}))
+        }
+        "runtime/subagents/entries" => {
+            let task_id = string(params, "taskId")?;
+            let parent_call_id = string(params, "parentCallId")?;
+            let child_session_id = string(params, "childSessionId")?;
+            let child = crate::subagent::open_linked_child(
+                scratch,
+                parent_session_id,
+                parent_call_id,
+                task_id,
+                child_session_id,
+            )?;
+            let mut page = support::entries_snapshot(&child, params)?;
+            conceal_child_private_records(&mut page);
+            page["taskId"] = json!(task_id);
+            page["parentCallId"] = json!(parent_call_id);
+            page["childSessionId"] = json!(child_session_id);
+            Ok(page)
+        }
+        "runtime/subagents/entry" => {
+            let task_id = string(params, "taskId")?;
+            let parent_call_id = string(params, "parentCallId")?;
+            let child_session_id = string(params, "childSessionId")?;
+            let child = crate::subagent::open_linked_child(
+                scratch,
+                parent_session_id,
+                parent_call_id,
+                task_id,
+                child_session_id,
+            )?;
+            let mut field = support::entry_snapshot(&child, params)?;
+            let private_reasoning = field["recordKind"].as_str() == Some("reasoning")
+                || (field["recordKind"].as_str() == Some("custom")
+                    && field["customKind"].as_str() == Some(crate::reasoning::KIND));
+            if private_reasoning {
+                field["text"] = json!("[reasoning hidden]");
+                field["fieldBytes"] = json!(0);
+                field["nextOffset"] = Value::Null;
+                field["hidden"] = json!(true);
+                field["customKind"] = Value::Null;
+            }
+            field["taskId"] = json!(task_id);
+            field["parentCallId"] = json!(parent_call_id);
+            field["childSessionId"] = json!(child_session_id);
+            Ok(field)
+        }
+        _ => Err("unknown subagent read method".into()),
+    }
+}
+
+fn conceal_child_private_records(page: &mut Value) {
+    let Some(entries) = page.get_mut("entries").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in entries {
+        let Some(record) = entry.get_mut("record") else {
+            continue;
+        };
+        let kind = record.get("k").and_then(Value::as_str);
+        let custom_kind = record.get("c").and_then(Value::as_str);
+        if kind == Some("reasoning") {
+            *record = json!({"k":"reasoning","hidden":true});
+        } else if kind == Some("custom") && custom_kind == Some(crate::reasoning::KIND) {
+            *record = json!({"k":"custom","hidden":true});
+        }
+    }
+}
+
+struct ActiveSubagentGuard {
+    tasks: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    task_id: String,
+}
+
+impl ActiveSubagentGuard {
+    fn new(
+        tasks: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+        task_id: String,
+    ) -> Self {
+        match tasks.lock() {
+            Ok(mut active) => {
+                active.insert(task_id.clone(), 0);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().insert(task_id.clone(), 0);
+            }
+        }
+        Self { tasks, task_id }
+    }
+}
+
+impl Drop for ActiveSubagentGuard {
+    fn drop(&mut self) {
+        match self.tasks.lock() {
+            Ok(mut active) => {
+                active.remove(&self.task_id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&self.task_id);
+            }
+        }
+    }
+}
+
 struct Wire {
     rx: Receiver<Result<Value, String>>,
     pending: VecDeque<Value>,
@@ -379,7 +512,10 @@ struct Wire {
     human_secret_input_supported: bool,
     human_input_counter: u64,
     pending_human_input: Option<PendingHumanInput>,
+    subagent_query: Option<std::sync::Arc<SubagentQuery>>,
 }
+
+type SubagentQuery = dyn Fn(&str, &str, &Value) -> Result<Value, String> + Send + Sync;
 
 struct PendingHumanInput {
     request_id: String,
@@ -629,6 +765,24 @@ impl Wire {
             }
         }
         match m["method"].as_str() {
+            Some(
+                "runtime/subagents/list" | "runtime/subagents/entries" | "runtime/subagents/entry",
+            ) if p["sessionId"].as_str() == Some(session) => {
+                if p.get("turnId").is_some_and(|value| value != turn) {
+                    error(&id, -32602, "turnId does not identify the active turn");
+                    return;
+                }
+                let method = m["method"].as_str().unwrap_or_default();
+                let result = self
+                    .subagent_query
+                    .as_ref()
+                    .ok_or_else(|| "subagent viewer is unavailable".to_string())
+                    .and_then(|query| query(method, session, p));
+                match result {
+                    Ok(value) => reply(&id, value),
+                    Err(message) => error(&id, -32602, message),
+                }
+            }
             Some("turn/cancel" | "turn/steer" | "completion/cancel")
                 if p["sessionId"].as_str() == Some(session) =>
             {
@@ -942,6 +1096,7 @@ struct Conversation {
     session: Session,
     cfg: config::Config,
     state: tools::State,
+    extensions: ext::Registry,
     tools: Option<Schemas>,
     tool_mode: ToolMode,
     instructions: String,
@@ -1017,7 +1172,8 @@ fn metadata(
                 .into_iter()
                 .map(|(name, _, _)| name)
                 .collect::<std::collections::HashSet<_>>();
-            let mut extension_registry = ext::Registry::load(&[], &cfg.workspace, &cfg.model);
+            let mut extension_registry =
+                ext::Registry::load(&cfg.extensions, &cfg.workspace, &cfg.model);
             let extensions = extension_registry
                 .declared_tools()
                 .0
@@ -1170,6 +1326,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         human_secret_input_supported: false,
         human_input_counter: 0,
         pending_human_input: None,
+        subagent_query: None,
     }));
     let mut root: Option<PathBuf> = None;
     let mut conversations = BTreeMap::<String, Conversation>::new();
@@ -1274,7 +1431,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     "maskedSecretInput":wire.borrow().human_secret_input_supported,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
                     "hostInteractions":"host tools provide workspace capabilities and structured questions; Glass does not re-decide Core tool permissions","concurrentTurns":false,
-                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true},
+                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true,"subagentsReadOnly":true},
                 "limits":{"frameBytes":MAX_FRAME,"toolResultBytes":512*1024,"queuedFollowUps":MAX_PENDING},
                 "storageDir":root}),
             );
@@ -1364,12 +1521,18 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     manifest["connection"] = json!(settings.connection);
                 }
                 support::save_manifest(dir, &sid, &manifest)?;
+                let mut extensions =
+                    ext::Registry::load(&settings.extensions, &settings.workspace, &settings.model);
+                if let Ok(records) = Session::raw_records(&session.path) {
+                    extensions.seed_custom(&records);
+                }
                 conversations.insert(
                     sid.clone(),
                     Conversation {
                         session,
                         cfg: settings,
                         state: tools::State::new(),
+                        extensions,
                         tools: host_tools,
                         tool_mode,
                         instructions,
@@ -1400,7 +1563,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
             _ => {
                 if !matches!(
                     method,
-                    "session/inspect"
+                    "runtime/subagents/list"
+                        | "runtime/subagents/entries"
+                        | "runtime/subagents/entry"
+                        | "session/inspect"
                         | "session/entries"
                         | "session/entry"
                         | "session/stats"
@@ -1425,6 +1591,15 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 let sid = string(p, "sessionId")?;
                 let c = conversations.get_mut(sid).ok_or("unknown open session")?;
                 match method {
+                    "runtime/subagents/list"
+                    | "runtime/subagents/entries"
+                    | "runtime/subagents/entry" => {
+                        let scratch = config::data_dir().join("subagents");
+                        let active_children = std::sync::Arc::new(std::sync::Mutex::new(
+                            std::collections::HashMap::new(),
+                        ));
+                        subagent_read_request(method, &scratch, &c.session.id, p, &active_children)
+                    }
                     "commands/list" => Ok(runtime_command_catalogue()),
                     "commands/execute" => {
                         let requested = string(p, "name")?.trim_start_matches('/');
@@ -1759,12 +1934,107 @@ fn run(
         io.steer = None;
         io.steer_records.clear();
     }
-    let mut extensions = ext::Registry::load(&[], &c.cfg.workspace, &c.cfg.model);
     let sid = c.session.id.clone();
+    let turn_id = turn.clone();
+    let subagent_scratch = config::data_dir().join("subagents");
+    let query_scratch = subagent_scratch.clone();
+    let active_children = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        u64,
+    >::new()));
+    let query_active_children = active_children.clone();
+    wire.borrow_mut().subagent_query = Some(std::sync::Arc::new(move |method, parent, params| {
+        let active_children = query_active_children.clone();
+        subagent_read_request(method, &query_scratch, parent, params, &active_children)
+    }));
+    let child_settings = c.cfg.clone();
+    let child_ledger = crate::budget::load(
+        &c.session.path.with_extension("cost.json"),
+        c.cfg.cost_limit,
+    );
+    let child_cost_path = std::sync::Arc::new(std::sync::Mutex::new(
+        c.session.path.with_extension("cost.json"),
+    ));
+    let parent_prompt = c.instructions.clone();
+    let parent_session = sid.clone();
+    let parent_turn = turn_id.clone();
+    let event_scratch = subagent_scratch.clone();
+    let event_active_children = active_children.clone();
+    c.extensions.set_subagent_with_events(move || {
+        let settings = child_settings.clone();
+        let ledger = child_ledger.clone();
+        let cost_path = child_cost_path.clone();
+        let scratch = event_scratch.clone();
+        let prompt = parent_prompt.clone();
+        let parent_session = parent_session.clone();
+        let parent_turn = parent_turn.clone();
+        let active_children = event_active_children.clone();
+        Box::new(move |tasks, call_id| {
+            let call_id = match call_id {
+                Value::String(value)
+                    if !value.is_empty()
+                        && value.len() <= 128
+                        && !value.chars().any(char::is_control) =>
+                {
+                    value.clone()
+                }
+                Value::Number(value) => value.to_string(),
+                _ => {
+                    return tasks
+                        .iter()
+                        .map(|_| "subagent failed: invalid extension call ID".to_string())
+                        .collect();
+                }
+            };
+            let make = |model: Option<&str>| {
+                crate::make_provider(&settings, ledger.clone(), cost_path.clone(), model)
+            };
+            crate::subagent::run_batch_with_index(
+                tasks,
+                crate::subagent::MAX_CONCURRENT,
+                |task_index, task| {
+                    let link = crate::subagent::ChildLink {
+                        task_id: crate::subagent::new_task_id(),
+                        parent_session_id: parent_session.clone(),
+                        parent_turn_id: parent_turn.clone(),
+                        parent_call_id: call_id.clone(),
+                        task_index,
+                        task_count: tasks.len(),
+                        read_only: task.read_only,
+                    };
+                    let _active = ActiveSubagentGuard::new(
+                        std::sync::Arc::clone(&active_children),
+                        link.task_id.clone(),
+                    );
+                    let sink_session = parent_session.clone();
+                    let sink_turn = parent_turn.clone();
+                    let sink_active = std::sync::Arc::clone(&active_children);
+                    let sink = |child: crate::subagent::ChildEvent| {
+                        if let (Some(task_id), Some(seq)) =
+                            (child.data["taskId"].as_str(), child.data["seq"].as_u64())
+                            && let Ok(mut active) = sink_active.lock()
+                        {
+                            active.insert(task_id.to_string(), seq);
+                        }
+                        event(&sink_session, &sink_turn, "subagent", child.data);
+                    };
+                    crate::subagent::run_task_observed(
+                        task,
+                        &settings.workspace,
+                        &scratch,
+                        &make,
+                        Some(&prompt),
+                        link,
+                        &sink,
+                    )
+                },
+            )
+        })
+    });
     let statuses = Rc::new(RefCell::new(BTreeMap::<String, bool>::new()));
     let emit_status = statuses.clone();
     let durable = c.durable.as_ref();
-    let mut agent=Agent::new(provider.as_ref(),&mut c.session,&mut c.state,&[],&mut extensions,&c.cfg.workspace)
+    let mut agent=Agent::new(provider.as_ref(),&mut c.session,&mut c.state,&[],&mut c.extensions,&c.cfg.workspace)
         .with_image_input(c.cfg.image_input)
         .with_prompt(c.instructions.clone(),None,None)
         .with_stream_factory(factory)
@@ -2199,6 +2469,7 @@ mod tests {
                 turn_id: json!("turn-1"),
                 response: None,
             }),
+            subagent_query: None,
         }
     }
 
@@ -2524,6 +2795,320 @@ mod tests {
     }
 
     #[test]
+    fn subagent_read_api_lists_and_opens_only_the_verified_child_link() {
+        let scratch =
+            std::env::temp_dir().join(format!("gc-runtime-subagents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let mut child = Session::create(&scratch).unwrap();
+        let child_id = child.id.clone();
+        crate::subagent::persist_child_link(
+            &scratch,
+            &crate::subagent::ChildLink {
+                task_id: "task-1".into(),
+                parent_session_id: "parent-1".into(),
+                parent_turn_id: json!("turn-1"),
+                parent_call_id: "call-1".into(),
+                task_index: 0,
+                task_count: 1,
+                read_only: true,
+            },
+            &child_id,
+            "completed",
+            10,
+            Some(20),
+            3,
+        )
+        .unwrap();
+        child.append(Record::User("inspect fixture".into()));
+        child.append(Record::Reasoning("private child reasoning".into()));
+        child.append(Record::Custom {
+            kind: crate::reasoning::KIND.into(),
+            data: Some("private custom reasoning".into()),
+        });
+        child.append(Record::Assistant("found it".into()));
+        let tool_output = "long child tool output ".repeat(4000);
+        child.append(Record::ToolResult {
+            name: "bash".into(),
+            call_id: "child-tool-call".into(),
+            body: tool_output.clone(),
+        });
+        let running_child = Session::create(&scratch).unwrap();
+        let running_child_id = running_child.id.clone();
+        crate::subagent::persist_child_link(
+            &scratch,
+            &crate::subagent::ChildLink {
+                task_id: "task-running".into(),
+                parent_session_id: "parent-1".into(),
+                parent_turn_id: json!("turn-2"),
+                parent_call_id: "call-2".into(),
+                task_index: 0,
+                task_count: 1,
+                read_only: false,
+            },
+            &running_child_id,
+            "running",
+            30,
+            None,
+            1,
+        )
+        .unwrap();
+        let active_children =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+        let list = subagent_read_request(
+            "runtime/subagents/list",
+            &scratch,
+            "parent-1",
+            &json!({"sessionId":"parent-1"}),
+            &active_children,
+        )
+        .unwrap();
+        assert_eq!(list["children"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            list["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["childSessionId"] == child_id)
+                .unwrap()["childSessionId"],
+            child_id
+        );
+        assert_eq!(
+            list["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["childSessionId"] == running_child_id)
+                .unwrap()["state"],
+            "interrupted"
+        );
+        active_children
+            .lock()
+            .unwrap()
+            .insert("task-running".into(), 2);
+        let active_list = subagent_read_request(
+            "runtime/subagents/list",
+            &scratch,
+            "parent-1",
+            &json!({"sessionId":"parent-1"}),
+            &active_children,
+        )
+        .unwrap();
+        assert_eq!(
+            active_list["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["childSessionId"] == running_child_id)
+                .unwrap()["state"],
+            "running"
+        );
+        assert_eq!(
+            active_list["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["childSessionId"] == running_child_id)
+                .unwrap()["lastSeq"],
+            2
+        );
+        assert!(
+            subagent_read_request(
+                "runtime/subagents/list",
+                &scratch,
+                "another-parent",
+                &json!({"sessionId":"another-parent"}),
+                &active_children,
+            )
+            .unwrap()["children"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let entries = subagent_read_request(
+            "runtime/subagents/entries",
+            &scratch,
+            "parent-1",
+            &json!({
+                "sessionId":"parent-1",
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "limit":10
+            }),
+            &active_children,
+        )
+        .unwrap();
+        assert_eq!(entries["childSessionId"], child_id);
+        assert!(!entries["entries"].as_array().unwrap().is_empty());
+        assert!(entries.to_string().contains("hidden"));
+        assert!(!entries.to_string().contains("private child reasoning"));
+        assert!(!entries.to_string().contains("private custom reasoning"));
+        let entry_id = entries["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["record"]["id"] == "child-tool-call")
+            .unwrap()["entryId"]
+            .as_str()
+            .unwrap();
+        let first_chunk = subagent_read_request(
+            "runtime/subagents/entry",
+            &scratch,
+            "parent-1",
+            &json!({
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "entryId":entry_id,
+                "field":"t",
+                "limitBytes":64 * 1024
+            }),
+            &active_children,
+        )
+        .unwrap();
+        assert_eq!(first_chunk["callId"], "child-tool-call");
+        assert_eq!(first_chunk["toolName"], "bash");
+        assert_eq!(first_chunk["text"].as_str().unwrap().len(), 64 * 1024);
+        assert_eq!(first_chunk["nextOffset"], json!(64 * 1024));
+        let second_chunk = subagent_read_request(
+            "runtime/subagents/entry",
+            &scratch,
+            "parent-1",
+            &json!({
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "entryId":entry_id,
+                "field":"t",
+                "offset":64 * 1024,
+                "limitBytes":64 * 1024
+            }),
+            &active_children,
+        )
+        .unwrap();
+        assert_eq!(
+            second_chunk["text"].as_str().unwrap(),
+            &tool_output[64 * 1024..]
+        );
+        assert!(second_chunk["nextOffset"].is_null());
+        let reasoning_entry = entries["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["record"]["k"] == "reasoning")
+            .unwrap()["entryId"]
+            .as_str()
+            .unwrap();
+        let hidden_reasoning = subagent_read_request(
+            "runtime/subagents/entry",
+            &scratch,
+            "parent-1",
+            &json!({
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "entryId":reasoning_entry,
+                "field":"t"
+            }),
+            &active_children,
+        )
+        .unwrap();
+        assert_eq!(hidden_reasoning["hidden"], true);
+        assert_eq!(hidden_reasoning["text"], "[reasoning hidden]");
+        assert!(
+            !hidden_reasoning
+                .to_string()
+                .contains("private child reasoning")
+        );
+        for (parent, call, task) in [
+            ("another-parent", "call-1", "task-1"),
+            ("parent-1", "other-call", "task-1"),
+            ("parent-1", "call-1", "other-task"),
+        ] {
+            assert!(
+                subagent_read_request(
+                    "runtime/subagents/entries",
+                    &scratch,
+                    parent,
+                    &json!({
+                        "taskId":task,
+                        "parentCallId":call,
+                        "childSessionId":child_id,
+                        "limit":10
+                    }),
+                    &active_children,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            subagent_read_request(
+                "runtime/subagents/entries",
+                &scratch,
+                "parent-1",
+                &json!({
+                    "taskId":"task-1",
+                    "parentCallId":"call-1",
+                    "childSessionId":"../child.jsonl"
+                }),
+                &active_children,
+            )
+            .is_err()
+        );
+        let readonly_snapshot =
+            crate::subagent::open_linked_child(&scratch, "parent-1", "call-1", "task-1", &child_id)
+                .unwrap();
+        let partial = serde_json::to_vec(&json!({
+            "k":"assistant",
+            "t":"partially appended child record",
+        }))
+        .unwrap();
+        let mut journal = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&child.path)
+            .unwrap();
+        std::io::Write::write_all(&mut journal, &partial).unwrap();
+        let during_partial = Session::open_readonly(&scratch, &child_id).unwrap();
+        let partial_page =
+            support::entries_snapshot(&during_partial, &json!({"limit":10})).unwrap();
+        assert!(
+            !partial_page
+                .to_string()
+                .contains("partially appended child record")
+        );
+        assert_eq!(partial_page["hasMore"], false);
+        std::io::Write::write_all(&mut journal, b"\n").unwrap();
+        let later = serde_json::to_vec(&json!({
+            "k":"assistant",
+            "t":"appended after snapshot",
+        }))
+        .unwrap();
+        std::io::Write::write_all(&mut journal, &later).unwrap();
+        std::io::Write::write_all(&mut journal, b"\n").unwrap();
+        drop(journal);
+        let snapshot_page =
+            support::entries_snapshot(&readonly_snapshot, &json!({"limit":10})).unwrap();
+        assert!(
+            !snapshot_page
+                .to_string()
+                .contains("appended after snapshot")
+        );
+        let refreshed =
+            crate::subagent::open_linked_child(&scratch, "parent-1", "call-1", "task-1", &child_id)
+                .unwrap();
+        let refreshed_page = support::entries_snapshot(&refreshed, &json!({"limit":10})).unwrap();
+        assert!(
+            refreshed_page
+                .to_string()
+                .contains("appended after snapshot")
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
     fn bounded_runtime_input_applies_backpressure_and_resumes_after_drain() {
         let (tx, rx) = mpsc::sync_channel(1);
         tx.send(Ok(json!({"id":"first"}))).unwrap();
@@ -2542,6 +3127,7 @@ mod tests {
             human_secret_input_supported: false,
             human_input_counter: 0,
             pending_human_input: None,
+            subagent_query: None,
         };
 
         assert!(matches!(
@@ -2586,6 +3172,7 @@ mod tests {
             human_secret_input_supported: false,
             human_input_counter: 0,
             pending_human_input: None,
+            subagent_query: None,
         };
 
         let result = wire.tool(

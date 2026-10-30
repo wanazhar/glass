@@ -44,6 +44,13 @@ pub type HostInputFn<'a> = dyn FnMut(&str, &serde_json::Value) -> serde_json::Va
 /// come back in request order.
 pub type SubagentFn = Box<dyn FnMut(&[SubagentTask]) -> Vec<String> + Send + Sync>;
 
+/// Runtime-aware variant of the delegated-task runner. The call ID is the
+/// extension request ID that owns this batch, allowing observers to bind
+/// child events to the exact parent tool call without changing the extension
+/// protocol or exposing control operations to a viewer.
+pub type SubagentEventFn =
+    Box<dyn FnMut(&[SubagentTask], &serde_json::Value) -> Vec<String> + Send + Sync>;
+
 /// Legacy whitespace commands or JSON argument vectors; never evaluated by a shell.
 pub fn arguments(spec: &str) -> Result<Vec<String>, String> {
     let mut args: Vec<String> = if spec.trim_start().starts_with('[') {
@@ -419,6 +426,10 @@ pub struct Extension {
     /// Runs a delegated task. Set by the REPL so the host, not the
     /// extension process, owns the nested agent loop.
     subagent: Option<SubagentFn>,
+    /// Observer-aware runner used by host runtimes that expose child progress.
+    /// Kept separate so existing CLI runner integrations remain source
+    /// compatible.
+    subagent_events: Option<SubagentEventFn>,
     /// Durable entries this extension owns, seeded at startup and
     /// grown by its own appends. `read_custom` is served from here,
     /// so an extension can reconstruct state after a restart
@@ -491,6 +502,7 @@ impl Extension {
             raw_fd,
             next_id: 0,
             subagent: None,
+            subagent_events: None,
             custom: std::collections::BTreeMap::new(),
             custom_bytes: 64,
             pending_custom: Vec::new(),
@@ -569,6 +581,13 @@ impl Extension {
     /// delegated. Called once after spawn, before any request.
     pub fn set_subagent(&mut self, runner: SubagentFn) {
         self.subagent = Some(runner);
+        self.subagent_events = None;
+    }
+
+    /// Install a runner that also receives the extension's batch call ID.
+    pub fn set_subagent_with_events(&mut self, runner: SubagentEventFn) {
+        self.subagent_events = Some(runner);
+        self.subagent = None;
     }
 
     /// Send a request and read one reply.
@@ -776,8 +795,27 @@ impl Extension {
                         false,
                     )
                 };
-                let Some(runner) = self.subagent.as_mut() else {
-                    let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                if self.subagent_events.is_some()
+                    && !call_id.as_str().is_some_and(|id| {
+                        !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+                    })
+                    && !call_id.is_number()
+                {
+                    self.reply_or_fail(protocol::subagents_result_json(
+                        &call_id,
+                        &[],
+                        Some("runtime subagent calls require a string or numeric call_id"),
+                    ))?;
+                    deadline =
+                        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                    continue;
+                }
+                let outputs = if let Some(runner) = self.subagent_events.as_mut() {
+                    runner(&tasks, &call_id)
+                } else if let Some(runner) = self.subagent.as_mut() {
+                    runner(&tasks)
+                } else {
                     self.reply_or_fail(protocol::subagents_result_json(
                         &call_id,
                         &[],
@@ -787,7 +825,6 @@ impl Extension {
                         std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                     continue;
                 };
-                let outputs = runner(&tasks);
                 // Frame every report so its content cannot read as
                 // session instructions: the envelope travels with the
                 // report into the tool result the model sees.
@@ -795,7 +832,6 @@ impl Extension {
                     .iter()
                     .map(|output| envelope_report(output))
                     .collect();
-                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 if batched {
                     self.reply_or_fail(protocol::subagents_result_json(&call_id, &outputs, None))?;
                 } else {

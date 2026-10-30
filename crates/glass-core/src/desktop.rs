@@ -1468,7 +1468,6 @@ mod tests {
 
     const MAX_BROWSER_ACCEPTANCE_ROUTES: usize = 64;
     const MAX_BROWSER_ACCEPTANCE_VALUES: usize = 32;
-    const MAX_BROWSER_ACCEPTANCE_SNAPSHOTS: usize = 8;
     const MAX_BROWSER_ACCEPTANCE_TRACE_BYTES: usize = 64 * 1024;
     const BROWSER_MODEL_MAX_ROUNDS: usize = 64;
 
@@ -1485,13 +1484,16 @@ mod tests {
         references_seen: bool,
         slices_seen: bool,
         slice_page_seen: bool,
-        two_tab_snapshot_seen: bool,
+        two_tab_navigation_seen: bool,
         url_values: Vec<String>,
         page_sequence: Vec<(String, String)>,
-        tab_snapshots: Vec<Vec<String>>,
-        tab_names: Vec<String>,
         window_names: Vec<String>,
         known_deep_link_text_attempted: bool,
+        second_tab_open_requested: bool,
+        second_tab_switch_requested: bool,
+        second_tab_address_seen: bool,
+        first_tab_switch_requested: bool,
+        last_browser_address: Option<String>,
     }
 
     impl BrowserAcceptanceTrace {
@@ -1518,6 +1520,58 @@ mod tests {
             *count = count.saturating_add(1);
         }
 
+        fn record_tab_navigation_chord(
+            &mut self,
+            keys: &[String],
+            last_verified_url: Option<&str>,
+        ) {
+            match keys {
+                [control, enter]
+                    if control == "Control"
+                        && enter == "Enter"
+                        && last_verified_url.is_some_and(|url| {
+                            url.contains("ch04-02-references-and-borrowing.html")
+                        }) =>
+                {
+                    self.second_tab_open_requested = true;
+                    self.second_tab_switch_requested = false;
+                    self.second_tab_address_seen = false;
+                    self.first_tab_switch_requested = false;
+                    self.two_tab_navigation_seen = false;
+                }
+                [control, tab]
+                    if control == "Control" && tab == "Tab" && self.second_tab_open_requested =>
+                {
+                    self.second_tab_switch_requested = true;
+                }
+                [control, shift, tab]
+                    if control == "Control"
+                        && shift == "Shift"
+                        && tab == "Tab"
+                        && self.second_tab_address_seen =>
+                {
+                    self.first_tab_switch_requested = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn record_tab_address(&mut self, url: &str) {
+            self.last_browser_address = Some(url.to_owned());
+            if self.second_tab_switch_requested && url.contains("ch04-03-slices.html") {
+                self.second_tab_address_seen = true;
+            }
+            if self.first_tab_switch_requested
+                && url.contains("ch04-02-references-and-borrowing.html")
+            {
+                self.two_tab_navigation_seen = true;
+            }
+        }
+
+        fn invalidate_browser_address(&mut self) {
+            self.last_browser_address = None;
+        }
+
         fn record_unique(values: &mut Vec<String>, value: String) {
             if values.len() < MAX_BROWSER_ACCEPTANCE_VALUES && !values.contains(&value) {
                 values.push(value);
@@ -1541,8 +1595,6 @@ mod tests {
                 "toolErrorCategories": self.error_categories,
                 "routes": self.routes,
                 "windowNames": self.window_names,
-                "tabNames": self.tab_names,
-                "tabSnapshots": self.tab_snapshots,
                 "observedUrls": self.url_values,
                 "pageSequence": self.page_sequence.iter().map(|(window_title, url)| json!({
                     "windowTitle": window_title,
@@ -1554,7 +1606,7 @@ mod tests {
                 "referencesSeen": self.references_seen,
                 "slicesSeen": self.slices_seen,
                 "slicePageSeen": self.slice_page_seen,
-                "twoTabSnapshotSeen": self.two_tab_snapshot_seen
+                "twoTabNavigationVerified": self.two_tab_navigation_seen
                 ,"knownDeepLinkTextAttempted": self.known_deep_link_text_attempted
             })
         }
@@ -1685,21 +1737,6 @@ mod tests {
         }
     }
 
-    fn has_complete_two_tab_snapshot(complete: bool, tab_names: &[String]) -> bool {
-        complete
-            && tab_names.len() == 2
-            && tab_names
-                .iter()
-                .filter(|name| name.as_str() == "References and Borrowing")
-                .count()
-                == 1
-            && tab_names
-                .iter()
-                .filter(|name| name.as_str() == "The Slice Type")
-                .count()
-                == 1
-    }
-
     fn trace_route_label(tool_name: &str, action: &str) -> String {
         let tool_name = match tool_name {
             "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app" => tool_name,
@@ -1773,7 +1810,7 @@ mod tests {
         {
             return Some("required_url_unverified");
         }
-        if trace.tab_names.len() < 2 || !trace.two_tab_snapshot_seen {
+        if !trace.two_tab_navigation_seen {
             return Some("two_tab_state_unverified");
         }
         if trace.window_names.len() < 2 {
@@ -2126,7 +2163,7 @@ mod tests {
         trace
             .url_values
             .push("https://doc.rust-lang.org/book/ch04-03-slices.html#string-slices".to_owned());
-        trace.tab_names.push("The Slice Type".to_owned());
+        trace.window_names.push("The Slice Type".to_owned());
         let report = trace.report("provider_turn_stopped", false, 2500);
         let path = persist_browser_acceptance_trace(&report).unwrap();
         let metadata = std::fs::metadata(&path).unwrap();
@@ -2176,7 +2213,7 @@ mod tests {
             references_seen: true,
             slices_seen: true,
             slice_page_seen: true,
-            two_tab_snapshot_seen: true,
+            two_tab_navigation_seen: true,
             url_values: vec![
                 "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html".to_owned(),
                 "https://doc.rust-lang.org/book/ch04-03-slices.html".to_owned(),
@@ -2203,10 +2240,6 @@ mod tests {
                     "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
                         .to_owned(),
                 ),
-            ],
-            tab_names: vec![
-                "References and Borrowing".to_owned(),
-                "The Slice Type".to_owned(),
             ],
             window_names: vec![
                 "References and Borrowing".to_owned(),
@@ -2307,7 +2340,11 @@ mod tests {
         let prompt = browser_model_workflow_prompt("test-session");
         assert!(prompt.contains("query `Chromium address`"));
         assert!(prompt.contains("Query `Chromium Toggle Table of Contents label`"));
-        assert!(prompt.contains("Query `Chromium tab`"));
+        assert!(prompt.contains("Control+Tab and require a fresh complete, unambiguous focused"));
+        assert!(
+            prompt.contains("Control+Shift+Tab and require a fresh complete, unambiguous focused")
+        );
+        assert!(prompt.contains("Do not claim tab names if the browser does not expose them"));
         assert!(prompt.contains(
             "call desktop_act click only when that exact fresh node's actions includes click"
         ));
@@ -2323,34 +2360,62 @@ mod tests {
         assert!(prompt.contains("Control+Enter to open it in a second tab"));
         assert!(prompt.contains("Control+Shift+Tab"));
         assert!(prompt.contains("Never type a chapter or section URL directly"));
-        assert!(prompt.contains("If tabs or address values are not exposed, say so"));
-        assert!(
-            prompt.contains("one fresh observation has `truncated:false`, `queryAmbiguous:false`")
-        );
-        assert!(prompt.contains("exactly one The Slice Type tab"));
+        assert!(prompt.contains("Two-tab success requires both addresses after their switches"));
         assert!(browser_model_system_prompt().len() < prompt.len());
     }
 
     #[test]
-    fn browser_trace_requires_one_complete_unambiguous_two_tab_snapshot() {
-        let expected = vec![
-            "References and Borrowing".to_owned(),
-            "The Slice Type".to_owned(),
-        ];
-        assert!(has_complete_two_tab_snapshot(true, &expected));
-        assert!(!has_complete_two_tab_snapshot(false, &expected));
-        assert!(!has_complete_two_tab_snapshot(
-            true,
-            &["References and Borrowing".to_owned()]
-        ));
-        assert!(!has_complete_two_tab_snapshot(
-            true,
-            &[
-                "References and Borrowing".to_owned(),
-                "The Slice Type".to_owned(),
-                "The Slice Type".to_owned(),
-            ]
-        ));
+    fn browser_trace_requires_observed_two_tab_url_switches() {
+        let mut trace = BrowserAcceptanceTrace::default();
+        trace.record_tab_navigation_chord(&["Control".into(), "Tab".into()], None);
+        trace.record_tab_address("https://doc.rust-lang.org/book/ch04-03-slices.html");
+        assert!(!trace.two_tab_navigation_seen);
+
+        trace.record_tab_navigation_chord(
+            &["Control".into(), "Enter".into()],
+            Some("https://doc.rust-lang.org/book/ch04-03-slices.html"),
+        );
+        assert!(!trace.second_tab_open_requested);
+        trace.record_tab_navigation_chord(
+            &["Control".into(), "Enter".into()],
+            Some("https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"),
+        );
+        assert!(trace.second_tab_open_requested);
+        trace.record_tab_navigation_chord(&["Control".into(), "Tab".into()], None);
+        trace.record_tab_address("https://doc.rust-lang.org/book/ch04-03-slices.html");
+        assert!(!trace.two_tab_navigation_seen);
+
+        trace.record_tab_navigation_chord(&["Control".into(), "Shift".into(), "Tab".into()], None);
+        trace.record_tab_address(
+            "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html",
+        );
+        assert!(trace.two_tab_navigation_seen);
+
+        let mut wrong_original_page = BrowserAcceptanceTrace::default();
+        wrong_original_page.record_tab_navigation_chord(
+            &["Control".into(), "Enter".into()],
+            Some("https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"),
+        );
+        wrong_original_page.record_tab_navigation_chord(&["Control".into(), "Tab".into()], None);
+        wrong_original_page
+            .record_tab_address("https://doc.rust-lang.org/book/ch04-03-slices.html");
+        wrong_original_page
+            .record_tab_navigation_chord(&["Control".into(), "Shift".into(), "Tab".into()], None);
+        wrong_original_page
+            .record_tab_address("https://doc.rust-lang.org/book/ch04-03-slices.html");
+        assert!(!wrong_original_page.two_tab_navigation_seen);
+
+        let mut stale_address = BrowserAcceptanceTrace::default();
+        stale_address.record_tab_address(
+            "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html",
+        );
+        stale_address.invalidate_browser_address();
+        let last_verified_url = stale_address.last_browser_address.clone();
+        stale_address.record_tab_navigation_chord(
+            &["Control".into(), "Enter".into()],
+            last_verified_url.as_deref(),
+        );
+        assert!(!stale_address.second_tab_open_requested);
     }
 
     #[test]
@@ -2843,7 +2908,7 @@ mod tests {
 
 The homepage table of contents starts collapsed. Query `Chromium Toggle Table of Contents label`; click only a fresh result with pointerFallback:true, onscreen:true, queryAmbiguous:false, and truncated:false. Then follow the observed `Understanding Ownership` link and verify its address and heading. Follow the observed `References and Borrowing` link and verify its address and heading. On that References page, observe the exact `The Slice Type` link. If it is onscreen:false, query the currently visible `References and Borrowing` table-of-contents link and use its fresh pointerTarget only when onscreen:true, queryAmbiguous:false, and truncated:false in the same browser window. Use that pointerTarget's normalized x and y in one `desktop_input` scroll action with deltaY 120 so the TOC pane scrolls. Re-query the exact `The Slice Type` link after every scroll; repeat only when the fresh result changes, at most six steps. Do not guess coordinates or reuse a pointerTarget after the UI changes. If no visible in-pane pointerTarget is available, stop and report that. Stop scrolling if the candidate disappears or does not progress. Focus the fresh visible link and press Control+Enter to open it in a second tab without navigating the References tab away.
 
-        Switch to the second tab with Control+Tab. Query `Chromium address` and the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and query the address; then Alt+ArrowRight and query it again. Switch to the first tab with Control+Shift+Tab and verify the References and Borrowing address/heading. Query `Chromium tab` and report both tabs only if one fresh observation has `truncated:false`, `queryAmbiguous:false`, and exactly one References and Borrowing tab plus exactly one The Slice Type tab. If tabs or address values are not exposed, say so and do not infer them. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, tabs, URLs, and steps observed."#
+        Switch to the second tab with Control+Tab and require a fresh complete, unambiguous focused `Chromium address` observation with the exact `ch04-03-slices.html` URL before continuing. Query the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and require the exact slice URL without the fragment; then use Alt+ArrowRight and require the exact fragment URL again. Switch to the first tab with Control+Shift+Tab and require a fresh complete, unambiguous focused `Chromium address` observation with the exact original `ch04-02-references-and-borrowing.html` URL. Two-tab success requires both addresses after their switches. Do not claim tab names if the browser does not expose them; if either URL is not observed after its switch, report that two-tab state is unverified. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, URLs, and steps observed."#
         )
     }
 
@@ -2979,7 +3044,32 @@ The homepage table of contents starts collapsed. Query `Chromium Toggle Table of
                         .is_some_and(contains_rust_book_deep_link);
                 }
                 let route = trace_route_label(&call.name, action);
-                action_trace.lock().unwrap().record_route(route);
+                {
+                    let mut trace = action_trace.lock().unwrap();
+                    trace.record_route(route);
+                    if call.name == "desktop_input" && action == "key-chord" {
+                        let keys = args["keys"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect::<Vec<_>>();
+                        let last_verified_url = trace.last_browser_address.clone();
+                        trace.record_tab_navigation_chord(&keys, last_verified_url.as_deref());
+                    }
+                    let may_change_page_or_tab = match call.name.as_str() {
+                        "desktop_act" => action == "click",
+                        "desktop_input" => {
+                            matches!(action, "pointer-click" | "key-chord" | "key-tap")
+                        }
+                        "desktop_launch_app" => true,
+                        _ => false,
+                    };
+                    if may_change_page_or_tab {
+                        trace.invalidate_browser_address();
+                    }
+                }
                 let result = match call.name.as_str() {
                     "desktop_observe" => desktop_ref
                         .observe_accessibility_scoped(
@@ -3018,7 +3108,6 @@ The homepage table of contents starts collapsed. Query `Chromium Toggle Table of
                                 trace.slice_page_seen |= title.contains("the slice type");
                             }
                             if let Some(nodes) = value["nodes"].as_array() {
-                                let mut current_tabs = Vec::new();
                                 let mut current_urls = Vec::new();
                                 for node in nodes {
                                     let name = node["name"].as_str().unwrap_or_default();
@@ -3054,19 +3143,6 @@ The homepage table of contents starts collapsed. Query `Chromium Toggle Table of
                                     {
                                         current_urls.push(observed_url.clone());
                                     }
-                                    if browser_observation
-                                        && matches!(node["role"].as_str(), Some("page tab" | "tab"))
-                                        && let Some(name) = safe_browser_trace_title(name)
-                                    {
-                                        let name = name.to_owned();
-                                        BrowserAcceptanceTrace::record_unique(
-                                            &mut trace.tab_names,
-                                            name.clone(),
-                                        );
-                                        if current_tabs.len() < 8 && !current_tabs.contains(&name) {
-                                            current_tabs.push(name);
-                                        }
-                                    }
                                 }
                                 if browser_observation
                                     && current_urls.len() == 1
@@ -3089,17 +3165,12 @@ The homepage table of contents starts collapsed. Query `Chromium Toggle Table of
                                         observed_url.contains("ch04-03-slices");
                                     BrowserAcceptanceTrace::record_unique(
                                         &mut trace.url_values,
-                                        observed_url,
+                                        observed_url.clone(),
                                     );
-                                }
-                                if browser_observation {
-                                    trace.two_tab_snapshot_seen |= has_complete_two_tab_snapshot(
-                                        complete_observation,
-                                        &current_tabs,
-                                    );
-                                    if trace.tab_snapshots.len() < MAX_BROWSER_ACCEPTANCE_SNAPSHOTS
+                                    if args["query"].as_str() == Some("Chromium address")
+                                        && args["windowId"].is_null()
                                     {
-                                        trace.tab_snapshots.push(current_tabs);
+                                        trace.record_tab_address(&observed_url);
                                     }
                                 }
                                 if let Some(url) = trace.url_values.last()
@@ -3123,10 +3194,8 @@ The homepage table of contents starts collapsed. Query `Chromium Toggle Table of
                     _ => Err("the test host exposes only managed desktop tools".to_owned()),
                 };
                 if let Err(error) = &result {
-                    action_trace
-                        .lock()
-                        .unwrap()
-                        .record_tool_error(&call.name, error);
+                    let mut trace = action_trace.lock().unwrap();
+                    trace.record_tool_error(&call.name, error);
                 }
                 crate::agent::HostToolOutcome::plain(match result {
                     Ok(output) => crate::tools::Outcome::ok(output),
@@ -3187,7 +3256,7 @@ The homepage table of contents starts collapsed. Query `Chromium Toggle Table of
                 "elapsedMs": started_at.elapsed().as_millis(),
                 "routes": trace.routes,
                 "windowNames": trace.window_names,
-                "tabNames": trace.tab_names,
+                "twoTabNavigationVerified": trace.two_tab_navigation_seen,
                 "observedUrls": trace.url_values,
                 "pageSequence": trace.page_sequence,
                 "homeSeen": trace.home_seen,

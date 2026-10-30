@@ -330,17 +330,189 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    fn private_busctl(address: &str, args: &[&str]) -> Option<std::process::Output> {
+        Command::new("/usr/bin/timeout")
+            .args(["--kill-after=0.25s", "2s", "/usr/bin/busctl"])
+            .arg(format!("--address={address}"))
+            .args(args)
+            .output()
+            .ok()
+    }
+
+    struct PrivateBusName {
+        name: String,
+        pid: Option<u32>,
+    }
+
+    fn private_bus_names(address: &str) -> (Option<Vec<PrivateBusName>>, bool) {
+        let Some(output) = private_busctl(address, &["list", "--no-pager", "--no-legend"]) else {
+            return (None, false);
+        };
+        if !output.status.success() {
+            return (None, matches!(output.status.code(), Some(124 | 137)));
+        }
+        (
+            Some(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut fields = line.split_whitespace();
+                        let name = fields.next()?.to_owned();
+                        let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
+                        Some(PrivateBusName { name, pid })
+                    })
+                    .collect(),
+            ),
+            false,
+        )
+    }
+
+    fn private_desktop_bus_diagnostics(
+        session_bus: &str,
+        atspi_bus: &str,
+        browser_process_ids: &[u32],
+    ) -> Value {
+        let (session_names, session_bus_probe_timed_out) = private_bus_names(session_bus);
+        let (atspi_names, atspi_bus_probe_timed_out) = private_bus_names(atspi_bus);
+        let atspi_address_output = private_busctl(
+            session_bus,
+            &[
+                "call",
+                "org.a11y.Bus",
+                "/org/a11y/bus",
+                "org.a11y.Bus",
+                "GetAddress",
+            ],
+        );
+        let atspi_address_probe_timed_out = atspi_address_output
+            .as_ref()
+            .is_some_and(|output| matches!(output.status.code(), Some(124 | 137)));
+        let advertised_atspi_address_matches = atspi_address_output
+            .filter(|output| output.status.success())
+            .and_then(|output| {
+                String::from_utf8(output.stdout).ok().and_then(|output| {
+                    output
+                        .split_once('"')
+                        .and_then(|(_, rest)| rest.split_once('"'))
+                        .map(|(address, _)| address == atspi_bus)
+                })
+            });
+        json!({
+            "sessionBusReachable": session_names.is_some(),
+            "sessionBusProbeTimedOut": session_bus_probe_timed_out,
+            "sessionBusNameCount": session_names.as_ref().map(Vec::len),
+            "a11yBusOwned": session_names.as_ref().is_some_and(|names| names.iter().any(|entry| entry.name == "org.a11y.Bus")),
+            "portalDesktopOwned": session_names.as_ref().is_some_and(|names| names.iter().any(|entry| entry.name == "org.freedesktop.portal.Desktop")),
+            "hostPortalRegistryOwned": session_names.as_ref().is_some_and(|names| names.iter().any(|entry| entry.name == "org.freedesktop.host.portal.Registry")),
+            "atspiBusReachable": atspi_names.is_some(),
+            "atspiBusProbeTimedOut": atspi_bus_probe_timed_out,
+            "atspiBusNameCount": atspi_names.as_ref().map(Vec::len),
+            "atspiRegistryOwned": atspi_names.as_ref().is_some_and(|names| names.iter().any(|entry| entry.name == "org.a11y.atspi.Registry")),
+            "atspiUniquePeerCount": atspi_names.as_ref().map(|names| names.iter().filter(|entry| entry.name.starts_with(':')).count()),
+            "browserSessionBusPeerCount": session_names.as_ref().map(|names| matching_bus_peer_count(names, browser_process_ids)),
+            "browserAtspiBusPeerCount": atspi_names.as_ref().map(|names| matching_bus_peer_count(names, browser_process_ids)),
+            "advertisedAtspiAddressMatches": advertised_atspi_address_matches,
+            "atspiAddressProbeTimedOut": atspi_address_probe_timed_out,
+        })
+    }
+
+    fn browser_startup_log_classes(log: &str) -> Value {
+        json!({
+            "missingOAuthClient": log.contains("no OAuth client ID and client secret"),
+            "screensaverServiceUnavailable": log.contains("ScreenSaver services could be used"),
+            "hostPortalRegistryUnavailable": log.contains("Failed to register with org.freedesktop.host.portal.Registry"),
+            "gcmDeprecatedEndpoint": log.contains("Registration response error message: DEPRECATED_ENDPOINT"),
+            "sandboxDiagnosticPresent": log.to_ascii_lowercase().contains("sandbox"),
+        })
+    }
+
+    fn matching_bus_peer_count(names: &[PrivateBusName], process_ids: &[u32]) -> usize {
+        names
+            .iter()
+            .filter(|entry| {
+                entry.name.starts_with(':')
+                    && entry.pid.is_some_and(|pid| process_ids.contains(&pid))
+            })
+            .count()
+    }
+
+    fn matching_browser_process_ids(binary: &Path, profile: &Path) -> Vec<u32> {
+        let Ok(processes) = fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        let binary = binary.as_os_str().as_bytes();
+        let profile = profile.as_os_str().as_bytes();
+        processes
+            .flatten()
+            .take(8192)
+            .filter_map(|entry| {
+                let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
+                let command_line = fs::read(entry.path().join("cmdline")).ok()?;
+                let contains = |needle: &[u8]| {
+                    command_line
+                        .windows(needle.len())
+                        .any(|window| window == needle)
+                };
+                (contains(binary) && contains(profile)).then_some(pid)
+            })
+            .collect()
+    }
+
+    fn managed_browser_ax_diagnostics(
+        desktop: &super::super::Desktop,
+        binary: &Path,
+        profile: &Path,
+    ) -> Value {
+        let (session_bus_address, atspi_bus_address, expected_environment) = {
+            let guard = desktop.session.lock().unwrap();
+            let session = guard.as_ref().unwrap();
+            let atspi_bus =
+                fs::read_to_string(session.directory.join("atspi-bus.address")).unwrap_or_default();
+            (
+                session.session_bus_address.clone(),
+                atspi_bus.trim().to_owned(),
+                vec![
+                    ("DISPLAY", session.display.clone()),
+                    (
+                        "XAUTHORITY",
+                        session.directory.join("Xauthority").display().to_string(),
+                    ),
+                    (
+                        "XDG_RUNTIME_DIR",
+                        session.directory.join("runtime").display().to_string(),
+                    ),
+                    (
+                        "DBUS_SESSION_BUS_ADDRESS",
+                        session.session_bus_address.clone(),
+                    ),
+                    ("AT_SPI_BUS_ADDRESS", atspi_bus.trim().to_owned()),
+                    ("GTK_A11Y", "atspi".to_owned()),
+                    ("ACCESSIBILITY_ENABLED", "1".to_owned()),
+                    ("XDG_CURRENT_DESKTOP", "XFCE".to_owned()),
+                    ("DESKTOP_SESSION", "xfce".to_owned()),
+                    ("XDG_SESSION_TYPE", "x11".to_owned()),
+                ],
+            )
+        };
+        let browser_process_ids = matching_browser_process_ids(binary, profile);
+        json!({
+            "privateBus": private_desktop_bus_diagnostics(&session_bus_address, &atspi_bus_address, &browser_process_ids),
+            "browserProcess": managed_browser_process_diagnostics(binary, profile, &expected_environment),
+            "chromeLogClasses": browser_startup_log_classes(&read_bounded_chrome_log(profile)),
+        })
+    }
+
     fn managed_browser_process_diagnostics(
         binary: &Path,
         profile: &Path,
         expected_environment: &[(&str, String)],
     ) -> Value {
         let Ok(processes) = fs::read_dir("/proc") else {
-            return json!({"running":false,"procReadable":false});
+            return json!({"processCount":0,"procReadable":false,"processes":[]});
         };
         let binary = binary.as_os_str().as_bytes();
         let profile = profile.as_os_str().as_bytes();
-        let mut browser_pid = None;
+        let mut browser_processes = Vec::new();
         for entry in processes.flatten().take(8192) {
             if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
                 continue;
@@ -357,85 +529,53 @@ mod tests {
             if !contains(binary) || !contains(profile) || contains(b"--type=") {
                 continue;
             }
-            browser_pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
-            break;
-        }
-        let Some(mut current_pid) = browser_pid else {
-            return json!({"running":false,"processChain":[]});
-        };
-        let mut process_chain = Vec::new();
-        for _ in 0..6 {
-            let directory = Path::new("/proc").join(current_pid.to_string());
-            let comm = fs::read_to_string(directory.join("comm"))
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            let executable = fs::read_link(directory.join("exe")).ok().and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
+            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
+            let environment = pid.and_then(|pid| {
+                fs::read(Path::new("/proc").join(pid.to_string()).join("environ")).ok()
             });
-            let status = fs::read_to_string(directory.join("stat")).unwrap_or_default();
-            let stat_fields = status
-                .rsplit_once(')')
-                .map(|(_, fields)| fields.split_whitespace().collect::<Vec<_>>())
-                .unwrap_or_default();
-            let parent_pid = stat_fields
-                .get(1)
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or_default();
-            let process_group = stat_fields
-                .get(2)
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or_default();
-            let environment = fs::read(directory.join("environ")).ok();
-            let wait_channel = fs::read_to_string(directory.join("wchan"))
-                .ok()
-                .map(|value| value.trim().chars().take(80).collect::<String>());
-            let (present, matches) = if let Some(environment) = environment.as_deref() {
-                let results = expected_environment
-                    .iter()
-                    .map(|(name, expected)| {
-                        let mut prefix = name.as_bytes().to_vec();
-                        prefix.push(b'=');
-                        let actual = environment
-                            .split(|byte| *byte == 0)
-                            .find_map(|value| value.strip_prefix(prefix.as_slice()));
-                        (
-                            name.to_string(),
-                            actual.is_some(),
-                            actual == Some(expected.as_bytes()),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let present = results
-                    .iter()
-                    .map(|(name, present, _)| (name.clone(), Value::Bool(*present)))
-                    .collect::<serde_json::Map<_, _>>();
-                let matches = results
-                    .iter()
-                    .map(|(name, _, matches)| (name.clone(), Value::Bool(*matches)))
-                    .collect::<serde_json::Map<_, _>>();
-                (json!(present), json!(matches))
-            } else {
-                (Value::Null, Value::Null)
-            };
-            process_chain.push(json!({
-                "pid":current_pid,
-                "state":stat_fields.first(),
-                "comm":comm,
-                "executable":executable,
-                "ppid":parent_pid,
-                "pgrp":process_group,
-                "waitChannel":wait_channel,
-                "environmentPresent":present,
-                "environmentMatches":matches,
+            let (environment_present, environment_matches) =
+                if let Some(environment) = environment.as_deref() {
+                    let results = expected_environment
+                        .iter()
+                        .map(|(name, expected)| {
+                            let mut prefix = name.as_bytes().to_vec();
+                            prefix.push(b'=');
+                            let actual = environment
+                                .split(|byte| *byte == 0)
+                                .find_map(|value| value.strip_prefix(prefix.as_slice()));
+                            (name, actual.is_some(), actual == Some(expected.as_bytes()))
+                        })
+                        .collect::<Vec<_>>();
+                    let present = results
+                        .iter()
+                        .map(|(name, present, _)| ((**name).to_owned(), Value::Bool(*present)))
+                        .collect::<serde_json::Map<_, _>>();
+                    let matches = results
+                        .iter()
+                        .map(|(name, _, matches)| ((**name).to_owned(), Value::Bool(*matches)))
+                        .collect::<serde_json::Map<_, _>>();
+                    (Some(json!(present)), Some(json!(matches)))
+                } else {
+                    (None, None)
+                };
+            let force_accessibility = contains(b"--force-renderer-accessibility=complete");
+            let accessibility_disabled = contains(b"--disable-renderer-accessibility");
+            let no_sandbox = contains(b"--no-sandbox");
+            let setuid_sandbox_disabled = contains(b"--disable-setuid-sandbox");
+            let seccomp_sandbox_disabled = contains(b"--disable-seccomp-filter-sandbox");
+            browser_processes.push(json!({
+                "executableIsChrome": fs::read_link(entry.path().join("exe")).ok().is_some_and(|path| path.file_name().is_some_and(|name| name == "chrome")),
+                "forceRendererAccessibilityComplete": force_accessibility,
+                "rendererAccessibilityDisabled": accessibility_disabled,
+                "noSandbox": no_sandbox,
+                "setuidSandboxDisabled": setuid_sandbox_disabled,
+                "seccompSandboxDisabled": seccomp_sandbox_disabled,
+                "environmentReadable": environment.is_some(),
+                "environmentPresent": environment_present,
+                "environmentMatches": environment_matches,
             }));
-            if parent_pid <= 1 || parent_pid == current_pid {
-                break;
-            }
-            current_pid = parent_pid;
         }
-        json!({"running":true,"processChain":process_chain})
+        json!({"processCount":browser_processes.len(),"processes":browser_processes})
     }
 
     fn direct_browser_exec_diagnostic(
@@ -449,7 +589,7 @@ mod tests {
             .and_then(|()| fs::set_permissions(profile, fs::Permissions::from_mode(0o700)))
             .is_err()
         {
-            return json!({"spawned":false,"reason":"could not create private profile"});
+            return json!({"spawned":false,"profileCreated":false});
         }
         let (
             environment,
@@ -461,7 +601,7 @@ mod tests {
         ) = {
             let guard = desktop.session.lock().unwrap();
             let Some(session) = guard.as_ref() else {
-                return json!({"spawned":false,"reason":"managed session disappeared"});
+                return json!({"spawned":false,"managedSessionAvailable":false});
             };
             let atspi =
                 fs::read_to_string(session.directory.join("atspi-bus.address")).unwrap_or_default();
@@ -521,17 +661,53 @@ mod tests {
             .spawn()
         {
             Ok(child) => child,
-            Err(error) => {
-                return json!({"spawned":false,"reason":error.to_string()});
+            Err(_) => {
+                return json!({"spawned":false,"spawnSucceeded":false});
             }
         };
         let process_group = child.id();
+        let expected_environment = vec![
+            ("XDG_CURRENT_DESKTOP", current_desktop.to_owned()),
+            ("DESKTOP_SESSION", desktop_session.to_owned()),
+            ("XDG_SESSION_TYPE", "x11".to_owned()),
+            ("XDG_SESSION_DESKTOP", desktop_session.to_owned()),
+            ("HOME", home.display().to_string()),
+            ("DISPLAY", display.clone()),
+            ("XAUTHORITY", xauthority.display().to_string()),
+            (
+                "XDG_CONFIG_HOME",
+                home.join(".config").display().to_string(),
+            ),
+            ("XDG_CACHE_HOME", home.join(".cache").display().to_string()),
+            (
+                "XDG_DATA_HOME",
+                home.join(".local/share").display().to_string(),
+            ),
+            ("XDG_CONFIG_DIRS", "/etc/xdg".to_owned()),
+            (
+                "XDG_DATA_DIRS",
+                super::super::process::MANAGED_XDG_DATA_DIRS.to_owned(),
+            ),
+            ("XDG_RUNTIME_DIR", runtime_directory.display().to_string()),
+            ("DBUS_SESSION_BUS_ADDRESS", session_bus_address.clone()),
+            ("AT_SPI_BUS_ADDRESS", atspi_bus_address.clone()),
+            ("GTK_A11Y", "atspi".to_owned()),
+            ("ACCESSIBILITY_ENABLED", "1".to_owned()),
+        ];
+        let process_diagnostics =
+            managed_browser_process_diagnostics(binary, profile, &expected_environment);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let mut window_observed = false;
-        let mut last_observation = Value::Null;
+        let mut last_observation = json!({
+            "applicationRootCount": null,
+            "browserApplicationRootCount": null,
+            "browserWindowCount": null,
+            "nodesVisited": null,
+            "focusedWindowIsBrowser": null,
+        });
         while std::time::Instant::now() < deadline {
             if let Ok(snapshot) = desktop.observe_accessibility(Some(session_id), None) {
-                let chrome_windows = snapshot["windows"]
+                let browser_window_count = snapshot["windows"]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -540,17 +716,27 @@ mod tests {
                             .as_str()
                             .is_some_and(super::super::is_browser_application)
                     })
-                    .take(8)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                last_observation = json!({
-                    "applications":snapshot["applications"],
-                    "windows":chrome_windows,
-                    "focusedWindow":snapshot["focusedWindow"],
-                });
-                window_observed = last_observation["windows"]
+                    .count();
+                let browser_application_root_count = snapshot["applications"]
                     .as_array()
-                    .is_some_and(|windows| !windows.is_empty());
+                    .into_iter()
+                    .flatten()
+                    .filter(|application| {
+                        application
+                            .as_str()
+                            .is_some_and(super::super::is_browser_application)
+                    })
+                    .count();
+                last_observation = json!({
+                    "applicationRootCount":snapshot["applications"].as_array().map(Vec::len),
+                    "browserApplicationRootCount":browser_application_root_count,
+                    "browserWindowCount":browser_window_count,
+                    "nodesVisited":snapshot["nodesVisited"],
+                    "focusedWindowIsBrowser":snapshot["focusedWindow"]["application"].as_str().is_some_and(super::super::is_browser_application),
+                    "truncated":snapshot["truncated"],
+                    "queryAmbiguous":snapshot["queryAmbiguous"],
+                });
+                window_observed = browser_window_count > 0;
                 if window_observed {
                     break;
                 }
@@ -580,7 +766,8 @@ mod tests {
             "spawned":true,
             "windowObserved":window_observed,
             "lastObservation":last_observation,
-            "chromeLog":read_bounded_chrome_log(profile),
+            "process":process_diagnostics,
+            "chromeLogClasses":browser_startup_log_classes(&read_bounded_chrome_log(profile)),
         })
     }
 
@@ -667,7 +854,13 @@ mod tests {
         desktop.root = root.join("desktop");
         let started = desktop
             .start_selected("xfce", "disposable")
-            .unwrap_or_else(|error| panic!("could not start isolated XFCE: {error}"));
+            .unwrap_or_else(|error| {
+                let capture_frame_unavailable =
+                    error.starts_with("Desktop capture did not produce a fresh frame");
+                panic!(
+                    "could not start isolated XFCE; captureFrameUnavailable={capture_frame_unavailable}"
+                )
+            });
         let session_id = started["sessionId"].as_str().unwrap().to_owned();
 
         let outcome = (|| {
@@ -725,11 +918,28 @@ mod tests {
             desktop
                 .set_lease("return-to-agent")
                 .map_err(|error| format!("could not return agent lease: {error}"))?;
-            let launched = desktop
-                .launch_app(
-                    &json!({"action":"launch","sessionId":session_id,"desktopEntryId":browser_id}),
-                )
-                .map_err(|error| format!("listed app launch failed: {error}"))?;
+            let launched = match desktop.launch_app(&json!({
+                "action":"launch",
+                "sessionId":session_id,
+                "desktopEntryId":browser_id
+            })) {
+                Ok(launched) => launched,
+                Err(error) => {
+                    if std::env::var_os("GLASS_DESKTOP_APP_LAUNCH_DIAGNOSTICS").as_deref()
+                        == Some(std::ffi::OsStr::new("1"))
+                    {
+                        eprintln!(
+                            "managed browser launch AX diagnostics: {}",
+                            managed_browser_ax_diagnostics(&desktop, &binary, &browser_profile)
+                        );
+                    }
+                    let accessibility_observation_timed_out =
+                        error.contains("Accessibility observation exceeded");
+                    return Err(format!(
+                        "listed app launch failed; accessibilityObservationTimedOut={accessibility_observation_timed_out}"
+                    ));
+                }
+            };
             if launched["verified"] != false || launched["launchRequested"] != true {
                 return Err(format!("launch result overstated verification: {launched}"));
             }
@@ -751,17 +961,44 @@ mod tests {
                         .take(20)
                         .cloned()
                         .collect::<Vec<_>>();
+                    let browser_ax_node_count = diagnostic_nodes
+                        .iter()
+                        .filter(|node| {
+                            node["application"]
+                                .as_str()
+                                .is_some_and(super::super::is_browser_application)
+                        })
+                        .count();
+                    let browser_window_node_count = diagnostic_nodes
+                        .iter()
+                        .filter(|node| {
+                            matches!(node["role"].as_str(), Some("frame" | "window"))
+                                && node["application"]
+                                    .as_str()
+                                    .is_some_and(super::super::is_browser_application)
+                        })
+                        .count();
+                    let browser_application_root_count = snapshot["applications"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|application| {
+                            application
+                                .as_str()
+                                .is_some_and(super::super::is_browser_application)
+                        })
+                        .count();
                     latest = json!({
-                        "applications": snapshot["applications"],
-                        "focusedWindow": snapshot["focusedWindow"],
-                        "diagnosticNodes": diagnostic_nodes
+                        "applicationRootCount": snapshot["applications"].as_array().map(Vec::len),
+                        "browserApplicationRootCount": browser_application_root_count,
+                        "browserAXNodeCount": browser_ax_node_count,
+                        "browserWindowNodeCount": browser_window_node_count,
+                        "focusedWindowIsBrowser": snapshot["focusedWindow"]["application"].as_str().is_some_and(super::super::is_browser_application),
+                        "nodesVisited": snapshot["nodesVisited"],
+                        "truncated": snapshot["truncated"],
+                        "queryAmbiguous": snapshot["queryAmbiguous"],
                     });
-                    if diagnostic_nodes.iter().any(|node| {
-                        matches!(node["role"].as_str(), Some("frame" | "window"))
-                            && node["application"].as_str().is_some_and(|application| {
-                                super::super::is_browser_application(application)
-                            })
-                    }) {
+                    if browser_window_node_count > 0 {
                         browser_window_seen = true;
                         break;
                     }
@@ -812,11 +1049,22 @@ mod tests {
                         ("GTK_A11Y", "atspi".to_owned()),
                     ]
                 };
+                let (session_bus_address, atspi_bus_address) = {
+                    let guard = desktop.session.lock().unwrap();
+                    let session = guard.as_ref().unwrap();
+                    let atspi_bus = fs::read_to_string(session.directory.join("atspi-bus.address"))
+                        .unwrap_or_default();
+                    (
+                        session.session_bus_address.clone(),
+                        atspi_bus.trim().to_owned(),
+                    )
+                };
                 let browser_process = managed_browser_process_diagnostics(
                     &binary,
                     &browser_profile,
                     &expected_environment,
                 );
+                let browser_process_ids = matching_browser_process_ids(&binary, &browser_profile);
                 let launch_stderr = if std::env::var_os("GLASS_DESKTOP_APP_LAUNCH_DIAGNOSTICS")
                     .as_deref()
                     == Some(std::ffi::OsStr::new("1"))
@@ -835,10 +1083,34 @@ mod tests {
                     &home.join("chromium-direct-profile"),
                     &home,
                 );
+                let bus_diagnostics = private_desktop_bus_diagnostics(
+                    &session_bus_address,
+                    &atspi_bus_address,
+                    &browser_process_ids,
+                );
                 return Err(format!(
-                    "managed browser launch was accepted but no browser window appeared within 30 seconds: {}",
-                    json!({"browserProcess":browser_process,"lastObservation":latest,"launchStderr":launch_stderr,"chromeLog":read_bounded_chrome_log(&browser_profile),"screenshot":screenshot_saved,"directExec":direct_exec})
+                    "managed browser launch was accepted but no Chromium accessibility window appeared within 30 seconds: {}",
+                    json!({
+                        "managedBrowserProcess":browser_process,
+                        "directExec":direct_exec,
+                        "privateBus":bus_diagnostics,
+                        "lastObservation":latest,
+                        "launchStderrClasses":browser_startup_log_classes(&launch_stderr),
+                        "chromeLogClasses":browser_startup_log_classes(&read_bounded_chrome_log(&browser_profile)),
+                        "screenshotCaptured":screenshot_saved.is_some(),
+                    })
                 ));
+            }
+            if std::env::var_os("GLASS_DESKTOP_APP_LAUNCH_DIAGNOSTICS").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                eprintln!(
+                    "managed browser AX diagnostics: {}",
+                    json!({
+                        "diagnostic": managed_browser_ax_diagnostics(&desktop, &binary, &browser_profile),
+                        "lastObservation": latest,
+                    })
+                );
             }
             let (bus_address, revision) = {
                 let guard = desktop.session.lock().unwrap();
@@ -880,17 +1152,30 @@ mod tests {
                 let observation = desktop
                     .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .map_err(|error| format!("observing browser address: {error}"))?;
-                if observation["truncated"] != false || observation["queryAmbiguous"] != false {
+                if observation["truncated"] != false
+                    || observation["queryAmbiguous"] != false
+                    || !observation["focusedWindow"]["application"]
+                        .as_str()
+                        .is_some_and(super::super::is_browser_application)
+                {
                     return Err(format!(
-                        "browser address observation is incomplete: {observation}"
+                        "browser address observation is incomplete: truncated={} queryAmbiguous={} focusedBrowser={}",
+                        observation["truncated"],
+                        observation["queryAmbiguous"],
+                        observation["focusedWindow"]["application"]
+                            .as_str()
+                            .is_some_and(super::super::is_browser_application),
                     ));
                 }
-                unique_browser_address_value(&observation)
-                    .filter(|value| value.contains(expected))
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| {
-                        format!("browser address was not unique or did not contain {expected:?}: {observation}")
-                    })
+                let address = unique_browser_address_value(&observation);
+                if let Some(address) = address.filter(|value| value.contains(expected)) {
+                    Ok(address.to_owned())
+                } else {
+                    Err(format!(
+                        "browser address did not match the expected fixture path: uniqueAddressObserved={} expectedPathMatched=false",
+                        address.is_some()
+                    ))
+                }
             };
             let fixture_url = url::Url::from_file_path(&home_page)
                 .map_err(|_| "could not form local browser fixture URL")?
@@ -1168,87 +1453,14 @@ mod tests {
                         error.message()
                     )
                 })?;
-            let all_tabs = desktop
-                .observe_accessibility(Some(&session_id), Some("Chromium tab"))
-                .map_err(|error| format!("observing both browser tabs failed: {error}"))?;
-            if all_tabs["truncated"] != false || all_tabs["queryAmbiguous"] != false {
-                return Err(format!(
-                    "browser tab observation was incomplete or ambiguous: truncated={} queryAmbiguous={}",
-                    all_tabs["truncated"], all_tabs["queryAmbiguous"]
-                ));
-            }
-            let tab_names = all_tabs["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|node| node["role"] == "page tab")
-                .filter_map(|node| node["name"].as_str())
-                .filter_map(|name| {
-                    if name.starts_with("Managed browser chapter fixture") {
-                        Some("Managed browser chapter fixture")
-                    } else if name.starts_with("Managed browser detail fixture") {
-                        Some("Managed browser detail fixture")
-                    } else {
-                        None
-                    }
-                })
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            if tab_names.len() != 2
-                || tab_names
-                    .iter()
-                    .filter(|name| name.as_str() == "Managed browser chapter fixture")
-                    .count()
-                    != 1
-                || tab_names
-                    .iter()
-                    .filter(|name| name.as_str() == "Managed browser detail fixture")
-                    .count()
-                    != 1
-            {
-                return Err(format!(
-                    "exactly one tab for each local fixture page was not observed: {tab_names:?}"
-                ));
-            }
-            let detail_tab = desktop
-                .observe_accessibility(
-                    Some(&session_id),
-                    Some("Chromium Managed browser detail fixture tab"),
-                )
-                .map_err(|error| format!("uniquely observing detail tab failed: {error}"))?;
-            let detail_tab_target = detail_tab["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|node| {
-                    node["role"] == "page tab"
-                        && node["name"] == "Managed browser detail fixture"
-                        && node["targetId"].is_string()
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    format!("detail tab was not a unique actionable result: {detail_tab}")
-                })?;
-            if detail_tab["truncated"] != false || detail_tab["queryAmbiguous"] != false {
-                return Err(format!(
-                    "detail tab search was incomplete or ambiguous: {detail_tab}"
-                ));
-            }
-            let tab_pointer = &detail_tab_target["pointerTarget"];
-            let tab_x = tab_pointer["x"]
-                .as_f64()
-                .ok_or("fresh detail tab has no pointer x coordinate")?;
-            let tab_y = tab_pointer["y"]
-                .as_f64()
-                .ok_or("fresh detail tab has no pointer y coordinate")?;
             desktop
                 .input(
                     super::super::Lease::Agent,
-                    &json!({"action":"pointer-click","button":"left","x":tab_x,"y":tab_y}),
+                    &json!({"action":"key-chord","keys":["Control","Tab"]}),
                 )
                 .map_err(|error| {
                     format!(
-                        "selecting the observed detail tab failed: {}",
+                        "switching to the opened detail tab failed: {}",
                         error.message()
                     )
                 })?;
@@ -1285,10 +1497,9 @@ mod tests {
                 .as_str()
                 .is_some_and(|name| name.contains("Managed browser detail fixture"))
             {
-                let tab_observation = all_tabs;
                 let screenshot = std::env::temp_dir()
                     .join(format!("glass-browser-tabs-e2e-{}.jpg", std::process::id()));
-                if let Ok(Some((_, _, jpeg))) =
+                let screenshot_captured = if let Ok(Some((_, _, jpeg))) =
                     desktop.frame_after(0, std::time::Duration::from_secs(1))
                 {
                     let mut options = fs::OpenOptions::new();
@@ -1298,13 +1509,20 @@ mod tests {
                         .truncate(true)
                         .mode(0o600)
                         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-                    if let Ok(mut file) = options.open(&screenshot) {
-                        let _ = file.write_all(&jpeg);
-                    }
-                }
+                    options
+                        .open(&screenshot)
+                        .and_then(|mut file| file.write_all(&jpeg))
+                        .is_ok()
+                } else {
+                    false
+                };
                 return Err(format!(
-                    "second tab did not reach the detail page: {detail_observation}; tab observation: {tab_observation}; screenshot: {}",
-                    screenshot.display()
+                    "second tab did not reach the detail page: focusedBrowser={} truncated={} queryAmbiguous={} screenshotCaptured={screenshot_captured}",
+                    detail_observation["focusedWindow"]["application"]
+                        .as_str()
+                        .is_some_and(super::super::is_browser_application),
+                    detail_observation["truncated"],
+                    detail_observation["queryAmbiguous"],
                 ));
             }
             let section_link = detail_observation["nodes"]
@@ -1495,87 +1713,30 @@ mod tests {
                 ));
             }
             let forward_address = read_expected_address("#section")?;
-            let original_tab = desktop
-                .observe_accessibility(
-                    Some(&session_id),
-                    Some("Chromium Managed browser chapter fixture tab"),
-                )
-                .map_err(|error| format!("uniquely observing original tab failed: {error}"))?;
-            let original_tab_target = original_tab["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|node| {
-                    node["role"] == "page tab"
-                        && node["name"]
-                            .as_str()
-                            .is_some_and(|name| name.starts_with("Managed browser chapter fixture"))
-                        && node["targetId"].is_string()
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    format!("original chapter tab was not actionable: {original_tab}")
-                })?;
-            if original_tab["truncated"] != false || original_tab["queryAmbiguous"] != false {
-                return Err(format!(
-                    "original tab search was incomplete or ambiguous: {original_tab}"
-                ));
-            }
-            let original_pointer = &original_tab_target["pointerTarget"];
-            let original_x = original_pointer["x"]
-                .as_f64()
-                .ok_or("fresh original tab has no pointer x coordinate")?;
-            let original_y = original_pointer["y"]
-                .as_f64()
-                .ok_or("fresh original tab has no pointer y coordinate")?;
-            let original_tab_click = desktop
+            desktop
                 .input(
                     super::super::Lease::Agent,
-                    &json!({"action":"pointer-click","button":"left","x":original_x,"y":original_y}),
+                    &json!({"action":"key-chord","keys":["Control","Shift","Tab"]}),
                 )
-                .map_err(|error| format!("selecting the observed original tab failed: {}", error.message()))?;
-            let original_tab_deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(8);
-            let mut original_tab_address = None;
-            let mut original_tab_state = Value::Null;
-            while std::time::Instant::now() < original_tab_deadline {
-                if let Ok(observation) =
-                    desktop.observe_accessibility(Some(&session_id), Some("Chromium address"))
-                {
-                    let address = unique_browser_address_value(&observation);
-                    original_tab_state = json!({
-                        "focusedWindow": observation["focusedWindow"],
-                        "truncated": observation["truncated"],
-                        "queryAmbiguous": observation["queryAmbiguous"],
-                        "address": address,
-                    });
-                    if observation["truncated"] == false
-                        && observation["queryAmbiguous"] == false
-                        && address.is_some_and(|address| address.contains("browser-chapter.html"))
-                    {
-                        original_tab_address = address.map(ToOwned::to_owned);
-                        break;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            }
-            let Some(original_tab_address) = original_tab_address else {
-                return Err(format!(
-                    "switching tabs did not preserve the chapter page in its tab: click={original_tab_click}; observation={original_tab_state}"
-                ));
-            };
+                .map_err(|error| {
+                    format!(
+                        "switching back to the chapter tab failed: {}",
+                        error.message()
+                    )
+                })?;
+            let original_tab_address = read_expected_address("browser-chapter.html")?;
             Ok(json!({
                 "desktopEntryId": browser_id,
                 "browserWindowObserved": true,
                 "homeToChapterObservedLink": true,
                 "chapterToDetailObservedLinkOpenedNewTab": true,
                 "sectionObservedLinkClicked": true,
-                "backAndForwardVerifiedByTitle": true,
+                "backAndForwardVerifiedByUrl": true,
                 "originalTabPreserved": true,
+                "twoTabNavigationVerified": true,
                 "deepNavigationVerified": true,
                 "firstPageTitle": home_observation["focusedWindow"]["name"],
                 "secondPageTitle": detail_observation["focusedWindow"]["name"],
-                "tabNames": tab_names,
                 "addresses": {
                     "home": home_address,
                     "chapter": chapter_address,

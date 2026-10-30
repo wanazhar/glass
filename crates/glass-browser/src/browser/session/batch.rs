@@ -102,6 +102,7 @@ impl CdpBrowserSession {
                         elapsed_ms: step_started.elapsed().as_millis() as u64,
                         message,
                         execution_id: None,
+                        diagnostics: None,
                     });
                     failed += 1;
                     break;
@@ -341,6 +342,7 @@ async fn execute_batch_step(
         BatchStep::Wait {
             condition,
             timeout_ms,
+            ..
         } => {
             let cond = WaitCondition::parse(condition)?;
             session

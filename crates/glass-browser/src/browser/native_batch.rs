@@ -160,12 +160,20 @@ pub(crate) async fn run_with_progress(
             }
             Err(error) => {
                 let elapsed_ms = step_started.elapsed().as_millis() as u64;
+                let diagnostics = match step {
+                    BatchStep::Wait {
+                        image_diagnostics: true,
+                        ..
+                    } => collect_native_image_diagnostics(session).await.ok(),
+                    _ => None,
+                };
                 outcomes.push(BatchStepOutcome::Error {
                     index,
                     action: action.clone(),
                     elapsed_ms,
                     message: bounded_text(&error.to_string(), 512),
                     execution_id: None,
+                    diagnostics,
                 });
                 progress(
                     json!({"event":"step_finished","index":index,"action":action,"status":"error","elapsedMs":elapsed_ms,"errorKind":batch_step_error_kind(error.as_ref())}),
@@ -421,6 +429,7 @@ async fn execute_step(
         BatchStep::Wait {
             condition,
             timeout_ms,
+            ..
         } => {
             let condition = WaitCondition::parse(condition)?;
             let result = session
@@ -490,6 +499,144 @@ async fn execute_step(
             Ok((Some(serde_json::to_vec(&result)?.len()), None, None))
         }
     }
+}
+
+async fn collect_native_image_diagnostics(session: &BrowserRuntimeSession) -> BrowserResult<Value> {
+    const IMAGE_DIAGNOSTIC_SCRIPT: &str = r#"(() => {
+      try {
+        const d = globalThis.document;
+        if (!d || !d.images || typeof Array.from !== 'function') {
+          return {supported:false, failureClass:'image_dom_unsupported'};
+        }
+        const rawCount = Number(d.images.length);
+        const total = Number.isFinite(rawCount) ? Math.max(0, Math.floor(rawCount)) : 0;
+        const limit = Math.min(total, 10000);
+        let loadedCount = 0, sourcePresentCount = 0, incompleteWithSourceCount = 0;
+        let completeWithoutDimensionsCount = 0, visibleCount = 0, lazyHintCount = 0;
+        let decodeApiSupported = false;
+        const samples = [];
+        const inspect = image => {
+          const complete = typeof image.complete === 'boolean' ? image.complete : null;
+          const width = Number.isFinite(Number(image.naturalWidth)) ? Math.max(0, Math.min(16384, Number(image.naturalWidth))) : null;
+          const height = Number.isFinite(Number(image.naturalHeight)) ? Math.max(0, Math.min(16384, Number(image.naturalHeight))) : null;
+          let pictureSource = false;
+          try {
+            const parent = image.parentElement;
+            pictureSource = Boolean(parent && String(parent.tagName).toLowerCase() === 'picture'
+              && typeof parent.querySelector === 'function' && parent.querySelector('source[srcset]'));
+          } catch (_) {}
+          const sourcePresent = Boolean(image.currentSrc || (typeof image.getAttribute === 'function'
+            && (image.getAttribute('src') || image.getAttribute('srcset'))) || pictureSource);
+          let visible = false;
+          try {
+            const rect = image.getBoundingClientRect();
+            const style = typeof globalThis.getComputedStyle === 'function' ? globalThis.getComputedStyle(image) : null;
+            const viewportWidth = Number(d.documentElement && d.documentElement.clientWidth) || Number(globalThis.innerWidth) || 0;
+            const viewportHeight = Number(d.documentElement && d.documentElement.clientHeight) || Number(globalThis.innerHeight) || 0;
+            visible = Number(rect.width) > 0 && Number(rect.height) > 0
+              && Number(rect.right) > 0 && Number(rect.bottom) > 0
+              && (!viewportWidth || Number(rect.left) < viewportWidth)
+              && (!viewportHeight || Number(rect.top) < viewportHeight)
+              && (!style || (style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0));
+          } catch (_) {}
+          const loading = typeof image.getAttribute === 'function' ? image.getAttribute('loading') : null;
+          return {complete, width, height, sourcePresent, visible, lazyHint:loading === 'lazy', decodeApi:typeof image.decode === 'function'};
+        };
+        for (let i = 0; i < limit; i++) {
+          const item = inspect(d.images[i]);
+          if (item.complete === true && item.width > 0 && item.height > 0) {
+            loadedCount++;
+            if (item.visible) visibleCount++;
+          }
+          if (item.sourcePresent) {
+            sourcePresentCount++;
+            if (item.complete === false) incompleteWithSourceCount++;
+            if (item.complete === true && !(item.width > 0 && item.height > 0)) completeWithoutDimensionsCount++;
+            if (item.lazyHint) lazyHintCount++;
+          }
+          if (item.decodeApi) decodeApiSupported = true;
+          if (samples.length < 8) samples.push({complete:item.complete,width:item.width,height:item.height,sourcePresent:item.sourcePresent,visible:item.visible});
+        }
+        return {
+          supported:true,
+          readyState:['loading','interactive','complete'].includes(d.readyState) ? d.readyState : 'unknown',
+          title:String(d.title || '').slice(0,256),
+          imageCount:total,
+          imageCountOverflow:total > 10000,
+          loadedCount,
+          sourcePresentCount,
+          incompleteWithSourceCount,
+          completeWithoutDimensionsCount,
+          visibleCount,
+          lazyHintCount,
+          decodeApiSupported,
+          images:samples
+        };
+      } catch (_) {
+        return {supported:false, failureClass:'image_diagnostic_probe_failed'};
+      }
+    })()"#;
+
+    let value = session.script(IMAGE_DIAGNOSTIC_SCRIPT).await?.value;
+    let supported = value
+        .get("supported")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !supported {
+        return Ok(json!({
+            "supported": false,
+            "failureClass": if value["failureClass"].as_str() == Some("image_dom_unsupported") {
+                "image_dom_unsupported"
+            } else {
+                "image_diagnostic_probe_failed"
+            }
+        }));
+    }
+    let cap = |key: &str, max: u64| value[key].as_u64().unwrap_or(0).min(max);
+    let image_count = cap("imageCount", 10_000);
+    let images = value["images"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(8)
+        .map(|image| {
+            let dimension = |key: &str| image[key].as_u64().map(|value| value.min(16_384));
+            json!({
+                "complete": image["complete"].as_bool(),
+                "width": dimension("width"),
+                "height": dimension("height"),
+                "sourcePresent": image["sourcePresent"].as_bool().unwrap_or(false),
+                "visible": image["visible"].as_bool().unwrap_or(false)
+            })
+        })
+        .collect::<Vec<_>>();
+    let title = if value["title"].as_str()
+        == Some("HTMLImageElement: The Image Embed element - HTML: HyperText Markup Language | MDN")
+    {
+        "MDN HTML image reference"
+    } else {
+        ""
+    };
+    Ok(json!({
+        "supported": true,
+        "readyState": match value["readyState"].as_str() {
+            Some("loading") => "loading",
+            Some("interactive") => "interactive",
+            Some("complete") => "complete",
+            _ => "unknown"
+        },
+        "title": title,
+        "imageCount": image_count,
+        "imageCountOverflow": value["imageCountOverflow"].as_bool().unwrap_or(false),
+        "loadedCount": cap("loadedCount", image_count),
+        "sourcePresentCount": cap("sourcePresentCount", image_count),
+        "incompleteWithSourceCount": cap("incompleteWithSourceCount", image_count),
+        "completeWithoutDimensionsCount": cap("completeWithoutDimensionsCount", image_count),
+        "visibleCount": cap("visibleCount", image_count),
+        "lazyHintCount": cap("lazyHintCount", image_count),
+        "decodeApiSupported": value["decodeApiSupported"].as_bool().unwrap_or(false),
+        "images": images
+    }))
 }
 
 async fn execute_action(

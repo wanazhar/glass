@@ -2338,9 +2338,11 @@ fn resolve_batch_step(
         BatchStep::Wait {
             condition,
             timeout_ms,
+            image_diagnostics,
         } => BatchStep::Wait {
             condition: resolve("condition", condition, MAX_WAIT_CONDITION_BYTES)?,
             timeout_ms: *timeout_ms,
+            image_diagnostics: *image_diagnostics,
         },
         BatchStep::Scroll { dx, dy } => BatchStep::Scroll { dx: *dx, dy: *dy },
         BatchStep::ScrollTarget { target, dx, dy } => BatchStep::ScrollTarget {
@@ -2945,6 +2947,7 @@ fn validate_batch_step(action: &BatchStep, path: &str) -> Result<(), WorkflowVal
         BatchStep::Wait {
             condition,
             timeout_ms,
+            ..
         } => {
             validate_bytes(
                 &format!("{path}.condition"),

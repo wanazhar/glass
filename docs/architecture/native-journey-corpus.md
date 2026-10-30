@@ -6,9 +6,10 @@ defines repeatable native-browser journeys. It separates deterministic local
 fixtures from optional public, read-only observations. Public journeys must
 use bounded timeouts, avoid accounts and state-changing submissions, and
 record blocked or denied responses separately from product failures. Reports
-should retain per-step duration, backend, capability outcome, typed error,
-final URL/title, and references to private diagnostic artifacts. They must not
-save full third-party pages, credentials, cookies, or personal data.
+retain per-step duration, backend, capability outcome, typed errors, a
+sanitized final host/path, allowlisted static title labels, and references to
+private diagnostic artifacts. They do not retain raw engine error messages,
+query strings, fragments, page dumps, credentials, cookies, or personal data.
 
 The local navigation journey is executed by
 `versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey` in
@@ -61,6 +62,21 @@ asserts the first article title, follows the freshly observed
 “Computer science” link by accessible role and name, then checks the second
 article URL and title, and a GitHub repository journey
 that follows an observed link into the Rust repository's `library` directory.
+The MDN image-reference journey targets the deep HTML `img` element page and
+waits for at least one complete image with positive intrinsic dimensions. If
+that predicate fails, the batch attaches a bounded source-free summary of
+image counts, completion state, dimensions, source presence, viewport
+visibility, and lazy-load hints. The summary distinguishes unsupported image
+DOM primitives, pending/lazy-hinted images, decoded images, and complete
+images without dimensions; the last category cannot by itself distinguish a
+network fetch failure from a decode failure. Image inspection is capped at
+10,000 entries and eight dimension samples. This journey measures decode and
+intrinsic dimensions only; it does not claim painted-pixel or screenshot
+evidence. The single bounded attempt on 30 October 2026 hit the native
+navigation deadline at 120 seconds before observation or the image predicate
+ran. Its report is `/tmp/glass-native-mdn-image-20261030.json`; the result is
+a navigation timeout, not an image-decode outcome or an MDN compatibility
+pass.
 The GitHub journey checks repository identity, follows the observed `library`
 link into the Rust repository, then asserts the subpage URL and directory
 content. On 25 October the native run passed all six steps in 50.62 seconds.

@@ -127,6 +127,10 @@ pub enum BatchStep {
         condition: String,
         #[serde(default = "default_timeout_ms")]
         timeout_ms: u64,
+        /// Attach a bounded, source-free native image-state summary if this
+        /// step fails. Intended for the native journey corpus diagnostics.
+        #[serde(default, rename = "imageDiagnostics")]
+        image_diagnostics: bool,
     },
     #[serde(rename = "observe")]
     Observe {
@@ -186,6 +190,8 @@ pub enum BatchStepOutcome {
         message: String,
         #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
         execution_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diagnostics: Option<Value>,
     },
 }
 

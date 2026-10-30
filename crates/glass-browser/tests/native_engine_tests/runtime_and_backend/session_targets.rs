@@ -51,6 +51,51 @@ async fn native_runtime_waits_for_a_loaded_image_with_the_standard_dom_predicate
 }
 
 #[test]
+fn native_batch_image_diagnostics_are_bounded_and_never_include_sources() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_batch_image_diagnostics_are_bounded_and_never_include_sources_inner());
+    });
+}
+
+async fn native_batch_image_diagnostics_are_bounded_and_never_include_sources_inner() {
+    let image_data = native_test_png_data_url();
+    let html = format!(
+        "<!doctype html><title>Image diagnostic fixture</title><img src='{image_data}' alt='ALT_SENTINEL'>"
+    );
+    let page_url = format!(
+        "data:text/html;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(html.as_bytes())
+    );
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(page_url),
+    )
+    .await
+    .unwrap();
+    let steps = [BatchStep::Wait {
+        condition: "js=false".to_owned(),
+        timeout_ms: 100,
+        image_diagnostics: true,
+    }];
+    let result = session
+        .native_run_batch(&steps, false, BatchMode::Unguarded, None)
+        .await
+        .unwrap();
+    let value = serde_json::to_value(result).unwrap();
+    let diagnostics = &value["steps"][0]["diagnostics"];
+    assert_eq!(diagnostics["supported"], true);
+    assert_eq!(diagnostics["imageCount"], 1);
+    assert_eq!(diagnostics["loadedCount"], 1);
+    assert_eq!(diagnostics["title"], "");
+    assert_eq!(diagnostics["images"][0]["sourcePresent"], true);
+    assert!(diagnostics["images"][0]["width"].as_u64().unwrap() > 0);
+    let serialized = value.to_string();
+    assert!(!serialized.contains("data:image/png"));
+    assert!(!serialized.contains("ALT_SENTINEL"));
+    session.close().await.unwrap();
+}
+
+#[test]
 fn native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute() {
     run_native_browser_worker_test(|runtime| {
         runtime

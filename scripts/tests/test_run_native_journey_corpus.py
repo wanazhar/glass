@@ -16,6 +16,103 @@ SPEC.loader.exec_module(corpus)
 
 
 class JourneyFailureClassificationTests(unittest.TestCase):
+    def test_public_report_url_drops_credentials_query_and_fragment(self):
+        safe = corpus.safe_report_url(
+            "https://user:pass@developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img?token=URL_SENTINEL#FRAGMENT_SENTINEL",
+            "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+        )
+        self.assertEqual(
+            safe,
+            "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+        )
+        self.assertNotIn("SENTINEL", safe)
+
+    def test_public_report_url_hides_off_host_redirect(self):
+        self.assertEqual(
+            corpus.safe_report_url(
+                "https://private.example/path?token=URL_SENTINEL",
+                "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+            ),
+            "external_redirect",
+        )
+        self.assertEqual(
+            corpus.safe_report_url(
+                "https://developer.mozilla.org/en-US/docs/users/USER_SENTINEL",
+                "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+            ),
+            "unexpected_path",
+        )
+
+    def test_title_is_mapped_to_static_allowlisted_label(self):
+        title = corpus.safe_title(
+            "HTMLImageElement: The Image Embed element - HTML: HyperText Markup Language | MDN"
+        )
+        self.assertEqual(title, "MDN HTML image reference")
+        unknown = corpus.safe_title("MDN img?token=TITLE_SENTINEL#frag")
+        self.assertIsNone(unknown)
+        self.assertNotIn("TITLE_SENTINEL", str(unknown))
+
+    def test_image_diagnostics_are_capped_typed_and_source_free(self):
+        diagnostics = corpus.safe_image_diagnostics({
+            "supported": True,
+            "readyState": "complete",
+            "title": "image?token=TITLE_SENTINEL",
+            "imageCount": 10001,
+            "imageCountOverflow": True,
+            "loadedCount": 0,
+            "sourcePresentCount": 1,
+            "incompleteWithSourceCount": 0,
+            "completeWithoutDimensionsCount": 1,
+            "visibleCount": 0,
+            "lazyHintCount": 0,
+            "decodeApiSupported": True,
+            "images": [{
+                "complete": True,
+                "width": 99999,
+                "height": 0,
+                "sourcePresent": True,
+                "visible": False,
+                "src": "https://private.example/SECRET_SENTINEL",
+                "alt": "ALT_SENTINEL",
+            }],
+        })
+        serialized = json.dumps(diagnostics)
+        self.assertEqual(diagnostics["category"], "image_set_overflow_inconclusive")
+        self.assertEqual(diagnostics["imageCount"], 10000)
+        self.assertEqual(diagnostics["images"][0]["dimensions"], [16384, 0])
+        for sentinel in ("TITLE_SENTINEL", "SECRET_SENTINEL", "ALT_SENTINEL"):
+            self.assertNotIn(sentinel, serialized)
+
+    def test_image_diagnostics_distinguish_unsupported_lazy_and_decoded_states(self):
+        unsupported = corpus.safe_image_diagnostics({
+            "supported": False,
+            "failureClass": "image_dom_unsupported",
+        })
+        lazy = corpus.safe_image_diagnostics({
+            "supported": True,
+            "imageCount": 1,
+            "sourcePresentCount": 1,
+            "incompleteWithSourceCount": 1,
+            "lazyHintCount": 1,
+        })
+        decoded = corpus.safe_image_diagnostics({
+            "supported": True,
+            "imageCount": 1,
+            "loadedCount": 1,
+            "sourcePresentCount": 1,
+            "images": [{"complete": True, "width": 2, "height": 2, "sourcePresent": True}],
+        })
+        self.assertEqual(unsupported["category"], "javascript_unsupported")
+        self.assertEqual(lazy["category"], "lazy_or_pending_image_load")
+        self.assertEqual(decoded["category"], "decoded_image_present")
+        unresolved = corpus.safe_image_diagnostics({
+            "supported": True,
+            "imageCount": 1,
+            "sourcePresentCount": 1,
+            "completeWithoutDimensionsCount": 1,
+        })
+        self.assertEqual(unresolved["category"], "fetch_or_decode_failure_unresolved")
+
     def test_safe_worker_diagnostics_keep_only_static_allowlisted_classes(self):
         diagnostics = corpus.safe_worker_diagnostics(
             "native content worker exited with diagnostic class: worker\n"
@@ -176,6 +273,22 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         self.assertIn("video.pause()", steps[5]["expression"])
         self.assertIn("video.paused", steps[6]["condition"])
 
+    def test_public_mdn_image_journey_is_deep_native_and_diagnostic_bounded(self):
+        journeys = json.loads(corpus.DEFAULT_CORPUS.read_text(encoding="utf-8"))["journeys"]
+        journey = next(item for item in journeys if item["id"] == "public-mdn-html-image-element")
+        self.assertEqual(journey["scope"], "public-read-only")
+        self.assertEqual(journey["backend"], "native")
+        self.assertEqual(
+            journey["steps"][0]["url"],
+            "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+        )
+        steps = corpus.compile_public_steps(journey)
+        self.assertEqual([step["action"] for step in steps], ["navigate", "observe", "wait"])
+        self.assertEqual(steps[2]["timeout_ms"], 8000)
+        self.assertTrue(steps[2]["imageDiagnostics"])
+        self.assertIn("naturalWidth > 0", steps[2]["condition"])
+        self.assertIn("naturalHeight > 0", steps[2]["condition"])
+
     def test_public_evaluate_step_is_bounded(self):
         journey = {"timeoutMs": 1000, "steps": [{"action": "evaluate", "expression": " "}]}
         with self.assertRaisesRegex(ValueError, "nonempty expression"):
@@ -298,6 +411,116 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         self.assertEqual(result["steps"][1]["errorKind"], "worker")
         self.assertEqual(result["errorKind"], "worker")
         self.assertIsNotNone(result["progressArtifact"])
+
+    def test_public_report_never_retains_raw_error_or_final_url_suffix(self):
+        with tempfile.TemporaryDirectory(prefix="glass-native-journey-redact-") as directory:
+            root = Path(directory)
+            fake = root / "fake-browser"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "cat <<'JSON'\n"
+                '{"success":false,"finalUrl":"https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img?token=URL_SENTINEL#FRAGMENT_SENTINEL",'
+                '"steps":[{"index":0,"action":"navigate","status":"error","elapsedMs":2,"message":"private text ERROR_SENTINEL"}],'
+                '"completed":0,"total":1}\n'
+                "JSON\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o700)
+            result = corpus.run_public_journey(
+                str(fake),
+                {
+                    "id": "redacted-report-fixture",
+                    "scope": "public-read-only",
+                    "timeoutMs": 1000,
+                    "steps": [{
+                        "action": "navigate",
+                        "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+                    }],
+                },
+                root,
+            )
+
+        serialized = json.dumps(result)
+        self.assertEqual(
+            result["finalUrl"],
+            "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+        )
+        self.assertEqual(result["steps"][0]["message"], "journey_step_error")
+        self.assertNotIn("URL_SENTINEL", serialized)
+        self.assertNotIn("FRAGMENT_SENTINEL", serialized)
+        self.assertNotIn("ERROR_SENTINEL", serialized)
+
+    def test_unexpected_final_path_cannot_be_reported_as_a_pass(self):
+        with tempfile.TemporaryDirectory(prefix="glass-native-journey-final-url-") as directory:
+            root = Path(directory)
+            fake = root / "fake-browser"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "cat <<'JSON'\n"
+                '{"success":true,"finalUrl":"https://developer.mozilla.org/en-US/docs/users/USER_SENTINEL",'
+                '"steps":[{"index":0,"action":"navigate","status":"ok","elapsedMs":2}],'
+                '"completed":1,"total":1}\n'
+                "JSON\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o700)
+            result = corpus.run_public_journey(
+                str(fake),
+                {
+                    "id": "unexpected-final-path-fixture",
+                    "scope": "public-read-only",
+                    "timeoutMs": 1000,
+                    "steps": [{
+                        "action": "navigate",
+                        "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+                    }],
+                },
+                root,
+            )
+        self.assertEqual(result["classification"], "inconclusive")
+        self.assertEqual(result["errorKind"], "unexpected_final_url")
+        self.assertEqual(result["finalUrl"], "unexpected_path")
+
+    def test_public_report_projects_diagnostic_without_sources_or_page_text(self):
+        with tempfile.TemporaryDirectory(prefix="glass-native-journey-image-diag-") as directory:
+            root = Path(directory)
+            fake = root / "fake-browser"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "cat <<'JSON'\n"
+                '{"success":false,"finalUrl":"https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img?token=URL_SENTINEL",'
+                '"steps":[{"index":2,"action":"wait","status":"error","elapsedMs":8000,'
+                '"message":"wait timed out for javascript_predicate ERROR_SENTINEL",'
+                '"diagnostics":{"supported":true,"readyState":"complete","title":"TITLE_SENTINEL",'
+                '"imageCount":1,"loadedCount":0,"sourcePresentCount":1,"incompleteWithSourceCount":0,'
+                '"completeWithoutDimensionsCount":1,"visibleCount":0,"lazyHintCount":0,'
+                '"decodeApiSupported":true,"images":[{"complete":true,"width":0,"height":0,"sourcePresent":true,'
+                '"visible":false,"src":"https://private.example/SRC_SENTINEL","alt":"ALT_SENTINEL"}]}}],'
+                '"completed":2,"total":3}\n'
+                "JSON\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o700)
+            journey = {
+                "id": "image-redaction-fixture",
+                "scope": "public-read-only",
+                "timeoutMs": 1000,
+                "steps": [{
+                    "action": "navigate",
+                    "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img",
+                }],
+            }
+            result = corpus.run_public_journey(str(fake), journey, root)
+
+        rendered = json.dumps(result)
+        self.assertEqual(
+            result["steps"][0]["imageDiagnostics"]["category"],
+            "fetch_or_decode_failure_unresolved",
+        )
+        for sentinel in ("URL_SENTINEL", "ERROR_SENTINEL", "TITLE_SENTINEL", "SRC_SENTINEL", "ALT_SENTINEL"):
+            self.assertNotIn(sentinel, rendered)
 
     def test_timeout_kills_and_reaps_the_owned_process_group(self):
         with tempfile.TemporaryDirectory() as directory:

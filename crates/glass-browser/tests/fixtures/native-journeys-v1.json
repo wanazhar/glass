@@ -93,6 +93,18 @@
       ]
     },
     {
+      "id": "public-mdn-html-image-element",
+      "backend": "native",
+      "scope": "public-read-only",
+      "capabilities": ["navigation", "observation", "image-elements", "image-decode", "intrinsic-dimensions"],
+      "timeoutMs": 120000,
+      "steps": [
+        {"id":"image-reference","action":"navigate","url":"https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img"},
+        {"id":"observe-image-reference","action":"observe"},
+        {"id":"assert-decoded-image","action":"assert","timeoutMs":8000,"imageDiagnostics":true,"expression":"Array.from(document.images).some(image => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0)"}
+      ]
+    },
+    {
       "id": "public-wikipedia-article-and-observed-subpage",
       "backend": "native",
       "scope": "public-read-only",

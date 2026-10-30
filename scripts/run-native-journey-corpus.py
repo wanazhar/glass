@@ -16,6 +16,7 @@ import time
 import uuid
 import tomllib
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +93,12 @@ def compile_public_steps(journey: dict) -> list[dict]:
             steps.append(observed_viewport_scroll_step(step, previous_action))
         elif action == "assert":
             condition = step["condition"] if "condition" in step else f"js={step['expression']}"
-            steps.append({"action": "wait", "condition": condition, "timeout_ms": step.get("timeoutMs", 5000)})
+            steps.append({
+                "action": "wait",
+                "condition": condition,
+                "timeout_ms": step.get("timeoutMs", 5000),
+                "imageDiagnostics": step.get("imageDiagnostics") is True,
+            })
         elif action == "capability":
             # Explicit negative capability assertion, evaluated in-page without
             # attempting playback or fetching additional media.
@@ -155,6 +161,116 @@ def error_kind(message: str, timed_out: bool = False) -> str:
     if timed_out:
         return "runner_deadline"
     return "journey_step_error"
+
+
+def safe_report_url(value: object, requested_url: object) -> str | None:
+    """Keep only a same-host public URL path; discard credentials and suffixes."""
+    if not isinstance(value, str) or not isinstance(requested_url, str):
+        return None
+    try:
+        actual = urlsplit(value)
+        requested = urlsplit(requested_url)
+        actual_host = (actual.hostname or "").lower()
+        requested_host = (requested.hostname or "").lower()
+    except ValueError:
+        return None
+    if actual.scheme != "https" or requested.scheme != "https" or not actual_host:
+        return None
+    if actual_host != requested_host:
+        return "external_redirect"
+    if actual.port not in (None, 443):
+        return "external_redirect"
+    path = actual.path or "/"
+    requested_path = requested.path or "/"
+    if len(path) > 256 or not re.fullmatch(r"/[A-Za-z0-9._~/%-]*", path):
+        return "unexpected_path"
+    if path != requested_path:
+        return "unexpected_path"
+    return f"https://{actual_host}{requested_path}"
+
+
+def safe_title(value: object) -> str | None:
+    """Map the one expected MDN title to a static label; never retain page text."""
+    if not isinstance(value, str):
+        return None
+    title = " ".join(value.split())
+    expected = "HTMLImageElement: The Image Embed element - HTML: HyperText Markup Language | MDN"
+    return "MDN HTML image reference" if title in {expected, "MDN HTML image reference"} else None
+
+
+def safe_image_diagnostics(value: object) -> dict | None:
+    """Project native image diagnostics onto a small typed, source-free schema."""
+    if not isinstance(value, dict):
+        return None
+    supported = value.get("supported") is True
+    if not supported:
+        failure = value.get("failureClass")
+        category = (
+            "javascript_unsupported"
+            if failure == "image_dom_unsupported"
+            else "diagnostic_probe_failed"
+        )
+        return {"supported": False, "category": category}
+
+    def count(name: str) -> int:
+        raw = value.get(name)
+        return min(10_000, max(0, raw)) if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+    image_count = count("imageCount")
+    loaded = count("loadedCount")
+    sourced = count("sourcePresentCount")
+    pending = count("incompleteWithSourceCount")
+    failed_dimensions = count("completeWithoutDimensionsCount")
+    lazy_hint = count("lazyHintCount")
+    overflow = value.get("imageCountOverflow") is True
+    if loaded:
+        category = "decoded_image_present"
+    elif overflow:
+        category = "image_set_overflow_inconclusive"
+    elif image_count == 0:
+        category = "no_image_elements"
+    elif sourced == 0:
+        category = "no_image_sources"
+    elif pending and lazy_hint:
+        category = "lazy_or_pending_image_load"
+    elif pending:
+        category = "pending_image_load"
+    elif failed_dimensions:
+        category = "fetch_or_decode_failure_unresolved"
+    else:
+        category = "image_state_unresolved"
+
+    images = []
+    for item in value.get("images", [])[:8] if isinstance(value.get("images"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        dimensions = []
+        for name in ("width", "height"):
+            raw = item.get(name)
+            dimensions.append(min(16_384, max(0, raw)) if isinstance(raw, int) and not isinstance(raw, bool) else None)
+        images.append({
+            "complete": item.get("complete") if isinstance(item.get("complete"), bool) else None,
+            "dimensions": dimensions,
+            "sourcePresent": item.get("sourcePresent") is True,
+            "visible": item.get("visible") is True,
+        })
+
+    return {
+        "supported": True,
+        "category": category,
+        "readyState": value.get("readyState") if value.get("readyState") in {"loading", "interactive", "complete", "unknown"} else "unknown",
+        "title": safe_title(value.get("title")),
+        "imageCount": image_count,
+        "imageCountOverflow": overflow,
+        "loadedCount": min(loaded, image_count),
+        "sourcePresentCount": min(sourced, image_count),
+        "incompleteWithSourceCount": min(pending, image_count),
+        "completeWithoutDimensionsCount": min(failed_dimensions, image_count),
+        "visibleCount": min(count("visibleCount"), image_count),
+        "lazyHintCount": min(lazy_hint, image_count),
+        "decodeApiSupported": value.get("decodeApiSupported") is True,
+        "images": images,
+    }
 
 
 def safe_worker_diagnostics(stderr: str) -> list[dict[str, str]]:
@@ -453,37 +569,64 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
         result = json.loads(stdout)
     except json.JSONDecodeError:
         result = {}
-    passed = result.get("success") is True and return_code == 0
+    requested_url = next(
+        (step.get("url") for step in reversed(journey["steps"]) if step.get("action") == "navigate"),
+        None,
+    )
+    safe_final_url = safe_report_url(result.get("finalUrl"), requested_url)
+    expected_report_url = safe_report_url(requested_url, requested_url)
+    final_url_matches = safe_final_url is not None and safe_final_url == expected_report_url
+    passed = result.get("success") is True and return_code == 0 and final_url_matches
     step_results = []
+    raw_step_messages = []
     for item in result.get("steps", []):
         message_text = str(item.get("message", ""))[:256]
-        step_results.append({
+        raw_step_messages.append(message_text)
+        kind = error_kind(message_text) if item.get("status") == "error" else None
+        step_result = {
             "index": item.get("index"),
             "action": item.get("action"),
             "status": item.get("status"),
             "elapsedMs": item.get("elapsedMs"),
-            "errorKind": error_kind(message_text) if item.get("status") == "error" else None,
-            "message": message_text,
-        })
+            "errorKind": kind,
+            # Raw engine messages can echo page text, URLs, or script input.
+            "message": kind,
+        }
+        image_diagnostics = safe_image_diagnostics(item.get("diagnostics"))
+        if image_diagnostics is not None:
+            step_result["imageDiagnostics"] = image_diagnostics
+        step_results.append(step_result)
     if not step_results and progress_results:
         step_results = progress_results
     failed_steps = [step for step in step_results if step.get("status") not in ("ok", "success", "completed")]
-    message = failed_steps[0].get("message", "") if failed_steps else stderr
+    message = (
+        raw_step_messages[failed_steps[0]["index"]]
+        if failed_steps and isinstance(failed_steps[0].get("index"), int)
+        and failed_steps[0]["index"] < len(raw_step_messages)
+        else stderr
+    )
     error_kind_value = (
         failed_steps[0].get("errorKind") or error_kind(message, timed_out)
         if failed_steps
         else error_kind(message, timed_out)
     )
+    if result.get("success") is True and return_code == 0 and not final_url_matches:
+        error_kind_value = "unexpected_final_url"
     return {
         "id": journey["id"],
         "backend": "native",
-        "classification": "pass" if passed else classify(message, timed_out),
+        "classification": (
+            "pass" if passed else
+            "inconclusive" if error_kind_value == "unexpected_final_url" else
+            classify(message, timed_out)
+        ),
         "errorKind": None if passed else error_kind_value,
         "elapsedMs": elapsed_ms,
         "outerTimeoutMs": outer_timeout_ms,
         "returnCode": return_code,
         "finalRevision": result.get("finalRevision"),
-        "finalUrl": result.get("finalUrl"),
+        "finalUrl": safe_final_url,
+        "title": safe_title(result.get("title")),
         "completedSteps": result.get("completed"),
         "totalSteps": result.get("total"),
         "steps": step_results,
@@ -503,7 +646,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
               "textLength": int(failure_match.group(2).split(":")[2])}
              if failure_match and len(failure_match.group(2).split(":")) == 3 else None)
         ),
-        "message": message[:256],
+        "message": None if passed else error_kind_value,
     }
 
 

@@ -520,6 +520,154 @@ mod tests {
         })
     }
 
+    fn private_display_probe(
+        desktop: &super::super::Desktop,
+        program: &str,
+        args: &[&str],
+    ) -> Option<std::process::Output> {
+        let (display, xauthority) = {
+            let guard = desktop.session.lock().ok()?;
+            let session = guard.as_ref()?;
+            (
+                session.display.clone(),
+                session.directory.join("Xauthority"),
+            )
+        };
+        Command::new("/usr/bin/timeout")
+            .args(["--kill-after=0.25s", "2s", program])
+            .args(args)
+            .env("DISPLAY", display)
+            .env("XAUTHORITY", xauthority)
+            .output()
+            .ok()
+    }
+
+    fn private_x_window_diagnostics(desktop: &super::super::Desktop) -> Value {
+        let window_manager = private_display_probe(
+            desktop,
+            "/usr/bin/xprop",
+            &["-root", "_NET_SUPPORTING_WM_CHECK"],
+        );
+        let client_list = private_display_probe(
+            desktop,
+            "/usr/bin/xprop",
+            &["-root", "_NET_CLIENT_LIST_STACKING"],
+        );
+        let tree = private_display_probe(desktop, "/usr/bin/xwininfo", &["-root", "-tree"]);
+
+        let manager_check_timed_out = window_manager
+            .as_ref()
+            .is_some_and(|output| matches!(output.status.code(), Some(124 | 137)));
+        let window_manager_detected = window_manager.as_ref().is_some_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("window id #")
+        });
+        let client_list_timed_out = client_list
+            .as_ref()
+            .is_some_and(|output| matches!(output.status.code(), Some(124 | 137)));
+        let managed_client_window_count = client_list
+            .as_ref()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                let text = String::from_utf8_lossy(&output.stdout);
+                text.split(|character: char| !character.is_ascii_hexdigit() && character != 'x')
+                    .filter(|token| {
+                        token.strip_prefix("0x").is_some_and(|hex| {
+                            !hex.is_empty() && u64::from_str_radix(hex, 16).is_ok()
+                        })
+                    })
+                    .take(128)
+                    .count()
+            });
+        let tree_timed_out = tree
+            .as_ref()
+            .is_some_and(|output| matches!(output.status.code(), Some(124 | 137)));
+        let (tree_window_count, chromium_class_window_count) = tree
+            .as_ref()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let mut window_count = 0usize;
+                let mut chromium_count = 0usize;
+                for line in text.lines() {
+                    let trimmed = line.trim_start();
+                    if !trimmed.starts_with("0x") {
+                        continue;
+                    }
+                    window_count = window_count.saturating_add(1);
+                    let Some((_, class_details)) = line.split_once(": (") else {
+                        continue;
+                    };
+                    let Some((classes, _)) = class_details.split_once(')') else {
+                        continue;
+                    };
+                    if classes.to_ascii_lowercase().contains("chrom") {
+                        chromium_count = chromium_count.saturating_add(1);
+                    }
+                }
+                (Some(window_count), Some(chromium_count))
+            })
+            .unwrap_or((None, None));
+
+        json!({
+            "windowManagerProbe":private_x_probe_summary(window_manager.as_ref()),
+            "windowManagerProbeSucceeded":window_manager.as_ref().is_some_and(|output| output.status.success()),
+            "windowManagerCheckTimedOut":manager_check_timed_out,
+            "windowManagerDetected":window_manager_detected,
+            "clientListProbe":private_x_probe_summary(client_list.as_ref()),
+            "clientListProbeSucceeded":client_list.as_ref().is_some_and(|output| output.status.success()),
+            "clientListProbeTimedOut":client_list_timed_out,
+            "managedClientWindowCount":managed_client_window_count,
+            "windowTreeProbe":private_x_probe_summary(tree.as_ref()),
+            "windowTreeProbeSucceeded":tree.as_ref().is_some_and(|output| output.status.success()),
+            "windowTreeProbeTimedOut":tree_timed_out,
+            "windowTreeWindowCount":tree_window_count,
+            "chromiumClassWindowCount":chromium_class_window_count,
+        })
+    }
+
+    fn private_x_probe_summary(output: Option<&std::process::Output>) -> Value {
+        let Some(output) = output else {
+            return json!({
+                "started":false,
+                "exitCode":null,
+                "timedOut":false,
+                "displayOpenFailure":false,
+                "authorizationFailure":false,
+                "commandMissing":false,
+                "propertyMissing":false,
+                "otherFailure":false,
+            });
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        let timed_out = matches!(output.status.code(), Some(124 | 137));
+        let display_open_failure = stderr.contains("unable to open display")
+            || stderr.contains("cannot open display")
+            || stderr.contains("can't open display");
+        let authorization_failure = stderr.contains("authorization required")
+            || stderr.contains("no protocol specified")
+            || stderr.contains("invalid mit-magic-cookie");
+        let command_missing = stderr.contains("no such file or directory");
+        let property_missing = stderr.contains("no such atom") || stdout.contains(": not found");
+        let other_failure = !output.status.success()
+            && !timed_out
+            && !display_open_failure
+            && !authorization_failure
+            && !command_missing
+            && !property_missing;
+        json!({
+            "started":true,
+            "exitCode":output.status.code(),
+            "timedOut":timed_out,
+            "displayOpenFailure":display_open_failure,
+            "authorizationFailure":authorization_failure,
+            "commandMissing":command_missing,
+            "propertyMissing":property_missing,
+            "otherFailure":other_failure,
+        })
+    }
+
     fn managed_browser_process_diagnostics(
         binary: &Path,
         profile: &Path,
@@ -988,7 +1136,19 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            let debugger_port = debugger_port.ok_or("debugger_endpoint_not_ready")?;
+            let Some(debugger_port) = debugger_port else {
+                let accessibility_diagnostics =
+                    managed_browser_ax_diagnostics(&desktop, &binary, &profile);
+                let x11_window_diagnostics = private_x_window_diagnostics(&desktop);
+                return Ok(json!({
+                    "stage":"debugger_endpoint_not_ready",
+                    "debuggerPortPublished":false,
+                    "fixtureRouteObserved":false,
+                    "fixtureUrlLoaded":false,
+                    "accessibilityDiagnostics":accessibility_diagnostics,
+                    "x11Windows":x11_window_diagnostics,
+                }));
+            };
             let mut initial_route = Err("endpoint_unavailable");
             let route_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while std::time::Instant::now() < route_deadline {
@@ -1071,6 +1231,9 @@ mod tests {
                         })
                         .unwrap_or(false)
                 };
+                let accessibility_diagnostics =
+                    managed_browser_ax_diagnostics(&desktop, &binary, &profile);
+                let x11_window_diagnostics = private_x_window_diagnostics(&desktop);
                 return Ok(json!({
                     "stage":"direct_file_accessibility",
                     "fixtureRouteObserved":direct_fixture_route_observed,
@@ -1081,6 +1244,8 @@ mod tests {
                     "accessibilitySnapshotUnambiguous":accessibility_snapshot_unambiguous,
                     "screenshotCaptured":screenshot_captured,
                     "fixtureUrlLoaded":direct_fixture_route_observed,
+                    "accessibilityDiagnostics":accessibility_diagnostics,
+                    "x11Windows":x11_window_diagnostics,
                 }));
             }
 

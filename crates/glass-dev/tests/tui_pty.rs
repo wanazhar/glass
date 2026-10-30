@@ -998,6 +998,37 @@ fn start_core_conversation(session: &mut Session, role: &str, task: &str) {
     session.send(b"\r");
 }
 
+fn start_core_conversation_in_current_palette(session: &mut Session, role: &str, task: &str) {
+    session.clear_output();
+    session.send(b"/");
+    assert!(
+        session.wait_for("CORE loading", Duration::from_secs(5))
+            || session.wait_for("CORE · agent commands", Duration::from_secs(5))
+            || session.wait_for("COMMAND PALETTE", Duration::from_secs(5)),
+        "Core command palette did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"glass agent spawn");
+    assert!(
+        session.wait_for("Start Core conversation", Duration::from_secs(5)),
+        "Core conversation action did not appear after filtering\n{}",
+        session.output_tail()
+    );
+    session.send(b"\t");
+    let completed = "/glass agent spawn ROLE TASK";
+    assert!(
+        session.wait_for(completed, Duration::from_secs(5)),
+        "slash completion did not provide the Core conversation arguments\n{}",
+        session.output_tail()
+    );
+    session.send(&[0x7f; 9]);
+    session.send_slowly(
+        format!("{role} {task}").as_bytes(),
+        Duration::from_millis(20),
+    );
+    session.send(b"\r");
+}
+
 fn complete_glass_action(
     session: &mut Session,
     query: &str,
@@ -7624,4 +7655,249 @@ fn resident_secret_prompt_submit_decline_and_expiry_are_masked_in_real_pty() {
         let _ = std::fs::remove_file(fake_core);
         std::fs::remove_dir_all(root).expect("remove isolated resident secret PTY workspace");
     }
+}
+
+#[test]
+fn resident_subagents_view_is_read_only_live_and_preserves_main_draft_in_real_pty() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    const PARENT_TOP: &str = "PARENT_TOP_SENTINEL";
+    const PARENT_BOTTOM: &str = "PARENT_BOTTOM_SENTINEL";
+    const MAIN_DRAFT: &str = "MAIN_DRAFT_TAIL";
+    const INSERTION: &str = "INSERT_";
+    const FINISHED_OUTPUT: &str = "CHILD_OUTPUT_SECOND_CHUNK";
+
+    let root = workspace_root();
+    let glass_dir = root.join(".glass");
+    std::fs::create_dir_all(&glass_dir).unwrap();
+    std::fs::write(glass_dir.join("e2e-core-request-log"), "enabled").unwrap();
+    let data_home = root.join("xdg-data");
+    std::fs::create_dir_all(&data_home).unwrap();
+    let fake_core = fake_core_binary_with_mode("subagents-viewer");
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        100,
+        32,
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+
+    start_core_conversation_in_current_palette(
+        &mut session,
+        "assistant",
+        "read-only viewer fixture",
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(
+        session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)),
+        "resident thread picker did not open after spawning\n{}",
+        session.output_tail()
+    );
+    assert!(session.wait_for_visible("idle", Duration::from_secs(12)));
+    session.send(b"\r");
+    assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
+
+    session.send_slowly(b"first parent turn", Duration::from_millis(8));
+    session.send(b"\r");
+    assert!(
+        session.wait_for(PARENT_BOTTOM, Duration::from_secs(12)),
+        "first parent turn did not settle\n{}",
+        session.output_tail()
+    );
+    let home_offset = session.buffer.len();
+    session.send(b"\x1b[H");
+    assert!(
+        session.wait_for_output_after(home_offset, PARENT_TOP, Duration::from_secs(5)),
+        "parent transcript did not scroll to its top\n{}",
+        session.output_tail()
+    );
+    assert!(
+        !session
+            .visible_output_from(home_offset)
+            .contains(PARENT_BOTTOM),
+        "parent transcript did not retain the top scroll position"
+    );
+
+    session.send_slowly(b"second parent turn", Duration::from_millis(8));
+    session.send(b"\r");
+    let started_marker = glass_dir.join("e2e-subagents-turn-started");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !started_marker.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+    }
+    assert!(
+        started_marker.exists(),
+        "second parent turn did not enter the fake runtime\n{}",
+        session.output_tail()
+    );
+
+    let registry_path = glass_dir.join("threads/registry.json");
+    session.send_slowly(MAIN_DRAFT.as_bytes(), Duration::from_millis(8));
+    wait_for_saved_thread_draft(
+        &mut session,
+        &registry_path,
+        "assistant",
+        MAIN_DRAFT,
+        MAIN_DRAFT.len(),
+    );
+    for _ in 0..4 {
+        session.send(b"\x1b[D");
+    }
+    wait_for_saved_thread_draft(
+        &mut session,
+        &registry_path,
+        "assistant",
+        MAIN_DRAFT,
+        MAIN_DRAFT.len() - 4,
+    );
+    session.send(b"\x1b[107;5u"); // Ctrl+K
+    session.send(b"subagents");
+    assert!(
+        session.wait_for_visible("Watch subagents", Duration::from_secs(5)),
+        "Watch subagents was not discoverable\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for_visible("SUBAGENTS", Duration::from_secs(8)),
+        "read-only subagents viewer did not open\n{}",
+        session.output_tail()
+    );
+
+    std::fs::write(glass_dir.join("e2e-subagents-open-release"), "release").unwrap();
+    assert!(
+        session.wait_for_visible("fixture-child-task", Duration::from_secs(8)),
+        "the live child row was not loaded\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for_visible("Tab select", Duration::from_secs(8)),
+        "viewer did not open the selected child\n{}",
+        session.output_tail()
+    );
+    std::fs::write(glass_dir.join("e2e-subagents-detail-release"), "release").unwrap();
+    assert!(
+        session.wait_for_visible("LIVE_CHILD_TEXT_SENTINEL", Duration::from_secs(8)),
+        "live child text did not update the watcher\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("bash", Duration::from_secs(5)),
+        "live tool start was not shown\n{}",
+        session.output_tail()
+    );
+
+    // The viewer owns these keys. Text cannot become a parent turn and Enter
+    // can only open the selected read-only tool output.
+    session.send_slowly(b"approve abort send", Duration::from_millis(5));
+    send_ctrl_c(&mut session);
+    assert!(
+        !session.wait_for_visible("QUIT?", Duration::from_millis(500)),
+        "Ctrl+C escaped the read-only viewer into quit confirmation"
+    );
+    assert!(
+        !session.visible_output().contains("approve abort send"),
+        "typed viewer text was rendered or entered into the parent composer"
+    );
+    std::fs::write(glass_dir.join("e2e-subagents-finish-release"), "release").unwrap();
+    assert!(
+        session.wait_for_visible("LIVE_TOOL_END_SENTINEL", Duration::from_secs(8)),
+        "live tool completion did not update the child view\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("completed", Duration::from_secs(5)),
+        "finished child state was not shown\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for_visible("CHILD_OUTPUT_FIRST_CHUNK", Duration::from_secs(8)),
+        "tool output inspector did not load its first chunk\n{}",
+        session.output_tail()
+    );
+    session.send(b"n");
+    session.send(&b"\x1b[6~".repeat(16)); // Page down through the first 16 KiB chunk.
+    assert!(
+        session.wait_for_visible(FINISHED_OUTPUT, Duration::from_secs(8)),
+        "tool output inspector did not load its next chunk\n{}",
+        session.output_tail()
+    );
+
+    session.send(b"\x1b");
+    assert!(session.wait_for_visible("Tab select", Duration::from_secs(5)));
+    let return_offset = session.buffer.len();
+    session.send(b"m");
+    assert!(
+        session.wait_for_visible("CONVERSATION", Duration::from_secs(8)),
+        "viewer did not return to the main conversation\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_output_after(return_offset, PARENT_TOP, Duration::from_secs(5)),
+        "main transcript scroll position was not preserved\n{}",
+        session.output_tail()
+    );
+    assert!(
+        !session
+            .visible_output_from(return_offset)
+            .contains(PARENT_BOTTOM),
+        "main transcript returned at a different scroll position"
+    );
+    session.send_slowly(INSERTION.as_bytes(), Duration::from_millis(8));
+    wait_for_saved_thread_draft(
+        &mut session,
+        &registry_path,
+        "assistant",
+        "MAIN_DRAFT_INSERT_TAIL",
+        "MAIN_DRAFT_INSERT_".len(),
+    );
+
+    let request_log = std::fs::read_to_string(glass_dir.join("e2e-core-requests.jsonl")).unwrap();
+    let requests = request_log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for required in [
+        "runtime/subagents/list",
+        "runtime/subagents/entries",
+        "runtime/subagents/entry",
+    ] {
+        assert!(
+            requests.iter().any(|request| request["method"] == required),
+            "missing read-only Core request {required}: {request_log}"
+        );
+    }
+    let prompt_count = requests
+        .iter()
+        .filter(|request| {
+            request["method"] == "turn/prompt" || request["method"] == "turn/followUp"
+        })
+        .count();
+    assert_eq!(
+        prompt_count, 2,
+        "viewer input created an unexpected parent/child turn: {request_log}"
+    );
+    for forbidden in [
+        "turn/steer",
+        "turn/cancel",
+        "durable/abort",
+        "commands/execute",
+    ] {
+        assert!(
+            !requests
+                .iter()
+                .any(|request| request["method"] == forbidden),
+            "viewer dispatched forbidden operation {forbidden}: {request_log}"
+        );
+    }
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    std::fs::remove_dir_all(root).expect("remove isolated resident subagents PTY workspace");
 }

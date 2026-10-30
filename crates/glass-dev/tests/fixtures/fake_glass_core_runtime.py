@@ -22,11 +22,23 @@ import os
 import re
 import select
 import sys
+import threading
 import time
 
 SESSION_ID = "fixture-session"
 STORAGE_DIR = None
 MODE = "mixed"
+TURN_COUNT = 0
+SUBAGENT_ID = "fixture-child-session"
+SUBAGENT_TASK_ID = "fixture-child-task"
+SUBAGENT_CALL_ID = "fixture-parent-call"
+SUBAGENT_FIRST_OUTPUT = "CHILD_OUTPUT_FIRST_CHUNK\n"
+SUBAGENT_OUTPUT = (
+    SUBAGENT_FIRST_OUTPUT
+    + ("x" * (16 * 1024 - len(SUBAGENT_FIRST_OUTPUT)))
+    + "\nCHILD_OUTPUT_SECOND_CHUNK"
+)
+SEND_LOCK = threading.Lock()
 
 
 def log_request(method: str, params: dict) -> None:
@@ -41,8 +53,9 @@ def log_request(method: str, params: dict) -> None:
 
 
 def send(message: dict) -> None:
-    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    with SEND_LOCK:
+        sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
 
 
 def reply(identifier, result: dict) -> None:
@@ -147,9 +160,123 @@ def run_browser_flow(identifier, params: dict, turn: str) -> None:
 
 
 def run_turn(identifier, params: dict) -> None:
+    global TURN_COUNT
+    TURN_COUNT += 1
     text = str(params.get("text", ""))
-    turn = "turn-1"
+    turn = f"turn-{TURN_COUNT}"
     event("turn_start", {}, turn)
+    if MODE == "subagents-viewer":
+        if TURN_COUNT == 1:
+            parent_text = "\n".join(
+                ["PARENT_TOP_SENTINEL"]
+                + [f"parent transcript line {index:02d}" for index in range(64)]
+                + ["PARENT_BOTTOM_SENTINEL"]
+            )
+            event("text", {"text": parent_text}, turn)
+            event("settled", {"reason": "completed"}, turn)
+            reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+            return
+
+        gate_root = os.path.join(os.getcwd(), ".glass")
+
+        def wait_for_gate(name: str) -> None:
+            deadline = time.monotonic() + 30
+            marker = os.path.join(gate_root, name)
+            while not os.path.exists(marker):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"timed out waiting for {name}")
+                time.sleep(0.02)
+
+        with open(os.path.join(gate_root, "e2e-subagents-turn-started"), "w", encoding="utf-8") as marker:
+            marker.write("started")
+        wait_for_gate("e2e-subagents-open-release")
+        event(
+            "subagent",
+            {
+                "kind": "started",
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "taskIndex": 1,
+                "taskCount": 1,
+                "childSessionId": SUBAGENT_ID,
+                "seq": 1,
+                "state": "running",
+                "readOnly": True,
+                "startedAtMs": 1,
+            },
+            turn,
+        )
+        with open(os.path.join(gate_root, "e2e-subagents-child-started"), "w", encoding="utf-8") as marker:
+            marker.write("started")
+        wait_for_gate("e2e-subagents-detail-release")
+        event(
+            "subagent",
+            {
+                "kind": "tool_start",
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "taskIndex": 1,
+                "taskCount": 1,
+                "childSessionId": SUBAGENT_ID,
+                "seq": 2,
+                "callId": "fixture-child-tool-call",
+                "toolName": "bash",
+            },
+            turn,
+        )
+        event(
+            "subagent",
+            {
+                "kind": "text",
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "taskIndex": 1,
+                "taskCount": 1,
+                "childSessionId": SUBAGENT_ID,
+                "seq": 3,
+                "text": "LIVE_CHILD_TEXT_SENTINEL",
+            },
+            turn,
+        )
+        with open(os.path.join(gate_root, "e2e-subagents-live-started"), "w", encoding="utf-8") as marker:
+            marker.write("started")
+        wait_for_gate("e2e-subagents-finish-release")
+        event(
+            "subagent",
+            {
+                "kind": "tool_end",
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "taskIndex": 1,
+                "taskCount": 1,
+                "childSessionId": SUBAGENT_ID,
+                "seq": 4,
+                "callId": "fixture-child-tool-call",
+                "toolName": "bash",
+                "summary": "fixture output ready",
+                "text": "LIVE_TOOL_END_SENTINEL",
+                "isError": False,
+            },
+            turn,
+        )
+        event(
+            "subagent",
+            {
+                "kind": "finished",
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "taskIndex": 1,
+                "taskCount": 1,
+                "childSessionId": SUBAGENT_ID,
+                "seq": 5,
+                "state": "completed",
+                "finishedAtMs": 2,
+            },
+            turn,
+        )
+        event("settled", {"reason": "completed"}, turn)
+        reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+        return
     if MODE in (
         "secret-input",
         "secret-input-cancel",
@@ -561,6 +688,81 @@ def main() -> None:
                     "cursor": 20,
                     "hasMore": False,
                 })
+        elif mode == "subagents-viewer" and method == "runtime/subagents/list":
+            assert params.get("sessionId") == SESSION_ID
+            gate_root = os.path.join(os.getcwd(), ".glass")
+            finished = os.path.exists(os.path.join(gate_root, "e2e-subagents-finish-release"))
+            reply(identifier, {
+                "parentSessionId": SESSION_ID,
+                "children": [{
+                    "taskId": SUBAGENT_TASK_ID,
+                    "parentSessionId": SESSION_ID,
+                    "parentTurnId": "turn-2",
+                    "parentCallId": SUBAGENT_CALL_ID,
+                    "taskIndex": 1,
+                    "taskCount": 1,
+                    "childSessionId": SUBAGENT_ID,
+                    "readOnly": True,
+                    "state": "completed" if finished else "running",
+                    "startedAtMs": 1,
+                    "finishedAtMs": 2,
+                    "lastSeq": 5,
+                }],
+            })
+        elif mode == "subagents-viewer" and method == "runtime/subagents/entries":
+            assert params.get("sessionId") == SESSION_ID
+            assert params.get("taskId") == SUBAGENT_TASK_ID
+            assert params.get("parentCallId") == SUBAGENT_CALL_ID
+            assert params.get("childSessionId") == SUBAGENT_ID
+            assert params.get("limit") == 50
+            if params.get("cursor", 0) > 0:
+                reply(identifier, {"entries": [], "cursor": params["cursor"], "hasMore": False})
+            else:
+                reply(identifier, {
+                    "taskId": SUBAGENT_TASK_ID,
+                    "parentCallId": SUBAGENT_CALL_ID,
+                    "childSessionId": SUBAGENT_ID,
+                    "entries": [{
+                        "entryId": f"{SUBAGENT_ID}@0",
+                        "cursor": 64,
+                        "record": {
+                            "k": "bash",
+                            "id": "fixture-child-tool-call",
+                            "name": "bash",
+                            "cmd": "printf fixture-child-output",
+                            "out": "CHILD_OUTPUT_FIRST_CHUNK… [truncated]",
+                            "code": 0,
+                        },
+                        "truncatedFields": [{"field": "out", "bytes": len(SUBAGENT_OUTPUT)}],
+                    }],
+                    "cursor": 64,
+                    "hasMore": False,
+                    "journalBytes": 64,
+                })
+        elif mode == "subagents-viewer" and method == "runtime/subagents/entry":
+            assert params.get("sessionId") == SESSION_ID
+            assert params.get("taskId") == SUBAGENT_TASK_ID
+            assert params.get("parentCallId") == SUBAGENT_CALL_ID
+            assert params.get("childSessionId") == SUBAGENT_ID
+            assert params.get("entryId") == f"{SUBAGENT_ID}@0"
+            assert params.get("field") == "out"
+            offset = params.get("offset", 0)
+            limit = params.get("limitBytes", 16 * 1024)
+            end = min(offset + limit, len(SUBAGENT_OUTPUT))
+            reply(identifier, {
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "childSessionId": SUBAGENT_ID,
+                "entryId": f"{SUBAGENT_ID}@0",
+                "field": "out",
+                "text": SUBAGENT_OUTPUT[offset:end],
+                "fieldBytes": len(SUBAGENT_OUTPUT),
+                "recordKind": "bash",
+                "customKind": None,
+                "callId": "fixture-child-tool-call",
+                "toolName": "bash",
+                "nextOffset": end if end < len(SUBAGENT_OUTPUT) else None,
+            })
         elif method == "models/list":
             assert params.get("sessionId") == SESSION_ID
             assert params.get("cursor") == 0
@@ -663,7 +865,10 @@ def main() -> None:
                     }
                 )
                 continue
-            run_turn(identifier, params)
+            if mode == "subagents-viewer":
+                threading.Thread(target=run_turn, args=(identifier, params), daemon=True).start()
+            else:
+                run_turn(identifier, params)
         elif method == "turn/steer":
             reply(identifier, {"accepted": True})
         elif method == "turn/cancel":

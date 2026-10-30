@@ -541,7 +541,20 @@ impl Session {
         let mut command = Command::new(binary);
         command.current_dir(root);
         if let Some(data_home) = data_home {
+            let runtime_dir = data_home.join("runtime");
+            std::fs::create_dir_all(&runtime_dir).expect("create isolated XDG runtime directory");
+            let mut runtime_permissions = std::fs::metadata(&runtime_dir)
+                .expect("inspect isolated XDG runtime directory")
+                .permissions();
+            runtime_permissions.set_mode(0o700);
+            std::fs::set_permissions(&runtime_dir, runtime_permissions)
+                .expect("restrict isolated XDG runtime directory");
             command.env("XDG_DATA_HOME", data_home);
+            command.env("XDG_CONFIG_HOME", data_home.join("config"));
+            command.env("XDG_CACHE_HOME", data_home.join("cache"));
+            command.env("XDG_STATE_HOME", data_home.join("state"));
+            command.env("XDG_RUNTIME_DIR", runtime_dir);
+            command.env("HOME", data_home);
         }
         if let Some(core_binary) = core_binary {
             command.env("GLASS_CORE_BINARY", core_binary);
@@ -7415,4 +7428,200 @@ fn git_stage_and_commit_work_in_an_isolated_local_repository() {
         "the local commit should leave a clean tree"
     );
     std::fs::remove_dir_all(root).expect("remove temporary Git workspace");
+}
+
+#[test]
+fn resident_secret_prompt_submit_decline_and_expiry_are_masked_in_real_pty() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    const SENTINEL: &str = "offline-secret-sentinel";
+
+    fn find_secret_result_files(root: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                find_secret_result_files(&path, found);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "fixture-secret-results.jsonl")
+            {
+                found.push(path);
+            }
+        }
+    }
+
+    fn assert_no_secret_files(root: &std::path::Path, sentinel: &str) {
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if let Ok(contents) = std::fs::read(&path) {
+                    assert!(
+                        !contents
+                            .windows(sentinel.len())
+                            .any(|window| window == sentinel.as_bytes()),
+                        "secret sentinel was persisted in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    for (mode, expected_status) in [
+        ("secret-input", "answered"),
+        ("secret-input", "cancelled"),
+        ("secret-input-expiring", "cancelled"),
+    ] {
+        let root = workspace_root();
+        let data_home = root.join("xdg-data");
+        std::fs::create_dir_all(&data_home).unwrap();
+        let fake_core = fake_core_binary_with_mode(mode);
+        let mut session = Session::start_with_data_home_options(
+            &binary(),
+            &root,
+            100,
+            30,
+            Some(&fake_core),
+            Some(&data_home),
+        );
+        assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+        session.wait_for_agent_surface();
+        assert!(session.wait_for("Core available", Duration::from_secs(8)));
+        let mut spawned = false;
+        for _ in 0..3 {
+            start_core_conversation(&mut session, "assistant", "request a fixture credential");
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while Instant::now() < deadline {
+                let visible = session.visible_output();
+                if visible.contains("agent-0002") {
+                    spawned = true;
+                    break;
+                }
+                if visible.contains("background operation") {
+                    break;
+                }
+                session.settle(Duration::from_millis(100));
+            }
+            if spawned {
+                break;
+            }
+            session.settle(Duration::from_millis(250));
+        }
+        assert!(
+            spawned,
+            "resident agent was not created\n{}",
+            session.output_tail()
+        );
+        send_ctrl_shift_t(&mut session);
+        assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
+        assert!(
+            session.wait_for("idle", Duration::from_secs(12)),
+            "spawned resident agent never became ready\n{}",
+            session.output_tail()
+        );
+        session.send(b"\r");
+        assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+        session.clear_output();
+        session.send_slowly(b"request a fixture secret", Duration::from_millis(10));
+        assert!(session.wait_for_composer_text("request a fixture secret", Duration::from_secs(5)));
+        session.send(b"\r");
+        assert!(
+            session.wait_for("Core requests a scoped secret", Duration::from_secs(12)),
+            "secret prompt did not appear for {mode}\n{}",
+            session.output_tail()
+        );
+        assert!(session.wait_for("Destination: https://example.test", Duration::from_secs(3)));
+
+        let mut post_secret_offset = session.buffer.len();
+        match expected_status {
+            "answered" => {
+                session.settle(Duration::from_millis(250));
+                session.send_slowly(SENTINEL.as_bytes(), Duration::from_millis(15));
+                assert!(
+                    session.wait_for_visible(
+                        &"•".repeat(SENTINEL.chars().count()),
+                        Duration::from_secs(3),
+                    ),
+                    "secret prompt did not render only masking bullets\n{}",
+                    session.output_tail()
+                );
+                post_secret_offset = session.buffer.len();
+                session.send(b"\r");
+            }
+            "cancelled" if mode == "secret-input" => {
+                post_secret_offset = session.buffer.len();
+                session.send(b"\x1b");
+            }
+            "cancelled" => {
+                assert!(
+                    session.wait_for("value expires automatically", Duration::from_secs(2)),
+                    "expiry prompt copy did not render\n{}",
+                    session.output_tail()
+                );
+            }
+            _ => unreachable!(),
+        }
+
+        let storage_root = root.join(".glass");
+        let mut result_files = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let result = loop {
+            result_files.clear();
+            find_secret_result_files(&storage_root, &mut result_files);
+            find_secret_result_files(&data_home, &mut result_files);
+            if let Some(path) = result_files.first() {
+                let contents = std::fs::read_to_string(path).unwrap_or_default();
+                if contents.contains(expected_status) {
+                    break contents;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fake Core did not observe the expected {expected_status} response for {mode}\n{}",
+                session.output_tail()
+            );
+            session.settle(Duration::from_millis(100));
+        };
+        assert!(result.contains(&format!("\"status\":\"{expected_status}\"")));
+        if expected_status == "answered" {
+            assert!(result.contains("\"secretMatchesSentinel\":true"));
+        }
+        if mode.starts_with("secret-input") {
+            assert!(
+                session.wait_for_output_after(post_secret_offset, "idle", Duration::from_secs(8)),
+                "completed secret request did not return to the normal Agent frame\n{}",
+                session.output_tail()
+            );
+            assert!(
+                !session
+                    .visible_output_from(post_secret_offset)
+                    .contains("Core requests a scoped secret"),
+                "expired secret prompt remained visible after Core settled\n{}",
+                session.output_tail()
+            );
+        }
+        assert!(
+            !session
+                .buffer
+                .windows(SENTINEL.len())
+                .any(|window| window == SENTINEL.as_bytes()),
+            "secret sentinel appeared in the raw PTY stream for {mode}"
+        );
+        assert_no_secret_files(&root, SENTINEL);
+        session.kill();
+        assert_no_secret_files(&root, SENTINEL);
+        let _ = std::fs::remove_file(fake_core);
+        std::fs::remove_dir_all(root).expect("remove isolated resident secret PTY workspace");
+    }
 }

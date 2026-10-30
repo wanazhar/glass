@@ -3443,6 +3443,7 @@ mod tests {
         reader.join().unwrap();
     }
 
-    #[path = "../secret_channel_acceptance.rs"]
-    mod secret_channel_acceptance;
+    mod secret_channel_acceptance {
+        include!("core_runtime/secret_channel_acceptance.rs");
+    }
 }

@@ -74,6 +74,26 @@ pub enum ResidentSessionRequest {
         name: String,
         arguments: Option<String>,
     },
+    /// Read the actual child sessions linked to this Core session.
+    CoreSubagentsList,
+    /// Read one bounded page of an exact, Core-verified child transcript.
+    CoreSubagentEntries {
+        task_id: String,
+        parent_call_id: String,
+        child_session_id: String,
+        cursor: u64,
+        limit: usize,
+    },
+    /// Read one bounded text field from an exact child transcript entry.
+    CoreSubagentEntry {
+        task_id: String,
+        parent_call_id: String,
+        child_session_id: String,
+        entry_id: String,
+        field: String,
+        offset: u64,
+        limit_bytes: usize,
+    },
     /// Read GC's durable task graph for the configured runtime storage.
     CoreTaskGraph,
     /// Request cancellation of one GC durable task.

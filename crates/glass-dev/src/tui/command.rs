@@ -163,6 +163,7 @@ fn is_tui_command_root(root: &str) -> bool {
                 | "plan"
                 | "q"
                 | "search"
+                | "subagents"
                 | "tasks"
                 | "tests"
                 | "gh"
@@ -181,6 +182,12 @@ fn is_complete_tui_command(input: &str) -> bool {
 }
 
 const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Watch subagents",
+        command: "subagents",
+        key: "/",
+        description: "read linked child-agent sessions without changing the main conversation",
+    },
     SurfaceAction {
         label: "Start Core conversation",
         command: "agent spawn ROLE TASK",
@@ -762,13 +769,13 @@ pub struct CommandGroup {
     pub example: &'static str,
 }
 
-const AGENT_ROOTS: &[&str] = &["agent", "harness"];
+const AGENT_ROOTS: &[&str] = &["agent", "harness", "subagents"];
 const BUILD_ROOTS: &[&str] = &["project", "editor", "github", "lsp", "git"];
 const RUN_ROOTS: &[&str] = &["browser", "workflow", "process"];
 const VERIFY_ROOTS: &[&str] = &["task", "test", "debug", "review"];
 const WORKSPACE_ROOTS: &[&str] = &["cockpit", "workspace", "daemon", "kernel", "experiment"];
 const INSPECT_ROOTS: &[&str] = &["replay", "memory", "surface", "tool"];
-const CORE_ROOTS: &[&str] = &["view", "help", "quit"];
+const CORE_ROOTS: &[&str] = &["view", "help", "quit", "subagents"];
 
 pub static COMMAND_GROUPS: &[CommandGroup] = &[
     CommandGroup {
@@ -830,6 +837,7 @@ pub static ROOT_COMMANDS: &[&str] = &[
     "replay",
     "review",
     "surface",
+    "subagents",
     "task",
     "test",
     "tool",
@@ -994,6 +1002,13 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             Ok("Actions menu opened · ↑↓ select · Enter run · Esc close".into())
         }
         "cockpit" => execute_cockpit(state, parts.collect()),
+        "subagents" => {
+            if parts.next().is_some() {
+                return Err("subagents takes no arguments".into());
+            }
+            state.open_subagents_viewer()?;
+            Ok("Watching linked child sessions · read only".into())
+        }
         "quit" | "q" => {
             state.request_quit();
             Ok("Quit confirmation · Enter exits · Esc stays".into())
@@ -3806,6 +3821,21 @@ mod tests {
         execute(&mut state, "review").expect("review route");
         assert_eq!(state.surface, DevSurface::Git);
         assert!(state.git_diff.starts_with("REVIEW"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn subagents_command_is_searchable_and_requires_a_selected_parent() {
+        assert!(is_tui_command_root("subagents"));
+        assert!(
+            CORE_AGENT_ACTIONS
+                .iter()
+                .any(|action| action.command == "subagents")
+        );
+        let (mut state, root) = test_state("subagents-command");
+        let error = execute(&mut state, "subagents").expect_err("no parent agent is selected");
+        assert!(error.contains("Select a Glass Agent conversation"));
+        assert!(state.subagents_viewer.is_none());
         let _ = fs::remove_dir_all(root);
     }
 

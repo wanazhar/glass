@@ -8,24 +8,26 @@ use super::state::DevTuiState;
 pub(super) enum ActiveOverlay {
     QuitConfirmation = 0,
     SecretPrompt = 1,
-    EditorExitPrompt = 2,
-    BrowserDialog = 3,
-    Help = 4,
-    CommandCenterMenu = 5,
-    BrowserTargetPicker = 6,
-    FilePicker = 7,
-    SessionPicker = 8,
-    FollowUpQueue = 9,
-    MutationConfirmation = 10,
-    FullscreenEditor = 11,
-    Composer = 12,
-    CommandPalette = 13,
-    BrowserRecovery = 14,
-    AttentionInbox = 15,
-    ThreadPicker = 16,
-    SendAttemptRetryConfirmation = 17,
-    GcCommandMenu = 18,
-    NativeGcUiPanel = 19,
+    ToolOutputInspector = 2,
+    EditorExitPrompt = 3,
+    BrowserDialog = 4,
+    Help = 5,
+    CommandCenterMenu = 6,
+    BrowserTargetPicker = 7,
+    FilePicker = 8,
+    SessionPicker = 9,
+    FollowUpQueue = 10,
+    MutationConfirmation = 11,
+    FullscreenEditor = 12,
+    Composer = 13,
+    CommandPalette = 14,
+    BrowserRecovery = 15,
+    AttentionInbox = 16,
+    ThreadPicker = 17,
+    SendAttemptRetryConfirmation = 18,
+    GcCommandMenu = 19,
+    NativeGcUiPanel = 20,
+    SubagentsViewer = 21,
 }
 
 impl ActiveOverlay {
@@ -44,6 +46,10 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::QuitConfirmation)
     } else if state.secret_prompt_active() {
         Some(ActiveOverlay::SecretPrompt)
+    } else if state.subagents_viewer.is_some() {
+        Some(ActiveOverlay::SubagentsViewer)
+    } else if state.tool_output_inspector_call_id.is_some() {
+        Some(ActiveOverlay::ToolOutputInspector)
     } else if state.send_attempt_retry_confirmation.is_some() {
         Some(ActiveOverlay::SendAttemptRetryConfirmation)
     } else if state.editor_exit_prompt.is_some() {

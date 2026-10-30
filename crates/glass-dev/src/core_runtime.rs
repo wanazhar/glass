@@ -1381,6 +1381,97 @@ fn request_parts(
             "commands/execute",
             json!({"sessionId":session,"name":name,"arguments":arguments}),
         ),
+        Request::CoreSubagentsList => ("runtime/subagents/list", json!({"sessionId":session})),
+        Request::CoreSubagentEntries {
+            task_id,
+            parent_call_id,
+            child_session_id,
+            cursor,
+            limit,
+        } => {
+            if task_id.is_empty()
+                || task_id.len() > 128
+                || parent_call_id.is_empty()
+                || parent_call_id.len() > 128
+                || !parent_call_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+                || child_session_id.is_empty()
+                || child_session_id.len() > 80
+                || !child_session_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                || !task_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                || *limit == 0
+                || *limit > 100
+            {
+                return Err("invalid Core subagent transcript request".into());
+            }
+            (
+                "runtime/subagents/entries",
+                json!({
+                    "sessionId":session,
+                    "taskId":task_id,
+                    "parentCallId":parent_call_id,
+                    "childSessionId":child_session_id,
+                    "cursor":cursor,
+                    "limit":limit,
+                }),
+            )
+        }
+        Request::CoreSubagentEntry {
+            task_id,
+            parent_call_id,
+            child_session_id,
+            entry_id,
+            field,
+            offset,
+            limit_bytes,
+        } => {
+            let entry_prefix = format!("{child_session_id}@");
+            if task_id.is_empty()
+                || task_id.len() > 128
+                || !task_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                || parent_call_id.is_empty()
+                || parent_call_id.len() > 128
+                || !parent_call_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+                || child_session_id.is_empty()
+                || child_session_id.len() > 80
+                || !child_session_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                || entry_id.len() > 128
+                || !entry_id.starts_with(&entry_prefix)
+                || entry_id[entry_prefix.len()..].is_empty()
+                || !entry_id[entry_prefix.len()..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit())
+                || !matches!(field.as_str(), "t" | "out")
+                || *limit_bytes == 0
+                || *limit_bytes > 64 * 1024
+            {
+                return Err("invalid Core subagent entry request".into());
+            }
+            (
+                "runtime/subagents/entry",
+                json!({
+                    "sessionId":session,
+                    "taskId":task_id,
+                    "parentCallId":parent_call_id,
+                    "childSessionId":child_session_id,
+                    "entryId":entry_id,
+                    "field":field,
+                    "offset":offset,
+                    "limitBytes":limit_bytes,
+                }),
+            )
+        }
         Request::CoreTaskGraph => ("durable/taskGraph", json!({})),
         Request::CoreTaskAbort {
             task_id,
@@ -1456,6 +1547,9 @@ fn request_operation(request: &crate::resident_harness::ResidentSessionRequest) 
         Request::Models => "models",
         Request::CoreCommands => "coreCommands",
         Request::CoreCommand { .. } => "coreCommand",
+        Request::CoreSubagentsList => "coreSubagentsList",
+        Request::CoreSubagentEntries { .. } => "coreSubagentEntries",
+        Request::CoreSubagentEntry { .. } => "coreSubagentEntry",
         Request::CoreTaskGraph => "coreTaskGraph",
         Request::CoreTaskAbort { .. } => "coreTaskAbort",
         Request::SetModel { .. } => "setModel",
@@ -1599,6 +1693,18 @@ fn translate_event(params: &Value) -> Vec<Value> {
         "settled" => {
             events.push(json!({"type": "agent_end", "detail": data.clone()}));
             events.push(json!({"type": "agent_settled", "detail": data}));
+        }
+        "subagent" => {
+            // Child activity belongs to its own session and call. Preserve
+            // the parent envelope and the complete child payload so the
+            // read-only viewer can correlate concurrent children; never fold
+            // it into the parent's transcript text.
+            events.push(json!({
+                "type": "subagent_event",
+                "parentSessionId": params.get("sessionId").cloned().unwrap_or(Value::Null),
+                "parentTurnId": params.get("turnId").cloned().unwrap_or(Value::Null),
+                "data": data,
+            }));
         }
         other => events.push(json!({
             "type": other,
@@ -2939,6 +3045,77 @@ mod tests {
     }
 
     #[test]
+    fn subagent_view_requests_are_scoped_read_only_and_bounded() {
+        let (method, params) =
+            request_parts("parent-session", &ResidentSessionRequest::CoreSubagentsList).unwrap();
+        assert_eq!(method, "runtime/subagents/list");
+        assert_eq!(params, json!({"sessionId":"parent-session"}));
+        assert_eq!(
+            request_operation(&ResidentSessionRequest::CoreSubagentsList),
+            "coreSubagentsList"
+        );
+
+        let request = ResidentSessionRequest::CoreSubagentEntries {
+            task_id: "task-1".into(),
+            parent_call_id: "call-2".into(),
+            child_session_id: "child-3".into(),
+            cursor: 4096,
+            limit: 25,
+        };
+        let (method, params) = request_parts("parent-session", &request).unwrap();
+        assert_eq!(method, "runtime/subagents/entries");
+        assert_eq!(
+            params,
+            json!({
+                "sessionId":"parent-session",
+                "taskId":"task-1",
+                "parentCallId":"call-2",
+                "childSessionId":"child-3",
+                "cursor":4096,
+                "limit":25
+            })
+        );
+        assert_eq!(request_operation(&request), "coreSubagentEntries");
+
+        let invalid = ResidentSessionRequest::CoreSubagentEntries {
+            task_id: "../other".into(),
+            parent_call_id: "call-2".into(),
+            child_session_id: "child-3".into(),
+            cursor: 0,
+            limit: 101,
+        };
+        assert!(request_parts("parent-session", &invalid).is_err());
+
+        let entry = ResidentSessionRequest::CoreSubagentEntry {
+            task_id: "task-1".into(),
+            parent_call_id: "call-2".into(),
+            child_session_id: "child-3".into(),
+            entry_id: "child-3@512".into(),
+            field: "out".into(),
+            offset: 8192,
+            limit_bytes: 16384,
+        };
+        let (method, params) = request_parts("parent-session", &entry).unwrap();
+        assert_eq!(method, "runtime/subagents/entry");
+        assert_eq!(params["entryId"], "child-3@512");
+        assert_eq!(params["field"], "out");
+        assert_eq!(params["offset"], 8192);
+        assert_eq!(params["limitBytes"], 16384);
+        assert_eq!(request_operation(&entry), "coreSubagentEntry");
+
+        let invalid_entry = ResidentSessionRequest::CoreSubagentEntry {
+            task_id: "task-1".into(),
+            parent_call_id: "call-2".into(),
+            child_session_id: "child-3".into(),
+            entry_id: "child-4@512".into(),
+            field: "out".into(),
+            offset: 0,
+            limit_bytes: 16 * 1024,
+        };
+        assert!(request_parts("parent-session", &invalid_entry).is_err());
+    }
+
+    #[test]
     fn model_affordances_are_scoped_to_the_selected_core_session() {
         let (method, params) =
             request_parts("selected-session", &ResidentSessionRequest::Models).unwrap();
@@ -3016,6 +3193,39 @@ mod tests {
             events[0].pointer("/assistantMessageEvent/type"),
             Some(&json!("text_delta"))
         );
+    }
+
+    #[test]
+    fn subagent_events_keep_parent_scope_and_child_identity_without_becoming_text() {
+        let child = json!({
+            "kind":"tool_end",
+            "taskId":"task-7",
+            "parentCallId":"call-2",
+            "taskIndex":1,
+            "taskCount":2,
+            "childSessionId":"child-9",
+            "seq":4,
+            "callId":"child-call-3",
+            "toolName":"bash",
+            "text":"bounded output",
+            "isError":false
+        });
+        let events = translate_event(&json!({
+            "sessionId":"parent-session",
+            "turnId":"turn-5",
+            "type":"subagent",
+            "data":child
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "subagent_event");
+        assert_eq!(events[0]["parentSessionId"], "parent-session");
+        assert_eq!(events[0]["parentTurnId"], "turn-5");
+        assert_eq!(events[0]["data"]["taskId"], "task-7");
+        assert_eq!(events[0]["data"]["parentCallId"], "call-2");
+        assert_eq!(events[0]["data"]["childSessionId"], "child-9");
+        assert_eq!(events[0]["data"]["seq"], 4);
+        assert_eq!(events[0]["data"]["text"], "bounded output");
+        assert!(events[0].get("assistantMessageEvent").is_none());
     }
 
     #[test]

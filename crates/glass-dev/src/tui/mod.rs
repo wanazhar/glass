@@ -528,6 +528,101 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::ToolOutputInspector) {
+                        match key.code {
+                            KeyCode::Esc => state.close_tool_output_inspector(),
+                            KeyCode::Up => {
+                                state.tool_output_scroll =
+                                    state.tool_output_scroll.saturating_sub(1)
+                            }
+                            KeyCode::Down => {
+                                state.tool_output_scroll =
+                                    state.tool_output_scroll.saturating_add(1)
+                            }
+                            KeyCode::PageUp => {
+                                state.tool_output_scroll =
+                                    state.tool_output_scroll.saturating_sub(10)
+                            }
+                            KeyCode::PageDown => {
+                                state.tool_output_scroll =
+                                    state.tool_output_scroll.saturating_add(10)
+                            }
+                            KeyCode::Home => state.tool_output_scroll = 0,
+                            _ => {}
+                        }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::SubagentsViewer) {
+                        let watching = state
+                            .subagents_viewer
+                            .as_ref()
+                            .is_some_and(|viewer| viewer.watching_child);
+                        let inspecting = state
+                            .subagents_viewer
+                            .as_ref()
+                            .is_some_and(|viewer| viewer.output_inspector.is_some());
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.back_subagents_viewer(),
+                            (KeyCode::Char('m' | 'M'), _) => state.close_subagents_viewer(),
+                            (KeyCode::Up, _) => state.move_subagent_selection(-1),
+                            (KeyCode::Down, _) => state.move_subagent_selection(1),
+                            (KeyCode::PageUp, _) if inspecting => {
+                                if let Some(viewer) = state.subagents_viewer.as_mut()
+                                    && let Some(inspector) = viewer.output_inspector.as_mut()
+                                {
+                                    inspector.scroll = inspector.scroll.saturating_sub(10);
+                                }
+                            }
+                            (KeyCode::PageDown, _) if inspecting => {
+                                if let Some(viewer) = state.subagents_viewer.as_mut()
+                                    && let Some(inspector) = viewer.output_inspector.as_mut()
+                                {
+                                    inspector.scroll = inspector.scroll.saturating_add(10);
+                                }
+                            }
+                            (KeyCode::Home, _) if inspecting => {
+                                if let Some(viewer) = state.subagents_viewer.as_mut()
+                                    && let Some(inspector) = viewer.output_inspector.as_mut()
+                                {
+                                    inspector.scroll = 0;
+                                }
+                            }
+                            (KeyCode::PageUp, _) if watching => {
+                                for _ in 0..10 {
+                                    state.move_subagent_selection(-1);
+                                }
+                            }
+                            (KeyCode::PageDown, _) if watching => {
+                                for _ in 0..10 {
+                                    state.move_subagent_selection(1);
+                                }
+                            }
+                            (KeyCode::Tab, _) if watching && !inspecting => {
+                                state.move_subagent_entry_selection(1)
+                            }
+                            (KeyCode::BackTab, _) if watching && !inspecting => {
+                                state.move_subagent_entry_selection(-1)
+                            }
+                            (KeyCode::Enter, _) if watching && !inspecting => {
+                                if let Err(error) = state.inspect_selected_subagent_output() {
+                                    state.set_subagents_viewer_error(error);
+                                }
+                            }
+                            (KeyCode::Enter, _) if !watching => {
+                                if let Err(error) = state.watch_selected_subagent() {
+                                    state.set_subagents_viewer_error(error);
+                                }
+                            }
+                            (KeyCode::Char('n' | 'N'), _) if inspecting => {
+                                if let Err(error) = state.next_subagent_output_chunk() {
+                                    state.set_subagents_viewer_error(error);
+                                }
+                            }
+                            (KeyCode::Char('n' | 'N'), _) if watching => {
+                                if let Err(error) = state.next_subagent_entries_page() {
+                                    state.set_subagents_viewer_error(error);
+                                }
+                            }
+                            _ => {}
+                        }
                     } else if active_overlay
                         == Some(overlay::ActiveOverlay::SendAttemptRetryConfirmation)
                     {
@@ -989,6 +1084,13 @@ pub(crate) fn run_with_browser_policy(
                             }
                             (KeyCode::Char('o'), modifiers)
                                 if state.surface == DevSurface::Agent
+                                    && modifiers
+                                        .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+                            {
+                                state.open_tool_output_inspector();
+                            }
+                            (KeyCode::Char('o'), modifiers)
+                                if state.surface == DevSurface::Agent
                                     && modifiers.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.toggle_transcript_expand();
@@ -1389,6 +1491,13 @@ pub(crate) fn run_with_browser_policy(
                             }
                             (KeyCode::Char('o'), modifiers)
                                 if state.surface == DevSurface::Agent
+                                    && modifiers
+                                        .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+                            {
+                                state.open_tool_output_inspector();
+                            }
+                            (KeyCode::Char('o'), modifiers)
+                                if state.surface == DevSurface::Agent
                                     && modifiers.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.toggle_transcript_expand();
@@ -1547,6 +1656,9 @@ pub(crate) fn run_with_browser_policy(
             state.submit_queued_tool(&mut worker);
         }
         state.tick_gc_command_discovery(&mut worker);
+        if state.tick_subagents_viewer() {
+            render_requested = true;
+        }
         state.flush_pending_selection_preview(&mut worker);
         if state.tick_pair_apply() {
             render_requested = true;
@@ -1694,6 +1806,7 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u32 {
                 overlay::ActiveOverlay::AttentionInbox => 30,
                 overlay::ActiveOverlay::ThreadPicker => 29,
                 overlay::ActiveOverlay::SendAttemptRetryConfirmation => 28,
+                overlay::ActiveOverlay::SubagentsViewer => 31,
                 // Overlay ids have grown past the upper bits over time. Keep
                 // ordinary overlays in 8..27, leaving bit 7 for Git diff and
                 // 28..30 for the three independently tracked inbox states.

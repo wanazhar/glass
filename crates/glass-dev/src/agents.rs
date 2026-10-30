@@ -619,6 +619,31 @@ impl AgentRegistry {
         Ok(record.snapshot.clone())
     }
 
+    /// Return the Core-owned session ID bound to this resident agent's
+    /// current run. Read-only viewers use this to address the exact parent
+    /// session without inferring it from a task prompt or conversation text.
+    pub(crate) fn core_session_id(&mut self, id: &AgentId) -> DevelopmentResult<String> {
+        self.refresh()?;
+        let (thread_id, run_id) = self
+            .records
+            .get(id)
+            .map(|record| (record.thread_id.clone(), record.run_id.clone()))
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        self.thread_store
+            .list()?
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .and_then(|thread| thread.runs.into_iter().find(|run| run.run_id == run_id))
+            .filter(|run| run.engine == "glass-core")
+            .and_then(|run| run.core_session_id)
+            .ok_or_else(|| {
+                DevelopmentError::Conflict(format!(
+                    "agent {} has no live Glass Core session reference",
+                    id.as_str()
+                ))
+            })
+    }
+
     /// Process-local pending secret prompts for the resident TUI only.
     pub(crate) fn pending_secret_inputs(
         &mut self,

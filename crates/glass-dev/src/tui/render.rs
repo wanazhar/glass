@@ -601,6 +601,14 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
             render_secret_prompt(frame, state, area);
             return;
         }
+        Some(ActiveOverlay::ToolOutputInspector) => {
+            render_tool_output_inspector(frame, state, area);
+            return;
+        }
+        Some(ActiveOverlay::SubagentsViewer) => {
+            render_subagents_viewer(frame, state, area);
+            return;
+        }
         Some(ActiveOverlay::SendAttemptRetryConfirmation) => {
             render_send_attempt_retry_confirmation(frame, state, area);
             return;
@@ -2279,6 +2287,422 @@ fn render_native_gc_ui_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: R
         .wrap(Wrap { trim: false }),
         rows[1],
     );
+}
+
+fn render_subagents_viewer(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let Some(viewer) = state.subagents_viewer.as_ref() else {
+        return;
+    };
+    frame.render_widget(Clear, area);
+    let watching = viewer.watching_child;
+    let title = if watching {
+        viewer
+            .children
+            .get(viewer.selected_child)
+            .and_then(|child| child["taskId"].as_str())
+            .map(|task_id| format!(" SUBAGENTS · {task_id} · READ ONLY "))
+            .unwrap_or_else(|| " SUBAGENT · READ ONLY ".into())
+    } else {
+        " SUBAGENTS · READ ONLY ".into()
+    };
+    if let Some(inspector) = viewer.output_inspector.as_ref() {
+        let header = format!(
+            "{} [{}] · {} · {}/{} bytes{}",
+            inspector.tool_name,
+            inspector.call_id,
+            inspector.field,
+            inspector.text.len(),
+            inspector.field_bytes,
+            if viewer.output_request_id.is_some() {
+                " · loading"
+            } else {
+                ""
+            }
+        );
+        let footer = if inspector.next_offset.is_some() {
+            "↑/↓ scroll · n load next chunk · Esc transcript · m Main"
+        } else {
+            "↑/↓ scroll · Esc transcript · m Main"
+        };
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Watching {} · read only",
+                viewer.parent_agent.as_str()
+            ))
+            .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND))
+            .alignment(ratatui::layout::Alignment::Center),
+            rows[0],
+        );
+        let output = if inspector.text.is_empty() && viewer.output_request_id.is_some() {
+            "Loading tool output…".into()
+        } else {
+            subagent_control_text(&inspector.text)
+        };
+        frame.render_widget(
+            Paragraph::new(output)
+                .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+                .scroll((u16::try_from(inspector.scroll).unwrap_or(u16::MAX), 0))
+                .block(
+                    Block::default()
+                        .title(format!(" {header} "))
+                        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Plain)
+                        .border_style(Style::default().fg(PURPLE))
+                        .bg(PANEL_BACKGROUND)
+                        .padding(Padding::horizontal(1)),
+                )
+                .wrap(Wrap { trim: false }),
+            rows[1],
+        );
+        if let Some(error) = viewer.error.as_deref() {
+            frame.render_widget(
+                Paragraph::new(error).style(Style::default().fg(ERROR)),
+                rows[2],
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(footer)
+                    .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND))
+                    .alignment(ratatui::layout::Alignment::Center),
+                rows[2],
+            );
+        }
+        return;
+    }
+    let instructions = if watching {
+        format!(
+            "↑/↓ scroll · Tab select · Enter inspect · n next page{} · Esc back · m Main",
+            if viewer.entries_has_more {
+                " · more available"
+            } else {
+                ""
+            }
+        )
+    } else {
+        "↑/↓ select · Enter watch · Esc close · m Main".into()
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Watching {} · main draft is preserved",
+            viewer.parent_agent.as_str()
+        ))
+        .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[0],
+    );
+    let mut lines = Vec::<Line<'static>>::new();
+    if watching {
+        if let Some(child) = viewer.children.get(viewer.selected_child) {
+            let label = child["state"].as_str().unwrap_or("unknown");
+            let scope = format!(
+                "Task {} · call {} · child {} · {}",
+                child["taskId"].as_str().unwrap_or("unknown"),
+                child["parentCallId"].as_str().unwrap_or("unknown"),
+                child["childSessionId"].as_str().unwrap_or("unknown"),
+                label
+            );
+            lines.push(Line::from(Span::styled(scope, Style::default().fg(PURPLE))));
+        }
+        for (entry_index, entry) in viewer.child_entries.iter().enumerate() {
+            let Some(record) = entry.get("record").and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let kind = record
+                .get("k")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("entry");
+            let label = match kind {
+                "user" => "YOU",
+                "assistant" => "AGENT",
+                "call" => "TOOL CALL",
+                "bash" => "TERMINAL",
+                "tool" => "TOOL RESULT",
+                "reasoning" | "custom" => continue,
+                _ => "SYSTEM",
+            };
+            let detail = match kind {
+                "user" | "assistant" => record
+                    .get("t")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                "call" => format!(
+                    "{} [{}] {}",
+                    record
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool"),
+                    record
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("call id unavailable"),
+                    record
+                        .get("args")
+                        .map(serde_json::Value::to_string)
+                        .unwrap_or_default()
+                ),
+                "tool" => format!(
+                    "{} [{}] {}",
+                    record
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool"),
+                    record
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("call id unavailable"),
+                    record
+                        .get("t")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                ),
+                "bash" => format!(
+                    "{} [{}] · exit {}\n{}\n{}",
+                    record
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("bash"),
+                    record
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("call id unavailable"),
+                    record
+                        .get("code")
+                        .and_then(serde_json::Value::as_i64)
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "running".into()),
+                    record
+                        .get("cmd")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default(),
+                    record
+                        .get("out")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                ),
+                _ => record
+                    .get("t")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            };
+            let selected = entry_index == viewer.selected_entry;
+            let output_field = if kind == "bash" { "out" } else { "t" };
+            let output_is_truncated = entry
+                .get("truncatedFields")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|fields| {
+                    fields.iter().any(|field| {
+                        field.get("field").and_then(serde_json::Value::as_str) == Some(output_field)
+                    })
+                });
+            let suffix = if output_is_truncated && matches!(kind, "bash" | "tool") {
+                " · output preview truncated; Enter opens full output"
+            } else {
+                ""
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { "› " } else { "  " },
+                    Style::default().fg(if selected { ACCENT_BRIGHT } else { MUTED }),
+                ),
+                Span::styled(
+                    format!("{label} · {}{suffix}", subagent_display_text(&detail)),
+                    Style::default().fg(if kind == "bash" { ACCENT_BRIGHT } else { TEXT }),
+                ),
+            ]));
+        }
+        for event in &viewer.live_events {
+            let kind = event
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let (label, detail, color) = match kind {
+                "text" => (
+                    "AGENT",
+                    event
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    TEXT,
+                ),
+                "tool_start" => (
+                    "TOOL",
+                    format!(
+                        "{} [{}] running",
+                        event
+                            .get("toolName")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tool"),
+                        event
+                            .get("callId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("call id unavailable")
+                    ),
+                    ACCENT_BRIGHT,
+                ),
+                "tool_end" => (
+                    if event.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
+                        "TOOL ERROR"
+                    } else {
+                        "TOOL"
+                    },
+                    format!(
+                        "{} [{}] · {}",
+                        event
+                            .get("toolName")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tool"),
+                        event
+                            .get("callId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("call id unavailable"),
+                        event
+                            .get("text")
+                            .or_else(|| event.get("summary"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    if event.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
+                        ERROR
+                    } else {
+                        TEXT
+                    },
+                ),
+                "finished" => (
+                    "STATUS",
+                    event
+                        .get("state")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("finished")
+                        .to_string(),
+                    MUTED,
+                ),
+                _ => continue,
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{label} · {}", subagent_display_text(&detail)),
+                Style::default().fg(color),
+            )));
+        }
+        if viewer.child_entries.is_empty() && viewer.entries_request_id.is_some() {
+            lines.push(Line::from(Span::styled(
+                "Loading child transcript…",
+                Style::default().fg(MUTED),
+            )));
+        } else if viewer.child_entries.is_empty() && viewer.error.is_none() {
+            lines.push(Line::from(Span::styled(
+                "This child session has no visible transcript entries yet.",
+                Style::default().fg(MUTED),
+            )));
+        }
+    } else if viewer.list_request_id.is_empty()
+        && viewer.children.is_empty()
+        && viewer.error.is_none()
+    {
+        lines.push(Line::from(Span::styled(
+            "No linked child sessions for this parent conversation.",
+            Style::default().fg(MUTED),
+        )));
+    } else {
+        for (index, child) in viewer.children.iter().enumerate() {
+            let task_id = child["taskId"].as_str().unwrap_or("unknown");
+            let state = child["state"].as_str().unwrap_or("unknown");
+            let task_position = format!(
+                "{}/{}",
+                child["taskIndex"].as_u64().unwrap_or(index as u64 + 1),
+                child["taskCount"]
+                    .as_u64()
+                    .unwrap_or(viewer.children.len() as u64)
+            );
+            let prefix = if index == viewer.selected_child {
+                "› "
+            } else {
+                "  "
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(ACCENT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{task_position}  {state:<12} "),
+                    Style::default().fg(if state == "failed" { ERROR } else { MUTED }),
+                ),
+                Span::styled(task_id.to_string(), Style::default().fg(TEXT)),
+            ]));
+        }
+        if !viewer.list_request_id.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "Loading linked child sessions…",
+                Style::default().fg(MUTED),
+            )));
+        }
+    }
+    if let Some(error) = viewer.error.as_deref() {
+        lines.push(Line::from(Span::styled(error, Style::default().fg(ERROR))));
+    }
+    let body = Paragraph::new(Text::from(lines))
+        .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+        .scroll((u16::try_from(viewer.entries_scroll).unwrap_or(u16::MAX), 0))
+        .block(
+            Block::default()
+                .title(title)
+                .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(Style::default().fg(PURPLE))
+                .bg(PANEL_BACKGROUND)
+                .padding(Padding::horizontal(1)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(body, chunks[1]);
+    frame.render_widget(
+        Paragraph::new(instructions)
+            .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND))
+            .alignment(ratatui::layout::Alignment::Center),
+        chunks[2],
+    );
+}
+
+fn subagent_display_text(text: &str) -> String {
+    const LIMIT: usize = 8 * 1024;
+    let clean = subagent_control_text(text);
+    let mut output = String::with_capacity(clean.len().min(LIMIT));
+    for character in clean.chars() {
+        if output.len().saturating_add(character.len_utf8()) > LIMIT {
+            output.push_str("… [entry truncated]");
+            break;
+        }
+        output.push(character);
+    }
+    output
+}
+
+fn subagent_control_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect()
 }
 
 fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -7662,5 +8086,130 @@ mod tests {
         let scrolled = rendered(&state, 118, 20);
         assert!(!scrolled.contains("TRANSCRIPT_LINE_01"));
         assert!(scrolled.contains("TRANSCRIPT_LINE_04"));
+    }
+
+    #[test]
+    fn subagents_view_is_read_only_and_keeps_the_main_composer_hidden() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        let parent = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(parent.clone());
+        state.composer_mode = true;
+        state.composer_input = "UNSENT_MAIN_DRAFT".into();
+        state.composer_cursor = state.composer_input.len();
+        state
+            .conversation_items
+            .push(super::super::projection::ConversationEntry::user(
+                "MAIN_TRANSCRIPT_SENTINEL",
+                None,
+                None,
+            ));
+        state.subagents_viewer = Some(super::super::state::SubagentViewer {
+            parent_agent: parent.clone(),
+            parent_session_id: "parent-1".into(),
+            list_request_id: String::new(),
+            children: vec![serde_json::json!({
+                "taskId":"task-child-2",
+                "parentSessionId":"parent-1",
+                "parentCallId":"call-2",
+                "childSessionId":"child-2",
+                "taskIndex":2,
+                "taskCount":2,
+                "readOnly":true,
+                "state":"running"
+            })],
+            live_events: Vec::new(),
+            selected_child: 0,
+            child_entries: Vec::new(),
+            selected_entry: 0,
+            watching_child: false,
+            entries_request_id: None,
+            output_inspector: None,
+            output_request_id: None,
+            entries_cursor: 0,
+            entries_has_more: false,
+            entries_scroll: 0,
+            error: None,
+            last_event_sequence: 0,
+            previous_composer_mode: true,
+        });
+
+        for (width, height) in [(80, 24), (120, 40)] {
+            let output = rendered(&state, width, height);
+            assert!(output.contains("SUBAGENTS"));
+            assert!(output.contains("task-child-2"));
+            assert!(output.to_ascii_lowercase().contains("read only"));
+            assert!(output.contains("Enter watch"));
+            assert!(!output.contains("UNSENT_MAIN_DRAFT"));
+            assert!(!output.contains("MAIN_TRANSCRIPT_SENTINEL"));
+            assert!(!output.contains("composer"));
+            assert!(!output.contains("abort"));
+            assert!(!output.contains("approve"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create TUI snapshot directory");
+                std::fs::write(
+                    directory.join(format!("subagents-list-{width}x{height}.txt")),
+                    &output,
+                )
+                .expect("write subagents list snapshot");
+            }
+        }
+        let viewer = state.subagents_viewer.as_mut().unwrap();
+        viewer.watching_child = true;
+        viewer.child_entries = vec![
+            serde_json::json!({"record":{"k":"assistant","t":"CHILD_TRANSCRIPT_SENTINEL"}}),
+            serde_json::json!({"record":{"k":"call","id":"child-call-42","name":"bash","args":{"cmd":"printf visible"}}}),
+            serde_json::json!({"record":{"k":"bash","id":"child-call-42","name":"bash","cmd":"printf visible","out":"CHILD_TOOL_OUTPUT_SENTINEL","code":0}}),
+            serde_json::json!({"record":{"k":"reasoning","t":"PRIVATE_REASONING_SENTINEL"}}),
+        ];
+        viewer.live_events = vec![
+            serde_json::json!({"kind":"tool_end","toolName":"bash","text":"LIVE_TOOL_OUTPUT_SENTINEL","isError":false}),
+        ];
+        for (width, height) in [(80, 24), (120, 40)] {
+            let detail = rendered(&state, width, height);
+            assert!(detail.contains("CHILD_TRANSCRIPT_SENTINEL"));
+            assert!(detail.contains("child-call-42"));
+            assert!(detail.contains("CHILD_TOOL_OUTPUT_SENTINEL"));
+            assert!(detail.contains("LIVE_TOOL_OUTPUT_SENTINEL"));
+            assert!(!detail.contains("PRIVATE_REASONING_SENTINEL"));
+            assert!(!detail.contains("UNSENT_MAIN_DRAFT"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create TUI snapshot directory");
+                std::fs::write(
+                    directory.join(format!("subagents-detail-{width}x{height}.txt")),
+                    &detail,
+                )
+                .expect("write subagents detail snapshot");
+            }
+        }
+        state.subagents_viewer.as_mut().unwrap().output_inspector =
+            Some(super::super::state::SubagentOutputInspector {
+                entry_id: "child-2@512".into(),
+                call_id: "child-call-42".into(),
+                tool_name: "bash".into(),
+                field: "out".into(),
+                text: "FULL_OUTPUT_CHUNK_SENTINEL\nnext line".into(),
+                field_bytes: 100_000,
+                next_offset: Some(16_384),
+                scroll: 0,
+            });
+        let inspector = rendered(&state, 120, 40);
+        assert!(inspector.contains("child-call-42"));
+        assert!(inspector.contains("FULL_OUTPUT_CHUNK_SENTINEL"));
+        assert!(inspector.contains("n load next chunk"));
+        assert!(!inspector.contains("UNSENT_MAIN_DRAFT"));
+        if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).expect("create TUI snapshot directory");
+            std::fs::write(directory.join("subagents-output-120x40.txt"), &inspector)
+                .expect("write subagents output snapshot");
+        }
+        state.close_subagents_viewer();
+        assert_eq!(state.selected_agent, Some(parent));
+        assert_eq!(state.composer_input, "UNSENT_MAIN_DRAFT");
+        assert_eq!(state.composer_cursor, "UNSENT_MAIN_DRAFT".len());
+        assert!(state.composer_mode);
     }
 }

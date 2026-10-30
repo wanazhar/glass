@@ -241,6 +241,131 @@ pub struct NativeGcUiPanel {
     requested_after_sequence: u64,
 }
 
+/// Read-only view of child sessions linked by Glass Core to one parent turn.
+/// This state is separate from the selected agent and its composer/transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentViewer {
+    pub parent_agent: crate::AgentId,
+    pub parent_session_id: String,
+    pub list_request_id: String,
+    pub children: Vec<serde_json::Value>,
+    pub live_events: Vec<serde_json::Value>,
+    pub selected_child: usize,
+    pub child_entries: Vec<serde_json::Value>,
+    pub selected_entry: usize,
+    pub watching_child: bool,
+    pub entries_request_id: Option<String>,
+    pub output_inspector: Option<SubagentOutputInspector>,
+    pub output_request_id: Option<String>,
+    pub entries_cursor: u64,
+    pub entries_has_more: bool,
+    pub entries_scroll: usize,
+    pub error: Option<String>,
+    pub(crate) last_event_sequence: u64,
+    pub(crate) previous_composer_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentOutputInspector {
+    pub entry_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+    pub field: String,
+    pub text: String,
+    pub field_bytes: usize,
+    pub next_offset: Option<u64>,
+    pub scroll: usize,
+}
+
+fn response_error_summary(_response: &serde_json::Value) -> String {
+    // Keep Core's raw error payload out of the UI; errors may carry paths or
+    // implementation details that are unnecessary for this read-only view.
+    "Core could not load this read-only child-session view".into()
+}
+
+fn update_subagent_live_event(viewer: &mut SubagentViewer, event: &serde_json::Value) -> bool {
+    if event
+        .get("parentSessionId")
+        .and_then(serde_json::Value::as_str)
+        != Some(viewer.parent_session_id.as_str())
+    {
+        return false;
+    }
+    let Some(data) = event.get("data") else {
+        return false;
+    };
+    let Some(task_id) = data.get("taskId").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(parent_call_id) = data.get("parentCallId").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(child_session_id) = data
+        .get("childSessionId")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let kind = data
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let child_index = viewer.children.iter().position(|child| {
+        child.get("taskId").and_then(serde_json::Value::as_str) == Some(task_id)
+            && child
+                .get("parentCallId")
+                .and_then(serde_json::Value::as_str)
+                == Some(parent_call_id)
+            && child
+                .get("childSessionId")
+                .and_then(serde_json::Value::as_str)
+                == Some(child_session_id)
+    });
+    let child_state = if kind == "finished" {
+        data.get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+    } else {
+        child_index
+            .and_then(|index| viewer.children.get(index))
+            .and_then(|child| child.get("state"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("running")
+    };
+    let row = serde_json::json!({
+        "taskId": task_id,
+        "parentSessionId": viewer.parent_session_id,
+        "parentTurnId": event.get("parentTurnId").cloned().unwrap_or(serde_json::Value::Null),
+        "parentCallId": parent_call_id,
+        "taskIndex": data.get("taskIndex").cloned().unwrap_or(serde_json::Value::Null),
+        "taskCount": data.get("taskCount").cloned().unwrap_or(serde_json::Value::Null),
+        "childSessionId": child_session_id,
+        "readOnly": true,
+        "state": child_state,
+        "lastSeq": data.get("seq").cloned().unwrap_or(serde_json::Value::Null),
+    });
+    if let Some(index) = child_index {
+        viewer.children[index] = row;
+    } else if kind == "started" && viewer.children.len() < 100 {
+        viewer.children.push(row);
+    } else {
+        return false;
+    }
+    if viewer.watching_child
+        && viewer
+            .children
+            .get(viewer.selected_child)
+            .and_then(|child| child.get("childSessionId"))
+            == Some(&serde_json::Value::String(child_session_id.to_string()))
+    {
+        viewer.live_events.push(data.clone());
+        if viewer.live_events.len() > 200 {
+            viewer.live_events.remove(0);
+        }
+    }
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeContextAttachment {
     pub path: String,
@@ -1685,6 +1810,8 @@ pub struct DevTuiState {
     pub help_scroll: u16,
     /// Explicit Core-owned human UI output, kept out of the chat transcript.
     pub native_gc_ui_panel: Option<NativeGcUiPanel>,
+    /// Read-only child-session viewer, never a writable agent selection.
+    pub subagents_viewer: Option<SubagentViewer>,
     secret_prompt: Option<PendingSecretPrompt>,
     native_gc_ui_last_sequence: std::collections::BTreeMap<crate::AgentId, u64>,
     pub composer_mode: bool,
@@ -2254,6 +2381,7 @@ impl DevTuiState {
             help_open: false,
             help_scroll: 0,
             native_gc_ui_panel: None,
+            subagents_viewer: None,
             secret_prompt: None,
             native_gc_ui_last_sequence: std::collections::BTreeMap::new(),
             // Agent is the landing workspace and its composer is immediately
@@ -2950,6 +3078,613 @@ impl DevTuiState {
         if self.native_gc_ui_panel.take().is_some() {
             self.status = "Glass Core panel closed · conversation and draft preserved".into();
         }
+    }
+
+    pub fn open_subagents_viewer(&mut self) -> Result<(), String> {
+        if self.subagents_viewer.is_some() {
+            return Ok(());
+        }
+        let owner = self.selected_agent.clone().ok_or_else(|| {
+            "Select a Glass Agent conversation before opening /subagents".to_string()
+        })?;
+        let previous_composer_mode = self.composer_mode;
+        let setup = self.locked(|workspace| {
+            let session_id = workspace.agents().core_session_id(&owner)?;
+            let since = workspace
+                .agents()
+                .history(0)?
+                .last()
+                .map(|event| event.sequence)
+                .unwrap_or_default();
+            let request_id = workspace.agents().request_with_id(
+                &owner,
+                crate::resident_harness::ResidentSessionRequest::CoreSubagentsList,
+            )?;
+            Ok::<_, crate::development::DevelopmentError>((session_id, since, request_id))
+        });
+        let (parent_session_id, last_event_sequence, list_request_id) = match setup {
+            Some(Ok(value)) => value,
+            Some(Err(error)) => return Err(error.to_string()),
+            None => return Err(self.status.clone()),
+        };
+        self.subagents_viewer = Some(SubagentViewer {
+            parent_agent: owner,
+            parent_session_id,
+            list_request_id,
+            children: Vec::new(),
+            live_events: Vec::new(),
+            selected_child: 0,
+            child_entries: Vec::new(),
+            selected_entry: 0,
+            watching_child: false,
+            entries_request_id: None,
+            output_inspector: None,
+            output_request_id: None,
+            entries_cursor: 0,
+            entries_has_more: false,
+            entries_scroll: 0,
+            error: None,
+            last_event_sequence,
+            previous_composer_mode,
+        });
+        self.composer_mode = false;
+        self.status = "Subagents · ↑/↓ select · Enter watch · Esc close · read only".into();
+        Ok(())
+    }
+
+    pub fn close_subagents_viewer(&mut self) {
+        if let Some(viewer) = self.subagents_viewer.take() {
+            self.composer_mode = viewer.previous_composer_mode;
+            self.status = "Returned to main conversation · draft preserved".into();
+        }
+    }
+
+    pub fn move_subagent_selection(&mut self, delta: i32) {
+        let Some(viewer) = self.subagents_viewer.as_mut() else {
+            return;
+        };
+        if viewer.watching_child {
+            if viewer.output_inspector.is_some() {
+                if let Some(inspector) = viewer.output_inspector.as_mut() {
+                    inspector.scroll = inspector
+                        .scroll
+                        .saturating_add_signed((delta.saturating_mul(3)) as isize);
+                }
+                return;
+            }
+            viewer.entries_scroll = viewer
+                .entries_scroll
+                .saturating_add_signed((delta.saturating_mul(3)) as isize);
+            return;
+        }
+        if viewer.children.is_empty() {
+            viewer.selected_child = 0;
+        } else {
+            viewer.selected_child = (viewer.selected_child as i32 + delta)
+                .rem_euclid(viewer.children.len() as i32)
+                as usize;
+        }
+    }
+
+    pub fn move_subagent_entry_selection(&mut self, delta: i32) {
+        let Some(viewer) = self.subagents_viewer.as_mut() else {
+            return;
+        };
+        if viewer.watching_child && !viewer.child_entries.is_empty() {
+            viewer.selected_entry = (viewer.selected_entry as i32 + delta)
+                .clamp(0, viewer.child_entries.len().saturating_sub(1) as i32)
+                as usize;
+        }
+    }
+
+    pub fn set_subagents_viewer_error(&mut self, error: String) {
+        if let Some(viewer) = self.subagents_viewer.as_mut() {
+            viewer.error = Some(error);
+        }
+    }
+
+    pub fn watch_selected_subagent(&mut self) -> Result<(), String> {
+        let Some(viewer) = self.subagents_viewer.as_ref() else {
+            return Err("Subagents viewer is closed".into());
+        };
+        let Some(child) = viewer.children.get(viewer.selected_child) else {
+            return Err("No linked child session is available to view".into());
+        };
+        if child
+            .get("parentSessionId")
+            .and_then(serde_json::Value::as_str)
+            != Some(viewer.parent_session_id.as_str())
+            || child.get("readOnly").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            return Err(
+                "Core child row is not linked to this parent as a read-only session".into(),
+            );
+        }
+        let task_id = child["taskId"]
+            .as_str()
+            .ok_or_else(|| "Core child row omitted its task ID".to_string())?;
+        let parent_call_id = child["parentCallId"]
+            .as_str()
+            .ok_or_else(|| "Core child row omitted its parent call ID".to_string())?;
+        let child_session_id = child["childSessionId"]
+            .as_str()
+            .ok_or_else(|| "Core child row omitted its session ID".to_string())?;
+        let (owner, task_id, parent_call_id, child_session_id) = (
+            viewer.parent_agent.clone(),
+            task_id.to_string(),
+            parent_call_id.to_string(),
+            child_session_id.to_string(),
+        );
+        let setup = self.locked(|workspace| {
+            let since = workspace
+                .agents()
+                .history(0)?
+                .last()
+                .map(|event| event.sequence)
+                .unwrap_or_default();
+            let request_id = workspace.agents().request_with_id(
+                &owner,
+                crate::resident_harness::ResidentSessionRequest::CoreSubagentEntries {
+                    task_id,
+                    parent_call_id,
+                    child_session_id,
+                    cursor: 0,
+                    limit: 50,
+                },
+            )?;
+            Ok::<_, crate::development::DevelopmentError>((since, request_id))
+        });
+        let (since, request_id) = match setup {
+            Some(Ok(value)) => value,
+            Some(Err(error)) => return Err(error.to_string()),
+            None => return Err(self.status.clone()),
+        };
+        let viewer = self
+            .subagents_viewer
+            .as_mut()
+            .expect("viewer checked above");
+        viewer.child_entries.clear();
+        viewer.selected_entry = 0;
+        viewer.live_events.clear();
+        viewer.watching_child = true;
+        viewer.entries_cursor = 0;
+        viewer.entries_has_more = false;
+        viewer.entries_scroll = 0;
+        viewer.entries_request_id = Some(request_id);
+        viewer.output_inspector = None;
+        viewer.output_request_id = None;
+        viewer.last_event_sequence = since;
+        viewer.error = None;
+        Ok(())
+    }
+
+    pub fn back_subagents_viewer(&mut self) {
+        let Some(viewer) = self.subagents_viewer.as_mut() else {
+            return;
+        };
+        if viewer.output_inspector.is_some() {
+            viewer.output_inspector = None;
+            viewer.output_request_id = None;
+            self.status = "Child transcript · Tab select output · Enter inspect · Esc back".into();
+            return;
+        }
+        if viewer.watching_child {
+            viewer.watching_child = false;
+            viewer.child_entries.clear();
+            viewer.selected_entry = 0;
+            viewer.live_events.clear();
+            viewer.entries_request_id = None;
+            viewer.entries_cursor = 0;
+            viewer.entries_has_more = false;
+            viewer.entries_scroll = 0;
+            viewer.error = None;
+            self.status = "Subagents · ↑/↓ select · Enter watch · Esc close · read only".into();
+        } else {
+            self.close_subagents_viewer();
+        }
+    }
+
+    pub fn inspect_selected_subagent_output(&mut self) -> Result<(), String> {
+        let Some(viewer) = self.subagents_viewer.as_ref() else {
+            return Err("Subagents viewer is closed".into());
+        };
+        if !viewer.watching_child || viewer.output_inspector.is_some() {
+            return Ok(());
+        }
+        let entry = viewer
+            .child_entries
+            .get(viewer.selected_entry)
+            .ok_or("Select a child transcript entry first")?;
+        let record = entry
+            .get("record")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("Child transcript entry is malformed")?;
+        let field = match record.get("k").and_then(serde_json::Value::as_str) {
+            Some("bash") => "out",
+            Some("tool") => "t",
+            _ => return Err("Select a tool result to inspect its full output".into()),
+        };
+        let entry_id = entry
+            .get("entryId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Child transcript entry has no Core entry ID")?
+            .to_string();
+        let call_id = record
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Child tool result has no call ID")?
+            .to_string();
+        let tool_name = record
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("tool")
+            .to_string();
+        let inspector = SubagentOutputInspector {
+            entry_id,
+            call_id,
+            tool_name,
+            field: field.into(),
+            text: String::new(),
+            field_bytes: 0,
+            next_offset: None,
+            scroll: 0,
+        };
+        let request_id = self.queue_subagent_output_chunk(&inspector, 0)?;
+        let viewer = self
+            .subagents_viewer
+            .as_mut()
+            .expect("viewer checked above");
+        viewer.output_inspector = Some(inspector);
+        viewer.output_request_id = Some(request_id);
+        Ok(())
+    }
+
+    fn queue_subagent_output_chunk(
+        &mut self,
+        inspector: &SubagentOutputInspector,
+        offset: u64,
+    ) -> Result<String, String> {
+        let viewer = self
+            .subagents_viewer
+            .as_ref()
+            .ok_or("Subagents viewer is closed")?;
+        let child = viewer
+            .children
+            .get(viewer.selected_child)
+            .ok_or("Selected child session is no longer available")?;
+        if child
+            .get("parentSessionId")
+            .and_then(serde_json::Value::as_str)
+            != Some(viewer.parent_session_id.as_str())
+            || child.get("readOnly").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            return Err(
+                "Core child row is not linked to this parent as a read-only session".into(),
+            );
+        }
+        let owner = viewer.parent_agent.clone();
+        let task_id = child["taskId"]
+            .as_str()
+            .ok_or("Core child row omitted task ID")?
+            .to_string();
+        let parent_call_id = child["parentCallId"]
+            .as_str()
+            .ok_or("Core child row omitted parent call ID")?
+            .to_string();
+        let child_session_id = child["childSessionId"]
+            .as_str()
+            .ok_or("Core child row omitted session ID")?
+            .to_string();
+        let entry_id = inspector.entry_id.clone();
+        let field = inspector.field.clone();
+        let setup = self.locked(|workspace| {
+            let since = workspace
+                .agents()
+                .history(0)?
+                .last()
+                .map(|event| event.sequence)
+                .unwrap_or_default();
+            let request_id = workspace.agents().request_with_id(
+                &owner,
+                crate::resident_harness::ResidentSessionRequest::CoreSubagentEntry {
+                    task_id,
+                    parent_call_id,
+                    child_session_id,
+                    entry_id,
+                    field,
+                    offset,
+                    limit_bytes: 16 * 1024,
+                },
+            )?;
+            Ok::<_, crate::development::DevelopmentError>((since, request_id))
+        });
+        match setup {
+            Some(Ok((since, request_id))) => {
+                if let Some(viewer) = self.subagents_viewer.as_mut() {
+                    viewer.last_event_sequence = since;
+                }
+                Ok(request_id)
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err(self.status.clone()),
+        }
+    }
+
+    pub fn next_subagent_output_chunk(&mut self) -> Result<(), String> {
+        let inspector = self
+            .subagents_viewer
+            .as_ref()
+            .and_then(|viewer| viewer.output_inspector.as_ref())
+            .cloned()
+            .ok_or("Output inspector is closed")?;
+        if self
+            .subagents_viewer
+            .as_ref()
+            .and_then(|viewer| viewer.output_request_id.as_ref())
+            .is_some()
+        {
+            return Ok(());
+        }
+        let Some(offset) = inspector.next_offset else {
+            return Ok(());
+        };
+        let request_id = self.queue_subagent_output_chunk(&inspector, offset)?;
+        if let Some(viewer) = self.subagents_viewer.as_mut() {
+            viewer.output_request_id = Some(request_id);
+        }
+        Ok(())
+    }
+
+    pub fn next_subagent_entries_page(&mut self) -> Result<(), String> {
+        let Some(viewer) = self.subagents_viewer.as_ref() else {
+            return Err("Subagents viewer is closed".into());
+        };
+        if !viewer.watching_child || !viewer.entries_has_more || viewer.entries_request_id.is_some()
+        {
+            return Ok(());
+        }
+        let Some(child) = viewer.children.get(viewer.selected_child) else {
+            return Err("Selected child session is no longer available".into());
+        };
+        if child
+            .get("parentSessionId")
+            .and_then(serde_json::Value::as_str)
+            != Some(viewer.parent_session_id.as_str())
+            || child.get("readOnly").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            return Err(
+                "Core child row is not linked to this parent as a read-only session".into(),
+            );
+        }
+        let owner = viewer.parent_agent.clone();
+        let task_id = child["taskId"]
+            .as_str()
+            .ok_or("Core child row omitted task ID")?
+            .to_string();
+        let parent_call_id = child["parentCallId"]
+            .as_str()
+            .ok_or("Core child row omitted parent call ID")?
+            .to_string();
+        let child_session_id = child["childSessionId"]
+            .as_str()
+            .ok_or("Core child row omitted session ID")?
+            .to_string();
+        let cursor = viewer.entries_cursor;
+        let setup = self.locked(|workspace| {
+            let since = workspace
+                .agents()
+                .history(0)?
+                .last()
+                .map(|event| event.sequence)
+                .unwrap_or_default();
+            let request_id = workspace.agents().request_with_id(
+                &owner,
+                crate::resident_harness::ResidentSessionRequest::CoreSubagentEntries {
+                    task_id,
+                    parent_call_id,
+                    child_session_id,
+                    cursor,
+                    limit: 50,
+                },
+            )?;
+            Ok::<_, crate::development::DevelopmentError>((since, request_id))
+        });
+        match setup {
+            Some(Ok((since, request_id))) => {
+                let viewer = self
+                    .subagents_viewer
+                    .as_mut()
+                    .expect("viewer checked above");
+                viewer.entries_request_id = Some(request_id);
+                viewer.last_event_sequence = since;
+                viewer.error = None;
+                Ok(())
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err(self.status.clone()),
+        }
+    }
+
+    pub fn tick_subagents_viewer(&mut self) -> bool {
+        let Some(viewer) = self.subagents_viewer.as_ref() else {
+            return false;
+        };
+        let owner = viewer.parent_agent.clone();
+        let list_request_id = viewer.list_request_id.clone();
+        let entries_request_id = viewer.entries_request_id.clone();
+        let output_request_id = viewer.output_request_id.clone();
+        let since = viewer.last_event_sequence;
+        let events = self.locked(|workspace| {
+            workspace
+                .agents()
+                .history(since)
+                .map_err(|error| error.to_string())
+        });
+        let Some(Ok(events)) = events else {
+            return false;
+        };
+        let Some(viewer) = self.subagents_viewer.as_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        let mut matched = None;
+        for event in events {
+            viewer.last_event_sequence = viewer.last_event_sequence.max(event.sequence);
+            if event.agent_id != owner {
+                continue;
+            }
+            if event.kind == "subagent_event" {
+                changed |= update_subagent_live_event(viewer, &event.payload);
+                continue;
+            }
+            if event.kind != "response" {
+                continue;
+            }
+            let Some(request_id) = event.payload.get("id").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if request_id == list_request_id {
+                matched = Some((0_u8, event.payload));
+            } else if entries_request_id.as_deref() == Some(request_id) {
+                matched = Some((1_u8, event.payload));
+            } else if output_request_id.as_deref() == Some(request_id) {
+                matched = Some((2_u8, event.payload));
+            }
+        }
+        let Some((request_kind, response)) = matched else {
+            return changed;
+        };
+        if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            viewer.error = Some(response_error_summary(&response));
+            if request_kind == 1 {
+                viewer.entries_request_id = None;
+            } else if request_kind == 2 {
+                viewer.output_request_id = None;
+            } else {
+                viewer.list_request_id.clear();
+            }
+            return true;
+        }
+        let result = response.get("result").unwrap_or(&serde_json::Value::Null);
+        if request_kind == 2 {
+            let Some(inspector) = viewer.output_inspector.as_mut() else {
+                viewer.output_request_id = None;
+                return true;
+            };
+            let expected_child = viewer.children.get(viewer.selected_child);
+            let matches_link = expected_child.is_some_and(|child| {
+                ["taskId", "parentCallId", "childSessionId"]
+                    .iter()
+                    .all(|key| result.get(key) == child.get(key))
+            });
+            let matches_entry = result.get("entryId").and_then(serde_json::Value::as_str)
+                == Some(inspector.entry_id.as_str())
+                && result.get("field").and_then(serde_json::Value::as_str)
+                    == Some(inspector.field.as_str())
+                && result.get("callId").and_then(serde_json::Value::as_str)
+                    == Some(inspector.call_id.as_str())
+                && result.get("toolName").and_then(serde_json::Value::as_str)
+                    == Some(inspector.tool_name.as_str());
+            if !matches_link || !matches_entry {
+                viewer.error = Some("Core returned output for a different child tool call".into());
+                viewer.output_request_id = None;
+            } else if matches!(
+                result.get("recordKind").and_then(serde_json::Value::as_str),
+                Some("reasoning" | "custom")
+            ) {
+                viewer.error = Some("Private child content is hidden".into());
+                viewer.output_request_id = None;
+            } else if let Some(text) = result.get("text").and_then(serde_json::Value::as_str) {
+                inspector.text.push_str(text);
+                inspector.field_bytes = usize::try_from(
+                    result
+                        .get("fieldBytes")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default(),
+                )
+                .unwrap_or(usize::MAX);
+                inspector.next_offset =
+                    result.get("nextOffset").and_then(serde_json::Value::as_u64);
+                viewer.output_request_id = None;
+            } else {
+                viewer.error = Some("Core returned an invalid child output chunk".into());
+                viewer.output_request_id = None;
+            }
+            return true;
+        }
+        if request_kind == 0 {
+            if result
+                .get("parentSessionId")
+                .and_then(serde_json::Value::as_str)
+                != Some(viewer.parent_session_id.as_str())
+            {
+                viewer.error =
+                    Some("Core returned child rows for a different parent session".into());
+                viewer.list_request_id.clear();
+            } else if let Some(children) =
+                result.get("children").and_then(serde_json::Value::as_array)
+            {
+                viewer.children = children
+                    .iter()
+                    .filter(|child| {
+                        child
+                            .get("parentSessionId")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(viewer.parent_session_id.as_str())
+                            && child.get("readOnly").and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                    })
+                    .cloned()
+                    .collect();
+                viewer.selected_child = viewer
+                    .selected_child
+                    .min(viewer.children.len().saturating_sub(1));
+                viewer.list_request_id.clear();
+            } else {
+                viewer.error = Some("Core returned an invalid child-session list".into());
+                viewer.list_request_id.clear();
+            }
+        } else {
+            let expected = viewer.children.get(viewer.selected_child);
+            let matches_link = expected.is_some_and(|child| {
+                ["taskId", "parentCallId", "childSessionId"]
+                    .iter()
+                    .all(|key| result.get(key) == child.get(key))
+            });
+            if !matches_link {
+                viewer.error = Some("Core returned a page for a different child session".into());
+                viewer.entries_request_id = None;
+            } else if let Some(entries) =
+                result.get("entries").and_then(serde_json::Value::as_array)
+            {
+                viewer.child_entries.extend(
+                    entries
+                        .iter()
+                        .filter(|entry| {
+                            entry
+                                .get("record")
+                                .and_then(serde_json::Value::as_object)
+                                .and_then(|record| record.get("k"))
+                                .and_then(serde_json::Value::as_str)
+                                != Some("reasoning")
+                        })
+                        .cloned(),
+                );
+                viewer.entries_cursor = result
+                    .get("cursor")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(viewer.entries_cursor);
+                viewer.entries_has_more = result
+                    .get("hasMore")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                viewer.entries_request_id = None;
+            } else {
+                viewer.error = Some("Core returned an invalid child-session page".into());
+            }
+        }
+        true
     }
 
     pub fn native_gc_ui_search_start(&mut self) {
@@ -21769,5 +22504,72 @@ mod tests {
 
         std::fs::remove_file(outside_path).expect("remove outside source file");
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn subagent_events_update_only_the_linked_parent_and_keep_live_output_typed() {
+        let mut viewer = SubagentViewer {
+            parent_agent: crate::AgentId::parse("agent-0001").unwrap(),
+            parent_session_id: "parent-session".into(),
+            list_request_id: String::new(),
+            children: Vec::new(),
+            live_events: Vec::new(),
+            selected_child: 0,
+            child_entries: Vec::new(),
+            selected_entry: 0,
+            watching_child: true,
+            entries_request_id: None,
+            output_inspector: None,
+            output_request_id: None,
+            entries_cursor: 0,
+            entries_has_more: false,
+            entries_scroll: 0,
+            error: None,
+            last_event_sequence: 0,
+            previous_composer_mode: true,
+        };
+        let event = serde_json::json!({
+            "parentSessionId":"parent-session",
+            "parentTurnId":"turn-1",
+            "data":{
+                "kind":"started",
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "taskIndex":1,
+                "taskCount":1,
+                "childSessionId":"child-1",
+                "seq":1,
+                "state":"running",
+                "readOnly":true
+            }
+        });
+        assert!(update_subagent_live_event(&mut viewer, &event));
+        assert_eq!(viewer.children.len(), 1);
+        assert_eq!(viewer.children[0]["state"], "running");
+        assert_eq!(viewer.children[0]["readOnly"], true);
+        assert_eq!(viewer.live_events.len(), 1);
+
+        let unrelated = serde_json::json!({
+            "parentSessionId":"other-parent",
+            "data":event["data"]
+        });
+        assert!(!update_subagent_live_event(&mut viewer, &unrelated));
+        assert_eq!(viewer.children.len(), 1);
+        assert_eq!(viewer.live_events.len(), 1);
+
+        let finished = serde_json::json!({
+            "parentSessionId":"parent-session",
+            "data":{
+                "kind":"finished",
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":"child-1",
+                "seq":2,
+                "state":"completed"
+            }
+        });
+        assert!(update_subagent_live_event(&mut viewer, &finished));
+        assert_eq!(viewer.children[0]["state"], "completed");
+        assert_eq!(viewer.live_events.len(), 2);
     }
 }

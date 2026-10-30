@@ -3084,4 +3084,7 @@ mod tests {
 
         reader.join().unwrap();
     }
+
+    #[path = "../secret_channel_acceptance.rs"]
+    mod secret_channel_acceptance;
 }

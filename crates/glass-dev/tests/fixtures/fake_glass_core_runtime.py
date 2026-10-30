@@ -150,6 +150,82 @@ def run_turn(identifier, params: dict) -> None:
     text = str(params.get("text", ""))
     turn = "turn-1"
     event("turn_start", {}, turn)
+    if MODE in (
+        "secret-input",
+        "secret-input-cancel",
+        "secret-input-expiring",
+        "secret-input-core-cancel",
+    ):
+        request_id = "human-secret-fixture"
+        lifetime_ms = 1_500 if MODE == "secret-input-expiring" else 60_000
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "human/input/request",
+            "params": {
+                "sessionId": SESSION_ID,
+                "turnId": turn,
+                "kind": "secret",
+                "purpose": "fixture login",
+                "destination": "https://example.test",
+                "tool": "web_secret_request",
+                "operation": "fixture",
+                "expiresAtMs": int(time.time() * 1000) + lifetime_ms,
+                "maxBytes": 4096,
+            },
+        })
+        if MODE == "secret-input-core-cancel":
+            send({
+                "jsonrpc": "2.0",
+                "method": "human/input/cancel",
+                "params": {"sessionId": "wrong-session", "requestId": request_id},
+            })
+            event("text", {"text": "wrong-session cancellation ignored"}, turn)
+            send({
+                "jsonrpc": "2.0",
+                "method": "human/input/cancel",
+                "params": {"sessionId": SESSION_ID, "requestId": "wrong-request-id"},
+            })
+            event("text", {"text": "wrong-id cancellation ignored"}, turn)
+            send({
+                "jsonrpc": "2.0",
+                "method": "human/input/cancel",
+                "params": {"sessionId": SESSION_ID, "requestId": request_id},
+            })
+            event("text", {"text": "secret request cancelled"}, turn)
+            event("settled", {"reason": "completed"}, turn)
+            reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+            return
+        line = sys.stdin.readline()
+        if not line:
+            raise SystemExit(0)
+        answer = json.loads(line)
+        if answer.get("id") != request_id or "method" in answer:
+            raise ValueError("secret input response did not match its live request")
+        result = answer.get("result", {})
+        status = result.get("status")
+        if status not in ("answered", "cancelled"):
+            raise ValueError("secret input response did not answer or cancel the request")
+        secret_matches = (
+            status == "answered"
+            and result.get("secret") == "offline-secret-sentinel"
+        )
+        if STORAGE_DIR is not None:
+            with open(
+                os.path.join(STORAGE_DIR, "fixture-secret-results.jsonl"),
+                "a",
+                encoding="utf-8",
+            ) as log:
+                log.write(json.dumps({
+                    "requestId": request_id,
+                    "status": status,
+                    "secretMatchesSentinel": secret_matches,
+                }, separators=(",", ":")) + "\n")
+        # The sentinel is deliberately never recorded or echoed by the fixture.
+        event("text", {"text": "secret request completed"}, turn)
+        event("settled", {"reason": "completed"}, turn)
+        reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+        return
     if MODE == "browser-flow":
         run_browser_flow(identifier, params, turn)
         return
@@ -348,6 +424,16 @@ def main() -> None:
                 os.makedirs(STORAGE_DIR, exist_ok=True)
                 with open(os.path.join(STORAGE_DIR, "fixture-runtime-pid"), "w", encoding="utf-8") as marker:
                     marker.write(str(os.getpid()))
+                if mode.startswith("secret-input") or mode == "missing-masked-secret-input":
+                    with open(
+                        os.path.join(STORAGE_DIR, "fixture-secret-capabilities.json"),
+                        "w",
+                        encoding="utf-8",
+                    ) as record:
+                        record.write(json.dumps({
+                            "requiredCapabilities": params.get("requiredCapabilities", []),
+                            "maskedSecretInputAdvertised": mode != "missing-masked-secret-input",
+                        }, separators=(",", ":")))
             if mode == "legacy-v1":
                 send({
                     "jsonrpc": "2.0",
@@ -369,7 +455,7 @@ def main() -> None:
                 {
                     "protocolVersion": 2,
                     "runtime": {"name": "glass-core", "version": runtime_version},
-                    "capabilities": {"hostTools": True, "localTools": True, "mixedTools": mode != "missing-mixed", "steering": True, "cancel": True},
+                    "capabilities": {"hostTools": True, "localTools": True, "mixedTools": mode != "missing-mixed", "maskedSecretInput": mode != "missing-masked-secret-input", "steering": True, "cancel": True},
                     "limits": {"frameBytes": 1024 * 1024, "toolResultBytes": 512 * 1024},
                     "storageDir": params.get("storageDir"),
                 },

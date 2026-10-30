@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_engine::font::MAX_NATIVE_FONT_TOTAL_BYTES;
+use crate::native_engine::font::reserve_native_font_resource_bytes;
 
 pub(in crate::native_engine::content_process) fn decode_fetch_response(
     response: &Value,
@@ -780,40 +780,25 @@ pub(in crate::native_engine::content_process) async fn load_font_faces(
                     }
                 }
             };
-            if let Some(bytes) = bytes
-                && reserve_native_font_resource_bytes(&mut total_font_bytes, bytes.len())
-            {
-                resources.push(NativeFontFaceResource::from_rule(rule, bytes));
-                break;
+            if let Some(bytes) = bytes {
+                let resource = NativeFontFaceResource::from_rule(rule, bytes);
+                if resources.contains(&resource) {
+                    break;
+                }
+                if reserve_native_font_resource_bytes(&mut total_font_bytes, resource.bytes.len()) {
+                    resources.push(resource);
+                    break;
+                }
             }
         }
     }
     document.set_font_resources(resources)
 }
 
-/// Keep a document's optional web-font resources within the same aggregate
-/// bound enforced by `NativeDocument::set_font_resources`. A page can declare
-/// many independently valid font faces; exhausting this budget should omit
-/// only the later face instead of failing the entire navigation.
-fn reserve_native_font_resource_bytes(total_bytes: &mut usize, resource_bytes: usize) -> bool {
-    if resource_bytes == 0 || resource_bytes > MAX_NATIVE_FONT_BYTES {
-        return false;
-    }
-    let Some(next_total) = total_bytes.checked_add(resource_bytes) else {
-        return false;
-    };
-    if next_total > MAX_NATIVE_FONT_TOTAL_BYTES {
-        return false;
-    }
-    *total_bytes = next_total;
-    true
-}
-
 #[cfg(test)]
 mod font_resource_budget_tests {
-    use super::{
-        MAX_NATIVE_FONT_BYTES, MAX_NATIVE_FONT_TOTAL_BYTES, reserve_native_font_resource_bytes,
-    };
+    use super::reserve_native_font_resource_bytes;
+    use crate::native_engine::font::{MAX_NATIVE_FONT_BYTES, MAX_NATIVE_FONT_TOTAL_BYTES};
 
     #[test]
     fn aggregate_font_budget_keeps_admitted_faces_and_skips_only_overflow() {

@@ -938,6 +938,7 @@ pub(super) fn load_font_faces(
     document_url: &str,
 ) -> Result<(), NativeEngineError> {
     let mut resources = Vec::new();
+    let mut total_font_bytes = 0usize;
     let system_fonts = NativeFontBook::system();
     for rule in document
         .font_face_rules()
@@ -964,8 +965,17 @@ pub(super) fn load_font_faces(
                 }
             };
             if let Some(bytes) = bytes {
-                resources.push(NativeFontFaceResource::from_rule(rule, bytes));
-                break;
+                let resource = NativeFontFaceResource::from_rule(rule, bytes);
+                if resources.contains(&resource) {
+                    break;
+                }
+                if super::super::font::reserve_native_font_resource_bytes(
+                    &mut total_font_bytes,
+                    resource.bytes.len(),
+                ) {
+                    resources.push(resource);
+                    break;
+                }
             }
         }
     }
@@ -980,4 +990,70 @@ pub(super) fn extract_local_scroll_commands(
         .filter(|command| matches!(command, NativeScriptCommand::ScrollTo { .. }))
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod font_budget_tests {
+    use super::*;
+
+    #[test]
+    fn local_font_aggregate_overflow_omits_only_later_faces_and_deduplicates_exact_faces() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let root = std::env::temp_dir().join(format!(
+            "glass-local-font-budget-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let write_font = |name: &str, size: usize, byte: u8| {
+            std::fs::write(root.join(name), vec![byte; size]).unwrap();
+        };
+        write_font("font-a.ttf", 2 * 1024 * 1024, 0x11);
+        write_font("font-b.ttf", 2 * 1024 * 1024, 0x22);
+        write_font("font-c.ttf", 2 * 1024 * 1024, 0x33);
+        write_font("font-d-oversized.ttf", 5 * 1024 * 1024, 0x44);
+        write_font("font-d-fallback.ttf", 512 * 1024, 0x45);
+        write_font("font-e-over-budget.ttf", 2 * 1024 * 1024, 0x55);
+        write_font("font-e-fallback.ttf", 1536 * 1024, 0x56);
+        write_font("font-f.ttf", 512 * 1024, 0x66);
+
+        let html = r#"<!doctype html><style>
+            @font-face { font-family: FontA; src: url("font-a.ttf"); }
+            @font-face { font-family: FontB; src: url("font-b.ttf"); }
+            @font-face { font-family: FontA; src: url("font-a.ttf"); }
+            @font-face { font-family: FontC; src: url("font-c.ttf"); }
+            @font-face { font-family: FontD; src: url("font-d-oversized.ttf"), url("font-d-fallback.ttf"); }
+            @font-face { font-family: FontE; src: url("font-e-over-budget.ttf"), url("font-e-fallback.ttf"); }
+            @font-face { font-family: FontF; src: url("font-f.ttf"); }
+        </style><main id="body">document remains available</main>"#;
+        std::fs::write(root.join("index.html"), html).unwrap();
+        let mut document =
+            NativeDocument::parse(html, &crate::native_engine::NativeEngineLimits::default())
+                .expect("local font fixture document parses");
+        let page_url = url::Url::from_file_path(root.join("index.html"))
+            .unwrap()
+            .to_string();
+        let config = NativeEngineConfig::default().with_allowed_file_root(root.clone());
+        let mut loader = NativeResourceLoader::new(&config).expect("fixture loader constructs");
+
+        load_font_faces(&mut document, None, &mut loader, &page_url)
+            .expect("optional font budget exhaustion must not fail document setup");
+
+        let statuses = document
+            .font_face_script_descriptors()
+            .into_iter()
+            .map(|face| face.status)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            [
+                "loaded", "loaded", "loaded", "loaded", "loaded", "loaded", "error"
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

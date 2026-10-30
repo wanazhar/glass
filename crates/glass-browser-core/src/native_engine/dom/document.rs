@@ -562,6 +562,9 @@ impl NativeDocument {
             feature_settings,
         };
         let mut resources = self.font_resources.clone();
+        if resources.contains(&resource) {
+            return Ok(());
+        }
         resources.push(resource);
         self.set_font_resources(resources)
     }

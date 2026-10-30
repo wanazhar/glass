@@ -57,6 +57,25 @@ pub(crate) const MAX_NATIVE_FONT_FACES: usize = 16;
 pub(crate) const MAX_NATIVE_FONT_BYTES: usize = 4 * 1024 * 1024;
 /// Bound the aggregate document-owned font payload in one snapshot.
 pub(crate) const MAX_NATIVE_FONT_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+
+/// Reserve one bounded document font payload. Callers treat a rejected face
+/// as unavailable so an optional web font cannot fail the document load.
+pub(crate) fn reserve_native_font_resource_bytes(
+    total_bytes: &mut usize,
+    resource_bytes: usize,
+) -> bool {
+    if resource_bytes == 0 || resource_bytes > MAX_NATIVE_FONT_BYTES {
+        return false;
+    }
+    let Some(next_total) = total_bytes.checked_add(resource_bytes) else {
+        return false;
+    };
+    if next_total > MAX_NATIVE_FONT_TOTAL_BYTES {
+        return false;
+    }
+    *total_bytes = next_total;
+    true
+}
 const FONT_PARSE_SCALE: f32 = 40.0;
 const FONT_SHAPE_SCALE: u32 = 64;
 const FALLBACK_GLYPH_ADVANCE: u32 = 8;

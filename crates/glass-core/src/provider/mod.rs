@@ -493,25 +493,25 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     let mut tools = vec![
         (
             "desktop_status".to_string(),
-            "Read the live status of the Connect-managed desktop shared with the human. Reports its exact display, workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. Does not start or stop a desktop.".to_string(),
+            "Read the live status of the managed desktop shared with GC, Glass resident agents, and the human through Connect. Reports its sessionId, exact display, workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. Does not start or stop a desktop.".to_string(),
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the same Connect desktop. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease.".to_string(),
-            serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
+            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease.".to_string(),
+            serde_json::json!({"type":"object","properties":{"sessionId":{"type":"string","maxLength":64}},"required":["sessionId"],"additionalProperties":false}).to_string(),
         ),
         (
             "desktop_observe".to_string(),
-            "Read a compact, bounded accessibility snapshot of visible apps, windows, and controls. Nodes identify whether accessible text editing is supported and may include bounded text values; password fields never return values. Use a visible `windowId` from the `windows` list or a node's `owningWindow` to scope the next query to that exact window without repeating its title. A windowId is a session-scoped selector, not an action token; it is revalidated on every scoped observation and stops working when the session changes, the window closes, or its title changes. If navigation changes a window title, use the current selector from the latest action's returned `observation.windows`; if no fresh list is available, call `desktop_observe` without `windowId`, then use its current selector. The selector may change. Without windowId, focused-search terms match app names, control names, roles, supported actions, and owningWindow titles. Broad snapshots omit `onscreen` and action tokens; issue a focused query before acting. An actionable `onscreen:false` match is descriptive only and has no `targetId` or `pointerTarget`. Scroll with `desktop_input` in small increments, then repeat the same scoped query using the latest windowId; stop if the candidate disappears or stops progressing. After following a link, query the current address and page heading before choosing another target. After switching tabs, observe the tab labels and active address. Act only on a fresh `onscreen:true` result with visible and showing states, a targetId, `queryAmbiguous:false`, and `truncated:false`. A visible non-actionable label with `pointerFallback:true` has no targetId; use its fresh onscreen pointerTarget for one pointer-click only when the query is complete and unique. If desktop_act rejects a click because the control has no accessibility action, repeat the exact query in the same window scope and use only the fresh onscreen pointerTarget from a complete, unique result. Never reuse coordinates or target IDs from an earlier observation. If results are ambiguous or truncated, use an observed windowId or refine the control label; if a complete query finds no result, broaden it once or inspect a fresh screenshot rather than repeating the same search or guessing. Queries never search editable values. Focused unique results return revision-bound target IDs. The observation returned by an action is for checking the UI state and current window selectors; broad action observations do not include actionable target IDs. Run a new focused `desktop_observe` before acting again.".to_string(),
+            "Read a compact, bounded accessibility snapshot in the managed session identified by the latest desktop_status.sessionId. Nodes cover visible apps, windows, and controls. Password fields never return values. Use a visible `windowId` from the `windows` list or a node's `owningWindow` to scope the next query to that exact window. A windowId is a session-scoped selector, not an action token; it is revalidated on each observation and stops working when the session changes, the window closes, or its title changes. The selector may change. If navigation changes a window title, use the current selector from the latest action's returned `observation.windows`; if no fresh list is available, call `desktop_observe` without `windowId`, then use its current selector. Without windowId, focused-search terms match app names, control names, roles, supported actions, and owningWindow titles. Broad snapshots omit `onscreen` and action tokens; issue a focused query before acting. An actionable `onscreen:false` match is descriptive only and has no `targetId` or `pointerTarget`. Scroll with `desktop_input` in small increments, then repeat the same scoped query using the latest windowId; stop if the candidate disappears or stops progressing. After following a link, query the current address and page heading before choosing another target. After switching tabs, observe the tab labels and active address. Act only on a fresh `onscreen:true` result with visible and showing states, a targetId, `queryAmbiguous:false`, and `truncated:false`. A visible non-actionable label with `pointerFallback:true` has no targetId; use its fresh onscreen pointerTarget for one pointer-click only when the query is complete and unique. If desktop_act rejects a click because the control has no accessibility action, repeat the exact query in the same window scope and use only the fresh onscreen pointerTarget from a complete, unique result. Never reuse coordinates or target IDs from an earlier observation. If results are ambiguous or truncated, use an observed windowId or refine the control label; if a complete query finds no result, broaden it once or inspect a fresh screenshot rather than repeating the same search or guessing. Queries never search editable values. Focused unique results return revision-bound target IDs. The observation returned by an action is for checking the UI state and current window selectors; broad action observations do not include actionable target IDs. Run a new focused `desktop_observe` before acting again.".to_string(),
             serde_json::json!({
                 "type":"object",
                 "properties":{
-                    "sessionId":{"type":"string","maxLength":64},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status. Rejected if the managed session changed."},
                     "query":{"type":"string","maxLength":120,"description":"Optional 1–8 word search across app/window names, control names, roles, and supported actions. Use a visible `windowId` for direct scoped search; without one, include app and distinctive owningWindow title terms. Broad snapshots have no action tokens; a focused query is required before acting. An offscreen match has onscreen=false and no action tokens; scroll and repeat the same query in the same window scope, then act only on fresh onscreen=true or pointerFallback=true results when complete and unique. Refine ambiguous or truncated results; never search editable values."},
                     "windowId":{"type":"string","maxLength":96,"description":"Optional visible window selector from the latest snapshot's windows list or owningWindow. Scopes this observation to that exact session window; stale, closed, or title-changed windows are rejected. If navigation changes the title, use the latest action observation's windows list or refresh with an unscoped desktop_observe; the selector may differ."}
                 },
-                "additionalProperties":false
+                "required":["sessionId"],"additionalProperties":false
             }).to_string(),
         ),
     ];
@@ -533,10 +533,11 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_input".to_string(),
-            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the current Connect desktop and is rejected while the human holds the control lease. It is already bound to this Connect session and does not accept a sessionId; desktop_act and desktop_launch_app do require the sessionId from the latest desktop_status/desktop_observe. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the managed session identified by the latest desktop_status.sessionId, and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
             serde_json::json!({
-                "type":"object","additionalProperties":false,"required":["action"],
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
                 "properties":{
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from desktop_status; the manager rejects stale sessions."},
                     "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","key-tap","key-chord","text","scroll"]},
                     "x":{"type":"number","minimum":0,"maximum":1},
                     "y":{"type":"number","minimum":0,"maximum":1},
@@ -559,7 +560,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_launch_app".to_string(),
-            "List installed desktop applications with their exact desktopEntryId, then launch one by that ID in the same managed Connect session. The ID must come from the current list and the sessionId from desktop_status. This does not accept command lines, URIs, or arguments. Launch is bounded and reports verified=false; call desktop_observe to confirm the application window opened. Launch requires the agent input lease.".to_string(),
+            "List installed desktop applications with their exact desktopEntryId, then launch one by that ID in the same managed session. The ID must come from the current list and the sessionId from desktop_status. This does not accept command lines, URIs, or arguments. Launch is bounded and reports verified=false; call desktop_observe to confirm the application window opened. Launch requires the agent input lease.".to_string(),
             serde_json::json!({
                 "type":"object",
                 "properties":{
@@ -711,6 +712,16 @@ mod tests {
         );
         assert_eq!(full.len(), 6);
         assert!(full[0].1.contains("frameTimeMs"));
+        for name in ["desktop_screenshot", "desktop_observe"] {
+            let schema: Value =
+                serde_json::from_str(&full.iter().find(|tool| tool.0 == name).unwrap().2).unwrap();
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&Value::String("sessionId".into()))
+            );
+        }
         let action: Value = serde_json::from_str(&full[3].2).unwrap();
         assert_eq!(action["properties"]["action"]["enum"][0], "click");
         let input: Value = serde_json::from_str(&full[4].2).unwrap();
@@ -729,6 +740,12 @@ mod tests {
         );
         assert!(full[4].1.contains("[\"Alt\",\"F2\"]"));
         assert_eq!(input["properties"]["deltaX"]["maximum"], 800);
+        assert!(
+            input["required"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("sessionId".into()))
+        );
         let coordinate_rule = input["allOf"]
             .as_array()
             .unwrap()

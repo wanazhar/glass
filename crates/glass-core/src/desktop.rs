@@ -37,6 +37,7 @@ const LEASE_SOCKET: &str = "desktop-agent.sock";
 const MAX_CACHED_ACCESSIBILITY_WINDOWS: usize = 64;
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
+type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Vec<u8>);
 const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
 const GNOME_XVFB_ACCEPTED: bool = false;
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -651,11 +652,25 @@ impl Desktop {
     }
 
     pub fn input(&self, role: Lease, value: &Value) -> Result<Value, InputError> {
+        self.input_for_session(role, None, value)
+    }
+
+    fn input_for_session(
+        &self,
+        role: Lease,
+        expected_session_id: Option<&str>,
+        value: &Value,
+    ) -> Result<Value, InputError> {
         self.restore_reusable_session()
             .map_err(|_| InputError::Unavailable)?;
         let _control = self.control.lock().map_err(|_| InputError::Unavailable)?;
         let mut guard = self.session.lock().map_err(|_| InputError::Unavailable)?;
         let session = guard.as_mut().ok_or(InputError::NoSession)?;
+        if expected_session_id.is_some_and(|expected| expected != session.id) {
+            return Err(InputError::Invalid(
+                "The managed desktop session changed; call desktop_status and observe again",
+            ));
+        }
         require_lease(role, session.lease)?;
         let action = value
             .get("action")
@@ -905,6 +920,16 @@ impl Desktop {
         after: u64,
         timeout: Duration,
     ) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
+        self.frame_after_for_session(None, after, timeout)
+            .map(|frame| frame.map(|(_, _, seq, captured, jpeg)| (seq, captured, jpeg)))
+    }
+
+    fn frame_after_for_session(
+        &self,
+        expected_session_id: Option<&str>,
+        after: u64,
+        timeout: Duration,
+    ) -> Result<Option<VerifiedDesktopFrame>, String> {
         self.restore_reusable_session()?;
         let (session_id, frame_state) = {
             let guard = self
@@ -914,6 +939,12 @@ impl Desktop {
             let session = guard
                 .as_ref()
                 .ok_or("No managed desktop session is running")?;
+            if expected_session_id.is_some_and(|expected| expected != session.id) {
+                return Err(
+                    "The managed desktop session changed; call desktop_status and observe again"
+                        .into(),
+                );
+            }
             (session.id.clone(), session.frames.clone())
         };
         let deadline = Instant::now() + timeout;
@@ -943,13 +974,21 @@ impl Desktop {
             .session
             .lock()
             .map_err(|_| "Desktop state unavailable")?;
-        let session_is_current = guard.as_ref().is_some_and(|session| {
-            session.id == session_id && Arc::ptr_eq(&session.frames, &frame_state)
-        });
-        if !session_is_current {
-            return Err("Managed desktop session changed while waiting for a frame".into());
-        }
-        Ok(result)
+        let session = guard
+            .as_ref()
+            .filter(|session| {
+                session.id == session_id && Arc::ptr_eq(&session.frames, &frame_state)
+            })
+            .ok_or("Managed desktop session changed while waiting for a frame")?;
+        Ok(result.map(|(seq, captured, jpeg)| {
+            (
+                session.id.clone(),
+                session.workspace.clone(),
+                seq,
+                captured,
+                jpeg,
+            )
+        }))
     }
 
     /// Run the private, same-uid bridge used by Core's agent tools. It never
@@ -992,6 +1031,14 @@ impl Desktop {
 
     pub fn agent_input(value: &Value) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"input","value":value}))
+    }
+
+    pub(crate) fn agent_status() -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"status"}))
+    }
+
+    pub(crate) fn agent_start() -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"start"}))
     }
 
     pub fn agent_launch_app(value: &Value) -> Result<Value, String> {
@@ -1169,12 +1216,8 @@ impl Desktop {
         Ok(())
     }
 
-    fn agent_status() -> Result<Value, String> {
-        Self::agent_request(&json!({"action":"status"}))
-    }
-
-    fn agent_frame() -> Result<Value, String> {
-        Self::agent_request(&json!({"action":"frame"}))
+    fn agent_frame(session_id: &str) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"frame","sessionId":session_id}))
     }
 
     fn agent_request(request: &Value) -> Result<Value, String> {
@@ -1266,7 +1309,14 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
-            Desktop::agent_frame().and_then(|value| save_agent_frame(workspace, &value))
+            let session_id = args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "sessionId is required from desktop_status".to_owned());
+            session_id.and_then(|session_id| {
+                Desktop::agent_frame(session_id)
+                    .and_then(|value| save_agent_frame(workspace, &value))
+            })
         }
         _ => Err("unknown desktop tool".into()),
     };
@@ -1431,21 +1481,39 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         .map_err(|e| e.to_string())?;
     let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     let result = match request["action"].as_str() {
-        Some("input") => desktop.input(Lease::Agent, &request["value"]).map_err(|error| error.message().to_owned()),
+        Some("input") => match request["value"]["sessionId"].as_str() {
+            Some(session_id) => desktop
+                .input_for_session(Lease::Agent, Some(session_id), &request["value"])
+                .map_err(|error| error.message().to_owned()),
+            None => Err("sessionId is required from desktop_status".into()),
+        },
         Some("status") => Ok(desktop.status()),
-        Some("observe") => desktop.observe_accessibility_scoped(
-            request["value"]["sessionId"].as_str(),
-            request["value"]["query"].as_str(),
-            request["value"]["windowId"].as_str(),
-        ),
+        Some("start") => desktop.start(),
+        Some("observe") => match request["value"]["sessionId"].as_str() {
+            Some(session_id) => desktop.observe_accessibility_scoped(
+                Some(session_id),
+                request["value"]["query"].as_str(),
+                request["value"]["windowId"].as_str(),
+            ),
+            None => Err("sessionId is required from desktop_status".into()),
+        },
         Some("act") => desktop.act_accessibility(&request["value"]),
         Some("launch_app") => desktop.launch_app(&request["value"]),
-        Some("frame") => desktop.frame_after(0, Duration::from_secs(2)).map(|frame| {
-            match frame {
-                Some((seq, captured, jpeg)) => json!({"sessionId":desktop.status()["sessionId"],"workspaceRoot":desktop.status()["workspaceRoot"],"seq":seq,"capturedAtMs":captured,"jpeg":base64::engine::general_purpose::STANDARD.encode(jpeg)}),
-                None => json!({"error":"Desktop frame source did not produce a fresh frame"}),
-            }
-        }),
+        Some("frame") => match request["sessionId"].as_str() {
+            Some(session_id) => desktop
+                .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
+                .map(|frame| match frame {
+                    Some((session_id, workspace_root, seq, captured, jpeg)) => json!({
+                        "sessionId":session_id,
+                        "workspaceRoot":workspace_root,
+                        "seq":seq,
+                        "capturedAtMs":captured,
+                        "jpeg":base64::engine::general_purpose::STANDARD.encode(jpeg)
+                    }),
+                    None => json!({"error":"Desktop frame source did not produce a fresh frame"}),
+                }),
+            None => Err("sessionId is required from desktop_status".into()),
+        },
         _ => Err("Unsupported desktop agent operation".to_owned()),
     };
     let response = match result {
@@ -1856,6 +1924,101 @@ mod tests {
         let desktop = Desktop::new(std::env::temp_dir());
         let status = desktop.status();
         assert_eq!(status["frameTimeMs"], Value::Null);
+    }
+
+    fn desktop_with_test_session(workspace: &Path, session_id: &str) -> Desktop {
+        let desktop = Desktop::new(workspace.to_path_buf());
+        *desktop.session.lock().unwrap() = Some(ManagedSession {
+            id: session_id.to_owned(),
+            display: ":test".into(),
+            environment: process::Environment::Xfce,
+            lifecycle: process::Lifecycle::Disposable,
+            profile_id: None,
+            workspace: workspace.to_path_buf(),
+            owner: SessionOwner::Attached,
+            auth_cookie: [0; 16],
+            directory: workspace.to_path_buf(),
+            xvfb: None,
+            desktop: None,
+            capture: None,
+            frames: Arc::new(Mutex::new(Frames::default())),
+            session_bus_address: String::new(),
+            _profile_lock: None,
+            accessibility_revision: 1,
+            accessibility_registry_ready: false,
+            accessibility_targets: HashMap::new(),
+            accessibility_windows: HashMap::new(),
+            lease: Lease::Agent,
+            held_buttons: HashSet::new(),
+            held_keys: HashSet::new(),
+            scroll_x_remainder: 0.0,
+            scroll_y_remainder: 0.0,
+        });
+        desktop
+    }
+
+    fn agent_bridge_request(desktop: Arc<Desktop>, request: Value) -> Value {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let worker = thread::spawn(move || handle_agent_request(server, desktop));
+        serde_json::to_writer(&mut client, &request).unwrap();
+        client.write_all(b"\n").unwrap();
+        let mut response = String::new();
+        BufReader::new(client)
+            .read_to_string(&mut response)
+            .unwrap();
+        worker.join().unwrap().unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[test]
+    fn agent_bridge_requires_and_checks_the_captured_session_for_every_operation() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-desktop-session-binding-{}-{}",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let desktop = Arc::new(desktop_with_test_session(&root, "active-session"));
+        for request in [
+            json!({"action":"input","value":{"action":"key-tap","key":"A"}}),
+            json!({"action":"observe","value":{"query":"window"}}),
+            json!({"action":"frame"}),
+        ] {
+            let response = agent_bridge_request(desktop.clone(), request);
+            assert_eq!(
+                response["error"],
+                "sessionId is required from desktop_status"
+            );
+        }
+        for request in [
+            json!({"action":"input","value":{"sessionId":"stale-session","action":"key-tap","key":"A"}}),
+            json!({"action":"observe","value":{"sessionId":"stale-session","query":"window"}}),
+            json!({"action":"frame","sessionId":"stale-session"}),
+        ] {
+            let response = agent_bridge_request(desktop.clone(), request);
+            assert!(
+                response["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("managed desktop session changed")
+            );
+        }
+        assert!(desktop
+            .act_accessibility(&json!({"sessionId":"stale-session","revision":1,"targetId":"old","action":"click"}))
+            .unwrap_err()
+            .contains("managed desktop session changed"));
+        assert!(
+            desktop
+                .launch_app(&json!({"action":"list","sessionId":"stale-session"}))
+                .unwrap_err()
+                .contains("managed desktop session changed")
+        );
+        let current_frame = desktop
+            .frame_after_for_session(Some("active-session"), 0, Duration::ZERO)
+            .unwrap();
+        assert!(current_frame.is_none());
+        drop(desktop);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -15,6 +15,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use zeroize::Zeroize;
 const MAX_BODY: usize = 65536;
 const MAX_EVENTS: usize = 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -706,6 +707,82 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     );
     Ok(())
 }
+
+/// Start or attach the standalone TUI to the same local Connect manager used
+/// by the web client, then start the manager's isolated default desktop when
+/// needed. This is only called by the human `/desktop` command; it never
+/// changes an already-running route or input lease.
+pub(crate) fn start_local_desktop_for_tui(cfg: crate::config::Config) -> Result<Value, String> {
+    let manager_started = !crate::desktop::service_running();
+    if manager_started {
+        let executable = crate::executable::path()?;
+        let mut output = Command::new(executable)
+            .args(["connect", "--local"])
+            .current_dir(&cfg.workspace)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|_| "Could not start the local Connect desktop manager".to_owned())?;
+        let success = output.status.success();
+        output.stdout.zeroize();
+        output.stderr.zeroize();
+        if !success {
+            return Err("Could not start the local Connect desktop manager; run `gc connect --local` for details".into());
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !crate::desktop::service_running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        if !crate::desktop::service_running() {
+            return Err("The local Connect manager did not become ready".into());
+        }
+    }
+
+    let settings = load_status()?
+        .filter(alive)
+        .ok_or("Connect manager settings are unavailable")?;
+
+    let status = crate::desktop::Desktop::agent_status()?;
+    let manager_workspace = status
+        .get("workspaceRoot")
+        .and_then(Value::as_str)
+        .ok_or("Connect manager did not report its workspace")?;
+    let expected_workspace = cfg
+        .workspace
+        .canonicalize()
+        .map_err(|_| "Current workspace is unavailable")?;
+    let manager_workspace = PathBuf::from(manager_workspace)
+        .canonicalize()
+        .map_err(|_| "Connect manager workspace is unavailable")?;
+    if manager_workspace != expected_workspace {
+        return Err(
+            "Connect manages a different workspace; switch to it or stop it explicitly before attaching".into(),
+        );
+    }
+
+    let session_started = status.get("sessionId").is_none_or(Value::is_null);
+    if session_started {
+        crate::desktop::Desktop::agent_start()?;
+    }
+    let mut status = crate::desktop::Desktop::agent_status()?;
+    if session_started && status["available"].as_bool() != Some(true) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while status["available"].as_bool() != Some(true) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(80));
+            status = crate::desktop::Desktop::agent_status()?;
+        }
+    }
+    Ok(json!({
+        "managerStarted": manager_started,
+        "connectionMode": if settings.local { "local" } else { "remote" },
+        "sessionStarted": session_started,
+        "sessionId": status.get("sessionId"),
+        "available": status.get("available"),
+        "environment": status.get("environment"),
+        "lifecycle": status.get("lifecycle"),
+        "lease": status.get("lease"),
+    }))
+}
+
 struct Feed {
     seq: u64,
     bytes: usize,

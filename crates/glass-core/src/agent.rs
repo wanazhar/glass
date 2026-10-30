@@ -585,7 +585,7 @@ impl<'a> Agent<'a> {
     }
 
     fn tool_set(&self) -> Vec<(String, String, String)> {
-        self.tool_set_for_connect(crate::desktop::service_running())
+        self.tool_set_for_desktop(desktop_tool_state(self.workspace))
     }
 
     /// Remote prompts require an active HTTPS endpoint; submitting a value also
@@ -609,9 +609,21 @@ impl<'a> Agent<'a> {
         }
     }
 
+    #[cfg(test)]
     fn tool_set_for_connect(
         &self,
         connect_desktop_available: bool,
+    ) -> Vec<(String, String, String)> {
+        self.tool_set_for_desktop(if connect_desktop_available {
+            DesktopToolState::Active
+        } else {
+            DesktopToolState::Unavailable
+        })
+    }
+
+    fn tool_set_for_desktop(
+        &self,
+        desktop_state: DesktopToolState,
     ) -> Vec<(String, String, String)> {
         if let Some((tools, _)) = &self.hosted {
             return tools.clone();
@@ -640,9 +652,7 @@ impl<'a> Agent<'a> {
             }
             tools
         };
-        if connect_desktop_available {
-            tools.extend(crate::provider::desktop_tool_schemas(!self.read_only));
-        }
+        tools.extend(desktop_schemas_for_state(desktop_state, self.read_only));
         if let Some((host_tools, _)) = &self.mixed_hosted {
             tools.extend(host_tools.iter().cloned());
         }
@@ -3491,20 +3501,16 @@ impl<'a> Agent<'a> {
             .next()
             .unwrap_or(&system)
             .to_owned();
-        if self.hosted.is_some() || !crate::desktop::service_running() {
+        if self.hosted.is_some() {
             return base;
         }
 
-        let call = ToolCall {
-            id: "connect-desktop-context".into(),
-            name: "desktop_status".into(),
-            arguments: "{}".into(),
+        let status = if crate::desktop::service_running() {
+            crate::desktop::Desktop::agent_status().ok()
+        } else {
+            None
         };
-        let outcome = crate::desktop::execute_tool(&call, self.workspace);
-        let status = (outcome.exit_code == Some(0))
-            .then(|| serde_json::from_str::<serde_json::Value>(&outcome.body).ok())
-            .flatten();
-        let context = connect_desktop_context(status.as_ref(), self.read_only);
+        let context = connect_desktop_context(status.as_ref(), self.read_only, self.workspace);
         format!("{base}{DESKTOP_CONTEXT_MARKER}\n{context}")
     }
 
@@ -3800,39 +3806,123 @@ fn provider_tool_aliases(
 
 const DESKTOP_CONTEXT_MARKER: &str = "\n\n[Connect desktop capability]";
 
-fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) -> String {
-    let tool_names = if read_only {
-        "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
-    } else {
-        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopToolState {
+    Unavailable,
+    Manager,
+    SessionUnavailable,
+    WorkspaceMismatch,
+    Active,
+}
+
+fn desktop_tool_state(workspace: &Path) -> DesktopToolState {
+    if !crate::desktop::service_running() {
+        return desktop_tool_state_from_status(None, workspace);
+    }
+    desktop_tool_state_from_status(Some(crate::desktop::Desktop::agent_status()), workspace)
+}
+
+fn desktop_tool_state_from_status(
+    status: Option<Result<serde_json::Value, String>>,
+    workspace: &Path,
+) -> DesktopToolState {
+    match status {
+        Some(Ok(status)) if !desktop_status_matches_workspace(&status, workspace) => {
+            DesktopToolState::WorkspaceMismatch
+        }
+        Some(Ok(status))
+            if status
+                .get("sessionId")
+                .is_some_and(serde_json::Value::is_null) =>
+        {
+            DesktopToolState::Manager
+        }
+        Some(Ok(status))
+            if status
+                .get("sessionId")
+                .is_some_and(serde_json::Value::is_string) =>
+        {
+            if status["available"].as_bool() == Some(true) {
+                DesktopToolState::Active
+            } else {
+                DesktopToolState::SessionUnavailable
+            }
+        }
+        _ => DesktopToolState::Unavailable,
+    }
+}
+
+fn desktop_status_matches_workspace(status: &serde_json::Value, workspace: &Path) -> bool {
+    let Some(status_workspace) = status["workspaceRoot"].as_str() else {
+        return false;
     };
+    workspace.canonicalize().ok().is_some_and(|expected| {
+        Path::new(status_workspace)
+            .canonicalize()
+            .is_ok_and(|actual| actual == expected)
+    })
+}
+
+fn desktop_schemas_for_state(
+    state: DesktopToolState,
+    read_only: bool,
+) -> Vec<(String, String, String)> {
+    match state {
+        DesktopToolState::Unavailable => Vec::new(),
+        DesktopToolState::Manager
+        | DesktopToolState::SessionUnavailable
+        | DesktopToolState::WorkspaceMismatch => {
+            crate::provider::desktop_tool_schemas(false)[..1].to_vec()
+        }
+        DesktopToolState::Active => crate::provider::desktop_tool_schemas(!read_only),
+    }
+}
+
+fn connect_desktop_context(
+    status: Option<&serde_json::Value>,
+    read_only: bool,
+    workspace: &Path,
+) -> String {
+    if status.is_some_and(|status| !desktop_status_matches_workspace(status, workspace)) {
+        return "The Connect manager belongs to a different or unavailable workspace. Only `desktop_status` is available; switch to the manager's workspace or ask the human to open the matching session. No desktop actions are offered across workspace roots.".into();
+    }
     let state = match status {
-        None => "Connect is running, but the managed desktop status could not be refreshed. Call `desktop_status` before acting.".to_string(),
+        None => "No managed desktop tools are attached to this session. In standalone GC, the human can run `/desktop` to start or attach to the local Connect manager; after that, Core and Glass resident agents use the same managed session. Browser-only work can use the native `glass-browser` tools. Do not claim desktop control until the desktop tools are listed.".to_string(),
         Some(status) => {
             let session_id = status["sessionId"].as_str();
             let lease = status["lease"].as_str().unwrap_or("unknown");
             let fresh = status["available"].as_bool().unwrap_or(false);
             match session_id {
                 Some(session_id) => {
+                    let tool_names = if !fresh {
+                        "`desktop_status`"
+                    } else if read_only {
+                        "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
+                    } else {
+                        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"
+                    };
                     let session_id: String = session_id
                         .chars()
                         .take(64)
                         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
                         .collect();
                     let frame = if fresh { "fresh" } else { "stale or unavailable" };
-                    format!("Managed session `{session_id}` is present; its latest frame is {frame}; the current input control lease is `{lease}`.")
+                    let recovery = if fresh { "" } else { " Ask the human to inspect or restart it in Connect before using desktop tools." };
+                    format!("Managed session `{session_id}` is present; its latest frame is {frame}; the current input control lease is `{lease}`. Available tools this request: {tool_names}.{recovery}")
                 }
-                None => "Connect is running, but there is no active managed desktop session; control lease is not applicable.".to_string(),
+                None => {
+                    "The Connect manager is attached, but no managed desktop session is active. Available tools this request: `desktop_status`. The human can run `/desktop` in standalone GC to start or attach to the shared isolated session.".to_owned()
+                }
             }
         }
     };
     let input = if read_only {
         "Plan/read-only mode offers no desktop input tool."
     } else {
-        "Use `desktop_launch_app` to list installed desktop applications and launch one by an exact listed desktopEntryId when the app is not already open; it accepts no command line or arguments and reports verified=false until you confirm a window with `desktop_observe`. Use `desktop_act` for revision-bound accessible targets; it requires the sessionId, revision, and targetId from the same latest observation, rejects stale IDs, and respects the lease. Its result includes a fresh observation when available; verify the expected UI change there before continuing. `desktop_input` is already bound to the current Connect session and does not accept sessionId; it requires the agent lease. Use exact key names from its schema: modifiers are Control/Alt/Shift/Meta (not Ctrl), Enter is the key name (not Return), and PageDown is the key name. Use it only as a fallback for controls missing from accessibility; the human changes the lease in Connect, and the agent cannot take it implicitly."
+        "Pass the latest `desktop_status.sessionId` to screenshot, observe, input, act, and launch calls. Use `desktop_act` for revision-bound accessible targets; stale IDs are rejected. `desktop_launch_app` lists exact desktopEntryIds before launching and never accepts command lines or arguments. `desktop_input` and `desktop_launch_app` require the agent lease. The human changes the lease in Connect, and the agent cannot take it implicitly."
     };
     format!(
-        "Connect manages a separate desktop shared with the human. {state} Available tools this request: {tool_names}. `desktop_observe` returns a compact bounded tree with revision-bound targets; password values are never returned. `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`; it does not edit project files. {input} These tools exist only while Connect manages a desktop; do not assume desktop access in standalone Core or other hosts."
+        "Connect owns the isolated managed desktop shared with the human, standalone GC, and Glass resident agents. {state} {input} When available, `desktop_observe` returns a bounded tree with revision-bound targets and `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`. The desktop never attaches to the host login session."
     )
 }
 
@@ -4253,21 +4343,23 @@ mod warm_integration {
 
     #[test]
     fn connect_desktop_context_reports_request_local_tools_session_and_lease() {
+        let workspace = std::env::current_dir().unwrap();
         let status = serde_json::json!({
             "available": true,
             "sessionId": "desktop-session-1",
             "lease": "human",
-            "frameAgeMs": 12
+            "frameAgeMs": 12,
+            "workspaceRoot": workspace
         });
-        let writable = connect_desktop_context(Some(&status), false);
+        let writable = connect_desktop_context(Some(&status), false, &workspace);
         assert!(writable.contains("desktop-session-1"));
         assert!(writable.contains("input control lease is `human`"));
         assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"));
-        assert!(writable.contains("exact listed desktopEntryId"));
         assert!(writable.contains("revision-bound accessible targets"));
+        assert!(writable.contains("never accepts command lines"));
         assert!(writable.contains("cannot take it implicitly"));
 
-        let readonly = connect_desktop_context(Some(&status), true);
+        let readonly = connect_desktop_context(Some(&status), true, &workspace);
         assert!(readonly.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`"));
         assert!(!readonly.contains("`desktop_input`"));
         assert!(!readonly.contains("`desktop_act`"));
@@ -4277,14 +4369,91 @@ mod warm_integration {
 
     #[test]
     fn connect_desktop_context_does_not_claim_a_session_when_none_is_active() {
+        let workspace = std::env::current_dir().unwrap();
         let status = serde_json::json!({
             "available": false,
             "sessionId": null,
-            "lease": "agent"
+            "lease": "agent",
+            "workspaceRoot": workspace
         });
-        let context = connect_desktop_context(Some(&status), false);
-        assert!(context.contains("no active managed desktop session"));
-        assert!(context.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"));
+        let context = connect_desktop_context(Some(&status), false, &workspace);
+        assert!(context.contains("no managed desktop session is active"));
+        assert!(context.contains("Available tools this request: `desktop_status`"));
+    }
+
+    #[test]
+    fn desktop_tool_discovery_requires_a_fresh_session_in_the_same_workspace() {
+        let workspace = std::env::current_dir().unwrap();
+        let active = serde_json::json!({
+            "workspaceRoot": workspace,
+            "sessionId": "desktop-1",
+            "available": true
+        });
+        assert_eq!(
+            desktop_tool_state_from_status(Some(Ok(active.clone())), &workspace),
+            DesktopToolState::Active
+        );
+        assert_eq!(
+            desktop_schemas_for_state(DesktopToolState::Active, false)
+                .iter()
+                .map(|tool| tool.0.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "desktop_status",
+                "desktop_screenshot",
+                "desktop_observe",
+                "desktop_act",
+                "desktop_input",
+                "desktop_launch_app"
+            ]
+        );
+        assert_eq!(
+            desktop_schemas_for_state(DesktopToolState::Active, true)
+                .iter()
+                .map(|tool| tool.0.as_str())
+                .collect::<Vec<_>>(),
+            ["desktop_status", "desktop_screenshot", "desktop_observe"]
+        );
+
+        let stale = serde_json::json!({
+            "workspaceRoot": workspace,
+            "sessionId": "desktop-1",
+            "available": false
+        });
+        assert_eq!(
+            desktop_tool_state_from_status(Some(Ok(stale)), &workspace),
+            DesktopToolState::SessionUnavailable
+        );
+        let no_session = serde_json::json!({
+            "workspaceRoot": workspace,
+            "sessionId": null,
+            "available": false
+        });
+        assert_eq!(
+            desktop_tool_state_from_status(Some(Ok(no_session)), &workspace),
+            DesktopToolState::Manager
+        );
+        let mismatch = serde_json::json!({
+            "workspaceRoot": std::env::temp_dir(),
+            "sessionId": "desktop-1",
+            "available": true
+        });
+        assert_eq!(
+            desktop_tool_state_from_status(Some(Ok(mismatch)), &workspace),
+            DesktopToolState::WorkspaceMismatch
+        );
+        assert_eq!(
+            desktop_tool_state_from_status(Some(Err("unavailable".into())), &workspace),
+            DesktopToolState::Unavailable
+        );
+        assert_eq!(
+            desktop_schemas_for_state(DesktopToolState::SessionUnavailable, false)
+                .iter()
+                .map(|tool| tool.0.as_str())
+                .collect::<Vec<_>>(),
+            ["desktop_status"]
+        );
+        assert!(desktop_schemas_for_state(DesktopToolState::Unavailable, false).is_empty());
     }
 
     #[test]

@@ -96,6 +96,241 @@ async fn native_batch_image_diagnostics_are_bounded_and_never_include_sources_in
 }
 
 #[test]
+fn native_runtime_completes_a_reduced_local_mdn_scale_style_script_layout_fixture() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
+                50, 100, 1,
+            ),
+        );
+    });
+}
+
+#[test]
+#[ignore = "manual 200/400 scale timing diagnostic; run explicitly when profiling native host-view work"]
+fn native_runtime_mdn_scale_script_layout_diagnostic_200_entries_400_auxiliary_spans() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
+                200, 400, 1,
+            ),
+        );
+    });
+}
+
+#[test]
+#[ignore = "manual large scale script/layout timing diagnostic; run explicitly when profiling native host-view work"]
+fn native_runtime_mdn_scale_script_layout_diagnostic_1400_entries_2600_auxiliary_spans() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
+                1_400, 2_600, 1,
+            ),
+        );
+    });
+}
+
+#[test]
+#[ignore = "manual large scale timing diagnostic; run explicitly when profiling native resource loading"]
+fn native_runtime_mdn_scale_resource_diagnostic_1400_entries_2600_auxiliary_spans() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
+                1_400, 2_600, 0,
+            ),
+        );
+    });
+}
+
+#[test]
+fn native_runtime_completes_a_reduced_local_mdn_scale_resource_fixture() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
+                200, 400, 0,
+            ),
+        );
+    });
+}
+
+async fn native_runtime_completes_a_local_mdn_scale_style_script_layout_fixture_inner(
+    entry_count: usize,
+    auxiliary_node_count: usize,
+    script_count: usize,
+) {
+    let _guard = native_content_process_test_lock().lock().await;
+    let image_data = native_test_png_data_url();
+    let image_bytes = base64::engine::general_purpose::STANDARD
+        .decode(image_data.split_once(',').unwrap().1)
+        .unwrap();
+    let mut html =
+        String::from("<!doctype html><title>Local document scale fixture</title><style>:root{");
+    for index in 0..46 {
+        html.push_str(&format!(
+            "--native-var-{index:02}:#{:06x};",
+            (index * 7919) & 0x00ff_ffff
+        ));
+    }
+    html.push_str(
+        "}html,body{margin:0;font:13px Arial;color:var(--native-var-00)}\
+         main{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}\
+         .layer-0,.layer-4,.layer-8{display:contents}\
+         .layer-1,.layer-5,.layer-9{display:flex;flex-wrap:wrap}\
+         .layer-2,.layer-6,.layer-10{display:grid;grid-template-columns:1fr 2fr}\
+         .entry{display:block;width:calc(100% - var(--probe-width,0px));font-size:12px;color:var(--native-var-01)}\
+         .entry span{color:var(--native-var-12);border-color:var(--native-var-22);padding:1px}\
+         .tile{min-width:2px;min-height:2px;background-size:2px 2px}\
+         .deep{display:contents}</style>",
+    );
+    for sheet in 0..16 {
+        html.push_str(&format!(
+            "<link rel='stylesheet' href='/sheet-{sheet}.css'>"
+        ));
+    }
+    html.push_str("</head><body><main id='fixture-root' class='");
+    for sheet in 0..16 {
+        html.push_str(&format!("sheet-{sheet} "));
+    }
+    html.push_str("'>");
+    for depth in 0..13 {
+        html.push_str(&format!("<div class='layer-{} deep'>", depth % 11));
+    }
+    for index in 0..entry_count {
+        html.push_str(&format!(
+            "<p class='entry' data-index='{index}'>item-{index}<span class='detail'> detail-{index}</span> tail-{index}</p>"
+        ));
+    }
+    for index in 0..auxiliary_node_count {
+        html.push_str(&format!("<span class='detail'>aux-{index}</span>"));
+    }
+    for index in 0..28 {
+        html.push_str(&format!(
+            "<div class='tile' style='background-image:url(/background-{index}.png)'><img class='fixture-image' src='/image-{index}.png' alt=''></div>"
+        ));
+    }
+    for index in 0..script_count {
+        html.push_str(&format!(
+            "<script type='module' src='/module-{index}.js'></script>"
+        ));
+    }
+    for _ in 0..13 {
+        html.push_str("</div>");
+    }
+    html.push_str("</main></body>");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let served_resource_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server_resource_count = Arc::clone(&served_resource_count);
+    let (stop_tx, mut stop_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut stop_rx => break,
+                accepted = listener.accept() => accepted,
+            };
+            let Ok((mut stream, _)) = accepted else {
+                break;
+            };
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (status, content_type, body) = match path {
+                "/scale" => ("200 OK", "text/html", html.as_bytes().to_vec()),
+                path if path.starts_with("/sheet-") && path.ends_with(".css") => {
+                    let sheet = path.trim_start_matches("/sheet-").trim_end_matches(".css");
+                    if let Ok(sheet) = sheet.parse::<usize>() {
+                        if sheet < 16 {
+                            let css = format!(
+                                ".sheet-{sheet} .entry{{line-height:{};margin:{}px;padding:{}px;border:1px solid var(--native-var-{:02})}} .sheet-{sheet} .detail{{white-space:normal;overflow-wrap:anywhere;color:var(--native-var-{:02})}}",
+                                1.1 + (sheet % 4) as f64 * 0.05,
+                                sheet % 3,
+                                sheet % 2,
+                                sheet % 46,
+                                (sheet + 17) % 46,
+                            );
+                            ("200 OK", "text/css", css.into_bytes())
+                        } else {
+                            ("404 Not Found", "text/plain", Vec::new())
+                        }
+                    } else {
+                        ("404 Not Found", "text/plain", Vec::new())
+                    }
+                }
+                path if path.starts_with("/image-") && path.ends_with(".png") => {
+                    ("200 OK", "image/png", image_bytes.clone())
+                }
+                path if path.starts_with("/background-") && path.ends_with(".png") => {
+                    ("200 OK", "image/png", image_bytes.clone())
+                }
+                path if path.starts_with("/module-") && path.ends_with(".js") => {
+                    let module = b"globalThis.__scaleScriptRuns=(globalThis.__scaleScriptRuns||0)+1;const entry=document.querySelector('.entry');globalThis.__scaleLayoutWidth=entry?entry.getBoundingClientRect().width:0;";
+                    ("200 OK", "text/javascript", module.to_vec())
+                }
+                _ => ("404 Not Found", "text/plain", Vec::new()),
+            };
+            if status == "200 OK" {
+                server_resource_count.fetch_add(1, Ordering::Relaxed);
+            }
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+            );
+            if stream.write_all(header.as_bytes()).await.is_ok() {
+                let _ = stream.write_all(&body).await;
+            }
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let session = tokio::time::timeout(
+        Duration::from_secs(60),
+        BrowserRuntimeSession::connect_native(
+            NativeEngineConfig::default().with_initial_url(format!("http://{address}/scale")),
+        ),
+    )
+    .await
+    .expect("local scale fixture should not stall navigation")
+    .unwrap();
+    let navigation_elapsed = started.elapsed();
+    if script_count > 0 {
+        session
+            .native_wait(
+                WaitCondition::JavaScript(
+                    "document.readyState === 'complete' && globalThis.__scaleScriptRuns === 1 && globalThis.__scaleLayoutWidth > 0 && Array.from(document.images).every(image => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0)".into(),
+                ),
+                Duration::from_secs(20),
+            )
+            .await
+            .expect("local image decode and one module layout probe should settle");
+        let summary = session
+            .script(
+                "({entries:document.querySelectorAll('.entry').length, auxiliary:document.querySelectorAll('.detail').length, images:document.images.length, imageLoaded:Array.from(document.images).filter(image=>image.complete&&image.naturalWidth>0&&image.naturalHeight>0).length, scriptRuns:globalThis.__scaleScriptRuns, layoutWidth:globalThis.__scaleLayoutWidth, depth:(()=>{let node=document.querySelector('.entry'),depth=0;while(node&&node!==document){depth++;node=node.parentElement;}return depth;})()})",
+            )
+            .await
+            .unwrap()
+            .value;
+        assert_eq!(summary["entries"], entry_count);
+        assert_eq!(summary["auxiliary"], entry_count + auxiliary_node_count);
+        assert_eq!(summary["images"], 28);
+        assert_eq!(summary["imageLoaded"], 28);
+        assert_eq!(summary["scriptRuns"], script_count);
+        assert!(summary["layoutWidth"].as_f64().unwrap() > 0.0);
+        assert!(summary["depth"].as_u64().unwrap() >= 14);
+    } else {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        served_resource_count.load(Ordering::Relaxed),
+        73 + script_count
+    );
+    assert!(navigation_elapsed < Duration::from_secs(60));
+    session.close().await.unwrap();
+    let _ = stop_tx.send(());
+    server.await.unwrap();
+}
+
+#[test]
 fn native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute() {
     run_native_browser_worker_test(|runtime| {
         runtime

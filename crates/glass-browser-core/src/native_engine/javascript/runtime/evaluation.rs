@@ -3040,6 +3040,41 @@ mod host_snapshot_delta_tests {
     }
 
     #[test]
+    fn host_snapshot_interns_repeated_computed_styles_without_changing_element_indices() {
+        let rows = (0..256)
+            .map(|index| format!("<p class='row'>row {index}</p>"))
+            .collect::<String>();
+        let document = NativeDocument::parse(
+            &format!("<style>.row{{color:#123456}}</style><main>{rows}</main>"),
+            &NativeEngineLimits::default(),
+        )
+        .expect("repeated computed-style fixture must parse");
+        let snapshot: serde_json::Value = serde_json::from_str(&large_host_snapshot(&document))
+            .expect("host snapshot must be JSON");
+        let row_style_indices = snapshot["state"]["elements"]
+            .as_array()
+            .expect("host snapshot elements must be an array")
+            .iter()
+            .filter(|element| element["tagName"] == "p")
+            .map(|element| element["cs"].as_u64().expect("style index must be numeric"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(row_style_indices.len(), 256);
+        assert!(
+            row_style_indices
+                .iter()
+                .all(|index| *index == row_style_indices[0])
+        );
+        assert!(
+            snapshot["state"]["computedStyles"]
+                .as_array()
+                .unwrap()
+                .len()
+                < 8
+        );
+    }
+
+    #[test]
     fn host_snapshot_delta_covers_object_removal_and_array_shape_replacement() {
         let previous = serde_json::json!({
             "attributes": {"class": "row accent", "data-observed": "yes"},

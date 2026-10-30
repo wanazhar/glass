@@ -43,7 +43,9 @@ journey, performs no retries, and writes a redacted JSON report with one-run
 and per-step timings and outcomes. The default report is placed in the system
 temporary directory with owner-only permissions; pass `--output PATH` to
 choose a different private location. A failed journey returns a nonzero exit
-code while preserving the report.
+code while preserving the report. Reports include the maximum completed
+duration per diagnostic stage and bounded static names/counts for stages left
+open at process exit; nested stage timings can overlap and are not additive.
 
 `timeoutMs` bounds an individual navigation step. A journey may set
 `runnerTimeoutMs` for its total owned process-group deadline (1–600 seconds);
@@ -77,6 +79,46 @@ navigation deadline at 120 seconds before observation or the image predicate
 ran. Its report is `/tmp/glass-native-mdn-image-20261030.json`; the result is
 a navigation timeout, not an image-decode outcome or an MDN compatibility
 pass.
+The saved trace shows all 49 resource-fetch spans completed in 9.12 seconds;
+the longest style-sheet and background-image spans were 0.15 and 0.91 seconds.
+The document-wire computed-style projection took 55.99 seconds and encoding
+took 56.81 seconds for 5,518 nodes. Page-script evaluation and the JavaScript
+bootstrap/layout stages had started but had no completion records when the
+navigation deadline ended. These timings overlap, and this trace does not
+isolate one script or layout call as the cause; no engine fix or image result
+is inferred from it.
+
+A loopback-only native scale fixture was added to separate resource loading
+from script and layout work. It serves 16 style sheets, 28 inline images,
+28 CSS background images, and 13 nested layout containers. The reduced
+200-entry/400-auxiliary-span version completed with one external module: the
+module ran once, its `getBoundingClientRect()` result was positive, all 28
+images had positive decoded width, and the bounded trace had no open stages.
+That run did not assert positive image height. It took 12.46 seconds; maximum
+page-script execution was
+4.82 seconds, host-view evaluation 1.07 seconds, and document-wire encoding
+2.79 seconds. A follow-up with the stronger width-and-height assertion
+reached a content-operation deadline during host-view installation, before
+the module and image predicates completed. The normal integration regression
+now uses 50 entries/100 auxiliary spans while retaining the stylesheet,
+image, background, nesting, module, decode, and layout assertions. It passed
+the width-and-height decode predicate in 4.93 seconds with no open trace
+stages. Maximum page-script execution was 1.37 seconds, document-wire
+encoding 0.86 seconds, and host-view evaluation 0.25 seconds. These are local
+results, not claims about the public MDN page. The opt-in 200/400
+host-view timing diagnostic preserves that failed run at
+`/tmp/glass-scale-reduced-script-wh-20261030.native_load.jsonl`.
+
+The 1,400-entry/2,600-auxiliary-span resource-only variant has one recorded
+pass at 48.49 seconds and a later combined-suite timeout at its 60-second
+navigation bound; both resource-only measurements predate the JavaScript
+host-snapshot cache. The full-size one-module diagnostic was captured after
+both recent-style caches and still hit the 60-second bound. All resource
+spans completed; its trace reported a 32.22-second document-wire projection,
+21.85 seconds of page-script evaluation, and open host-view/page-script stages.
+Those stage durations overlap and the trace does not isolate one as the sole
+cause. The 200/400 and two 1,400/2,600 diagnostic targets are opt-in; the
+normal 50/100 regression verifies module, image decode, and layout predicates.
 The GitHub journey checks repository identity, follows the observed `library`
 link into the Rust repository, then asserts the subpage URL and directory
 content. On 25 October the native run passed all six steps in 50.62 seconds.

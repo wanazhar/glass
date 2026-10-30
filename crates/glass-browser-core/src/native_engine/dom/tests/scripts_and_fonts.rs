@@ -413,6 +413,40 @@ fn content_wire_interns_repeated_computed_styles_without_changing_decoded_styles
 }
 
 #[test]
+fn content_wire_reuses_a_nonadjacent_recent_computed_style_index() {
+    let limits = NativeEngineLimits::default();
+    let document = NativeDocument::parse(
+        "<style>.repeat{color:#123456}.other{color:#654321}</style><main><p class='repeat'>first</p><p class='other'>middle</p><p class='repeat'>last</p></main>",
+        &limits,
+    )
+    .expect("nonadjacent style fixture must parse");
+    let wire = document.to_content_wire();
+    let paragraph_nodes = document
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| (node.element_name() == Some("p")).then_some(index))
+        .collect::<Vec<_>>();
+    let paragraph_styles = paragraph_nodes
+        .iter()
+        .map(|node_index| wire.computed_style_indices[*node_index])
+        .collect::<Vec<_>>();
+
+    assert_eq!(paragraph_styles.len(), 3);
+    assert_eq!(paragraph_styles[0], paragraph_styles[2]);
+    assert_ne!(paragraph_styles[0], paragraph_styles[1]);
+    for (node_index, style_index) in paragraph_nodes.iter().zip(paragraph_styles) {
+        assert_eq!(
+            wire.computed_style_table[style_index as usize],
+            document.computed_style_for_layout(NativeNodeId::from_parts(
+                document.generation(),
+                *node_index as u32,
+            )),
+        );
+    }
+}
+
+#[test]
 fn content_wire_compresses_image_pixels_without_changing_rendered_data() {
     let limits = NativeEngineLimits::default();
     let images = (0..24)

@@ -113,6 +113,23 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         })
         self.assertEqual(unresolved["category"], "fetch_or_decode_failure_unresolved")
 
+    def test_native_trace_summary_reports_unmatched_static_phases_only(self):
+        summary = corpus.summarize_native_trace([
+            json.dumps({"stage": "page_script_evaluation", "phase": "start", "process_id": 101, "request_id": 7, "ordinal": 1}),
+            json.dumps({"stage": "page_script_evaluation", "phase": "complete", "process_id": 101, "request_id": 8, "ordinal": 1, "elapsed_us": 50_000}),
+            json.dumps({"stage": "page_script_evaluation", "phase": "complete", "process_id": 202, "request_id": 7, "ordinal": 1, "elapsed_us": 60_000}),
+            json.dumps({"stage": "document_wire_encode", "phase": "start", "request_id": 7}),
+            json.dumps({"stage": "document_wire_encode", "phase": "complete", "request_id": 7, "elapsed_us": 12_345}),
+            json.dumps({"stage": "native_layout_tree_build", "phase": "start", "request_id": 0}),
+            json.dumps({"stage": "native_layout_tree_build", "phase": "complete", "request_id": 0, "elapsed_us": 3_000_000}),
+            json.dumps({"stage": "https://private.example/TRACE_SENTINEL", "phase": "start"}),
+            "malformed trace row",
+        ])
+        self.assertEqual(summary["unfinishedStages"], [{"stage": "page_script_evaluation", "openCount": 1}])
+        self.assertEqual(summary["unfinishedStageCount"], 1)
+        self.assertEqual(summary["maxStageMs"]["native_layout_tree_build"], 3000.0)
+        self.assertNotIn("TRACE_SENTINEL", json.dumps(summary))
+
     def test_safe_worker_diagnostics_keep_only_static_allowlisted_classes(self):
         diagnostics = corpus.safe_worker_diagnostics(
             "native content worker exited with diagnostic class: worker\n"

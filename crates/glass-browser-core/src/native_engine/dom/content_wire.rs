@@ -31,21 +31,42 @@ impl NativeDocument {
         let mut computed_style_table = Vec::new();
         let mut computed_style_indices = Vec::with_capacity(self.nodes.len());
         let mut computed_style_lookup = HashMap::<Vec<u8>, u32>::new();
+        let mut recent_style_indices = std::collections::VecDeque::<u32>::with_capacity(16);
         for index in 0..self.nodes.len() {
             let style = self.computed_style_for_layout(NativeNodeId {
                 generation: self.generation,
                 index: u32::try_from(index).unwrap_or(u32::MAX),
             });
-            let style_key = serde_json::to_vec(&style)
-                .unwrap_or_else(|_| format!("serialization-error:{style:?}").into_bytes());
-            let style_index = if let Some(existing) = computed_style_lookup.get(&style_key) {
-                *existing
+            // Most documents repeat a small set of computed styles across
+            // adjacent nodes. Compare those recent typed values before
+            // allocating and serializing a JSON key for the fallback map.
+            // The bounded cache preserves the map's exact deduplication for
+            // styles that recur farther apart and keeps unique-style pages
+            // from turning this pass into an unbounded linear search.
+            let recent_style = recent_style_indices.iter().copied().find(|style_index| {
+                computed_style_table
+                    .get(*style_index as usize)
+                    .is_some_and(|candidate| *candidate == style)
+            });
+            let style_index = if let Some(recent_style) = recent_style {
+                recent_style
             } else {
-                let style_index = u32::try_from(computed_style_table.len()).unwrap_or(u32::MAX);
-                computed_style_table.push(style);
-                computed_style_lookup.insert(style_key, style_index);
-                style_index
+                let style_key = serde_json::to_vec(&style)
+                    .unwrap_or_else(|_| format!("serialization-error:{style:?}").into_bytes());
+                if let Some(existing) = computed_style_lookup.get(&style_key) {
+                    *existing
+                } else {
+                    let style_index = u32::try_from(computed_style_table.len()).unwrap_or(u32::MAX);
+                    computed_style_table.push(style);
+                    computed_style_lookup.insert(style_key, style_index);
+                    style_index
+                }
             };
+            recent_style_indices.retain(|cached| *cached != style_index);
+            recent_style_indices.push_front(style_index);
+            if recent_style_indices.len() > 16 {
+                recent_style_indices.pop_back();
+            }
             computed_style_indices.push(style_index);
         }
         if let Some(stage) = style_stage {

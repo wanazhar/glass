@@ -106,6 +106,7 @@ pub(super) fn document_bootstrap(
     if let Some(state) = state.as_mut() {
         let mut computed_styles = Vec::new();
         let mut style_indices = std::collections::HashMap::<Vec<u8>, u32>::new();
+        let mut recent_style_indices = std::collections::VecDeque::<u32>::with_capacity(16);
         if let Some(elements) = state
             .get_mut("elements")
             .and_then(serde_json::Value::as_array_mut)
@@ -126,27 +127,45 @@ pub(super) fn document_bootstrap(
                     let computed_style = element
                         .remove("computedStyle")
                         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-                    let style_key = serde_json::to_vec(&computed_style).map_err(|_| {
-                        NativeEngineError::Worker {
-                            operation: "compact JavaScript computed style".into(),
-                            reason: "native computed style could not be compacted".into(),
-                        }
-                    })?;
-                    style_key_bytes = style_key_bytes.saturating_add(style_key.len());
-                    let style_index = if let Some(index) = style_indices.get(&style_key) {
-                        *index
+                    // Repeated styles are common in large documents. Check a
+                    // small, bounded set of recent typed values before
+                    // serializing a JSON key; retain the canonical byte map
+                    // for styles that recur farther apart or are unique.
+                    let recent_style = recent_style_indices.iter().copied().find(|index| {
+                        computed_styles
+                            .get(*index as usize)
+                            .is_some_and(|candidate| candidate == &computed_style)
+                    });
+                    let style_index = if let Some(recent_style) = recent_style {
+                        recent_style
                     } else {
-                        let index = u32::try_from(computed_styles.len()).map_err(|_| {
-                            NativeEngineError::limit(
-                                "native computed style table",
-                                u32::MAX as usize,
-                                computed_styles.len(),
-                            )
+                        let style_key = serde_json::to_vec(&computed_style).map_err(|_| {
+                            NativeEngineError::Worker {
+                                operation: "compact JavaScript computed style".into(),
+                                reason: "native computed style could not be compacted".into(),
+                            }
                         })?;
-                        computed_styles.push(computed_style);
-                        style_indices.insert(style_key, index);
-                        index
+                        style_key_bytes = style_key_bytes.saturating_add(style_key.len());
+                        if let Some(index) = style_indices.get(&style_key) {
+                            *index
+                        } else {
+                            let index = u32::try_from(computed_styles.len()).map_err(|_| {
+                                NativeEngineError::limit(
+                                    "native computed style table",
+                                    u32::MAX as usize,
+                                    computed_styles.len(),
+                                )
+                            })?;
+                            computed_styles.push(computed_style);
+                            style_indices.insert(style_key, index);
+                            index
+                        }
                     };
+                    recent_style_indices.retain(|cached| *cached != style_index);
+                    recent_style_indices.push_front(style_index);
+                    if recent_style_indices.len() > 16 {
+                        recent_style_indices.pop_back();
+                    }
                     // This key is repeated for every styled element in the
                     // 16 MiB-bounded host snapshot. Keep the transport name
                     // compact; runtime_timers.js restores the computed style

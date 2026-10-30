@@ -273,6 +273,63 @@ def safe_image_diagnostics(value: object) -> dict | None:
     }
 
 
+def summarize_native_trace(lines) -> dict:
+    """Summarize bounded trace timing and open phases without trace payloads."""
+    completed_us = {}
+    starts = {}
+    finishes = {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        stage = event.get("stage")
+        if not isinstance(stage, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", stage):
+            continue
+        request_id = event.get("request_id")
+        ordinal = event.get("ordinal")
+        resource_type = event.get("resource_type")
+        process_id = event.get("process_id")
+        component = event.get("component")
+        trace_key = (
+            stage,
+            process_id if isinstance(process_id, int) and not isinstance(process_id, bool) else None,
+            component if isinstance(component, str) and re.fullmatch(r"[a-z0-9_]{1,48}", component) else None,
+            request_id if isinstance(request_id, int) and not isinstance(request_id, bool) else None,
+            ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None,
+            resource_type if isinstance(resource_type, str) and re.fullmatch(r"[a-z0-9_]{1,48}", resource_type) else None,
+        )
+        phase = event.get("phase")
+        if phase == "start":
+            starts[trace_key] = starts.get(trace_key, 0) + 1
+        elif phase == "complete":
+            finishes[trace_key] = finishes.get(trace_key, 0) + 1
+            elapsed = event.get("elapsed_us")
+            if isinstance(elapsed, int) and not isinstance(elapsed, bool) and elapsed >= 0:
+                completed_us[stage] = max(completed_us.get(stage, 0), elapsed)
+
+    unfinished_by_stage = {}
+    for trace_key, count in starts.items():
+        open_count = count - finishes.get(trace_key, 0)
+        if open_count > 0:
+            stage = trace_key[0]
+            unfinished_by_stage[stage] = unfinished_by_stage.get(stage, 0) + open_count
+    unfinished = [
+        {"stage": stage, "openCount": min(10_000, count)}
+        for stage, count in unfinished_by_stage.items()
+    ]
+    unfinished.sort(key=lambda item: (-item["openCount"], item["stage"]))
+    max_stage_ms = {
+        stage: round(elapsed / 1000, 2)
+        for stage, elapsed in sorted(completed_us.items(), key=lambda item: (-item[1], item[0]))[:12]
+    }
+    return {
+        "maxStageMs": max_stage_ms,
+        "unfinishedStages": unfinished[:16],
+        "unfinishedStageCount": min(10_000, sum(item["openCount"] for item in unfinished)),
+    }
+
+
 def safe_worker_diagnostics(stderr: str) -> list[dict[str, str]]:
     """Retain only the worker's static privacy-safe diagnostic categories."""
     classes = {
@@ -543,9 +600,12 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
         trace_target = artifact_dir / f"{journey['id']}.native_load.jsonl"
         progress_target = artifact_dir / f"{journey['id']}.progress.jsonl"
         stage_time_us: dict[str, int] = {}
+        trace_summary = {"maxStageMs": {}, "unfinishedStages": [], "unfinishedStageCount": 0}
         failure_match = None
         if trace_source.exists():
-            for line in trace_source.read_text(encoding="utf-8", errors="replace").splitlines():
+            trace_lines = trace_source.read_text(encoding="utf-8", errors="replace").splitlines()
+            trace_summary = summarize_native_trace(trace_lines)
+            for line in trace_lines:
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -636,6 +696,9 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
         "diagnosticsArtifact": str(trace_target) if trace_target.exists() else None,
         "progressArtifact": str(progress_target) if progress_target.exists() else None,
         "diagnosticStageTotalsMs": {stage: round(value / 1000, 2) for stage, value in stage_time_us.items()},
+        "diagnosticStageMaxMs": trace_summary["maxStageMs"],
+        "unfinishedDiagnosticStages": trace_summary["unfinishedStages"],
+        "unfinishedDiagnosticStageCount": trace_summary["unfinishedStageCount"],
         "hostViewFailureStructure": (
             {"elementIndex": int(structure_match.group(1)), "tag": structure_match.group(2),
              "attributeCount": int(structure_match.group(3)), "textLength": int(structure_match.group(4)),

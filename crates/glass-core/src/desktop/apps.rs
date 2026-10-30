@@ -836,6 +836,47 @@ mod tests {
     }
 
     #[test]
+    fn browser_address_reading_uses_one_editable_address_field_and_exact_url() {
+        let home = "file:///tmp/glass-fixture/browser-home.html";
+        let snapshot = json!({
+            "truncated":false,
+            "queryAmbiguous":false,
+            "nodes":[
+                {"role":"static","name":"Address hint","value":"not an address"},
+                {"role":"entry","name":"Address and search bar","editable":true,"value":home}
+            ]
+        });
+        assert_eq!(unique_browser_address_value(&snapshot), Some(home));
+        assert!(address_matches_expected(home, home));
+        assert!(!address_matches_expected(
+            "Search Google or enter address",
+            home
+        ));
+        assert!(!address_matches_expected(
+            "file:///tmp/glass-fixture/browser-home.html?unexpected=1",
+            home
+        ));
+        assert!(!address_matches_expected("chrome://newtab/", home));
+
+        let duplicate_fields = json!({
+            "truncated":false,
+            "queryAmbiguous":false,
+            "nodes":[
+                {"role":"entry","name":"Address bar","editable":true,"value":home},
+                {"role":"combo box","name":"Address search","editable":true,"value":home}
+            ]
+        });
+        assert_eq!(unique_browser_address_value(&duplicate_fields), None);
+
+        let incomplete = json!({
+            "truncated":true,
+            "queryAmbiguous":false,
+            "nodes":[{"role":"entry","name":"Address bar","editable":true,"value":home}]
+        });
+        assert_eq!(unique_browser_address_value(&incomplete), None);
+    }
+
+    #[test]
     fn managed_desktop_launches_only_a_listed_entry_and_observes_its_window() {
         if std::env::var_os("GLASS_DESKTOP_LAUNCH_APP_E2E").as_deref()
             != Some(std::ffi::OsStr::new("1"))
@@ -1148,10 +1189,34 @@ mod tests {
                 "<!doctype html><html><head><title>Managed browser detail fixture</title></head><body><h1>Detail page</h1><a href=\"#section\">Observed section link</a><h2 id=\"section\">Detail section</h2></body></html>",
             )
             .map_err(|error| format!("writing isolated browser detail fixture: {error}"))?;
-            let read_expected_address = |expected: &str| -> Result<String, String> {
+            let home_fixture_url = url::Url::from_file_path(&home_page)
+                .map_err(|_| "could not form local browser fixture URL")?
+                .to_string();
+            let chapter_fixture_url = url::Url::from_file_path(&chapter_page)
+                .map_err(|_| "could not form local browser fixture URL")?
+                .to_string();
+            let detail_fixture_url = url::Url::from_file_path(&detail_page)
+                .map_err(|_| "could not form local browser fixture URL")?
+                .to_string();
+            let mut section_fixture = url::Url::parse(&detail_fixture_url)
+                .map_err(|_| "could not form local browser fixture URL")?;
+            section_fixture.set_fragment(Some("section"));
+            let known_fixture_routes = [
+                ("home", home_fixture_url.as_str()),
+                ("chapter", chapter_fixture_url.as_str()),
+                ("detail", detail_fixture_url.as_str()),
+                ("section", section_fixture.as_str()),
+            ];
+            let read_expected_address = |route: &str,
+                                         expected: &str,
+                                         expected_window_title: &str|
+             -> Result<String, String> {
                 let observation = desktop
                     .observe_accessibility(Some(&session_id), Some("Chromium address"))
-                    .map_err(|error| format!("observing browser address: {error}"))?;
+                    .map_err(|error| format!("observing {route} browser address: {error}"))?;
+                let focused_title_matches = observation["focusedWindow"]["name"]
+                    .as_str()
+                    .is_some_and(|name| name.contains(expected_window_title));
                 if observation["truncated"] != false
                     || observation["queryAmbiguous"] != false
                     || !observation["focusedWindow"]["application"]
@@ -1159,7 +1224,7 @@ mod tests {
                         .is_some_and(super::super::is_browser_application)
                 {
                     return Err(format!(
-                        "browser address observation is incomplete: truncated={} queryAmbiguous={} focusedBrowser={}",
+                        "{route} browser address observation is incomplete: truncated={} queryAmbiguous={} focusedBrowser={} focusedTitleMatches={focused_title_matches}",
                         observation["truncated"],
                         observation["queryAmbiguous"],
                         observation["focusedWindow"]["application"]
@@ -1168,18 +1233,39 @@ mod tests {
                     ));
                 }
                 let address = unique_browser_address_value(&observation);
-                if let Some(address) = address.filter(|value| value.contains(expected)) {
+                if let Some(address) =
+                    address.filter(|value| address_matches_expected(value, expected))
+                    && focused_title_matches
+                {
                     Ok(address.to_owned())
                 } else {
+                    if std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_DIAGNOSTICS").as_deref()
+                        == Some(std::ffi::OsStr::new("1"))
+                    {
+                        let observed_file_exists = address
+                            .and_then(|value| url::Url::parse(value).ok())
+                            .filter(|value| value.scheme() == "file")
+                            .and_then(|value| value.to_file_path().ok())
+                            .map(|path| path.is_file());
+                        eprintln!(
+                            "managed browser private address diagnostic: expectedRoute={route} actualAddress={} focusedTitleMatches={focused_title_matches} observedFileExists={observed_file_exists:?}",
+                            address.unwrap_or("<none>"),
+                        );
+                    }
+                    let observed_route = address
+                        .and_then(|address| {
+                            known_fixture_routes
+                                .iter()
+                                .find(|(_, known_url)| address == *known_url)
+                                .map(|(route, _)| *route)
+                        })
+                        .unwrap_or("other");
                     Err(format!(
-                        "browser address did not match the expected fixture path: uniqueAddressObserved={} expectedPathMatched=false",
-                        address.is_some()
+                        "{route} browser address did not match the expected fixture path: focusedBrowser=true focusedTitleMatches={focused_title_matches} truncated=false queryAmbiguous=false uniqueAddressObserved={} expectedPathMatched=false observedFixtureRoute={observed_route}",
+                        address.is_some(),
                     ))
                 }
             };
-            let fixture_url = url::Url::from_file_path(&home_page)
-                .map_err(|_| "could not form local browser fixture URL")?
-                .to_string();
             desktop
                 .input(
                     super::super::Lease::Agent,
@@ -1189,7 +1275,7 @@ mod tests {
             desktop
                 .input(
                     super::super::Lease::Agent,
-                    &json!({"action":"text","text":fixture_url}),
+                    &json!({"action":"text","text":home_fixture_url}),
                 )
                 .map_err(|error| format!("entering the local fixture URL: {}", error.message()))?;
             desktop
@@ -1206,7 +1292,11 @@ mod tests {
             let home_address_deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(15);
             let home_address = loop {
-                match read_expected_address("browser-home.html") {
+                match read_expected_address(
+                    "home",
+                    &home_fixture_url,
+                    "Managed browser home fixture",
+                ) {
                     Ok(address) => break address,
                     Err(error) if std::time::Instant::now() < home_address_deadline => {
                         let _ = error;
@@ -1384,7 +1474,11 @@ mod tests {
             let chapter_address_deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(15);
             let chapter_address = loop {
-                match read_expected_address("browser-chapter.html") {
+                match read_expected_address(
+                    "chapter",
+                    &chapter_fixture_url,
+                    "Managed browser chapter fixture",
+                ) {
                     Ok(address) => break address,
                     Err(error) if std::time::Instant::now() < chapter_address_deadline => {
                         let _ = error;
@@ -1453,6 +1547,26 @@ mod tests {
                         error.message()
                     )
                 })?;
+            let middle_click_deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let chapter_after_middle_click = loop {
+                match read_expected_address(
+                    "middle-click",
+                    &chapter_fixture_url,
+                    "Managed browser chapter fixture",
+                ) {
+                    Ok(address) => break address,
+                    Err(error) if std::time::Instant::now() < middle_click_deadline => {
+                        let _ = error;
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "middle-click did not preserve the chapter tab before switching: {error}"
+                        ));
+                    }
+                }
+            };
             desktop
                 .input(
                     super::super::Lease::Agent,
@@ -1467,7 +1581,11 @@ mod tests {
             let detail_address_deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(15);
             let detail_address = loop {
-                match read_expected_address("browser-detail.html") {
+                match read_expected_address(
+                    "detail",
+                    &detail_fixture_url,
+                    "Managed browser detail fixture",
+                ) {
                     Ok(address) => break address,
                     Err(error) if std::time::Instant::now() < detail_address_deadline => {
                         let _ = error;
@@ -1640,7 +1758,11 @@ mod tests {
                     })
                 ));
             }
-            let back_address = read_expected_address("browser-detail.html")?;
+            let back_address = read_expected_address(
+                "back",
+                &detail_fixture_url,
+                "Managed browser detail fixture",
+            )?;
             desktop
                 .input(
                     super::super::Lease::Agent,
@@ -1712,7 +1834,11 @@ mod tests {
                     })
                 ));
             }
-            let forward_address = read_expected_address("#section")?;
+            let forward_address = read_expected_address(
+                "forward",
+                section_fixture.as_str(),
+                "Managed browser detail fixture",
+            )?;
             desktop
                 .input(
                     super::super::Lease::Agent,
@@ -1724,12 +1850,17 @@ mod tests {
                         error.message()
                     )
                 })?;
-            let original_tab_address = read_expected_address("browser-chapter.html")?;
+            let original_tab_address = read_expected_address(
+                "original",
+                &chapter_fixture_url,
+                "Managed browser chapter fixture",
+            )?;
             Ok(json!({
                 "desktopEntryId": browser_id,
                 "browserWindowObserved": true,
                 "homeToChapterObservedLink": true,
                 "chapterToDetailObservedLinkOpenedNewTab": true,
+                "chapterPreservedAfterMiddleClick": chapter_after_middle_click.contains("browser-chapter.html"),
                 "sectionObservedLinkClicked": true,
                 "backAndForwardVerifiedByUrl": true,
                 "originalTabPreserved": true,
@@ -2712,12 +2843,25 @@ mod tests {
         if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
             return None;
         }
-        let mut values = snapshot["nodes"]
-            .as_array()?
-            .iter()
-            .filter_map(|node| node["value"].as_str());
-        let address = values.next()?;
-        values.next().is_none().then_some(address)
+        let mut address_fields = snapshot["nodes"].as_array()?.iter().filter(|node| {
+            let role = node["role"].as_str().unwrap_or_default();
+            let name = node["name"].as_str().unwrap_or_default();
+            matches!(role, "entry" | "text entry" | "text box" | "combo box")
+                && node["editable"] == true
+                && name.to_ascii_lowercase().contains("address")
+        });
+        let field = address_fields.next()?;
+        if address_fields.next().is_some() {
+            return None;
+        }
+        field["value"].as_str()
+    }
+
+    fn address_matches_expected(actual: &str, expected: &str) -> bool {
+        url::Url::parse(actual)
+            .ok()
+            .zip(url::Url::parse(expected).ok())
+            .is_some_and(|(actual, expected)| actual == expected)
     }
 
     fn write_test_application_entry(

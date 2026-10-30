@@ -538,7 +538,7 @@ mod tests {
                     .filter(|window| {
                         window["application"]
                             .as_str()
-                            .is_some_and(|name| name.to_ascii_lowercase().contains("chrome"))
+                            .is_some_and(super::super::is_browser_application)
                     })
                     .take(8)
                     .cloned()
@@ -745,7 +745,7 @@ mod tests {
                         .filter(|node| {
                             matches!(node["role"].as_str(), Some("frame" | "window" | "dialog"))
                                 || node["application"].as_str().is_some_and(|application| {
-                                    application.to_ascii_lowercase().contains("chrome")
+                                    super::super::is_browser_application(application)
                                 })
                         })
                         .take(20)
@@ -759,7 +759,7 @@ mod tests {
                     if diagnostic_nodes.iter().any(|node| {
                         matches!(node["role"].as_str(), Some("frame" | "window"))
                             && node["application"].as_str().is_some_and(|application| {
-                                application.to_ascii_lowercase().contains("chrome")
+                                super::super::is_browser_application(application)
                             })
                     }) {
                         browser_window_seen = true;
@@ -878,7 +878,7 @@ mod tests {
             .map_err(|error| format!("writing isolated browser detail fixture: {error}"))?;
             let read_expected_address = |expected: &str| -> Result<String, String> {
                 let observation = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .map_err(|error| format!("observing browser address: {error}"))?;
                 if observation["truncated"] != false || observation["queryAmbiguous"] != false {
                     return Err(format!(
@@ -934,7 +934,10 @@ mod tests {
             let mut page_diagnostics = Value::Null;
             let mut home_link = None;
             let initial_search = desktop
-                .observe_accessibility(Some(&session_id), Some("Chrome Observed chapter link link"))
+                .observe_accessibility(
+                    Some(&session_id),
+                    Some("Chromium Observed chapter link link"),
+                )
                 .map_err(|error| format!("searching for the below-fold home link: {error}"))?;
             let initial_matches = initial_search["nodes"]
                 .as_array()
@@ -962,7 +965,7 @@ mod tests {
             while std::time::Instant::now() < page_deadline {
                 if let Ok(observation) = desktop.observe_accessibility(
                     Some(&session_id),
-                    Some("Chrome Observed chapter link link"),
+                    Some("Chromium Observed chapter link link"),
                 ) {
                     let nodes = observation["nodes"].as_array().cloned().unwrap_or_default();
                     page_diagnostics = json!({
@@ -1055,7 +1058,7 @@ mod tests {
                     let refreshed = desktop
                         .observe_accessibility(
                             Some(&session_id),
-                            Some("Chrome Observed chapter link link"),
+                            Some("Chromium Observed chapter link link"),
                         )
                         .map_err(|refresh_error| {
                             format!("stale-link recovery observation failed: {refresh_error}")
@@ -1111,7 +1114,7 @@ mod tests {
             while std::time::Instant::now() < chapter_deadline {
                 if let Ok(observation) = desktop.observe_accessibility(
                     Some(&session_id),
-                    Some("Chrome Observed detail link link"),
+                    Some("Chromium Observed detail link link"),
                 ) {
                     let nodes = observation["nodes"].as_array().cloned().unwrap_or_default();
                     chapter_observation = json!({
@@ -1166,7 +1169,7 @@ mod tests {
                     )
                 })?;
             let all_tabs = desktop
-                .observe_accessibility(Some(&session_id), Some("Chrome tab"))
+                .observe_accessibility(Some(&session_id), Some("Chromium tab"))
                 .map_err(|error| format!("observing both browser tabs failed: {error}"))?;
             let tab_names = all_tabs["nodes"]
                 .as_array()
@@ -1177,10 +1180,10 @@ mod tests {
                 .collect::<Vec<_>>();
             if !tab_names
                 .iter()
-                .any(|name| name == "Managed browser chapter fixture")
+                .any(|name| name.starts_with("Managed browser chapter fixture"))
                 || !tab_names
                     .iter()
-                    .any(|name| name == "Managed browser detail fixture")
+                    .any(|name| name.starts_with("Managed browser detail fixture"))
             {
                 return Err(format!(
                     "both distinct browser tabs were not observed: {all_tabs}"
@@ -1189,7 +1192,7 @@ mod tests {
             let detail_tab = desktop
                 .observe_accessibility(
                     Some(&session_id),
-                    Some("Chrome Managed browser detail fixture tab"),
+                    Some("Chromium Managed browser detail fixture tab"),
                 )
                 .map_err(|error| format!("uniquely observing detail tab failed: {error}"))?;
             let detail_tab_target = detail_tab["nodes"]
@@ -1245,7 +1248,7 @@ mod tests {
             while std::time::Instant::now() < detail_deadline {
                 if let Ok(observation) = desktop.observe_accessibility(
                     Some(&session_id),
-                    Some("Chrome Observed section link link"),
+                    Some("Chromium Observed section link link"),
                 ) {
                     detail_observation = observation;
                     if detail_observation["focusedWindow"]["name"]
@@ -1304,10 +1307,13 @@ mod tests {
             let mut section_snapshot = Value::Null;
             while std::time::Instant::now() < section_deadline {
                 section_snapshot = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome Detail section heading"))
+                    .observe_accessibility(
+                        Some(&session_id),
+                        Some("Chromium Detail section heading"),
+                    )
                     .unwrap_or(Value::Null);
                 let address_snapshot = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .ok();
                 let current_address = address_snapshot
                     .as_ref()
@@ -1356,7 +1362,7 @@ mod tests {
             let mut back_observation = Value::Null;
             while std::time::Instant::now() < back_deadline {
                 let observation = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .unwrap_or(Value::Null);
                 let address = unique_browser_address_value(&observation);
                 let title_matches = observation["focusedWindow"]["name"]
@@ -1375,7 +1381,7 @@ mod tests {
             }
             if !back_verified {
                 let diagnostic = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .ok();
                 let address = diagnostic
                     .as_ref()
@@ -1388,7 +1394,7 @@ mod tests {
                     json!({
                         "focusedWindow":diagnostic.as_ref().map(|snapshot| &snapshot["focusedWindow"]),
                         "windows":diagnostic.as_ref().map(|snapshot| &snapshot["windows"]),
-                        "address":address,
+                        "Chromium address":address,
                         "backObservation":back_observation,
                         "nodesVisited":diagnostic.as_ref().map(|snapshot| &snapshot["nodesVisited"]),
                         "truncated":diagnostic.as_ref().map(|snapshot| &snapshot["truncated"]),
@@ -1408,14 +1414,17 @@ mod tests {
             let mut forward_section = Value::Null;
             while std::time::Instant::now() < forward_deadline {
                 let observation = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .unwrap_or(Value::Null);
                 let address = unique_browser_address_value(&observation);
                 let title_matches = observation["focusedWindow"]["name"]
                     .as_str()
                     .is_some_and(|name| name.contains("Managed browser detail fixture"));
                 let section = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome Detail section heading"))
+                    .observe_accessibility(
+                        Some(&session_id),
+                        Some("Chromium Detail section heading"),
+                    )
                     .unwrap_or(Value::Null);
                 let heading_matches = section["truncated"] == false
                     && section["queryAmbiguous"] == false
@@ -1443,7 +1452,7 @@ mod tests {
             }
             if !forward_verified {
                 let diagnostic = desktop
-                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .ok();
                 let address = diagnostic
                     .as_ref()
@@ -1456,7 +1465,7 @@ mod tests {
                     json!({
                         "focusedWindow":diagnostic.as_ref().map(|snapshot| &snapshot["focusedWindow"]),
                         "windows":diagnostic.as_ref().map(|snapshot| &snapshot["windows"]),
-                        "address":address,
+                        "Chromium address":address,
                         "forwardObservation":forward_observation,
                         "sectionNodes":forward_section["nodes"],
                         "nodesVisited":diagnostic.as_ref().map(|snapshot| &snapshot["nodesVisited"]),
@@ -1468,7 +1477,7 @@ mod tests {
             let original_tab = desktop
                 .observe_accessibility(
                     Some(&session_id),
-                    Some("Chrome Managed browser chapter fixture tab"),
+                    Some("Chromium Managed browser chapter fixture tab"),
                 )
                 .map_err(|error| format!("uniquely observing original tab failed: {error}"))?;
             let original_tab_target = original_tab["nodes"]
@@ -1477,7 +1486,9 @@ mod tests {
                 .flatten()
                 .find(|node| {
                     node["role"] == "page tab"
-                        && node["name"] == "Managed browser chapter fixture"
+                        && node["name"]
+                            .as_str()
+                            .is_some_and(|name| name.starts_with("Managed browser chapter fixture"))
                         && node["targetId"].is_string()
                 })
                 .cloned()
@@ -1496,7 +1507,7 @@ mod tests {
             let original_y = original_pointer["y"]
                 .as_f64()
                 .ok_or("fresh original tab has no pointer y coordinate")?;
-            desktop
+            let original_tab_click = desktop
                 .input(
                     super::super::Lease::Agent,
                     &json!({"action":"pointer-click","button":"left","x":original_x,"y":original_y}),
@@ -1504,22 +1515,34 @@ mod tests {
                 .map_err(|error| format!("selecting the observed original tab failed: {}", error.message()))?;
             let original_tab_deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(8);
-            let mut original_tab_preserved = false;
+            let mut original_tab_address = None;
+            let mut original_tab_state = Value::Null;
             while std::time::Instant::now() < original_tab_deadline {
-                if let Ok(observation) = desktop.observe_accessibility(Some(&session_id), None)
-                    && observation["focusedWindow"]["name"]
-                        .as_str()
-                        .is_some_and(|name| name.contains("Managed browser chapter fixture"))
+                if let Ok(observation) =
+                    desktop.observe_accessibility(Some(&session_id), Some("Chromium address"))
                 {
-                    original_tab_preserved = true;
-                    break;
+                    let address = unique_browser_address_value(&observation);
+                    original_tab_state = json!({
+                        "focusedWindow": observation["focusedWindow"],
+                        "truncated": observation["truncated"],
+                        "queryAmbiguous": observation["queryAmbiguous"],
+                        "address": address,
+                    });
+                    if observation["truncated"] == false
+                        && observation["queryAmbiguous"] == false
+                        && address.is_some_and(|address| address.contains("browser-chapter.html"))
+                    {
+                        original_tab_address = address.map(ToOwned::to_owned);
+                        break;
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
-            if !original_tab_preserved {
-                return Err("switching tabs did not preserve the chapter page in its tab".into());
-            }
-            let original_tab_address = read_expected_address("browser-chapter.html")?;
+            let Some(original_tab_address) = original_tab_address else {
+                return Err(format!(
+                    "switching tabs did not preserve the chapter page in its tab: click={original_tab_click}; observation={original_tab_state}"
+                ));
+            };
             Ok(json!({
                 "desktopEntryId": browser_id,
                 "browserWindowObserved": true,
@@ -1588,7 +1611,7 @@ mod tests {
             .map_err(|error| format!("entering the public URL: {}", error.message()))?;
         std::thread::sleep(std::time::Duration::from_millis(300));
         let address_observation = desktop
-            .observe_accessibility(Some(session_id), Some("Chrome address"))
+            .observe_accessibility(Some(session_id), Some("Chromium address"))
             .map_err(|error| format!("checking the browser address field: {error}"))?;
         let address_value = address_observation["nodes"]
             .as_array()
@@ -1636,10 +1659,10 @@ mod tests {
         let mut browser_window_id = select_rust_book_window(
             desktop,
             session_id,
-            "Chrome The Rust Programming Language",
+            "Chromium The Rust Programming Language",
             "rust programming language",
         )?;
-        let toggle_query = "Chrome Toggle Table of Contents label";
+        let toggle_query = "Chromium Toggle Table of Contents label";
         let toggle_snapshot = desktop
             .observe_accessibility_scoped(
                 Some(session_id),
@@ -1693,7 +1716,7 @@ mod tests {
                 )
             })?;
         std::thread::sleep(std::time::Duration::from_millis(250));
-        let ownership_query = "Chrome Understanding Ownership link";
+        let ownership_query = "Chromium Understanding Ownership link";
         let ownership = desktop
             .observe_accessibility_scoped(
                 Some(session_id),
@@ -1817,7 +1840,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
             if let Ok(address_snapshot) =
-                desktop.observe_accessibility(Some(session_id), Some("Chrome address"))
+                desktop.observe_accessibility(Some(session_id), Some("Chromium address"))
             {
                 ownership_navigation["addressObservation"] = address_snapshot;
             }
@@ -1850,7 +1873,7 @@ mod tests {
                 desktop
                     .observe_accessibility(
                         Some(session_id),
-                        Some("Chrome Understanding Ownership link"),
+                        Some("Chromium Understanding Ownership link"),
                     )
                     .ok()
                     .map(|snapshot| {
@@ -1906,7 +1929,7 @@ mod tests {
         browser_window_id = select_rust_book_window(
             desktop,
             session_id,
-            "Chrome Understanding Ownership The Rust Programming Language",
+            "Understanding Ownership The Rust Programming Language",
             "understanding ownership",
         )?;
         let address_value = ownership_navigation["addressObservation"]["nodes"]
@@ -1919,10 +1942,10 @@ mod tests {
         {
             return Err(format!(
                 "the public Ownership link did not reach its chapter URL: {}",
-                json!({"address":address_value,"navigation":ownership_navigation})
+                json!({"Chromium address":address_value,"navigation":ownership_navigation})
             ));
         }
-        let ownership_toc = "Chrome Understanding Ownership Toggle Table of Contents label";
+        let ownership_toc = "Chromium Understanding Ownership Toggle Table of Contents label";
         let _ = pointer_click_fresh_target(
             desktop,
             session_id,
@@ -1931,7 +1954,7 @@ mod tests {
             "Toggle Table of Contents",
             true,
         )?;
-        let references_query = "Chrome References and Borrowing link";
+        let references_query = "Chromium References and Borrowing link";
         let references_click = match click_fresh_link(
             desktop,
             session_id,
@@ -1944,7 +1967,7 @@ mod tests {
                 let fallback = desktop
                     .observe_accessibility(
                         Some(session_id),
-                        Some("Chrome References and Borrowing link"),
+                        Some("Chromium References and Borrowing link"),
                     )
                     .unwrap_or_else(|error| json!({"error":error}));
                 return Err(format!(
@@ -1957,7 +1980,7 @@ mod tests {
         browser_window_id = select_rust_book_window(
             desktop,
             session_id,
-            "Chrome References Borrowing The Rust Programming Language",
+            "Chromium References Borrowing The Rust Programming Language",
             "references and borrowing",
         )?;
         let references_address = read_browser_address(desktop, session_id, &browser_window_id)?;
@@ -1966,7 +1989,7 @@ mod tests {
                 "the observed References and Borrowing link did not reach its chapter: {references_address}"
             ));
         }
-        let references_toc = "Chrome Toggle Table of Contents label";
+        let references_toc = "Chromium Toggle Table of Contents label";
         let _ = pointer_click_fresh_target(
             desktop,
             session_id,
@@ -1975,8 +1998,8 @@ mod tests {
             "Toggle Table of Contents",
             true,
         )?;
-        let slice_query = "Chrome The Slice Type link";
-        let current_view_query = "References Borrowing heading";
+        let slice_query = "Chromium The Slice Type link";
+        let current_view_query = "Chromium References Borrowing heading";
         let current_view = desktop
             .observe_accessibility_scoped(
                 Some(session_id),
@@ -2100,7 +2123,7 @@ mod tests {
         browser_window_id = select_rust_book_window(
             desktop,
             session_id,
-            "Chrome The Slice Type The Rust Programming Language",
+            "Chromium The Slice Type The Rust Programming Language",
             "the slice type",
         )?;
         let slice_address = read_browser_address(desktop, session_id, &browser_window_id)?;
@@ -2112,7 +2135,7 @@ mod tests {
         let slice_heading_snapshot = desktop
             .observe_accessibility_scoped(
                 Some(session_id),
-                Some("Chrome The Slice Type heading"),
+                Some("Chromium The Slice Type heading"),
                 Some(&browser_window_id),
             )
             .map_err(|error| format!("observing the Slice Type page heading: {error}"))?;
@@ -2170,10 +2193,10 @@ mod tests {
             "toggle":toggle,
             "ownershipQuery":ownership_query,
             "ownershipSearch":{"truncated":ownership["truncated"],"queryAmbiguous":ownership["queryAmbiguous"],"nodesVisited":ownership["nodesVisited"],"ownerWindowScoped":ownership["_testOwnerWindowScoped"],"matches":ownership_matches},
-            "ownershipNavigation":{"fallback":ownership_navigation["fallback"],"semanticClickRejected":ownership_navigation["semanticClickRejected"],"address":address_value},
-            "referencesNavigation":{"address":references_address,"result":references_click},
+            "ownershipNavigation":{"fallback":ownership_navigation["fallback"],"semanticClickRejected":ownership_navigation["semanticClickRejected"],"Chromium address":address_value},
+            "referencesNavigation":{"Chromium address":references_address,"result":references_click},
             "sliceSearch":{"query":slice_query,"nodesVisited":slice_snapshot["nodesVisited"],"truncated":slice_snapshot["truncated"],"queryAmbiguous":slice_snapshot["queryAmbiguous"],"ownerWindowScoped":slice_snapshot["_testOwnerWindowScoped"],"matches":slice_matches},
-            "sliceNavigation":{"address":slice_address,"scrolls":slice_scroll,"result":slice_click},
+            "sliceNavigation":{"Chromium address":slice_address,"scrolls":slice_scroll,"result":slice_click},
             "slicePageContent":{"windowId":browser_window_id,"heading":slice_heading["name"],"visible":true},
             "screenshot":screenshot_path,
         });
@@ -2454,11 +2477,15 @@ mod tests {
         window_id: &str,
     ) -> Result<String, String> {
         let snapshot = desktop
-            .observe_accessibility_scoped(Some(session_id), Some("Chrome address"), Some(window_id))
+            .observe_accessibility_scoped(
+                Some(session_id),
+                Some("Chromium address"),
+                Some(window_id),
+            )
             .map_err(|error| format!("reading Chrome address: {error}"))?;
         if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
             return Err(format!(
-                "Chrome address observation was incomplete or ambiguous: {snapshot}"
+                "address observation was incomplete or ambiguous: {snapshot}"
             ));
         }
         let values = snapshot["nodes"]
@@ -2469,9 +2496,7 @@ mod tests {
             .collect::<Vec<_>>();
         match values.as_slice() {
             [address] => Ok(address.clone()),
-            _ => Err(format!(
-                "Chrome address observation was not unique: {snapshot}"
-            )),
+            _ => Err(format!("address observation was not unique: {snapshot}")),
         }
     }
 
@@ -2491,7 +2516,7 @@ mod tests {
             .find(|window| {
                 window["application"]
                     .as_str()
-                    .is_some_and(|name| name.to_ascii_lowercase().contains("chrome"))
+                    .is_some_and(super::super::is_browser_application)
                     && window["name"]
                         .as_str()
                         .is_some_and(|name| name.to_ascii_lowercase().contains(expected_title))

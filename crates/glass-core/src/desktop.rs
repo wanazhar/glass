@@ -40,6 +40,11 @@ const DEFAULT_PROFILE_ID: &str = "default";
 const GNOME_XVFB_ACCEPTED: bool = false;
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(test)]
+fn is_browser_application(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("chrom")
+}
+
 fn random_accessibility_revision() -> Result<u64, String> {
     let mut bytes = [0u8; 8];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
@@ -2279,14 +2284,43 @@ mod tests {
     #[test]
     fn browser_model_prompt_has_one_sequential_tab_and_progress_contract() {
         let prompt = browser_model_workflow_prompt("test-session");
-        assert!(prompt.contains("query `Chrome address`"));
-        assert!(prompt.contains("scroll down by 120 pixels once"));
+        assert!(prompt.contains("query `Chromium address`"));
+        assert!(prompt.contains("Query `Chromium Toggle Table of Contents label`"));
+        assert!(prompt.contains("Query `Chromium tab`"));
+        assert!(prompt.contains(
+            "call desktop_act click only when that exact fresh node's actions includes click"
+        ));
+        assert!(prompt.contains("After a stale error, discard all prior revisions and targets"));
+        assert!(prompt.contains("complete and unambiguous and exactly one recognized URL value"));
+        assert!(prompt.contains("visible browser window"));
+        assert!(
+            prompt.contains("currently visible `References and Borrowing` table-of-contents link")
+        );
+        assert!(prompt.contains("pointerTarget's normalized x and y"));
+        assert!(prompt.contains("Do not guess coordinates"));
         assert!(prompt.contains("at most six steps"));
         assert!(prompt.contains("Control+Enter to open it in a second tab"));
         assert!(prompt.contains("Control+Shift+Tab"));
         assert!(prompt.contains("Never type a chapter or section URL directly"));
         assert!(prompt.contains("If tabs or address values are not exposed, say so"));
         assert!(browser_model_system_prompt().len() < prompt.len());
+    }
+
+    #[test]
+    fn browser_acceptance_recognizes_chrome_and_chromium_application_names() {
+        assert!(is_browser_application("Google Chrome"));
+        assert!(is_browser_application("Chromium"));
+        assert!(!is_browser_application("Firefox"));
+    }
+
+    #[test]
+    fn browser_acceptance_http_429_is_not_automatically_retried() {
+        let error = browser_acceptance_provider_error(crate::provider::Error::Status(
+            429,
+            "rate limited".into(),
+        ));
+        assert!(matches!(error, crate::provider::Error::Transport(_)));
+        assert!(!crate::provider::is_transient(&error));
     }
 
     #[test]
@@ -2758,16 +2792,59 @@ mod tests {
 
     fn browser_model_workflow_prompt(session_id: &str) -> String {
         format!(
-            r#"Work only in managed session {session_id}. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. First list apps and launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so observe the Chrome window before interacting. Navigate to the public Rust Book homepage only with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Never type a chapter or section URL directly. After each navigation, query `Chrome address` and the page heading before proceeding; keep the latest matching Chrome windowId when available. Use focused queries, one target per action, and do not repeat a click unless a fresh observation shows the page did not change. If an action is unsupported, reobserve the exact link and use its fresh pointerTarget only when onscreen:true, complete, and unique.
+            r#"Work only in managed session {session_id}. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. First list apps and launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so observe the visible browser window before interacting. Navigate to the public Rust Book homepage only with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Never type a chapter or section URL directly. After each navigation, query `Chromium address`; continue only when the observation is complete and unambiguous and exactly one recognized URL value matches the expected page. Verify the page heading with a separate focused query; do not infer a URL from a title. Keep the latest matching browser windowId when available. Use focused queries and one target per action. For a link, call desktop_act click only when that exact fresh node's actions includes click. Otherwise, do not try desktop_act: reobserve the exact link and use desktop_input pointer-click only with its fresh, unique, complete, unambiguous, onscreen pointerTarget and normalized x/y in the same browser window. After a stale error, discard all prior revisions and targets and reobserve before another action. Never reuse a target after the UI changes.
 
-The homepage table of contents starts collapsed. Query `Chrome Toggle Table of Contents label`; click only a fresh result with pointerFallback:true, onscreen:true, queryAmbiguous:false, and truncated:false. Then follow the observed `Understanding Ownership` link and verify its address and heading. Follow the observed `References and Borrowing` link and verify its address and heading. On that References page, observe the exact `The Slice Type` link. If it is onscreen:false, scroll down by 120 pixels once and repeat that exact query; repeat only when the fresh result changes, at most six steps. Stop if the candidate disappears or does not progress. Focus the fresh visible link and press Control+Enter to open it in a second tab without navigating the References tab away.
+The homepage table of contents starts collapsed. Query `Chromium Toggle Table of Contents label`; click only a fresh result with pointerFallback:true, onscreen:true, queryAmbiguous:false, and truncated:false. Then follow the observed `Understanding Ownership` link and verify its address and heading. Follow the observed `References and Borrowing` link and verify its address and heading. On that References page, observe the exact `The Slice Type` link. If it is onscreen:false, query the currently visible `References and Borrowing` table-of-contents link and use its fresh pointerTarget only when onscreen:true, queryAmbiguous:false, and truncated:false in the same browser window. Use that pointerTarget's normalized x and y in one `desktop_input` scroll action with deltaY 120 so the TOC pane scrolls. Re-query the exact `The Slice Type` link after every scroll; repeat only when the fresh result changes, at most six steps. Do not guess coordinates or reuse a pointerTarget after the UI changes. If no visible in-pane pointerTarget is available, stop and report that. Stop scrolling if the candidate disappears or does not progress. Focus the fresh visible link and press Control+Enter to open it in a second tab without navigating the References tab away.
 
-Switch to the second tab with Control+Tab. Query `Chrome address` and the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and query the address; then Alt+ArrowRight and query it again. Switch to the first tab with Control+Shift+Tab and verify the References and Borrowing address/heading. Query `Chrome tab` and report both tabs only if one fresh observation shows both. If tabs or address values are not exposed, say so and do not infer them. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, tabs, URLs, and steps observed."#
+Switch to the second tab with Control+Tab. Query `Chromium address` and the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and query the address; then Alt+ArrowRight and query it again. Switch to the first tab with Control+Shift+Tab and verify the References and Borrowing address/heading. Query `Chromium tab` and report both tabs only if one fresh observation shows both. If tabs or address values are not exposed, say so and do not infer them. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, tabs, URLs, and steps observed."#
         )
     }
 
     fn browser_model_system_prompt() -> &'static str {
         "Use only the exposed managed desktop tools. Act on fresh observations and report only results you observed."
+    }
+
+    fn browser_acceptance_provider_error(error: crate::provider::Error) -> crate::provider::Error {
+        match error {
+            crate::provider::Error::Status(429, _) => crate::provider::Error::Transport(
+                "browser acceptance stopped on HTTP 429; provider retries are disabled".into(),
+            ),
+            error => error,
+        }
+    }
+
+    struct BrowserAcceptanceProvider<'a>(&'a dyn crate::provider::Provider);
+
+    impl crate::provider::Provider for BrowserAcceptanceProvider<'_> {
+        fn rate_card(&self) -> Option<crate::pricing::RateCard> {
+            self.0.rate_card()
+        }
+
+        fn id(&self) -> &str {
+            self.0.id()
+        }
+
+        fn model(&self) -> &str {
+            self.0.model()
+        }
+
+        fn stream(
+            &self,
+            request: &crate::provider::Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = crate::provider::Event> + '_>, crate::provider::Error>
+        {
+            self.0
+                .stream(request)
+                .map_err(browser_acceptance_provider_error)
+        }
+
+        fn context_window(&self) -> u32 {
+            self.0.context_window()
+        }
+
+        fn estimate_tokens(&self, messages: &[glass_mod_api::Message]) -> u32 {
+            self.0.estimate_tokens(messages)
+        }
     }
 
     fn run_live_browser_workflow(desktop: &Desktop, root: &Path, session_id: &str) {
@@ -2802,6 +2879,7 @@ Switch to the second tab with Control+Tab. Query `Chrome address` and the `The S
         )
         .unwrap_or_else(|_| panic!("Could not construct the configured free provider"));
         provider.set_session_identity(config.provider_session.as_deref());
+        let no_rate_limit_retry = BrowserAcceptanceProvider(provider.as_ref());
 
         let session_dir = root.join("live-browser-agent-turn");
         std::fs::create_dir_all(&session_dir).unwrap();
@@ -2832,7 +2910,7 @@ Switch to the second tab with Control+Tab. Query `Chrome address` and the `The S
         let desktop_ref = desktop;
         let started_at = Instant::now();
         let mut agent = crate::agent::Agent::new(
-            provider.as_ref(),
+            &no_rate_limit_retry,
             &mut session,
             &mut state,
             &mods,
@@ -2875,7 +2953,7 @@ Switch to the second tab with Control+Tab. Query `Chrome address` and the `The S
                             let complete_observation =
                                 value["truncated"] == false && value["queryAmbiguous"] == false;
                             let browser_observation =
-                                complete_observation && active_app.contains("chrome");
+                                complete_observation && is_browser_application(&active_app);
                             let mut trace = action_trace.lock().unwrap();
                             trace.observations += 1;
                             if browser_observation {
@@ -2918,9 +2996,9 @@ Switch to the second tab with Control+Tab. Query `Chrome address` and the `The S
                                             .any(|part| name.to_ascii_lowercase().contains(part))
                                         && !value_text.is_empty()
                                         && let Some(observed_url) = safe_rust_book_url(value_text)
-                                        && node["owningWindow"]["application"].as_str().is_some_and(
-                                            |app| app.to_ascii_lowercase().contains("chrome"),
-                                        )
+                                        && node["owningWindow"]["application"]
+                                            .as_str()
+                                            .is_some_and(is_browser_application)
                                         && node["owningWindow"]["name"]
                                             .as_str()
                                             .and_then(safe_browser_trace_title)

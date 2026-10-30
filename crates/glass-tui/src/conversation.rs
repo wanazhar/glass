@@ -184,13 +184,20 @@ impl Conversation {
                 let Some(index) = self.tool_index(&call_id) else {
                     return Some(self.push(Role::Tool, output, None));
                 };
+                let name = self.items[index]
+                    .entry
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("tool")
+                    .to_owned();
                 let card = self.items[index].entry.tool_card.as_mut()?;
                 if !output.is_empty() {
                     card.output = output;
                 }
                 card.status = status;
                 card.elapsed_ms = elapsed_ms;
-                self.items[index].entry.text = format!("{}\n{}", card.command, card.output);
+                self.items[index].entry.text = format!("{name}\n{}\n{}", card.command, card.output);
                 Some(index)
             }
             ConversationEvent::Status { role, text } => {
@@ -291,6 +298,12 @@ mod tests {
         assert_eq!(a.status, "running");
         assert_eq!(b.output, "second output");
         assert_eq!(b.status, "exit 0");
+        assert!(
+            conversation.items()[1]
+                .entry
+                .text
+                .starts_with("glass.file.read\n")
+        );
     }
 
     #[test]

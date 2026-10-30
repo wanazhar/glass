@@ -1710,6 +1710,11 @@ pub struct DevTuiState {
     pub file_picker_selection: usize,
     pub transcript_selection: usize,
     pub transcript_expanded: bool,
+    pub expanded_tool_call_id: Option<String>,
+    pub tool_output_inspector_call_id: Option<String>,
+    pub tool_output_scroll: usize,
+    pub(super) tool_output_layout: RefCell<glass_tui::layout::Layout>,
+    pub(super) tool_output_card_cache: RefCell<Option<(glass_tui::ToolCard, String, u16)>>,
     /// Shows provider reasoning in isolation after an explicit Ctrl-T toggle.
     pub reasoning_view_open: bool,
     pub session_picker_open: bool,
@@ -2274,6 +2279,11 @@ impl DevTuiState {
             file_picker_selection: 0,
             transcript_selection: 0,
             transcript_expanded: false,
+            expanded_tool_call_id: None,
+            tool_output_inspector_call_id: None,
+            tool_output_scroll: 0,
+            tool_output_layout: RefCell::new(glass_tui::layout::Layout::default()),
+            tool_output_card_cache: RefCell::new(None),
             reasoning_view_open: false,
             core_transcript: RefCell::new(super::core_conversation::InlineTranscript::default()),
             session_picker_open: false,
@@ -4727,12 +4737,60 @@ impl DevTuiState {
     }
 
     pub fn toggle_transcript_expand(&mut self) {
+        if self.surface == DevSurface::Agent {
+            let call_id = self
+                .conversation_entries_view()
+                .get(self.transcript_selection)
+                .and_then(|entry| entry.tool_card.as_ref())
+                .map(|card| card.call_id.clone());
+            let Some(call_id) = call_id else {
+                self.status = "Select a tool call · Ctrl-O expands its output".into();
+                return;
+            };
+            let expanded = if self.expanded_tool_call_id.as_deref() == Some(&call_id) {
+                self.expanded_tool_call_id = None;
+                false
+            } else {
+                self.expanded_tool_call_id = Some(call_id);
+                true
+            };
+            self.status = if expanded {
+                "Tool output expanded · Ctrl-O collapse · Ctrl-Shift-O inspect".into()
+            } else {
+                "Tool output collapsed · Ctrl-O expand".into()
+            };
+            return;
+        }
         self.transcript_expanded = !self.transcript_expanded;
         self.status = if self.transcript_expanded {
             "Expanded tool card · o collapse".into()
         } else {
             "Collapsed · o expand".into()
         };
+    }
+
+    pub fn open_tool_output_inspector(&mut self) {
+        let call_id = self
+            .conversation_entries_view()
+            .get(self.transcript_selection)
+            .and_then(|entry| entry.tool_card.as_ref())
+            .map(|card| card.call_id.clone());
+        if let Some(call_id) = call_id {
+            self.tool_output_inspector_call_id = Some(call_id);
+            self.tool_output_scroll = 0;
+            *self.tool_output_card_cache.borrow_mut() = None;
+            self.status = "Tool output · ↑/↓ or PgUp/PgDn to scroll · Esc close".into();
+        } else {
+            self.status = "Select a tool call · Ctrl-Shift-O opens full output".into();
+        }
+    }
+
+    pub fn close_tool_output_inspector(&mut self) {
+        self.tool_output_inspector_call_id = None;
+        self.tool_output_scroll = 0;
+        *self.tool_output_card_cache.borrow_mut() = None;
+        *self.tool_output_layout.borrow_mut() = glass_tui::layout::Layout::default();
+        self.status = "Returned to conversation".into();
     }
 
     pub fn toggle_reasoning_view(&mut self) {
@@ -6588,10 +6646,14 @@ impl DevTuiState {
         self.composer_mode = true;
         self.composer_code_context_enabled =
             self.surface == DevSurface::Code && !self.focused_editor_path.is_empty();
-        self.status = format!(
-            "Message on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
-            self.surface.label(),
-        );
+        self.status = if self.surface == DevSurface::Agent {
+            "Glass Agent idle".into()
+        } else {
+            format!(
+                "Message on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
+                self.surface.label(),
+            )
+        };
     }
 
     /// Focus the shared chat dock without changing the active surface.
@@ -7191,25 +7253,31 @@ impl DevTuiState {
     }
 
     pub fn gc_command_glass_actions(&self) -> Vec<command::SurfaceAction> {
+        static ALL_ACTIONS: std::sync::OnceLock<Vec<command::SurfaceAction>> =
+            std::sync::OnceLock::new();
         let raw_query = self.gc_command_query.trim().to_ascii_lowercase();
         let query = raw_query
             .strip_prefix("glass")
             .map(str::trim)
             .unwrap_or(raw_query.as_str());
-        let mut actions = Vec::new();
-        for surface in DevSurface::ALL {
-            for action in command::surface_actions(surface) {
-                if actions
-                    .iter()
-                    .any(|known: &command::SurfaceAction| known.command == action.command)
-                {
-                    continue;
-                }
+        let all_actions = ALL_ACTIONS.get_or_init(|| {
+            let mut seen = std::collections::HashSet::new();
+            DevSurface::ALL
+                .into_iter()
+                .flat_map(command::surface_actions)
+                .copied()
+                .filter(|action| seen.insert(action.command))
+                .collect()
+        });
+        all_actions
+            .iter()
+            .copied()
+            .filter(|action| {
                 let searchable =
                     format!("{} {} {}", action.label, action.command, action.description)
                         .to_ascii_lowercase();
-                if query.is_empty()
-                    && [
+                if query.is_empty() {
+                    [
                         "view Agent",
                         "view Code",
                         "view Browser",
@@ -7222,16 +7290,13 @@ impl DevTuiState {
                         "task list",
                     ]
                     .contains(&action.command)
-                    || !query.is_empty()
-                        && query
-                            .split_whitespace()
-                            .all(|term| searchable.contains(term))
-                {
-                    actions.push(*action);
+                } else {
+                    query
+                        .split_whitespace()
+                        .all(|term| searchable.contains(term))
                 }
-            }
-        }
-        actions
+            })
+            .collect()
     }
 
     /// Keep the empty-query palette focused on common controls. Typing a query

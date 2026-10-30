@@ -23,23 +23,24 @@ fn documented_shortcut_help() -> &'static str {
     HELP.get_or_init(|| {
         let inventory: ShortcutInventory =
             serde_json::from_str(SHORTCUT_INVENTORY).expect("invalid TUI shortcut inventory");
-        assert_eq!(
-            inventory.schema_version, 1,
-            "unsupported TUI shortcut inventory schema"
-        );
+        assert_eq!(inventory.schema_version, 1);
         for line in &inventory.help_lines {
-            assert!(!line.keys.is_empty(), "TUI shortcut help line has no keys");
+            assert!(!line.keys.is_empty());
             for key in &line.keys {
-                assert!(
-                    line.text.contains(key),
-                    "TUI shortcut help line omits its key {key:?}"
-                );
+                assert!(line.text.contains(key));
             }
         }
+        // Keep the binding inventory as the single source of truth while
+        // presenting only the daily shortcuts in the compact help panel.
         inventory
             .help_lines
-            .into_iter()
-            .map(|line| format!("  {}", line.text))
+            .iter()
+            .filter(|line| {
+                line.keys
+                    .iter()
+                    .any(|key| matches!(key.as_str(), "Ctrl-L" | "Ctrl-P"))
+            })
+            .map(|line| line.text.as_str())
             .collect::<Vec<_>>()
             .join("\n")
     })
@@ -48,19 +49,17 @@ fn documented_shortcut_help() -> &'static str {
 pub fn curriculum_help(surface: DevSurface) -> String {
     let surface_lines = match surface {
         DevSurface::Agent => {
-            "AGENT · COMPOSER READY\n  type to talk · Enter sends · / commands\n  Ctrl-Tab surfaces · Ctrl-Shift-T project threads\n  Ctrl-K Glass actions · Ctrl-F fork · Ctrl-R rewind\n  Ctrl-E edit last · Ctrl-O expand transcript"
+            "AGENT\n  Type a message · Enter sends · PgUp/PgDn reads history\n  Ctrl-Shift-T threads · Ctrl-F fork · Ctrl-R rewind · Ctrl-E edit last\n  Ctrl-O expand selected tool · Ctrl-Shift-O inspect full output"
         }
         DevSurface::Code => {
-            "CODE\n  ↑/↓ preview · Enter opens · Ctrl-O symbols · Ctrl-L ask with this buffer · Ctrl-Shift-A attach a buffer/range · Ctrl-Shift-X remove context"
+            "CODE\n  ↑/↓ preview · Enter opens · Ctrl-O symbols · Ctrl-L ask with this buffer\n  Ctrl-Shift-A attach a range · Ctrl-Shift-X toggle file context"
         }
-        DevSurface::App => {
-            "BROWSER / PREVIEW\n  connected page, native-first · / browser actions · g source"
-        }
+        DevSurface::App => "BROWSER\n  / browser actions · g source · Alt-Left/Right history",
         DevSurface::Terminal => {
-            "TERMINAL\n  j/k select · Enter logs · Space restart · u Browser · x stop"
+            "TERMINAL\n  j/k select · Enter logs · Space restart · u browser · x stop"
         }
         DevSurface::Git => {
-            "GIT\n  Enter/d diff · Space stage · c commit · o open · x discard · r review"
+            "GIT\n  Enter diff · Space stage · c commit · o open · x discard · r review"
         }
         DevSurface::Tasks => "TASKS\n  j/k todos · Enter complete · Space activate",
         DevSurface::Debug => {
@@ -69,7 +68,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::More => "MORE\n  j/k or click routes · Enter/double-click runs · / actions",
     };
     format!(
-        "DO THIS\n  type in Agent      composer is ready immediately\n  /                  Core commands and Glass workspace actions\n  Ctrl-Tab            next surface · Ctrl-Shift-Tab previous\n  Alt-1…5             direct primary surface when terminal supports Alt\n  Ctrl-K              Glass action palette\n  Esc                 dismiss menu / return to surface\n  ?                   close help\n\n{surface_lines}\n\nWORKSPACE\n  Agent · Code · Browser · Terminal · Git\n  Tasks, Debug, and services are available in / actions\n\nKEYS\n{}\n  click surface tabs · double-click open · right-click / long-press context actions",
+        "START\n  Type to talk · Enter sends\n  / Core + Glass commands · Ctrl-K workspace actions · ? shortcuts\n\nMOVE AROUND\n  Ctrl-Tab next surface · Ctrl-Shift-Tab previous\n  Agent · Code · Browser · Git · Terminal · Tasks · Debug\n\n{surface_lines}\n\nMORE\n{}",
         documented_shortcut_help()
     )
 }

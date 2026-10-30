@@ -31,6 +31,7 @@ pub(super) struct InlineTranscriptKey {
     pub(super) entry_count: usize,
     pub(super) pending_signature: Vec<(String, super::state::ChatMessageState, Option<String>)>,
     pub(super) expanded_tools: bool,
+    pub(super) expanded_tool_call_id: Option<String>,
 }
 
 impl Default for InlineTranscript {
@@ -54,11 +55,19 @@ impl InlineTranscript {
         if self.source_key.as_ref() == Some(&key) {
             return;
         }
+        let expanded_tool_call_id = key.expanded_tool_call_id.clone();
         self.transcript.replace_entries(
             entries
                 .iter()
                 .enumerate()
-                .map(|(turn, entry)| transcript_entry(entry, turn, expanded_tools))
+                .map(|(turn, entry)| {
+                    transcript_entry(
+                        entry,
+                        turn,
+                        expanded_tools,
+                        expanded_tool_call_id.as_deref(),
+                    )
+                })
                 .collect(),
         );
         self.source_key = Some(key);
@@ -123,6 +132,7 @@ impl InlineTranscript {
         self.transcript.scroll
     }
 
+    #[cfg(test)]
     pub(super) fn is_following(&self) -> bool {
         self.transcript.follow
     }
@@ -160,6 +170,7 @@ pub(super) fn transcript_entry(
     entry: &ConversationEntry,
     turn: usize,
     expanded_tools: bool,
+    expanded_tool_call_id: Option<&str>,
 ) -> glass_tui::Entry {
     let mut text = entry.text.clone();
     if entry.kind == ConversationKind::Assistant && entry.streaming {
@@ -182,6 +193,7 @@ pub(super) fn transcript_entry(
             .tool_card
             .as_ref()
             .is_some_and(|card| card.command == "bash")
+            || entry.tool_name.as_deref() == Some("bash")
         {
             glass_tui::Role::Bash
         } else {
@@ -206,7 +218,7 @@ pub(super) fn transcript_entry(
     }
     let tool_card = entry.tool_card.as_ref().map(|card| {
         let mut card = card.clone();
-        card.expanded = expanded_tools;
+        card.expanded = expanded_tools || expanded_tool_call_id == Some(card.call_id.as_str());
         card
     });
     glass_tui::Entry {
@@ -241,6 +253,7 @@ mod tests {
             entry_count,
             pending_signature: Vec::new(),
             expanded_tools: false,
+            expanded_tool_call_id: None,
         }
     }
 
@@ -256,7 +269,7 @@ mod tests {
             tool_card: None,
             core_ui: None,
         };
-        let shared = transcript_entry(&entry, 7, false);
+        let shared = transcript_entry(&entry, 7, false, None);
         assert_eq!(shared.role, glass_tui::Role::Assistant);
         assert_eq!(shared.text, "GLASS AGENT\nanswer\n… streaming");
         assert_eq!(shared.turn, 7);
@@ -280,12 +293,35 @@ mod tests {
             truncated: false,
         });
 
-        let shared = transcript_entry(&row, 4, false);
+        let shared = transcript_entry(&row, 4, false, None);
         assert_eq!(shared.role, glass_tui::Role::Tool);
         let card = shared.tool_card.expect("shared tool card");
         assert_eq!(card.call_id, "call-stable-17");
         assert_eq!(card.status, "completed");
         assert_eq!(card.elapsed_ms, Some(37));
+    }
+
+    #[test]
+    fn expands_only_the_selected_tool_call() {
+        let make_entry = |call_id: &str| {
+            let mut row = entry(ConversationKind::System, "tool result");
+            row.tool_card = Some(glass_tui::ToolCard {
+                expanded: false,
+                call_id: call_id.into(),
+                command: "glass.file.read src/main.rs".into(),
+                output: "contents".into(),
+                status: "completed".into(),
+                elapsed_ms: None,
+                spill: None,
+                truncated: false,
+            });
+            row
+        };
+
+        let first = transcript_entry(&make_entry("call-a"), 0, false, Some("call-b"));
+        let second = transcript_entry(&make_entry("call-b"), 1, false, Some("call-b"));
+        assert!(!first.tool_card.expect("first card").expanded);
+        assert!(second.tool_card.expect("second card").expanded);
     }
 
     #[test]
@@ -310,7 +346,7 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("CORE · bash · completed"));
+        assert!(rendered.contains("CORE · Terminal · completed"));
         assert!(!rendered.contains("$ bash"));
         assert!(!rendered.contains("0.0s"));
         assert!(!rendered.contains("No output"));
@@ -387,8 +423,14 @@ mod tests {
             &entry(ConversationKind::Alert, "approval required"),
             0,
             false,
+            None,
         );
-        let error = transcript_entry(&entry(ConversationKind::Error, "tool failed"), 1, false);
+        let error = transcript_entry(
+            &entry(ConversationKind::Error, "tool failed"),
+            1,
+            false,
+            None,
+        );
         assert!(alert.text.starts_with("⚠ ALERT\napproval required"));
         assert!(error.text.starts_with("ERROR\n× tool failed"));
     }
@@ -399,6 +441,7 @@ mod tests {
             &entry(ConversationKind::System, "Tool repair 1/2"),
             0,
             false,
+            None,
         );
         assert_eq!(system.text, "Tool repair 1/2");
 
@@ -409,6 +452,7 @@ mod tests {
             ),
             1,
             false,
+            None,
         );
         assert_eq!(
             error.text,

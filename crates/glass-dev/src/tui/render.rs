@@ -161,6 +161,16 @@ pub(crate) fn screen_geometry(state: &DevTuiState, area: Rect) -> ScreenGeometry
     let [header, body, footer] = shell_rows(state, area);
     match state.responsive_class(area.width, area.height) {
         ResponsiveClass::Desktop => {
+            if state.surface == DevSurface::Agent {
+                return ScreenGeometry {
+                    header,
+                    body,
+                    footer,
+                    navigation: None,
+                    surface: body,
+                    context: None,
+                };
+            }
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -179,6 +189,16 @@ pub(crate) fn screen_geometry(state: &DevTuiState, area: Rect) -> ScreenGeometry
             }
         }
         ResponsiveClass::Compact => {
+            if state.surface == DevSurface::Agent {
+                return ScreenGeometry {
+                    header,
+                    body,
+                    footer,
+                    navigation: None,
+                    surface: body,
+                    context: None,
+                };
+            }
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(22), Constraint::Min(36)])
@@ -265,7 +285,6 @@ pub(super) struct GcCommandMenuGeometry {
 struct GcCommandMenuContent {
     lines: Vec<Line<'static>>,
     command_for_line: Vec<Option<usize>>,
-    selected_line: Option<usize>,
 }
 
 fn command_menu_regions(area: Rect) -> [Rect; 2] {
@@ -610,6 +629,11 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
             render_gc_command_menu(frame, state, area);
             return;
         }
+        Some(ActiveOverlay::CommandPalette) => {
+            frame.render_widget(Block::default().bg(PANEL_INSET), area);
+            render_command_palette(frame, state, area);
+            return;
+        }
         Some(ActiveOverlay::FullscreenEditor) => {
             render_fullscreen_editor(frame, state, area);
             return;
@@ -698,17 +722,117 @@ fn render_secret_prompt(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     );
 }
 
+fn render_tool_output_inspector(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let Some(call_id) = state.tool_output_inspector_call_id.as_deref() else {
+        return;
+    };
+    let mut owner = "CORE";
+    let card_entry = state.conversation_entries_view().into_iter().find(|entry| {
+        entry
+            .tool_card
+            .as_ref()
+            .is_some_and(|card| card.call_id == call_id)
+    });
+    let mut lines = Vec::<Line<'static>>::new();
+    let content = Rect {
+        x: area.x,
+        y: area.y.saturating_add(1),
+        width: area.width,
+        height: area.height.saturating_sub(3),
+    };
+    if let Some(entry) = card_entry {
+        let mut card = entry.tool_card.expect("selected tool card");
+        if card.command.starts_with("glass.") {
+            owner = "GLASS";
+        }
+        card.expanded = true;
+        let width = content.width.max(1);
+        let cache_key = (card.clone(), entry.text.clone(), width);
+        let mut layout = state.tool_output_layout.borrow_mut();
+        if state.tool_output_card_cache.borrow().as_ref() != Some(&cache_key) {
+            layout.set_entries(vec![(
+                entry.text,
+                if entry.tool_name.as_deref() == Some("bash") || card.command == "bash" {
+                    glass_tui::Role::Bash
+                } else {
+                    glass_tui::Role::Tool
+                },
+                0,
+            )]);
+            layout.set_cards(std::collections::HashMap::from([(0, card)]));
+            layout.set_glass_presentation(true);
+            layout.set_width(width);
+            *state.tool_output_card_cache.borrow_mut() = Some(cache_key);
+        }
+        let max_scroll = layout
+            .total_lines()
+            .saturating_sub(usize::from(content.height));
+        let scroll = state.tool_output_scroll.min(max_scroll);
+        lines.extend(
+            layout
+                .visible_lines(scroll, content)
+                .into_iter()
+                .map(|(_, line)| line),
+        );
+    } else {
+        lines.push(Line::from(Span::styled(
+            "This tool result is no longer available in the selected conversation.",
+            Style::default().fg(MUTED),
+        )));
+    }
+
+    frame.render_widget(
+        Block::default().style(Style::default().bg(PANEL_BACKGROUND)),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                owner,
+                Style::default()
+                    .fg(if owner == "GLASS" { ACCENT } else { PURPLE })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  Tool output", Style::default().fg(TEXT)),
+        ]))
+        .style(Style::default().bg(PANEL_BACKGROUND)),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(PANEL_BACKGROUND)),
+        content,
+    );
+    frame.render_widget(
+        Paragraph::new("↑/↓ or PgUp/PgDn scroll · Esc close")
+            .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND)),
+        Rect {
+            x: area.x,
+            y: area.bottom().saturating_sub(1),
+            width: area.width,
+            height: 1,
+        },
+    );
+}
+
 fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let block = gc_command_menu_block();
-    let content = gc_command_menu_content(state);
+    let width = area.width.saturating_sub(4).min(88);
+    let content = gc_command_menu_content(
+        state,
+        gc_command_menu_row_limit(area),
+        width.saturating_sub(4),
+    );
     let geometry = gc_command_menu_geometry(area, &block, &content);
     frame.render_widget(Clear, geometry.modal);
     frame.render_widget(
         Paragraph::new(Text::from(content.lines))
-            .scroll((u16::try_from(geometry.scroll_offset).unwrap_or(u16::MAX), 0))
-            // Catalogue entries must each occupy exactly one terminal row.
-            // Wrapping descriptions made the selected logical line diverge
-            // from the row Ratatui actually displayed.
+            // Each command stays on one terminal row so pointer hit-testing
+            // continues to match keyboard selection at narrow widths.
             .block(block),
         geometry.modal,
     );
@@ -716,16 +840,22 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
 
 fn gc_command_menu_block() -> Block<'static> {
     Block::default()
-        .title(" / COMMANDS · ↑↓ select · Tab complete · Enter open/run · Esc close ")
-        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::default().fg(PURPLE))
         .bg(PANEL_BACKGROUND)
         .padding(Padding::horizontal(1))
 }
 
-fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
+fn gc_command_menu_row_limit(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(7).clamp(1, 8))
+}
+
+fn gc_command_menu_content(
+    state: &DevTuiState,
+    row_limit: usize,
+    row_width: u16,
+) -> GcCommandMenuContent {
     let glass_actions = if state.gc_model_menu_open {
         Vec::new()
     } else {
@@ -736,106 +866,56 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
     } else {
         state.gc_palette_core_commands()
     };
-    let mut lines = vec![Line::from(vec![
+    let mut search = vec![
         Span::styled(
-            "/",
+            "/ ",
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
         ),
         Span::styled(state.gc_command_query.clone(), Style::default().fg(TEXT)),
         Span::styled("▏", Style::default().fg(PURPLE)),
-    ])];
-    lines.push(Line::from(vec![
-        Span::styled(
-            "CORE ",
-            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                "{} shown · {} total",
-                core_commands.len(),
-                state.gc_command_items.len()
-            ),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled(
-            "   GLASS ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{} actions", glass_actions.len()),
-            Style::default().fg(MUTED),
-        ),
-    ]));
-    let mut command_for_line = vec![None, None];
-    let mut selected_line = 0usize;
+    ];
+    if state.gc_command_loading {
+        search.push(Span::styled("  CORE loading", Style::default().fg(PURPLE)));
+    }
+    let mut lines = vec![Line::from(search)];
+    let mut command_for_line = vec![None];
+    let mut items = Vec::<GcPaletteRow>::new();
+    let mut selected_description = None::<String>;
     if state.gc_model_menu_open {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "CORE settings · provider {} · model {}",
-                state.gc_model_provider.as_deref().unwrap_or("provider"),
-                state.gc_model_current.as_deref().unwrap_or("unknown")
-            ),
-            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-        )));
-        command_for_line.push(None);
         if state.gc_settings_view {
             if let Some(settings) = state.gc_session_settings.as_ref() {
                 if let Some(error) = settings.error.as_deref() {
-                    lines.push(Line::from(Span::styled(
-                        format!("Session details unavailable: {error}"),
-                        Style::default().fg(ERROR),
-                    )));
-                    command_for_line.push(None);
+                    selected_description = Some(format!("Session details unavailable: {error}"));
                 } else {
-                    for (label, value) in [
-                        ("tool mode", settings.tool_mode.clone()),
-                        (
-                            "max tokens",
-                            settings.max_tokens.map(|value| value.to_string()),
-                        ),
-                        (
-                            "image input",
-                            settings.image_input.map(|value| value.to_string()),
-                        ),
-                        (
-                            "reasoning budget",
-                            settings.reasoning_budget.map(|value| value.to_string()),
-                        ),
-                    ] {
-                        if let Some(value) = value {
-                            lines.push(Line::from(vec![
-                                Span::styled(format!("  {label}: "), Style::default().fg(MUTED)),
-                                Span::styled(value, Style::default().fg(TEXT)),
-                            ]));
-                            command_for_line.push(None);
-                        }
-                    }
+                    selected_description = Some(format!(
+                        "{} · {} tokens · image {} · reasoning {} · {}",
+                        settings
+                            .tool_mode
+                            .as_deref()
+                            .unwrap_or("tool mode unavailable"),
+                        settings
+                            .max_tokens
+                            .map_or_else(|| "—".into(), |value| value.to_string()),
+                        settings
+                            .image_input
+                            .map_or_else(|| "—".into(), |value| value.to_string()),
+                        settings
+                            .reasoning_budget
+                            .map_or_else(|| "—".into(), |value| value.to_string()),
+                        state
+                            .gc_model_provider
+                            .as_deref()
+                            .unwrap_or("provider unknown"),
+                    ));
                 }
             } else {
-                lines.push(Line::from(Span::styled(
-                    "Loading session details from Core…",
-                    Style::default().fg(MUTED),
-                )));
-                command_for_line.push(None);
+                selected_description = Some("Loading session details…".into());
             }
-            lines.push(Line::from(Span::styled(
-                "Choose a model below to update Core provider/model settings",
-                Style::default().fg(MUTED),
-            )));
-            command_for_line.push(None);
         }
         if state.gc_command_loading {
-            lines.push(Line::from(Span::styled(
-                "Loading models from Glass Core…",
-                Style::default().fg(MUTED),
-            )));
-            command_for_line.push(None);
+            selected_description = Some("Loading provider models…".into());
         } else if let Some(error) = state.gc_model_error.as_deref() {
-            lines.push(Line::from(Span::styled(
-                format!("Could not load models: {error}"),
-                Style::default().fg(ERROR),
-            )));
-            command_for_line.push(None);
+            selected_description = Some(format!("Could not load models: {error}"));
         }
         for (index, item) in state.gc_model_items.iter().enumerate() {
             let id = item
@@ -847,49 +927,33 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(id);
             let selected = index == state.gc_command_selected;
-            let style = if selected {
-                Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
-            } else {
-                Style::default().fg(TEXT)
-            };
             let current = state.gc_model_current.as_deref() == Some(id);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{label} · {id}"),
-                    style.add_modifier(Modifier::BOLD),
-                ),
-                if current {
-                    Span::styled("  current", Style::default().fg(ACCENT))
-                } else {
-                    Span::raw("")
-                },
-            ]));
-            command_for_line.push(Some(index));
             if selected {
-                selected_line = lines.len() - 1;
+                selected_description = Some(if current {
+                    format!(
+                        "{} · current model for this session",
+                        state
+                            .gc_model_provider
+                            .as_deref()
+                            .unwrap_or("provider unknown")
+                    )
+                } else {
+                    format!(
+                        "{} · use {label} for this Core session",
+                        state
+                            .gc_model_provider
+                            .as_deref()
+                            .unwrap_or("provider unknown")
+                    )
+                });
             }
+            items.push(GcPaletteRow {
+                owner: GcPaletteOwner::Core,
+                label: label.into(),
+                hint: id.into(),
+            });
         }
-    } else if glass_actions.is_empty() && core_commands.is_empty() && !state.gc_command_loading {
-        lines.push(Line::from(Span::styled(
-            "No matching commands or Glass actions",
-            Style::default().fg(MUTED),
-        )));
-        command_for_line.push(None);
-    } else if !glass_actions.is_empty() || !core_commands.is_empty() {
-        if !core_commands.is_empty() || state.gc_command_loading {
-            lines.push(Line::from(Span::styled(
-                "CORE · agent commands and session controls",
-                Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-            )));
-            command_for_line.push(None);
-        }
-        if state.gc_command_loading {
-            lines.push(Line::from(Span::styled(
-                "Loading commands from Glass Core…",
-                Style::default().fg(MUTED),
-            )));
-            command_for_line.push(None);
-        }
+    } else {
         for (index, item) in core_commands.iter().enumerate() {
             let name = item
                 .get("name")
@@ -899,66 +963,123 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
                 .get("description")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            let style = if index == state.gc_command_selected {
-                Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("/{name:<16} "), style.add_modifier(Modifier::BOLD)),
-                Span::styled(description.to_string(), style),
-            ]));
-            command_for_line.push(Some(index));
             if index == state.gc_command_selected {
-                selected_line = lines.len() - 1;
+                selected_description = Some(description.into());
             }
-        }
-        if !glass_actions.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "GLASS · workspace and host actions",
-                Style::default()
-                    .fg(ACCENT_BRIGHT)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            command_for_line.push(None);
+            items.push(GcPaletteRow {
+                owner: GcPaletteOwner::Core,
+                label: format!("/{name}"),
+                hint: item
+                    .get("argumentsHint")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .into(),
+            });
         }
         for (index, action) in glass_actions.iter().enumerate() {
             let selected_index = core_commands.len() + index;
-            let style = if selected_index == state.gc_command_selected {
-                Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            lines.push(Line::from(vec![Span::styled(
-                format!("{} · {}", action.label, action.command),
-                style,
-            )]));
-            command_for_line.push(Some(selected_index));
             if selected_index == state.gc_command_selected {
-                selected_line = lines.len() - 1;
+                selected_description = Some(action.description.into());
             }
+            items.push(GcPaletteRow {
+                owner: GcPaletteOwner::Glass,
+                label: action.label.into(),
+                hint: String::new(),
+            });
         }
-    } else if state.gc_command_loading {
-        lines.push(Line::from(Span::styled(
-            "Loading commands from Glass Core…",
-            Style::default().fg(MUTED),
-        )));
-        command_for_line.push(None);
     }
-    lines.push(Line::from(Span::styled(
-        if state.gc_model_menu_open {
-            "Enter applies through Core session/configure · Esc returns to commands"
+
+    let total = items.len();
+    if total == 0 && state.gc_command_loading {
+        selected_description = Some("Core commands are loading in the background".into());
+    } else if total == 0 && selected_description.is_none() {
+        selected_description = Some("No matches · keep typing to search all commands".into());
+    }
+    let row_limit = row_limit.max(1);
+    let first_item = state
+        .gc_command_selected
+        .saturating_add(1)
+        .saturating_sub(row_limit)
+        .min(total.saturating_sub(row_limit));
+    for (visible_index, item) in items.iter().enumerate().skip(first_item).take(row_limit) {
+        let command_index = first_item + visible_index.saturating_sub(first_item);
+        let selected = command_index == state.gc_command_selected;
+        let bg = if selected {
+            ACTIVE_BACKGROUND
         } else {
-            "Search the full Core catalogue · unsupported controls stay in this workspace"
-        },
+            PANEL_BACKGROUND
+        };
+        let marker = if selected { "› " } else { "  " };
+        let (owner, owner_color) = match item.owner {
+            GcPaletteOwner::Core => ("CORE", PURPLE),
+            GcPaletteOwner::Glass => ("GLASS", ACCENT_BRIGHT),
+        };
+        let suffix = if item.hint.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", item.hint)
+        };
+        let text = compact_line(
+            &format!("{}{suffix}", item.label),
+            row_width.saturating_sub(9),
+        );
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(ACCENT_BRIGHT).bg(bg)),
+            Span::styled(
+                format!("{owner} "),
+                Style::default()
+                    .fg(owner_color)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                text,
+                Style::default()
+                    .fg(if selected { TEXT } else { MUTED })
+                    .bg(bg)
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+        ]));
+        command_for_line.push(Some(command_index));
+    }
+    let description = selected_description.unwrap_or_else(|| {
+        if state.gc_command_loading {
+            "Core commands are loading in the background".into()
+        } else {
+            String::new()
+        }
+    });
+    lines.push(Line::from(Span::styled(
+        compact_line(&description, row_width),
+        Style::default().fg(MUTED),
+    )));
+    command_for_line.push(None);
+    lines.push(Line::from(Span::styled(
+        "↑↓ move · Enter run · Tab complete · Esc close",
         Style::default().fg(MUTED),
     )));
     command_for_line.push(None);
     GcCommandMenuContent {
         lines,
         command_for_line,
-        selected_line: (selected_line != 0).then_some(selected_line),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GcPaletteOwner {
+    Core,
+    Glass,
+}
+
+#[derive(Debug)]
+struct GcPaletteRow {
+    owner: GcPaletteOwner,
+    label: String,
+    hint: String,
 }
 
 fn gc_command_menu_geometry(
@@ -967,10 +1088,9 @@ fn gc_command_menu_geometry(
     content: &GcCommandMenuContent,
 ) -> GcCommandMenuGeometry {
     let width = area.width.saturating_sub(4).min(88);
-    let content_height = u16::try_from(content.lines.len().saturating_add(2)).unwrap_or(u16::MAX);
-    let height = content_height
-        .clamp(5, 16)
-        .min(area.height.saturating_sub(4).max(1));
+    let height = u16::try_from(content.lines.len().saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(2).max(1));
     let modal = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -979,12 +1099,7 @@ fn gc_command_menu_geometry(
     };
     let inner = block.inner(modal);
     let visible_lines = usize::from(inner.height);
-    let max_scroll = content.lines.len().saturating_sub(visible_lines);
-    let selected_scroll = content
-        .selected_line
-        .unwrap_or(0)
-        .saturating_sub(visible_lines.saturating_sub(1));
-    let scroll_offset = selected_scroll.min(max_scroll);
+    let scroll_offset = 0;
     GcCommandMenuGeometry {
         modal,
         inner,
@@ -1008,7 +1123,12 @@ pub(super) fn gc_command_menu_geometry_for_screen(state: &DevTuiState) -> GcComm
         state.terminal_height.max(1),
     );
     let block = gc_command_menu_block();
-    let content = gc_command_menu_content(state);
+    let width = area.width.saturating_sub(4).min(88);
+    let content = gc_command_menu_content(
+        state,
+        gc_command_menu_row_limit(area),
+        width.saturating_sub(4),
+    );
     gc_command_menu_geometry(area, &block, &content)
 }
 
@@ -1865,165 +1985,148 @@ fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
 }
 
 fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let width = area.width.saturating_sub(4).min(104);
-    let height = area.height.saturating_sub(6).max(5).min(area.height);
-    let modal = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + 1,
-        width,
-        height,
+    let width = area.width.saturating_sub(4).min(88);
+    let row_limit = usize::from(area.height.saturating_sub(7).clamp(1, 8));
+    let navigation = navigation_value(state);
+    let indices = if navigation.is_some() {
+        Vec::new()
+    } else {
+        state.palette_action_indices()
     };
-    let address = navigation_value(state);
-    let title = match address {
-        Some(_) => " NAVIGATE · URL OR DOMAIN · Enter submit · Esc close ".to_string(),
-        None => format!(
-            " COMMAND PALETTE · {} · ↑↓ select · Enter run · Esc close ",
-            state.surface.label()
-        ),
+    let first = state
+        .palette_selection
+        .saturating_add(1)
+        .saturating_sub(row_limit)
+        .min(indices.len().saturating_sub(row_limit));
+    let visible = indices
+        .iter()
+        .skip(first)
+        .take(row_limit)
+        .copied()
+        .collect::<Vec<_>>();
+    let selected = if navigation.is_some() {
+        "Enter navigate · Esc close"
+    } else {
+        state
+            .selected_palette_action()
+            .map(|action| action.description)
+            .or(state.palette_error.as_deref())
+            .unwrap_or(if indices.is_empty() {
+                "No matches · keep typing to search every Glass action"
+            } else {
+                ""
+            })
     };
-    let block = Block::default()
-        .title(title)
-        .title_style(
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            if navigation.is_some() { "URL" } else { "GLASS" },
             Style::default()
                 .fg(ACCENT_BRIGHT)
                 .add_modifier(Modifier::BOLD),
-        )
+        ),
+        Span::styled("  ", Style::default().fg(MUTED)),
+        Span::styled(
+            navigation
+                .unwrap_or(state.command_input.as_str())
+                .to_string(),
+            Style::default().fg(TEXT),
+        ),
+        Span::styled("▏", Style::default().fg(ACCENT_BRIGHT)),
+    ])];
+    for (offset, action_index) in visible.iter().enumerate() {
+        let action = &state.surface_actions()[*action_index];
+        let selected_row = first + offset == state.palette_selection;
+        let background = if selected_row {
+            ACTIVE_BACKGROUND
+        } else {
+            PANEL_BACKGROUND
+        };
+        let marker = if selected_row { "› " } else { "  " };
+        let key = if action.key.is_empty() || action.key == "/" {
+            ""
+        } else {
+            action.key
+        };
+        let row = compact_line(
+            &format!(
+                "{}{}{}",
+                action.label,
+                if key.is_empty() { "" } else { "  ·  " },
+                key
+            ),
+            width.saturating_sub(8),
+        );
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(ACCENT_BRIGHT).bg(background)),
+            Span::styled(
+                row,
+                Style::default()
+                    .fg(if selected_row { TEXT } else { MUTED })
+                    .bg(background)
+                    .add_modifier(if selected_row {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+        ]));
+    }
+    if navigation.is_none() && visible.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No matching actions",
+            Style::default().fg(MUTED),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        compact_line(selected, width.saturating_sub(6)),
+        Style::default().fg(MUTED),
+    )));
+    lines.push(Line::from(Span::styled(
+        "↑↓ move · Enter run · Esc close",
+        Style::default().fg(MUTED),
+    )));
+    let height = u16::try_from(lines.len().saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(2).max(1));
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::default().fg(ACCENT))
         .bg(PANEL_BACKGROUND)
         .padding(Padding::horizontal(1));
-    let inner = block.inner(modal);
-    let is_navigation = address.is_some();
-    let mut lines = match address {
-        Some(address) => vec![
-            palette_fixed_line(
-                "ENTER A URL OR DOMAIN",
-                inner.width,
-                Style::default()
-                    .fg(ACCENT_BRIGHT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            palette_fixed_line(
-                "https:// is optional · Enter navigates · Esc cancels",
-                inner.width,
-                Style::default().fg(MUTED),
-            ),
-            palette_fixed_line(
-                format!("Address: {address}"),
-                inner.width,
-                Style::default().fg(TEXT),
-            ),
-        ],
-        None => vec![
-            palette_fixed_line(
-                "SELECT AN ACTION",
-                inner.width,
-                Style::default()
-                    .fg(ACCENT_BRIGHT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            palette_fixed_line(
-                "Command search · ↑/↓ select · Enter run · Esc close · type only to filter (optional)",
-                inner.width,
-                Style::default().fg(MUTED),
-            ),
-        ],
-    };
-    if !state.command_input.is_empty() {
-        lines.push(palette_fixed_line(
-            format!("Filter: {}", state.command_input),
-            inner.width,
-            Style::default().fg(MUTED),
-        ));
-    }
-    lines.push(palette_fixed_line(
-        "",
-        inner.width,
-        Style::default().bg(PANEL_BACKGROUND),
-    ));
-    let action_offset = lines.len();
-    let indices = state.palette_action_indices();
-    if indices.is_empty() {
-        let message = if is_navigation {
-            "Ready · Enter runs this navigation · Esc cancels"
-        } else if !state.command_input.trim().is_empty() {
-            "No matching action · Enter runs the typed command · Ctrl-U clears"
-        } else {
-            "No matching actions · type a command or Esc closes"
-        };
-        lines.push(palette_fixed_line(
-            message,
-            inner.width,
-            Style::default().fg(MUTED),
-        ));
-    } else {
-        for (visible_index, action_index) in indices.into_iter().enumerate() {
-            let action = &state.surface_actions()[action_index];
-            lines.push(palette_action_line(
-                action,
-                visible_index == state.palette_selection,
-                inner.width,
-            ));
-        }
-    }
-    let line_count = lines.len();
-    let visible_lines = usize::from(inner.height);
-    let max_scroll = line_count.saturating_sub(visible_lines);
-    let selected_line = action_offset.saturating_add(state.palette_selection);
-    let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
-    let scroll = usize::from(state.palette_scroll)
-        .max(selected_scroll)
-        .min(max_scroll) as u16;
     frame.render_widget(Clear, modal);
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((scroll, 0))
-            .block(block),
-        modal,
-    );
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), modal);
 }
 
 #[cfg(test)]
 fn command_palette_content(state: &DevTuiState) -> String {
-    let address = navigation_value(state);
-    let is_navigation = address.is_some();
     let indices = state.palette_action_indices();
-    let mut lines = match address {
-        Some(address) => vec![
-            "ENTER A URL OR DOMAIN".to_string(),
-            "https:// is optional · Enter navigates · Esc cancels".to_string(),
-            format!("Address: {address}"),
-        ],
-        None => vec![
-            "SELECT AN ACTION".to_string(),
-            "Command search · ↑/↓ select · Enter run · Esc close · type only to filter (optional)"
-                .to_string(),
-        ],
-    };
-    lines.push(String::new());
-    if indices.is_empty() {
-        lines.push(if is_navigation {
-            "Ready · Enter runs this navigation · Esc cancels".into()
-        } else if !state.command_input.trim().is_empty() {
-            "No matching action · Enter runs the typed command · Ctrl-U clears".into()
-        } else {
-            "No matching actions · type a command or Esc closes".into()
-        });
+    let mut lines = vec![format!("GLASS  {}", state.command_input)];
+    if let Some(address) = navigation_value(state) {
+        lines.push(format!("URL  {address}"));
+        lines.push("Enter navigate · Esc close".into());
     } else {
         for (visible_index, action_index) in indices.into_iter().enumerate() {
             let action = &state.surface_actions()[action_index];
             let marker = if visible_index == state.palette_selection {
-                "▸"
+                "›"
             } else {
                 " "
             };
-            lines.push(format!(
-                "{marker} {:<26} · {}",
-                action.label,
-                palette_action_hint(action.command)
-            ));
+            lines.push(format!("{marker} GLASS  {} · {}", action.label, action.key));
         }
+        lines.push(
+            state
+                .selected_palette_action()
+                .map_or_else(|| "No matches".into(), |action| action.description.into()),
+        );
+        lines.push("↑↓ move · Enter run · Esc close".into());
     }
     lines.join("\n")
 }
@@ -2050,28 +2153,6 @@ fn palette_fixed_line(content: impl Into<String>, width: u16, style: Style) -> L
     ))
 }
 
-fn palette_action_line(
-    action: &command::SurfaceAction,
-    selected: bool,
-    width: u16,
-) -> Line<'static> {
-    let marker = if selected { "▸ " } else { "  " };
-    let content = format!(
-        "{marker}{:<26} · {}",
-        action.label,
-        palette_action_hint(action.command)
-    );
-    let style = if selected {
-        Style::default()
-            .fg(ACCENT_BRIGHT)
-            .bg(ACTIVE_BACKGROUND)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
-    };
-    Line::from(Span::styled(palette_row_text(&content, width), style))
-}
-
 fn palette_row_text(content: &str, width: u16) -> String {
     let mut row = compact_line(content, width);
     let padding = usize::from(width).saturating_sub(row.chars().count());
@@ -2079,29 +2160,6 @@ fn palette_row_text(content: &str, width: u16) -> String {
         row.push_str(&" ".repeat(padding));
     }
     row
-}
-
-fn palette_action_hint(command: &str) -> String {
-    let mut prefix = Vec::new();
-    let mut has_arguments = false;
-    for token in command.split_whitespace() {
-        if token
-            .chars()
-            .all(|character| character.is_ascii_uppercase() || character == '_')
-        {
-            has_arguments = true;
-            break;
-        }
-        prefix.push(token);
-    }
-    let mut hint = prefix.join(" ");
-    if has_arguments {
-        if !hint.is_empty() {
-            hint.push(' ');
-        }
-        hint.push('…');
-    }
-    hint
 }
 
 fn help_content(surface: DevSurface) -> String {
@@ -2747,44 +2805,6 @@ fn browser_progress(
     )
 }
 
-fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
-    let readiness = state
-        .agent_readiness
-        .lines()
-        .next()
-        .unwrap_or("Glass Core unavailable");
-    let core_state = readiness
-        .split(" · ")
-        .next()
-        .unwrap_or("Glass Core unavailable");
-    let runtime_state = state.selected_agent_status().map_or_else(
-        || {
-            if core_state == "✓ Ready" {
-                "✓ Core available".to_string()
-            } else {
-                core_state.to_string()
-            }
-        },
-        |status| format!("Agent {}", status.label()),
-    );
-    let app_summary = state
-        .browser_chat_header()
-        .split(" · ")
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let chrome = state.agent_chrome_line();
-    let second = if chrome.is_empty() {
-        format!("Ctrl-L · {app_summary}")
-    } else {
-        format!("{chrome} · {app_summary}")
-    };
-    format!(
-        "{}\n{}",
-        compact_line(&runtime_state, width),
-        compact_line(&second, width)
-    )
-}
 pub(super) fn agent_conversation_text(
     state: &DevTuiState,
     landing: &str,
@@ -2840,6 +2860,7 @@ pub(super) fn agent_conversation_text(
                 })
                 .collect(),
             expanded_tools: state.transcript_expanded,
+            expanded_tool_call_id: state.expanded_tool_call_id.clone(),
         },
         state.transcript_expanded,
     );
@@ -2848,41 +2869,12 @@ pub(super) fn agent_conversation_text(
         lines.truncate(usize::from(height.max(1)));
         return Text::from(lines);
     }
-    let at_tail = transcript.is_following();
-    let position = transcript.scroll().saturating_add(1);
-    let total = transcript.total_lines().max(1);
-    let tail_hint = if at_tail { "↓ live" } else { "↓ new" };
-    let core_running = state.selected_agent_status() == Some(crate::AgentStatus::Working);
-    let footer = if width < 52 {
-        format!("PgUp/Dn · {position}/{total} · {tail_hint}")
-    } else if width < 72 {
-        format!("PgUp/Dn · {position}/{total} · {tail_hint} · Ctrl-T think")
-    } else if width < 112 {
-        format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning")
-    } else if !state.composer_mode {
-        format!(
-            "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning · Ctrl-F fork · Ctrl-R rewind · Ctrl-E edit · Ctrl-O tools"
-        )
-    } else {
-        let chips = state.composer_context_chips();
-        if state.composer_steer && core_running {
-            format!(
-                "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · {chips} · Ctrl-D follow-up · Ctrl-X abort"
-            )
-        } else if chips.is_empty() {
-            format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning")
-        } else {
-            format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · {chips}")
-        }
-    };
-    let message_height = height.saturating_sub(1).max(1);
     let mut lines = transcript.visible_lines(
         usize::from(width),
-        usize::from(message_height),
+        usize::from(height.max(1)),
         state.transcript_selection,
     );
     style_glass_transcript_lines(&mut lines);
-    lines.push(Line::from(Span::styled(footer, Style::default().fg(MUTED))));
     Text::from(lines)
 }
 
@@ -2890,11 +2882,13 @@ pub(super) fn agent_conversation_text(
 /// and viewport output. The standalone Core transcript keeps its own styling.
 fn style_glass_transcript_lines(lines: &mut [Line<'static>]) {
     let mut lifecycle_tone = None;
+    let mut user_block = false;
     for line in lines {
         let raw = line.to_string();
         let trimmed = raw.trim_start();
         if trimmed.is_empty() {
             lifecycle_tone = None;
+            user_block = false;
             continue;
         }
 
@@ -2955,8 +2949,17 @@ fn style_glass_transcript_lines(lines: &mut [Line<'static>]) {
         }
 
         if trimmed.starts_with("❯ YOU") {
+            user_block = true;
             for span in &mut line.spans {
-                span.style = span.style.fg(ACCENT_BRIGHT).add_modifier(Modifier::BOLD);
+                span.style = span
+                    .style
+                    .fg(ACCENT_BRIGHT)
+                    .bg(Color::Rgb(34, 40, 50))
+                    .add_modifier(Modifier::BOLD);
+            }
+        } else if user_block {
+            for span in &mut line.spans {
+                span.style = span.style.fg(TEXT).bg(Color::Rgb(34, 40, 50));
             }
         } else if trimmed.starts_with("GLASS AGENT") {
             let leading = raw.len().saturating_sub(trimmed.len());
@@ -2996,33 +2999,18 @@ fn agent_landing(state: &DevTuiState) -> String {
 fn agent_conversation_panel_rect(state: &DevTuiState) -> Rect {
     let screen = Rect::new(0, 0, state.terminal_width, state.terminal_height);
     let area = surface_area(state, screen);
-    let compact = matches!(
-        state.responsive_class(area.width, area.height),
-        ResponsiveClass::Phone | ResponsiveClass::Compact
-    );
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if compact {
-            [Constraint::Length(2), Constraint::Min(5)]
-        } else {
-            [Constraint::Length(2), Constraint::Min(6)]
-        })
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
-    if compact || area.width < 84 {
-        rows[1]
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(68), Constraint::Min(24)])
-            .split(rows[1])[0]
-    }
+    rows[1]
 }
 
 pub(super) fn agent_conversation_viewport_size(state: &DevTuiState) -> (u16, u16) {
     let area = agent_conversation_panel_rect(state);
     (
         area.width.saturating_sub(2).max(1),
-        area.height.saturating_sub(3).max(1),
+        area.height.saturating_sub(1).max(1),
     )
 }
 
@@ -3052,6 +3040,7 @@ pub(super) fn agent_conversation_scroll_end(state: &DevTuiState) -> usize {
                 })
                 .collect(),
             expanded_tools: state.transcript_expanded,
+            expanded_tool_call_id: state.expanded_tool_call_id.clone(),
         },
         state.transcript_expanded,
     );
@@ -3068,83 +3057,80 @@ fn render_agent_conversation_panel(
     if area.width < 2 || area.height < 2 {
         return;
     }
-    let inner_height = area.height.saturating_sub(2);
-    let message_height = inner_height.saturating_sub(1).max(1);
     frame.render_widget(
         Paragraph::new(agent_conversation_text(
             state,
             landing,
-            area.width.saturating_sub(2),
-            message_height,
+            area.width.saturating_sub(2).max(1),
+            area.height.max(1),
         ))
         .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
-        .block(surface_block(" CONVERSATION ", ACCENT_BRIGHT))
         .wrap(Wrap { trim: false }),
         area,
     );
 }
 
 fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let compact = matches!(
-        state.responsive_class(area.width, area.height),
-        ResponsiveClass::Phone | ResponsiveClass::Compact
-    );
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if compact {
-            [Constraint::Length(2), Constraint::Min(5)]
-        } else {
-            [Constraint::Length(2), Constraint::Min(6)]
-        })
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
-    let raw_header = compact_agent_header(state, rows[0].width.saturating_sub(16));
-    let mut header_lines = raw_header.lines();
-    let core_header = header_lines.next().unwrap_or("Core available").to_string();
-    let metadata = header_lines.next().unwrap_or("").to_string();
+    let (presence, approval) = agent_presence(state);
+    let mut header = vec![
+        Span::styled(
+            "CORE",
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default().fg(MUTED)),
+        Span::styled(
+            presence,
+            Style::default().fg(if presence == "Working" {
+                ACCENT_BRIGHT
+            } else {
+                MUTED
+            }),
+        ),
+    ];
+    if approval {
+        header.push(Span::styled(
+            " · approval needed",
+            Style::default().fg(WARNING),
+        ));
+    } else if !state.agent_readiness.starts_with("✓ Ready") {
+        header.push(Span::styled(
+            " · setup required",
+            Style::default().fg(WARNING),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(
-                    "CODING AGENT",
-                    Style::default()
-                        .fg(ACCENT_BRIGHT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" · ", Style::default().fg(MUTED)),
-                Span::styled(core_header, Style::default().fg(PURPLE)),
-            ]),
-            Line::from(Span::styled(metadata, Style::default().fg(MUTED))),
-        ]))
-        .style(Style::default().bg(PANEL_BACKGROUND))
-        .wrap(Wrap { trim: true }),
+        Paragraph::new(Line::from(header))
+            .style(Style::default().bg(PANEL_BACKGROUND))
+            .wrap(Wrap { trim: false }),
         rows[0],
     );
 
     let landing = agent_landing(state);
-    if compact || area.width < 84 {
-        render_agent_conversation_panel(frame, state, &landing, rows[1]);
-        return;
-    }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(68), Constraint::Min(24)])
-        .split(rows[1]);
-    render_agent_conversation_panel(frame, state, &landing, columns[0]);
-    let installed_harnesses = state
-        .harnesses
-        .lines()
-        .filter(|line| line.starts_with("●"))
-        .count();
-    let known_harnesses = state
-        .harnesses
-        .lines()
-        .filter(|line| line.starts_with("●") || line.starts_with("○"))
-        .count();
-    let sidebar = format!(
-        "TASK LOOP\n{}\n\nHARNESS BRIDGE\n{installed_harnesses}/{known_harnesses} detected\n:harness list\n:harness start NAME",
-        agent_progress(state)
-    );
-    render_panel(frame, columns[1], " SESSION ", sidebar, PURPLE);
+    render_agent_conversation_panel(frame, state, &landing, rows[1]);
+}
+
+fn agent_presence(state: &DevTuiState) -> (&'static str, bool) {
+    let lifecycle = state.selected_agent_status();
+    let working = state.agent_send_job.is_some()
+        || state.running_tool_job.is_some()
+        || matches!(
+            lifecycle,
+            Some(
+                crate::AgentStatus::Queued
+                    | crate::AgentStatus::Starting
+                    | crate::AgentStatus::RecoveryPending
+                    | crate::AgentStatus::Working
+                    | crate::AgentStatus::Waiting
+            )
+        );
+    let approval = lifecycle == Some(crate::AgentStatus::Waiting)
+        || state.pending_confirmation.is_some()
+        || state.status.to_ascii_lowercase().contains("approval");
+    (if working { "Working" } else { "Idle" }, approval)
 }
 fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
@@ -5622,15 +5608,74 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let active = overlay::active_overlay(state);
     let lines = if active == Some(ActiveOverlay::Composer) {
         let mut lines = composer_input_lines(state, area.width.saturating_sub(5));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {glyph} "),
-                Style::default()
-                    .fg(glyph_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(state.status.clone(), status_style(state)),
-        ]));
+        if state.surface == DevSurface::Agent {
+            for line in &mut lines {
+                for span in &mut line.spans {
+                    span.style = span.style.bg(Color::Rgb(34, 40, 50));
+                }
+            }
+            let (presence, approval) = agent_presence(state);
+            let failed = matches!(status_glyph(state).0, "×");
+            let glyph = if failed {
+                "×"
+            } else if presence == "Working" {
+                "◐"
+            } else {
+                "●"
+            };
+            let glyph_color = if failed {
+                ERROR
+            } else if presence == "Working" {
+                ACCENT_BRIGHT
+            } else {
+                SUCCESS
+            };
+            let default_status = matches!(
+                state.status.as_str(),
+                "Glass Agent idle"
+                    | "Agent ready for a prompt"
+                    | "agent ready for a prompt"
+                    | "Glass Agent working"
+                    | "Glass Agent waiting"
+            ) || state.status.starts_with("Loading workspace snapshot")
+                || state.status.starts_with("Core available · type to chat")
+                || state
+                    .status
+                    .starts_with("Core setup required · type / for Core commands");
+            let mut label = match (presence, approval) {
+                ("Working", true) => "Working · approval needed",
+                ("Working", false) => "Working · follow-up ready",
+                ("Idle", true) => "Idle · approval needed",
+                _ => "Idle · Enter sends",
+            }
+            .to_string();
+            if !default_status && !state.status.trim().is_empty() {
+                label.push_str(" · ");
+                label.push_str(&compact_line(&state.status, area.width.saturating_sub(18)));
+            }
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {glyph} "),
+                    Style::default()
+                        .fg(glyph_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    label,
+                    Style::default().fg(if approval { WARNING } else { MUTED }),
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {glyph} "),
+                    Style::default()
+                        .fg(glyph_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(state.status.clone(), status_style(state)),
+            ]));
+        }
         lines
     } else if active == Some(ActiveOverlay::FilePicker) {
         vec![
@@ -5891,6 +5936,255 @@ mod tests {
             .collect::<String>()
     }
 
+    fn rendered_lines(state: &DevTuiState, width: u16, height: u16) -> Vec<String> {
+        let buffer = rendered_buffer(state, width, height);
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn glass_agent_palette_and_chat_review_frames_cover_phone_and_desktop() {
+        let mut chat_state = state(TuiLayout::Desktop);
+        chat_state.surface = DevSurface::Agent;
+        chat_state.status = "Glass Agent idle".into();
+        chat_state.conversation_items = vec![
+            super::super::projection::ConversationEntry::user(
+                "Please check the parser tests for the missing token case.",
+                Some("snapshot-user-1".into()),
+                None,
+            ),
+            super::super::projection::ConversationEntry::assistant(
+                "I’ll inspect the parser tests and report the exact failing assertion.",
+                false,
+                Some("snapshot-assistant-1".into()),
+            ),
+        ];
+        chat_state.open_composer();
+        chat_state.insert_composer_text("Inspect the parser tests");
+        let chat_buffer = rendered_buffer(&chat_state, 80, 24);
+        let user_arrow = chat_buffer
+            .content()
+            .iter()
+            .position(|cell| cell.symbol() == "❯")
+            .expect("user block marker") as u16;
+        let user_x = user_arrow % 80;
+        let user_y = user_arrow / 80;
+        let user_label = &chat_buffer[(user_x + 2, user_y)];
+        assert_eq!(user_label.fg, ACCENT_BRIGHT);
+        assert_eq!(user_label.bg, Color::Rgb(34, 40, 50));
+        assert!(user_label.modifier.contains(Modifier::BOLD));
+        let user_body = &chat_buffer[(0, user_y + 1)];
+        assert_eq!(user_body.bg, Color::Rgb(34, 40, 50));
+        assert_eq!(user_body.fg, TEXT);
+        for (width, height) in [(80, 24), (120, 40)] {
+            let lines = rendered_lines(&chat_state, width, height);
+            let output = lines.join("\n");
+            assert!(output.contains("CORE"));
+            assert!(output.contains("Please check the parser tests"));
+            assert!(output.contains("I’ll inspect the parser tests"));
+            assert!(output.contains("Inspect the parser tests"));
+            assert!(output.contains("Idle · Enter sends"));
+            assert!(!output.contains("Message on Agent"));
+            assert!(!output.contains("Tab mention"));
+            assert!(!output.contains("CODING AGENT"));
+            assert!(!output.contains("CONVERSATION"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("chat-{width}x{height}.txt")),
+                    lines.join("\n") + "\n",
+                )
+                .expect("write chat snapshot");
+            }
+        }
+
+        let mut actions = state(TuiLayout::Desktop);
+        actions.surface = DevSurface::Agent;
+        actions.open_palette();
+        for (width, height) in [(80, 24), (120, 40)] {
+            let lines = rendered_lines(&actions, width, height);
+            let output = lines.join("\n");
+            assert!(output.contains("GLASS"));
+            assert!(output.contains("↑↓ move · Enter run · Esc close"));
+            assert!(!output.contains("· /"));
+            assert!(!output.contains("GLASS DEV"));
+            assert!(!output.contains("SELECT AN ACTION"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("actions-{width}x{height}.txt")),
+                    lines.join("\n") + "\n",
+                )
+                .expect("write action palette snapshot");
+            }
+        }
+
+        let mut commands = state(TuiLayout::Desktop);
+        commands.surface = DevSurface::Agent;
+        commands.composer_mode = true;
+        commands.gc_command_menu_open = true;
+        commands.gc_command_items = vec![serde_json::json!({
+            "name":"status",
+            "description":"View session status",
+            "runtimeMode":"runtime"
+        })];
+        for (width, height) in [(80, 24), (120, 40)] {
+            let lines = rendered_lines(&commands, width, height);
+            let output = lines.join("\n");
+            assert!(output.contains("CORE"));
+            assert!(output.contains("GLASS"));
+            assert!(output.contains("GLASS Glass session status"));
+            assert!(output.contains("View session status"));
+            assert!(output.contains("↑↓ move · Enter run · Tab complete · Esc close"));
+            assert!(!output.contains("shown ·"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("commands-{width}x{height}.txt")),
+                    lines.join("\n") + "\n",
+                )
+                .expect("write command palette snapshot");
+            }
+        }
+    }
+
+    #[test]
+    fn glass_agent_tool_cards_and_full_output_inspector_review_frames() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.status = "Glass Agent idle".into();
+        let mut tool = super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::System,
+            text: "✓ apply_patch · completed".into(),
+            streaming: false,
+            entry_id: Some("tool-entry-1".into()),
+            client_message_id: None,
+            tool_name: Some("apply_patch".into()),
+            tool_card: Some(glass_tui::ToolCard {
+                expanded: false,
+                call_id: "patch-call-1".into(),
+                command: "apply_patch".into(),
+                output: format!(
+                    "[file src/parser.rs]\n- old token\n+ new token\n{}",
+                    (1..=24)
+                        .map(|line| format!("context line {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+                status: "exit 0".into(),
+                elapsed_ms: Some(1_240),
+                spill: None,
+                truncated: true,
+            }),
+            core_ui: None,
+        };
+        state.conversation_items = vec![
+            super::super::projection::ConversationEntry::user(
+                "Please update the parser token handling.",
+                Some("tool-review-user".into()),
+                None,
+            ),
+            super::super::projection::ConversationEntry::assistant(
+                "I’ll make the small parser edit and summarize it.",
+                false,
+                Some("tool-review-assistant".into()),
+            ),
+            tool.clone(),
+            super::super::projection::ConversationEntry {
+                kind: super::super::projection::ConversationKind::System,
+                text: "× glass.browser.navigate · failed".into(),
+                streaming: false,
+                entry_id: Some("tool-entry-2".into()),
+                client_message_id: None,
+                tool_name: Some("glass.browser.navigate".into()),
+                tool_card: Some(glass_tui::ToolCard {
+                    expanded: false,
+                    call_id: "browser-call-2".into(),
+                    command: "glass.browser.navigate https://example.test".into(),
+                    output: "Navigation deadline exceeded".into(),
+                    status: "failed · navigation deadline exceeded".into(),
+                    elapsed_ms: None,
+                    spill: None,
+                    truncated: false,
+                }),
+                core_ui: None,
+            },
+            super::super::projection::ConversationEntry::system(
+                "Rust tests completed · 18 passed",
+                None,
+            ),
+            super::super::projection::ConversationEntry::error(
+                "One optional check could not start.",
+                None,
+            ),
+        ];
+        for (width, height) in [(80, 24), (120, 40)] {
+            let lines = rendered_lines(&state, width, height);
+            let output = lines.join("\n");
+            assert!(output.contains("Please update the parser token handling."));
+            assert!(!output.contains("GLASS AGENT"));
+            assert!(output.contains("CORE"));
+            assert!(
+                output.contains("CORE · Edit · completed · 1.2s · src/parser.rs (+1 −1)"),
+                "tool edit header missing at {width}x{height}: {output}"
+            );
+            assert!(output.contains("GLASS · Browser · failed"));
+            assert!(output.contains("… +24 lines · Ctrl-O expand"));
+            assert!(output.contains("Rust tests completed"));
+            assert!(output.contains("One optional check could not start."));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("output-{width}x{height}.txt")),
+                    lines.join("\n") + "\n",
+                )
+                .expect("write output snapshot");
+            }
+        }
+
+        tool.tool_card.as_mut().expect("tool card").expanded = true;
+        state.conversation_items[2] = tool;
+        state.tool_output_inspector_call_id = Some("patch-call-1".into());
+        for (width, height) in [(80, 24), (120, 40)] {
+            let lines = rendered_lines(&state, width, height);
+            let output = lines.join("\n");
+            assert!(output.contains("CORE  Tool output"));
+            assert!(output.contains("[file src/parser.rs]"));
+            assert!(output.contains("context line 1"));
+            if height >= 32 {
+                assert!(output.contains("Output truncated in the event"));
+            }
+            assert!(output.contains("↑/↓ or PgUp/PgDn scroll · Esc close"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("tool-output-{width}x{height}.txt")),
+                    lines.join("\n") + "\n",
+                )
+                .expect("write full tool output snapshot");
+            }
+        }
+        state.tool_output_scroll = usize::MAX;
+        let bottom = rendered_lines(&state, 80, 24).join("\n");
+        assert!(bottom.contains("Output truncated in the event"));
+        state.tool_output_scroll = 8;
+        let scrolled = rendered_lines(&state, 80, 24).join("\n");
+        assert!(scrolled.lines().any(|line| line.trim() == "context line 8"));
+        assert!(!scrolled.lines().any(|line| line.trim() == "context line 1"));
+    }
+
     #[test]
     fn gc_slash_menu_renders_compact_owner_groups_without_runtime_handoff_claims() {
         let (mut state, root) = overlay_state();
@@ -5904,13 +6198,13 @@ mod tests {
         })];
 
         let output = rendered(&state, 100, 30);
-        assert!(output.contains("/ COMMANDS"));
-        assert!(output.contains("CORE 1 shown · 1 total"));
+        assert!(!output.contains("/ COMMANDS"));
+        assert!(!output.contains("shown ·"));
         assert!(output.contains("GLASS"));
         assert!(output.contains("/status"));
         assert!(output.contains("View session status"));
         assert!(!output.contains("native GC UI"));
-        assert!(output.contains("GLASS · workspace and host actions"));
+        assert!(!output.contains("GLASS · workspace and host actions"));
         assert!(output.contains("Glass session status"));
         let host_actions = state.gc_command_glass_actions();
         assert!(
@@ -5953,7 +6247,7 @@ mod tests {
             serde_json::json!({"id":"gpt-next","label":"Next"}),
         ];
         let output = rendered(&state, 80, 24);
-        assert!(output.contains("CORE settings"));
+        assert!(output.contains("CORE"));
         assert!(output.contains("openai"));
         assert!(output.contains("gpt-current"));
         assert!(output.contains("current"));
@@ -5986,7 +6280,8 @@ mod tests {
             state.terminal_height = height;
             let geometry = gc_command_menu_geometry_for_screen(&state);
             assert!(geometry.inner.height > 0, "{width}x{height}");
-            assert!(geometry.scroll_offset > 0, "{width}x{height}");
+            assert_eq!(geometry.scroll_offset, 0, "rows are windowed before render");
+            assert!(geometry.visible_command_rows <= 8, "{width}x{height}");
 
             let buffer = rendered_buffer(&state, width, height);
             let selected_row = (geometry.inner.y..geometry.inner.bottom())
@@ -6323,7 +6618,8 @@ mod tests {
                 assert!(rendered.contains("ASYNC STATUS VISIBLE"));
             }
             assert!(rendered.contains("Agent"));
-            assert!(rendered.contains("CONVERSATION"));
+            assert!(rendered.contains("CORE"));
+            assert!(!rendered.contains("CONVERSATION"));
         }
     }
 
@@ -6336,13 +6632,15 @@ mod tests {
             assert!(output.contains("Type a message or / for commands"));
         } else {
             assert!(output.contains("SETUP"));
-            assert!(output.contains("Enter to install"));
+            assert!(output.contains("setup required"));
         }
         assert!(!output.contains("optional"));
-        assert!(output.contains("● Ready"));
+        assert!(output.contains("● Idle · Enter sends"));
 
         state.status = "browser failed".into();
-        assert!(rendered(&state, 48, 18).contains("× browser failed"));
+        let failure = rendered(&state, 48, 18);
+        assert!(failure.contains("×"));
+        assert!(failure.contains("browser failed"));
     }
     #[test]
     fn setup_landing_explains_in_tui_recovery() {
@@ -6369,17 +6667,18 @@ mod tests {
         state.help_open = true;
         state.surface = DevSurface::Code;
         let help = rendered(&state, 100, 28);
-        assert!(help.contains("DO THIS"));
+        assert!(help.contains("START"));
         assert!(help.contains("CODE"));
         assert!(help.contains("Enter opens"));
         assert!(help.contains("Ctrl-L"));
-        assert!(help.contains("KEYS"));
-        assert!(help.contains("Tab surfaces"));
-        assert!(help.contains("Agent · Code"));
+        assert!(help.contains("MOVE AROUND"));
+        assert!(help.contains("Ctrl-Tab surfaces"));
         assert!(help.contains("Ctrl-O symbols"));
         assert!(!help.contains("Ctrl-O back"));
         assert!(!help.contains("▎   AGENT"));
         assert!(!help.contains("Alt-←/→"));
+        assert!(!help.contains("[native GC UI]"));
+        assert!(help.lines().count() < 18);
     }
 
     #[test]
@@ -6397,7 +6696,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_surface_exposes_workspace_context() {
+    fn agent_surface_uses_a_single_wide_chat_without_repeated_titles() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
         state.git = "branch main".into();
@@ -6411,22 +6710,15 @@ mod tests {
         let output = rendered(&state, 140, 40);
         assert!(output.contains("Agent · WORKSPACE"));
         assert!(!output.contains("CODING WORKSPACE"));
-        assert!(output.contains("BRANCH main"));
-        assert!(output.contains("GITHUB no GitHub origin"));
-        assert!(output.contains("CHANGES · 1"));
-        assert!(output.contains("src/lib.rs"));
-        assert!(output.contains("VISUAL PLANE"));
+        assert!(output.contains("CORE"));
+        assert!(output.contains("Idle"));
+        assert!(!output.contains("CODING AGENT"));
+        assert!(!output.contains("CONVERSATION"));
+        assert!(!output.contains("SESSION"));
         if state.agent_readiness.starts_with("✓ Ready") {
             assert!(output.contains("Describe a coding task"));
             assert!(output.contains("Open the browser for UI work"));
         }
-
-        state.git_diff_open = true;
-        state.git_diff_path = Some("src/lib.rs".into());
-        state.git_diff = "@@ -1 +1 @@\n-old\n+added".into();
-        let diff_output = rendered(&state, 140, 40);
-        assert!(diff_output.contains("DIFF"));
-        assert!(diff_output.contains("+added"));
     }
 
     #[test]
@@ -6454,7 +6746,7 @@ mod tests {
 
         let _workspace_guard = state.workspace.lock().unwrap();
         assert_eq!(agent_progress(&state), "agent ready for a prompt");
-        assert!(compact_agent_header(&state, 80).starts_with("Agent idle"));
+        assert_eq!(agent_presence(&state), ("Idle", false));
     }
 
     #[test]
@@ -6494,7 +6786,7 @@ mod tests {
             };
             state.scroll_end();
             let tail = rendered(&state, width, height);
-            assert!(tail.contains("CONVERSATION"));
+            assert!(!tail.contains("CONVERSATION"));
             assert!(
                 tail.contains("ERROR ·"),
                 "tail error role missing at {width}x{height}: {tail}"
@@ -6614,9 +6906,9 @@ mod tests {
             for (index, ((card, origin), status)) in cards
                 .iter()
                 .zip([
-                    "✓ CORE · bash ·",
-                    "✓ GLASS · browser ·",
-                    "× GLASS · browser ·",
+                    "✓ CORE · Terminal ·",
+                    "✓ GLASS · Browser ·",
+                    "× GLASS · Browser ·",
                 ])
                 .zip(["running", "comp", "fail"])
                 .enumerate()
@@ -6659,7 +6951,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_transcript_exposes_scroll_position_without_idle_abort_hints() {
+    fn agent_transcript_keeps_navigation_keys_out_of_message_text() {
         let mut state = state(TuiLayout::Compact);
         state.surface = DevSurface::Agent;
         state.conversation_items = vec![super::super::projection::ConversationEntry {
@@ -6673,24 +6965,27 @@ mod tests {
             core_ui: None,
         }];
         let text = agent_conversation_text(&state, "", 72, 8).to_string();
-        assert!(text.contains("PgUp/PgDn"));
-        assert!(text.contains("Home/End"));
-        assert!(text.contains("↓ live"));
+        assert!(text.contains("A settled response."));
+        assert!(!text.contains("PgUp/PgDn"));
+        assert!(!text.contains("Home/End"));
+        assert!(!text.contains("↓ live"));
         assert!(!text.contains("Ctrl-X abort"));
         assert!(!text.contains("Ctrl-D follow-up"));
-
-        let narrow = agent_conversation_text(&state, "", 56, 8);
-        let narrow_footer = narrow.lines.last().expect("conversation footer");
-        assert!(
-            narrow_footer.width() <= 56,
-            "phone footer wraps instead of preserving one-line controls: {narrow_footer:?}"
-        );
-        assert!(narrow_footer.to_string().contains("Ctrl-T think"));
 
         state.composer_steer = true;
         let idle_steer = agent_conversation_text(&state, "", 72, 8).to_string();
         assert!(!idle_steer.contains("Ctrl-X abort"));
         assert!(!idle_steer.contains("Ctrl-D follow-up"));
+    }
+
+    #[test]
+    fn agent_presence_collapses_activity_and_keeps_approval_as_a_detail() {
+        let mut state = state(TuiLayout::Desktop);
+        assert_eq!(agent_presence(&state), ("Idle", false));
+        state.running_tool_job = Some(9);
+        assert_eq!(agent_presence(&state), ("Working", false));
+        state.status = "approval required".into();
+        assert_eq!(agent_presence(&state), ("Working", true));
     }
 
     #[test]
@@ -6969,7 +7264,7 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
 
         for (surface, markers) in [
-            (DevSurface::Agent, ["CONVERSATION", "START HERE"]),
+            (DevSurface::Agent, ["CORE", "START HERE"]),
             (DevSurface::Code, ["FILES", "CODE"]),
             (DevSurface::App, ["VISUAL PLANE", "INSPECTOR"]),
             (DevSurface::Terminal, ["TERMINAL", "PROCESSES"]),
@@ -7109,7 +7404,7 @@ mod tests {
         let mut state = state(TuiLayout::Mobile);
         state.toggle_help();
         let help = rendered(&state, 48, 18);
-        assert!(help.contains("DO THIS"));
+        assert!(help.contains("START"));
         state.scroll_help(16);
         assert!(state.help_scroll <= 16);
         assert!(
@@ -7150,8 +7445,9 @@ mod tests {
 
         state.open_palette();
         assert!(rendered(&state, 120, 32).contains("▌"));
-        assert!(rendered(&state, 120, 32).contains("SELECT AN ACTION"));
-        assert!(rendered(&state, 120, 32).contains("type only to filter"));
+        assert!(rendered(&state, 120, 32).contains("GLASS"));
+        assert!(rendered(&state, 120, 32).contains("↑↓ move · Enter run · Esc close"));
+        assert!(!rendered(&state, 120, 32).contains("SELECT AN ACTION"));
         assert_eq!(state.palette_selection, 0);
         state.move_palette_selection(2);
         assert_eq!(
@@ -7201,30 +7497,45 @@ mod tests {
         let mut palette_state = state(TuiLayout::Desktop);
         palette_state.open_palette();
         let first_page = rendered(&palette_state, 120, 32);
-        for marker in [
-            "COMMAND PALETTE",
-            "SELECT AN ACTION",
-            "↑↓ select",
-            "Compose message",
-            "Glass Core setup guidance",
-        ] {
+        for marker in ["GLASS", "↑↓ move", "Compose message"] {
             assert!(
                 first_page.contains(marker),
                 "missing palette marker {marker}"
             );
         }
+        assert!(!first_page.contains("GLASS DEV"));
+        for (width, height) in [(80, 24), (120, 40)] {
+            let buffer = rendered_buffer(&palette_state, width, height);
+            let palette_rows = (0..height)
+                .filter(|row| {
+                    let text = (0..width)
+                        .map(|column| buffer[(column, *row)].symbol())
+                        .collect::<String>();
+                    text.contains("GLASS")
+                })
+                .count();
+            assert!(
+                palette_rows <= 9,
+                "search plus at most 8 rows: {width}x{height}"
+            );
+            let output = rendered(&palette_state, width, height);
+            assert_eq!(output.matches("↑↓ move · Enter run · Esc close").count(), 1);
+            assert!(!output.contains("COMMAND PALETTE"));
+        }
+        palette_state.insert_palette_text("Glass Core setup guidance");
+        assert!(rendered(&palette_state, 80, 24).contains("Glass Core setup guidance"));
 
         let mut git_state = state(TuiLayout::Desktop);
         git_state.surface = DevSurface::Git;
         let git_content = command_palette_content(&git_state);
         assert!(git_content.contains("Stage all changes"));
-        assert!(git_content.contains("git stage"));
+        assert!(!git_content.contains("git stage"));
         assert!(!git_content.contains("Open selected file"));
         assert!(!git_content.contains("COMMAND ROOTS"));
 
         palette_state.move_palette_selection(5);
         assert_eq!(palette_state.palette_selection, 5);
-        assert!(rendered(&palette_state, 120, 32).contains("▸"));
+        assert!(rendered(&palette_state, 120, 32).contains("›"));
         palette_state.scroll_palette(-1);
         assert_eq!(palette_state.palette_selection, 0);
     }
@@ -7278,7 +7589,7 @@ mod tests {
         let output = rendered(&state, 48, 18);
         assert!(output.contains("…"));
         assert!(output.contains("development commands"));
-        assert!(output.contains("AGENT"));
+        assert!(output.contains("CORE"));
         assert!(output.contains("Enter sends"));
         assert!(output.contains("▌"));
     }

@@ -202,7 +202,7 @@ impl Layout {
             return entry_lines(text, role, width, idx > 0);
         };
         if self.glass_presentation {
-            return glass_tool_lines(card, role, width);
+            return glass_tool_lines(card, role, text, width);
         }
         let status = card.status.split(" · ").next().unwrap_or(&card.status);
         let failed = !matches!(status, "exit 0" | "completed" | "running");
@@ -371,36 +371,51 @@ impl Layout {
     }
 }
 
-fn glass_tool_lines(card: &crate::ToolCard, role: Role, width: u16) -> Vec<Line<'static>> {
+fn glass_tool_lines(
+    card: &crate::ToolCard,
+    role: Role,
+    text: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
     use crate::theme::{self, Tone};
     use ratatui::style::{Modifier, Style};
 
     let width = usize::from(width.max(1));
     let command = card.command.trim();
+    let transcript_label = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim_start_matches(['✓', '×', '→', ' '])
+        .split(" · ")
+        .next()
+        .unwrap_or("");
     let raw_identity = if role == Role::Bash {
         "bash"
+    } else if !transcript_label.is_empty() {
+        transcript_label
     } else {
         command.split_whitespace().next().unwrap_or("tool")
     };
-    let identity = if raw_identity.starts_with("glass.browser") {
-        "browser"
-    } else if raw_identity.starts_with("glass.git") {
-        "git"
-    } else {
-        raw_identity
+    let identity = match raw_identity {
+        "bash" => "Terminal".to_string(),
+        name if name.starts_with("glass.browser") => "Browser".to_string(),
+        name if name.starts_with("glass.git") => "Git".to_string(),
+        name if name.starts_with("glass.file") => "Files".to_string(),
+        "apply_patch" | "edit" => "Edit".to_string(),
+        name => name.replace('_', " "),
     };
-    let group =
-        if raw_identity.starts_with("glass.browser") || raw_identity.starts_with("glass.git") {
-            "GLASS"
-        } else {
-            "CORE"
-        };
+    let group = if raw_identity.starts_with("glass.") {
+        "GLASS"
+    } else {
+        "CORE"
+    };
     let status = card.status.split(" · ").next().unwrap_or(&card.status);
     let failed = !matches!(status, "exit 0" | "completed" | "running");
     let state = match status {
         "running" => "running".to_string(),
         "completed" | "exit 0" => "completed".to_string(),
-        _ => format!("failed · {}", status.trim_start_matches("failed · ")),
+        _ => status.to_string(),
     };
     let duration = card
         .elapsed_ms
@@ -414,8 +429,24 @@ fn glass_tool_lines(card: &crate::ToolCard, role: Role, width: u16) -> Vec<Line<
     } else {
         Tone::Core
     };
+    let output = card.output.trim();
+    let file_path = output
+        .lines()
+        .find_map(|line| line.strip_prefix("[file ")?.strip_suffix(']'));
+    let (added, removed) = output.lines().fold((0usize, 0usize), |(add, del), line| {
+        if line.starts_with("+ ") && !line.starts_with("+++ ") {
+            (add + 1, del)
+        } else if line.starts_with("- ") && !line.starts_with("--- ") {
+            (add, del + 1)
+        } else {
+            (add, del)
+        }
+    });
+    let edit_summary = file_path
+        .map(|path| format!(" · {path} (+{added} −{removed})"))
+        .unwrap_or_default();
     let header = format!(
-        "{} {group} · {identity} · {state}{duration}",
+        "{} {group} · {identity} · {state}{duration}{edit_summary}",
         if failed { "×" } else { "✓" }
     );
     let mut rows = vec![Line::from(Span::styled(
@@ -425,8 +456,20 @@ fn glass_tool_lines(card: &crate::ToolCard, role: Role, width: u16) -> Vec<Line<
             .add_modifier(Modifier::BOLD),
     ))];
 
-    if card.expanded && !command.is_empty() && command != identity {
+    if !command.is_empty() && command != raw_identity && command != identity {
+        let command_line = if card.expanded {
+            command.to_string()
+        } else {
+            crate::text::clip(command, width.saturating_sub(2))
+        };
         for row in wrap_width(&crate::markdown::sanitize(command), width.saturating_sub(2)) {
+            if !card.expanded && command_line != command {
+                rows.push(Line::from(Span::styled(
+                    format!("  {command_line}"),
+                    Style::new().fg(theme::color(Tone::Secondary)),
+                )));
+                break;
+            }
             rows.push(Line::from(Span::styled(
                 format!("  {row}"),
                 Style::new().fg(theme::color(Tone::Secondary)),
@@ -434,31 +477,45 @@ fn glass_tool_lines(card: &crate::ToolCard, role: Role, width: u16) -> Vec<Line<
         }
     }
 
-    let output = card.output.trim();
     if !output.is_empty() {
-        let mut shown = 0usize;
-        for raw in output.lines() {
-            if !card.expanded && shown == 1 {
-                break;
-            }
+        const PREVIEW_OUTPUT_LINES: usize = 3;
+        for raw in output.lines().take(if card.expanded {
+            usize::MAX
+        } else {
+            PREVIEW_OUTPUT_LINES
+        }) {
+            let raw_tone = if failed {
+                Tone::Error
+            } else if raw.starts_with("+ ") && file_path.is_some() {
+                Tone::Success
+            } else if raw.starts_with("- ") && file_path.is_some() {
+                Tone::Error
+            } else if raw.starts_with("[file ") {
+                Tone::Accent
+            } else {
+                Tone::Muted
+            };
             for row in wrap_width(&crate::markdown::sanitize(raw), width.saturating_sub(2)) {
                 rows.push(Line::from(Span::styled(
                     format!("  {row}"),
-                    Style::new().fg(theme::color(if failed { Tone::Error } else { Tone::Muted })),
+                    Style::new().fg(theme::color(raw_tone)),
                 )));
-                shown += 1;
-                if !card.expanded {
-                    break;
-                }
             }
         }
-        if !card.expanded && output.lines().count() > 1 {
+        let omitted = output.lines().count().saturating_sub(PREVIEW_OUTPUT_LINES);
+        if !card.expanded && omitted > 0 {
             rows.push(Line::from(Span::styled(
-                "  … o to expand",
+                format!("  … +{omitted} lines · Ctrl-O expand"),
                 Style::new().fg(theme::color(Tone::Muted)),
             )));
         }
-    } else if card.expanded {
+    }
+    if card.truncated {
+        rows.push(Line::from(Span::styled(
+            "  Output truncated in the event",
+            Style::new().fg(theme::color(Tone::Warning)),
+        )));
+    } else if output.is_empty() && card.expanded {
         rows.push(Line::from(Span::styled(
             "  (no output)",
             Style::new().fg(theme::color(Tone::Muted)),
@@ -653,6 +710,57 @@ mod tests {
     }
 
     #[test]
+    fn glass_tool_preview_shows_diff_counts_colored_changes_and_omitted_rows() {
+        use crate::theme::{Tone, color};
+        let card = crate::ToolCard {
+            expanded: false,
+            call_id: "edit-1".into(),
+            command: "apply_patch".into(),
+            output: "[file src/parser.rs]\n- old token\n+ new token\n context\n+ final token"
+                .into(),
+            status: "exit 0".into(),
+            elapsed_ms: Some(1_240),
+            spill: None,
+            truncated: false,
+        };
+        let mut layout = Layout::new(vec![("✓ apply_patch · done".into(), Role::Tool, 0)]);
+        layout.set_cards(HashMap::from([(0, card.clone())]));
+        layout.set_glass_presentation(true);
+        layout.set_width(80);
+        let preview_lines = layout.entry_lines(0);
+        let preview = preview_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(preview.contains("CORE · Edit · completed · 1.2s · src/parser.rs (+2 −1)"));
+        assert!(preview.contains("… +2 lines · Ctrl-O expand"));
+        assert!(!preview.contains("+ final token"));
+        assert!(preview_lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content.contains("+ new token") && span.style.fg == Some(color(Tone::Success))
+            })
+        }));
+        assert!(preview_lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content.contains("- old token") && span.style.fg == Some(color(Tone::Error))
+            })
+        }));
+
+        let mut expanded = card;
+        expanded.expanded = true;
+        layout.set_cards(HashMap::from([(0, expanded)]));
+        let all = layout
+            .entry_lines(0)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("+ final token"));
+        assert!(!all.contains("… +2 lines"));
+    }
+
+    #[test]
     fn glass_presentation_is_compact_and_core_default_keeps_legacy_card() {
         let card = crate::ToolCard {
             expanded: false,
@@ -673,7 +781,7 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(compact.contains("CORE · bash · completed"));
+        assert!(compact.contains("CORE · Terminal · completed"));
         assert!(!compact.contains("$ bash"));
         assert!(!compact.contains("0.0s"));
         assert!(!compact.contains("No output"));
@@ -717,7 +825,7 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(row.contains("GLASS · browser · completed · 1.4s"));
+        assert!(row.contains("GLASS · Browser · completed · 1.4s"));
     }
     #[test]
     fn tool_cards_use_bounded_colored_renderer_until_explicit_expansion() {
@@ -734,18 +842,22 @@ mod tests {
         };
         layout.set_cards(HashMap::from([(0, card.clone())]));
         layout.set_width(40);
-        let lines = layout.lines(0, "legacy plain text", Role::Bash, 40);
+        let lines = layout.lines(0, "✓ bash · done", Role::Bash, 40);
         assert!(lines.len() < 15);
-        assert!(lines[0].to_string().contains("✓ bash"));
+        assert!(
+            lines[0]
+                .to_string()
+                .contains("✓ CORE · Terminal · completed")
+        );
         assert!(!lines.iter().any(|l| l.to_string().contains("output 29")));
         let mut truncated = card.clone();
         truncated.status = "exit 0 · truncated".into();
         truncated.truncated = true;
         layout.set_cards(HashMap::from([(0, truncated)]));
         assert!(
-            layout.lines(0, "", Role::Bash, 40)[0]
+            layout.lines(0, "✓ bash · done", Role::Bash, 40)[0]
                 .to_string()
-                .contains("✓ bash")
+                .contains("✓ CORE · Terminal · exit 0")
         );
         let mut expanded = card;
         expanded.expanded = true;

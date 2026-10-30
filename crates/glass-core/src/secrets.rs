@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const MAX_ENTRIES: usize = 32;
-const MAX_SECRET_BYTES: usize = 4096;
+pub(crate) const MAX_SECRET_BYTES: usize = 4096;
 const SECRET_TTL: Duration = Duration::from_secs(5 * 60);
 const WEB_SECRET_TOOL: &str = "web_secret_request";
 

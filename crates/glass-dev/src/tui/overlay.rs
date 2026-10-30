@@ -7,14 +7,15 @@ use super::state::DevTuiState;
 #[repr(u8)]
 pub(super) enum ActiveOverlay {
     QuitConfirmation = 0,
-    EditorExitPrompt = 1,
-    BrowserDialog = 2,
-    Help = 3,
-    CommandCenterMenu = 4,
-    BrowserTargetPicker = 5,
-    FilePicker = 6,
-    SessionPicker = 7,
-    FollowUpQueue = 8,
+    SecretPrompt = 1,
+    EditorExitPrompt = 2,
+    BrowserDialog = 3,
+    Help = 4,
+    CommandCenterMenu = 5,
+    BrowserTargetPicker = 6,
+    FilePicker = 7,
+    SessionPicker = 8,
+    FollowUpQueue = 9,
     MutationConfirmation = 10,
     FullscreenEditor = 11,
     Composer = 12,
@@ -41,6 +42,8 @@ impl ActiveOverlay {
 pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
     if state.quit_confirmation {
         Some(ActiveOverlay::QuitConfirmation)
+    } else if state.secret_prompt_active() {
+        Some(ActiveOverlay::SecretPrompt)
     } else if state.send_attempt_retry_confirmation.is_some() {
         Some(ActiveOverlay::SendAttemptRetryConfirmation)
     } else if state.editor_exit_prompt.is_some() {

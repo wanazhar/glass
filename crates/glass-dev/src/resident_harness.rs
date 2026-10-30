@@ -8,6 +8,37 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use zeroize::Zeroizing;
+
+/// Bounded, non-secret metadata for one live request from Core to its human.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidentSecretInputRequest {
+    pub request_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub purpose: String,
+    pub destination: String,
+    pub tool: String,
+    pub operation: String,
+    pub expires_at_ms: u128,
+    pub max_bytes: usize,
+}
+
+/// One direct response to a pending Core human-input request.
+pub enum ResidentSecretInputAnswer {
+    Provided(Zeroizing<String>),
+    Declined,
+}
+
+impl std::fmt::Debug for ResidentSecretInputAnswer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provided(_) => formatter.write_str("Provided([REDACTED])"),
+            Self::Declined => formatter.write_str("Declined"),
+        }
+    }
+}
 
 /// Executes one host tool call against the resident Glass workspace.
 pub type AgentToolExecutor =
@@ -239,6 +270,23 @@ impl ResidentHarness {
     ) -> DevelopmentResult<String> {
         match self {
             Self::GlassCore(runtime) => runtime.start_request(request),
+        }
+    }
+
+    /// Answer one live Core human-input request outside the agent transcript.
+    pub(crate) fn answer_secret_input(
+        &mut self,
+        request: &ResidentSecretInputRequest,
+        answer: ResidentSecretInputAnswer,
+    ) -> DevelopmentResult<()> {
+        match self {
+            Self::GlassCore(runtime) => runtime.answer_secret_input(request, answer),
+        }
+    }
+
+    pub(crate) fn cancel_pending_secret_inputs(&mut self) -> DevelopmentResult<()> {
+        match self {
+            Self::GlassCore(runtime) => runtime.cancel_pending_secret_inputs(),
         }
     }
 

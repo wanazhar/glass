@@ -53,6 +53,7 @@ use ratatui::layout::Rect;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 /// Public TUI state, selected surface, product mode, and responsive class.
 pub use state::{DevSurface, DevTuiState, ProductMode, ResponsiveClass};
@@ -511,6 +512,20 @@ pub(crate) fn run_with_browser_policy(
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => state.confirm_quit(),
                             KeyCode::Esc | KeyCode::Char('n' | 'N') => state.cancel_quit(),
+                            _ => {}
+                        }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::SecretPrompt) {
+                        match key.code {
+                            KeyCode::Esc => state.secret_prompt_decline(),
+                            KeyCode::Enter => state.secret_prompt_submit(),
+                            KeyCode::Backspace => state.secret_prompt_backspace(),
+                            KeyCode::Char(character)
+                                if !key.modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                                ) =>
+                            {
+                                state.secret_prompt_insert_char(character)
+                            }
                             _ => {}
                         }
                     } else if active_overlay
@@ -1427,8 +1442,14 @@ pub(crate) fn run_with_browser_policy(
                     #[cfg(unix)]
                     state.persist_composer_draft();
                 }
-                Event::Paste(text) => {
-                    route_paste(&mut state, &text);
+                Event::Paste(mut text) => {
+                    if overlay::active_overlay(&state) == Some(overlay::ActiveOverlay::SecretPrompt)
+                    {
+                        state.secret_prompt_insert(&text);
+                        text.zeroize();
+                    } else {
+                        route_paste(&mut state, &text);
+                    }
                     #[cfg(unix)]
                     state.persist_composer_draft();
                 }
@@ -1701,6 +1722,7 @@ fn reset_pointer_on_overlay_transition(
 
 fn route_paste(state: &mut DevTuiState, text: &str) {
     match overlay::active_overlay(state) {
+        Some(overlay::ActiveOverlay::SecretPrompt) => state.secret_prompt_insert(text),
         Some(overlay::ActiveOverlay::NativeGcUiPanel) => {
             for character in text.chars() {
                 state.native_gc_ui_search_char(character);

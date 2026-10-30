@@ -14,7 +14,8 @@ use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zeroize::{Zeroize, Zeroizing};
 
 #[path = "durable_runtime.rs"]
 mod durable_host;
@@ -375,7 +376,45 @@ struct Wire {
     durable: Option<Rc<RefCell<crate::durable::Store>>>,
     durable_task: Option<String>,
     protocol_version: Option<u64>,
+    human_secret_input_supported: bool,
+    human_input_counter: u64,
+    pending_human_input: Option<PendingHumanInput>,
 }
+
+struct PendingHumanInput {
+    request_id: String,
+    session_id: String,
+    turn_id: Value,
+    response: Option<Result<HumanSecretAnswer, String>>,
+}
+
+enum HumanSecretAnswer {
+    Provided(Zeroizing<String>),
+    Cancelled,
+}
+
+fn scrub_human_input_secret_fields(message: &mut Value) {
+    for path in ["/result/secret", "/params/secret"] {
+        if let Some(value) = message.pointer_mut(path)
+            && let Value::String(secret) = std::mem::replace(value, Value::Null)
+        {
+            drop(Zeroizing::new(secret));
+        }
+    }
+}
+
+fn host_supports_masked_secret_input(
+    protocol_version: u64,
+    capabilities: Option<&[Value]>,
+) -> bool {
+    protocol_version >= 2
+        && capabilities.is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|value| value == "maskedSecretInput")
+        })
+}
+
 impl Wire {
     fn incoming(&mut self) -> Option<Value> {
         match self.rx.try_recv() {
@@ -391,7 +430,151 @@ impl Wire {
             Err(_) => None,
         }
     }
-    fn active(&mut self, m: Value, session: &str, turn: &Value) {
+
+    fn consume_human_input_response(
+        &mut self,
+        message: &mut Value,
+        session: &str,
+        turn: &Value,
+    ) -> bool {
+        let Some(pending) = self.pending_human_input.as_ref() else {
+            scrub_human_input_secret_fields(message);
+            return false;
+        };
+        if message.get("method").is_some()
+            || message.get("id").and_then(Value::as_str) != Some(pending.request_id.as_str())
+        {
+            scrub_human_input_secret_fields(message);
+            return false;
+        }
+        let pending_session = pending.session_id.clone();
+        let pending_turn = pending.turn_id.clone();
+        let mut result = std::mem::replace(&mut message["result"], Value::Null);
+        let secret_value = std::mem::replace(&mut result["secret"], Value::Null);
+        let secret = match secret_value {
+            Value::String(secret) => Some(Zeroizing::new(secret)),
+            _ => None,
+        };
+        scrub_human_input_secret_fields(message);
+        let matches_scope = pending_session == session && &pending_turn == turn;
+        let response = if !matches_scope {
+            Err("human input response does not match the active turn".to_owned())
+        } else {
+            match result.get("status").and_then(Value::as_str) {
+                Some("cancelled") => Ok(HumanSecretAnswer::Cancelled),
+                Some("answered") => match secret {
+                    Some(secret)
+                        if !secret.trim().is_empty()
+                            && secret.len() <= crate::secrets::MAX_SECRET_BYTES
+                            && !secret.chars().any(char::is_control) =>
+                    {
+                        Ok(HumanSecretAnswer::Provided(secret))
+                    }
+                    _ => Err("human input answer was empty or exceeded its size limit".into()),
+                },
+                _ => Err("human input response was not accepted".into()),
+            }
+        };
+        if let Some(pending) = self.pending_human_input.as_mut() {
+            pending.response = Some(response);
+        }
+        true
+    }
+
+    fn request_secret_input(
+        &mut self,
+        request: &Value,
+        session: &str,
+        turn: &Value,
+    ) -> Result<Value, String> {
+        if request.get("kind").and_then(Value::as_str) != Some("secret") {
+            return Err("unsupported human input request".into());
+        }
+        let request =
+            crate::secrets::SecretRequest::parse(request.get("request").unwrap_or(&Value::Null))?;
+        if self.pending_human_input.is_some() {
+            return Err("another human input request is already active".into());
+        }
+        self.human_input_counter = self.human_input_counter.saturating_add(1);
+        let request_id = format!("human-{}", self.human_input_counter);
+        let expires_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or_default()
+            // Leave room for host transport/dispatch latency under the host's
+            // 120-second maximum accepted request lifetime.
+            .saturating_add(110_000);
+        let turn_id = turn.clone();
+        self.pending_human_input = Some(PendingHumanInput {
+            request_id: request_id.clone(),
+            session_id: session.to_owned(),
+            turn_id: turn.clone(),
+            response: None,
+        });
+        if !send(json!({
+            "jsonrpc":"2.0",
+            "id":request_id,
+            "method":"human/input/request",
+            "params":{
+                "sessionId":session,
+                "turnId":turn_id,
+                "kind":"secret",
+                "purpose":request.purpose,
+                "destination":request.destination,
+                "tool":request.tool_name,
+                "operation":request.operation,
+                "expiresAtMs":expires_at_ms,
+                "maxBytes":crate::secrets::MAX_SECRET_BYTES
+            }
+        })) {
+            self.pending_human_input = None;
+            return Err("Glass host disconnected before the secret request was delivered".into());
+        }
+        let deadline = Instant::now() + Duration::from_millis(120_000);
+        loop {
+            let mut interrupted = None;
+            self.pump(&mut interrupted, session, turn);
+            if self.disconnected || interrupted.is_some() {
+                self.cancel_human_input(session, &request_id);
+                return Err("Human cancelled or interrupted the secret request".into());
+            }
+            if let Some(pending) = self.pending_human_input.as_mut()
+                && let Some(response) = pending.response.take()
+            {
+                self.pending_human_input = None;
+                return match response {
+                    Ok(HumanSecretAnswer::Provided(mut secret)) => {
+                        Ok(json!({"status":"answered","secret":std::mem::take(&mut *secret)}))
+                    }
+                    Ok(HumanSecretAnswer::Cancelled) => Ok(json!({"status":"cancelled"})),
+                    Err(error) => {
+                        self.cancel_human_input(session, &request_id);
+                        Err(error)
+                    }
+                };
+            }
+            if Instant::now() >= deadline {
+                self.cancel_human_input(session, &request_id);
+                return Err("Human secret request expired".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn cancel_human_input(&mut self, session: &str, request_id: &str) {
+        self.pending_human_input = None;
+        let _ = send(json!({
+            "jsonrpc":"2.0",
+            "method":"human/input/cancel",
+            "params":{"sessionId":session,"requestId":request_id}
+        }));
+    }
+
+    fn active(&mut self, mut m: Value, session: &str, turn: &Value) {
+        if self.consume_human_input_response(&mut m, session, turn) {
+            return;
+        }
+        scrub_human_input_secret_fields(&mut m);
         let id = m.get("id").cloned().unwrap_or(Value::Null);
         trace_runtime_frame(
             "core_stdin",
@@ -940,7 +1123,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         let stdin = std::io::stdin();
         let mut reader = stdin.lock();
         loop {
-            let mut line = Vec::new();
+            let mut line = Zeroizing::new(Vec::new());
             match reader
                 .by_ref()
                 .take((MAX_FRAME + 1) as u64)
@@ -964,6 +1147,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                 Err("expected a JSON-RPC 2.0 object".into())
                             }
                         });
+                    line.zeroize();
                     if tx.send(parsed).is_err() {
                         break;
                     }
@@ -983,6 +1167,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         durable: None,
         durable_task: None,
         protocol_version: None,
+        human_secret_input_supported: false,
+        human_input_counter: 0,
+        pending_human_input: None,
     }));
     let mut root: Option<PathBuf> = None;
     let mut conversations = BTreeMap::<String, Conversation>::new();
@@ -1040,7 +1227,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     );
                     continue;
                 };
-                if capabilities.iter().any(|value| value != "mixedTools") {
+                if capabilities
+                    .iter()
+                    .any(|value| value != "mixedTools" && value != "maskedSecretInput")
+                {
                     error(&id, -32602, "unsupported required runtime capability");
                     continue;
                 }
@@ -1072,11 +1262,16 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
             }
             root = Some(dir.canonicalize().map_err(|e| e.to_string())?);
             wire.borrow_mut().protocol_version = Some(requested_protocol);
+            wire.borrow_mut().human_secret_input_supported = host_supports_masked_secret_input(
+                requested_protocol,
+                p["requiredCapabilities"].as_array().map(Vec::as_slice),
+            );
             reply(
                 &id,
                 json!({"protocolVersion":requested_protocol,"runtime":{"name":"glass-core","version":env!("CARGO_PKG_VERSION")},
                 "capabilities":{"durable":true,"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
                     "mixedTools":requested_protocol >= 2,
+                    "maskedSecretInput":wire.borrow().human_secret_input_supported,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
                     "hostInteractions":"host tools provide workspace capabilities and structured questions; Glass does not re-decide Core tool permissions","concurrentTurns":false,
                     "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true},
@@ -1590,6 +1785,15 @@ fn run(
                 _=>{},
             }
         });
+    if wire.borrow().human_secret_input_supported {
+        let io = wire.clone();
+        let session = sid.clone();
+        let turn = turn.clone();
+        agent = agent.with_human(move |request| {
+            io.borrow_mut()
+                .request_secret_input(request, &session, &turn)
+        });
+    }
     if let Some(tools) = &c.tools {
         let io = wire.clone();
         let status = statuses.clone();
@@ -1973,6 +2177,138 @@ fn completion(
 mod tests {
     use super::*;
 
+    fn wire_for_human_input() -> Wire {
+        let (_tx, rx) = mpsc::sync_channel(1);
+        Wire {
+            rx,
+            pending: VecDeque::new(),
+            disconnected: false,
+            steer: None,
+            steer_records: Vec::new(),
+            image_enabled: true,
+            completing: false,
+            cancel_grace_ms: 250,
+            durable: None,
+            durable_task: None,
+            protocol_version: Some(2),
+            human_secret_input_supported: true,
+            human_input_counter: 1,
+            pending_human_input: Some(PendingHumanInput {
+                request_id: "human-1".into(),
+                session_id: "session-1".into(),
+                turn_id: json!("turn-1"),
+                response: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn human_input_response_requires_live_id_and_turn_and_scrubs_secret_fields() {
+        let sentinel = "core-wire-secret-sentinel";
+        let mut wire = wire_for_human_input();
+        let mut valid = json!({
+            "jsonrpc":"2.0",
+            "id":"human-1",
+            "result":{"status":"answered","secret":sentinel},
+            "params":{"secret":"unexpected-duplicate"}
+        });
+        assert!(wire.consume_human_input_response(&mut valid, "session-1", &json!("turn-1")));
+        assert!(valid["result"].is_null());
+        assert!(valid["params"]["secret"].is_null());
+        let response = wire
+            .pending_human_input
+            .as_mut()
+            .unwrap()
+            .response
+            .take()
+            .unwrap()
+            .unwrap();
+        match response {
+            HumanSecretAnswer::Provided(secret) => assert_eq!(secret.as_str(), sentinel),
+            HumanSecretAnswer::Cancelled => panic!("answered response became cancelled"),
+        }
+
+        let mut cancelled_wire = wire_for_human_input();
+        let mut cancelled = json!({
+            "id":"human-1",
+            "result":{"status":"cancelled","secret":sentinel}
+        });
+        assert!(cancelled_wire.consume_human_input_response(
+            &mut cancelled,
+            "session-1",
+            &json!("turn-1")
+        ));
+        assert!(cancelled["result"].is_null());
+        assert!(matches!(
+            cancelled_wire
+                .pending_human_input
+                .as_ref()
+                .unwrap()
+                .response
+                .as_ref(),
+            Some(Ok(HumanSecretAnswer::Cancelled))
+        ));
+
+        let mut stale_id_wire = wire_for_human_input();
+        let mut stale_id = json!({
+            "id":"human-old",
+            "result":{"status":"answered","secret":sentinel},
+            "params":{"secret":sentinel}
+        });
+        assert!(!stale_id_wire.consume_human_input_response(
+            &mut stale_id,
+            "session-1",
+            &json!("turn-1")
+        ));
+        assert!(stale_id["result"]["secret"].is_null());
+        assert!(stale_id["params"]["secret"].is_null());
+        assert!(
+            stale_id_wire
+                .pending_human_input
+                .as_ref()
+                .unwrap()
+                .response
+                .is_none()
+        );
+
+        let mut stale_scope_wire = wire_for_human_input();
+        let mut stale_scope = json!({
+            "id":"human-1",
+            "result":{"status":"answered","secret":sentinel}
+        });
+        assert!(stale_scope_wire.consume_human_input_response(
+            &mut stale_scope,
+            "other-session",
+            &json!("turn-old")
+        ));
+        assert!(stale_scope["result"].is_null());
+        assert!(matches!(
+            stale_scope_wire
+                .pending_human_input
+                .as_ref()
+                .unwrap()
+                .response
+                .as_ref(),
+            Some(Err(_))
+        ));
+    }
+
+    #[test]
+    fn masked_secret_input_is_available_only_when_explicitly_negotiated() {
+        let mixed = vec![json!("mixedTools")];
+        let mixed_and_secret = vec![json!("mixedTools"), json!("maskedSecretInput")];
+        assert!(!host_supports_masked_secret_input(
+            1,
+            Some(&mixed_and_secret)
+        ));
+        assert!(!host_supports_masked_secret_input(2, Some(&mixed)));
+        assert!(host_supports_masked_secret_input(
+            2,
+            Some(&mixed_and_secret)
+        ));
+        assert!(!host_supports_masked_secret_input(2, None));
+    }
+
     #[test]
     fn session_turn_index_rejects_wrapping_u64_values() {
         let beyond_32_bit = (u32::MAX as u64) + 1;
@@ -2203,6 +2539,9 @@ mod tests {
             durable: None,
             durable_task: None,
             protocol_version: None,
+            human_secret_input_supported: false,
+            human_input_counter: 0,
+            pending_human_input: None,
         };
 
         assert!(matches!(
@@ -2244,6 +2583,9 @@ mod tests {
             durable: None,
             durable_task: None,
             protocol_version: Some(2),
+            human_secret_input_supported: false,
+            human_input_counter: 0,
+            pending_human_input: None,
         };
 
         let result = wire.tool(

@@ -578,6 +578,10 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
             render_quit_confirmation(frame, state, area);
             return;
         }
+        Some(ActiveOverlay::SecretPrompt) => {
+            render_secret_prompt(frame, state, area);
+            return;
+        }
         Some(ActiveOverlay::SendAttemptRetryConfirmation) => {
             render_send_attempt_retry_confirmation(frame, state, area);
             return;
@@ -648,6 +652,50 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         Some(ActiveOverlay::AttentionInbox) => render_attention_inbox(frame, state, area),
         _ => {}
     }
+}
+
+fn render_secret_prompt(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.min(76);
+    let height = area.height.min(12);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let Some((_, request)) = state.pending_secret_prompt_metadata() else {
+        return;
+    };
+    frame.render_widget(Clear, modal);
+    let body = vec![
+        Line::from(Span::styled(
+            "Core requests a scoped secret",
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("Purpose: {}", request.purpose)),
+        Line::from(format!("Destination: {}", request.destination)),
+        Line::from(format!(
+            "Consumer: {} · {}",
+            request.tool, request.operation
+        )),
+        Line::from(
+            "When submitted, the HTTPS tool sends this value to the displayed destination for this operation. It stays masked in this prompt.",
+        ),
+        Line::from(format!("Secret: {}", state.secret_prompt_input())),
+        Line::from("Enter submits · Escape declines · value expires automatically"),
+    ];
+    frame.render_widget(
+        Paragraph::new(body)
+            .block(
+                Block::default()
+                    .title(" Secret input ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded),
+            )
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .wrap(Wrap { trim: true }),
+        modal,
+    );
 }
 
 fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -5764,6 +5812,59 @@ mod tests {
         assert!(screen.contains("ssh -L 3000"));
         assert!(screen.contains("<user>@<host>"));
         assert!(screen.contains("Browser actions"));
+    }
+
+    #[test]
+    fn resident_secret_prompt_masks_input_and_keeps_it_out_of_chat_state() {
+        let mut state = state(TuiLayout::Desktop);
+        let agent_id = crate::AgentId::parse("agent-secret-prompt-test").unwrap();
+        let request = crate::resident_harness::ResidentSecretInputRequest {
+            request_id: "human-1".into(),
+            session_id: "session-1".into(),
+            turn_id: "turn-1".into(),
+            purpose: "Sign in to the test service".into(),
+            destination: "https://example.test".into(),
+            tool: "web_secret_request".into(),
+            operation: "create a read-only token".into(),
+            expires_at_ms: u128::MAX,
+            max_bytes: 4096,
+        };
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot {
+            pending_secret_inputs: vec![(agent_id, request)],
+            ..Default::default()
+        });
+        let sentinel = "private-value-73";
+        state.secret_prompt_insert(sentinel);
+        assert_eq!(
+            state.secret_prompt_input(),
+            "•".repeat(sentinel.chars().count())
+        );
+        assert_eq!(
+            super::super::overlay::active_overlay(&state),
+            Some(ActiveOverlay::SecretPrompt)
+        );
+        let screen = rendered(&state, 100, 30);
+        assert!(screen.contains("https://example.test"));
+        assert!(screen.contains("HTTPS tool sends this value"));
+        assert!(screen.contains("••••••••••••••••"));
+        assert!(!screen.contains(sentinel));
+        assert!(state.composer_input.is_empty());
+        assert!(state.composer_history.is_empty());
+        assert!(state.conversation_items.is_empty());
+
+        state.secret_prompt_insert("   ");
+        state.secret_prompt_submit();
+        assert!(
+            state.secret_prompt_active(),
+            "whitespace-only input stays editable"
+        );
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+        assert!(
+            !state.secret_prompt_active(),
+            "Core cancellation clears the prompt"
+        );
+        assert!(state.composer_input.is_empty());
+        drop(state);
     }
 
     fn overlay_state() -> (DevTuiState, std::path::PathBuf) {

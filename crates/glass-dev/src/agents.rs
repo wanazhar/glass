@@ -233,6 +233,10 @@ enum WorkerCommand {
         request: ResidentSessionRequest,
         started: Option<SyncSender<Result<String, String>>>,
     },
+    HumanInputAnswer {
+        request: crate::resident_harness::ResidentSecretInputRequest,
+        answer: crate::resident_harness::ResidentSecretInputAnswer,
+    },
     Shutdown,
 }
 
@@ -242,6 +246,8 @@ enum WorkerEvent {
     RequestStarted(AgentId, String, bool, Option<String>),
     RequestFailed(AgentId, String, String),
     Engine(AgentId, Value),
+    HumanInputRequest(AgentId, crate::resident_harness::ResidentSecretInputRequest),
+    HumanInputCancelled(AgentId, String),
     Failed(AgentId, String),
     Stopped(AgentId),
 }
@@ -257,6 +263,7 @@ struct AgentRecord {
     run_id: String,
     resume_session_id: Option<String>,
     recovering: bool,
+    pending_secret_input: Option<crate::resident_harness::ResidentSecretInputRequest>,
 }
 
 struct WorkerRuntime {
@@ -408,6 +415,7 @@ impl AgentRegistry {
                     run_id: run.run_id.clone(),
                     resume_session_id: None,
                     recovering: false,
+                    pending_secret_input: None,
                 },
             );
         }
@@ -564,6 +572,7 @@ impl AgentRegistry {
                 run_id,
                 resume_session_id: None,
                 recovering: false,
+                pending_secret_input: None,
             },
         );
         if status == AgentStatus::Starting {
@@ -608,6 +617,89 @@ impl AgentRegistry {
             .get(id)
             .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
         Ok(record.snapshot.clone())
+    }
+
+    /// Process-local pending secret prompts for the resident TUI only.
+    pub(crate) fn pending_secret_inputs(
+        &mut self,
+    ) -> DevelopmentResult<Vec<(AgentId, crate::resident_harness::ResidentSecretInputRequest)>>
+    {
+        self.refresh()?;
+        let now = now_ms();
+        let expired = self
+            .records
+            .iter()
+            .filter_map(|(id, record)| {
+                record
+                    .pending_secret_input
+                    .as_ref()
+                    .filter(|request| request.expires_at_ms <= now)
+                    .map(|request| (id.clone(), request.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (id, request) in expired {
+            let _ = self.answer_secret_input(
+                &id,
+                &request.request_id,
+                crate::resident_harness::ResidentSecretInputAnswer::Declined,
+            );
+        }
+        Ok(self
+            .records
+            .iter()
+            .filter_map(|(id, record)| {
+                record
+                    .pending_secret_input
+                    .clone()
+                    .map(|request| (id.clone(), request))
+            })
+            .collect())
+    }
+
+    pub(crate) fn answer_secret_input(
+        &mut self,
+        id: &AgentId,
+        request_id: &str,
+        answer: crate::resident_harness::ResidentSecretInputAnswer,
+    ) -> DevelopmentResult<()> {
+        self.refresh()?;
+        let record = self.record_mut(id)?;
+        let request = record
+            .pending_secret_input
+            .as_ref()
+            .filter(|request| request.request_id == request_id)
+            .cloned()
+            .ok_or_else(|| {
+                DevelopmentError::Conflict("secret request is stale or no longer active".into())
+            })?;
+        if request.expires_at_ms <= now_ms() {
+            if let crate::resident_harness::ResidentSecretInputAnswer::Provided(secret) = answer {
+                drop(secret);
+            }
+            if let Some(sender) = record.command.as_ref() {
+                let _ = sender.try_send(WorkerCommand::HumanInputAnswer {
+                    request: request.clone(),
+                    answer: crate::resident_harness::ResidentSecretInputAnswer::Declined,
+                });
+            }
+            record.pending_secret_input = None;
+            return Err(DevelopmentError::Conflict(
+                "secret request has expired".into(),
+            ));
+        }
+        let sender = record.command.as_ref().ok_or_else(|| {
+            DevelopmentError::Process("resident worker is no longer connected".into())
+        })?;
+        sender
+            .try_send(WorkerCommand::HumanInputAnswer {
+                request: request.clone(),
+                answer,
+            })
+            .map_err(|_| {
+                DevelopmentError::Conflict("resident secret-input channel is unavailable".into())
+            })?;
+        record.pending_secret_input = None;
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1525,6 +1617,7 @@ impl AgentRegistry {
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
                 {
+                    record.pending_secret_input = None;
                     record.snapshot.last_response_id = Some(request_id.clone());
                     record.snapshot.status = AgentStatus::Working;
                     record.awaiting_agent_settle |= waits_for_agent;
@@ -1539,6 +1632,24 @@ impl AgentRegistry {
                     "requestFailed",
                     serde_json::json!({"attemptId":attempt_id,"error":error}),
                 );
+            }
+            WorkerEvent::HumanInputRequest(id, request) => {
+                if let Some(record) = self.records.get_mut(&id)
+                    && record.snapshot.status == AgentStatus::Working
+                    && request.expires_at_ms > now_ms()
+                {
+                    record.pending_secret_input = Some(request);
+                }
+            }
+            WorkerEvent::HumanInputCancelled(id, request_id) => {
+                if let Some(record) = self.records.get_mut(&id)
+                    && record
+                        .pending_secret_input
+                        .as_ref()
+                        .is_some_and(|request| request.request_id == request_id)
+                {
+                    record.pending_secret_input = None;
+                }
             }
             WorkerEvent::Engine(id, value) => {
                 let event_type = value.get("type").and_then(Value::as_str);
@@ -1612,9 +1723,11 @@ impl AgentRegistry {
                     if event_type == Some("agent_settled") && !record.snapshot.status.terminal() {
                         record.awaiting_agent_settle = false;
                         record.snapshot.status = AgentStatus::Idle;
+                        record.pending_secret_input = None;
                     }
                     if failed_turn_response && !record.snapshot.status.terminal() {
                         record.awaiting_agent_settle = false;
+                        record.pending_secret_input = None;
                     }
                     if event_type == Some("response")
                         && !record.awaiting_agent_settle
@@ -1655,6 +1768,7 @@ impl AgentRegistry {
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
                 {
+                    record.pending_secret_input = None;
                     record.snapshot.status = if record.recovering {
                         AgentStatus::RecoveryPending
                     } else {
@@ -1669,6 +1783,7 @@ impl AgentRegistry {
             WorkerEvent::Stopped(id) => {
                 if let Some(record) = self.records.get_mut(&id) {
                     record.command = None;
+                    record.pending_secret_input = None;
                 }
                 self.record_event(&id, "stopped", Value::Null);
             }
@@ -2195,7 +2310,15 @@ fn run_worker(
                         }
                     }
                 }
+                Ok(WorkerCommand::HumanInputAnswer { request, answer }) => {
+                    if let Err(error) = harness.answer_secret_input(&request, answer) {
+                        tracing::debug!(agent_id = %id.as_str(), %error, "could not deliver the masked secret answer");
+                    }
+                }
                 Ok(WorkerCommand::Shutdown) | Err(TryRecvError::Disconnected) => {
+                    if let Err(error) = harness.cancel_pending_secret_inputs() {
+                        tracing::debug!(agent_id = %id.as_str(), %error, "could not cancel pending secret input during shutdown");
+                    }
                     send_critical_worker_event(&events, WorkerEvent::Stopped(id));
                     return;
                 }
@@ -2203,11 +2326,33 @@ fn run_worker(
             }
         }
         match harness.recv_event_timeout(Duration::from_millis(25)) {
-            Ok(Some(value)) => send_engine_worker_event(
-                &events,
-                WorkerEvent::Engine(id.clone(), value),
-                &dropped_events,
-            ),
+            Ok(Some(value)) => match value.get("type").and_then(Value::as_str) {
+                Some("human_input_request") => {
+                    if let Ok(request) = serde_json::from_value::<
+                        crate::resident_harness::ResidentSecretInputRequest,
+                    >(
+                        value.get("request").cloned().unwrap_or(Value::Null)
+                    ) {
+                        send_critical_worker_event(
+                            &events,
+                            WorkerEvent::HumanInputRequest(id.clone(), request),
+                        );
+                    }
+                }
+                Some("human_input_cancelled") => {
+                    if let Some(request_id) = value.get("requestId").and_then(Value::as_str) {
+                        send_critical_worker_event(
+                            &events,
+                            WorkerEvent::HumanInputCancelled(id.clone(), request_id.to_owned()),
+                        );
+                    }
+                }
+                _ => send_engine_worker_event(
+                    &events,
+                    WorkerEvent::Engine(id.clone(), value),
+                    &dropped_events,
+                ),
+            },
             Ok(None) => {}
             Err(error) => {
                 send_critical_worker_event(&events, WorkerEvent::Failed(id, error.to_string()));
@@ -2939,8 +3084,91 @@ mod tests {
                 run_id,
                 resume_session_id: None,
                 recovering: false,
+                pending_secret_input: None,
             },
         );
+    }
+
+    #[test]
+    fn secret_input_pending_metadata_is_process_local_and_not_history_evidence() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-transient-secret-test").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let (answered_tx, answered_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                match command {
+                    WorkerCommand::HumanInputAnswer { request, answer } => {
+                        let declined = matches!(
+                            answer,
+                            crate::resident_harness::ResidentSecretInputAnswer::Declined
+                        );
+                        answered_tx.send((request.request_id, declined)).unwrap();
+                    }
+                    WorkerCommand::Shutdown => break,
+                    _ => {}
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        let request = crate::resident_harness::ResidentSecretInputRequest {
+            request_id: "human-77".into(),
+            session_id: "fixture-session".into(),
+            turn_id: "turn-3".into(),
+            purpose: "Sign in".into(),
+            destination: "https://example.test".into(),
+            tool: "web_secret_request".into(),
+            operation: "create token".into(),
+            expires_at_ms: now_ms() + 60_000,
+            max_bytes: 4096,
+        };
+        registry
+            .apply_worker_event(WorkerEvent::HumanInputRequest(id.clone(), request.clone()))
+            .unwrap();
+        assert!(registry.history(0).unwrap().is_empty());
+        let visible = registry.pending_secret_inputs().unwrap();
+        assert_eq!(visible, vec![(id.clone(), request.clone())]);
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("human-77")
+        );
+        let persisted = serde_json::to_string(&registry.thread_store.list().unwrap()).unwrap();
+        assert!(!persisted.contains("human-77"));
+        registry
+            .answer_secret_input(
+                &id,
+                "human-77",
+                crate::resident_harness::ResidentSecretInputAnswer::Declined,
+            )
+            .unwrap();
+        assert_eq!(
+            answered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ("human-77".into(), true)
+        );
+        assert!(registry.pending_secret_inputs().unwrap().is_empty());
+        let cancelled_request = crate::resident_harness::ResidentSecretInputRequest {
+            request_id: "human-78".into(),
+            ..request
+        };
+        registry
+            .apply_worker_event(WorkerEvent::HumanInputRequest(
+                id.clone(),
+                cancelled_request,
+            ))
+            .unwrap();
+        registry
+            .apply_worker_event(WorkerEvent::HumanInputCancelled(
+                id.clone(),
+                "human-78".into(),
+            ))
+            .unwrap();
+        assert!(registry.pending_secret_inputs().unwrap().is_empty());
+        assert!(registry.history(0).unwrap().is_empty());
+        drop(registry);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3028,6 +3256,7 @@ mod tests {
                             .unwrap();
                         return;
                     }
+                    WorkerCommand::HumanInputAnswer { .. } => {}
                 }
             }
         });

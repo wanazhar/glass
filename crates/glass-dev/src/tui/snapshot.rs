@@ -132,6 +132,11 @@ pub struct DisplaySnapshot {
     /// Highest agent event sequence folded into the conversation projection.
     pub conversation_cursor: u64,
     pub agents: String,
+    /// Transient Core secret prompts; never part of AgentSnapshot or storage.
+    pub pending_secret_inputs: Vec<(
+        crate::AgentId,
+        crate::resident_harness::ResidentSecretInputRequest,
+    )>,
     /// Typed lifecycle state for each resident agent; the TUI uses this to
     /// replace optimistic "thinking" copy when a turn actually settles.
     pub agent_states: Vec<(crate::AgentId, crate::AgentStatus)>,
@@ -873,6 +878,7 @@ fn compute_snapshot(
         .unwrap_or_default();
     snapshot.harnesses = crate::harness::summary();
     let agent_snapshots = locked.agents().list();
+    snapshot.pending_secret_inputs = locked.agents().pending_secret_inputs().unwrap_or_default();
     let task_snapshots = locked.tasks();
     let picker_tasks = task_snapshots
         .as_ref()

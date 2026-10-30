@@ -29,6 +29,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use zeroize::{Zeroize, Zeroizing};
 
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
@@ -1684,6 +1685,7 @@ pub struct DevTuiState {
     pub help_scroll: u16,
     /// Explicit Core-owned human UI output, kept out of the chat transcript.
     pub native_gc_ui_panel: Option<NativeGcUiPanel>,
+    secret_prompt: Option<PendingSecretPrompt>,
     native_gc_ui_last_sequence: std::collections::BTreeMap<crate::AgentId, u64>,
     pub composer_mode: bool,
     pub pending_plan: Option<WorkspacePlan>,
@@ -1953,6 +1955,12 @@ pub struct DevTuiState {
     pending_fim: Option<PendingFim>,
 }
 
+struct PendingSecretPrompt {
+    agent_id: crate::AgentId,
+    request: crate::resident_harness::ResidentSecretInputRequest,
+    input: Zeroizing<Vec<u8>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BrowserVisualRequest {
     pub(crate) live: bool,
@@ -1975,6 +1983,163 @@ impl DevTuiState {
     /// Lock the shared workspace for mutation, mapping errors to strings.
     pub fn ws_mut(&self) -> Result<std::sync::MutexGuard<'_, crate::DevelopmentWorkspace>, String> {
         self.workspace.try_lock().map_err(|error| error.to_string())
+    }
+
+    fn sync_secret_prompt(
+        &mut self,
+        pending: &[(
+            crate::AgentId,
+            crate::resident_harness::ResidentSecretInputRequest,
+        )],
+    ) {
+        if let Some(prompt) = &self.secret_prompt
+            && pending
+                .iter()
+                .any(|(agent, request)| agent == &prompt.agent_id && request == &prompt.request)
+        {
+            return;
+        }
+        self.secret_prompt = pending
+            .first()
+            .map(|(agent_id, request)| PendingSecretPrompt {
+                agent_id: agent_id.clone(),
+                request: request.clone(),
+                input: Zeroizing::new(Vec::with_capacity(request.max_bytes)),
+            });
+    }
+
+    pub(super) fn secret_prompt_active(&self) -> bool {
+        self.secret_prompt.is_some()
+    }
+
+    pub(super) fn pending_secret_prompt_metadata(
+        &self,
+    ) -> Option<(
+        &crate::AgentId,
+        &crate::resident_harness::ResidentSecretInputRequest,
+    )> {
+        self.secret_prompt
+            .as_ref()
+            .map(|prompt| (&prompt.agent_id, &prompt.request))
+    }
+
+    pub(super) fn secret_prompt_input(&self) -> String {
+        let Some(prompt) = self.secret_prompt.as_ref() else {
+            return String::new();
+        };
+        let Ok(text) = std::str::from_utf8(&prompt.input) else {
+            return String::new();
+        };
+        "•".repeat(text.chars().count().min(128))
+    }
+
+    pub(super) fn secret_prompt_insert(&mut self, text: &str) {
+        let Some(prompt) = self.secret_prompt.as_mut() else {
+            return;
+        };
+        for character in text.chars().filter(|character| !character.is_control()) {
+            Self::push_secret_character(prompt, character);
+        }
+    }
+
+    pub(super) fn secret_prompt_insert_char(&mut self, character: char) {
+        let Some(prompt) = self.secret_prompt.as_mut() else {
+            return;
+        };
+        if !character.is_control() {
+            Self::push_secret_character(prompt, character);
+        }
+    }
+
+    fn push_secret_character(prompt: &mut PendingSecretPrompt, character: char) {
+        let mut encoded = [0_u8; 4];
+        let bytes = character.encode_utf8(&mut encoded).as_bytes();
+        if prompt.input.len().saturating_add(bytes.len()) <= prompt.request.max_bytes {
+            prompt.input.extend_from_slice(bytes);
+        }
+        encoded.zeroize();
+    }
+
+    pub(super) fn secret_prompt_backspace(&mut self) {
+        let Some(prompt) = self.secret_prompt.as_mut() else {
+            return;
+        };
+        let mut length = prompt.input.len();
+        while length > 0 && prompt.input[length - 1] & 0b1100_0000 == 0b1000_0000 {
+            length -= 1;
+        }
+        if length > 0 {
+            length -= 1;
+            prompt.input[length..].zeroize();
+            prompt.input.truncate(length);
+        }
+    }
+
+    pub(super) fn secret_prompt_submit(&mut self) {
+        let Some(mut prompt) = self.secret_prompt.take() else {
+            return;
+        };
+        if prompt.input.is_empty()
+            || std::str::from_utf8(&prompt.input).is_ok_and(|text| text.trim().is_empty())
+        {
+            self.secret_prompt = Some(prompt);
+            self.status = "Enter a value or press Escape to decline".into();
+            return;
+        }
+        let bytes = std::mem::take(&mut *prompt.input);
+        let secret = match String::from_utf8(bytes) {
+            Ok(secret) => Zeroizing::new(secret),
+            Err(error) => {
+                let mut bytes = Zeroizing::new(error.into_bytes());
+                bytes.zeroize();
+                self.status = "Secret entry could not be read; request will expire".into();
+                return;
+            }
+        };
+        let answer = crate::resident_harness::ResidentSecretInputAnswer::Provided(secret);
+        match self.workspace.try_lock() {
+            Ok(mut workspace) => match workspace.agents().answer_secret_input(
+                &prompt.agent_id,
+                &prompt.request.request_id,
+                answer,
+            ) {
+                Ok(()) => self.status = "Secret response submitted to this session".into(),
+                Err(_) => {
+                    self.secret_prompt = Some(prompt);
+                    self.status =
+                        "Secret request could not be reached; re-enter if it is still active"
+                            .into();
+                }
+            },
+            Err(_) => {
+                self.secret_prompt = Some(prompt);
+                self.status =
+                    "Workspace is busy; re-enter the value when the prompt returns".into();
+            }
+        }
+    }
+
+    pub(super) fn secret_prompt_decline(&mut self) {
+        let Some(prompt) = self.secret_prompt.take() else {
+            return;
+        };
+        match self.workspace.try_lock() {
+            Ok(mut workspace) => match workspace.agents().answer_secret_input(
+                &prompt.agent_id,
+                &prompt.request.request_id,
+                crate::resident_harness::ResidentSecretInputAnswer::Declined,
+            ) {
+                Ok(()) => self.status = "Secret request declined".into(),
+                Err(_) => {
+                    self.secret_prompt = Some(prompt);
+                    self.status = "Secret request could not be reached; try Escape again".into();
+                }
+            },
+            Err(_) => {
+                self.secret_prompt = Some(prompt);
+                self.status = "Workspace is busy; try Escape again".into();
+            }
+        }
     }
 
     /// Lock the workspace for mutation inside UI callbacks; reports lock
@@ -2084,6 +2249,7 @@ impl DevTuiState {
             help_open: false,
             help_scroll: 0,
             native_gc_ui_panel: None,
+            secret_prompt: None,
             native_gc_ui_last_sequence: std::collections::BTreeMap::new(),
             // Agent is the landing workspace and its composer is immediately
             // ready for text, including digits and slash commands.
@@ -12598,6 +12764,7 @@ impl DevTuiState {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        self.sync_secret_prompt(&snapshot.pending_secret_inputs);
         self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
         self.project_native_gc_ui_outputs(snapshot, was_waiting_for_snapshot);

@@ -20,7 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Protocol version Glass Dev speaks to `glass-core runtime`.
 pub const GLASS_CORE_PROTOCOL_VERSION: u64 = 2;
@@ -30,6 +31,8 @@ const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const TOOL_RESULT_BYTES: usize = 512 * 1024;
 const EVENT_CAPACITY: usize = 256;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+const SECRET_INPUT_MAX_BYTES: usize = 4096;
+const SECRET_INPUT_MAX_TTL: Duration = Duration::from_secs(120);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const BROWSER_TOOL_SETTLEMENT_GRACE: Duration = Duration::from_secs(10);
 /// Environment override for the `glass-core` executable.
@@ -232,6 +235,7 @@ pub(crate) struct GlassCoreRuntime {
     startup_events: Vec<Value>,
     pending_operations: HashMap<String, String>,
     pending_command_names: HashMap<String, String>,
+    pending_secret_inputs: HashMap<String, crate::resident_harness::ResidentSecretInputRequest>,
     active_turn: Option<Value>,
 }
 
@@ -403,6 +407,7 @@ impl GlassCoreRuntime {
             startup_events: Vec::new(),
             pending_operations: HashMap::new(),
             pending_command_names: HashMap::new(),
+            pending_secret_inputs: HashMap::new(),
             active_turn: None,
         };
         runtime.initialize()?;
@@ -423,7 +428,7 @@ impl GlassCoreRuntime {
             "initialize",
             json!({
                 "protocolVersion": GLASS_CORE_PROTOCOL_VERSION,
-                "requiredCapabilities": ["mixedTools"],
+                "requiredCapabilities": ["mixedTools", "maskedSecretInput"],
                 "storageDir": self.storage_dir,
             }),
         )?;
@@ -444,6 +449,15 @@ impl GlassCoreRuntime {
         {
             return Err(DevelopmentError::Process(
                 "Glass Core runtime does not advertise mixed Core/Glass tool ownership (protocol v2 required)".into(),
+            ));
+        }
+        if !result
+            .pointer("/capabilities/maskedSecretInput")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Err(DevelopmentError::Process(
+                "Glass Core runtime does not support the masked secret input channel".into(),
             ));
         }
         Ok(())
@@ -791,6 +805,24 @@ impl GlassCoreRuntime {
 
     fn handle_frame(&mut self, value: Value) -> DevelopmentResult<()> {
         match value.get("method").and_then(Value::as_str) {
+            Some("human/input/request") => self.handle_secret_input_request(value),
+            Some("human/input/cancel") => {
+                let params = value.get("params").cloned().unwrap_or(Value::Null);
+                let session = params.get("sessionId").and_then(Value::as_str);
+                let request_id = params.get("requestId").and_then(Value::as_str);
+                if session != Some(self.session_id.as_str()) {
+                    return Ok(());
+                }
+                if let Some(request_id) = request_id
+                    && self.pending_secret_inputs.remove(request_id).is_some()
+                {
+                    self.host_events.push_back(json!({
+                        "type":"human_input_cancelled",
+                        "requestId":request_id,
+                    }));
+                }
+                Ok(())
+            }
             Some("tool/execute") => {
                 let class = core_frame_class(&value);
                 let tracing_enabled = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some();
@@ -963,6 +995,174 @@ impl GlassCoreRuntime {
             "id": id,
             "result": {"text": text, "isError": is_error},
         }))
+    }
+
+    fn handle_secret_input_request(&mut self, value: Value) -> DevelopmentResult<()> {
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_runtime_id(id))
+            .ok_or_else(|| {
+                DevelopmentError::Serialization("invalid human input request id".into())
+            })?
+            .to_owned();
+        let params = value.get("params").cloned().unwrap_or(Value::Null);
+        match parse_secret_input_request(&id, &params, &self.session_id) {
+            Ok(_) if self.pending_secret_inputs.contains_key(&id) => {
+                self.send_frame(&json!({
+                    "jsonrpc":"2.0",
+                    "id":id,
+                    "error":{"code":-32600,"message":"human input request id is already active"}
+                }))?;
+                Ok(())
+            }
+            Ok(request) => {
+                self.pending_secret_inputs.insert(id, request.clone());
+                self.host_events.push_back(json!({
+                    "type":"human_input_request",
+                    "request":request,
+                }));
+                Ok(())
+            }
+            Err(message) => {
+                self.send_frame(&json!({
+                    "jsonrpc":"2.0",
+                    "id":id,
+                    "error":{"code":-32602,"message":message}
+                }))?;
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn answer_secret_input(
+        &mut self,
+        request: &crate::resident_harness::ResidentSecretInputRequest,
+        answer: crate::resident_harness::ResidentSecretInputAnswer,
+    ) -> DevelopmentResult<()> {
+        let Some(pending) = self.pending_secret_inputs.get(&request.request_id) else {
+            return Err(DevelopmentError::Conflict(
+                "secret request is no longer active".into(),
+            ));
+        };
+        if pending != request || request.session_id != self.session_id {
+            return Err(DevelopmentError::Conflict(
+                "secret request does not match the active Core session".into(),
+            ));
+        }
+        if request.expires_at_ms <= unix_time_ms() {
+            self.pending_secret_inputs.remove(&request.request_id);
+            if matches!(
+                &answer,
+                crate::resident_harness::ResidentSecretInputAnswer::Provided(_)
+            ) {
+                self.send_frame(&json!({
+                    "jsonrpc":"2.0",
+                    "id":request.request_id,
+                    "result":{"status":"cancelled"}
+                }))?;
+                return Err(DevelopmentError::Conflict(
+                    "secret request expired before the answer was sent".into(),
+                ));
+            }
+            self.send_frame(&json!({
+                "jsonrpc":"2.0",
+                "id":request.request_id,
+                "result":{"status":"cancelled"}
+            }))?;
+            return Ok(());
+        }
+        match answer {
+            crate::resident_harness::ResidentSecretInputAnswer::Provided(secret) => {
+                if secret.trim().is_empty()
+                    || secret.len() > request.max_bytes
+                    || secret.chars().any(char::is_control)
+                {
+                    return Err(DevelopmentError::InvalidInput(
+                        "secret entry is empty or exceeds the supported size".into(),
+                    ));
+                }
+                self.send_sensitive_secret_response(&request.request_id, secret)?;
+            }
+            crate::resident_harness::ResidentSecretInputAnswer::Declined => {
+                self.send_frame(&json!({
+                    "jsonrpc":"2.0",
+                    "id":request.request_id,
+                    "result":{"status":"cancelled"}
+                }))?;
+            }
+        }
+        self.pending_secret_inputs.remove(&request.request_id);
+        Ok(())
+    }
+
+    pub(crate) fn cancel_pending_secret_inputs(&mut self) -> DevelopmentResult<()> {
+        let requests = self
+            .pending_secret_inputs
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for request in requests {
+            self.answer_secret_input(
+                &request,
+                crate::resident_harness::ResidentSecretInputAnswer::Declined,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn send_sensitive_secret_response(
+        &mut self,
+        request_id: &str,
+        secret: Zeroizing<String>,
+    ) -> DevelopmentResult<()> {
+        #[derive(Serialize)]
+        struct SecretResponse<'a> {
+            jsonrpc: &'static str,
+            id: &'a str,
+            result: SecretResult<'a>,
+        }
+        #[derive(Serialize)]
+        struct SecretResult<'a> {
+            status: &'static str,
+            secret: &'a str,
+        }
+        let response = SecretResponse {
+            jsonrpc: "2.0",
+            id: request_id,
+            result: SecretResult {
+                status: "answered",
+                secret: secret.as_str(),
+            },
+        };
+        let mut encoded = Zeroizing::new(
+            serde_json::to_vec(&response)
+                .map_err(|error| DevelopmentError::Serialization(error.to_string()))?,
+        );
+        if encoded.len() + 1 > MAX_FRAME_BYTES {
+            return Err(DevelopmentError::InvalidInput(
+                "secret response exceeds the runtime frame limit".into(),
+            ));
+        }
+        encoded.push(b'\n');
+        let started = Instant::now();
+        self.input
+            .write_all(&encoded)
+            .and_then(|()| self.input.flush())
+            .map_err(|error| {
+                DevelopmentError::Process(format!(
+                    "Glass Core runtime secret response write failed: {error}"
+                ))
+            })?;
+        trace_runtime_frame(
+            "glass_stdin",
+            "secret_response_complete",
+            "human_input_secret_response",
+            encoded.len(),
+            Some(started.elapsed().as_micros()),
+            Some(format!("{:x}", Sha256::digest(request_id.as_bytes()))),
+        );
+        Ok(())
     }
 
     fn send_request(&mut self, method: &str, params: Value) -> DevelopmentResult<String> {
@@ -1566,6 +1766,97 @@ fn frame_id_value(frame_id: &str) -> DevelopmentResult<Value> {
     Ok(serde_json::from_str::<Value>(frame_id).unwrap_or_else(|_| Value::String(frame_id.into())))
 }
 
+fn valid_runtime_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn unix_time_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn parse_secret_input_request(
+    request_id: &str,
+    params: &Value,
+    session_id: &str,
+) -> Result<crate::resident_harness::ResidentSecretInputRequest, String> {
+    let text = |key: &str, max: usize| -> Result<String, String> {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.trim().is_empty()
+                    && value.len() <= max
+                    && !value.chars().any(char::is_control)
+            })
+            .map(str::to_owned)
+            .ok_or_else(|| format!("invalid human input {key}"))
+    };
+    if params.get("sessionId").and_then(Value::as_str) != Some(session_id)
+        || params.get("kind").and_then(Value::as_str) != Some("secret")
+    {
+        return Err("human input request does not match the active Core session".into());
+    }
+    let turn_id = match params.get("turnId") {
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => value.clone(),
+        Some(Value::Number(value)) => value.to_string(),
+        _ => return Err("invalid human input turn id".into()),
+    };
+    let purpose = text("purpose", 512)?;
+    let destination = text("destination", 2048)?;
+    let destination_url = url::Url::parse(&destination)
+        .map_err(|_| "human input destination must be an HTTPS origin".to_owned())?;
+    if destination_url.scheme() != "https"
+        || destination_url.host_str().is_none()
+        || !destination_url.username().is_empty()
+        || destination_url.password().is_some()
+        || destination_url.query().is_some()
+        || destination_url.fragment().is_some()
+        || (!destination_url.path().is_empty() && destination_url.path() != "/")
+        || destination_url.origin().ascii_serialization() != destination
+    {
+        return Err("human input destination must be a canonical HTTPS origin".into());
+    }
+    let tool = text("tool", 128)?;
+    if tool != "web_secret_request" {
+        return Err("human input consumer is not supported".into());
+    }
+    let operation = text("operation", 256)?;
+    let expires_at_ms = params
+        .get("expiresAtMs")
+        .and_then(Value::as_u64)
+        .map(u128::from)
+        .ok_or_else(|| "invalid human input expiry".to_owned())?;
+    let now = unix_time_ms();
+    let latest_expiry = now.saturating_add(SECRET_INPUT_MAX_TTL.as_millis());
+    if expires_at_ms <= now || expires_at_ms > latest_expiry {
+        return Err("human input request is expired or exceeds its lifetime".into());
+    }
+    let max_bytes = params
+        .get("maxBytes")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value == SECRET_INPUT_MAX_BYTES)
+        .ok_or_else(|| "invalid human input size limit".to_owned())?;
+    Ok(crate::resident_harness::ResidentSecretInputRequest {
+        request_id: request_id.to_owned(),
+        session_id: session_id.to_owned(),
+        turn_id,
+        purpose,
+        destination,
+        tool,
+        operation,
+        expires_at_ms,
+        max_bytes,
+    })
+}
+
 fn instructions(options: &CoreRuntimeOptions) -> String {
     let mut text = SYSTEM_INSTRUCTIONS.trim().to_string();
     if let Some(extra) = options
@@ -1582,11 +1873,11 @@ fn instructions(options: &CoreRuntimeOptions) -> String {
 
 fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<Value, String>>) {
     let mut reader = BufReader::new(&mut stream);
-    let mut line = String::new();
+    let mut line = Zeroizing::new(Vec::with_capacity(4096));
     loop {
-        line.clear();
+        line.zeroize();
         let read_started = Instant::now();
-        match reader.read_line(&mut line) {
+        match reader.read_until(b'\n', &mut line) {
             Ok(0) => {
                 let _ = sender.send(Err("Glass Core runtime closed its output stream".into()));
                 return;
@@ -1597,20 +1888,27 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
                 return;
             }
         }
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        if trimmed.is_empty() {
+        let mut frame_len = line.len();
+        if frame_len > 0 && line[frame_len - 1] == b'\n' {
+            frame_len -= 1;
+        }
+        if frame_len > 0 && line[frame_len - 1] == b'\r' {
+            frame_len -= 1;
+        }
+        if frame_len == 0 {
             continue;
         }
-        if trimmed.len() > MAX_FRAME_BYTES {
+        if frame_len > MAX_FRAME_BYTES {
             let _ = sender.send(Err("Glass Core runtime emitted an oversized frame".into()));
             return;
         }
-        let value = serde_json::from_str::<Value>(trimmed).map_err(|error| error.to_string());
+        let value =
+            serde_json::from_slice::<Value>(&line[..frame_len]).map_err(|error| error.to_string());
         let class = value
             .as_ref()
             .map(core_frame_class)
             .unwrap_or("invalid_frame");
-        let bytes = trimmed.len();
+        let bytes = frame_len;
         trace_runtime_frame(
             "glass_reader",
             "frame_read",
@@ -1629,7 +1927,9 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
             None,
             correlation_hash.clone(),
         );
-        if sender.send(value).is_err() {
+        let send_result = sender.send(value);
+        line.zeroize();
+        if send_result.is_err() {
             return;
         }
         trace_runtime_frame(
@@ -2903,6 +3203,64 @@ mod tests {
             .unwrap();
         assert_eq!(settled.pointer("/detail/reason"), Some(&json!("completed")));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn masked_secret_input_round_trips_only_on_the_transient_runtime_channel() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-secret-input-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut runtime = spawn_mode(&root, None, "secret-input").unwrap();
+        runtime
+            .start_request(ResidentSessionRequest::Prompt {
+                text: "request a test credential".into(),
+                context: None,
+            })
+            .unwrap();
+        let request_event = loop {
+            let event = runtime
+                .recv_event_timeout(Duration::from_secs(3))
+                .unwrap()
+                .expect("fixture runtime event");
+            if event["type"] == "human_input_request" {
+                break event;
+            }
+        };
+        let request: crate::resident_harness::ResidentSecretInputRequest =
+            serde_json::from_value(request_event["request"].clone()).unwrap();
+        assert_eq!(request.session_id, runtime.session_id());
+        assert_eq!(request.turn_id, "turn-1");
+        assert_eq!(request.destination, "https://example.test");
+        let sentinel = "offline-secret-sentinel";
+        runtime
+            .answer_secret_input(
+                &request,
+                crate::resident_harness::ResidentSecretInputAnswer::Provided(Zeroizing::new(
+                    sentinel.into(),
+                )),
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .answer_secret_input(
+                    &request,
+                    crate::resident_harness::ResidentSecretInputAnswer::Declined,
+                )
+                .is_err()
+        );
+        let events = drain(&mut runtime, Duration::from_secs(3));
+        assert!(events.iter().any(|event| event["type"] == "agent_settled"));
+        assert!(!format!("{events:?}").contains(sentinel));
+        assert!(!format!("{request_event:?}").contains(sentinel));
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

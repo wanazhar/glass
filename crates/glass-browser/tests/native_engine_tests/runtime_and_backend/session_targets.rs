@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn native_runtime_waits_for_a_loaded_image_with_the_standard_dom_predicate() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_waits_for_a_loaded_image_with_the_standard_dom_predicate_inner(),
+        );
+    });
+}
+
+async fn native_runtime_waits_for_a_loaded_image_with_the_standard_dom_predicate_inner() {
+    let image_data = native_test_png_data_url();
+    let html = format!(
+        "<!doctype html><title>Local image predicate</title><img id='fixture-image' src='{image_data}'>"
+    );
+    let page_url = format!(
+        "data:text/html;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(html.as_bytes())
+    );
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(page_url),
+    )
+    .await
+    .unwrap();
+
+    let predicate = "Array.from(document.images).some(image => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0)";
+    session
+        .native_wait(
+            WaitCondition::JavaScript(predicate.into()),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("a decoded local PNG should satisfy the public journey predicate");
+
+    let diagnostics = session
+        .script(
+            "(() => { const images = Array.from(document.images); const image = images[0]; return { readyState: document.readyState, imageCount: images.length, supportedPredicatePrimitives: typeof Array.from === 'function' && typeof image.complete === 'boolean' && typeof image.naturalWidth === 'number' && typeof image.naturalHeight === 'number', sourceAvailable: Boolean(image && (image.currentSrc || image.getAttribute('src'))), complete: image && image.complete, naturalWidth: image && image.naturalWidth, naturalHeight: image && image.naturalHeight }; })()",
+        )
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(diagnostics["readyState"], "complete");
+    assert_eq!(diagnostics["imageCount"], 1);
+    assert_eq!(diagnostics["supportedPredicatePrimitives"], true);
+    assert_eq!(diagnostics["sourceAvailable"], true);
+    assert_eq!(diagnostics["complete"], true);
+    assert!(diagnostics["naturalWidth"].as_u64().unwrap() > 0);
+    assert!(diagnostics["naturalHeight"].as_u64().unwrap() > 0);
+    session.close().await.unwrap();
+}
+
+#[test]
 fn native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute() {
     run_native_browser_worker_test(|runtime| {
         runtime

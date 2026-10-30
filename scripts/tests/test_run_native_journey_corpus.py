@@ -221,6 +221,11 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         message = "video decoding is not supported by the native backend"
         self.assertEqual(corpus.classify(message), "unsupported")
 
+    def test_unsatisfied_javascript_predicate_is_not_an_engine_failure(self):
+        message = "wait timed out for javascript_predicate"
+        self.assertEqual(corpus.classify(message), "inconclusive")
+        self.assertEqual(corpus.error_kind(message), "javascript_predicate_timeout")
+
     def test_remote_challenge_is_denied(self):
         message = "remote site returned HTTP 403 access denied"
         self.assertEqual(corpus.classify(message), "denied")

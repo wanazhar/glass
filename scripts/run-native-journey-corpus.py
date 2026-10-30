@@ -39,6 +39,8 @@ def journey_outer_timeout_ms(journey: dict) -> int:
 
 def classify(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if "wait timed out for javascript_predicate" in text:
+        return "inconclusive"
     if any(
         marker in text
         for marker in (
@@ -110,6 +112,8 @@ def compile_public_steps(journey: dict) -> list[dict]:
 
 def error_kind(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if "wait timed out for javascript_predicate" in text:
+        return "javascript_predicate_timeout"
     if "native action target was not found" in text:
         return "native_target_not_found"
     if "native action target matched" in text:

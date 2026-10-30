@@ -225,6 +225,11 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         message = "remote site returned HTTP 403 access denied"
         self.assertEqual(corpus.classify(message), "denied")
 
+    def test_remote_rate_limit_is_denied_not_a_product_failure(self):
+        message = "network failure during HTTP document request: server returned HTTP 429"
+        self.assertEqual(corpus.classify(message), "denied")
+        self.assertEqual(corpus.error_kind(message), "remote_rate_limited")
+
     def test_progress_file_preserves_completed_steps_and_identifies_interrupted_step(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "progress.jsonl"

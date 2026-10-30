@@ -57,6 +57,8 @@ def classify(message: str, timed_out: bool = False) -> str:
         return "resource_limit"
     if any(word in text for word in ("unsupported", "not supported", "not implemented")):
         return "unsupported"
+    if "http 429" in text or "429 too many requests" in text or "rate limit" in text:
+        return "denied"
     if any(word in text for word in ("403", "forbidden", "captcha", "challenge", "access denied")):
         return "denied"
     if "native navigation exceeded" in text or "host view" in text or "layout" in text:
@@ -142,6 +144,8 @@ def error_kind(message: str, timed_out: bool = False) -> str:
         return "content_process_deadline"
     if any(word in text for word in ("403", "forbidden", "captcha", "challenge", "access denied")):
         return "remote_access_denied"
+    if "http 429" in text or "429 too many requests" in text or "rate limit" in text:
+        return "remote_rate_limited"
     if any(word in text for word in ("dns", "connection reset", "resource fetch failed", "remote host closed")):
         return "external_network_error"
     if timed_out:

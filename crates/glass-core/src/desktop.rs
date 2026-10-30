@@ -1685,6 +1685,21 @@ mod tests {
         }
     }
 
+    fn has_complete_two_tab_snapshot(complete: bool, tab_names: &[String]) -> bool {
+        complete
+            && tab_names.len() == 2
+            && tab_names
+                .iter()
+                .filter(|name| name.as_str() == "References and Borrowing")
+                .count()
+                == 1
+            && tab_names
+                .iter()
+                .filter(|name| name.as_str() == "The Slice Type")
+                .count()
+                == 1
+    }
+
     fn trace_route_label(tool_name: &str, action: &str) -> String {
         let tool_name = match tool_name {
             "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app" => tool_name,
@@ -2309,7 +2324,33 @@ mod tests {
         assert!(prompt.contains("Control+Shift+Tab"));
         assert!(prompt.contains("Never type a chapter or section URL directly"));
         assert!(prompt.contains("If tabs or address values are not exposed, say so"));
+        assert!(
+            prompt.contains("one fresh observation has `truncated:false`, `queryAmbiguous:false`")
+        );
+        assert!(prompt.contains("exactly one The Slice Type tab"));
         assert!(browser_model_system_prompt().len() < prompt.len());
+    }
+
+    #[test]
+    fn browser_trace_requires_one_complete_unambiguous_two_tab_snapshot() {
+        let expected = vec![
+            "References and Borrowing".to_owned(),
+            "The Slice Type".to_owned(),
+        ];
+        assert!(has_complete_two_tab_snapshot(true, &expected));
+        assert!(!has_complete_two_tab_snapshot(false, &expected));
+        assert!(!has_complete_two_tab_snapshot(
+            true,
+            &["References and Borrowing".to_owned()]
+        ));
+        assert!(!has_complete_two_tab_snapshot(
+            true,
+            &[
+                "References and Borrowing".to_owned(),
+                "The Slice Type".to_owned(),
+                "The Slice Type".to_owned(),
+            ]
+        ));
     }
 
     #[test]
@@ -2802,7 +2843,7 @@ mod tests {
 
 The homepage table of contents starts collapsed. Query `Chromium Toggle Table of Contents label`; click only a fresh result with pointerFallback:true, onscreen:true, queryAmbiguous:false, and truncated:false. Then follow the observed `Understanding Ownership` link and verify its address and heading. Follow the observed `References and Borrowing` link and verify its address and heading. On that References page, observe the exact `The Slice Type` link. If it is onscreen:false, query the currently visible `References and Borrowing` table-of-contents link and use its fresh pointerTarget only when onscreen:true, queryAmbiguous:false, and truncated:false in the same browser window. Use that pointerTarget's normalized x and y in one `desktop_input` scroll action with deltaY 120 so the TOC pane scrolls. Re-query the exact `The Slice Type` link after every scroll; repeat only when the fresh result changes, at most six steps. Do not guess coordinates or reuse a pointerTarget after the UI changes. If no visible in-pane pointerTarget is available, stop and report that. Stop scrolling if the candidate disappears or does not progress. Focus the fresh visible link and press Control+Enter to open it in a second tab without navigating the References tab away.
 
-Switch to the second tab with Control+Tab. Query `Chromium address` and the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and query the address; then Alt+ArrowRight and query it again. Switch to the first tab with Control+Shift+Tab and verify the References and Borrowing address/heading. Query `Chromium tab` and report both tabs only if one fresh observation shows both. If tabs or address values are not exposed, say so and do not infer them. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, tabs, URLs, and steps observed."#
+        Switch to the second tab with Control+Tab. Query `Chromium address` and the `The Slice Type` heading, then follow only the observed `String slices` link. Verify the `#string-slices` address and heading. Use Alt+ArrowLeft and query the address; then Alt+ArrowRight and query it again. Switch to the first tab with Control+Shift+Tab and verify the References and Borrowing address/heading. Query `Chromium tab` and report both tabs only if one fresh observation has `truncated:false`, `queryAmbiguous:false`, and exactly one References and Borrowing tab plus exactly one The Slice Type tab. If tabs or address values are not exposed, say so and do not infer them. Target IDs require sessionId/revision from the same fresh observation; use a fresh focused query after every action. Do not use terminal, shell, filesystem, network, CDP, Playwright, browser automation, or another desktop. Report only pages, tabs, URLs, and steps observed."#
         )
     }
 
@@ -3051,16 +3092,11 @@ Switch to the second tab with Control+Tab. Query `Chromium address` and the `The
                                         observed_url,
                                     );
                                 }
-                                let has_references = current_tabs.iter().any(|tab| {
-                                    tab.to_ascii_lowercase()
-                                        .contains("references and borrowing")
-                                });
-                                let has_slice = current_tabs
-                                    .iter()
-                                    .any(|tab| tab.to_ascii_lowercase().contains("slice type"));
                                 if browser_observation {
-                                    trace.two_tab_snapshot_seen |=
-                                        current_tabs.len() >= 2 && has_references && has_slice;
+                                    trace.two_tab_snapshot_seen |= has_complete_two_tab_snapshot(
+                                        complete_observation,
+                                        &current_tabs,
+                                    );
                                     if trace.tab_snapshots.len() < MAX_BROWSER_ACCEPTANCE_SNAPSHOTS
                                     {
                                         trace.tab_snapshots.push(current_tabs);

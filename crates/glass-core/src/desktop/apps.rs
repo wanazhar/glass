@@ -1171,22 +1171,43 @@ mod tests {
             let all_tabs = desktop
                 .observe_accessibility(Some(&session_id), Some("Chromium tab"))
                 .map_err(|error| format!("observing both browser tabs failed: {error}"))?;
+            if all_tabs["truncated"] != false || all_tabs["queryAmbiguous"] != false {
+                return Err(format!(
+                    "browser tab observation was incomplete or ambiguous: truncated={} queryAmbiguous={}",
+                    all_tabs["truncated"], all_tabs["queryAmbiguous"]
+                ));
+            }
             let tab_names = all_tabs["nodes"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter(|node| node["role"] == "page tab")
-                .filter_map(|node| node["name"].as_str().map(ToOwned::to_owned))
+                .filter_map(|node| node["name"].as_str())
+                .filter_map(|name| {
+                    if name.starts_with("Managed browser chapter fixture") {
+                        Some("Managed browser chapter fixture")
+                    } else if name.starts_with("Managed browser detail fixture") {
+                        Some("Managed browser detail fixture")
+                    } else {
+                        None
+                    }
+                })
+                .map(ToOwned::to_owned)
                 .collect::<Vec<_>>();
-            if !tab_names
-                .iter()
-                .any(|name| name.starts_with("Managed browser chapter fixture"))
-                || !tab_names
+            if tab_names.len() != 2
+                || tab_names
                     .iter()
-                    .any(|name| name.starts_with("Managed browser detail fixture"))
+                    .filter(|name| name.as_str() == "Managed browser chapter fixture")
+                    .count()
+                    != 1
+                || tab_names
+                    .iter()
+                    .filter(|name| name.as_str() == "Managed browser detail fixture")
+                    .count()
+                    != 1
             {
                 return Err(format!(
-                    "both distinct browser tabs were not observed: {all_tabs}"
+                    "exactly one tab for each local fixture page was not observed: {tab_names:?}"
                 ));
             }
             let detail_tab = desktop

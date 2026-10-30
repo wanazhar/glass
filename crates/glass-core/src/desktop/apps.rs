@@ -458,6 +458,24 @@ mod tests {
             .collect()
     }
 
+    fn stop_matching_browser_processes(binary: &Path, profile: &Path) {
+        let signal_matching = |signal| {
+            for pid in matching_browser_process_ids(binary, profile) {
+                unsafe {
+                    libc::kill(pid as libc::pid_t, signal);
+                }
+            }
+        };
+        signal_matching(libc::SIGTERM);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline
+            && !matching_browser_process_ids(binary, profile).is_empty()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        signal_matching(libc::SIGKILL);
+    }
+
     fn managed_browser_ax_diagnostics(
         desktop: &super::super::Desktop,
         binary: &Path,
@@ -877,6 +895,410 @@ mod tests {
     }
 
     #[test]
+    fn managed_browser_key_input_loads_owned_fixture_with_debugger_route_check() {
+        if std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_CONTROL_E2E").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        let root = crate::config::data_dir().join(format!(
+            "desktop-address-control-e2e-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut desktop = super::super::Desktop::new(workspace);
+        desktop.root = root.join("desktop");
+        let started = desktop
+            .start_selected("xfce", "disposable")
+            .unwrap_or_else(|_| panic!("could not start isolated XFCE"));
+        let session_id = started["sessionId"].as_str().unwrap().to_owned();
+
+        let mut debugger_port = None;
+        let mut owned_browser_profile = None;
+        let outcome = (|| -> Result<Value, &'static str> {
+            let binary = std::env::var_os("GLASS_DESKTOP_BROWSER_BINARY")
+                .map(PathBuf::from)
+                .ok_or("browser_binary_missing")?
+                .canonicalize()
+                .map_err(|_| "browser_binary_missing")?;
+            if !binary.is_file() || binary.to_string_lossy().chars().any(char::is_whitespace) {
+                return Err("browser_binary_invalid");
+            }
+            let session_home = desktop
+                .session
+                .lock()
+                .unwrap()
+                .as_ref()
+                .ok_or("desktop_session_missing")?
+                .directory
+                .join("home");
+            let profile = session_home.join("chromium-address-control-profile");
+            fs::create_dir(&profile).map_err(|_| "profile_create_failed")?;
+            fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))
+                .map_err(|_| "profile_create_failed")?;
+            owned_browser_profile = Some((binary.clone(), profile.clone()));
+
+            let fixture = root.join("address-control.html");
+            fs::write(
+                &fixture,
+                "<!doctype html><title>Address control fixture</title><h1>Local navigation completed</h1>",
+            )
+            .map_err(|_| "fixture_write_failed")?;
+            let expected_url = url::Url::from_file_path(&fixture)
+                .map_err(|_| "fixture_url_invalid")?
+                .to_string();
+            let direct_file_accessibility =
+                std::env::var_os("GLASS_DESKTOP_APP_DIRECT_FILE_ACCESSIBILITY_E2E").as_deref()
+                    == Some(std::ffi::OsStr::new("1"));
+            write_test_application_entry(
+                &session_home,
+                &binary,
+                &profile,
+                true,
+                direct_file_accessibility.then_some(expected_url.as_str()),
+            )
+            .map_err(|_| "desktop_entry_write_failed")?;
+            let listed = desktop
+                .launch_app(&json!({"action":"list","sessionId":session_id}))
+                .map_err(|_| "app_list_failed")?;
+            let browser_id = listed["applications"]
+                .as_array()
+                .and_then(|apps| {
+                    apps.iter()
+                        .find(|app| app["desktopEntryId"] == "glass-managed-browser")
+                })
+                .and_then(|app| app["desktopEntryId"].as_str())
+                .ok_or("browser_entry_not_listed")?;
+            desktop
+                .launch_app(
+                    &json!({"action":"launch","sessionId":session_id,"desktopEntryId":browser_id}),
+                )
+                .map_err(|_| "browser_launch_failed")?;
+
+            let debugger_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while std::time::Instant::now() < debugger_deadline {
+                debugger_port = fs::read_to_string(profile.join("DevToolsActivePort"))
+                    .ok()
+                    .and_then(|contents| contents.lines().next()?.parse::<u16>().ok());
+                if debugger_port.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let debugger_port = debugger_port.ok_or("debugger_endpoint_not_ready")?;
+            let mut initial_route = Err("endpoint_unavailable");
+            let route_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < route_deadline {
+                initial_route = devtools_current_route_category(debugger_port, &expected_url);
+                if initial_route.is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let mut direct_fixture_route_observed =
+                initial_route.as_ref().ok().copied() == Some("fixture");
+            let mut direct_route_probe_error = initial_route.as_ref().err().copied();
+            if direct_file_accessibility {
+                let navigation_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(12);
+                while !direct_fixture_route_observed
+                    && std::time::Instant::now() < navigation_deadline
+                {
+                    match devtools_current_route_category(debugger_port, &expected_url) {
+                        Ok(route) => {
+                            direct_fixture_route_observed = route == "fixture";
+                            direct_route_probe_error = None;
+                        }
+                        Err(error) => direct_route_probe_error = Some(error),
+                    }
+                    if !direct_fixture_route_observed {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+            let accessibility_snapshot =
+                desktop.observe_accessibility(Some(&session_id), None).ok();
+            let browser_ax_window_observed = accessibility_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot["windows"].as_array())
+                .is_some_and(|windows| {
+                    windows.iter().any(|window| {
+                        window["application"]
+                            .as_str()
+                            .is_some_and(super::super::is_browser_application)
+                    })
+                });
+            let focused_window_is_browser = accessibility_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot["focusedWindow"]["application"].as_str())
+                .is_some_and(super::super::is_browser_application);
+            let accessibility_snapshot_complete = accessibility_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot["truncated"] == false);
+            let accessibility_snapshot_unambiguous = accessibility_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot["queryAmbiguous"] == false);
+
+            if direct_file_accessibility {
+                let screenshot_captured = if browser_ax_window_observed
+                    && focused_window_is_browser
+                    && accessibility_snapshot_complete
+                    && accessibility_snapshot_unambiguous
+                {
+                    false
+                } else {
+                    desktop
+                        .frame_after(0, std::time::Duration::from_secs(2))
+                        .ok()
+                        .flatten()
+                        .map(|frame| frame.0)
+                        .and_then(|watermark| {
+                            desktop
+                                .frame_after(watermark, std::time::Duration::from_secs(2))
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|frame| {
+                            std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_CONTROL_SCREENSHOT_PATH")
+                                .map(PathBuf::from)
+                                .map(|path| path.with_file_name("direct-file-ax.jpg"))
+                                .map(|path| {
+                                    write_private_diagnostic_screenshot(&path, &frame.2).is_ok()
+                                })
+                        })
+                        .unwrap_or(false)
+                };
+                return Ok(json!({
+                    "stage":"direct_file_accessibility",
+                    "fixtureRouteObserved":direct_fixture_route_observed,
+                    "routeProbeError":direct_route_probe_error,
+                    "browserAXWindowObserved":browser_ax_window_observed,
+                    "focusedWindowIsBrowser":focused_window_is_browser,
+                    "accessibilitySnapshotComplete":accessibility_snapshot_complete,
+                    "accessibilitySnapshotUnambiguous":accessibility_snapshot_unambiguous,
+                    "screenshotCaptured":screenshot_captured,
+                    "fixtureUrlLoaded":direct_fixture_route_observed,
+                }));
+            }
+
+            if !browser_ax_window_observed
+                || !focused_window_is_browser
+                || !accessibility_snapshot_complete
+                || !accessibility_snapshot_unambiguous
+            {
+                let focus_gate_screenshot_captured = desktop
+                    .frame_after(0, std::time::Duration::from_secs(2))
+                    .ok()
+                    .flatten()
+                    .map(|frame| frame.0)
+                    .and_then(|watermark| {
+                        desktop
+                            .frame_after(watermark, std::time::Duration::from_secs(2))
+                            .ok()
+                            .flatten()
+                    })
+                    .and_then(|frame| {
+                        std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_CONTROL_SCREENSHOT_PATH")
+                            .map(PathBuf::from)
+                            .map(|path| path.with_file_name("focus-gate.jpg"))
+                            .map(|path| {
+                                write_private_diagnostic_screenshot(&path, &frame.2).is_ok()
+                            })
+                    })
+                    .unwrap_or(false);
+                return Ok(json!({
+                    "stage":"chromium_focus_unverified",
+                    "browserAXWindowObserved":browser_ax_window_observed,
+                    "focusedWindowIsBrowser":focused_window_is_browser,
+                    "accessibilitySnapshotComplete":accessibility_snapshot_complete,
+                    "accessibilitySnapshotUnambiguous":accessibility_snapshot_unambiguous,
+                    "focusGateScreenshotCaptured":focus_gate_screenshot_captured,
+                    "debuggerPortPublished":true,
+                    "debuggerRouteObserved":initial_route.is_ok(),
+                    "initialRoute":initial_route.as_ref().ok().copied(),
+                    "initialProbeError":initial_route.as_ref().err().copied(),
+                    "fixtureUrlLoaded":false,
+                }));
+            }
+
+            let frame_watermark = desktop
+                .frame_after(0, std::time::Duration::from_secs(3))
+                .ok()
+                .flatten()
+                .map(|frame| frame.0)
+                .ok_or("pre_input_frame_watermark_unavailable")?;
+            desktop
+                .input(
+                    super::super::Lease::Agent,
+                    &json!({"action":"key-chord","keys":["Control","L"]}),
+                )
+                .map_err(|_| "control_l_input_failed")?;
+            desktop
+                .input(
+                    super::super::Lease::Agent,
+                    &json!({"action":"text","text":expected_url}),
+                )
+                .map_err(|_| "address_text_input_failed")?;
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let frame = desktop
+                .frame_after(frame_watermark, std::time::Duration::from_secs(3))
+                .ok()
+                .flatten()
+                .ok_or("pre_enter_frame_unavailable")?;
+            let screenshot_path =
+                std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_CONTROL_SCREENSHOT_PATH")
+                    .map(PathBuf::from)
+                    .ok_or("private_screenshot_path_missing")?;
+            write_private_diagnostic_screenshot(&screenshot_path, &frame.2)
+                .map_err(|_| "private_screenshot_write_failed")?;
+            let typed_address_snapshot = desktop
+                .observe_accessibility(Some(&session_id), Some("Chromium address"))
+                .ok();
+            if let Some(snapshot) = typed_address_snapshot.as_ref() {
+                append_private_address_evidence(
+                    &screenshot_path.with_file_name("address-control.jsonl"),
+                    "typed-address-before-enter",
+                    &expected_url,
+                    snapshot,
+                )
+                .map_err(|_| "private_address_evidence_write_failed")?;
+            }
+            let typed_address_field_focused = typed_address_snapshot
+                .as_ref()
+                .is_some_and(browser_address_field_is_focused);
+            let typed_url_matches_expected = typed_address_snapshot
+                .as_ref()
+                .and_then(unique_browser_address_value)
+                .is_some_and(|actual| address_matches_expected(actual, &expected_url));
+            if !typed_address_field_focused || !typed_url_matches_expected {
+                return Ok(json!({
+                    "stage":"typed_address_unverified",
+                    "browserAXWindowObserved":browser_ax_window_observed,
+                    "focusedWindowIsBrowser":focused_window_is_browser,
+                    "addressSnapshotComplete":typed_address_snapshot.as_ref().is_some_and(|snapshot| snapshot["truncated"] == false),
+                    "addressSnapshotUnambiguous":typed_address_snapshot.as_ref().is_some_and(|snapshot| snapshot["queryAmbiguous"] == false),
+                    "typedAddressFieldFocused":typed_address_field_focused,
+                    "typedUrlMatchesExpected":typed_url_matches_expected,
+                    "fixtureUrlLoaded":false,
+                }));
+            }
+            desktop
+                .input(
+                    super::super::Lease::Agent,
+                    &json!({"action":"key-tap","key":"Enter"}),
+                )
+                .map_err(|_| "enter_input_failed")?;
+            let after_enter_frame = desktop
+                .frame_after(frame.0, std::time::Duration::from_secs(3))
+                .ok()
+                .flatten()
+                .ok_or("post_enter_frame_unavailable")?;
+            let screenshot_path =
+                std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_CONTROL_SCREENSHOT_PATH")
+                    .map(PathBuf::from)
+                    .ok_or("private_screenshot_path_missing")?;
+            let after_enter_path = screenshot_path.with_file_name("after-enter.jpg");
+            write_private_diagnostic_screenshot(&after_enter_path, &after_enter_frame.2)
+                .map_err(|_| "post_enter_screenshot_write_failed")?;
+
+            let navigation_deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(12);
+            let mut post_enter_route = initial_route.as_ref().ok().copied();
+            let mut post_enter_probe_error = initial_route.as_ref().err().copied();
+            while std::time::Instant::now() < navigation_deadline {
+                match devtools_current_route_category(debugger_port, &expected_url) {
+                    Ok(route) => {
+                        post_enter_route = Some(route);
+                        post_enter_probe_error = None;
+                    }
+                    Err(error) => {
+                        post_enter_probe_error = Some(error);
+                    }
+                }
+                if post_enter_route == Some("fixture") {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(json!({
+                "stage":"complete",
+                "browserAXWindowObserved":browser_ax_window_observed,
+                "focusedWindowIsBrowser":focused_window_is_browser,
+                "accessibilitySnapshotComplete":accessibility_snapshot_complete,
+                "accessibilitySnapshotUnambiguous":accessibility_snapshot_unambiguous,
+                "typedAddressFieldFocused":typed_address_field_focused,
+                "typedUrlMatchesExpected":typed_url_matches_expected,
+                "debuggerPortPublished":true,
+                "debuggerRouteObserved":initial_route.is_ok(),
+                "initialRoute":initial_route.as_ref().ok().copied(),
+                "initialProbeError":initial_route.as_ref().err().copied(),
+                "postEnterRoute":post_enter_route,
+                "postEnterProbeError":post_enter_probe_error,
+                "fixtureUrlLoaded":post_enter_route == Some("fixture"),
+            }))
+        })();
+        let stopped = desktop.stop();
+        if let Some((binary, profile)) = owned_browser_profile.as_ref() {
+            stop_matching_browser_processes(binary, profile);
+        }
+        let endpoint_closed_after_stop = debugger_port.is_none_or(|port| {
+            let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if std::net::TcpStream::connect_timeout(
+                    &address,
+                    std::time::Duration::from_millis(250),
+                )
+                .is_err()
+                {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            false
+        });
+        let _ = fs::remove_dir_all(&root);
+        stopped.unwrap_or_else(|_| panic!("isolated desktop cleanup failed"));
+        let report = outcome.unwrap_or_else(|stage| {
+            panic!("managed browser address-control diagnostic stopped at {stage}")
+        });
+        let mut report = report;
+        report["endpointClosedAfterStop"] = json!(endpoint_closed_after_stop);
+        eprintln!("managed browser address-control diagnostic: {report}");
+        assert_eq!(
+            report["fixtureUrlLoaded"], true,
+            "local fixture URL was not loaded"
+        );
+        if std::env::var_os("GLASS_DESKTOP_APP_DIRECT_FILE_ACCESSIBILITY_E2E").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            assert_eq!(
+                report["browserAXWindowObserved"], true,
+                "direct local fixture load did not expose a Chromium AX window"
+            );
+            assert_eq!(
+                report["focusedWindowIsBrowser"], true,
+                "direct local fixture load did not focus the Chromium AX window"
+            );
+            assert_eq!(
+                report["accessibilitySnapshotComplete"], true,
+                "direct local fixture AX snapshot was incomplete"
+            );
+            assert_eq!(
+                report["accessibilitySnapshotUnambiguous"], true,
+                "direct local fixture AX snapshot was ambiguous"
+            );
+        }
+        assert_eq!(
+            report["endpointClosedAfterStop"], true,
+            "test-owned Chromium endpoint remained active after cleanup"
+        );
+    }
+
+    #[test]
     fn managed_desktop_launches_only_a_listed_entry_and_observes_its_window() {
         if std::env::var_os("GLASS_DESKTOP_LAUNCH_APP_E2E").as_deref()
             != Some(std::ffi::OsStr::new("1"))
@@ -927,7 +1349,7 @@ mod tests {
                     fs::set_permissions(&browser_profile, fs::Permissions::from_mode(0o700))
                 })
                 .map_err(|error| format!("creating isolated browser profile: {error}"))?;
-            write_test_application_entry(&home, &binary, &browser_profile)
+            write_test_application_entry(&home, &binary, &browser_profile, false, None)
                 .map_err(|error| format!("writing private managed browser entry: {error}"))?;
             let listed = desktop
                 .launch_app(&json!({"action":"list","sessionId":session_id}))
@@ -1207,6 +1629,16 @@ mod tests {
                 ("detail", detail_fixture_url.as_str()),
                 ("section", section_fixture.as_str()),
             ];
+            let address_evidence_path =
+                std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_EVIDENCE_PATH").map(PathBuf::from);
+            let capture_address_evidence =
+                |route: &str, expected: &str, snapshot: &Value| -> Result<(), String> {
+                    if let Some(path) = address_evidence_path.as_deref() {
+                        append_private_address_evidence(path, route, expected, snapshot)
+                            .map_err(|_| "writing private address evidence failed".to_owned())?;
+                    }
+                    Ok(())
+                };
             let read_expected_address = |route: &str,
                                          expected: &str,
                                          expected_window_title: &str|
@@ -1214,6 +1646,7 @@ mod tests {
                 let observation = desktop
                     .observe_accessibility(Some(&session_id), Some("Chromium address"))
                     .map_err(|error| format!("observing {route} browser address: {error}"))?;
+                capture_address_evidence(route, expected, &observation)?;
                 let focused_title_matches = observation["focusedWindow"]["name"]
                     .as_str()
                     .is_some_and(|name| name.contains(expected_window_title));
@@ -1239,19 +1672,6 @@ mod tests {
                 {
                     Ok(address.to_owned())
                 } else {
-                    if std::env::var_os("GLASS_DESKTOP_APP_ADDRESS_DIAGNOSTICS").as_deref()
-                        == Some(std::ffi::OsStr::new("1"))
-                    {
-                        let observed_file_exists = address
-                            .and_then(|value| url::Url::parse(value).ok())
-                            .filter(|value| value.scheme() == "file")
-                            .and_then(|value| value.to_file_path().ok())
-                            .map(|path| path.is_file());
-                        eprintln!(
-                            "managed browser private address diagnostic: expectedRoute={route} actualAddress={} focusedTitleMatches={focused_title_matches} observedFileExists={observed_file_exists:?}",
-                            address.unwrap_or("<none>"),
-                        );
-                    }
                     let observed_route = address
                         .and_then(|address| {
                             known_fixture_routes
@@ -1272,12 +1692,54 @@ mod tests {
                     &json!({"action":"key-chord","keys":["Control","L"]}),
                 )
                 .map_err(|error| format!("focusing Chrome's address bar: {}", error.message()))?;
+            let address_after_focus = desktop
+                .observe_accessibility(Some(&session_id), Some("Chromium address"))
+                .map_err(|error| format!("observing the focused address field: {error}"))?;
+            capture_address_evidence(
+                "omnibox-after-control-l",
+                &home_fixture_url,
+                &address_after_focus,
+            )?;
+            if !browser_address_field_is_focused(&address_after_focus) {
+                return Err(format!(
+                    "Control+L did not focus one editable address field: focusedBrowser={} complete={} queryAmbiguous={}",
+                    address_after_focus["focusedWindow"]["application"]
+                        .as_str()
+                        .is_some_and(super::super::is_browser_application),
+                    address_after_focus["truncated"] == false,
+                    address_after_focus["queryAmbiguous"],
+                ));
+            }
             desktop
                 .input(
                     super::super::Lease::Agent,
                     &json!({"action":"text","text":home_fixture_url}),
                 )
                 .map_err(|error| format!("entering the local fixture URL: {}", error.message()))?;
+            let address_after_typing = desktop
+                .observe_accessibility(Some(&session_id), Some("Chromium address"))
+                .map_err(|error| format!("observing the typed address field: {error}"))?;
+            capture_address_evidence(
+                "omnibox-after-text-before-enter",
+                &home_fixture_url,
+                &address_after_typing,
+            )?;
+            if !browser_address_field_is_focused(&address_after_typing)
+                || !unique_browser_address_value(&address_after_typing)
+                    .is_some_and(|value| address_matches_expected(value, &home_fixture_url))
+            {
+                return Err(format!(
+                    "typed fixture URL was not present in the focused address field before Enter: focusedBrowser={} complete={} queryAmbiguous={} addressFieldFocused={} exactExpectedValueMatch={}",
+                    address_after_typing["focusedWindow"]["application"]
+                        .as_str()
+                        .is_some_and(super::super::is_browser_application),
+                    address_after_typing["truncated"] == false,
+                    address_after_typing["queryAmbiguous"],
+                    browser_address_field_is_focused(&address_after_typing),
+                    unique_browser_address_value(&address_after_typing)
+                        .is_some_and(|value| address_matches_expected(value, &home_fixture_url)),
+                ));
+            }
             desktop
                 .input(
                     super::super::Lease::Agent,
@@ -2840,6 +3302,10 @@ mod tests {
     }
 
     fn unique_browser_address_value(snapshot: &Value) -> Option<&str> {
+        unique_browser_address_field(snapshot).and_then(|field| field["value"].as_str())
+    }
+
+    fn unique_browser_address_field(snapshot: &Value) -> Option<&Value> {
         if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
             return None;
         }
@@ -2854,7 +3320,90 @@ mod tests {
         if address_fields.next().is_some() {
             return None;
         }
-        field["value"].as_str()
+        Some(field)
+    }
+
+    fn browser_address_field_is_focused(snapshot: &Value) -> bool {
+        unique_browser_address_field(snapshot)
+            .and_then(|field| field["states"].as_array())
+            .is_some_and(|states| states.iter().any(|state| state == "focused"))
+    }
+
+    fn private_address_evidence_record(route: &str, expected: &str, snapshot: &Value) -> Value {
+        let field = unique_browser_address_field(snapshot);
+        let address = field.and_then(|field| field["value"].as_str());
+        let address_file_exists = address
+            .and_then(|value| url::Url::parse(value).ok())
+            .filter(|value| value.scheme() == "file")
+            .and_then(|value| value.to_file_path().ok())
+            .map(|path| path.is_file());
+        let role = field
+            .and_then(|field| field["role"].as_str())
+            .map(|role| match role {
+                "entry" => "entry",
+                "text entry" | "text box" => "text_entry",
+                "combo box" => "combo_box",
+                _ => "other",
+            })
+            .unwrap_or("none");
+        let title = snapshot["focusedWindow"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let focused_window_route = if title.contains("managed browser home fixture") {
+            "home"
+        } else if title.contains("managed browser chapter fixture") {
+            "chapter"
+        } else if title.contains("managed browser detail fixture") {
+            "detail"
+        } else {
+            "other"
+        };
+        json!({
+            "route": route,
+            "focusedWindowRoute": focused_window_route,
+            "focusedBrowser": snapshot["focusedWindow"]["application"]
+                .as_str()
+                .is_some_and(super::super::is_browser_application),
+            "complete": snapshot["truncated"] == false,
+            "queryAmbiguous": snapshot["queryAmbiguous"],
+            "addressFieldCount": snapshot["nodes"].as_array().map(|nodes| {
+                nodes.iter().filter(|node| {
+                    let role = node["role"].as_str().unwrap_or_default();
+                    let name = node["name"].as_str().unwrap_or_default();
+                    matches!(role, "entry" | "text entry" | "text box" | "combo box")
+                        && node["editable"] == true
+                        && name.to_ascii_lowercase().contains("address")
+                }).count()
+            }),
+            "addressFieldRole": role,
+            "addressFieldEditable": field.is_some_and(|field| field["editable"] == true),
+            "addressFieldFocused": browser_address_field_is_focused(snapshot),
+            "addressValue": address,
+            "addressFileExists": address_file_exists,
+            "expectedAddressMatches": address.is_some_and(|actual| address_matches_expected(actual, expected)),
+        })
+    }
+
+    fn append_private_address_evidence(
+        path: &Path,
+        route: &str,
+        expected: &str,
+        snapshot: &Value,
+    ) -> std::io::Result<()> {
+        let record = private_address_evidence_record(route, expected, snapshot);
+        let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+        let mut options = fs::OpenOptions::new();
+        options
+            .write(true)
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut file = options.open(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        file.write_all(&bytes)?;
+        file.write_all(b"\n")
     }
 
     fn address_matches_expected(actual: &str, expected: &str) -> bool {
@@ -2868,12 +3417,26 @@ mod tests {
         home: &Path,
         binary: &Path,
         profile: &Path,
+        remote_debugging: bool,
+        initial_url: Option<&str>,
     ) -> std::io::Result<()> {
         let applications = home.join(".local/share/applications");
         fs::create_dir_all(&applications)?;
         fs::set_permissions(&applications, fs::Permissions::from_mode(0o700))?;
         let binary = binary.display().to_string();
         let profile = profile.display().to_string();
+        let remote_debugging = if remote_debugging {
+            " --remote-debugging-address=127.0.0.1 --remote-debugging-port=0 --disable-background-networking --host-resolver-rules=\"MAP * ~NOTFOUND\""
+        } else {
+            ""
+        };
+        let initial_page = initial_url.map(|url| format!(" {url}")).unwrap_or_else(|| {
+            if remote_debugging.is_empty() {
+                String::new()
+            } else {
+                " about:blank".to_owned()
+            }
+        });
         if binary
             .chars()
             .any(|character| !(character.is_ascii_alphanumeric() || "/._-".contains(character)))
@@ -2896,8 +3459,176 @@ mod tests {
         let mut file = options.open(path)?;
         writeln!(
             file,
-            "[Desktop Entry]\nType=Application\nName=Managed Chromium (Glass acceptance)\nExec=/usr/bin/env ACCESSIBILITY_ENABLED=1 {binary} --user-data-dir={profile} --no-first-run --no-default-browser-check --password-store=basic --force-renderer-accessibility=complete --disable-gpu --enable-logging=stderr --log-file={profile}/chrome.log\nStartupWMClass=chrome\nTerminal=false\nNoDisplay=false\n"
+            "[Desktop Entry]\nType=Application\nName=Managed Chromium (Glass acceptance)\nExec=/usr/bin/env ACCESSIBILITY_ENABLED=1 {binary} --user-data-dir={profile} --no-first-run --no-default-browser-check --password-store=basic --force-renderer-accessibility=complete{remote_debugging} --disable-gpu --enable-logging=stderr --log-file={profile}/chrome.log{initial_page}\nStartupWMClass=chrome\nTerminal=false\nNoDisplay=false\n"
         )
+    }
+
+    fn write_private_diagnostic_screenshot(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+        let parent_mode = fs::metadata(parent)?.permissions().mode() & 0o777;
+        if parent_mode & 0o077 != 0 {
+            return Err(std::io::ErrorKind::PermissionDenied.into());
+        }
+        let mut options = fs::OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut file = options.open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.write_all(bytes)
+    }
+
+    fn devtools_current_route_category(
+        port: u16,
+        expected_url: &str,
+    ) -> Result<&'static str, &'static str> {
+        use std::{
+            io::{Read, Write},
+            net::{SocketAddr, TcpStream},
+            time::Duration,
+        };
+
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
+            .map_err(|_| "endpoint_unreachable")?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .map_err(|_| "endpoint_setup_failed")?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .map_err(|_| "endpoint_setup_failed")?;
+        stream
+            .write_all(
+                b"GET /json/list HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+            )
+            .map_err(|_| "http_request_failed")?;
+        let mut response = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let read_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < read_deadline && response.len() < 1_048_576 {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(size) => response.extend_from_slice(&chunk[..size]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(_) => return Err("http_read_failed"),
+            }
+            if let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&response[..header_end])
+                    .map_err(|_| "http_headers_invalid")?;
+                if let Some(content_length) = headers.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                }) && response.len() >= header_end + 4 + content_length
+                {
+                    break;
+                }
+                if response[header_end + 4..].ends_with(b"0\r\n\r\n") {
+                    break;
+                }
+            }
+        }
+        let header_end = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or("http_headers_missing")?;
+        let headers =
+            std::str::from_utf8(&response[..header_end]).map_err(|_| "http_headers_invalid")?;
+        if !headers
+            .lines()
+            .next()
+            .ok_or("http_status_missing")?
+            .contains(" 200 ")
+        {
+            return Err("http_status_unexpected");
+        }
+        let mut body = response[header_end + 4..].to_vec();
+        if headers.lines().any(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("transfer-encoding: chunked")
+        }) {
+            let mut decoded = Vec::new();
+            let mut offset = 0;
+            loop {
+                let line_end = body[offset..]
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                    .ok_or("http_chunk_incomplete")?
+                    + offset;
+                let size = usize::from_str_radix(
+                    std::str::from_utf8(&body[offset..line_end])
+                        .map_err(|_| "http_chunk_invalid")?
+                        .split(';')
+                        .next()
+                        .ok_or("http_chunk_invalid")?,
+                    16,
+                )
+                .map_err(|_| "http_chunk_invalid")?;
+                offset = line_end + 2;
+                if size == 0 {
+                    break;
+                }
+                let chunk_end = offset.checked_add(size).ok_or("http_chunk_invalid")?;
+                decoded
+                    .extend_from_slice(body.get(offset..chunk_end).ok_or("http_chunk_incomplete")?);
+                offset = chunk_end.checked_add(2).ok_or("http_chunk_invalid")?;
+                if body.get(chunk_end..offset).ok_or("http_chunk_incomplete")? != b"\r\n" {
+                    return Err("http_chunk_invalid");
+                }
+            }
+            body = decoded;
+        }
+        let targets = serde_json::from_slice::<Vec<Value>>(&body).map_err(|_| "json_invalid")?;
+        let expected = url::Url::parse(expected_url).map_err(|_| "expected_url_invalid")?;
+        let mut page_count = 0;
+        let mut first_route = None;
+        let mut fixture_count = 0;
+        for target in targets.iter().filter(|target| target["type"] == "page") {
+            page_count += 1;
+            let actual = url::Url::parse(target["url"].as_str().ok_or("target_url_missing")?)
+                .map_err(|_| "target_url_invalid")?;
+            let route = if actual == expected {
+                fixture_count += 1;
+                "fixture"
+            } else if actual.as_str() == "about:blank" {
+                "blank"
+            } else if actual.as_str() == "chrome://newtab/" {
+                "new_tab"
+            } else if actual.scheme() == "file" {
+                "other_file"
+            } else if actual.scheme() == "chrome-error" {
+                "chrome_error"
+            } else if matches!(actual.scheme(), "http" | "https") {
+                "web_url"
+            } else if actual.scheme() == "chrome" {
+                "chrome_url"
+            } else {
+                "other_url"
+            };
+            first_route.get_or_insert(route);
+        }
+        if page_count == 0 {
+            return Err("page_target_missing");
+        }
+        Ok(if fixture_count == 1 {
+            "fixture"
+        } else if fixture_count > 1 {
+            "multiple_fixture_pages"
+        } else if page_count > 1 {
+            "multiple_pages_without_fixture"
+        } else {
+            first_route.unwrap_or("other_url")
+        })
     }
 
     fn read_bounded_chrome_log(profile: &Path) -> String {

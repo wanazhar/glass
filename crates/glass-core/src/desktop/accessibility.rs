@@ -45,6 +45,8 @@ pub(super) struct Snapshot {
     pub application_root_names: Vec<String>,
 }
 
+const UNSUPPORTED_CLICK_RECOVERY: &str = "Call desktop_observe again with the same app, window, and control query, then use desktop_input pointer-click only with a fresh onscreen pointerTarget from a complete, unambiguous result. Do not retry desktop_act on this target or guess coordinates.";
+
 #[derive(Clone, Debug)]
 pub(super) struct WindowRoot {
     pub object: ObjectRefOwned,
@@ -144,7 +146,7 @@ async fn observe_async(
             .object
             .as_accessible_proxy(&accessibility)
             .await
-            .map_err(|_| "windowId is stale; observe visible windows again")?;
+            .map_err(|_| super::STALE_WINDOW_SELECTOR_RECOVERY)?;
         let (role, states, raw_name) =
             tokio::join!(window.get_role_name(), window.get_state(), window.name(),);
         let role = role.unwrap_or_default();
@@ -165,9 +167,7 @@ async fn observe_async(
             || !states.contains(State::Visible)
             || !states.contains(State::Showing)
         {
-            return Err(
-                "windowId is stale or no longer visible; observe visible windows again".into(),
-            );
+            return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
         }
     }
     let root = AccessibleProxy::builder(&accessibility)
@@ -200,10 +200,7 @@ async fn observe_async(
             }
         }
         if matching_applications.is_empty() {
-            return Err(
-                "windowId application is no longer registered; observe visible windows again"
-                    .into(),
-            );
+            return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
         }
         application_roots = matching_applications;
     }
@@ -893,10 +890,7 @@ async fn observe_async(
     );
 
     if scoped_window_id.is_some() && !scoped_window_root_seen {
-        return Err(
-            "windowId is no longer a visible child of its application; observe visible windows again"
-                .into(),
-        );
+        return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
     }
 
     let value = json!({
@@ -1448,7 +1442,9 @@ async fn act_async(
     match action {
         "click" => {
             if !target.supports_click {
-                return Err("Target has no accessibility action; use desktop_screenshot then explicit desktop_input".to_owned());
+                return Err(format!(
+                    "Target has no accessibility action. {UNSUPPORTED_CLICK_RECOVERY}"
+                ));
             }
             let proxies = accessible.proxies().await.map_err(accessibility_error)?;
             let action_proxy = proxies.action().await.map_err(accessibility_error)?;
@@ -1465,7 +1461,9 @@ async fn act_async(
                     )
                 })
                 .ok_or_else(|| {
-                    "Target reports no recognized accessibility click action; use desktop_screenshot then explicit desktop_input".to_owned()
+                    format!(
+                        "Target reports no recognized accessibility click action. {UNSUPPORTED_CLICK_RECOVERY}"
+                    )
                 })?;
             let performed = action_proxy
                 .do_action(index as i32)
@@ -1638,18 +1636,31 @@ fn accessibility_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, accessibility_target_id,
-        accessibility_window_id_from_parts, bounded_accessible_name, display_accessible_name,
-        focused_query_role_is_leaf, focused_search_result_is_actionable, is_password_role,
-        is_pointer_fallback_candidate, node_is_relevant, owner_is_within_ancestor_limit,
-        pointer_target_from_extents, protect_text_value, query_can_issue_action_tokens,
-        query_is_focused, query_matches, query_prefers_document_content, query_skips_app_menus,
-        role_matches_hint, should_follow_related_object, target_can_be_exposed,
-        text_edit_is_supported, unverified_click_result, validate_query, window_id_is_in_scope,
-        window_identity_matches, window_name_identity, window_title_terms,
-        withhold_unverified_query_tokens,
+        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, UNSUPPORTED_CLICK_RECOVERY,
+        accessibility_target_id, accessibility_window_id_from_parts, bounded_accessible_name,
+        display_accessible_name, focused_query_role_is_leaf, focused_search_result_is_actionable,
+        is_password_role, is_pointer_fallback_candidate, node_is_relevant,
+        owner_is_within_ancestor_limit, pointer_target_from_extents, protect_text_value,
+        query_can_issue_action_tokens, query_is_focused, query_matches,
+        query_prefers_document_content, query_skips_app_menus, role_matches_hint,
+        should_follow_related_object, target_can_be_exposed, text_edit_is_supported,
+        unverified_click_result, validate_query, window_id_is_in_scope, window_identity_matches,
+        window_name_identity, window_title_terms, withhold_unverified_query_tokens,
     };
     use serde_json::json;
+
+    #[test]
+    fn unsupported_accessibility_click_error_has_grounded_pointer_recovery() {
+        assert!(UNSUPPORTED_CLICK_RECOVERY.contains("desktop_observe again"));
+        assert!(UNSUPPORTED_CLICK_RECOVERY.contains("same app, window, and control query"));
+        assert!(UNSUPPORTED_CLICK_RECOVERY.contains("fresh onscreen pointerTarget"));
+        assert!(UNSUPPORTED_CLICK_RECOVERY.contains("complete, unambiguous result"));
+        assert!(!UNSUPPORTED_CLICK_RECOVERY.contains("screenshot"));
+        assert!(
+            UNSUPPORTED_CLICK_RECOVERY
+                .contains("Do not retry desktop_act on this target or guess coordinates")
+        );
+    }
 
     #[test]
     fn accessibility_query_is_bounded_and_searches_semantics_not_values() {

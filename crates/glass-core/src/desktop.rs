@@ -37,6 +37,7 @@ const LEASE_SOCKET: &str = "desktop-agent.sock";
 const MAX_CACHED_ACCESSIBILITY_WINDOWS: usize = 64;
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
+const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
 const GNOME_XVFB_ACCEPTED: bool = false;
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -756,9 +757,7 @@ impl Desktop {
                         .accessibility_windows
                         .get(window_id)
                         .cloned()
-                        .ok_or(
-                            "windowId is stale or belongs to another observation; observe again",
-                        )?,
+                        .ok_or(STALE_WINDOW_SELECTOR_RECOVERY)?,
                 )
             } else {
                 None
@@ -1805,6 +1804,13 @@ mod tests {
         let desktop = Desktop::new(std::env::temp_dir());
         let status = desktop.status();
         assert_eq!(status["frameTimeMs"], Value::Null);
+    }
+
+    #[test]
+    fn stale_window_selector_error_names_unscoped_refresh_path() {
+        assert!(STALE_WINDOW_SELECTOR_RECOVERY.contains("without windowId"));
+        assert!(STALE_WINDOW_SELECTOR_RECOVERY.contains("fresh visible windowId"));
+        assert!(STALE_WINDOW_SELECTOR_RECOVERY.contains("windows list"));
     }
 
     #[test]

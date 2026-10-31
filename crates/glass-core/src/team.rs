@@ -2202,6 +2202,10 @@ mod tests {
                     provider::Event::Usage(provider::Usage {
                         input: 100,
                         output: 20,
+                        input_known: true,
+                        cache_read_known: true,
+                        cache_write_known: true,
+                        output_known: true,
                         ..Default::default()
                     }),
                     provider::Event::Done,

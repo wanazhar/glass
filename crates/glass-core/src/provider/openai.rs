@@ -881,45 +881,47 @@ impl<R: Read> StreamEvents<R> {
 
     fn read_usage(&mut self, v: &Value) {
         if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
-            let prompt = bounded_usage_tokens(
-                usage
-                    .get("prompt_tokens")
-                    .or_else(|| usage.get("input_tokens"))
-                    .and_then(Value::as_u64),
-            );
-            let output = bounded_usage_tokens(
-                usage
-                    .get("completion_tokens")
-                    .or_else(|| usage.get("output_tokens"))
-                    .and_then(Value::as_u64),
-            );
+            let prompt = usage
+                .get("prompt_tokens")
+                .or_else(|| usage.get("input_tokens"))
+                .and_then(Value::as_u64);
+            let output = usage
+                .get("completion_tokens")
+                .or_else(|| usage.get("output_tokens"))
+                .and_then(Value::as_u64);
 
             // Unlike Anthropic, OpenAI reports `cached_tokens` as a SUBSET of
             // `prompt_tokens`, not in addition to it. Subtracting is what makes
             // the buckets mean the same thing across both adapters, so a cost
             // model does not have to special-case the provider.
-            let cached = bounded_usage_tokens(
-                usage
-                    .get("prompt_tokens_details")
-                    .or_else(|| usage.get("input_tokens_details"))
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(Value::as_u64),
-            );
-            let written = bounded_usage_tokens(
-                usage
-                    .get("prompt_tokens_details")
-                    .or_else(|| usage.get("input_tokens_details"))
-                    .and_then(|d| d.get("cache_write_tokens"))
-                    .and_then(Value::as_u64),
-            );
+            let cached = usage
+                .get("prompt_tokens_details")
+                .or_else(|| usage.get("input_tokens_details"))
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(Value::as_u64);
+            let written = usage
+                .get("prompt_tokens_details")
+                .or_else(|| usage.get("input_tokens_details"))
+                .and_then(|d| d.get("cache_write_tokens"))
+                .and_then(Value::as_u64);
 
-            if prompt > 0 || output > 0 {
+            if let (Some(prompt), Some(output)) = (prompt, output) {
                 self.acc.usage = Some(Usage {
-                    input: prompt.saturating_sub(cached).saturating_sub(written),
-                    cache_read: cached,
-                    cache_write: written,
-                    output,
+                    input: bounded_usage_tokens(Some(prompt))
+                        .saturating_sub(bounded_usage_tokens(cached))
+                        .saturating_sub(bounded_usage_tokens(written)),
+                    cache_read: bounded_usage_tokens(cached),
+                    cache_write: bounded_usage_tokens(written),
+                    output: bounded_usage_tokens(Some(output)),
+                    input_known: true,
+                    cache_read_known: cached.is_some(),
+                    cache_write_known: written.is_some(),
+                    output_known: true,
                 });
+            } else {
+                // Do not turn a missing prompt/output bucket into a reported
+                // zero; Metered will retain its reservation and fail closed.
+                self.acc.usage = None;
             }
         }
     }
@@ -1272,6 +1274,7 @@ mod stream_tests {
 #[cfg(test)]
 mod protocol_regressions {
     use super::*;
+    use crate::pricing::RateCard;
     fn events(values: &[Value], done: bool) -> Vec<Event> {
         let mut wire = values
             .iter()
@@ -1299,7 +1302,11 @@ mod protocol_regressions {
                     input: 60,
                     output: 5,
                     cache_read: 40,
-                    cache_write: 0
+                    cache_write: 0,
+                    input_known: true,
+                    cache_read_known: true,
+                    cache_write_known: false,
+                    output_known: true,
                 }),
                 Event::Done
             ]
@@ -1332,11 +1339,72 @@ mod protocol_regressions {
                     cache_read: u32::MAX,
                     cache_write: 0,
                     output: u32::MAX,
+                    input_known: true,
+                    cache_read_known: true,
+                    cache_write_known: false,
+                    output_known: true,
                 }),
                 Event::Done,
             ]
         );
     }
+
+    #[test]
+    fn responses_usage_requires_prompt_and_output_counters() {
+        for usage in [json!({"input_tokens": 10}), json!({"output_tokens": 5})] {
+            let output = events(
+                &[json!({"type":"response.completed","response":{"usage":usage}})],
+                false,
+            );
+            assert!(!output.iter().any(|event| matches!(event, Event::Usage(_))));
+        }
+    }
+
+    #[test]
+    fn chat_usage_requires_prompt_and_output_counters() {
+        for usage in [
+            json!({"prompt_tokens": 10}),
+            json!({"completion_tokens": 5}),
+        ] {
+            let output = events(
+                &[json!({
+                    "id":"partial-usage",
+                    "model":"gpt-5",
+                    "choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}],
+                    "usage":usage
+                })],
+                true,
+            );
+            assert!(!output.iter().any(|event| matches!(event, Event::Usage(_))));
+        }
+    }
+
+    #[test]
+    fn usage_marks_omitted_cache_buckets_unknown() {
+        let output = events(
+            &[json!({
+                "type":"response.completed",
+                "response":{"usage":{"input_tokens":10,"output_tokens":3}}
+            })],
+            false,
+        );
+        let Some(Event::Usage(usage)) =
+            output.iter().find(|event| matches!(event, Event::Usage(_)))
+        else {
+            panic!("prompt/output counts are present");
+        };
+        assert!(usage.input_known);
+        assert!(!usage.cache_read_known);
+        assert!(!usage.cache_write_known);
+        assert!(usage.output_known);
+        assert!(!usage.priced_complete(RateCard {
+            input: 1.0,
+            cache_read: 0.1,
+            cache_write: 1.25,
+            output: 5.0,
+        }));
+    }
+
     #[test]
     fn responses_tools_use_call_ids_and_complete_arguments() {
         let output = events(

@@ -1835,12 +1835,8 @@ fn make_metered(
     )
     .map_err(|e| e.to_string())?;
     inner.set_session_identity(cfg.provider_session.as_deref());
-    Ok(Box::new(budget::Metered {
-        inner,
-        ledger,
-        card: cfg.rate_card(model),
-        path,
-    }) as Box<dyn provider::Provider>)
+    let context = budget::Context::from_parts(ledger, path);
+    Ok(Box::new(context.metered(inner, cfg.rate_card(model))) as Box<dyn provider::Provider>)
 }
 
 fn budget_context_snapshot(
@@ -5420,6 +5416,10 @@ mod totals_tests {
             cache_read: read,
             cache_write: write,
             output,
+            input_known: true,
+            cache_read_known: true,
+            cache_write_known: true,
+            output_known: true,
         }
     }
 

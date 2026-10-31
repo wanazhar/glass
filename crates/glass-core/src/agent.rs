@@ -1699,13 +1699,21 @@ impl<'a> Agent<'a> {
             last.text.clone_from(&out.text);
             last.last_input = out.last_input;
             if let Some(u) = out.usage {
-                let total = last
-                    .usage
-                    .get_or_insert_with(crate::provider::Usage::default);
+                let total = last.usage.get_or_insert_with(|| crate::provider::Usage {
+                    input_known: true,
+                    cache_read_known: true,
+                    cache_write_known: true,
+                    output_known: true,
+                    ..Default::default()
+                });
                 total.input = total.input.saturating_add(u.input);
                 total.output = total.output.saturating_add(u.output);
                 total.cache_read = total.cache_read.saturating_add(u.cache_read);
                 total.cache_write = total.cache_write.saturating_add(u.cache_write);
+                total.input_known &= u.input_known;
+                total.cache_read_known &= u.cache_read_known;
+                total.cache_write_known &= u.cache_write_known;
+                total.output_known &= u.output_known;
             }
             last.warnings.clone_from(&out.warnings);
             last.tool_calls = out.tool_calls.clone();
@@ -5203,6 +5211,10 @@ for line in sys.stdin:
                             output: 1,
                             cache_read: 0,
                             cache_write: 0,
+                            input_known: true,
+                            cache_read_known: true,
+                            cache_write_known: true,
+                            output_known: true,
                         }),
                         Event::Done,
                     ]
@@ -5272,6 +5284,10 @@ for line in sys.stdin:
                 events.push(Event::Usage(crate::provider::Usage {
                     input: if first { 90_000 } else { 1000 },
                     output: 10,
+                    input_known: true,
+                    cache_read_known: true,
+                    cache_write_known: true,
+                    output_known: true,
                     ..Default::default()
                 }));
                 events.push(Event::Done);

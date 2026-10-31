@@ -9,9 +9,11 @@ depends-on: []
 
 ## Objective
 
-Plan and review event-driven delegation tied to existing state/checklist tasks,
-with bounded execution and no model polling. This record authorizes planning;
-implementation follows design confirmation, not completion of this document.
+Deliver event-driven delegation tied to existing state/checklist tasks, with
+bounded execution and no model polling. The user reiterated the request to
+plan and delegate after the reviewed proposal; root approved the bounded first
+implementation slices on 2026-10-31. Keep automatic coordination opt-in until
+the integrated acceptance gates pass. Existing task identities remain intact.
 
 ## Context
 
@@ -53,12 +55,23 @@ loop, no live provider test and no release rebuild for documentation alone.
 - [x] P1: reject empty-evidence `Settled` verification for required tasks and account for TODO auto-continuation within the owner lease and request/turn budget.
 - [x] P1: bind assignment and terminal activity cards to authenticated child/parent records and call/task identity.
 - [x] Independent design review; resolve blocking findings.
-- [ ] Design confirmation before implementation.
+- [x] Root reviewed the proposal and confirmed bounded implementation following the user's renewed delegation request (2026-10-31).
 - [ ] P2: module tests plus real host delegate→wait→verified result→wake path.
 - [ ] P3: existing state/todo and TUI/web views use the same execution identity.
 - [ ] P4: fake-provider request-count, crash/replay and loop-exhaustion tests.
 - [ ] P4: real offline TUI/web acceptance and independent review.
 - [ ] P5: installed verification without restarting unrelated workers.
+
+## First implementation slices
+
+- [Shared budget admission](task-agent-budget-002.md): Luna Secure, isolated
+  worktree; implement synchronized root reservation/accounting before requests.
+- [Task binding and durable inbox](task-agent-inbox-003.md): Luna Capture,
+  isolated worktree; implement task-backed identity, deduplicated delivery and
+  fenced bounded wake reservations without invoking providers yet.
+- Luna Acceptance independently reviews both committed slices. Runtime
+  delegate/park/wake integration follows only after both merge and their
+  concrete APIs are reviewed; UI changes must not simulate missing runtime work.
 
 ## Verification
 

@@ -1,5 +1,13 @@
 # Glass delivery plans
 
+## Proposed plan: task-backed agent coordination
+
+The [coordination design](analysis/task-agent-coordination.md) and
+[phased delivery checklist](tasks/task-agent-coordination-001.md) propose
+event-driven delegation tied to existing task/state tools, shared execution
+limits, durable inboxes and bounded owner wakeups without model polling.
+This is planning work, not an implemented scheduler or enabled feature.
+
 ## Active plan: shared Glass and Glass Core workspace
 
 Replacement issue [#64](https://github.com/wanazhar/glass/issues/64), which

@@ -1966,7 +1966,9 @@
         "docs/mobile-remote.md",
         "docs/ownership.md",
         "docs/plan/README.md",
+        "docs/plan/analysis/task-agent-coordination.md",
         "docs/plan/native-engine-browser-profile.md",
+        "docs/plan/tasks/task-agent-coordination-001.md",
         "docs/policy.md",
         "docs/positioning.md",
         "docs/production-canary.md",
@@ -6550,7 +6552,8 @@
         "docs/plan/tasks/issue64-queue-retarget-retry-001.md",
         "docs/plan/tasks/issue64-send-attempt-recovery-001.md",
         "docs/plan/tasks/issue64-task-thread-journey-001.md",
-        "docs/plan/tasks/issue64-three-thread-journey-001.md"
+        "docs/plan/tasks/issue64-three-thread-journey-001.md",
+        "docs/plan/tasks/task-agent-coordination-001.md"
       ],
       "dependencies": [
         "docs/INDEX.md",
@@ -6586,6 +6589,7 @@
         "docs/plan/analysis/semantic-core-hardening.md",
         "docs/plan/analysis/semantic-resource-audit.md",
         "docs/plan/analysis/shared-workspace.md",
+        "docs/plan/analysis/task-agent-coordination.md",
         "docs/plan/native-engine-browser-profile.md",
         "docs/plan/reviews/native-engine-browser-846-01.md",
         "docs/plan/reviews/native-engine-browser-847-01.md",
@@ -7858,6 +7862,7 @@
         "docs/plan/tasks/surface-031-001.md",
         "docs/plan/tasks/surface-031-002.md",
         "docs/plan/tasks/target-009.md",
+        "docs/plan/tasks/task-agent-coordination-001.md",
         "docs/plan/tasks/topology-011.md",
         "docs/plan/tasks/tui-005.md",
         "docs/plan/tasks/tui-recovery-033-002.md",
@@ -7878,6 +7883,11 @@
           "level": "1",
           "title": "Glass delivery plans",
           "anchor": "glass-delivery-plans"
+        },
+        {
+          "level": "2",
+          "title": "Proposed plan: task-backed agent coordination",
+          "anchor": "proposed-plan-task-backed-agent-coordination"
         },
         {
           "level": "2",
@@ -9572,6 +9582,80 @@
           "level": "2",
           "title": "Verification",
           "anchor": "verification"
+        }
+      ]
+    },
+    {
+      "path": "docs/plan/analysis/task-agent-coordination.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "docs/plan/README.md",
+        "docs/plan/tasks/task-agent-coordination-001.md"
+      ],
+      "dependencies": [
+        "docs/plan/tasks/task-agent-coordination-001.md",
+        "docs/task-dag.md",
+        "products/glass-core/docs/reference/durable.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/analysis/task-agent-coordination.md#task-backed-agent-coordination",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Task-backed agent coordination",
+          "anchor": "task-backed-agent-coordination"
+        },
+        {
+          "level": "2",
+          "title": "Objective and existing boundaries",
+          "anchor": "objective-and-existing-boundaries"
+        },
+        {
+          "level": "2",
+          "title": "P0 source audit",
+          "anchor": "p0-source-audit"
+        },
+        {
+          "level": "2",
+          "title": "State ownership",
+          "anchor": "state-ownership"
+        },
+        {
+          "level": "2",
+          "title": "Execution and stopping contract",
+          "anchor": "execution-and-stopping-contract"
+        },
+        {
+          "level": "2",
+          "title": "Durable communication and wakeups",
+          "anchor": "durable-communication-and-wakeups"
+        },
+        {
+          "level": "2",
+          "title": "Recovery, controls and privacy",
+          "anchor": "recovery-controls-and-privacy"
+        },
+        {
+          "level": "2",
+          "title": "User interface",
+          "anchor": "user-interface"
+        },
+        {
+          "level": "2",
+          "title": "Required integration paths",
+          "anchor": "required-integration-paths"
+        },
+        {
+          "level": "2",
+          "title": "Verification and rollout",
+          "anchor": "verification-and-rollout"
         }
       ]
     },
@@ -13127,6 +13211,54 @@
           "level": "2",
           "title": "Certification record",
           "anchor": "certification-record"
+        }
+      ]
+    },
+    {
+      "path": "docs/plan/reviews/task-agent-coordination-001-01.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/plan/tasks/task-agent-coordination-001.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/reviews/task-agent-coordination-001-01.md#task-backed-coordination-independent-design-review",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Task-backed coordination independent design review",
+          "anchor": "task-backed-coordination-independent-design-review"
+        },
+        {
+          "level": "2",
+          "title": "Scope reviewed",
+          "anchor": "scope-reviewed"
+        },
+        {
+          "level": "2",
+          "title": "Findings",
+          "anchor": "findings"
+        },
+        {
+          "level": "2",
+          "title": "Proposed-design verdict",
+          "anchor": "proposed-design-verdict"
+        },
+        {
+          "level": "2",
+          "title": "Post-review implementation status",
+          "anchor": "post-review-implementation-status"
+        },
+        {
+          "level": "2",
+          "title": "Verification evidence",
+          "anchor": "verification-evidence"
         }
       ]
     },
@@ -79482,6 +79614,63 @@
       ]
     },
     {
+      "path": "docs/plan/tasks/task-agent-coordination-001.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "docs/plan/README.md",
+        "docs/plan/analysis/task-agent-coordination.md"
+      ],
+      "dependencies": [
+        "docs/plan/README.md",
+        "docs/plan/analysis/task-agent-coordination.md",
+        "docs/plan/reviews/task-agent-coordination-001-01.md",
+        "docs/task-dag.md",
+        "products/glass-core/docs/reference/checklist.md",
+        "products/glass-core/docs/reference/runtime.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/tasks/task-agent-coordination-001.md#task-backed-coordination-delivery-plan",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Task-backed coordination delivery plan",
+          "anchor": "task-backed-coordination-delivery-plan"
+        },
+        {
+          "level": "2",
+          "title": "Objective",
+          "anchor": "objective"
+        },
+        {
+          "level": "2",
+          "title": "Context",
+          "anchor": "context"
+        },
+        {
+          "level": "2",
+          "title": "Path and owners",
+          "anchor": "path-and-owners"
+        },
+        {
+          "level": "2",
+          "title": "Checklist",
+          "anchor": "checklist"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
+        }
+      ]
+    },
+    {
       "path": "docs/plan/tasks/topology-011.md",
       "class": "historical",
       "topic": "history",
@@ -83134,8 +83323,10 @@
         "docs/INDEX.md",
         "docs/development-runtime.md",
         "docs/harness-architecture.md",
+        "docs/plan/analysis/task-agent-coordination.md",
         "docs/plan/tasks/issue64-task-scheduler-recovery-001.md",
-        "docs/plan/tasks/issue64-task-thread-queue-restart-001.md"
+        "docs/plan/tasks/issue64-task-thread-queue-restart-001.md",
+        "docs/plan/tasks/task-agent-coordination-001.md"
       ],
       "dependencies": [
         "docs/daemon.md",
@@ -90767,6 +90958,7 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
+        "docs/plan/tasks/task-agent-coordination-001.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/tools.md",
         "products/glass-core/docs/workflows.md",
@@ -90823,6 +91015,7 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
+        "docs/plan/analysis/task-agent-coordination.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/plan/durable-and-output.md",
         "products/glass-core/docs/plan/reviews/native-durable-output-2026-10-15.md",
@@ -90973,6 +91166,7 @@
       "canonicalSuccessor": null,
       "consumers": [
         "crates/glass-runtime-client/README.md",
+        "docs/plan/tasks/task-agent-coordination-001.md",
         "products/glass-core/README.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/automation.md",

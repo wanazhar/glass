@@ -1,5 +1,9 @@
 # Glass documentation
 
+Proposed design: [task-backed agent coordination](plan/analysis/task-agent-coordination.md)
+and its [delivery checklist](plan/tasks/task-agent-coordination-001.md) describe
+event-driven delegation and execution limits. This feature is not implemented.
+
 These guides describe the current Glass source tree. They do not claim that
 every change in this tree is part of a published release. The
 [release evidence](release-evidence.md) records which packages and artifacts

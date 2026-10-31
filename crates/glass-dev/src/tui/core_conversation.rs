@@ -243,6 +243,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }
     }
 
@@ -268,6 +269,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         };
         let shared = transcript_entry(&entry, 7, false, None);
         assert_eq!(shared.role, glass_tui::Role::Assistant);

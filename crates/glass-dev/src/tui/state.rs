@@ -251,12 +251,14 @@ pub struct SubagentViewer {
     pub children: Vec<serde_json::Value>,
     pub live_events: Vec<serde_json::Value>,
     pub selected_child: usize,
+    pub(super) pending_open_child: Option<super::projection::SubagentActivityCard>,
     pub child_entries: Vec<serde_json::Value>,
     pub selected_entry: usize,
     pub watching_child: bool,
     pub entries_request_id: Option<String>,
     pub output_inspector: Option<SubagentOutputInspector>,
     pub output_request_id: Option<String>,
+    pub(super) pending_output_offset: Option<(u64, u8)>,
     pub entries_cursor: u64,
     pub entries_has_more: bool,
     pub entries_scroll: usize,
@@ -1812,6 +1814,9 @@ pub struct DevTuiState {
     pub native_gc_ui_panel: Option<NativeGcUiPanel>,
     /// Read-only child-session viewer, never a writable agent selection.
     pub subagents_viewer: Option<SubagentViewer>,
+    /// A child-viewer open deferred briefly while a workspace background job
+    /// owns the shared workspace mutex.
+    pending_subagents_open: Option<(Option<super::projection::SubagentActivityCard>, u8)>,
     secret_prompt: Option<PendingSecretPrompt>,
     native_gc_ui_last_sequence: std::collections::BTreeMap<crate::AgentId, u64>,
     pub composer_mode: bool,
@@ -1836,6 +1841,7 @@ pub struct DevTuiState {
     pub file_picker_cursor: usize,
     pub file_picker_selection: usize,
     pub transcript_selection: usize,
+    pub transcript_navigation_focus: bool,
     pub transcript_expanded: bool,
     pub expanded_tool_call_id: Option<String>,
     pub tool_output_inspector_call_id: Option<String>,
@@ -2382,6 +2388,7 @@ impl DevTuiState {
             help_scroll: 0,
             native_gc_ui_panel: None,
             subagents_viewer: None,
+            pending_subagents_open: None,
             secret_prompt: None,
             native_gc_ui_last_sequence: std::collections::BTreeMap::new(),
             // Agent is the landing workspace and its composer is immediately
@@ -2406,6 +2413,7 @@ impl DevTuiState {
             file_picker_cursor: 0,
             file_picker_selection: 0,
             transcript_selection: 0,
+            transcript_navigation_focus: false,
             transcript_expanded: false,
             expanded_tool_call_id: None,
             tool_output_inspector_call_id: None,
@@ -3081,6 +3089,34 @@ impl DevTuiState {
     }
 
     pub fn open_subagents_viewer(&mut self) -> Result<(), String> {
+        self.open_subagents_viewer_for_target(None)
+    }
+
+    pub(super) fn open_subagents_viewer_for(
+        &mut self,
+        target: super::projection::SubagentActivityCard,
+    ) -> Result<(), String> {
+        self.open_subagents_viewer_for_target(Some(target))
+    }
+
+    fn open_subagents_viewer_for_target(
+        &mut self,
+        target: Option<super::projection::SubagentActivityCard>,
+    ) -> Result<(), String> {
+        match self.try_open_subagents_viewer_for_target(target.clone()) {
+            Err(error) if error.contains("workspace busy with a background operation") => {
+                self.pending_subagents_open = Some((target, 0));
+                self.status = "Opening linked child · waiting for workspace".into();
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
+    fn try_open_subagents_viewer_for_target(
+        &mut self,
+        target: Option<super::projection::SubagentActivityCard>,
+    ) -> Result<(), String> {
         if self.subagents_viewer.is_some() {
             return Ok(());
         }
@@ -3107,6 +3143,12 @@ impl DevTuiState {
             Some(Err(error)) => return Err(error.to_string()),
             None => return Err(self.status.clone()),
         };
+        if target
+            .as_ref()
+            .is_some_and(|target| target.parent_session_id != parent_session_id)
+        {
+            return Err("This child activity belongs to a different Core session".into());
+        }
         self.subagents_viewer = Some(SubagentViewer {
             parent_agent: owner,
             parent_session_id,
@@ -3114,12 +3156,14 @@ impl DevTuiState {
             children: Vec::new(),
             live_events: Vec::new(),
             selected_child: 0,
+            pending_open_child: target,
             child_entries: Vec::new(),
             selected_entry: 0,
             watching_child: false,
             entries_request_id: None,
             output_inspector: None,
             output_request_id: None,
+            pending_output_offset: None,
             entries_cursor: 0,
             entries_has_more: false,
             entries_scroll: 0,
@@ -3132,7 +3176,49 @@ impl DevTuiState {
         Ok(())
     }
 
+    pub(super) fn selected_subagent_activity(
+        &self,
+    ) -> Option<super::projection::SubagentActivityCard> {
+        self.conversation_entries_view()
+            .get(self.transcript_selection)
+            .and_then(|entry| entry.subagent_activity.clone())
+    }
+
+    pub fn open_selected_subagent_activity(&mut self) {
+        let Some(target) = self.selected_subagent_activity() else {
+            return;
+        };
+        if let Err(error) = self.open_subagents_viewer_for(target) {
+            self.status = format!("Could not open linked child · {error}");
+        }
+    }
+
+    pub fn toggle_selected_subagent_exchange(&mut self) {
+        let selected = self
+            .conversation_entries_view()
+            .get(self.transcript_selection)
+            .filter(|entry| entry.subagent_activity.is_some())
+            .and_then(|entry| entry.tool_card.as_ref())
+            .map(|card| card.call_id.clone());
+        let Some(call_id) = selected else {
+            return;
+        };
+        let expanded = if self.expanded_tool_call_id.as_deref() == Some(call_id.as_str()) {
+            self.expanded_tool_call_id = None;
+            false
+        } else {
+            self.expanded_tool_call_id = Some(call_id);
+            true
+        };
+        self.status = if expanded {
+            "Child exchange expanded · e collapse · Enter watch · Esc composer".into()
+        } else {
+            "Child exchange collapsed · e reveal · Enter watch · Esc composer".into()
+        };
+    }
+
     pub fn close_subagents_viewer(&mut self) {
+        self.pending_subagents_open = None;
         if let Some(viewer) = self.subagents_viewer.take() {
             self.composer_mode = viewer.previous_composer_mode;
             self.status = "Returned to main conversation · draft preserved".into();
@@ -3253,6 +3339,7 @@ impl DevTuiState {
         viewer.entries_request_id = Some(request_id);
         viewer.output_inspector = None;
         viewer.output_request_id = None;
+        viewer.pending_output_offset = None;
         viewer.last_event_sequence = since;
         viewer.error = None;
         Ok(())
@@ -3265,6 +3352,7 @@ impl DevTuiState {
         if viewer.output_inspector.is_some() {
             viewer.output_inspector = None;
             viewer.output_request_id = None;
+            viewer.pending_output_offset = None;
             self.status = "Child transcript · Tab select output · Enter inspect · Esc back".into();
             return;
         }
@@ -3329,13 +3417,22 @@ impl DevTuiState {
             next_offset: None,
             scroll: 0,
         };
-        let request_id = self.queue_subagent_output_chunk(&inspector, 0)?;
+        let request_id = match self.queue_subagent_output_chunk(&inspector, 0) {
+            Ok(request_id) => Some(request_id),
+            Err(error) if error.contains("workspace busy with a background operation") => None,
+            Err(error) => return Err(error),
+        };
         let viewer = self
             .subagents_viewer
             .as_mut()
             .expect("viewer checked above");
         viewer.output_inspector = Some(inspector);
-        viewer.output_request_id = Some(request_id);
+        viewer.output_request_id = request_id;
+        viewer.pending_output_offset = viewer.output_request_id.is_none().then_some((0, 0));
+        viewer.error = None;
+        if viewer.pending_output_offset.is_some() {
+            self.status = "Loading child output · waiting for workspace".into();
+        }
         Ok(())
     }
 
@@ -3428,9 +3525,19 @@ impl DevTuiState {
         let Some(offset) = inspector.next_offset else {
             return Ok(());
         };
-        let request_id = self.queue_subagent_output_chunk(&inspector, offset)?;
+        let request_id = match self.queue_subagent_output_chunk(&inspector, offset) {
+            Ok(request_id) => Some(request_id),
+            Err(error) if error.contains("workspace busy with a background operation") => None,
+            Err(error) => return Err(error),
+        };
         if let Some(viewer) = self.subagents_viewer.as_mut() {
-            viewer.output_request_id = Some(request_id);
+            viewer.output_request_id = request_id;
+            viewer.pending_output_offset =
+                viewer.output_request_id.is_none().then_some((offset, 0));
+            viewer.error = None;
+            if viewer.pending_output_offset.is_some() {
+                self.status = "Loading child output · waiting for workspace".into();
+            }
         }
         Ok(())
     }
@@ -3506,6 +3613,72 @@ impl DevTuiState {
     }
 
     pub fn tick_subagents_viewer(&mut self) -> bool {
+        if self.subagents_viewer.is_none() {
+            let Some((target, attempts)) = self.pending_subagents_open.take() else {
+                return false;
+            };
+            match self.try_open_subagents_viewer_for_target(target.clone()) {
+                Ok(()) => return true,
+                Err(error) if error.contains("workspace busy with a background operation") => {
+                    if attempts < 40 {
+                        self.pending_subagents_open = Some((target, attempts + 1));
+                        return false;
+                    }
+                    self.status =
+                        "Could not open linked child · workspace stayed busy; try again".into();
+                    return true;
+                }
+                Err(error) => {
+                    self.status = format!("Could not open linked child · {error}");
+                    return true;
+                }
+            }
+        }
+        let pending_output = self
+            .subagents_viewer
+            .as_mut()
+            .and_then(|viewer| viewer.pending_output_offset.take());
+        if let Some((offset, attempts)) = pending_output {
+            let inspector = self
+                .subagents_viewer
+                .as_ref()
+                .and_then(|viewer| viewer.output_inspector.as_ref())
+                .cloned();
+            let Some(inspector) = inspector else {
+                return false;
+            };
+            match self.queue_subagent_output_chunk(&inspector, offset) {
+                Ok(request_id) => {
+                    if let Some(viewer) = self.subagents_viewer.as_mut() {
+                        viewer.output_request_id = Some(request_id);
+                        viewer.error = None;
+                    }
+                    return true;
+                }
+                Err(error) if error.contains("workspace busy with a background operation") => {
+                    if let Some(viewer) = self.subagents_viewer.as_mut() {
+                        if attempts < 40 {
+                            viewer.pending_output_offset = Some((offset, attempts + 1));
+                            viewer.error = None;
+                            self.status = "Loading child output · waiting for workspace".into();
+                            return false;
+                        }
+                        viewer.error = Some(if inspector.next_offset.is_some() {
+                            "Workspace stayed busy; press n to retry this output chunk".into()
+                        } else {
+                            "Workspace stayed busy; press Esc, then Enter to reopen output after it clears".into()
+                        });
+                    }
+                    return true;
+                }
+                Err(error) => {
+                    if let Some(viewer) = self.subagents_viewer.as_mut() {
+                        viewer.error = Some(error);
+                    }
+                    return true;
+                }
+            }
+        }
         let Some(viewer) = self.subagents_viewer.as_ref() else {
             return false;
         };
@@ -3527,6 +3700,7 @@ impl DevTuiState {
             return false;
         };
         let mut changed = false;
+        let mut open_selected_child = false;
         let mut matched = None;
         for event in events {
             viewer.last_event_sequence = viewer.last_event_sequence.max(event.sequence);
@@ -3637,9 +3811,35 @@ impl DevTuiState {
                     })
                     .cloned()
                     .collect();
-                viewer.selected_child = viewer
-                    .selected_child
-                    .min(viewer.children.len().saturating_sub(1));
+                if let Some(target) = viewer.pending_open_child.take() {
+                    let selected = viewer.children.iter().position(|child| {
+                        child.get("taskId").and_then(serde_json::Value::as_str)
+                            == Some(target.task_id.as_str())
+                            && child
+                                .get("parentTurnId")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(target.parent_turn_id.as_str())
+                            && child
+                                .get("parentCallId")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(target.parent_call_id.as_str())
+                            && child
+                                .get("childSessionId")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(target.child_session_id.as_str())
+                    });
+                    if let Some(selected) = selected {
+                        viewer.selected_child = selected;
+                        open_selected_child = true;
+                    } else {
+                        viewer.error =
+                            Some("The linked child is not in this parent session".into());
+                    }
+                } else {
+                    viewer.selected_child = viewer
+                        .selected_child
+                        .min(viewer.children.len().saturating_sub(1));
+                }
                 viewer.list_request_id.clear();
             } else {
                 viewer.error = Some("Core returned an invalid child-session list".into());
@@ -3683,6 +3883,12 @@ impl DevTuiState {
             } else {
                 viewer.error = Some("Core returned an invalid child-session page".into());
             }
+        }
+        if open_selected_child
+            && let Err(error) = self.watch_selected_subagent()
+            && let Some(viewer) = self.subagents_viewer.as_mut()
+        {
+            viewer.error = Some(error);
         }
         true
     }
@@ -5033,6 +5239,7 @@ impl DevTuiState {
                 tool_name: None,
                 tool_card: None,
                 core_ui: None,
+                subagent_activity: None,
             });
         }
         Cow::Owned(entries)
@@ -5464,15 +5671,56 @@ impl DevTuiState {
                 .borrow_mut()
                 .focus_entry(self.transcript_selection, height);
         }
+        let selected = self
+            .conversation_entries_view()
+            .get(self.transcript_selection)
+            .is_some_and(|entry| entry.subagent_activity.is_some());
+        self.status = if selected {
+            if self.transcript_navigation_focus {
+                format!(
+                    "Child activity {}/{} · e exchange · Enter watch · Esc composer",
+                    self.transcript_selection + 1,
+                    len
+                )
+            } else {
+                format!(
+                    "Child activity {}/{} · Ctrl+↑/↓ select · e exchange · Enter watch read-only child",
+                    self.transcript_selection + 1,
+                    len
+                )
+            }
+        } else {
+            format!(
+                "Bubble {}/{} · f fork · r rewind · e edit last · o expand",
+                self.transcript_selection + 1,
+                len
+            )
+        };
+    }
+
+    pub fn focus_transcript_navigation(&mut self, delta: i32) {
+        self.transcript_navigation_focus = true;
+        self.move_transcript_selection(delta);
         self.status = format!(
-            "Bubble {}/{} · f fork · r rewind · e edit last · o expand",
+            "Transcript focus · {}/{} · e exchange · Enter watch · Esc composer",
             self.transcript_selection + 1,
-            len
+            self.conversation_entries_view().len()
         );
+    }
+
+    pub fn return_to_composer_focus(&mut self) {
+        if self.transcript_navigation_focus {
+            self.transcript_navigation_focus = false;
+            self.status = "Composer focus · draft preserved · Ctrl+↑/↓ transcript".into();
+        }
     }
 
     pub fn toggle_transcript_expand(&mut self) {
         if self.surface == DevSurface::Agent {
+            if self.selected_subagent_activity().is_some() {
+                self.toggle_selected_subagent_exchange();
+                return;
+            }
             let call_id = self
                 .conversation_entries_view()
                 .get(self.transcript_selection)
@@ -15993,6 +16241,7 @@ fn conversation_entry_from_lines(
         tool_name: None,
         tool_card: None,
         core_ui: None,
+        subagent_activity: None,
     }
 }
 
@@ -16919,6 +17168,7 @@ mod tests {
             tool_name: Some("glass-core.native-ui/help/Core".into()),
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         };
         let assistant = super::super::projection::ConversationEntry {
             kind: super::super::projection::ConversationKind::Assistant,
@@ -16929,6 +17179,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         };
         let items = vec![assistant, marker.clone()];
         snapshot.agent_conversations.insert(
@@ -17022,6 +17273,7 @@ mod tests {
                 sequence: 3,
                 error: false,
             }),
+            subagent_activity: None,
         };
         snapshot.agent_conversations.insert(
             owner,
@@ -17070,6 +17322,7 @@ mod tests {
                 sequence: 9,
                 error: true,
             }),
+            subagent_activity: None,
         };
         snapshot.agent_conversations.insert(
             owner,
@@ -21062,6 +21315,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         };
         state.agent_conversations.insert(
             agent_a.clone(),
@@ -21206,6 +21460,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }];
         state.pending_chat_messages.push(PendingChatMessage {
             agent_id: state.selected_agent.clone(),
@@ -21418,6 +21673,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }];
 
         let view = state.conversation_view();
@@ -21442,6 +21698,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }];
 
         let view = state.conversation_entries_cow();
@@ -21476,6 +21733,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         };
         state.conversation_items = vec![user_entry("chat-1")];
 
@@ -21709,6 +21967,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }];
         state.transcript_selection = 0;
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
@@ -22515,12 +22774,14 @@ mod tests {
             children: Vec::new(),
             live_events: Vec::new(),
             selected_child: 0,
+            pending_open_child: None,
             child_entries: Vec::new(),
             selected_entry: 0,
             watching_child: true,
             entries_request_id: None,
             output_inspector: None,
             output_request_id: None,
+            pending_output_offset: None,
             entries_cursor: 0,
             entries_has_more: false,
             entries_scroll: 0,

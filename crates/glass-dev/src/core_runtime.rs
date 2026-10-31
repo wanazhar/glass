@@ -1640,6 +1640,8 @@ fn translate_event(params: &Value) -> Vec<Value> {
         "tool_start" => {
             events.push(json!({
                 "type": "tool_execution_start",
+                "parentSessionId": params.get("sessionId").cloned().unwrap_or(Value::Null),
+                "parentTurnId": params.get("turnId").cloned().unwrap_or(Value::Null),
                 "toolName": data.get("name").cloned().unwrap_or(Value::Null),
                 "callId": data.get("callId").cloned().unwrap_or(Value::Null),
             }));
@@ -3226,6 +3228,22 @@ mod tests {
         assert_eq!(events[0]["data"]["seq"], 4);
         assert_eq!(events[0]["data"]["text"], "bounded output");
         assert!(events[0].get("assistantMessageEvent").is_none());
+    }
+
+    #[test]
+    fn parent_tool_start_keeps_runtime_scope_for_child_card_correlation() {
+        let events = translate_event(&json!({
+            "sessionId":"parent-session",
+            "turnId":"turn-5",
+            "type":"tool_start",
+            "data":{"name":"run_subagents","callId":"call-8"}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "tool_execution_start");
+        assert_eq!(events[0]["parentSessionId"], "parent-session");
+        assert_eq!(events[0]["parentTurnId"], "turn-5");
+        assert_eq!(events[0]["toolName"], "run_subagents");
+        assert_eq!(events[0]["callId"], "call-8");
     }
 
     #[test]

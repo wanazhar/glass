@@ -408,6 +408,376 @@ pub struct ConversationEntry {
     pub tool_card: Option<glass_tui::ToolCard>,
     /// Core-owned presentation for a UI command; never rendered as transcript text.
     pub(super) core_ui: Option<CoreUiPresentation>,
+    /// Verified, read-only metadata for one real Core child session.
+    pub(super) subagent_activity: Option<SubagentActivityCard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SubagentActivityCard {
+    pub parent_session_id: String,
+    pub parent_turn_id: String,
+    pub task_id: String,
+    pub parent_call_id: String,
+    pub child_session_id: String,
+    pub task_index: usize,
+    pub task_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubagentActivityEvent {
+    parent_session_id: String,
+    parent_turn_id: String,
+    task_id: String,
+    parent_call_id: String,
+    child_session_id: String,
+    task_index: usize,
+    task_count: usize,
+    sequence: u64,
+    kind: SubagentActivityEventKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SubagentActivityEventKind {
+    Started {
+        task_text: String,
+        truncated: bool,
+    },
+    Text {
+        text: String,
+        truncated: bool,
+    },
+    ToolStart {
+        tool_name: String,
+    },
+    ToolEnd {
+        tool_name: String,
+        summary: String,
+        text: String,
+        truncated: bool,
+        is_error: bool,
+    },
+    Finished {
+        state: String,
+        result: String,
+        error: String,
+        truncated: bool,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ActivityAccumulator {
+    parent_session_id: String,
+    parent_turn_id: String,
+    task_id: String,
+    parent_call_id: String,
+    child_session_id: String,
+    task_index: usize,
+    task_count: usize,
+    last_sequence: u64,
+    started: bool,
+    finished: bool,
+    state: String,
+    task_text: String,
+    updates: Vec<String>,
+    result: String,
+}
+
+impl SubagentActivityEvent {
+    fn key(&self) -> String {
+        format!(
+            "{}\0{}\0{}\0{}\0{}",
+            self.parent_session_id,
+            self.parent_turn_id,
+            self.task_id,
+            self.parent_call_id,
+            self.child_session_id
+        )
+    }
+}
+
+impl ActivityAccumulator {
+    fn apply(&mut self, event: SubagentActivityEvent) -> bool {
+        if self.finished || event.sequence <= self.last_sequence {
+            return false;
+        }
+        if self.started
+            && (self.parent_session_id != event.parent_session_id
+                || self.parent_turn_id != event.parent_turn_id
+                || self.task_id != event.task_id
+                || self.parent_call_id != event.parent_call_id
+                || self.child_session_id != event.child_session_id
+                || self.task_index != event.task_index
+                || self.task_count != event.task_count)
+        {
+            return false;
+        }
+        if !self.started && !matches!(event.kind, SubagentActivityEventKind::Started { .. }) {
+            return false;
+        }
+        if let SubagentActivityEventKind::Finished { state, .. } = &event.kind
+            && !matches!(state.as_str(), "completed" | "failed" | "cancelled")
+        {
+            return false;
+        }
+        self.parent_session_id = event.parent_session_id;
+        self.parent_turn_id = event.parent_turn_id;
+        self.task_id = event.task_id;
+        self.parent_call_id = event.parent_call_id;
+        self.child_session_id = event.child_session_id;
+        self.task_index = event.task_index;
+        self.task_count = event.task_count;
+        self.last_sequence = event.sequence;
+        match event.kind {
+            SubagentActivityEventKind::Started {
+                task_text,
+                truncated,
+            } => {
+                self.started = true;
+                self.state = "running".into();
+                self.task_text = bounded_display_text(&task_text, 640);
+                if truncated {
+                    self.task_text.push_str(" … [truncated]");
+                }
+            }
+            SubagentActivityEventKind::Text { text, truncated } => {
+                self.state = "running".into();
+                self.push_update("Child", &append_truncated(text, truncated));
+            }
+            SubagentActivityEventKind::ToolStart { tool_name } => {
+                self.state = "running".into();
+                self.push_update("Tool started", &tool_name);
+            }
+            SubagentActivityEventKind::ToolEnd {
+                tool_name,
+                summary,
+                text,
+                truncated,
+                is_error,
+            } => {
+                self.state = "running".into();
+                let status = if is_error { "failed" } else { "completed" };
+                let preview = bounded_display_text(&text, 320);
+                let detail = if preview.is_empty() {
+                    summary
+                } else if summary.is_empty() {
+                    preview
+                } else {
+                    format!("{summary} · {preview}")
+                };
+                self.push_update(
+                    "Tool",
+                    &format!(
+                        "{tool_name} · {status} · {}",
+                        append_truncated(detail, truncated)
+                    ),
+                );
+            }
+            SubagentActivityEventKind::Finished {
+                state,
+                result,
+                error,
+                truncated,
+            } => {
+                self.state = state;
+                self.finished = true;
+                self.result =
+                    bounded_display_text(if result.is_empty() { &error } else { &result }, 1_024);
+                if truncated {
+                    self.result.push_str(" … [truncated]");
+                }
+            }
+        }
+        true
+    }
+
+    fn push_update(&mut self, label: &str, text: &str) {
+        let text = bounded_display_text(text, 512);
+        if text.is_empty() {
+            return;
+        }
+        let line = format!("{label}: {text}");
+        if label == "Child"
+            && let Some(previous) = self.updates.last_mut()
+            && let Some(previous_text) = previous.strip_prefix("Child: ")
+        {
+            let remaining = 2_048_usize.saturating_sub(previous_text.len());
+            if remaining > 0 {
+                previous.push_str(&text.chars().take(remaining).collect::<String>());
+            }
+            return;
+        }
+        if self.updates.len() == 12 {
+            self.updates.remove(0);
+        }
+        self.updates.push(line);
+    }
+
+    fn into_conversation_entry(self) -> ConversationEntry {
+        let position = format!("{}/{}", self.task_index.saturating_add(1), self.task_count);
+        let task = if self.task_text.is_empty() {
+            "task details unavailable".into()
+        } else {
+            self.task_text.clone()
+        };
+        let mut output = vec![format!("Assigned task · {task}")];
+        output.extend(self.updates);
+        if !self.result.is_empty() {
+            output.push(format!("Child report · {}", self.result));
+        }
+        let call_id = format!("subagent:{}:{}", self.task_id, self.child_session_id);
+        let tool_card = glass_tui::ToolCard {
+            expanded: false,
+            call_id,
+            command: format!("Subagent {position} · {}", bounded_display_text(&task, 88)),
+            output: output.join("\n"),
+            status: self.state.clone(),
+            elapsed_ms: None,
+            spill: None,
+            truncated: false,
+        };
+        ConversationEntry {
+            kind: ConversationKind::System,
+            text: format!(
+                "Delegated · {position} · {} · e exchange · Enter watch",
+                self.state
+            ),
+            streaming: false,
+            entry_id: Some(format!("subagent:{}", self.task_id)),
+            client_message_id: None,
+            tool_name: Some("subagent".into()),
+            tool_card: Some(tool_card),
+            core_ui: None,
+            subagent_activity: Some(SubagentActivityCard {
+                parent_session_id: self.parent_session_id,
+                parent_turn_id: self.parent_turn_id,
+                task_id: self.task_id,
+                parent_call_id: self.parent_call_id,
+                child_session_id: self.child_session_id,
+                task_index: self.task_index,
+                task_count: self.task_count,
+            }),
+        }
+    }
+}
+
+fn parse_subagent_activity_event(event: &crate::AgentEvent) -> Option<SubagentActivityEvent> {
+    let payload = &event.payload;
+    let data = payload.get("data")?;
+    let parent_session = payload.get("parentSessionId")?.as_str()?;
+    let parent_turn = payload
+        .get("parentTurnId")?
+        .as_str()
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .filter(|value| !value.chars().any(char::is_control))?
+        .to_owned();
+    if parent_session.is_empty()
+        || parent_session.len() > 128
+        || parent_session.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let id = |key: &str| -> Option<String> {
+        payload_string(data, key)
+            .filter(|value| !value.is_empty() && value.len() <= 128)
+            .filter(|value| !value.chars().any(char::is_control))
+    };
+    let task_id = id("taskId")?;
+    let parent_call_id = id("parentCallId")?;
+    let child_session_id = id("childSessionId")?;
+    let sequence = data.get("seq")?.as_u64()?;
+    let task_index = usize::try_from(data.get("taskIndex")?.as_u64()?).ok()?;
+    let task_count = usize::try_from(data.get("taskCount")?.as_u64()?).ok()?;
+    if sequence == 0 || task_count == 0 || task_count > 100 || task_index >= task_count {
+        return None;
+    }
+    let text = |key: &str, cap: usize| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .map(|value| bounded_display_text(value, cap))
+            .unwrap_or_default()
+    };
+    let kind = match data.get("kind")?.as_str()? {
+        "started" => SubagentActivityEventKind::Started {
+            task_text: text("taskText", 4_096),
+            truncated: data
+                .get("taskTextTruncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        },
+        "text" => SubagentActivityEventKind::Text {
+            text: text("text", 1_024),
+            truncated: data
+                .get("textTruncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        },
+        "tool_start" => SubagentActivityEventKind::ToolStart {
+            tool_name: text("toolName", 128),
+        },
+        "tool_end" => SubagentActivityEventKind::ToolEnd {
+            tool_name: text("toolName", 128),
+            summary: text("summary", 512),
+            text: text("text", 1_024),
+            truncated: data
+                .get("summaryTruncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || data
+                    .get("textTruncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            is_error: data
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        },
+        "finished" => SubagentActivityEventKind::Finished {
+            state: text("state", 32),
+            result: text("result", 4_096),
+            error: text("error", 1_024),
+            truncated: data
+                .get("resultTruncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || data
+                    .get("errorTruncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+        },
+        _ => return None,
+    };
+    Some(SubagentActivityEvent {
+        parent_session_id: parent_session.to_string(),
+        parent_turn_id: parent_turn,
+        task_id,
+        parent_call_id,
+        child_session_id,
+        task_index,
+        task_count,
+        sequence,
+        kind,
+    })
+}
+
+fn payload_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(str::to_owned)
+}
+
+fn bounded_display_text(text: &str, max_chars: usize) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn append_truncated(text: String, truncated: bool) -> String {
+    if truncated && !text.is_empty() {
+        format!("{text} … [truncated]")
+    } else {
+        text
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -481,6 +851,7 @@ impl ConversationEntry {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }
     }
 
@@ -498,6 +869,7 @@ impl ConversationEntry {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }
     }
 
@@ -511,6 +883,7 @@ impl ConversationEntry {
             tool_name,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }
     }
 
@@ -524,6 +897,7 @@ impl ConversationEntry {
             tool_name,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }
     }
 
@@ -694,10 +1068,55 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
     let mut items = Vec::new();
     let mut shared = SharedConversationProjection::default();
     let mut host_tool_calls = BTreeSet::new();
+    let mut subagent_cards = std::collections::BTreeMap::<String, ActivityAccumulator>::new();
+    let mut subagent_positions = std::collections::BTreeMap::<String, usize>::new();
+    let mut subagent_parent_calls = BTreeSet::<(String, String, String)>::new();
+    let mut parent_subagent_calls = BTreeSet::<(String, String, String)>::new();
+    let mut parent_tool_scopes =
+        std::collections::BTreeMap::<String, (String, String, String)>::new();
     let mut turn = 0_usize;
     for event in events {
         let entry_id = event_entry_id(event);
         match event.kind.as_str() {
+            "subagent_event" => {
+                let Some(activity) = parse_subagent_activity_event(event) else {
+                    continue;
+                };
+                let scope = (
+                    activity.parent_session_id.clone(),
+                    activity.parent_turn_id.clone(),
+                );
+                let parent_call = (
+                    activity.parent_call_id.clone(),
+                    scope.0.clone(),
+                    scope.1.clone(),
+                );
+                if !parent_subagent_calls.contains(&parent_call) {
+                    continue;
+                }
+                shared.finish_streaming(&mut items);
+                let key = activity.key();
+                if !subagent_cards.contains_key(&key)
+                    && !matches!(&activity.kind, SubagentActivityEventKind::Started { .. })
+                {
+                    continue;
+                }
+                let card = subagent_cards.entry(key.clone()).or_default();
+                if !card.apply(activity) {
+                    continue;
+                }
+                subagent_parent_calls.insert(parent_call);
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    subagent_positions.entry(key)
+                {
+                    let index = items.len();
+                    items.push(ConversationEntry::system(
+                        "",
+                        Some("subagent_activity".into()),
+                    ));
+                    entry.insert(index);
+                }
+            }
             "starting" | "ready" | "turn_end" | "message_start" | "agent_settled" => {}
             "turn_start" => {
                 turn = turn.saturating_add(1);
@@ -841,6 +1260,29 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("legacy-{}", event.sequence));
+                let parent_call_scope = (name == "run_subagents")
+                    .then(|| {
+                        Some((
+                            call_id.clone(),
+                            event
+                                .payload
+                                .get("parentSessionId")
+                                .and_then(Value::as_str)?
+                                .to_string(),
+                            event
+                                .payload
+                                .get("parentTurnId")
+                                .and_then(Value::as_str)?
+                                .to_string(),
+                        ))
+                    })
+                    .flatten()
+                    .filter(|(_, session_id, turn_id)| {
+                        !session_id.is_empty() && !turn_id.is_empty()
+                    });
+                if let Some(scope) = parent_call_scope.as_ref() {
+                    parent_subagent_calls.insert(scope.clone());
+                }
                 // Core owns the lifecycle of every call, but the resident
                 // runtime also returns an attributed Glass integration
                 // evidence event with the authoritative host result. Avoid
@@ -852,7 +1294,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 }
                 shared.apply(
                     glass_tui::ConversationEvent::ToolStart {
-                        call_id,
+                        call_id: call_id.clone(),
                         name,
                         command: event
                             .payload
@@ -864,6 +1306,25 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     &mut items,
                     None,
                 );
+                if let Some(scope) = parent_call_scope
+                    && let Some(entry) = items.iter_mut().rev().find(|entry| {
+                        entry
+                            .tool_card
+                            .as_ref()
+                            .is_some_and(|card| card.call_id == call_id)
+                    })
+                {
+                    let scope_id = format!(
+                        "parent-call:{}:{}:{}:{}:{}",
+                        event.agent_id.as_str(),
+                        scope.1,
+                        scope.2,
+                        scope.0,
+                        event.sequence
+                    );
+                    entry.entry_id = Some(scope_id.clone());
+                    parent_tool_scopes.insert(scope_id, scope);
+                }
             }
             "tool_progress" => {
                 if let Some(call_id) = event
@@ -1163,6 +1624,27 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
             _ => {}
         }
     }
+    for (key, card) in subagent_cards {
+        if let Some(index) = subagent_positions.get(&key).copied()
+            && let Some(entry) = items.get_mut(index)
+        {
+            *entry = card.into_conversation_entry();
+        }
+    }
+    if !subagent_parent_calls.is_empty() {
+        items.retain(|entry| {
+            !(entry.tool_name.as_deref() == Some("run_subagents")
+                && entry.tool_card.as_ref().is_some_and(|card| {
+                    entry
+                        .entry_id
+                        .as_ref()
+                        .and_then(|entry_id| parent_tool_scopes.get(entry_id))
+                        .is_some_and(|scope| {
+                            scope.0 == card.call_id && subagent_parent_calls.contains(scope)
+                        })
+                }))
+        });
+    }
     items
 }
 
@@ -1434,6 +1916,259 @@ mod tests {
         assert!(
             rendered.is_empty(),
             "model discovery belongs to palette state"
+        );
+    }
+
+    #[test]
+    fn subagent_events_group_into_attributed_activity_cards_without_reasoning() {
+        let agent_id = crate::AgentId::parse("agent-0002").unwrap();
+        let event = |sequence, data| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "subagent_event".into(),
+            payload: serde_json::json!({
+                "parentSessionId":"parent-session",
+                "parentTurnId":"turn-2",
+                "data":data
+            }),
+        };
+        let child = |kind, seq, extra: serde_json::Value| {
+            let mut data = serde_json::json!({
+                "kind":kind,
+                "taskId":"task-17",
+                "parentCallId":"call-delegate-3",
+                "taskIndex":0,
+                "taskCount":2,
+                "childSessionId":"child-session-17",
+                "seq":seq
+            });
+            for (key, value) in extra.as_object().unwrap() {
+                data[key] = value.clone();
+            }
+            data
+        };
+        let events = [
+            crate::AgentEvent {
+                sequence: 0,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "tool_execution_start".into(),
+                payload: serde_json::json!({
+                    "name":"run_subagents",
+                    "callId":"call-delegate-3",
+                    "command":"run_subagents",
+                    "parentSessionId":"parent-session",
+                    "parentTurnId":"turn-2",
+                }),
+            },
+            crate::AgentEvent {
+                sequence: 0,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "tool_execution_start".into(),
+                payload: serde_json::json!({
+                    "name":"run_subagents",
+                    "callId":"call-regular-4",
+                    "command":"run_subagents",
+                    "parentSessionId":"parent-session",
+                    "parentTurnId":"turn-2",
+                }),
+            },
+            event(
+                1,
+                child(
+                    "started",
+                    1,
+                    serde_json::json!({
+                        "taskText":"Inspect the parser and summarize the regression risk.",
+                        "state":"running"
+                    }),
+                ),
+            ),
+            event(
+                2,
+                child(
+                    "text",
+                    2,
+                    serde_json::json!({"text":"The parser branch preserves"}),
+                ),
+            ),
+            event(
+                3,
+                child(
+                    "tool_start",
+                    3,
+                    serde_json::json!({"toolName":"bash","callId":"tool-1"}),
+                ),
+            ),
+            event(
+                4,
+                child(
+                    "tool_end",
+                    4,
+                    serde_json::json!({
+                        "toolName":"bash",
+                        "summary":"1 focused check passed",
+                        "text":"Relevant output line from the focused check.",
+                        "isError":false
+                    }),
+                ),
+            ),
+            event(
+                5,
+                child(
+                    "finished",
+                    5,
+                    serde_json::json!({
+                        "state":"completed",
+                        "result":"The branch preserves the expected behavior."
+                    }),
+                ),
+            ),
+            event(
+                6,
+                child(
+                    "reasoning",
+                    6,
+                    serde_json::json!({"text":"must remain private"}),
+                ),
+            ),
+            event(
+                7,
+                child(
+                    "text",
+                    7,
+                    serde_json::json!({"text":"late update after terminal state"}),
+                ),
+            ),
+            {
+                let mut unrelated = event(
+                    8,
+                    child("started", 1, serde_json::json!({"taskText":"wrong parent"})),
+                );
+                unrelated.payload["parentSessionId"] = serde_json::json!("other-parent");
+                unrelated
+            },
+            {
+                let mut forged = event(
+                    9,
+                    child(
+                        "started",
+                        1,
+                        serde_json::json!({"taskText":"wrong parent call"}),
+                    ),
+                );
+                forged.payload["parentSessionId"] = serde_json::json!("other-parent");
+                forged.payload["data"]["parentCallId"] = serde_json::json!("call-regular-4");
+                forged
+            },
+        ];
+
+        let entries = conversation_entries(&events);
+        let cards = entries
+            .iter()
+            .filter(|entry| entry.subagent_activity.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(cards.len(), 1);
+        let card = cards[0];
+        let activity = card.subagent_activity.as_ref().unwrap();
+        assert_eq!(activity.task_id, "task-17");
+        assert_eq!(activity.parent_turn_id, "turn-2");
+        assert_eq!(activity.parent_call_id, "call-delegate-3");
+        assert_eq!(activity.child_session_id, "child-session-17");
+        assert_eq!(activity.task_index, 0);
+        assert_eq!(activity.task_count, 2);
+        let tool = card.tool_card.as_ref().unwrap();
+        assert_eq!(tool.status, "completed");
+        assert!(tool.command.contains("Subagent 1/2"));
+        assert!(tool.output.contains("Inspect the parser"));
+        assert!(tool.output.contains("The parser branch preserves"));
+        assert!(tool.output.contains("1 focused check passed"));
+        assert!(
+            tool.output
+                .contains("Relevant output line from the focused check.")
+        );
+        assert!(
+            tool.output
+                .contains("The branch preserves the expected behavior")
+        );
+        assert!(!tool.output.contains("must remain private"));
+        assert!(!tool.output.contains("late update after terminal state"));
+        let delegated_tools = entries
+            .iter()
+            .filter(|entry| entry.tool_name.as_deref() == Some("run_subagents"))
+            .collect::<Vec<_>>();
+        assert_eq!(delegated_tools.len(), 1);
+        assert_eq!(
+            delegated_tools[0]
+                .tool_card
+                .as_ref()
+                .map(|card| card.call_id.as_str()),
+            Some("call-regular-4"),
+            "an event from a different parent session cannot suppress an unrelated tool card"
+        );
+    }
+
+    #[test]
+    fn orphan_or_wrong_scope_child_events_do_not_create_cards_or_hide_parent_tools() {
+        let agent_id = crate::AgentId::parse("agent-0002").unwrap();
+        let event = |sequence, session: &str, turn: &str| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "subagent_event".into(),
+            payload: serde_json::json!({
+                "parentSessionId":session,
+                "parentTurnId":turn,
+                "data":{
+                    "kind":"started",
+                    "taskId":"task-orphan",
+                    "parentCallId":"call-orphan",
+                    "taskIndex":0,
+                    "taskCount":1,
+                    "childSessionId":"child-orphan",
+                    "seq":1,
+                    "taskText":"must not appear without an exact parent call"
+                }
+            }),
+        };
+        let parent_start = crate::AgentEvent {
+            sequence: 2,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "tool_execution_start".into(),
+            payload: serde_json::json!({
+                "name":"run_subagents",
+                "callId":"call-orphan",
+                "parentSessionId":"parent-session",
+                "parentTurnId":"turn-2",
+            }),
+        };
+        let entries = conversation_entries(&[
+            event(1, "parent-session", "turn-2"), // Arrived before the call was observed.
+            parent_start,
+            event(3, "other-session", "turn-2"), // Same call ID, wrong parent session.
+            event(4, "parent-session", "other-turn"), // Same call ID, wrong parent turn.
+        ]);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.subagent_activity.is_none()),
+            "unmatched or cross-scope events must not create child cards"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.tool_name.as_deref() == Some("run_subagents"))
+                .count(),
+            1,
+            "only a validated child card can replace its matching parent call row"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.text.contains("must not appear"))
         );
     }
 

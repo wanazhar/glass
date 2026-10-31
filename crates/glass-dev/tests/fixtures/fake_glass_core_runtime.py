@@ -189,6 +189,15 @@ def run_turn(identifier, params: dict) -> None:
 
         with open(os.path.join(gate_root, "e2e-subagents-turn-started"), "w", encoding="utf-8") as marker:
             marker.write("started")
+        event(
+            "tool_start",
+            {
+                "callId": SUBAGENT_CALL_ID,
+                "name": "run_subagents",
+                "title": "Delegate the focused parser review",
+            },
+            turn,
+        )
         wait_for_gate("e2e-subagents-open-release")
         event(
             "subagent",
@@ -196,13 +205,14 @@ def run_turn(identifier, params: dict) -> None:
                 "kind": "started",
                 "taskId": SUBAGENT_TASK_ID,
                 "parentCallId": SUBAGENT_CALL_ID,
-                "taskIndex": 1,
+                "taskIndex": 0,
                 "taskCount": 1,
                 "childSessionId": SUBAGENT_ID,
                 "seq": 1,
                 "state": "running",
                 "readOnly": True,
                 "startedAtMs": 1,
+                "taskText": "Inspect the parser branch and report the focused contract result.",
             },
             turn,
         )
@@ -215,7 +225,7 @@ def run_turn(identifier, params: dict) -> None:
                 "kind": "tool_start",
                 "taskId": SUBAGENT_TASK_ID,
                 "parentCallId": SUBAGENT_CALL_ID,
-                "taskIndex": 1,
+                "taskIndex": 0,
                 "taskCount": 1,
                 "childSessionId": SUBAGENT_ID,
                 "seq": 2,
@@ -230,7 +240,7 @@ def run_turn(identifier, params: dict) -> None:
                 "kind": "text",
                 "taskId": SUBAGENT_TASK_ID,
                 "parentCallId": SUBAGENT_CALL_ID,
-                "taskIndex": 1,
+                "taskIndex": 0,
                 "taskCount": 1,
                 "childSessionId": SUBAGENT_ID,
                 "seq": 3,
@@ -240,6 +250,23 @@ def run_turn(identifier, params: dict) -> None:
         )
         with open(os.path.join(gate_root, "e2e-subagents-live-started"), "w", encoding="utf-8") as marker:
             marker.write("started")
+        wait_for_gate("e2e-subagents-watcher-release")
+        event(
+            "subagent",
+            {
+                "kind": "text",
+                "taskId": SUBAGENT_TASK_ID,
+                "parentCallId": SUBAGENT_CALL_ID,
+                "taskIndex": 0,
+                "taskCount": 1,
+                "childSessionId": SUBAGENT_ID,
+                "seq": 4,
+                "text": "LIVE_CHILD_WATCHER_TEXT_SENTINEL",
+            },
+            turn,
+        )
+        with open(os.path.join(gate_root, "e2e-subagents-watcher-started"), "w", encoding="utf-8") as marker:
+            marker.write("started")
         wait_for_gate("e2e-subagents-finish-release")
         event(
             "subagent",
@@ -247,10 +274,10 @@ def run_turn(identifier, params: dict) -> None:
                 "kind": "tool_end",
                 "taskId": SUBAGENT_TASK_ID,
                 "parentCallId": SUBAGENT_CALL_ID,
-                "taskIndex": 1,
+                "taskIndex": 0,
                 "taskCount": 1,
                 "childSessionId": SUBAGENT_ID,
-                "seq": 4,
+                "seq": 5,
                 "callId": "fixture-child-tool-call",
                 "toolName": "bash",
                 "summary": "fixture output ready",
@@ -265,17 +292,22 @@ def run_turn(identifier, params: dict) -> None:
                 "kind": "finished",
                 "taskId": SUBAGENT_TASK_ID,
                 "parentCallId": SUBAGENT_CALL_ID,
-                "taskIndex": 1,
+                "taskIndex": 0,
                 "taskCount": 1,
                 "childSessionId": SUBAGENT_ID,
-                "seq": 5,
+                "seq": 6,
                 "state": "completed",
                 "finishedAtMs": 2,
+                "result": "The focused contract check passed; the parser branch preserves expected behavior.",
             },
             turn,
         )
+        with open(os.path.join(gate_root, "e2e-subagents-finish-emitted"), "w", encoding="utf-8") as marker:
+            marker.write("emitted")
         event("settled", {"reason": "completed"}, turn)
         reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+        with open(os.path.join(gate_root, "e2e-subagents-parent-settled"), "w", encoding="utf-8") as marker:
+            marker.write("settled")
         return
     if MODE in (
         "secret-input",
@@ -699,7 +731,7 @@ def main() -> None:
                     "parentSessionId": SESSION_ID,
                     "parentTurnId": "turn-2",
                     "parentCallId": SUBAGENT_CALL_ID,
-                    "taskIndex": 1,
+                    "taskIndex": 0,
                     "taskCount": 1,
                     "childSessionId": SUBAGENT_ID,
                     "readOnly": True,
@@ -730,7 +762,7 @@ def main() -> None:
                             "id": "fixture-child-tool-call",
                             "name": "bash",
                             "cmd": "printf fixture-child-output",
-                            "out": "CHILD_OUTPUT_FIRST_CHUNK… [truncated]",
+                            "out": "CHILD_OUTPUT_PREVIEW… [truncated]",
                             "code": 0,
                         },
                         "truncatedFields": [{"field": "out", "bytes": len(SUBAGENT_OUTPUT)}],

@@ -7679,8 +7679,8 @@ fn resident_subagents_view_is_read_only_live_and_preserves_main_draft_in_real_pt
     let mut session = Session::start_with_data_home_options(
         &binary(),
         &root,
-        100,
-        32,
+        120,
+        40,
         Some(&fake_core),
         Some(&data_home),
     );
@@ -7754,35 +7754,134 @@ fn resident_subagents_view_is_read_only_live_and_preserves_main_draft_in_real_pt
         MAIN_DRAFT,
         MAIN_DRAFT.len() - 4,
     );
-    session.send(b"\x1b[107;5u"); // Ctrl+K
-    session.send(b"subagents");
-    assert!(
-        session.wait_for_visible("Watch subagents", Duration::from_secs(5)),
-        "Watch subagents was not discoverable\n{}",
-        session.output_tail()
-    );
-    session.send(b"\r");
-    assert!(
-        session.wait_for_visible("SUBAGENTS", Duration::from_secs(8)),
-        "read-only subagents viewer did not open\n{}",
-        session.output_tail()
-    );
-
     std::fs::write(glass_dir.join("e2e-subagents-open-release"), "release").unwrap();
+    let child_started_marker = glass_dir.join("e2e-subagents-child-started");
+    let child_deadline = Instant::now() + Duration::from_secs(8);
+    while !child_started_marker.exists() && Instant::now() < child_deadline {
+        session.settle(Duration::from_millis(100));
+    }
     assert!(
-        session.wait_for_visible("fixture-child-task", Duration::from_secs(8)),
-        "the live child row was not loaded\n{}",
+        child_started_marker.exists(),
+        "fake runtime did not emit the child-start event"
+    );
+    // The parent transcript was deliberately scrolled to its top above. Keep
+    // that position through the turn, then explicitly follow the tail to
+    // inspect the newly appended activity card.
+    session.send(b"\x1b[F");
+    assert!(
+        session.wait_for_visible("Delegated · running", Duration::from_secs(8)),
+        "the delegated child activity card was not projected into the main conversation\n{}",
         session.output_tail()
     );
-    session.send(b"\r");
     assert!(
-        session.wait_for_visible("Tab select", Duration::from_secs(8)),
-        "viewer did not open the selected child\n{}",
+        session.wait_for_visible("Subagent 1/1", Duration::from_secs(5)),
+        "the activity card omitted the task position\n{}",
+        session.output_tail()
+    );
+    session.send(b"e"); // Composer focus still types normally when a child card exists.
+    wait_for_saved_thread_draft(
+        &mut session,
+        &registry_path,
+        "assistant",
+        "MAIN_DRAFT_eTAIL",
+        "MAIN_DRAFT_e".len(),
+    );
+    for _ in 0..16 {
+        session.send(b"\x1b[1;5B"); // Ctrl+Down selects transcript entries without editing the draft.
+    }
+    assert!(
+        session.wait_for_visible("Child activity", Duration::from_secs(5)),
+        "the activity card was not keyboard-selectable\n{}",
+        session.output_tail()
+    );
+    wait_for_saved_thread_draft(
+        &mut session,
+        &registry_path,
+        "assistant",
+        "MAIN_DRAFT_eTAIL",
+        "MAIN_DRAFT_e".len(),
+    );
+    assert!(
+        session.wait_for_visible("Assigned task", Duration::from_secs(5)),
+        "the card did not reveal the actual assigned task\n{}",
+        session.output_tail()
+    );
+    let expand_offset = session.buffer.len();
+    session.send(b"e");
+    assert!(
+        session.wait_for_output_after(
+            expand_offset,
+            "e collapse · Enter watch",
+            Duration::from_secs(5)
+        ),
+        "the card exchange shortcut did not expand the selected child\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[F"); // Follow the new output revealed by expanding the card.
+    assert!(
+        session.wait_for_visible(
+            "Inspect the parser branch and report the focused contract result",
+            Duration::from_secs(5)
+        ),
+        "the expanded card did not show its Core-provided assignment\n{}",
         session.output_tail()
     );
     std::fs::write(glass_dir.join("e2e-subagents-detail-release"), "release").unwrap();
     assert!(
         session.wait_for_visible("LIVE_CHILD_TEXT_SENTINEL", Duration::from_secs(8)),
+        "live child text did not update the main activity card\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("bash", Duration::from_secs(5)),
+        "live tool start was not shown in the activity card\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("Child activity", Duration::from_secs(5)),
+        "activity-card selection was lost during live child updates\n{}",
+        session.output_tail()
+    );
+    let viewer_offset = session.buffer.len();
+    session.send(b"\r");
+    assert!(
+        session.wait_for_output_after(viewer_offset, "SUBAGENTS", Duration::from_secs(8)),
+        "Enter on the activity card did not open the child viewer\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_output_after(viewer_offset, "fixture-child-task", Duration::from_secs(8)),
+        "the exact linked child row was not loaded\n{}",
+        session.output_tail()
+    );
+    if !session.wait_for_output_after(viewer_offset, "Tab select", Duration::from_secs(2)) {
+        // Some Core snapshots deliver the linked list and entry response in
+        // separate worker ticks. If it leaves the viewer on the linked-child
+        // list, Enter watches that exact selected child.
+        session.send(b"\r");
+    }
+    assert!(
+        session.wait_for_output_after(viewer_offset, "Tab select", Duration::from_secs(8)),
+        "the linked child viewer did not open\n{}",
+        session.output_tail()
+    );
+    let watcher_offset = session.buffer.len();
+    std::fs::write(glass_dir.join("e2e-subagents-watcher-release"), "release").unwrap();
+    let watcher_started = glass_dir.join("e2e-subagents-watcher-started");
+    let watcher_deadline = Instant::now() + Duration::from_secs(8);
+    while !watcher_started.exists() && Instant::now() < watcher_deadline {
+        session.settle(Duration::from_millis(100));
+    }
+    assert!(
+        watcher_started.exists(),
+        "fake runtime did not emit a watcher update"
+    );
+    assert!(
+        session.wait_for_output_after(
+            watcher_offset,
+            "LIVE_CHILD_WATCHER_TEXT_SENTINEL",
+            Duration::from_secs(8)
+        ),
         "live child text did not update the watcher\n{}",
         session.output_tail()
     );
@@ -7804,9 +7903,23 @@ fn resident_subagents_view_is_read_only_live_and_preserves_main_draft_in_real_pt
         !session.visible_output().contains("approve abort send"),
         "typed viewer text was rendered or entered into the parent composer"
     );
+    let finish_offset = session.buffer.len();
     std::fs::write(glass_dir.join("e2e-subagents-finish-release"), "release").unwrap();
+    let finish_emitted = glass_dir.join("e2e-subagents-finish-emitted");
+    let finish_deadline = Instant::now() + Duration::from_secs(5);
+    while !finish_emitted.exists() && Instant::now() < finish_deadline {
+        session.settle(Duration::from_millis(100));
+    }
     assert!(
-        session.wait_for_visible("LIVE_TOOL_END_SENTINEL", Duration::from_secs(8)),
+        finish_emitted.exists(),
+        "fake runtime did not emit terminal child events"
+    );
+    assert!(
+        session.wait_for_output_after(
+            finish_offset,
+            "LIVE_TOOL_END_SENTINEL",
+            Duration::from_secs(8)
+        ),
         "live tool completion did not update the child view\n{}",
         session.output_tail()
     );
@@ -7815,14 +7928,50 @@ fn resident_subagents_view_is_read_only_live_and_preserves_main_draft_in_real_pt
         "finished child state was not shown\n{}",
         session.output_tail()
     );
+    let parent_settled = glass_dir.join("e2e-subagents-parent-settled");
+    let parent_settled_deadline = Instant::now() + Duration::from_secs(5);
+    while !parent_settled.exists() && Instant::now() < parent_settled_deadline {
+        session.settle(Duration::from_millis(100));
+    }
+    assert!(
+        parent_settled.exists(),
+        "fake runtime did not settle the parent turn"
+    );
+    session.settle(Duration::from_millis(500));
+    let inspector_offset = session.buffer.len();
     session.send(b"\r");
     assert!(
-        session.wait_for_visible("CHILD_OUTPUT_FIRST_CHUNK", Duration::from_secs(8)),
+        session.wait_for_output_after(
+            inspector_offset,
+            "CHILD_OUTPUT_FIRST_CHUNK",
+            Duration::from_secs(8)
+        ),
         "tool output inspector did not load its first chunk\n{}",
         session.output_tail()
     );
+    let second_chunk_offset = session.buffer.len();
     session.send(b"n");
-    session.send(&b"\x1b[6~".repeat(16)); // Page down through the first 16 KiB chunk.
+    let first_chunk_bytes = (16 * 1024).to_string();
+    let complete_output_bytes = 16 * 1024 + 1 + FINISHED_OUTPUT.len();
+    let complete_output_bytes = complete_output_bytes.to_string();
+    let shared_prefix = first_chunk_bytes
+        .chars()
+        .zip(complete_output_bytes.chars())
+        .take_while(|(first, complete)| first == complete)
+        .count();
+    let updated_length_cells = &complete_output_bytes[shared_prefix..];
+    assert!(
+        session.wait_for_output_after(
+            second_chunk_offset,
+            updated_length_cells,
+            Duration::from_secs(8)
+        ),
+        "tool output inspector did not update its byte count after the second chunk\n{}",
+        session.output_tail()
+    );
+    // The first chunk is one 16 KiB line; at 120 columns it wraps to more
+    // than 140 terminal rows, so advance beyond it before checking the tail.
+    session.send(&b"\x1b[6~".repeat(20));
     assert!(
         session.wait_for_visible(FINISHED_OUTPUT, Duration::from_secs(8)),
         "tool output inspector did not load its next chunk\n{}",
@@ -7831,32 +7980,24 @@ fn resident_subagents_view_is_read_only_live_and_preserves_main_draft_in_real_pt
 
     session.send(b"\x1b");
     assert!(session.wait_for_visible("Tab select", Duration::from_secs(5)));
-    let return_offset = session.buffer.len();
     session.send(b"m");
     assert!(
         session.wait_for_visible("CONVERSATION", Duration::from_secs(8)),
         "viewer did not return to the main conversation\n{}",
         session.output_tail()
     );
-    assert!(
-        session.wait_for_output_after(return_offset, PARENT_TOP, Duration::from_secs(5)),
-        "main transcript scroll position was not preserved\n{}",
-        session.output_tail()
-    );
-    assert!(
-        !session
-            .visible_output_from(return_offset)
-            .contains(PARENT_BOTTOM),
-        "main transcript returned at a different scroll position"
-    );
+    session.send(b"\x1b"); // Return focus to the preserved composer draft.
     session.send_slowly(INSERTION.as_bytes(), Duration::from_millis(8));
     wait_for_saved_thread_draft(
         &mut session,
         &registry_path,
         "assistant",
-        "MAIN_DRAFT_INSERT_TAIL",
-        "MAIN_DRAFT_INSERT_".len(),
+        "MAIN_DRAFT_eINSERT_TAIL",
+        "MAIN_DRAFT_eINSERT_".len(),
     );
+    // The existing render regression checks the completed card report at both
+    // responsive sizes; this PTY assertion instead verifies the restored draft
+    // and cursor after the Main/child-viewer round trip.
 
     let request_log = std::fs::read_to_string(glass_dir.join("e2e-core-requests.jsonl")).unwrap();
     let requests = request_log

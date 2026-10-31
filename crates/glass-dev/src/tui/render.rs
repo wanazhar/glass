@@ -6511,6 +6511,7 @@ mod tests {
                 truncated: true,
             }),
             core_ui: None,
+            subagent_activity: None,
         };
         state.conversation_items = vec![
             super::super::projection::ConversationEntry::user(
@@ -6542,6 +6543,7 @@ mod tests {
                     truncated: false,
                 }),
                 core_ui: None,
+                subagent_activity: None,
             },
             super::super::projection::ConversationEntry::system(
                 "Rust tests completed · 18 passed",
@@ -6607,6 +6609,150 @@ mod tests {
         let scrolled = rendered_lines(&state, 80, 24).join("\n");
         assert!(scrolled.lines().any(|line| line.trim() == "context line 8"));
         assert!(!scrolled.lines().any(|line| line.trim() == "context line 1"));
+    }
+
+    #[test]
+    fn subagent_activity_cards_render_compactly_and_expand_the_actual_exchange() {
+        let agent_id = crate::AgentId::parse("agent-0002").unwrap();
+        let activity_event = |sequence, kind: &str, extra: serde_json::Value| {
+            let mut data = serde_json::json!({
+                "kind": kind,
+                "taskId": "task-card-1",
+                "parentCallId": "call-delegation-1",
+                "taskIndex": 0,
+                "taskCount": 1,
+                "childSessionId": "child-card-1",
+                "seq": sequence,
+            });
+            for (key, value) in extra.as_object().unwrap() {
+                data[key] = value.clone();
+            }
+            crate::AgentEvent {
+                sequence,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "subagent_event".into(),
+                payload: serde_json::json!({
+                    "parentSessionId": "parent-card-1",
+                    "parentTurnId": "turn-card-1",
+                    "data": data,
+                }),
+            }
+        };
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.conversation_items = super::super::projection::conversation_entries(&[
+            crate::AgentEvent {
+                sequence: 0,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "tool_execution_start".into(),
+                payload: serde_json::json!({
+                    "name":"run_subagents",
+                    "callId":"call-delegation-1",
+                    "parentSessionId":"parent-card-1",
+                    "parentTurnId":"turn-card-1",
+                }),
+            },
+            activity_event(
+                1,
+                "started",
+                serde_json::json!({
+                    "taskText": "Inspect the exact parser contract and report the result.",
+                }),
+            ),
+            activity_event(
+                2,
+                "text",
+                serde_json::json!({"text":"The parser branch preserves the contract."}),
+            ),
+            activity_event(
+                3,
+                "tool_end",
+                serde_json::json!({
+                    "toolName":"cargo test",
+                    "summary":"1 focused check passed",
+                    "text":"No regressions found.",
+                    "isError":false,
+                }),
+            ),
+            activity_event(
+                4,
+                "finished",
+                serde_json::json!({
+                    "state":"completed",
+                    "result":"The parser contract is preserved and the focused check passed.",
+                }),
+            ),
+        ]);
+        state.transcript_selection = 0;
+        state.status =
+            "Child activity 1/1 · Ctrl+↑/↓ select · e exchange · Enter watch read-only child"
+                .into();
+
+        for (width, height) in [(80, 24), (120, 40)] {
+            let output = rendered_lines(&state, width, height).join("\n");
+            assert!(
+                output.contains("Delegated")
+                    && output.contains("1/1")
+                    && output.contains("completed"),
+                "{width}x{height}: {output}"
+            );
+            assert!(
+                output.contains("Assigned task"),
+                "{width}x{height}: {output}"
+            );
+            assert!(
+                output.contains("The parser branch preserves"),
+                "{width}x{height}: {output}"
+            );
+            assert!(!output.contains("reasoning"));
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("subagents-collapsed-{width}x{height}.txt")),
+                    output.clone() + "\n",
+                )
+                .expect("write collapsed subagent snapshot");
+            }
+        }
+
+        state.toggle_selected_subagent_exchange();
+        for (width, height) in [(80, 24), (120, 40)] {
+            let output = rendered_lines(&state, width, height).join("\n");
+            assert!(
+                output.contains("Inspect the exact parser contract"),
+                "{width}x{height}: {output}"
+            );
+            assert!(
+                output.contains("e collapse · Enter watch"),
+                "{width}x{height}: {output}"
+            );
+            if height >= 32 {
+                assert!(
+                    output.contains("No regressions found."),
+                    "{width}x{height}: {output}"
+                );
+                assert!(
+                    output.contains("Child report"),
+                    "{width}x{height}: {output}"
+                );
+                assert!(
+                    output.contains("The parser contract is preserved"),
+                    "{width}x{height}: {output}"
+                );
+            }
+            if let Some(directory) = std::env::var_os("GLASS_TUI_SNAPSHOT_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).expect("create snapshot output directory");
+                std::fs::write(
+                    directory.join(format!("subagents-expanded-{width}x{height}.txt")),
+                    output + "\n",
+                )
+                .expect("write expanded subagent snapshot");
+            }
+        }
     }
 
     #[test]
@@ -7198,6 +7344,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         })
         .collect();
 
@@ -7323,6 +7470,7 @@ mod tests {
                 truncated: false,
             }),
             core_ui: None,
+            subagent_activity: None,
         })
         .collect();
 
@@ -7365,6 +7513,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }];
         let text = agent_conversation_text(&state, "", 32, 4);
         assert!(text.lines.len() <= 4);
@@ -7387,6 +7536,7 @@ mod tests {
             tool_name: None,
             tool_card: None,
             core_ui: None,
+            subagent_activity: None,
         }];
         let text = agent_conversation_text(&state, "", 72, 8).to_string();
         assert!(text.contains("A settled response."));
@@ -8066,6 +8216,7 @@ mod tests {
                 tool_name: None,
                 tool_card: None,
                 core_ui: None,
+                subagent_activity: None,
             })
             .collect();
         state.agent_conversations.insert(
@@ -8120,12 +8271,14 @@ mod tests {
             })],
             live_events: Vec::new(),
             selected_child: 0,
+            pending_open_child: None,
             child_entries: Vec::new(),
             selected_entry: 0,
             watching_child: false,
             entries_request_id: None,
             output_inspector: None,
             output_request_id: None,
+            pending_output_offset: None,
             entries_cursor: 0,
             entries_has_more: false,
             entries_scroll: 0,

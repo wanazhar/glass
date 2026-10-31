@@ -1057,8 +1057,45 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::End => state.scroll_end(),
                             _ => unreachable!("matched transcript scroll key"),
                         }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::Composer)
+                        && state.surface == DevSurface::Agent
+                        && state.transcript_navigation_focus
+                    {
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                state.move_transcript_selection(-1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                state.move_transcript_selection(1);
+                            }
+                            KeyCode::Char('e') if state.selected_subagent_activity().is_some() => {
+                                state.toggle_selected_subagent_exchange();
+                            }
+                            KeyCode::Enter if state.selected_subagent_activity().is_some() => {
+                                state.open_selected_subagent_activity();
+                            }
+                            KeyCode::Enter => {
+                                state.status =
+                                    "Select a child activity card · Esc returns to the composer"
+                                        .into();
+                            }
+                            KeyCode::Esc => state.return_to_composer_focus(),
+                            _ => {}
+                        }
                     } else if active_overlay == Some(overlay::ActiveOverlay::Composer) {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Up, modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.focus_transcript_navigation(-1);
+                            }
+                            (KeyCode::Down, modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.focus_transcript_navigation(1);
+                            }
                             (KeyCode::Char('k'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
@@ -1310,6 +1347,12 @@ pub(crate) fn run_with_browser_policy(
                                 if state.surface == DevSurface::Debug && !state.composer_mode =>
                             {
                                 state.continue_selected_debug();
+                            }
+                            (KeyCode::Enter, _)
+                                if state.surface == DevSurface::Agent
+                                    && state.selected_subagent_activity().is_some() =>
+                            {
+                                state.open_selected_subagent_activity();
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Agent => {
                                 state.start_agent_interaction();

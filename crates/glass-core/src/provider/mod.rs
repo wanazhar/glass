@@ -26,7 +26,7 @@ use glass_mod_api::Message;
 /// Providers disagree about what "input tokens" means, so the parts are kept
 /// apart and summed only for display. Anthropic charges `cache_read` at 0.1x,
 /// `cache_write` at 1.25x, and `input` at 1.0x.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Usage {
     /// Prompt tokens that were neither read from nor written to cache.
     pub input: u32,
@@ -35,9 +35,23 @@ pub struct Usage {
     /// Prompt tokens written to cache this request.
     pub cache_write: u32,
     pub output: u32,
+    /// Presence is tracked independently so a priced cache bucket omitted by
+    /// the provider cannot be mistaken for zero usage.
+    pub input_known: bool,
+    pub cache_read_known: bool,
+    pub cache_write_known: bool,
+    pub output_known: bool,
 }
 
 impl Usage {
+    /// Whether all buckets with a nonzero rate have authoritative counts.
+    pub fn priced_complete(&self, card: crate::pricing::RateCard) -> bool {
+        (card.input == 0.0 || self.input_known)
+            && (card.cache_read == 0.0 || self.cache_read_known)
+            && (card.cache_write == 0.0 || self.cache_write_known)
+            && (card.output == 0.0 || self.output_known)
+    }
+
     /// Total prompt tokens actually sent, however they were billed.
     pub fn prompt_total(&self) -> u32 {
         self.input
@@ -74,6 +88,10 @@ mod usage_tests {
             cache_read: 1,
             cache_write: u32::MAX,
             output: 0,
+            input_known: true,
+            cache_read_known: true,
+            cache_write_known: true,
+            output_known: true,
         };
         assert_eq!(usage.prompt_total(), u32::MAX);
     }

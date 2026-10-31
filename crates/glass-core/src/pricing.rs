@@ -96,6 +96,10 @@ mod tests {
             cache_read: read,
             cache_write: write,
             output,
+            input_known: true,
+            cache_read_known: true,
+            cache_write_known: true,
+            output_known: true,
         }
     }
 

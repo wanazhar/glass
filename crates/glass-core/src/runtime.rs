@@ -1117,6 +1117,7 @@ impl Wire {
 struct Conversation {
     session: Session,
     cfg: config::Config,
+    budget: crate::budget::Context,
     state: tools::State,
     extensions: ext::Registry,
     tools: Option<Schemas>,
@@ -1543,6 +1544,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     manifest["connection"] = json!(settings.connection);
                 }
                 support::save_manifest(dir, &sid, &manifest)?;
+                let budget = crate::budget::Context::load(
+                    &session.path.with_extension("cost.json"),
+                    settings.cost_limit,
+                );
                 let mut extensions =
                     ext::Registry::load(&settings.extensions, &settings.workspace, &settings.model);
                 if let Ok(records) = Session::raw_records(&session.path) {
@@ -1553,6 +1558,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     Conversation {
                         session,
                         cfg: settings,
+                        budget,
                         state: tools::State::new(),
                         extensions,
                         tools: host_tools,
@@ -1660,7 +1666,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                 )
                             }
                             "compact" => {
-                                let provider = provider(&c.cfg, &c.session)?;
+                                let provider = provider(&c.cfg, &c.budget)?;
                                 let (kept, dropped) = crate::compact::run_manual(
                                     provider.as_ref(),
                                     &mut c.session,
@@ -1715,7 +1721,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     "session/interruptedTools" => support::interrupted(&c.session),
                     "session/describe" => Ok(support::read_manifest(dir, sid)?),
                     "session/validate" => {
-                        let provider = provider(&c.cfg, &c.session)?;
+                        let provider = provider(&c.cfg, &c.budget)?;
                         Ok(
                             json!({"configured":true,"model":provider.model(),"contextWindow":provider.context_window(),
                             "imageInput":c.cfg.image_input,"reasoning":reasoning_capability(&c.cfg.model),"providerReachable":null}),
@@ -1884,7 +1890,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         Ok(json!({"hiddenTurns":turns-through,"files":"unchanged"}))
                     }
                     "session/compact" => {
-                        let provider = provider(&c.cfg, &c.session)?;
+                        let provider = provider(&c.cfg, &c.budget)?;
                         let (kept, dropped) = crate::compact::run_manual(
                             provider.as_ref(),
                             &mut c.session,
@@ -1918,16 +1924,48 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
 }
 fn provider(
     cfg: &config::Config,
-    session: &Session,
+    budget: &crate::budget::Context,
 ) -> Result<Box<dyn crate::provider::Provider>, String> {
-    let path = session.path.with_extension("cost.json");
-    let ledger = crate::budget::load(&path, cfg.cost_limit);
-    crate::make_provider(
-        cfg,
-        ledger,
-        std::sync::Arc::new(std::sync::Mutex::new(path)),
-        None,
-    )
+    budget.set_limit(cfg.cost_limit);
+    budget.provider(cfg, None)
+}
+
+type RuntimeProviderBuilder = std::sync::Arc<
+    dyn Fn(
+            &config::Config,
+            &crate::budget::Context,
+            Option<&str>,
+        ) -> Result<Box<dyn crate::provider::Provider>, String>
+        + Send
+        + Sync,
+>;
+
+/// Build the parent and per-model child factories from the same runtime-owned
+/// budget context. Keeping this wiring in one helper makes it possible to
+/// exercise the exact factory path used by `run()` without contacting a real
+/// provider.
+fn runtime_provider_factories(
+    settings: config::Config,
+    budget: crate::budget::Context,
+    build: RuntimeProviderBuilder,
+) -> (
+    crate::warmer::ProviderFactory,
+    crate::warmer::ProviderForModel,
+) {
+    let parent_settings = settings.clone();
+    let parent_budget = budget.clone();
+    let parent_build = build.clone();
+    let parent: crate::warmer::ProviderFactory =
+        std::sync::Arc::new(move || parent_build(&parent_settings, &parent_budget, None));
+
+    let child: crate::warmer::ProviderForModel = std::sync::Arc::new(move |model| {
+        let settings = settings.clone();
+        let budget = budget.clone();
+        let build = build.clone();
+        let model = model.to_string();
+        std::sync::Arc::new(move || build(&settings, &budget, Some(&model)))
+    });
+    (parent, child)
 }
 fn record(r: &Record) -> Value {
     let (role, text) = r.to_entry();
@@ -1943,15 +1981,19 @@ fn run(
     turn: &Value,
     records: Vec<Record>,
 ) -> Result<(), String> {
-    let factory: crate::warmer::ProviderFactory = {
-        let settings = c.cfg.clone();
-        let path = c.session.path.with_extension("cost.json");
-        let ledger = crate::budget::load(&path, settings.cost_limit);
-        let path = std::sync::Arc::new(std::sync::Mutex::new(path));
-        std::sync::Arc::new(move || {
-            crate::make_provider(&settings, ledger.clone(), path.clone(), None)
-        })
-    };
+    // Parent and every child provider in this runtime turn must share one
+    // synchronized ledger and persistence path. Loading the same file twice
+    // produces independent stale in-memory copies and defeats admission.
+    c.budget.set_limit(c.cfg.cost_limit);
+    let budget = c.budget.clone();
+    let (factory, child_factory) = runtime_provider_factories(
+        c.cfg.clone(),
+        budget.clone(),
+        std::sync::Arc::new(|settings, budget, model| {
+            budget.set_limit(settings.cost_limit);
+            budget.provider(settings, model)
+        }),
+    );
     let provider = factory()?;
     c.session
         .append_checked(&records)
@@ -1984,31 +2026,28 @@ fn run(
             &query_parent_secrets,
         )
     }));
-    let child_settings = c.cfg.clone();
     let parent_secrets = c.session.secrets.clone();
-    let child_ledger = crate::budget::load(
-        &c.session.path.with_extension("cost.json"),
-        c.cfg.cost_limit,
-    );
-    let child_cost_path = std::sync::Arc::new(std::sync::Mutex::new(
-        c.session.path.with_extension("cost.json"),
-    ));
     let parent_prompt = c.instructions.clone();
     let parent_session = sid.clone();
     let parent_turn = turn_id.clone();
     let event_scratch = subagent_scratch.clone();
     let event_active_children = active_children.clone();
     let event_parent_secrets = parent_secrets.clone();
+    let child_workspace = c.cfg.workspace.clone();
+    let child_budget = budget.clone();
+    let child_parent_factory = factory.clone();
+    let child_model_factory = child_factory.clone();
     c.extensions.set_subagent_with_events(move || {
-        let settings = child_settings.clone();
-        let ledger = child_ledger.clone();
-        let cost_path = child_cost_path.clone();
         let scratch = event_scratch.clone();
+        let workspace = child_workspace.clone();
         let prompt = parent_prompt.clone();
         let parent_session = parent_session.clone();
         let parent_turn = parent_turn.clone();
         let active_children = event_active_children.clone();
         let parent_secrets = event_parent_secrets.clone();
+        let budget = child_budget.clone();
+        let parent_factory = child_parent_factory.clone();
+        let model_factory = child_model_factory.clone();
         Box::new(move |tasks, call_id| {
             let call_id = match call_id {
                 Value::String(value)
@@ -2026,8 +2065,9 @@ fn run(
                         .collect();
                 }
             };
-            let make = |model: Option<&str>| {
-                crate::make_provider(&settings, ledger.clone(), cost_path.clone(), model)
+            let make = |model: Option<&str>| match model {
+                Some(model) => model_factory(model)(),
+                None => parent_factory(),
             };
             crate::subagent::run_batch_with_index(
                 tasks,
@@ -2042,6 +2082,13 @@ fn run(
                         task_count: tasks.len(),
                         read_only: task.read_only,
                     };
+                    if let Err(error) = crate::budget::reserve_child(
+                        &budget.ledger(),
+                        &budget.path(),
+                        &link.task_id,
+                    ) {
+                        return format!("subagent not admitted: {error}");
+                    }
                     let _active = ActiveSubagentGuard::new(
                         std::sync::Arc::clone(&active_children),
                         link.task_id.clone(),
@@ -2060,7 +2107,7 @@ fn run(
                     };
                     crate::subagent::run_task_observed(
                         task,
-                        &settings.workspace,
+                        &workspace,
                         &scratch,
                         &make,
                         crate::subagent::ParentContext {
@@ -2379,11 +2426,9 @@ fn completion(
         return Err("completion maxTokens must be 1..4096".into());
     }
     // Admission checks happen before completion_start, and never append history.
-    let _admission = provider(&c.cfg, &c.session)?;
+    let _admission = provider(&c.cfg, &c.budget)?;
     let settings = c.cfg.clone();
-    let path = c.session.path.with_extension("cost.json");
-    let ledger = crate::budget::load(&path, settings.cost_limit);
-    let path = Arc::new(std::sync::Mutex::new(path));
+    let budget = c.budget.clone();
     let messages = vec![glass_mod_api::Message::User(format!(
         "Insert source text between the following prefix and suffix. Return only the insertion.\n<prefix>\n{prefix}\n</prefix>\n<suffix>\n{suffix}\n</suffix>"
     ))];
@@ -2394,7 +2439,7 @@ fn completion(
         let result = crate::provider::with_request_cancel(
             worker_cancel.clone(),
             || -> Result<(), String> {
-                let provider = crate::make_provider(&settings, ledger, path, None)?;
+                let provider = budget.provider(&settings, None)?;
                 let request = crate::provider::Request {
                     model: &settings.model,
                     system: "Return only inserted source text. No tools, explanation, or Markdown fences.",
@@ -2489,6 +2534,114 @@ fn completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    struct RuntimeBudgetFake(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl crate::provider::Provider for RuntimeBudgetFake {
+        fn id(&self) -> &str {
+            "runtime-budget-fake"
+        }
+
+        fn context_window(&self) -> u32 {
+            1
+        }
+
+        fn stream(
+            &self,
+            _: &crate::provider::Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = crate::provider::Event> + '_>, crate::provider::Error>
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(
+                vec![
+                    crate::provider::Event::Usage(crate::provider::Usage {
+                        input: 1,
+                        input_known: true,
+                        cache_read_known: true,
+                        cache_write_known: true,
+                        output_known: true,
+                        ..Default::default()
+                    }),
+                    crate::provider::Event::Done,
+                ]
+                .into_iter(),
+            ))
+        }
+    }
+
+    #[test]
+    fn parent_child_factories_share_one_budget_scope_under_parallel_dispatch() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let path = std::env::temp_dir().join(format!(
+            "glass-runtime-budget-factory-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let budget = crate::budget::Context::load(&path, Some(0.000001));
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let card = crate::pricing::RateCard {
+            input: 1.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 0.0,
+        };
+        let (parent_factory, child_factory) = runtime_provider_factories(
+            config::Config::default(),
+            budget.clone(),
+            Arc::new({
+                let provider_calls = Arc::clone(&provider_calls);
+                move |_, budget, _| {
+                    Ok(Box::new(budget.metered(
+                        Box::new(RuntimeBudgetFake(Arc::clone(&provider_calls))),
+                        Some(card),
+                    )))
+                }
+            }),
+        );
+
+        let start = Arc::new(Barrier::new(3));
+        let dispatch = |provider: Box<dyn crate::provider::Provider>, start: Arc<Barrier>| {
+            let request = crate::provider::Request {
+                model: "fake",
+                system: "",
+                messages: &[],
+                tools: &[],
+                max_tokens: 1,
+                reasoning: None,
+            };
+            start.wait();
+            match provider.stream(&request) {
+                Ok(events) => {
+                    for _ in events {}
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        let parent_start = Arc::clone(&start);
+        let parent = parent_factory.clone();
+        let parent_worker = std::thread::spawn(move || dispatch(parent().unwrap(), parent_start));
+        let child_start = Arc::clone(&start);
+        let child = child_factory("delegated-model");
+        let child_worker = std::thread::spawn(move || dispatch(child().unwrap(), child_start));
+        start.wait();
+        let admitted =
+            usize::from(parent_worker.join().unwrap()) + usize::from(child_worker.join().unwrap());
+
+        assert_eq!(admitted, 1);
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        let shared_ledger = budget.ledger();
+        let ledger = crate::budget::lock(&shared_ledger);
+        assert!((ledger.spent - 0.000001).abs() < 1e-12);
+        assert!(!ledger.unknown);
+        drop(ledger);
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn wire_for_human_input() -> Wire {
         let (_tx, rx) = mpsc::sync_channel(1);

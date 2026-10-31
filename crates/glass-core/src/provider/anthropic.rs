@@ -517,26 +517,39 @@ impl<R: Read> StreamEvents<R> {
             "message_start" => {
                 let u = v.get("message").and_then(|m| m.get("usage")).cloned();
                 if let Some(u) = u {
-                    let get = |k: &str| bounded_usage_tokens(u.get(k).and_then(Value::as_u64));
-                    self.pending = Some(Usage {
-                        input: get("input_tokens"),
-                        cache_read: get("cache_read_input_tokens"),
-                        cache_write: get("cache_creation_input_tokens"),
-                        output: 0,
+                    self.pending = u.get("input_tokens").and_then(Value::as_u64).map(|input| {
+                        let cache_read = u.get("cache_read_input_tokens").and_then(Value::as_u64);
+                        let cache_write =
+                            u.get("cache_creation_input_tokens").and_then(Value::as_u64);
+                        Usage {
+                            input: bounded_usage_tokens(Some(input)),
+                            cache_read: bounded_usage_tokens(cache_read),
+                            cache_write: bounded_usage_tokens(cache_write),
+                            output: 0,
+                            input_known: true,
+                            cache_read_known: cache_read.is_some(),
+                            cache_write_known: cache_write.is_some(),
+                            output_known: false,
+                        }
                     });
+                } else {
+                    self.pending = None;
                 }
             }
             "message_delta" => {
                 // Output tokens arrive here; carry forward the prompt
                 // buckets captured at message_start.
-                let out = bounded_usage_tokens(
-                    v.get("usage")
-                        .and_then(|u| u.get("output_tokens"))
-                        .and_then(Value::as_u64),
-                );
-                let mut u = self.pending.take().unwrap_or_default();
-                u.output = out;
-                self.outbox.push_back(Event::Usage(u));
+                let out = v
+                    .get("usage")
+                    .and_then(|u| u.get("output_tokens"))
+                    .and_then(Value::as_u64);
+                if let (Some(mut usage), Some(output)) = (self.pending.take(), out) {
+                    usage.output = bounded_usage_tokens(Some(output));
+                    usage.output_known = true;
+                    self.outbox.push_back(Event::Usage(usage));
+                } else {
+                    self.pending = None;
+                }
             }
             "message_stop" => {
                 self.done = true;
@@ -636,7 +649,66 @@ mod tests {
                 cache_read: u32::MAX,
                 cache_write: u32::MAX,
                 output: u32::MAX,
+                input_known: true,
+                cache_read_known: true,
+                cache_write_known: true,
+                output_known: true,
             }))
+        );
+    }
+
+    #[test]
+    fn message_delta_requires_output_and_preserves_cache_presence() {
+        let mut missing_output = StreamEvents::new(std::io::Cursor::new(Vec::<u8>::new()));
+        missing_output.process(crate::sse::SseEvent {
+            event: Some("message_start".into()),
+            data: json!({"message":{"usage":{"input_tokens":10}}}).to_string(),
+        });
+        missing_output.process(crate::sse::SseEvent {
+            event: Some("message_delta".into()),
+            data: json!({"usage":{}}).to_string(),
+        });
+        assert!(
+            !missing_output
+                .outbox
+                .iter()
+                .any(|event| matches!(event, Event::Usage(_)))
+        );
+
+        let mut cache_omitted = StreamEvents::new(std::io::Cursor::new(Vec::<u8>::new()));
+        cache_omitted.process(crate::sse::SseEvent {
+            event: Some("message_start".into()),
+            data: json!({"message":{"usage":{"input_tokens":10}}}).to_string(),
+        });
+        cache_omitted.process(crate::sse::SseEvent {
+            event: Some("message_delta".into()),
+            data: json!({"usage":{"output_tokens":2}}).to_string(),
+        });
+        let Some(Event::Usage(usage)) = cache_omitted.outbox.pop_front() else {
+            panic!("complete base counters should produce a usage event");
+        };
+        assert!(usage.input_known);
+        assert!(!usage.cache_read_known);
+        assert!(!usage.cache_write_known);
+        assert!(usage.output_known);
+    }
+
+    #[test]
+    fn message_delta_without_parent_prompt_usage_does_not_emit_usage() {
+        let mut stream = StreamEvents::new(std::io::Cursor::new(Vec::<u8>::new()));
+        stream.process(crate::sse::SseEvent {
+            event: Some("message_start".into()),
+            data: json!({"message":{"usage":{"cache_read_input_tokens":10}}}).to_string(),
+        });
+        stream.process(crate::sse::SseEvent {
+            event: Some("message_delta".into()),
+            data: json!({"usage":{"output_tokens":2}}).to_string(),
+        });
+        assert!(
+            !stream
+                .outbox
+                .iter()
+                .any(|event| matches!(event, Event::Usage(_)))
         );
     }
 

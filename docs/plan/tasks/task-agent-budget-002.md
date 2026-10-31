@@ -48,3 +48,5 @@ and unknown-usage behavior. Run focused Core tests, formatting and strict
 Clippy. Commit a reviewable checkpoint and stop for independent review; no live
 provider test, service restart, install or push. One development/review cycle;
 report concrete blockers instead of starting an unbounded redesign.
+
+Independent acceptance review: [task-agent-budget-002-01](../reviews/task-agent-budget-002-01.md).

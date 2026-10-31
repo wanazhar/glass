@@ -134,6 +134,10 @@ pub fn render(question: &str, answer: &Answer, card: Option<&crate::pricing::Rat
                 cache_read: 0,
                 cache_write: 0,
                 output: answer.output_tokens,
+                input_known: true,
+                cache_read_known: true,
+                cache_write_known: true,
+                output_known: true,
             };
             cost.push_str(&format!(", {}", crate::pricing::money(card.cost(&usage))));
         }

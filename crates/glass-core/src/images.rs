@@ -44,6 +44,21 @@ pub fn share(bytes: &[u8], path: &str) -> Result<Value, String> {
     )
 }
 
+/// Prepare metadata and an immutable preview copy scoped to one Core session.
+/// The original path remains descriptive metadata only; web clients load the
+/// content-addressed attachment endpoint instead of reopening that path.
+pub fn share_for_session(
+    bytes: &[u8],
+    path: &str,
+    data_root: &std::path::Path,
+    session_path: &std::path::Path,
+) -> Result<Value, String> {
+    let mut value = share(bytes, path)?;
+    let attachment_id = crate::shared_attachments::store(data_root, session_path, bytes)?;
+    value["attachment_id"] = json!(attachment_id);
+    Ok(value)
+}
+
 pub fn display_shared(value: &Value) -> String {
     format!(
         "[display image]\n{value}\nShown to the user only. No pixels supplied to the model; visual contents are unknown. Already shared in web chat. Markdown is available for inline placement if needed."
@@ -372,6 +387,34 @@ mod tests {
         assert!(!text_only_rejection(&crate::provider::Error::Transport(
             "timeout".into()
         )));
+    }
+
+    #[test]
+    fn session_image_share_persists_only_an_opaque_preview_reference() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-image-share-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let session = root.join("thread_image.jsonl");
+        std::fs::write(&session, b"{}\n").unwrap();
+        let bytes = png(8, 6);
+        let value = share_for_session(&bytes, "/tmp/scratchpad/yt.png", &root, &session).unwrap();
+        let attachment_id = value["attachment_id"].as_str().unwrap();
+        assert_eq!(attachment_id.len(), 64);
+        assert_eq!(value["path"], "/tmp/scratchpad/yt.png");
+        assert_eq!(
+            crate::shared_attachments::read_thread(&root, "thread_image", attachment_id)
+                .unwrap()
+                .1,
+            bytes
+        );
+        assert!(!display_shared(&value).contains("data:image"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

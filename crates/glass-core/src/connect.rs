@@ -7,7 +7,7 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
     os::unix::{fs::OpenOptionsExt, net::UnixStream, process::CommandExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         Arc, Condvar, Mutex,
@@ -942,6 +942,7 @@ impl Bridge {
 struct App {
     settings: Settings,
     cfg: crate::config::Config,
+    data_root: PathBuf,
     desktop: Arc<crate::desktop::Desktop>,
     bridges: Mutex<HashMap<String, Arc<Bridge>>>,
     clients: AtomicUsize,
@@ -2026,6 +2027,15 @@ fn preview_file(id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
     let root = thread_workspace(id)?;
     preview_path(&root, path)
 }
+fn preview_attachment_at(
+    data_root: &Path,
+    id: &str,
+    attachment: &str,
+) -> Result<(String, Vec<u8>), String> {
+    crate::shared_attachments::read_thread(data_root, id, attachment)
+        .map(|(kind, bytes)| (kind.to_owned(), bytes))
+        .map_err(|_| "Image attachment unavailable".into())
+}
 fn preview_path(root: &std::path::Path, path: &str) -> Result<(String, Vec<u8>), String> {
     let requested = PathBuf::from(path);
     let file = if requested.is_absolute() {
@@ -2375,6 +2385,24 @@ fn handle_with_transport(
                     .map_err(|e| e.to_string());
             }
         }
+    }
+    if path == "/api/attachment" && r.method == "GET" {
+        let result = preview_attachment_at(
+            &app.data_root,
+            query.get("id").map(String::as_str).unwrap_or_default(),
+            query
+                .get("attachment")
+                .map(String::as_str)
+                .unwrap_or_default(),
+        );
+        return match result {
+            Ok((kind, body)) => {
+                response(&mut stream, 200, &kind, &body, "").map_err(|e| e.to_string())
+            }
+            Err(error) => {
+                json_response(&mut stream, 404, json!({"error":error})).map_err(|e| e.to_string())
+            }
+        };
     }
     if path == "/api/desktop/stream" && r.method == "GET" {
         let width = query
@@ -2958,6 +2986,7 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
     let app = Arc::new(App {
         settings,
         cfg,
+        data_root: crate::config::data_dir(),
         desktop,
         bridges: Mutex::new(HashMap::new()),
         clients: AtomicUsize::new(0),
@@ -3006,6 +3035,84 @@ mod tests {
     }
 
     use super::*;
+
+    fn attachment_get_request(app: Arc<App>, target: &str, authenticate: bool) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_with_transport(stream, app, false, false, false).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "GET {target} HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nConnection: close\r\n"
+        )
+        .unwrap();
+        if authenticate {
+            write!(stream, "Authorization: Bearer {}\r\n", "a".repeat(64)).unwrap();
+        }
+        stream.write_all(b"\r\n").unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        handler.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn authenticated_attachment_route_serves_only_thread_scoped_image_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-connect-attachments-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let session = root.join("thread-image.jsonl");
+        std::fs::write(&session, b"{}\n").unwrap();
+        let bytes = {
+            let mut output = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(3, 2)
+                .write_to(&mut output, image::ImageFormat::Png)
+                .unwrap();
+            output.into_inner()
+        };
+        let attachment = crate::shared_attachments::store(&root, &session, &bytes).unwrap();
+        let mut settings = settings();
+        settings.local = true;
+        let app = Arc::new(App {
+            settings,
+            cfg: crate::config::Config::default(),
+            data_root: root.clone(),
+            desktop: Arc::new(crate::desktop::Desktop::new(PathBuf::from("/tmp"))),
+            bridges: Mutex::new(HashMap::new()),
+            clients: AtomicUsize::new(0),
+        });
+
+        let target = format!("/api/attachment?id=thread-image&attachment={attachment}");
+        let response = attachment_get_request(app.clone(), &target, true);
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8(response[..split].to_vec()).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200"));
+        assert!(headers.contains("Content-Type: image/png"));
+        assert_eq!(&response[split + 4..], bytes);
+
+        let cross_thread = attachment_get_request(
+            app.clone(),
+            &format!("/api/attachment?id=other-thread&attachment={attachment}"),
+            true,
+        );
+        assert!(cross_thread.starts_with(b"HTTP/1.1 404"));
+        assert!(String::from_utf8_lossy(&cross_thread).contains("Image attachment unavailable"));
+        let unauthenticated = attachment_get_request(app, &target, false);
+        assert!(unauthenticated.starts_with(b"HTTP/1.1 403"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn event_stream_cursor_maximum_does_not_overflow() {
@@ -3095,6 +3202,7 @@ mod tests {
         let app = Arc::new(App {
             settings,
             cfg: crate::config::Config::default(),
+            data_root: PathBuf::from("/tmp"),
             desktop: Arc::new(crate::desktop::Desktop::new(PathBuf::from("/tmp"))),
             bridges: Mutex::new(HashMap::from([("test-thread".into(), bridge)])),
             clients: AtomicUsize::new(0),

@@ -57,11 +57,12 @@ thread_local! { static APPROVED_CALL: std::cell::Cell<bool> = const { std::cell:
 fn approved() -> bool {
     APPROVED_CALL.with(|value| value.get())
 }
-pub fn tool_cancellable_approved(
+pub fn tool_cancellable_approved_for_session(
     call: &glass_mod_api::ToolCall,
     root: &Path,
     cancel: &std::sync::atomic::AtomicBool,
     granted: bool,
+    session_path: &Path,
 ) -> crate::tools::Outcome {
     struct Restore(bool);
     impl Drop for Restore {
@@ -70,7 +71,7 @@ pub fn tool_cancellable_approved(
         }
     }
     let _restore = Restore(APPROVED_CALL.with(|value| value.replace(granted)));
-    tool_cancellable(call, root, cancel)
+    tool_cancellable_for_session(call, root, cancel, Some(session_path))
 }
 
 struct Target {
@@ -336,6 +337,15 @@ fn execute_cancellable(
     v: &Value,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Value, String> {
+    execute_cancellable_for_session(root, action, v, cancel, None)
+}
+fn execute_cancellable_for_session(
+    root: &Path,
+    action: &str,
+    v: &Value,
+    cancel: &std::sync::atomic::AtomicBool,
+    session_path: Option<&Path>,
+) -> Result<Value, String> {
     let cancelled = || cancel.load(std::sync::atomic::Ordering::Acquire);
     if cancelled() {
         return Err("File operation cancelled before execution".into());
@@ -409,7 +419,15 @@ fn execute_cancellable(
             if existing.is_none() {
                 return Err("image file does not exist".into());
             }
-            return crate::images::share(bytes, &target.label);
+            return match session_path {
+                Some(session_path) => crate::images::share_for_session(
+                    bytes,
+                    &target.label,
+                    &crate::config::data_dir(),
+                    session_path,
+                ),
+                None => crate::images::share(bytes, &target.label),
+            };
         }
         if existing.is_none() {
             return Err("image file does not exist".into());
@@ -919,13 +937,24 @@ pub fn schemas() -> Vec<(String, String, String)> {
     ]
 }
 
+#[cfg(test)]
 pub fn tool(call: &glass_mod_api::ToolCall, root: &Path) -> crate::tools::Outcome {
     tool_cancellable(call, root, &std::sync::atomic::AtomicBool::new(false))
 }
+#[cfg(test)]
 pub fn tool_cancellable(
     call: &glass_mod_api::ToolCall,
     root: &Path,
     cancel: &std::sync::atomic::AtomicBool,
+) -> crate::tools::Outcome {
+    tool_cancellable_for_session(call, root, cancel, None)
+}
+
+pub fn tool_cancellable_for_session(
+    call: &glass_mod_api::ToolCall,
+    root: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    session_path: Option<&Path>,
 ) -> crate::tools::Outcome {
     if !approved()
         && let Some(reason) = crate::sandbox::refusal()
@@ -949,7 +978,7 @@ pub fn tool_cancellable(
         object.remove("permission");
         object.remove("justification");
     }
-    match execute_cancellable(root, &call.name, &value, cancel) {
+    match execute_cancellable_for_session(root, &call.name, &value, cancel, session_path) {
         Ok(value) => {
             let mut body = display_inner(&value, false);
             if let Some(next) = value.get("next_read").filter(|v| !v.is_null()) {

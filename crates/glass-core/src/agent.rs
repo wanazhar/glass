@@ -2480,16 +2480,18 @@ impl<'a> Agent<'a> {
             .arg_str("path")
             .is_some_and(|path| self.approved_calls.get(&call.id) == Some(&path));
         let workspace = self.workspace.to_path_buf();
+        let session_path = self.session.path.clone();
         let worker = self.reads.native_call(call, self.workspace);
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::files::tool_cancellable_approved(
+            let _ = tx.send(crate::files::tool_cancellable_approved_for_session(
                 &worker,
                 &workspace,
                 &worker_cancel,
                 granted,
+                &session_path,
             ));
         });
         let outcome = loop {
@@ -3288,9 +3290,11 @@ impl<'a> Agent<'a> {
             if let Some(refusal) = self.read_before_write_refusal(call) {
                 return self.finish_tool(call, tools::Outcome::err(refusal));
             }
-            outcome = crate::files::tool(
+            outcome = crate::files::tool_cancellable_for_session(
                 &self.reads.native_call(call, self.workspace),
                 self.workspace,
+                &std::sync::atomic::AtomicBool::new(false),
+                Some(&self.session.path),
             );
             if outcome.exit_code == Some(0) {
                 self.reads.observe_native(

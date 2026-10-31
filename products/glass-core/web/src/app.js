@@ -822,6 +822,8 @@ function sharedImage(t) {
       || !/^image\/(png|jpeg|gif|webp)$/.test(value.media_type)
       || !Number.isInteger(value.width) || !Number.isInteger(value.height)
       || value.width <= 0 || value.height <= 0 || value.width * value.height > 32000000) return;
+  const attachmentId = typeof value.attachment_id === "string"
+      && /^[a-f0-9]{64}$/.test(value.attachment_id) ? value.attachment_id : null;
   const figure = el("figure", "shared-image-card"), open = el("button", "shared-image-open");
   open.type = "button";
   const image = el("img");
@@ -831,17 +833,48 @@ function sharedImage(t) {
   image.decoding = "async";
   image.width = value.width;
   image.height = value.height;
-  loadOwnerImage(image, "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path));
+  const source = attachmentId
+      ? "/api/attachment?id=" + encodeURIComponent(view.id) + "&attachment=" + encodeURIComponent(attachmentId)
+      : "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path);
+  loadOwnerImage(image, source);
   image.onerror = () => {
     image.hidden = true;
-    if (!figure.querySelector(".shared-image-error")) figure.append(el("p", "shared-image-error", "Image preview unavailable. Open the file to check its location and permissions."));
+    if (!figure.querySelector(".shared-image-error")) figure.append(el("p", "shared-image-error", "Shared image preview unavailable."));
   };
   open.append(image);
-  open.onclick = () => openFile(value.path, undefined, true);
+  open.onclick = () => attachmentId
+      ? openSharedAttachment(value.path, attachmentId)
+      : openFile(value.path, undefined, true);
   open.setAttribute("aria-label", "Open shared image " + filename);
   figure.append(open, el("figcaption", "", `${filename} · ${value.width} × ${value.height} · Shared without model vision`));
   t.row.after(figure);
   t.sharedImage = figure;
+}
+async function openSharedAttachment(title, attachmentId) {
+  if (!view.id || !/^[a-f0-9]{64}$/.test(attachmentId)) return;
+  const label = title.split("/").pop() || "Shared image";
+  preview(label, "Image", "", "image");
+  const version = fileVersion;
+  fileAbort = new AbortController();
+  $("#preview-body").replaceChildren(el("div", "loading-surface"));
+  $("#download").disabled = true;
+  try {
+    const response = await ownerFetch(
+      "/api/attachment?id=" + encodeURIComponent(view.id) + "&attachment=" + encodeURIComponent(attachmentId),
+      { signal: fileAbort.signal },
+    );
+    if (!response.ok) throw Error("Image attachment unavailable");
+    const blob = await response.blob();
+    if (!blob.type.startsWith("image/")) throw Error("Image attachment unavailable");
+    if (version !== fileVersion || !$("#preview").open) return;
+    const url = URL.createObjectURL(blob);
+    preview(label, "Image", url, "image", undefined, true);
+    $("#preview").addEventListener("close", () => URL.revokeObjectURL(url), { once: true });
+  } catch {
+    if (version === fileVersion && $("#preview").open) {
+      $("#preview-body").replaceChildren(el("p", "error", "Image preview unavailable."));
+    }
+  }
 }
 function toolStatus(t, failed = false) {
   if (!failed) sharedImage(t);

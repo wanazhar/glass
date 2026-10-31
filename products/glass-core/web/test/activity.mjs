@@ -7,10 +7,11 @@ import { existsSync } from "node:fs";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
-const streams = new Set(), answers = [], requests = [], imagePaths = [];
+const streams = new Set(), answers = [], requests = [], attachmentRequests = [];
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC", "base64");
 const sharedPath = "shots/ui #1 (é).png";
-const sharedResult = "[display image]\n" + JSON.stringify({ kind: "image_display", path: sharedPath, width: 1, height: 1, bytes: PNG.length, media_type: "image/png", markdown: "![Image](shots/ui%20%231%20%28%C3%A9%29.png)" }) + "\nShown to the user only. No pixels supplied to the model.";
+const attachmentId = "a".repeat(64);
+const sharedResult = "[display image]\n" + JSON.stringify({ kind: "image_display", path: sharedPath, attachment_id: attachmentId, width: 1, height: 1, bytes: PNG.length, media_type: "image/png", markdown: "![Image](shots/ui%20%231%20%28%C3%A9%29.png)" }) + "\nShown to the user only. No pixels supplied to the model.";
 const { activitySnapshot } = await import("../src/activity.js");
 const bounded = activitySnapshot([{ state: "completed", name: "bash", time: { textContent: "" }, command: "build", output: { textContent: "x".repeat(200000) + "FINAL_BUILD_ERROR" } }]);
 assert(bounded.length < 132000 && bounded.endsWith("FINAL_BUILD_ERROR"), "Activity snapshots must stay bounded and retain the latest output");
@@ -39,8 +40,8 @@ const server = createServer(async (request, response) => {
     request.on("close", () => streams.delete(response));
     return;
   }
-  if (path === "/api/file" && url.searchParams.get("path")?.endsWith(".png")) {
-    imagePaths.push(url.searchParams.get("path"));
+  if (path === "/api/attachment") {
+    attachmentRequests.push({ id: url.searchParams.get("id"), attachment: url.searchParams.get("attachment") });
     response.writeHead(200, { "Content-Type": "image/png" });
     response.end(PNG);
     return;
@@ -98,10 +99,10 @@ try {
     await shared.scrollIntoViewIfNeeded();
     await page.waitForFunction(() => document.querySelector(".shared-image-card img")?.naturalWidth === 1);
     assert.match(await shared.textContent(), /Shared without model vision/);
-    assert(imagePaths.includes(sharedPath), "Image paths with spaces, Unicode and fragment characters must survive sharing");
+    assert(attachmentRequests.some(request => request.id === "fixture" && request.attachment === attachmentId), "Shared images must load through their authenticated thread-scoped attachment ID, not the original path");
     await shared.getByRole("button").click();
     await page.locator("#preview-body > img").waitFor();
-    assert.equal(await page.locator("#preview-title").textContent(), sharedPath);
+    assert.equal(await page.locator("#preview-title").textContent(), "ui #1 (é).png");
     await page.locator("#preview-close").click();
     emit([{ t: "tool", call_id: "live-display", name: "display_image", command: sharedPath }, { t: "tool_end", call_id: "live-display", output: sharedResult, summary: "Shared image" }]);
     await page.waitForFunction(() => document.querySelectorAll(".shared-image-card").length === 2);

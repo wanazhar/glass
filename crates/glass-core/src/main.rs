@@ -92,6 +92,7 @@ mod serve;
 mod session;
 mod session_diagnostics;
 mod settings;
+mod shared_attachments;
 mod signals;
 mod skills;
 mod source_control;

@@ -415,6 +415,45 @@ impl<'a> Agent<'a> {
         }
     }
 
+    fn publish_stream_text(&mut self, out: &mut TurnOutput, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(live) = self.live.as_mut() {
+            live.text(text);
+        }
+        self.emit(Progress::Text(text));
+        out.text.push_str(text);
+    }
+
+    fn finish_stream_text(
+        &mut self,
+        out: &mut TurnOutput,
+        stream: &mut crate::secrets::SecretTextStream,
+    ) {
+        let safe = stream.finish(&self.session.secrets);
+        self.publish_stream_text(out, &safe);
+    }
+
+    fn finish_stream_reasoning(
+        &mut self,
+        out: &mut TurnOutput,
+        reasoning: &mut crate::secrets::SecretTextStream,
+        chat_reasoning: &mut crate::secrets::SecretTextStream,
+    ) {
+        let safe = reasoning.finish(&self.session.secrets);
+        if !safe.is_empty() {
+            self.session.append(Record::Reasoning(safe.clone()));
+            self.emit(Progress::Reasoning(&safe));
+        }
+        let safe = chat_reasoning.finish(&self.session.secrets);
+        if !safe.is_empty() {
+            out.chat_reasoning
+                .get_or_insert_with(String::new)
+                .push_str(&safe);
+        }
+    }
+
     /// Open a tool chip in the default view.
     fn emit_tool_start(&mut self, call: &ToolCall) {
         if let Some(live) = self.live.as_mut() {
@@ -1243,6 +1282,10 @@ impl<'a> Agent<'a> {
             chat_reasoning: None,
             chat_response: false,
         };
+        let mut text_stream = crate::secrets::SecretTextStream::default();
+        let mut reasoning_stream = crate::secrets::SecretTextStream::default();
+        let mut chat_reasoning_stream = crate::secrets::SecretTextStream::default();
+        let mut chat_reasoning_bytes = 0_usize;
 
         loop {
             let ev = if let Some(rx) = &receiver {
@@ -1305,10 +1348,22 @@ impl<'a> Agent<'a> {
                 // Chat Completions cannot accept input into this HTTP request.
                 // Preserve received prose and resume from history with the
                 // correction; incomplete/unexecuted tool calls must not run.
+                self.finish_stream_text(&mut out, &mut text_stream);
+                self.finish_stream_reasoning(
+                    &mut out,
+                    &mut reasoning_stream,
+                    &mut chat_reasoning_stream,
+                );
                 out.tool_calls.clear();
                 return Ok(out);
             }
             if self.steer.as_deref() == Some("") {
+                self.finish_stream_text(&mut out, &mut text_stream);
+                self.finish_stream_reasoning(
+                    &mut out,
+                    &mut reasoning_stream,
+                    &mut chat_reasoning_stream,
+                );
                 if !out.text.is_empty() {
                     if out.chat_response {
                         self.session.append(crate::reasoning::record(
@@ -1326,32 +1381,39 @@ impl<'a> Agent<'a> {
             trace.event(&ev);
             match ev {
                 Event::Text(t) => {
-                    // Emit before accumulating so the UI can paint the delta
-                    // as it arrives rather than after the whole turn.
-                    let text = self.session.secrets.redact(&t);
-                    if let Some(live) = self.live.as_mut() {
-                        live.text(&text);
-                    }
-                    self.emit(Progress::Text(&text));
-                    out.text.push_str(&text);
+                    // A secret can be split across provider text events.
+                    // Hold its possible prefix until a later event resolves it.
+                    let text = text_stream.push(&self.session.secrets, &t);
+                    self.publish_stream_text(&mut out, &text);
                 }
                 // Reasoning is captured but not rendered by default: it is
                 // noise in a terminal and costs context to replay.
                 Event::ChatResponse => out.chat_response = true,
                 Event::ChatReasoning(t) => {
                     out.chat_response = true;
+                    chat_reasoning_bytes = chat_reasoning_bytes.saturating_add(t.len());
                     let content = out.chat_reasoning.get_or_insert_with(String::new);
-                    if content.len() + t.len() > crate::reasoning::MAX_BYTES {
+                    if chat_reasoning_bytes > crate::reasoning::MAX_BYTES {
+                        self.finish_stream_text(&mut out, &mut text_stream);
+                        self.finish_stream_reasoning(
+                            &mut out,
+                            &mut reasoning_stream,
+                            &mut chat_reasoning_stream,
+                        );
                         return Err(provider::Error::Transport(
                             "Provider reasoning exceeds the 2 MiB replay bound; no tools executed"
                                 .into(),
                         ));
                     }
-                    content.push_str(&t);
+                    let safe = chat_reasoning_stream.push(&self.session.secrets, &t);
+                    content.push_str(&safe);
                 }
                 Event::Reasoning(t) => {
-                    self.session.append(Record::Reasoning(t.clone()));
-                    self.emit(Progress::Reasoning(&t));
+                    let safe = reasoning_stream.push(&self.session.secrets, &t);
+                    if !safe.is_empty() {
+                        self.session.append(Record::Reasoning(safe.clone()));
+                        self.emit(Progress::Reasoning(&safe));
+                    }
                 }
                 Event::ToolCall {
                     id,
@@ -1372,6 +1434,12 @@ impl<'a> Agent<'a> {
                     out.warnings.push(w);
                 }
                 Event::Error(e) => {
+                    self.finish_stream_text(&mut out, &mut text_stream);
+                    self.finish_stream_reasoning(
+                        &mut out,
+                        &mut reasoning_stream,
+                        &mut chat_reasoning_stream,
+                    );
                     let e = crate::live::sanitize_provider_detail(&e);
                     if out.text.trim().is_empty() && out.tool_calls.is_empty() {
                         let status = provider::stream_status(&e)
@@ -1406,9 +1474,19 @@ impl<'a> Agent<'a> {
                     self.emit(Progress::ProviderFailure(&e));
                     return Err(provider::Error::Transport(e));
                 }
-                Event::Done => break,
+                Event::Done => {
+                    self.finish_stream_text(&mut out, &mut text_stream);
+                    self.finish_stream_reasoning(
+                        &mut out,
+                        &mut reasoning_stream,
+                        &mut chat_reasoning_stream,
+                    );
+                    break;
+                }
             }
         }
+        self.finish_stream_text(&mut out, &mut text_stream);
+        self.finish_stream_reasoning(&mut out, &mut reasoning_stream, &mut chat_reasoning_stream);
         if out.tool_calls.len() > 256 {
             return Err(provider::Error::Transport(
                 "Provider returned more than 256 tool calls; none executed".into(),

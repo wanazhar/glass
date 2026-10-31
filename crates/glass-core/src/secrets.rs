@@ -5,6 +5,7 @@
 //! shown to the human, and each handle can be resolved once.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -143,14 +144,106 @@ struct Entry {
 /// An in-memory vault owned by one GC session. References are random handles,
 /// not encoded or derived from the secret value. Expired, revoked and consumed
 /// entries remain bounded redactors until vault drop; they never regain use.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SecretVault {
-    entries: HashMap<String, Entry>,
+    // Runtime subagent observers may execute on worker threads. Cloned vault
+    // handles share the live session registry so secrets requested earlier
+    // in the same turn are still redacted by child-event observers.
+    entries: Arc<Mutex<HashMap<String, Entry>>>,
+    // Parent-session values copied into a child session for redaction only.
+    // They have no handles/scopes in this vault and cannot be consumed.
+    inherited_redactors: Vec<Zeroizing<String>>,
+}
+
+/// Stateful redaction for provider text that may split one known value across
+/// multiple stream events.
+#[derive(Default)]
+pub(crate) struct SecretTextStream {
+    pending: Zeroizing<String>,
+}
+
+impl SecretTextStream {
+    pub(crate) fn push(&mut self, secrets: &SecretVault, chunk: &str) -> String {
+        self.pending.push_str(chunk);
+        self.pending = Zeroizing::new(secrets.redact(&self.pending));
+        let safe_end = secrets.stream_safe_prefix_len(&self.pending);
+        let safe = self.pending[..safe_end].to_string();
+        self.pending.drain(..safe_end);
+        safe
+    }
+
+    /// Flush remaining text, replacing any incomplete secret prefix at the
+    /// stream boundary instead of exposing a fragment when a response stops.
+    pub(crate) fn finish(&mut self, secrets: &SecretVault) -> String {
+        self.pending = Zeroizing::new(secrets.redact(&self.pending));
+        let safe_end = secrets.stream_safe_prefix_len(&self.pending);
+        let mut output = self.pending[..safe_end].to_string();
+        if safe_end < self.pending.len() {
+            output.push_str("[redacted secret]");
+        }
+        self.pending = Zeroizing::default();
+        output
+    }
 }
 
 impl SecretVault {
+    fn entries(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
+        match self.entries.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => {
+                let entries = poisoned.into_inner();
+                self.entries.clear_poison();
+                entries
+            }
+        }
+    }
+
     pub(crate) fn has_redactors(&self) -> bool {
-        !self.entries.is_empty()
+        !self.entries().is_empty() || !self.inherited_redactors.is_empty()
+    }
+
+    /// Copy another session's current values as redactors only. Child tasks
+    /// must not retain parent handles or gain authority to consume them.
+    pub(crate) fn inherit_redactors(&mut self, parent: &SecretVault) {
+        let parent_entries = parent.entries();
+        self.inherited_redactors.extend(
+            parent_entries
+                .values()
+                .map(|entry| Zeroizing::new(entry.value.to_string())),
+        );
+        self.inherited_redactors.extend(
+            parent
+                .inherited_redactors
+                .iter()
+                .map(|value| Zeroizing::new(value.to_string())),
+        );
+    }
+
+    /// Largest prefix that can be safely emitted now. The caller first
+    /// replaces complete matches; this holds only a trailing partial value
+    /// that a later chunk could complete.
+    pub(crate) fn stream_safe_prefix_len(&self, text: &str) -> usize {
+        let entries = self.entries();
+        let values = entries
+            .values()
+            .map(|entry| entry.value.as_str())
+            .chain(self.inherited_redactors.iter().map(|value| value.as_str()));
+        let mut held = 0;
+        for value in values {
+            let max_prefix = value.len().saturating_sub(1).min(text.len());
+            for prefix_len in (1..=max_prefix).rev() {
+                if !value.is_char_boundary(prefix_len)
+                    || !text.is_char_boundary(text.len() - prefix_len)
+                {
+                    continue;
+                }
+                if text.ends_with(&value[..prefix_len]) {
+                    held = held.max(prefix_len);
+                    break;
+                }
+            }
+        }
+        text.len() - held
     }
 
     pub(crate) fn issue_zeroizing(
@@ -184,13 +277,14 @@ impl SecretVault {
         {
             return Err("Secret request is invalid or outside supported limits".into());
         }
-        if self.entries.len() >= MAX_ENTRIES {
+        let mut entries = self.entries();
+        if entries.len() >= MAX_ENTRIES {
             return Err(
                 "Session secret limit reached; start a new session for additional secrets".into(),
             );
         }
         let handle = random_handle()?;
-        self.entries.insert(
+        entries.insert(
             handle.clone(),
             Entry {
                 value,
@@ -222,8 +316,8 @@ impl SecretVault {
         operation: &str,
         now: Instant,
     ) -> Result<(Zeroizing<String>, String), String> {
-        let entry = self
-            .entries
+        let mut entries = self.entries();
+        let entry = entries
             .get_mut(handle)
             .ok_or_else(|| "Secret handle is missing, expired, or revoked".to_owned())?;
         if entry.revoked || now >= entry.expires_at {
@@ -253,8 +347,8 @@ impl SecretVault {
         now: Instant,
         use_value: impl FnOnce(&str) -> T,
     ) -> Result<T, String> {
-        let entry = self
-            .entries
+        let mut entries = self.entries();
+        let entry = entries
             .get_mut(handle)
             .ok_or_else(|| "Secret handle is missing, expired, or revoked".to_owned())?;
         if entry.revoked || now >= entry.expires_at {
@@ -271,7 +365,8 @@ impl SecretVault {
     }
 
     pub(crate) fn revoke(&mut self, handle: &str) -> bool {
-        let Some(entry) = self.entries.get_mut(handle) else {
+        let mut entries = self.entries();
+        let Some(entry) = entries.get_mut(handle) else {
             return false;
         };
         if entry.used || entry.revoked || Instant::now() >= entry.expires_at {
@@ -283,7 +378,7 @@ impl SecretVault {
 
     #[cfg(test)]
     pub(crate) fn revoke_session(&mut self, session_id: &str) {
-        for entry in self.entries.values_mut() {
+        for entry in self.entries().values_mut() {
             if entry.scope.session_id == session_id {
                 entry.revoked = true;
             }
@@ -294,10 +389,11 @@ impl SecretVault {
     /// to the provider. Handle expiry/revocation limits use, not redaction:
     /// values remain zeroizing and bounded until this session vault is dropped.
     pub(crate) fn redact(&self, text: &str) -> String {
-        let mut values = self
-            .entries
+        let entries = self.entries();
+        let mut values = entries
             .values()
             .map(|entry| entry.value.as_str())
+            .chain(self.inherited_redactors.iter().map(|value| value.as_str()))
             .collect::<Vec<_>>();
         values.sort_unstable_by(|left, right| {
             right.len().cmp(&left.len()).then_with(|| left.cmp(right))
@@ -588,7 +684,7 @@ mod tests {
                 .issue_at(scope(), "new-sentinel".into(), now + SECRET_TTL)
                 .is_err()
         );
-        assert_eq!(vault.entries.len(), MAX_ENTRIES);
+        assert_eq!(vault.entries().len(), MAX_ENTRIES);
         for index in 0..MAX_ENTRIES {
             assert_eq!(
                 vault.redact(&format!("retained-{index:02}-sentinel")),
@@ -610,6 +706,59 @@ mod tests {
         assert_eq!(
             vault.redact("shared-prefix-sensitive-suffix shared-prefix"),
             "[redacted secret] [redacted secret]"
+        );
+    }
+
+    #[test]
+    fn cloned_live_handle_redacts_secrets_added_after_the_clone() {
+        let mut session_vault = SecretVault::default();
+        let observer_vault = session_vault.clone();
+        session_vault
+            .issue_at(
+                scope(),
+                "parent-secret-added-mid-turn".into(),
+                Instant::now(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            observer_vault.redact("echo parent-secret-added-mid-turn"),
+            "echo [redacted secret]"
+        );
+    }
+
+    #[test]
+    fn inherited_values_are_redaction_only_and_stream_boundaries_hold_partial_values() {
+        let mut parent = SecretVault::default();
+        parent
+            .issue_at(scope(), "parent-secret-sentinel".into(), Instant::now())
+            .unwrap();
+        let mut child = SecretVault::default();
+        child.inherit_redactors(&parent);
+
+        assert!(child.has_redactors());
+        assert_eq!(child.redact("parent-secret-sentinel"), "[redacted secret]");
+        assert_eq!(
+            child.stream_safe_prefix_len("before parent-secret-"),
+            "before ".len()
+        );
+        assert_eq!(
+            child.redact(
+                &"before parent-secret-"[..child.stream_safe_prefix_len("before parent-secret-")]
+            ),
+            "before "
+        );
+        let mut stream = SecretTextStream::default();
+        assert_eq!(stream.push(&child, "before parent-secret-"), "before ");
+        assert_eq!(stream.finish(&child), "[redacted secret]");
+        let complete = child.redact("parent-secret-sentinel after");
+        assert_eq!(child.stream_safe_prefix_len(&complete), complete.len());
+
+        // Inherited values do not create handles that the child can consume.
+        assert!(
+            child
+                .take_web_request_secret("unknown", "child-session", "create staging token")
+                .is_err()
         );
     }
 }

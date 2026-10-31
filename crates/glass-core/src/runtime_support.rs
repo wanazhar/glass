@@ -148,20 +148,30 @@ fn preview(mut v: Value) -> (Value, Vec<Value>) {
     (v, clipped)
 }
 pub fn entries(session: &Session, p: &Value) -> Result<Value, String> {
-    entries_with_bound(session, p, None)
+    entries_with_bound(session, p, None, None)
 }
 
 /// Read entries only through the byte boundary captured by a read-only
 /// session snapshot. This keeps a child viewer from accidentally including a
 /// record appended after its snapshot was opened.
+#[cfg(test)]
 pub fn entries_snapshot(session: &Session, p: &Value) -> Result<Value, String> {
-    entries_with_bound(session, p, Some(session.snapshot_bytes()))
+    entries_with_bound(session, p, Some(session.snapshot_bytes()), None)
+}
+
+pub fn entries_snapshot_redacted(
+    session: &Session,
+    p: &Value,
+    redact: &dyn Fn(&str) -> String,
+) -> Result<Value, String> {
+    entries_with_bound(session, p, Some(session.snapshot_bytes()), Some(redact))
 }
 
 fn entries_with_bound(
     session: &Session,
     p: &Value,
     snapshot_bytes: Option<u64>,
+    redact: Option<&dyn Fn(&str) -> String>,
 ) -> Result<Value, String> {
     let mut cursor = p.get("cursor").and_then(Value::as_u64).unwrap_or(0);
     let limit = p
@@ -183,10 +193,13 @@ fn entries_with_bound(
     let mut bytes = 0;
     let mut complete_snapshot_tail = true;
     while entries.len() < limit && cursor < total {
-        let Some((record, len)) = next_bounded(&mut reader, total - cursor)? else {
+        let Some((mut record, len)) = next_bounded(&mut reader, total - cursor)? else {
             complete_snapshot_tail = false;
             break;
         };
+        if let Some(redact) = redact {
+            redact_json_strings(&mut record, redact);
+        }
         let (record, truncated) = preview(record);
         let entry = json!({"entryId":format!("{}@{cursor}",session.id),"cursor":cursor+len,
             "record":record,"truncatedFields":truncated});
@@ -203,19 +216,22 @@ fn entries_with_bound(
     )
 }
 pub fn entry(session: &Session, p: &Value) -> Result<Value, String> {
-    entry_with_bound(session, p, None)
+    entry_with_bound(session, p, None, None)
 }
 
-/// Read a full field chunk from a read-only snapshot without crossing the
-/// byte boundary captured when that child session was opened.
-pub fn entry_snapshot(session: &Session, p: &Value) -> Result<Value, String> {
-    entry_with_bound(session, p, Some(session.snapshot_bytes()))
+pub fn entry_snapshot_redacted(
+    session: &Session,
+    p: &Value,
+    redact: &dyn Fn(&str) -> String,
+) -> Result<Value, String> {
+    entry_with_bound(session, p, Some(session.snapshot_bytes()), Some(redact))
 }
 
 fn entry_with_bound(
     session: &Session,
     p: &Value,
     snapshot_bytes: Option<u64>,
+    redact: Option<&dyn Fn(&str) -> String>,
 ) -> Result<Value, String> {
     let id = super::string(p, "entryId")?;
     let prefix = format!("{}@", session.id);
@@ -233,8 +249,11 @@ fn entry_with_bound(
     if cursor > total {
         return Err("entry cursor exceeds journal snapshot".into());
     }
-    let (value, _) = next_bounded(&mut reader(&session.path, cursor)?, total - cursor)?
+    let (mut value, _) = next_bounded(&mut reader(&session.path, cursor)?, total - cursor)?
         .ok_or("entry does not exist")?;
+    if let Some(redact) = redact {
+        redact_json_strings(&mut value, redact);
+    }
     let field = p.get("field").and_then(Value::as_str).unwrap_or("t");
     let text = value
         .get(field)
@@ -260,6 +279,23 @@ fn entry_with_bound(
         "callId":value.get("id"),"toolName":value.get("name"),
         "nextOffset":if end<text.len(){Some(end)}else{None}}),
     )
+}
+
+fn redact_json_strings(value: &mut Value, redact: &dyn Fn(&str) -> String) {
+    match value {
+        Value::String(text) => *text = redact(text),
+        Value::Array(values) => {
+            for value in values {
+                redact_json_strings(value, redact);
+            }
+        }
+        Value::Object(fields) => {
+            for value in fields.values_mut() {
+                redact_json_strings(value, redact);
+            }
+        }
+        _ => {}
+    }
 }
 pub fn scan(session: &Session, mut visit: impl FnMut(&Value)) -> Result<(), String> {
     let mut r = reader(&session.path, 0)?;

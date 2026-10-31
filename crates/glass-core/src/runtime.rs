@@ -366,12 +366,32 @@ fn mixed_schemas(
     Ok(registered)
 }
 
+#[cfg(test)]
 fn subagent_read_request(
     method: &str,
     scratch: &std::path::Path,
     parent_session_id: &str,
     params: &Value,
     active_children: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+) -> Result<Value, String> {
+    let secrets = crate::secrets::SecretVault::default();
+    subagent_read_request_with_secrets(
+        method,
+        scratch,
+        parent_session_id,
+        params,
+        active_children,
+        &secrets,
+    )
+}
+
+fn subagent_read_request_with_secrets(
+    method: &str,
+    scratch: &std::path::Path,
+    parent_session_id: &str,
+    params: &Value,
+    active_children: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    parent_secrets: &crate::secrets::SecretVault,
 ) -> Result<Value, String> {
     match method {
         "runtime/subagents/list" => {
@@ -406,7 +426,8 @@ fn subagent_read_request(
                 task_id,
                 child_session_id,
             )?;
-            let mut page = support::entries_snapshot(&child, params)?;
+            let redact = |text: &str| parent_secrets.redact(text);
+            let mut page = support::entries_snapshot_redacted(&child, params, &redact)?;
             conceal_child_private_records(&mut page);
             page["taskId"] = json!(task_id);
             page["parentCallId"] = json!(parent_call_id);
@@ -424,7 +445,8 @@ fn subagent_read_request(
                 task_id,
                 child_session_id,
             )?;
-            let mut field = support::entry_snapshot(&child, params)?;
+            let redact = |text: &str| parent_secrets.redact(text);
+            let mut field = support::entry_snapshot_redacted(&child, params, &redact)?;
             let private_reasoning = field["recordKind"].as_str() == Some("reasoning")
                 || (field["recordKind"].as_str() == Some("custom")
                     && field["customKind"].as_str() == Some(crate::reasoning::KIND));
@@ -1598,7 +1620,14 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         let active_children = std::sync::Arc::new(std::sync::Mutex::new(
                             std::collections::HashMap::new(),
                         ));
-                        subagent_read_request(method, &scratch, &c.session.id, p, &active_children)
+                        subagent_read_request_with_secrets(
+                            method,
+                            &scratch,
+                            &c.session.id,
+                            p,
+                            &active_children,
+                            &c.session.secrets,
+                        )
                     }
                     "commands/list" => Ok(runtime_command_catalogue()),
                     "commands/execute" => {
@@ -1943,11 +1972,20 @@ fn run(
         u64,
     >::new()));
     let query_active_children = active_children.clone();
+    let query_parent_secrets = c.session.secrets.clone();
     wire.borrow_mut().subagent_query = Some(std::sync::Arc::new(move |method, parent, params| {
         let active_children = query_active_children.clone();
-        subagent_read_request(method, &query_scratch, parent, params, &active_children)
+        subagent_read_request_with_secrets(
+            method,
+            &query_scratch,
+            parent,
+            params,
+            &active_children,
+            &query_parent_secrets,
+        )
     }));
     let child_settings = c.cfg.clone();
+    let parent_secrets = c.session.secrets.clone();
     let child_ledger = crate::budget::load(
         &c.session.path.with_extension("cost.json"),
         c.cfg.cost_limit,
@@ -1960,6 +1998,7 @@ fn run(
     let parent_turn = turn_id.clone();
     let event_scratch = subagent_scratch.clone();
     let event_active_children = active_children.clone();
+    let event_parent_secrets = parent_secrets.clone();
     c.extensions.set_subagent_with_events(move || {
         let settings = child_settings.clone();
         let ledger = child_ledger.clone();
@@ -1969,6 +2008,7 @@ fn run(
         let parent_session = parent_session.clone();
         let parent_turn = parent_turn.clone();
         let active_children = event_active_children.clone();
+        let parent_secrets = event_parent_secrets.clone();
         Box::new(move |tasks, call_id| {
             let call_id = match call_id {
                 Value::String(value)
@@ -2023,7 +2063,10 @@ fn run(
                         &settings.workspace,
                         &scratch,
                         &make,
-                        Some(&prompt),
+                        crate::subagent::ParentContext {
+                            prompt: Some(&prompt),
+                            secrets: &parent_secrets,
+                        },
                         link,
                         &sink,
                     )
@@ -2833,6 +2876,32 @@ mod tests {
             call_id: "child-tool-call".into(),
             body: tool_output.clone(),
         });
+        let mut parent_secrets = crate::secrets::SecretVault::default();
+        let page_secret = "parent-page-secret-sentinel";
+        parent_secrets
+            .issue_zeroizing(
+                crate::secrets::SecretScope {
+                    session_id: "parent-1".into(),
+                    tool_name: "web_secret_request".into(),
+                    operation: "create token".into(),
+                    destination: "https://api.example.test".into(),
+                },
+                zeroize::Zeroizing::new(page_secret.to_owned()),
+            )
+            .unwrap();
+        child.append(Record::ToolCall {
+            id: page_secret.into(),
+            name: page_secret.into(),
+            arguments: format!("argument {page_secret}"),
+        });
+        let mut secret_page_output = "x".repeat(64 * 1024 - 4);
+        secret_page_output.push_str(page_secret);
+        secret_page_output.push_str(&"y".repeat(1024));
+        child.append(Record::ToolResult {
+            name: page_secret.into(),
+            call_id: page_secret.into(),
+            body: secret_page_output,
+        });
         let running_child = Session::create(&scratch).unwrap();
         let running_child_id = running_child.id.clone();
         crate::subagent::persist_child_link(
@@ -2927,7 +2996,7 @@ mod tests {
                 .is_empty()
         );
 
-        let entries = subagent_read_request(
+        let entries = subagent_read_request_with_secrets(
             "runtime/subagents/entries",
             &scratch,
             "parent-1",
@@ -2939,6 +3008,7 @@ mod tests {
                 "limit":10
             }),
             &active_children,
+            &parent_secrets,
         )
         .unwrap();
         assert_eq!(entries["childSessionId"], child_id);
@@ -2946,6 +3016,79 @@ mod tests {
         assert!(entries.to_string().contains("hidden"));
         assert!(!entries.to_string().contains("private child reasoning"));
         assert!(!entries.to_string().contains("private custom reasoning"));
+        assert!(!entries.to_string().contains(page_secret));
+        let redacted_call_entry_id = entries["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["record"]["k"] == "call")
+            .unwrap()["entryId"]
+            .as_str()
+            .unwrap();
+        let redacted_call = subagent_read_request_with_secrets(
+            "runtime/subagents/entry",
+            &scratch,
+            "parent-1",
+            &json!({
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "entryId":redacted_call_entry_id,
+                "field":"args"
+            }),
+            &active_children,
+            &parent_secrets,
+        )
+        .unwrap();
+        assert_eq!(redacted_call["text"], "argument [redacted secret]");
+        assert!(!redacted_call.to_string().contains(page_secret));
+        let redacted_output_entry_id = entries["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| {
+                entry["record"]["k"] == "tool" && entry["record"]["id"] == "[redacted secret]"
+            })
+            .unwrap()["entryId"]
+            .as_str()
+            .unwrap();
+        let first_secret_page = subagent_read_request_with_secrets(
+            "runtime/subagents/entry",
+            &scratch,
+            "parent-1",
+            &json!({
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "entryId":redacted_output_entry_id,
+                "field":"t",
+                "limitBytes":64 * 1024
+            }),
+            &active_children,
+            &parent_secrets,
+        )
+        .unwrap();
+        let second_secret_page = subagent_read_request_with_secrets(
+            "runtime/subagents/entry",
+            &scratch,
+            "parent-1",
+            &json!({
+                "taskId":"task-1",
+                "parentCallId":"call-1",
+                "childSessionId":child_id,
+                "entryId":redacted_output_entry_id,
+                "field":"t",
+                "offset":first_secret_page["nextOffset"],
+                "limitBytes":64 * 1024
+            }),
+            &active_children,
+            &parent_secrets,
+        )
+        .unwrap();
+        for page in [&first_secret_page, &second_secret_page] {
+            assert!(!page.to_string().contains(page_secret));
+            assert!(!page.to_string().contains("parent-page-"));
+        }
         let entry_id = entries["entries"]
             .as_array()
             .unwrap()
@@ -2954,7 +3097,7 @@ mod tests {
             .unwrap()["entryId"]
             .as_str()
             .unwrap();
-        let first_chunk = subagent_read_request(
+        let first_chunk = subagent_read_request_with_secrets(
             "runtime/subagents/entry",
             &scratch,
             "parent-1",
@@ -2967,13 +3110,14 @@ mod tests {
                 "limitBytes":64 * 1024
             }),
             &active_children,
+            &parent_secrets,
         )
         .unwrap();
         assert_eq!(first_chunk["callId"], "child-tool-call");
         assert_eq!(first_chunk["toolName"], "bash");
         assert_eq!(first_chunk["text"].as_str().unwrap().len(), 64 * 1024);
         assert_eq!(first_chunk["nextOffset"], json!(64 * 1024));
-        let second_chunk = subagent_read_request(
+        let second_chunk = subagent_read_request_with_secrets(
             "runtime/subagents/entry",
             &scratch,
             "parent-1",
@@ -2987,6 +3131,7 @@ mod tests {
                 "limitBytes":64 * 1024
             }),
             &active_children,
+            &parent_secrets,
         )
         .unwrap();
         assert_eq!(

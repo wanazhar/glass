@@ -99,7 +99,49 @@ pub struct ChildEvent {
     pub data: serde_json::Value,
 }
 
+pub(crate) struct ParentContext<'a> {
+    pub prompt: Option<&'a str>,
+    pub secrets: &'a crate::secrets::SecretVault,
+}
+
 const CHILD_LINK_DIR: &str = "subagent-links";
+const MAX_CHILD_EVENT_TEXT_BYTES: usize = 4 * 1024;
+
+#[derive(Default)]
+struct ChildToolCallIds {
+    next: u64,
+    active: Vec<(zeroize::Zeroizing<String>, String)>,
+}
+
+impl ChildToolCallIds {
+    fn start(&mut self, provider_id: &str) -> String {
+        if let Some((_, public_id)) = self
+            .active
+            .iter()
+            .find(|(raw_id, _)| raw_id.as_str() == provider_id)
+        {
+            return public_id.clone();
+        }
+        self.next = self.next.saturating_add(1);
+        let public_id = format!("child-tool-{}", self.next);
+        self.active.push((
+            zeroize::Zeroizing::new(provider_id.to_owned()),
+            public_id.clone(),
+        ));
+        public_id
+    }
+
+    fn finish(&mut self, provider_id: &str) -> String {
+        if let Some(index) = self
+            .active
+            .iter()
+            .position(|(raw_id, _)| raw_id.as_str() == provider_id)
+        {
+            return self.active.remove(index).1;
+        }
+        self.start(provider_id)
+    }
+}
 
 /// Persist the Core-owned parent/child relationship separately from the child
 /// conversation. This small sidecar keeps snapshots cheap even when a child
@@ -343,31 +385,39 @@ pub fn run_task_observed(
     workspace: &Path,
     scratch: &Path,
     make_provider: &MakeProvider<'_>,
-    parent_prompt: Option<&str>,
+    parent: ParentContext<'_>,
     link: ChildLink,
     observer: &(dyn Fn(ChildEvent) + Sync),
 ) -> String {
+    // A parent-known value must not be copied into a child prompt/transcript.
+    // Keep the task that the child actually receives as the card's assignment.
+    let mut task = task.clone();
+    task.task = parent.secrets.redact(&task.task);
+    task.prompt = task.prompt.map(|prompt| parent.secrets.redact(&prompt));
+    let parent_prompt = parent.prompt.map(|prompt| parent.secrets.redact(prompt));
     let mut session = match Session::create(scratch) {
         Ok(session) => session,
         Err(error) => return format!("subagent failed: {error}"),
     };
+    session.secrets.inherit_redactors(parent.secrets);
     let child_session_id = session.id.clone();
     let now = unix_millis();
     if persist_child_link(scratch, &link, &child_session_id, "running", now, None, 1).is_err() {
         let report = "subagent failed: child session relationship could not be recorded";
-        observer(ChildEvent {
-            data: serde_json::json!({
-                "kind":"finished",
-                "taskId":link.task_id,
-                "parentCallId":link.parent_call_id,
-                "taskIndex":link.task_index,
-                "taskCount":link.task_count,
-                "childSessionId":child_session_id,
-                "seq":1,
-                "state":"failed",
-                "error":"child session relationship could not be recorded",
-            }),
+        let mut data = serde_json::json!({
+            "kind":"finished",
+            "taskId":link.task_id,
+            "parentCallId":link.parent_call_id,
+            "taskIndex":link.task_index,
+            "taskCount":link.task_count,
+            "childSessionId":child_session_id,
+            "seq":1,
+            "state":"failed",
+            "error":"child session relationship could not be recorded",
+            "taskText":task.task,
         });
+        redact_and_bound_child_event(parent.secrets, &mut data);
+        observer(ChildEvent { data });
         return report.into();
     }
     let sequence = std::cell::Cell::new(0_u64);
@@ -384,6 +434,7 @@ pub fn run_task_observed(
         data["taskCount"] = serde_json::json!(link.task_count);
         data["childSessionId"] = serde_json::json!(child_session_id);
         data["seq"] = serde_json::json!(seq);
+        redact_and_bound_child_event(parent.secrets, &mut data);
         observer(ChildEvent { data });
     };
     emit(
@@ -392,6 +443,7 @@ pub fn run_task_observed(
             "state":"running",
             "readOnly":link.read_only,
             "startedAtMs":now,
+            "taskText":task.task,
         }),
     );
     session.append(Record::User(task.task.clone()));
@@ -412,7 +464,9 @@ pub fn run_task_observed(
             let mut state = tools::State::new();
             let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
             let mut registry = ext::Registry::empty();
-            let base = task_prompt(task, parent_prompt);
+            let base = task_prompt(&task, parent_prompt.as_deref());
+            let text_buffer = std::cell::RefCell::new(String::new());
+            let tool_call_ids = std::cell::RefCell::new(ChildToolCallIds::default());
             let mut agent = Agent::new(
                 provider.as_ref(),
                 &mut session,
@@ -424,29 +478,42 @@ pub fn run_task_observed(
             .with_task_context(base, task.read_only)
             .with_progress(|progress| match progress {
                 crate::agent::Progress::Text(text) => {
-                    emit("text", serde_json::json!({"text":text}));
+                    let mut buffer = text_buffer.borrow_mut();
+                    buffer.push_str(text);
+                    *buffer = parent.secrets.redact(&buffer);
+                    emit_ready_child_text(&mut buffer, parent.secrets, false, &emit);
                 }
-                crate::agent::Progress::ToolStart { call_id, name, .. } => emit(
-                    "tool_start",
-                    serde_json::json!({"callId":call_id,"toolName":name}),
-                ),
+                crate::agent::Progress::ToolStart { call_id, name, .. } => {
+                    let call_id = tool_call_ids.borrow_mut().start(call_id);
+                    emit(
+                        "tool_start",
+                        serde_json::json!({"callId":call_id,"toolName":name}),
+                    );
+                }
                 crate::agent::Progress::ToolEnd {
                     call_id,
                     summary,
                     output,
-                } => emit(
-                    "tool_end",
-                    serde_json::json!({
-                        "callId":call_id,
-                        "summary":summary,
-                        "text":output,
-                        "isError":output.starts_with("error:")
-                            || (output.starts_with("[exit ") && !output.starts_with("[exit 0]")),
-                    }),
-                ),
+                } => {
+                    let call_id = tool_call_ids.borrow_mut().finish(call_id);
+                    emit(
+                        "tool_end",
+                        serde_json::json!({
+                            "callId":call_id,
+                            "summary":summary,
+                            "text":output,
+                            "isError":output.starts_with("error:")
+                                || (output.starts_with("[exit ") && !output.starts_with("[exit 0]")),
+                        }),
+                    );
+                }
                 _ => {}
             });
-            match agent.run_turn(|_| {}) {
+            let turn_result = agent.run_turn(|_| {});
+            drop(agent);
+            let mut text_buffer = text_buffer.into_inner();
+            emit_ready_child_text(&mut text_buffer, parent.secrets, true, &emit);
+            match turn_result {
                 Ok((out, crate::agent::Stop::Cancelled)) => {
                     Ok((format!("{}{note}", out.text), "cancelled"))
                 }
@@ -475,16 +542,83 @@ pub fn run_task_observed(
         sequence.get().saturating_add(1),
     )
     .is_ok();
-    let report = session.secrets.redact(&report);
+    let report = parent.secrets.redact(&session.secrets.redact(&report));
     emit(
         "finished",
         serde_json::json!({
             "state":if status_persisted {status} else {"failed"},
             "finishedAtMs":finished,
             "error":(!status_persisted).then_some("child session status could not be recorded"),
+            "result":report,
         }),
     );
     report
+}
+
+fn redact_and_bound_child_event(
+    secrets: &crate::secrets::SecretVault,
+    data: &mut serde_json::Value,
+) {
+    let Some(fields) = data.as_object_mut() else {
+        return;
+    };
+    for (field, limit) in [
+        ("taskText", MAX_CHILD_EVENT_TEXT_BYTES),
+        ("result", MAX_CHILD_EVENT_TEXT_BYTES),
+        ("text", MAX_CHILD_EVENT_TEXT_BYTES),
+        ("callId", 128),
+        ("toolName", 128),
+        ("summary", 1024),
+        ("error", 1024),
+    ] {
+        let Some(original) = fields.get(field).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let redacted = secrets.redact(original);
+        let (bounded, truncated) = truncate_child_event_text(&redacted, limit);
+        fields.insert(field.to_string(), serde_json::Value::String(bounded));
+        if truncated {
+            fields.insert(format!("{field}Truncated"), serde_json::Value::Bool(true));
+        }
+    }
+}
+
+fn truncate_child_event_text(text: &str, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text.to_string(), false);
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
+fn emit_ready_child_text(
+    buffer: &mut String,
+    secrets: &crate::secrets::SecretVault,
+    final_chunk: bool,
+    emit: &impl Fn(&'static str, serde_json::Value),
+) {
+    *buffer = secrets.redact(buffer);
+    let safe_end = if final_chunk {
+        buffer.len()
+    } else {
+        secrets.stream_safe_prefix_len(buffer)
+    };
+    let ready = buffer[..safe_end].to_string();
+    buffer.drain(..safe_end);
+    let mut start = 0;
+    while start < ready.len() {
+        let mut end = start
+            .saturating_add(MAX_CHILD_EVENT_TEXT_BYTES)
+            .min(ready.len());
+        while !ready.is_char_boundary(end) {
+            end -= 1;
+        }
+        emit("text", serde_json::json!({"text":&ready[start..end]}));
+        start = end;
+    }
 }
 
 fn unix_millis() -> u64 {
@@ -811,6 +945,39 @@ mod tests {
         }
     }
 
+    struct SplitSecretProvider;
+
+    impl Provider for SplitSecretProvider {
+        fn id(&self) -> &str {
+            "split-secret"
+        }
+
+        fn stream(
+            &self,
+            _: &crate::provider::Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = crate::provider::Event> + '_>, crate::provider::Error>
+        {
+            Ok(Box::new(
+                [
+                    crate::provider::Event::Text("before progress-".into()),
+                    crate::provider::Event::Text("sent".into()),
+                    crate::provider::Event::Text("inel after".into()),
+                    crate::provider::Event::Reasoning("thought progress-".into()),
+                    crate::provider::Event::Reasoning("sentinel".into()),
+                    crate::provider::Event::ChatResponse,
+                    crate::provider::Event::ChatReasoning("private progress-".into()),
+                    crate::provider::Event::ChatReasoning("sentinel thought assignment-".into()),
+                    crate::provider::Event::Done,
+                ]
+                .into_iter(),
+            ))
+        }
+
+        fn context_window(&self) -> u32 {
+            100_000
+        }
+    }
+
     #[test]
     fn cache_affinity_reuses_the_parent_system_prefix() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -874,7 +1041,10 @@ mod tests {
             &scratch,
             &scratch,
             &make,
-            None,
+            ParentContext {
+                prompt: None,
+                secrets: &crate::secrets::SecretVault::default(),
+            },
             link,
             &observer,
         );
@@ -949,6 +1119,126 @@ mod tests {
     }
 
     #[test]
+    fn parent_secrets_are_redacted_from_child_assignment_split_progress_report_and_tool_fields() {
+        let scratch = std::env::temp_dir().join(format!(
+            "gc-child-parent-secret-feed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+
+        let mut parent_secrets = crate::secrets::SecretVault::default();
+        let scope = crate::secrets::SecretScope {
+            session_id: "parent-session".into(),
+            tool_name: "web_secret_request".into(),
+            operation: "create token".into(),
+            destination: "https://api.example.test".into(),
+        };
+        parent_secrets
+            .issue_zeroizing(
+                scope.clone(),
+                zeroize::Zeroizing::new("assignment-sentinel".into()),
+            )
+            .unwrap();
+        parent_secrets
+            .issue_zeroizing(scope, zeroize::Zeroizing::new("progress-sentinel".into()))
+            .unwrap();
+
+        let events = std::sync::Mutex::new(Vec::new());
+        let observer = |event: ChildEvent| events.lock().unwrap().push(event.data);
+        let make = |_: Option<&str>| -> Result<Box<dyn Provider>, String> {
+            Ok(Box::new(SplitSecretProvider))
+        };
+        let report = run_task_observed(
+            &task("inspect assignment-sentinel"),
+            &scratch,
+            &scratch,
+            &make,
+            ParentContext {
+                prompt: None,
+                secrets: &parent_secrets,
+            },
+            ChildLink {
+                task_id: "task-parent-secret".into(),
+                parent_session_id: "parent-session".into(),
+                parent_turn_id: serde_json::json!("turn-1"),
+                parent_call_id: "call-parent-secret".into(),
+                task_index: 0,
+                task_count: 1,
+                read_only: true,
+            },
+            &observer,
+        );
+
+        assert!(!report.contains("assignment-sentinel"));
+        assert!(!report.contains("progress-sentinel"));
+        let events = events.lock().unwrap();
+        let started = events
+            .iter()
+            .find(|event| event["kind"] == "started")
+            .unwrap();
+        let finished = events
+            .iter()
+            .find(|event| event["kind"] == "finished")
+            .unwrap();
+        assert_eq!(started["taskText"], "inspect [redacted secret]");
+        assert_eq!(finished["result"], "before [redacted secret] after");
+        assert!(events.iter().all(|event| {
+            let encoded = event.to_string();
+            !encoded.contains("assignment-sentinel")
+                && !encoded.contains("assignment-")
+                && !encoded.contains("progress-sentinel")
+                && !encoded.contains("progress-")
+        }));
+        assert!(events.iter().any(|event| event["kind"] == "text"));
+        assert!(events.iter().all(|event| {
+            event["taskId"] == "task-parent-secret"
+                && event["parentCallId"] == "call-parent-secret"
+                && event["childSessionId"].as_str().is_some()
+        }));
+        let child_id = started["childSessionId"].as_str().unwrap().to_owned();
+        drop(events);
+
+        let child = Session::open_readonly(&scratch, &child_id).unwrap();
+        let transcript = format!("{:?}", child.history_records());
+        assert!(!transcript.contains("assignment-sentinel"));
+        assert!(!transcript.contains("assignment-"));
+        assert!(!transcript.contains("progress-sentinel"));
+        assert!(!transcript.contains("progress-"));
+        assert!(!transcript.contains("private progress-sentinel thought"));
+
+        let mut tool_end = serde_json::json!({
+            "kind":"tool_end",
+            "callId":"progress-sentinel",
+            "toolName":"assignment-sentinel",
+            "summary":"printed progress-sentinel",
+            "text":"progress-sentinel",
+        });
+        redact_and_bound_child_event(&parent_secrets, &mut tool_end);
+        assert_eq!(tool_end["callId"], "[redacted secret]");
+        assert_eq!(tool_end["toolName"], "[redacted secret]");
+        assert_eq!(tool_end["summary"], "printed [redacted secret]");
+        assert_eq!(tool_end["text"], "[redacted secret]");
+        assert!(!tool_end.to_string().contains("progress-sentinel"));
+        assert!(!tool_end.to_string().contains("assignment-sentinel"));
+
+        let mut call_ids = ChildToolCallIds::default();
+        let public_id = call_ids.start("progress-sentinel");
+        assert_eq!(call_ids.finish("progress-sentinel"), public_id);
+        assert!(!public_id.contains("progress-sentinel"));
+
+        let oversized = "x".repeat(MAX_CHILD_EVENT_TEXT_BYTES + 7);
+        let mut bounded = serde_json::json!({"taskText":oversized});
+        redact_and_bound_child_event(&parent_secrets, &mut bounded);
+        assert_eq!(
+            bounded["taskText"].as_str().unwrap().len(),
+            MAX_CHILD_EVENT_TEXT_BYTES
+        );
+        assert_eq!(bounded["taskTextTruncated"], true);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
     fn observed_child_records_provider_setup_failure_as_a_terminal_child() {
         let scratch = std::env::temp_dir().join(format!("gc-child-failed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -963,7 +1253,10 @@ mod tests {
             &scratch,
             &scratch,
             &make,
-            None,
+            ParentContext {
+                prompt: None,
+                secrets: &crate::secrets::SecretVault::default(),
+            },
             ChildLink {
                 task_id: "task-failed".into(),
                 parent_session_id: "parent-session".into(),

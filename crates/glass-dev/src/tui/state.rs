@@ -22833,4 +22833,67 @@ mod tests {
         assert_eq!(viewer.children[0]["state"], "completed");
         assert_eq!(viewer.live_events.len(), 2);
     }
+
+    #[test]
+    fn subagent_output_page_is_deferred_when_workspace_is_busy() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-subagent-output-retry-{}-{}",
+            std::process::id(),
+            NEXT_BROWSER_TOOL.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.subagents_viewer = Some(SubagentViewer {
+            parent_agent: crate::AgentId::parse("agent-0001").unwrap(),
+            parent_session_id: "parent-session".into(),
+            list_request_id: String::new(),
+            children: vec![serde_json::json!({
+                "taskId":"task-child",
+                "parentSessionId":"parent-session",
+                "parentCallId":"parent-call",
+                "childSessionId":"child-session",
+                "readOnly":true
+            })],
+            live_events: Vec::new(),
+            selected_child: 0,
+            pending_open_child: None,
+            child_entries: Vec::new(),
+            selected_entry: 0,
+            watching_child: true,
+            entries_request_id: None,
+            output_inspector: Some(SubagentOutputInspector {
+                entry_id: "child-session@0".into(),
+                call_id: "child-call".into(),
+                tool_name: "bash".into(),
+                field: "out".into(),
+                text: "first chunk".into(),
+                field_bytes: 32_000,
+                next_offset: Some(16_384),
+                scroll: 0,
+            }),
+            output_request_id: None,
+            pending_output_offset: None,
+            entries_cursor: 0,
+            entries_has_more: false,
+            entries_scroll: 0,
+            error: None,
+            last_event_sequence: 0,
+            previous_composer_mode: true,
+        });
+
+        let workspace = state.workspace.clone();
+        let guard = workspace.lock().expect("hold workspace lock");
+        state
+            .next_subagent_output_chunk()
+            .expect("busy workspace defers the output request");
+        let viewer = state.subagents_viewer.as_ref().unwrap();
+        assert_eq!(viewer.output_request_id, None);
+        assert_eq!(viewer.pending_output_offset, Some((16_384, 0)));
+        assert_eq!(viewer.error, None);
+        assert!(state.status.contains("waiting for workspace"));
+        drop(guard);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
 }

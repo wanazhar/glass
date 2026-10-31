@@ -51,3 +51,8 @@ against real scheduler persistence, not only an in-memory duplicate model.
 Run focused tests, formatting and strict Clippy. Commit for independent review;
 no provider, installation, live services or push. One development/review cycle,
 then report results and the exact integration prerequisites for P2 continuation.
+
+
+Independent acceptance review: [task-agent-inbox-003-01](../reviews/task-agent-inbox-003-01.md).
+
+Independent acceptance review: [task-agent-inbox-003-01](../reviews/task-agent-inbox-003-01.md).

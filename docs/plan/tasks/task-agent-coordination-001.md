@@ -64,6 +64,10 @@ loop, no live provider test and no release rebuild for documentation alone.
 
 ## First implementation slices
 
+The two foundation branches merged at `84f76e4b`. Their scoped reviews pass;
+production wake dispatch, full root limits and the real redaction adapter
+remain unfinished. Continue with the [runtime integration task](task-agent-runtime-004.md).
+
 - [Shared budget admission](task-agent-budget-002.md): Luna Secure, isolated
   worktree; implement synchronized root reservation/accounting before requests.
 - [Task binding and durable inbox](task-agent-inbox-003.md): Luna Capture,

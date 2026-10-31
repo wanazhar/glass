@@ -353,6 +353,10 @@ export function desktopSurface({ api }) {
           const headerAt = findBytes(buffer, headerDelimiter, boundary.length);
           if (headerAt < 0) break;
           const headerText = new TextDecoder().decode(buffer.slice(boundary.length, headerAt));
+          if (/(?:^|\r\n)X-Glass-Heartbeat:\s*1(?:\r\n|$)/i.test(headerText)) {
+            buffer = buffer.slice(headerAt + headerDelimiter.length);
+            continue;
+          }
           const length = Number(headerText.match(/(?:^|\r\n)Content-Length:\s*(\d+)/i)?.[1]);
           const seq = Number(headerText.match(/(?:^|\r\n)X-Frame-Seq:\s*(\d+)/i)?.[1]);
           const timeMs = Number(headerText.match(/(?:^|\r\n)X-Frame-Time-Ms:\s*(\d+(?:\.\d+)?)/i)?.[1]);

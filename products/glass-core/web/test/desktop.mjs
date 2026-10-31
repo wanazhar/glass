@@ -23,6 +23,7 @@ let statusFailuresDuringStart = 0;
 let streamResponse = null;
 let streamTimer = 0;
 let streamFrameDelayMs = 0;
+let streamPauseUntil = 0;
 const streamWidths = [];
 const actions = [];
 const sessionStartEnvironments = [];
@@ -66,6 +67,7 @@ const testModule = `
   window.setDesktopInputDelay = (ms) => fetch("/__test/input-delay?ms=" + ms);
   window.disconnectDesktopStream = () => fetch("/__test/stream-close");
   window.setStaleDesktopStream = (delayMs) => fetch("/__test/stream-stale?delayMs=" + delayMs);
+  window.setDesktopStreamGap = (durationMs) => fetch("/__test/stream-gap?durationMs=" + durationMs);
   window.__inputTimings = [];
   window.__frameTimings = [];
   window.addEventListener("glass-desktop-input-timing", (event) => window.__inputTimings.push(event.detail));
@@ -139,6 +141,11 @@ const server = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
+  if (url.pathname === "/__test/stream-gap") {
+    streamPauseUntil = Date.now() + Math.max(0, Math.min(10_000, Number(url.searchParams.get("durationMs")) || 0));
+    response.writeHead(204).end();
+    return;
+  }
   if (url.pathname === "/__test/stream-widths") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(streamWidths));
@@ -208,6 +215,10 @@ const server = createServer(async (request, response) => {
     streamResponse = response;
     const writeFrame = () => {
       if (!streamResponse || streamResponse.destroyed) return;
+      if (Date.now() < streamPauseUntil) {
+        response.write("--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n");
+        return;
+      }
       const seq = nextFrameSeq++;
       const frameTimeMs = Math.max(0, seq * 100 - streamFrameDelayMs);
       response.write(`--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: ${seq}\r\nX-Frame-Time-Ms: ${frameTimeMs}\r\n\r\n`);
@@ -399,6 +410,11 @@ try {
   assert((await page.evaluate(async () => await (await fetch("/__test/stream-widths")).json())).includes("480"),
     "phone viewer should request the bandwidth-friendly 480px stream");
   assert.equal(await page.locator("#desktop-placeholder").isHidden(), true);
+  await page.evaluate(() => window.setDesktopStreamGap(2500));
+  await page.waitForTimeout(2200);
+  assert.equal(await page.locator("#desktop-retry").isHidden(), true,
+    "a temporarily quiet frame body must not be reported as a disconnected stream");
+  await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
   await page.evaluate(() => window.setStaleDesktopStream(1500));
   await page.getByText(/^Delayed ·/).waitFor({ timeout: 3000 });
   assert.equal(await page.locator("#desktop-stream").isVisible(), true, "a decoded frame within the delay bound should remain visible");

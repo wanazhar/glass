@@ -2810,9 +2810,11 @@ fn desktop_stream(
         )
         .map_err(|e| e.to_string());
     }
-    let first = match desktop.frame_after(0, Duration::from_secs(5)) {
-        Ok(Some(frame)) => frame,
-        Ok(None) => {
+    let first_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut watermark = 0;
+    let first = loop {
+        let remaining = first_deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             return json_response(
                 stream,
                 503,
@@ -2820,8 +2822,13 @@ fn desktop_stream(
             )
             .map_err(|e| e.to_string());
         }
-        Err(error) => {
-            return json_response(stream, 503, json!({"error":error})).map_err(|e| e.to_string());
+        match stream_frame_after(desktop, &mut watermark, remaining) {
+            Ok(Some(frame)) => break frame,
+            Ok(None) => continue,
+            Err(error) => {
+                return json_response(stream, 503, json!({"error":error}))
+                    .map_err(|e| e.to_string());
+            }
         }
     };
     write!(
@@ -2830,14 +2837,62 @@ fn desktop_stream(
     )
     .map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
+    write_desktop_stream_frames(stream, first, width, |after, timeout| {
+        stream_frame_after(desktop, after, timeout)
+    })
+}
+
+fn stream_frame_after(
+    desktop: &crate::desktop::Desktop,
+    after: &mut u64,
+    timeout: Duration,
+) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
+    match desktop.frame_after(*after, timeout) {
+        Err(error) if error == "Desktop frame source is stale" => {
+            if let Some(current) = desktop.status()["frameSeq"].as_u64() {
+                *after = (*after).max(current);
+            }
+            Ok(None)
+        }
+        result => result,
+    }
+}
+
+fn write_desktop_stream_frames<W, F>(
+    stream: &mut W,
+    first: (u64, u64, Vec<u8>),
+    width: u32,
+    mut frame_after: F,
+) -> Result<(), String>
+where
+    W: Write,
+    F: FnMut(&mut u64, Duration) -> Result<Option<(u64, u64, Vec<u8>)>, String>,
+{
     let mut next = Some(first);
     let mut sequence = 0;
+    let mut after = next.as_ref().map_or(0, |frame| frame.0);
     loop {
         let (seq, time_ms, jpeg) = match next.take() {
             Some(frame) => frame,
-            None => match desktop.frame_after(sequence, Duration::from_secs(2)) {
+            None => match frame_after(&mut after, Duration::from_secs(2)) {
                 Ok(Some(frame)) => frame,
-                Ok(None) | Err(_) => return Ok(()),
+                // Capture can pause while a desktop is idle or the remote
+                // transport is delayed. Keep the response open and wait for
+                // the next frame instead of turning one quiet interval into
+                // a reconnect loop in the viewer.
+                Ok(None) => {
+                    // Use a valid, explicitly marked empty multipart part so
+                    // proxies keep the response alive without making the
+                    // viewer treat a heartbeat as an image frame.
+                    stream
+                        .write_all(
+                            b"--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    stream.flush().map_err(|e| e.to_string())?;
+                    continue;
+                }
+                Err(_) => return Ok(()),
             },
         };
         if seq <= sequence {
@@ -2858,6 +2913,7 @@ fn desktop_stream(
         stream.write_all(b"\r\n").map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
         sequence = seq;
+        after = seq;
     }
 }
 
@@ -2960,6 +3016,36 @@ mod tests {
         ));
         assert!(event_stream_requires_reset(3, 10, Some(5)));
         assert!(!event_stream_requires_reset(4, 10, Some(5)));
+    }
+
+    #[test]
+    fn desktop_stream_stays_open_across_a_temporary_frame_gap() {
+        let mut polls = 0;
+        let mut body = Vec::new();
+        write_desktop_stream_frames(&mut body, (1, 100, b"first".to_vec()), 1280, |after, _| {
+            polls += 1;
+            match polls {
+                1 => {
+                    *after = 1;
+                    Ok(None)
+                }
+                2 => {
+                    assert_eq!(*after, 1, "the stale frame watermark must be skipped");
+                    Ok(Some((2, 3_000, b"after-gap".to_vec())))
+                }
+                _ => Err("test stream closed".into()),
+            }
+        })
+        .unwrap();
+
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("X-Frame-Seq: 1"));
+        assert!(body.contains("X-Frame-Seq: 2"));
+        assert!(
+            body.contains("--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n")
+        );
+        assert!(body.contains("after-gap"));
+        assert_eq!(polls, 3);
     }
     fn settings() -> Settings {
         Settings {

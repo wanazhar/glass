@@ -12,13 +12,22 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[allow(dead_code)] // The production Core/Glass adapter is deliberately a later task.
+mod task_coordination;
+#[allow(unused_imports)]
+// Public to the crate for the next adapter slice; tests exercise them here.
+pub(crate) use task_coordination::{
+    BindingStatus, InboxAppendResult, OwnerWakeDispatchAdapter, OwnerWakeLease, RootWakePolicy,
+    TaskBindingIntent, TaskInboxEvent, TaskInboxEventKind, WakeDeliveryOutcome, WakeLeaseState,
+};
+
 const MAX_TASKS: usize = 128;
 const MAX_DEPENDENCIES: usize = 32;
 const MAX_TASK_EVIDENCE: usize = 128;
 const MAX_PERSISTED_TASK_ERROR_BYTES: usize = 160;
 const MAX_TASK_TEXT_BYTES: usize = 128 * 1024;
 const MAX_VERIFIER_COMMAND_BYTES: usize = 16 * 1024;
-const TASK_CHECKPOINT_VERSION: u32 = 1;
+const TASK_CHECKPOINT_VERSION: u32 = 2;
 const MAX_TASK_CHECKPOINT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CREW_WAKE_BYTES: u64 = MAX_TASK_CHECKPOINT_BYTES;
 const TASK_CHECKPOINT_MUTATION_RESERVE: usize = 256;
@@ -165,6 +174,10 @@ pub struct TaskEvidence {
     pub source: String,
     pub passed: Option<bool>,
     pub observed_at_ms: u128,
+    /// Attempt that produced this evidence. Zero denotes legacy checkpoint
+    /// data whose attempt cannot be proven during recovery.
+    #[serde(default)]
+    pub attempt: u32,
     pub details: Value,
 }
 
@@ -511,6 +524,7 @@ pub(crate) struct TaskScheduler {
     tasks: BTreeMap<TaskId, TaskRecord>,
     next_task: u64,
     agent_event_cursor: u64,
+    coordination: task_coordination::CoordinationState,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -520,6 +534,8 @@ struct TaskSchedulerCheckpoint {
     project_root: PathBuf,
     next_task: u64,
     tasks: Vec<TaskRecordCheckpoint>,
+    #[serde(default)]
+    coordination: Option<task_coordination::CoordinationState>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -534,16 +550,21 @@ impl TaskScheduler {
         let root = std::fs::canonicalize(root)?;
         validate_task_checkpoint_paths(&root)?;
         let checkpoint_path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
-        let (tasks, next_task) = if checkpoint_path.exists() {
+        let (tasks, next_task, coordination) = if checkpoint_path.exists() {
             load_task_checkpoint(&checkpoint_path, &root)?
         } else {
-            (BTreeMap::new(), 1)
+            (
+                BTreeMap::new(),
+                1,
+                task_coordination::CoordinationState::default(),
+            )
         };
         let mut scheduler = Self {
             root,
             tasks,
             next_task,
             agent_event_cursor: 0,
+            coordination,
         };
         for record in scheduler.tasks.values() {
             scheduler.validate_snapshot(&record.snapshot)?;
@@ -569,6 +590,12 @@ impl TaskScheduler {
         }
         if recovered {
             scheduler.persist_recovery_checkpoint(&recovered_ids)?;
+        }
+        if scheduler
+            .coordination
+            .mark_interrupted_wake_dispatches_unknown()
+        {
+            scheduler.persist_checkpoint()?;
         }
         Ok(scheduler)
     }
@@ -789,6 +816,7 @@ impl TaskScheduler {
             source: source.into(),
             passed: Some(passed),
             observed_at_ms: now_ms(),
+            attempt: self.record(id)?.snapshot.attempt,
             details,
         };
         validate_text("task evidence kind", &evidence.kind)?;
@@ -1086,6 +1114,7 @@ impl TaskScheduler {
                     source: "resident-agent-session".into(),
                     passed: Some(true),
                     observed_at_ms: event.timestamp_ms,
+                    attempt: self.record(&task_id)?.snapshot.attempt,
                     details: bounded_event_details(&event.payload),
                 };
                 let mut projected = self.record(&task_id)?.snapshot.clone();
@@ -1096,6 +1125,7 @@ impl TaskScheduler {
             }
             kind => {
                 let mut projected = self.record(&task_id)?.snapshot.clone();
+                let attempt = projected.attempt;
                 if kind == "message_end" {
                     projected.observed_tokens = projected
                         .observed_tokens
@@ -1109,6 +1139,7 @@ impl TaskScheduler {
                         source: "resident-agent-session".into(),
                         passed: None,
                         observed_at_ms: event.timestamp_ms,
+                        attempt,
                         details: bounded_event_details(&event.payload),
                     },
                 );
@@ -1170,8 +1201,9 @@ impl TaskScheduler {
             match verify(&requirement, &worktree, &evidence)? {
                 VerificationOutcome::Passed(new_evidence) => {
                     let mut projected = self.record(&id)?.snapshot.clone();
-                    for item in &new_evidence {
-                        push_snapshot_evidence(&mut projected, item.clone());
+                    for mut item in new_evidence.iter().cloned() {
+                        item.attempt = projected.attempt;
+                        push_snapshot_evidence(&mut projected, item);
                     }
                     projected.state = TaskState::Succeeded;
                     projected.completed_at_ms = Some(now_ms());
@@ -1199,8 +1231,9 @@ impl TaskScheduler {
                 VerificationOutcome::Failed(error, new_evidence) => {
                     validate_text("task verification error", &error)?;
                     let mut projected = self.record(&id)?.snapshot.clone();
-                    for item in &new_evidence {
-                        push_snapshot_evidence(&mut projected, item.clone());
+                    for mut item in new_evidence.iter().cloned() {
+                        item.attempt = projected.attempt;
+                        push_snapshot_evidence(&mut projected, item);
                     }
                     projected.assigned_agent = None;
                     projected.last_error = Some(bounded_task_error(&error));
@@ -1540,6 +1573,7 @@ impl TaskScheduler {
             project_root: self.root.clone(),
             next_task,
             tasks,
+            coordination: Some(self.coordination.clone()),
         })
         .map_err(Into::into)
     }
@@ -1846,7 +1880,11 @@ fn maximum_length_agent_id() -> DevelopmentResult<AgentId> {
 fn load_task_checkpoint(
     path: &Path,
     project_root: &Path,
-) -> DevelopmentResult<(BTreeMap<TaskId, TaskRecord>, u64)> {
+) -> DevelopmentResult<(
+    BTreeMap<TaskId, TaskRecord>,
+    u64,
+    task_coordination::CoordinationState,
+)> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(DevelopmentError::InvalidInput(
@@ -1863,7 +1901,7 @@ fn load_task_checkpoint(
     let checkpoint: TaskSchedulerCheckpoint = serde_json::from_slice(&bytes).map_err(|error| {
         DevelopmentError::InvalidInput(format!("invalid task checkpoint: {error}"))
     })?;
-    if checkpoint.format_version != TASK_CHECKPOINT_VERSION {
+    if !matches!(checkpoint.format_version, 1 | TASK_CHECKPOINT_VERSION) {
         return Err(DevelopmentError::InvalidInput(format!(
             "unsupported task checkpoint version {}",
             checkpoint.format_version
@@ -1941,7 +1979,22 @@ fn load_task_checkpoint(
             AgentId::parse(agent.as_str().to_owned())?;
         }
     }
-    Ok((tasks, checkpoint.next_task))
+    let coordination = match (checkpoint.format_version, checkpoint.coordination) {
+        (1, None) => task_coordination::CoordinationState::default(),
+        (_, Some(coordination)) => coordination,
+        (2, None) => {
+            return Err(DevelopmentError::InvalidInput(
+                "version 2 task checkpoint is missing coordination state".into(),
+            ));
+        }
+        (version, None) => {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "task checkpoint version {version} is missing coordination state"
+            )));
+        }
+    };
+    coordination.validate(project_root, &tasks)?;
+    Ok((tasks, checkpoint.next_task, coordination))
 }
 
 fn read_bounded_task_checkpoint(
@@ -2074,6 +2127,7 @@ fn verify_command(
                 source: "trusted-command".into(),
                 passed: Some(passed),
                 observed_at_ms: now_ms(),
+                attempt: 0,
                 details: serde_json::json!({
                     "command": command,
                     "expectedExit": expected_exit,
@@ -2100,6 +2154,7 @@ fn verify_command(
                     source: "trusted-command".into(),
                     passed: Some(false),
                     observed_at_ms: now_ms(),
+                    attempt: 0,
                     details: serde_json::json!({"command":command,"timedOut":true}),
                 }],
             ));
@@ -2412,6 +2467,77 @@ mod tests {
         let mut spec = TaskSpec::new(title, prompt);
         spec.verification = VerificationRequirement::Settled;
         spec
+    }
+
+    fn verified_task(title: impl Into<String>) -> TaskSpec {
+        let mut spec = TaskSpec::new(title, "run a deterministic local verifier");
+        spec.verification = VerificationRequirement::Command {
+            command: "true".into(),
+            expected_exit: 0,
+            timeout_seconds: 2,
+        };
+        spec
+    }
+
+    fn binding_intent(
+        root: &Path,
+        intent_id: &str,
+        todo_id: &str,
+        revision: u64,
+    ) -> TaskBindingIntent {
+        TaskBindingIntent {
+            intent_id: intent_id.into(),
+            workspace_id: root.to_string_lossy().into_owned(),
+            core_session_id: "core-parent-session".into(),
+            todo_id: todo_id.into(),
+            todo_revision: revision,
+            plan_revision: 1,
+        }
+    }
+
+    fn coordination_event(
+        root: &Path,
+        root_task_id: &TaskId,
+        task_id: &TaskId,
+        child_session_id: &str,
+        parent_call_id: &str,
+        sequence: u64,
+        kind: TaskInboxEventKind,
+    ) -> TaskInboxEvent {
+        let mut event = TaskInboxEvent {
+            event_id: format!("event-{}-{sequence}", task_id.as_str()),
+            workspace_id: root.to_string_lossy().into_owned(),
+            root_task_id: root_task_id.clone(),
+            task_id: task_id.clone(),
+            attempt: 1,
+            parent_session_id: "core-parent-session".into(),
+            recipient_session_id: "core-parent-session".into(),
+            child_session_id: child_session_id.into(),
+            parent_call_id: parent_call_id.into(),
+            sequence,
+            kind,
+            redacted_summary: "child update: raw-parent-secret".into(),
+            parent_redaction_applied: false,
+            observed_at_ms: 1_000 + u128::from(sequence),
+        };
+        event.redacted_summary = event
+            .redacted_summary
+            .replace("raw-parent-secret", "[redacted secret]");
+        event.parent_redaction_applied = true;
+        event
+    }
+
+    #[derive(Default)]
+    struct FakeWakeAdapter {
+        calls: usize,
+        outcome: Option<WakeDeliveryOutcome>,
+    }
+
+    impl OwnerWakeDispatchAdapter for FakeWakeAdapter {
+        fn dispatch_owner_wake(&mut self, _lease: &OwnerWakeLease) -> WakeDeliveryOutcome {
+            self.calls = self.calls.saturating_add(1);
+            self.outcome.unwrap_or(WakeDeliveryOutcome::Acknowledged)
+        }
     }
 
     #[test]
@@ -3346,5 +3472,1363 @@ mod tests {
         assert!(!root.join(".glass/crew/latest.json").exists());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_inbox_persists_dedup_reordering_and_one_coalesced_verified_wake() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let first = scheduler
+            .create(&mut agents, verified_task("first required task"))
+            .unwrap();
+        let second = scheduler
+            .create(&mut agents, verified_task("second required task"))
+            .unwrap();
+        let mut root_spec = verified_task("coordination root");
+        root_spec.dependencies = vec![first.clone(), second.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let first_snapshot = scheduler.tasks[&first].snapshot.clone();
+        let second_snapshot = scheduler.tasks[&second].snapshot.clone();
+        let policy = RootWakePolicy {
+            version: 1,
+            root_task_id: root_task.clone(),
+            owner_session_id: "core-parent-session".into(),
+            owner_turn_id: "parent-turn-7".into(),
+            required_task_ids: vec![first.clone(), second.clone()],
+            max_events: 16,
+            max_event_bytes: 64 * 1024,
+            max_owner_wakes: 1,
+            reserved_wakes: 0,
+        };
+        scheduler.register_root_wake_policy(policy.clone()).unwrap();
+
+        for (index, (task, snapshot)) in [(&first, &first_snapshot), (&second, &second_snapshot)]
+            .into_iter()
+            .enumerate()
+        {
+            let intent_id = format!("binding-{index}");
+            let intent = binding_intent(&root, &intent_id, &format!("T{}", index + 1), 1);
+            let pending = scheduler.begin_task_binding(intent.clone()).unwrap();
+            assert_eq!(pending.status, BindingStatus::Pending);
+            assert_eq!(scheduler.begin_task_binding(intent).unwrap(), pending);
+            scheduler
+                .resolve_task_binding(
+                    &intent_id,
+                    root_task.clone(),
+                    task.clone(),
+                    snapshot.attempt,
+                    format!("child-session-{index}"),
+                    format!("parent-call-{index}"),
+                )
+                .unwrap();
+            assert!(
+                scheduler
+                    .resolve_task_binding(
+                        &intent_id,
+                        root_task.clone(),
+                        task.clone(),
+                        snapshot.attempt,
+                        format!("replacement-child-{index}"),
+                        format!("replacement-call-{index}"),
+                    )
+                    .is_err(),
+                "one task attempt cannot be rebound to a different child"
+            );
+        }
+
+        let root_path = root.clone();
+        let prompts_before_events = agents.prompts.len();
+        for task_id in [&first, &second] {
+            scheduler.tasks.get_mut(task_id).unwrap().snapshot.state = TaskState::Running;
+        }
+        let mut dispatcher = FakeWakeAdapter::default();
+        let mut first_later = coordination_event(
+            &root_path,
+            &root_task,
+            &first,
+            "child-session-0",
+            "parent-call-0",
+            2,
+            TaskInboxEventKind::Progress,
+        );
+        first_later.event_id = "event-first-2".into();
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(first_later.clone())
+                .unwrap(),
+            InboxAppendResult::BufferedOutOfOrder
+        );
+        assert!(scheduler.task_inbox(&root_task).is_empty());
+        assert_eq!(agents.prompts.len(), prompts_before_events);
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            1,
+            "out-of-order receipt is durable before acknowledgement"
+        );
+        assert!(scheduler.task_inbox(&root_task).is_empty());
+
+        let first_progress = coordination_event(
+            &root_path,
+            &root_task,
+            &first,
+            "child-session-0",
+            "parent-call-0",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(first_progress.clone())
+                .unwrap(),
+            InboxAppendResult::Accepted
+        );
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(first_progress.clone())
+                .unwrap(),
+            InboxAppendResult::Duplicate
+        );
+        assert_eq!(
+            scheduler
+                .task_inbox(&root_task)
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(
+            scheduler
+                .reserve_owner_wake(&root_task, "wake-1".into(), 10_000, 5_000)
+                .unwrap()
+                .is_none()
+        );
+
+        let mut wrong_parent = coordination_event(
+            &root_path,
+            &root_task,
+            &second,
+            "child-session-1",
+            "parent-call-1",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        wrong_parent.parent_session_id = "other-parent".into();
+        assert!(scheduler.append_task_inbox_event(wrong_parent).is_err());
+        let mut unredacted = coordination_event(
+            &root_path,
+            &root_task,
+            &second,
+            "child-session-1",
+            "parent-call-1",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        unredacted.parent_redaction_applied = false;
+        assert!(scheduler.append_task_inbox_event(unredacted).is_err());
+
+        let second_progress = coordination_event(
+            &root_path,
+            &root_task,
+            &second,
+            "child-session-1",
+            "parent-call-1",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        scheduler.append_task_inbox_event(second_progress).unwrap();
+        assert_eq!(agents.prompts.len(), prompts_before_events);
+        assert_eq!(dispatcher.calls, 0, "progress does not wake the owner");
+
+        for task_id in [&first, &second] {
+            scheduler.tasks.get_mut(task_id).unwrap().snapshot.state = TaskState::Verifying;
+        }
+        settle(&mut scheduler, &mut agents);
+        for task_id in [&first, &second] {
+            let snapshot = scheduler.tasks[task_id].snapshot.clone();
+            assert_eq!(snapshot.state, TaskState::Succeeded);
+            assert!(snapshot.evidence.iter().any(|evidence| {
+                evidence.passed == Some(true) && evidence.attempt == snapshot.attempt
+            }));
+        }
+
+        let mut first_done = coordination_event(
+            &root_path,
+            &root_task,
+            &first,
+            "child-session-0",
+            "parent-call-0",
+            3,
+            TaskInboxEventKind::VerifiedCompletion,
+        );
+        first_done.event_id = "completion-first".into();
+        scheduler
+            .append_task_inbox_event(first_done.clone())
+            .unwrap();
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(first_done.clone())
+                .unwrap(),
+            InboxAppendResult::Duplicate
+        );
+        let mut repeated_completion = coordination_event(
+            &root_path,
+            &root_task,
+            &first,
+            "child-session-0",
+            "parent-call-0",
+            4,
+            TaskInboxEventKind::VerifiedCompletion,
+        );
+        repeated_completion.event_id = "completion-first-repeated-id".into();
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(repeated_completion)
+                .unwrap(),
+            InboxAppendResult::Stale,
+            "one attempt cannot create orphan completion receipts"
+        );
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(coordination_event(
+                    &root_path,
+                    &root_task,
+                    &first,
+                    "child-session-0",
+                    "parent-call-0",
+                    4,
+                    TaskInboxEventKind::Progress,
+                ))
+                .unwrap(),
+            InboxAppendResult::Stale
+        );
+        assert!(
+            scheduler
+                .reserve_owner_wake(&root_task, "wake-1".into(), 10_001, 5_000)
+                .unwrap()
+                .is_none()
+        );
+        let second_done = coordination_event(
+            &root_path,
+            &root_task,
+            &second,
+            "child-session-1",
+            "parent-call-1",
+            2,
+            TaskInboxEventKind::VerifiedCompletion,
+        );
+        scheduler.append_task_inbox_event(second_done).unwrap();
+
+        let lease = scheduler
+            .reserve_owner_wake(&root_task, "wake-1".into(), 10_002, 5_000)
+            .unwrap()
+            .expect("both verifier-backed siblings coalesce into one wake");
+        assert_eq!(lease.state, WakeLeaseState::Reserved);
+        assert_eq!(lease.event_ids.len(), 2);
+        assert!(
+            scheduler
+                .acknowledge_task_inbox_event("completion-first")
+                .is_err()
+        );
+
+        drop(scheduler);
+        let mut reopened = TaskScheduler::new(&root).unwrap();
+        assert_eq!(
+            reopened.task_inbox(&root_task).len(),
+            5,
+            "persisted progress and both completion events survive restart"
+        );
+        assert_eq!(reopened.tasks[&root_task].snapshot.state, TaskState::Paused);
+        let same_lease = reopened
+            .reserve_owner_wake(&root_task, "wake-1".into(), 10_003, 5_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(same_lease, lease);
+        assert_eq!(
+            reopened
+                .task_coordination_counters(&root_task)
+                .wake_reservations,
+            1
+        );
+
+        let delivered = reopened
+            .dispatch_reserved_owner_wake("wake-1", 10_004, &mut dispatcher)
+            .unwrap();
+        assert_eq!(delivered.state, WakeLeaseState::Delivered);
+        assert_eq!(dispatcher.calls, 1);
+        assert!(
+            reopened
+                .dispatch_reserved_owner_wake("wake-1", 10_005, &mut dispatcher)
+                .is_err()
+        );
+        assert_eq!(dispatcher.calls, 1);
+        assert!(
+            reopened
+                .settle_owner_wake("wake-1", "other-session", "parent-turn-7")
+                .is_err()
+        );
+        reopened
+            .settle_owner_wake("wake-1", "core-parent-session", "parent-turn-7")
+            .unwrap();
+        assert_eq!(
+            reopened.append_task_inbox_event(first_done).unwrap(),
+            InboxAppendResult::Duplicate,
+            "redelivery after settlement is deduplicated from the receipt"
+        );
+        assert_eq!(reopened.task_inbox(&root_task).len(), 3);
+        assert!(
+            reopened
+                .reserve_owner_wake(&root_task, "wake-2".into(), 10_006, 5_000)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            reopened
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            5
+        );
+        assert_eq!(
+            reopened
+                .task_coordination_counters(&root_task)
+                .duplicate_events,
+            3
+        );
+        assert_eq!(
+            reopened
+                .task_inbox(&root_task)
+                .iter()
+                .map(|event| event.redacted_summary.as_str())
+                .collect::<Vec<_>>(),
+            vec!["child update: [redacted secret]"; 3]
+        );
+        let encoded_checkpoint = fs::read(root.join(TASK_CHECKPOINT_RELATIVE_PATH)).unwrap();
+        let serialized = String::from_utf8(encoded_checkpoint).unwrap();
+        assert!(!serialized.contains("raw-parent-secret"));
+        assert!(serialized.contains("[redacted secret]"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_task_binding_survives_cross_store_crash_boundary() {
+        let (root, mut scheduler, _agents) = scheduler();
+        let intent = binding_intent(&root, "intent-pending", "T42", 3);
+        let pending = scheduler.begin_task_binding(intent.clone()).unwrap();
+        assert_eq!(pending.status, BindingStatus::Pending);
+        drop(scheduler);
+
+        let mut scheduler = TaskScheduler::new(&root).unwrap();
+        let recovered = scheduler
+            .task_bindings()
+            .into_iter()
+            .find(|binding| binding.intent.intent_id == intent.intent_id)
+            .expect("durable pending binding remains available for reconciliation");
+        assert_eq!(recovered, pending);
+        assert_eq!(scheduler.begin_task_binding(intent).unwrap(), recovered);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retry_keeps_prior_binding_for_stale_event_checkpoint_validation() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("retry-bound child"))
+            .unwrap();
+        let mut root_spec = verified_task("retry-bound root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let child_attempt = scheduler.tasks[&child].snapshot.attempt;
+        let intent = binding_intent(&root, "binding-retry-history", "T203", 1);
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: intent.core_session_id.clone(),
+                owner_turn_id: "turn-retry-history".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 4,
+                max_event_bytes: 16 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler.begin_task_binding(intent).unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-retry-history",
+                root_task.clone(),
+                child.clone(),
+                child_attempt,
+                "child-session-old".into(),
+                "parent-call-old".into(),
+            )
+            .unwrap();
+        let old_event = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-session-old",
+            "parent-call-old",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(old_event.clone())
+                .unwrap(),
+            InboxAppendResult::Accepted
+        );
+
+        let next_attempt = child_attempt + 1;
+        let child_snapshot = &mut scheduler.tasks.get_mut(&child).unwrap().snapshot;
+        child_snapshot.attempt = next_attempt;
+        child_snapshot.state = TaskState::Running;
+        scheduler.persist_checkpoint().unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-retry-history",
+                root_task.clone(),
+                child.clone(),
+                next_attempt,
+                "child-session-new".into(),
+                "parent-call-new".into(),
+            )
+            .unwrap();
+
+        let mut stale_redelivery = old_event;
+        stale_redelivery.event_id = "old-attempt-redelivery".into();
+        stale_redelivery.sequence = 2;
+        assert_eq!(
+            scheduler.append_task_inbox_event(stale_redelivery).unwrap(),
+            InboxAppendResult::Stale
+        );
+        drop(scheduler);
+
+        let reopened = TaskScheduler::new(&root).unwrap();
+        assert_eq!(reopened.task_inbox(&root_task).len(), 1);
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let mut checkpoint: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        checkpoint["coordination"]["inbox"][0]["childSessionId"] =
+            Value::from("tampered-child-session");
+        fs::write(&path, serde_json::to_vec_pretty(&checkpoint).unwrap()).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn version_one_task_checkpoint_migrates_with_empty_coordination_state() {
+        let (root, mut scheduler, _agents) = scheduler();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "legacy-pending", "T98", 1))
+            .unwrap();
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy["formatVersion"] = Value::from(1);
+        legacy.as_object_mut().unwrap().remove("coordination");
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        drop(scheduler);
+
+        let mut recovered = TaskScheduler::new(&root).unwrap();
+        assert!(recovered.task_bindings().is_empty());
+        recovered
+            .begin_task_binding(binding_intent(&root, "after-migration", "T99", 1))
+            .unwrap();
+        let migrated: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(migrated["formatVersion"], TASK_CHECKPOINT_VERSION);
+        assert_eq!(migrated["coordination"]["formatVersion"], 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_checkpoint_rejects_unknown_coordination_versions() {
+        let (root, mut scheduler, _agents) = scheduler();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "corrupt-version", "T97", 1))
+            .unwrap();
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let mut checkpoint: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let valid_coordination = checkpoint["coordination"].clone();
+        checkpoint["coordination"] = serde_json::json!({"formatVersion": 1});
+        fs::write(&path, serde_json::to_vec_pretty(&checkpoint).unwrap()).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+
+        checkpoint["coordination"] = valid_coordination;
+        checkpoint["coordination"]["formatVersion"] = Value::from(99);
+        fs::write(&path, serde_json::to_vec_pretty(&checkpoint).unwrap()).unwrap();
+        drop(scheduler);
+
+        assert!(TaskScheduler::new(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn version_two_task_checkpoint_requires_durable_coordination_field() {
+        let (root, mut scheduler, _agents) = scheduler();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "missing-coordination", "T96", 1))
+            .unwrap();
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let mut checkpoint: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        checkpoint.as_object_mut().unwrap().remove("coordination");
+        fs::write(&path, serde_json::to_vec_pretty(&checkpoint).unwrap()).unwrap();
+        drop(scheduler);
+
+        assert!(TaskScheduler::new(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acknowledged_inbox_event_stays_removed_after_restart() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("acknowledged progress"))
+            .unwrap();
+        let mut root_spec = verified_task("acknowledgement root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let child_attempt = scheduler.tasks[&child].snapshot.attempt;
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-ack".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 4,
+                max_event_bytes: 16 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "binding-ack", "T10", 1))
+            .unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-ack",
+                root_task.clone(),
+                child.clone(),
+                child_attempt,
+                "child-ack".into(),
+                "call-ack".into(),
+            )
+            .unwrap();
+        let event = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-ack",
+            "call-ack",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        let prompts_before = agents.prompts.len();
+        assert_eq!(
+            scheduler.append_task_inbox_event(event.clone()).unwrap(),
+            InboxAppendResult::Accepted
+        );
+        assert_eq!(agents.prompts.len(), prompts_before);
+        drop(scheduler);
+
+        let mut scheduler = TaskScheduler::new(&root).unwrap();
+        assert!(
+            scheduler
+                .acknowledge_task_inbox_event(&event.event_id)
+                .unwrap()
+        );
+        drop(scheduler);
+
+        let mut scheduler = TaskScheduler::new(&root).unwrap();
+        assert!(scheduler.task_inbox(&root_task).is_empty());
+        assert_eq!(
+            scheduler.append_task_inbox_event(event).unwrap(),
+            InboxAppendResult::Stale
+        );
+        assert!(scheduler.task_inbox(&root_task).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn out_of_order_event_and_cursor_survive_restart_before_acknowledgement() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("reordered progress"))
+            .unwrap();
+        let mut root_spec = verified_task("reorder root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let child_attempt = scheduler.tasks[&child].snapshot.attempt;
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-reorder".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 4,
+                max_event_bytes: 16 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "binding-reorder", "T11", 1))
+            .unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-reorder",
+                root_task.clone(),
+                child.clone(),
+                child_attempt,
+                "child-reorder".into(),
+                "call-reorder".into(),
+            )
+            .unwrap();
+        let later = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-reorder",
+            "call-reorder",
+            2,
+            TaskInboxEventKind::Progress,
+        );
+        let prompts_before_events = agents.prompts.len();
+        assert_eq!(
+            scheduler.append_task_inbox_event(later.clone()).unwrap(),
+            InboxAppendResult::BufferedOutOfOrder
+        );
+        drop(scheduler);
+
+        let mut scheduler = TaskScheduler::new(&root).unwrap();
+        assert!(scheduler.task_inbox(&root_task).is_empty());
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            1
+        );
+        assert_eq!(
+            scheduler.append_task_inbox_event(later).unwrap(),
+            InboxAppendResult::Duplicate
+        );
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(coordination_event(
+                    &root,
+                    &root_task,
+                    &child,
+                    "child-reorder",
+                    "call-reorder",
+                    1,
+                    TaskInboxEventKind::Progress,
+                ))
+                .unwrap(),
+            InboxAppendResult::Accepted
+        );
+        assert_eq!(
+            scheduler
+                .task_inbox(&root_task)
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            agents.prompts.len(),
+            prompts_before_events,
+            "inbox recovery never prompts an agent"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_owner_wake_becomes_unknown_without_redispatch() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let required = scheduler
+            .create(&mut agents, verified_task("required proof"))
+            .unwrap();
+        settle(&mut scheduler, &mut agents);
+        let mut root_spec = verified_task("wake root");
+        root_spec.dependencies = vec![required.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let required_snapshot = scheduler.tasks[&required].snapshot.clone();
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-unknown".into(),
+                required_task_ids: vec![required.clone()],
+                max_events: 4,
+                max_event_bytes: 16 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        let intent = binding_intent(&root, "binding-unknown", "T7", 1);
+        scheduler.begin_task_binding(intent).unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-unknown",
+                root_task.clone(),
+                required.clone(),
+                required_snapshot.attempt,
+                "child-unknown".into(),
+                "parent-call-unknown".into(),
+            )
+            .unwrap();
+        scheduler
+            .append_task_inbox_event(coordination_event(
+                &root,
+                &root_task,
+                &required,
+                "child-unknown",
+                "parent-call-unknown",
+                1,
+                TaskInboxEventKind::VerifiedCompletion,
+            ))
+            .unwrap();
+        scheduler
+            .reserve_owner_wake(&root_task, "wake-unknown".into(), 50_000, 2_000)
+            .unwrap()
+            .unwrap();
+        scheduler
+            .mark_owner_wake_dispatching("wake-unknown", 50_001)
+            .unwrap();
+        drop(scheduler);
+
+        let mut reopened = TaskScheduler::new(&root).unwrap();
+        assert_eq!(
+            reopened.owner_wake_lease("wake-unknown").unwrap().state,
+            WakeLeaseState::Unknown
+        );
+        let mut dispatcher = FakeWakeAdapter::default();
+        assert!(
+            reopened
+                .dispatch_reserved_owner_wake("wake-unknown", 50_002, &mut dispatcher)
+                .is_err()
+        );
+        assert_eq!(dispatcher.calls, 0);
+        reopened
+            .reconcile_owner_wake("wake-unknown", false)
+            .unwrap();
+        assert!(
+            reopened
+                .reserve_owner_wake(&root_task, "wake-replay".into(), 50_003, 2_000)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            reopened
+                .task_coordination_counters(&root_task)
+                .unknown_wake_outcomes,
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settled_tasks_cannot_become_required_wake_proof() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, settle_only("settled child", "no verifier"))
+            .unwrap();
+        let mut root_spec = verified_task("verified root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let result = scheduler.register_root_wake_policy(RootWakePolicy {
+            version: 1,
+            root_task_id: root_task,
+            owner_session_id: "core-owner".into(),
+            owner_turn_id: "turn-settled".into(),
+            required_task_ids: vec![child],
+            max_events: 4,
+            max_event_bytes: 16 * 1024,
+            max_owner_wakes: 1,
+            reserved_wakes: 0,
+        });
+        assert!(result.is_err());
+
+        let mut nested_settled = TaskSpec::new("nested settled child", "no evidence verifier");
+        nested_settled.verification = VerificationRequirement::All {
+            requirements: vec![VerificationRequirement::Settled],
+        };
+        let nested_child = scheduler.create(&mut agents, nested_settled).unwrap();
+        let mut nested_root_spec = verified_task("nested settled root");
+        nested_root_spec.dependencies = vec![nested_child.clone()];
+        let nested_root = scheduler.create(&mut agents, nested_root_spec).unwrap();
+        let nested_result = scheduler.register_root_wake_policy(RootWakePolicy {
+            version: 1,
+            root_task_id: nested_root,
+            owner_session_id: "core-owner".into(),
+            owner_turn_id: "turn-nested-settled".into(),
+            required_task_ids: vec![nested_child],
+            max_events: 4,
+            max_event_bytes: 16 * 1024,
+            max_owner_wakes: 1,
+            reserved_wakes: 0,
+        });
+        assert!(nested_result.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wake_proof_requires_every_current_attempt_all_leaf() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let mut child_spec = TaskSpec::new("two-proof child", "produce both proof types");
+        child_spec.verification = VerificationRequirement::All {
+            requirements: vec![
+                VerificationRequirement::Command {
+                    command: "true".into(),
+                    expected_exit: 0,
+                    timeout_seconds: 2,
+                },
+                VerificationRequirement::BrowserWorkflow {
+                    assertion: "local fixture loaded".into(),
+                },
+            ],
+        };
+        let child = scheduler.create(&mut agents, child_spec).unwrap();
+        let mut root_spec = verified_task("two-proof root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        settle(&mut scheduler, &mut agents);
+        assert_eq!(scheduler.tasks[&child].snapshot.state, TaskState::Waiting);
+
+        scheduler
+            .submit_evidence(
+                &child,
+                "browserWorkflow",
+                "test",
+                "local-fixture",
+                true,
+                serde_json::json!({"assertion": "local fixture loaded"}),
+            )
+            .unwrap();
+        settle(&mut scheduler, &mut agents);
+        let complete_snapshot = scheduler.tasks[&child].snapshot.clone();
+        assert_eq!(complete_snapshot.state, TaskState::Succeeded);
+        assert!(complete_snapshot.evidence.iter().any(|evidence| {
+            evidence.kind == "command" && evidence.attempt == complete_snapshot.attempt
+        }));
+        assert!(complete_snapshot.evidence.iter().any(|evidence| {
+            evidence.kind == "browserWorkflow" && evidence.attempt == complete_snapshot.attempt
+        }));
+
+        let intent = binding_intent(&root, "binding-two-proof", "T201", 1);
+        scheduler.begin_task_binding(intent).unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-two-proof",
+                root_task.clone(),
+                child.clone(),
+                complete_snapshot.attempt,
+                "child-two-proof".into(),
+                "parent-call-two-proof".into(),
+            )
+            .unwrap();
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-two-proof".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 4,
+                max_event_bytes: 16 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+
+        scheduler.tasks.get_mut(&child).unwrap().snapshot.evidence = complete_snapshot
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.kind != "browserWorkflow")
+            .cloned()
+            .collect();
+        scheduler.persist_checkpoint().unwrap();
+        assert!(
+            scheduler
+                .append_task_inbox_event(coordination_event(
+                    &root,
+                    &root_task,
+                    &child,
+                    "child-two-proof",
+                    "parent-call-two-proof",
+                    1,
+                    TaskInboxEventKind::VerifiedCompletion,
+                ))
+                .is_err()
+        );
+
+        scheduler.tasks.get_mut(&child).unwrap().snapshot = complete_snapshot;
+        scheduler.persist_checkpoint().unwrap();
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(coordination_event(
+                    &root,
+                    &root_task,
+                    &child,
+                    "child-two-proof",
+                    "parent-call-two-proof",
+                    1,
+                    TaskInboxEventKind::VerifiedCompletion,
+                ))
+                .unwrap(),
+            InboxAppendResult::Accepted
+        );
+        assert!(
+            scheduler
+                .reserve_owner_wake(&root_task, "wake-two-proof".into(), 70_000, 2_000)
+                .unwrap()
+                .is_some()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wake_policy_owner_must_match_every_required_binding_session() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("owner-bound child"))
+            .unwrap();
+        settle(&mut scheduler, &mut agents);
+        let mut root_spec = verified_task("owner-bound root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let child_attempt = scheduler.tasks[&child].snapshot.attempt;
+        let mut intent = binding_intent(&root, "binding-owner-mismatch", "T202", 1);
+        intent.core_session_id = "bound-parent-session".into();
+        scheduler.begin_task_binding(intent).unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-owner-mismatch",
+                root_task.clone(),
+                child.clone(),
+                child_attempt,
+                "child-owner-mismatch".into(),
+                "parent-call-owner-mismatch".into(),
+            )
+            .unwrap();
+
+        let result = scheduler.register_root_wake_policy(RootWakePolicy {
+            version: 1,
+            root_task_id: root_task,
+            owner_session_id: "different-owner-session".into(),
+            owner_turn_id: "turn-owner-mismatch".into(),
+            required_task_ids: vec![child],
+            max_events: 4,
+            max_event_bytes: 16 * 1024,
+            max_owner_wakes: 1,
+            reserved_wakes: 0,
+        });
+        assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn late_wake_policy_must_match_historical_required_binding_sessions() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("historical owner child"))
+            .unwrap();
+        settle(&mut scheduler, &mut agents);
+        let mut root_spec = verified_task("historical owner root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let attempt_one = scheduler.tasks[&child].snapshot.attempt;
+
+        let mut old_intent = binding_intent(&root, "binding-owner-old", "T208", 1);
+        old_intent.core_session_id = "old-owner-session".into();
+        scheduler.begin_task_binding(old_intent).unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-owner-old",
+                root_task.clone(),
+                child.clone(),
+                attempt_one,
+                "old-child-session".into(),
+                "old-parent-call".into(),
+            )
+            .unwrap();
+
+        let child_snapshot = &mut scheduler.tasks.get_mut(&child).unwrap().snapshot;
+        child_snapshot.attempt = attempt_one + 1;
+        child_snapshot.state = TaskState::Running;
+        let mut new_intent = binding_intent(&root, "binding-owner-new", "T209", 1);
+        new_intent.core_session_id = "new-owner-session".into();
+        scheduler.begin_task_binding(new_intent).unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-owner-new",
+                root_task.clone(),
+                child.clone(),
+                attempt_one + 1,
+                "new-child-session".into(),
+                "new-parent-call".into(),
+            )
+            .unwrap();
+
+        let result = scheduler.register_root_wake_policy(RootWakePolicy {
+            version: 1,
+            root_task_id: root_task,
+            owner_session_id: "new-owner-session".into(),
+            owner_turn_id: "turn-historical-owner".into(),
+            required_task_ids: vec![child],
+            max_events: 4,
+            max_event_bytes: 16 * 1024,
+            max_owner_wakes: 1,
+            reserved_wakes: 0,
+        });
+        assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_terminal_progress_does_not_consume_or_poison_event_budget() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("late progress child"))
+            .unwrap();
+        let mut root_spec = verified_task("late progress root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-late-progress".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 1,
+                max_event_bytes: 16 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "binding-late", "T9", 1))
+            .unwrap();
+        let child_attempt = scheduler.tasks[&child].snapshot.attempt;
+        scheduler
+            .resolve_task_binding(
+                "binding-late",
+                root_task.clone(),
+                child.clone(),
+                child_attempt,
+                "child-late".into(),
+                "call-late".into(),
+            )
+            .unwrap();
+        scheduler
+            .append_task_inbox_event(coordination_event(
+                &root,
+                &root_task,
+                &child,
+                "child-late",
+                "call-late",
+                1,
+                TaskInboxEventKind::Progress,
+            ))
+            .unwrap();
+        settle(&mut scheduler, &mut agents);
+        let late = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-late",
+            "call-late",
+            2,
+            TaskInboxEventKind::Progress,
+        );
+        assert_eq!(
+            scheduler.append_task_inbox_event(late).unwrap(),
+            InboxAppendResult::Stale
+        );
+        let counters = scheduler.task_coordination_counters(&root_task);
+        assert_eq!(counters.accepted_events, 1);
+        assert_eq!(counters.stale_events, 1);
+        assert_ne!(
+            counters.stop_reason.as_deref(),
+            Some("root task event budget exhausted")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_event_count_byte_and_payload_limits_fail_closed_without_wake() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("event-count child"))
+            .unwrap();
+        let mut root_spec = verified_task("event-count root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let attempt = scheduler.tasks[&child].snapshot.attempt;
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-count-limit".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 1,
+                max_event_bytes: 64 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "binding-count-limit", "T204", 1))
+            .unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-count-limit",
+                root_task.clone(),
+                child.clone(),
+                attempt,
+                "child-count-limit".into(),
+                "call-count-limit".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            scheduler
+                .append_task_inbox_event(coordination_event(
+                    &root,
+                    &root_task,
+                    &child,
+                    "child-count-limit",
+                    "call-count-limit",
+                    1,
+                    TaskInboxEventKind::Progress,
+                ))
+                .unwrap(),
+            InboxAppendResult::Accepted
+        );
+        let count_exhausted = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-count-limit",
+            "call-count-limit",
+            2,
+            TaskInboxEventKind::Progress,
+        );
+        assert!(scheduler.append_task_inbox_event(count_exhausted).is_err());
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .stop_reason
+                .as_deref(),
+            Some("root task event budget exhausted")
+        );
+        let mut oversized = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-count-limit",
+            "call-count-limit",
+            2,
+            TaskInboxEventKind::Progress,
+        );
+        oversized.redacted_summary = "x".repeat(512 + 1);
+        assert!(scheduler.append_task_inbox_event(oversized).is_err());
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            1
+        );
+        drop(scheduler);
+        let mut scheduler = TaskScheduler::new(&root).unwrap();
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .stop_reason
+                .as_deref(),
+            Some("root task event budget exhausted")
+        );
+        let mut dispatcher = FakeWakeAdapter::default();
+        assert!(
+            scheduler
+                .dispatch_reserved_owner_wake("no-reservation", 80_000, &mut dispatcher)
+                .is_err()
+        );
+        assert_eq!(dispatcher.calls, 0);
+        fs::remove_dir_all(root).unwrap();
+
+        let (root, mut scheduler, mut agents) = self::scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("event-byte child"))
+            .unwrap();
+        let mut root_spec = verified_task("event-byte root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let attempt = scheduler.tasks[&child].snapshot.attempt;
+        let mut first_event = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-byte-limit",
+            "call-byte-limit",
+            1,
+            TaskInboxEventKind::Progress,
+        );
+        first_event.redacted_summary = "a".into();
+        let event_byte_limit = serde_json::to_vec(&first_event).unwrap().len() as u64;
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-byte-limit".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 4,
+                max_event_bytes: event_byte_limit,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "binding-byte-limit", "T205", 1))
+            .unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-byte-limit",
+                root_task.clone(),
+                child.clone(),
+                attempt,
+                "child-byte-limit".into(),
+                "call-byte-limit".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            scheduler.append_task_inbox_event(first_event).unwrap(),
+            InboxAppendResult::Accepted
+        );
+        let mut byte_exhausted = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-byte-limit",
+            "call-byte-limit",
+            2,
+            TaskInboxEventKind::Progress,
+        );
+        byte_exhausted.redacted_summary = "b".repeat(32);
+        assert!(scheduler.append_task_inbox_event(byte_exhausted).is_err());
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .stop_reason
+                .as_deref(),
+            Some("root task event budget exhausted")
+        );
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            1
+        );
+        drop(scheduler);
+        let scheduler = TaskScheduler::new(&root).unwrap();
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_inbox_global_event_cap_persists_stop_reason_without_wake() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let child = scheduler
+            .create(&mut agents, verified_task("global inbox cap child"))
+            .unwrap();
+        let mut root_spec = verified_task("global inbox cap root");
+        root_spec.dependencies = vec![child.clone()];
+        let root_task = scheduler.create(&mut agents, root_spec).unwrap();
+        let attempt = scheduler.tasks[&child].snapshot.attempt;
+        scheduler
+            .register_root_wake_policy(RootWakePolicy {
+                version: 1,
+                root_task_id: root_task.clone(),
+                owner_session_id: "core-parent-session".into(),
+                owner_turn_id: "turn-global-inbox-cap".into(),
+                required_task_ids: vec![child.clone()],
+                max_events: 1_000,
+                max_event_bytes: 512 * 1024,
+                max_owner_wakes: 1,
+                reserved_wakes: 0,
+            })
+            .unwrap();
+        scheduler
+            .begin_task_binding(binding_intent(&root, "binding-global-inbox-cap", "T206", 1))
+            .unwrap();
+        scheduler
+            .resolve_task_binding(
+                "binding-global-inbox-cap",
+                root_task.clone(),
+                child.clone(),
+                attempt,
+                "child-global-inbox-cap".into(),
+                "call-global-inbox-cap".into(),
+            )
+            .unwrap();
+        for sequence in 1..=256 {
+            let mut event = coordination_event(
+                &root,
+                &root_task,
+                &child,
+                "child-global-inbox-cap",
+                "call-global-inbox-cap",
+                sequence,
+                TaskInboxEventKind::Progress,
+            );
+            event.event_id = format!("global-inbox-event-{sequence}");
+            assert_eq!(
+                scheduler.append_task_inbox_event(event).unwrap(),
+                InboxAppendResult::Accepted
+            );
+        }
+        let mut overflow = coordination_event(
+            &root,
+            &root_task,
+            &child,
+            "child-global-inbox-cap",
+            "call-global-inbox-cap",
+            257,
+            TaskInboxEventKind::Progress,
+        );
+        overflow.event_id = "global-inbox-event-257".into();
+        assert!(scheduler.append_task_inbox_event(overflow).is_err());
+        assert_eq!(scheduler.task_inbox(&root_task).len(), 256);
+        assert_eq!(
+            scheduler
+                .task_coordination_counters(&root_task)
+                .accepted_events,
+            256
+        );
+        drop(scheduler);
+
+        let mut reopened = TaskScheduler::new(&root).unwrap();
+        let counters = reopened.task_coordination_counters(&root_task);
+        assert_eq!(counters.accepted_events, 256);
+        assert_eq!(
+            counters.stop_reason.as_deref(),
+            Some("task event inbox requires reconciliation")
+        );
+        let mut dispatcher = FakeWakeAdapter::default();
+        assert!(
+            reopened
+                .dispatch_reserved_owner_wake("no-inbox-lease", 90_000, &mut dispatcher)
+                .is_err()
+        );
+        assert_eq!(dispatcher.calls, 0);
+        fs::remove_dir_all(root).unwrap();
     }
 }

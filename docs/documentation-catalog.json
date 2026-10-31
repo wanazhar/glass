@@ -13304,6 +13304,44 @@
       ]
     },
     {
+      "path": "docs/plan/reviews/task-agent-inbox-003-01.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/plan/tasks/task-agent-inbox-003.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/reviews/task-agent-inbox-003-01.md#independent-review-durable-task-inbox-and-wake-reservations",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Independent review: durable task inbox and wake reservations",
+          "anchor": "independent-review-durable-task-inbox-and-wake-reservations"
+        },
+        {
+          "level": "2",
+          "title": "Findings",
+          "anchor": "findings"
+        },
+        {
+          "level": "2",
+          "title": "Review evidence",
+          "anchor": "review-evidence"
+        },
+        {
+          "level": "2",
+          "title": "Validation reported for the frozen commit",
+          "anchor": "validation-reported-for-the-frozen-commit"
+        }
+      ]
+    },
+    {
       "path": "docs/plan/reviews/workspace-031-001-001.md",
       "class": "historical",
       "topic": "history",
@@ -79783,7 +79821,8 @@
         "docs/plan/tasks/task-agent-coordination-001.md"
       ],
       "dependencies": [
-        "docs/plan/analysis/task-agent-coordination.md"
+        "docs/plan/analysis/task-agent-coordination.md",
+        "docs/plan/reviews/task-agent-inbox-003-01.md"
       ],
       "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
       "route": "docs/plan/tasks/task-agent-inbox-003.md#task-binding-and-durable-inbox",

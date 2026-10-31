@@ -241,6 +241,36 @@ impl NativeStylesheet {
         }
     }
 
+    pub(crate) fn matched_rule_indices_for_node_in_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+        candidates: &[usize],
+        matched: &mut Vec<usize>,
+    ) {
+        matched.clear();
+        if document.node(node_id).is_none() {
+            return;
+        }
+        for rule_index in candidates.iter().copied() {
+            let rule = &self.rules[rule_index];
+            if rule
+                .media
+                .as_deref()
+                .is_some_and(|media| !css_media_list_matches(media, viewport))
+                || rule
+                    .supports
+                    .as_deref()
+                    .is_some_and(|supports| !css_supports_condition_matches(supports))
+                || !rule.selector.matches_in_document(document, node_id)
+            {
+                continue;
+            }
+            matched.push(rule_index);
+        }
+    }
+
     pub(crate) fn custom_property_rule_candidates_for_node_in_document(
         &self,
         document: &NativeDocument,
@@ -346,6 +376,7 @@ impl NativeStylesheet {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn computed_for_in_document_with_inheritance_and_custom_properties(
         &self,
         document: &NativeDocument,
@@ -412,6 +443,7 @@ impl NativeStylesheet {
     }
 
     #[allow(clippy::explicit_auto_deref, clippy::needless_borrow)]
+    #[cfg(test)]
     pub(super) fn computed_for_with_matcher_and_custom_properties_and_candidates(
         &self,
         node: &NativeNode,
@@ -420,6 +452,39 @@ impl NativeStylesheet {
         viewport: Viewport,
         rule_indices: &[usize],
         matches: impl Fn(&NativeSelector) -> bool,
+    ) -> NativeComputedStyle {
+        let mut matched_rule_indices = Vec::with_capacity(rule_indices.len());
+        for rule_index in rule_indices.iter().copied() {
+            let rule = &self.rules[rule_index];
+            if rule
+                .media
+                .as_deref()
+                .is_some_and(|media| !css_media_list_matches(media, viewport))
+                || rule
+                    .supports
+                    .as_deref()
+                    .is_some_and(|supports| !css_supports_condition_matches(supports))
+                || !matches(&rule.selector)
+            {
+                continue;
+            }
+            matched_rule_indices.push(rule_index);
+        }
+        self.computed_for_with_matched_rule_indices(
+            node,
+            inherited,
+            custom_properties,
+            &matched_rule_indices,
+        )
+    }
+
+    #[allow(clippy::explicit_auto_deref, clippy::needless_borrow)]
+    pub(crate) fn computed_for_with_matched_rule_indices(
+        &self,
+        node: &NativeNode,
+        inherited: NativeInheritedStyle,
+        custom_properties: &BTreeMap<u64, String>,
+        matched_rule_indices: &[usize],
     ) -> NativeComputedStyle {
         let mut scratch = NativeCascadeScratch::new_boxed();
         let mut display = &mut scratch.display;
@@ -511,20 +576,8 @@ impl NativeStylesheet {
         let mut color = &mut scratch.color;
         let mut overflow_x = &mut scratch.overflow_x;
         let mut overflow_y = &mut scratch.overflow_y;
-        for rule_index in rule_indices.iter().copied() {
+        for rule_index in matched_rule_indices.iter().copied() {
             let rule = &self.rules[rule_index];
-            if rule
-                .media
-                .as_deref()
-                .is_some_and(|media| !css_media_list_matches(media, viewport))
-                || rule
-                    .supports
-                    .as_deref()
-                    .is_some_and(|supports| !css_supports_condition_matches(supports))
-                || !matches(&rule.selector)
-            {
-                continue;
-            }
             apply_local_important_cascade_declaration(
                 rule.declarations.display,
                 rule.selector.specificity,

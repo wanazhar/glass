@@ -8,6 +8,7 @@ use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use url::Url;
 
 mod background_values;
@@ -2219,6 +2220,18 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) word_spacing: u32,
     pub(crate) letter_spacing: u32,
     pub(crate) pointer_events: NativePointerEventsValue,
+}
+
+/// Exact inputs to one computed-style cascade. A document-local bounded cache
+/// may reuse a style only when selector matching and every inherited or inline
+/// input are identical.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCascadeMemoKey {
+    pub(crate) matched_rule_indices: Vec<usize>,
+    pub(crate) inherited: NativeInheritedStyle,
+    pub(crate) custom_properties: Arc<BTreeMap<u64, String>>,
+    pub(crate) viewport: Viewport,
+    pub(crate) inline_style: Option<String>,
 }
 
 impl Default for NativeInheritedStyle {

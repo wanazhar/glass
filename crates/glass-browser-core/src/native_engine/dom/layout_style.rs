@@ -90,20 +90,51 @@ impl NativeDocument {
         {
             return style;
         }
+        // Preorder host-snapshot projection usually has the parent style and
+        // custom properties cached already. Check that fast path before
+        // walking the full ancestor chain; the chain is only needed for an
+        // arbitrary query whose parent cache is missing.
+        let cached_parent = use_cached_parent
+            .then(|| {
+                self.node(id)
+                    .and_then(NativeNode::parent)
+                    .and_then(|parent_id| {
+                        let style = self
+                            .layout_style_cache
+                            .0
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(&parent_id)
+                            .copied()?;
+                        let custom_properties = self
+                            .layout_style_cache
+                            .1
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(&parent_id)
+                            .cloned()?;
+                        Some((parent_id, style, custom_properties))
+                    })
+            })
+            .flatten();
         let mut chain = Vec::new();
-        let mut current = Some(id);
-        for _ in 0..=MAX_NATIVE_DOM_DEPTH {
-            let Some(current_id) = current else {
-                break;
-            };
-            let Some(node) = self.node(current_id) else {
-                break;
-            };
-            if let Some(host) = node.shadow_host {
-                current = Some(host);
-            } else {
-                chain.push(current_id);
-                current = node.parent();
+        if cached_parent.is_some() {
+            chain.push(id);
+        } else {
+            let mut current = Some(id);
+            for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+                let Some(current_id) = current else {
+                    break;
+                };
+                let Some(node) = self.node(current_id) else {
+                    break;
+                };
+                if let Some(host) = node.shadow_host {
+                    current = Some(host);
+                } else {
+                    chain.push(current_id);
+                    current = node.parent();
+                }
             }
         }
 
@@ -261,34 +292,12 @@ impl NativeDocument {
         // properties; ordinary declarations still use the complete index.
         let mut rule_candidates = Vec::new();
         let mut custom_property_rule_candidates = Vec::new();
+        let mut matched_rule_indices = Vec::new();
         // Snapshot transfer walks the arena in preorder. When the target's
         // parent already has both cached style and inherited variables, start
         // at the target directly instead of rebuilding the entire ancestor
         // chain for every subsequent node. Arbitrary query orders still use
         // the complete fallback chain below.
-        let cached_parent = use_cached_parent
-            .then(|| {
-                self.node(id)
-                    .and_then(NativeNode::parent)
-                    .and_then(|parent_id| {
-                        let style = self
-                            .layout_style_cache
-                            .0
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .get(&parent_id)
-                            .copied()?;
-                        let custom_properties = self
-                            .layout_style_cache
-                            .1
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .get(&parent_id)
-                            .cloned()?;
-                        Some((parent_id, style, custom_properties))
-                    })
-            })
-            .flatten();
         if let Some((parent_id, parent_style, custom_properties)) = cached_parent {
             let root_element = self.node(self.root).and_then(|root| {
                 root.children().iter().find_map(|child| {
@@ -314,8 +323,6 @@ impl NativeDocument {
             }
             inherit_from_style!(parent_style);
             inherited_custom_properties = custom_properties;
-            chain.clear();
-            chain.push(id);
         }
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
@@ -387,86 +394,110 @@ impl NativeDocument {
                         "native_css_style_compute",
                     )
                 });
-                let style = self
-                    .stylesheet
-                    .computed_for_in_document_with_inheritance_and_custom_properties(
-                        self,
-                        current_id,
-                        NativeInheritedStyle {
-                            color: inherited_color,
-                            background_color: inherited_background_color,
-                            text_decoration_color: inherited_text_decoration_color,
-                            border_color: inherited_border_color,
-                            border_width: inherited_border_width,
-                            border_style: inherited_border_style,
-                            border_radius: inherited_border_radius,
-                            padding: inherited_padding,
-                            margin: inherited_margin,
-                            box_sizing: inherited_box_sizing,
-                            width: inherited_width,
-                            height: inherited_height,
-                            min_width: inherited_min_width,
-                            max_width: inherited_max_width,
-                            min_height: inherited_min_height,
-                            max_height: inherited_max_height,
-                            justify_content: inherited_justify_content,
-                            align_items: inherited_align_items,
-                            align_self: inherited_align_self,
-                            align_content: inherited_align_content,
-                            flex_direction: inherited_flex_direction,
-                            flex_wrap: inherited_flex_wrap,
-                            flex_item_order: inherited_flex_item_order,
-                            row_gap: inherited_row_gap,
-                            column_gap: inherited_column_gap,
-                            direction: inherited_direction,
-                            flex_grow: inherited_flex_grow,
-                            flex_shrink: inherited_flex_shrink,
-                            flex_basis: inherited_flex_basis,
-                            white_space: inherited_white_space,
-                            line_height: inherited_line_height,
-                            text_align: inherited_text_align,
-                            text_align_last: inherited_text_align_last,
-                            text_justify: inherited_text_justify,
-                            text_decoration: inherited_text_decoration,
-                            text_decoration_style: inherited_text_decoration_style,
-                            text_decoration_skip_ink: inherited_text_decoration_skip_ink,
-                            text_decoration_skip_spaces: inherited_text_decoration_skip_spaces,
-                            text_decoration_thickness: inherited_text_decoration_thickness,
-                            text_underline_offset: inherited_text_underline_offset,
-                            text_transform: inherited_text_transform,
-                            font_variant_ligatures: inherited_font_variant_ligatures,
-                            font_variant_caps: inherited_font_variant_caps,
-                            font_variant_position: inherited_font_variant_position,
-                            font_variant_alternates: inherited_font_variant_alternates,
-                            font_language_override: inherited_font_language_override,
-                            font_variation_settings: inherited_font_variation_settings,
-                            font_variant_east_asian: inherited_font_variant_east_asian,
-                            font_variant_numeric: inherited_font_variant_numeric,
-                            font_feature_settings: inherited_font_feature_settings,
-                            font_kerning: inherited_font_kerning,
-                            font_optical_sizing: inherited_font_optical_sizing,
-                            font_palette: inherited_font_palette,
-                            font_weight: inherited_font_weight,
-                            font_style: inherited_font_style,
-                            font_stretch: inherited_font_stretch,
-                            font_family: inherited_font_family,
-                            font_size: inherited_font_size,
-                            root_font_size: inherited_root_font_size,
-                            viewport: self.viewport,
-                            word_break: inherited_word_break,
-                            text_overflow: inherited_text_overflow,
-                            overflow_x: inherited_overflow_x,
-                            overflow_y: inherited_overflow_y,
-                            vertical_align: inherited_vertical_align,
-                            text_indent: inherited_text_indent,
-                            word_spacing: inherited_word_spacing,
-                            letter_spacing: inherited_letter_spacing,
-                            pointer_events: inherited_pointer_events,
-                        },
+                let inherited = NativeInheritedStyle {
+                    color: inherited_color,
+                    background_color: inherited_background_color,
+                    text_decoration_color: inherited_text_decoration_color,
+                    border_color: inherited_border_color,
+                    border_width: inherited_border_width,
+                    border_style: inherited_border_style,
+                    border_radius: inherited_border_radius,
+                    padding: inherited_padding,
+                    margin: inherited_margin,
+                    box_sizing: inherited_box_sizing,
+                    width: inherited_width,
+                    height: inherited_height,
+                    min_width: inherited_min_width,
+                    max_width: inherited_max_width,
+                    min_height: inherited_min_height,
+                    max_height: inherited_max_height,
+                    justify_content: inherited_justify_content,
+                    align_items: inherited_align_items,
+                    align_self: inherited_align_self,
+                    align_content: inherited_align_content,
+                    flex_direction: inherited_flex_direction,
+                    flex_wrap: inherited_flex_wrap,
+                    flex_item_order: inherited_flex_item_order,
+                    row_gap: inherited_row_gap,
+                    column_gap: inherited_column_gap,
+                    direction: inherited_direction,
+                    flex_grow: inherited_flex_grow,
+                    flex_shrink: inherited_flex_shrink,
+                    flex_basis: inherited_flex_basis,
+                    white_space: inherited_white_space,
+                    line_height: inherited_line_height,
+                    text_align: inherited_text_align,
+                    text_align_last: inherited_text_align_last,
+                    text_justify: inherited_text_justify,
+                    text_decoration: inherited_text_decoration,
+                    text_decoration_style: inherited_text_decoration_style,
+                    text_decoration_skip_ink: inherited_text_decoration_skip_ink,
+                    text_decoration_skip_spaces: inherited_text_decoration_skip_spaces,
+                    text_decoration_thickness: inherited_text_decoration_thickness,
+                    text_underline_offset: inherited_text_underline_offset,
+                    text_transform: inherited_text_transform,
+                    font_variant_ligatures: inherited_font_variant_ligatures,
+                    font_variant_caps: inherited_font_variant_caps,
+                    font_variant_position: inherited_font_variant_position,
+                    font_variant_alternates: inherited_font_variant_alternates,
+                    font_language_override: inherited_font_language_override,
+                    font_variation_settings: inherited_font_variation_settings,
+                    font_variant_east_asian: inherited_font_variant_east_asian,
+                    font_variant_numeric: inherited_font_variant_numeric,
+                    font_feature_settings: inherited_font_feature_settings,
+                    font_kerning: inherited_font_kerning,
+                    font_optical_sizing: inherited_font_optical_sizing,
+                    font_palette: inherited_font_palette,
+                    font_weight: inherited_font_weight,
+                    font_style: inherited_font_style,
+                    font_stretch: inherited_font_stretch,
+                    font_family: inherited_font_family,
+                    font_size: inherited_font_size,
+                    root_font_size: inherited_root_font_size,
+                    viewport: self.viewport,
+                    word_break: inherited_word_break,
+                    text_overflow: inherited_text_overflow,
+                    overflow_x: inherited_overflow_x,
+                    overflow_y: inherited_overflow_y,
+                    vertical_align: inherited_vertical_align,
+                    text_indent: inherited_text_indent,
+                    word_spacing: inherited_word_spacing,
+                    letter_spacing: inherited_letter_spacing,
+                    pointer_events: inherited_pointer_events,
+                };
+                self.stylesheet.matched_rule_indices_for_node_in_document(
+                    self,
+                    current_id,
+                    self.viewport,
+                    &rule_candidates,
+                    &mut matched_rule_indices,
+                );
+                let node = self
+                    .node(current_id)
+                    .expect("style query node remains present");
+                let inline_style = node
+                    .inline_style_allowed()
+                    .then(|| node.attribute("style").map(str::to_owned))
+                    .flatten();
+                let key = NativeCascadeMemoKey {
+                    matched_rule_indices: matched_rule_indices.clone(),
+                    inherited,
+                    custom_properties: Arc::clone(&custom_properties),
+                    viewport: self.viewport,
+                    inline_style,
+                };
+                let style = if let Some(style) = self.layout_style_cache.cascade_memo_style(&key) {
+                    style
+                } else {
+                    let style = self.stylesheet.computed_for_with_matched_rule_indices(
+                        node,
+                        inherited,
                         &custom_properties,
-                        self.viewport,
-                        &rule_candidates,
+                        &matched_rule_indices,
                     );
+                    self.layout_style_cache.cache_cascade_memo_style(key, style);
+                    style
+                };
                 if let Some(stage) = style_stage {
                     stage.finish(None);
                 }

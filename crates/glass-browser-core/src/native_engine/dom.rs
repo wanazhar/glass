@@ -3,7 +3,7 @@ use super::config::{
     without_fragment,
 };
 use super::css::{
-    DEFAULT_NATIVE_FONT_SIZE_ADJUST, NativeFontDisplay, NativeFontFaceRule,
+    DEFAULT_NATIVE_FONT_SIZE_ADJUST, NativeCascadeMemoKey, NativeFontDisplay, NativeFontFaceRule,
     NativeFontMetricOverrides, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
     format_font_feature_settings, format_font_metric_override, format_font_size_adjust,
@@ -60,7 +60,7 @@ use super::{
 use base64::Engine as _;
 use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -1206,6 +1206,7 @@ type CachedNativeScrollProjection = (
     NativeLayoutSnapshot,
     Vec<NativeScriptGeometrySnapshot>,
 );
+const NATIVE_CASCADE_MEMO_CAPACITY: usize = 32;
 
 #[derive(Debug, Default)]
 struct NativeLayoutStyleCache(
@@ -1217,6 +1218,7 @@ struct NativeLayoutStyleCache(
     Mutex<Option<CachedNativeScrollProjection>>,
     Mutex<CachedNativeTextWidths>,
     Mutex<usize>,
+    Mutex<VecDeque<(NativeCascadeMemoKey, NativeComputedStyle)>>,
 );
 
 impl Clone for NativeLayoutStyleCache {
@@ -1258,6 +1260,7 @@ impl Clone for NativeLayoutStyleCache {
             Mutex::new(None),
             Mutex::new(text_widths),
             Mutex::new(text_width_cache_hits),
+            Mutex::new(VecDeque::new()),
         )
     }
 }
@@ -1280,7 +1283,34 @@ impl NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.8
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.invalidate_layout_snapshot();
+    }
+
+    fn cascade_memo_style(&self, key: &NativeCascadeMemoKey) -> Option<NativeComputedStyle> {
+        let mut entries = self
+            .8
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = entries.iter().position(|(candidate, _)| candidate == key)?;
+        let (cached_key, style) = entries.remove(index)?;
+        entries.push_front((cached_key, style));
+        Some(style)
+    }
+
+    fn cache_cascade_memo_style(&self, key: NativeCascadeMemoKey, style: NativeComputedStyle) {
+        let mut entries = self
+            .8
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = entries.iter().position(|(candidate, _)| candidate == &key) {
+            entries.remove(index);
+        }
+        entries.push_front((key, style));
+        entries.truncate(NATIVE_CASCADE_MEMO_CAPACITY);
     }
 
     fn invalidate_layout_snapshot(&self) {

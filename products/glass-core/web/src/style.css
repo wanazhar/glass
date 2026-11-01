@@ -3304,7 +3304,7 @@ dialog.floating-palette {
 }
 .desktop-controls > button, .desktop-keyboard-row > button { min-height: 44px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
 .desktop-controls button[hidden] { display: none; }
-.desktop-controls > .primary { padding: 8px 13px; }
+.desktop-controls > .primary { padding: 8px 13px; align-items: center; justify-content: center; text-align: center; }
 .desktop-owner { color: var(--text); font-size: 12px; font-weight: 550; }
 .desktop-environment-picker {
   display: flex;

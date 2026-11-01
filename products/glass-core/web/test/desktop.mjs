@@ -486,8 +486,16 @@ try {
     await page.goto(`http://127.0.0.1:${port}/`);
     await page.locator("#desktop-toggle").click();
     await page.getByText("Ready to start").waitFor();
+    const centered = async selector => {
+      const result=await page.locator(selector).evaluate(button=>{
+        const rect=button.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(button);
+        const text=range.getBoundingClientRect();return {dx:Math.abs((text.left+text.right-rect.left-rect.right)/2),dy:Math.abs((text.top+text.bottom-rect.top-rect.bottom)/2)};
+      });assert(result.dx<2 && result.dy<3, selector+" text must be centered: "+JSON.stringify(result));
+    };
+    await centered("#desktop-start");
     await page.locator("#desktop-start").click();
     await page.getByText("View only · GC may control").waitFor();
+    await centered("#desktop-take");
     await page.locator("#desktop-take").click();
     await page.getByText("You control · GC paused").waitFor();
     for (const size of [{ width:390,height:844 },{ width:1024,height:768 }]) {

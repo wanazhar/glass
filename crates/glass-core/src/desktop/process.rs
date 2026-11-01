@@ -5,7 +5,7 @@ use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -265,14 +265,16 @@ fn start_session_impl(
         "--",
         "sh",
         "-c",
-        r#"umask 077; atspi_address=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.a11y.Bus.GetAddress | sed -n "s/^('\(.*\)',)$/\1/p") || exit 1; test -n "$atspi_address" || exit 1; printf '%s' "$DBUS_SESSION_BUS_ADDRESS" > "$1"; printf '%s' "$atspi_address" > "$2"; export AT_SPI_BUS_ADDRESS="$atspi_address"; dbus-update-activation-environment AT_SPI_BUS_ADDRESS HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_CONFIG_DIRS XDG_DATA_DIRS XDG_RUNTIME_DIR DISPLAY XAUTHORITY PATH GTK_A11Y XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE XDG_SESSION_DESKTOP || exit 1; program=$3; shift 3; exec "$program" "$@"; : "#,
+        r#"umask 077; atspi_address=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.a11y.Bus.GetAddress | sed -n "s/^('\(.*\)',)$/\1/p") || exit 1; test -n "$atspi_address" || exit 1; printf '%s' "$DBUS_SESSION_BUS_ADDRESS" > "$1"; printf '%s' "$atspi_address" > "$2"; export AT_SPI_BUS_ADDRESS="$atspi_address"; dbus-update-activation-environment AT_SPI_BUS_ADDRESS HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_CONFIG_DIRS XDG_DATA_DIRS XDG_RUNTIME_DIR DISPLAY XAUTHORITY PATH GTK_A11Y XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE XDG_SESSION_DESKTOP || exit 1; program=$3; shift 3; if [ "$program" = gnome-shell ]; then gsettings set org.gnome.desktop.screensaver lock-enabled false; gsettings set org.gnome.desktop.lockdown disable-lock-screen true; gsettings set org.gnome.desktop.session idle-delay 0; gsettings set org.gnome.desktop.interface enable-animations false; fi; exec "$program" "$@"; : "#,
         "glass-managed-session",
         session_bus_file_arg,
         atspi_bus_file_arg,
     ];
     match environment {
         Environment::Xfce => desktop_args.push("xfce4-session"),
-        Environment::Gnome => desktop_args.extend(["gnome-session", "--session=ubuntu"]),
+        Environment::Gnome => {
+            desktop_args.extend(["gnome-shell", "--x11", "--sm-disable", "--mode=user"])
+        }
     }
     let startup_log = directory.join("startup.stderr");
     let startup_stderr = std::fs::OpenOptions::new()
@@ -281,7 +283,27 @@ fn start_session_impl(
         .mode(0o600)
         .open(&startup_log)
         .map_err(|error| format!("Creating private desktop startup log: {error}"))?;
-    let mut desktop_command = command("dbus-run-session", &desktop_args);
+    // A private runtime view makes GNOME use its supported non-logind path.
+    // This changes no host services and keeps the real workspace accessible.
+    let mut isolated_args = vec![
+        "--bind",
+        "/",
+        "/",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--tmpfs",
+        "/run/systemd",
+        "--die-with-parent",
+        "--",
+        "dbus-run-session",
+    ];
+    isolated_args.extend(desktop_args.iter().copied());
+    let mut desktop_command = if environment == Environment::Gnome {
+        command("bwrap", &isolated_args)
+    } else {
+        command("dbus-run-session", &desktop_args)
+    };
     desktop_command
         .env("DISPLAY", &display)
         .env("XAUTHORITY", &auth_file)
@@ -325,7 +347,7 @@ fn start_session_impl(
         .current_dir(workspace);
     if environment == Environment::Gnome {
         desktop_command
-            .env("GNOME_SHELL_SESSION_MODE", "ubuntu")
+            .env("GNOME_SHELL_SESSION_MODE", "user")
             .env("LIBGL_ALWAYS_SOFTWARE", "1")
             .env("MUTTER_DEBUG_DISABLE_HW_CURSORS", "1");
     } else {
@@ -350,6 +372,10 @@ fn start_session_impl(
     if let Err(error) = wait_for_atspi_bus(&atspi_bus_file, desktop.child_mut()) {
         let diagnostic = startup_diagnostic(&startup_log, &directory);
         return Err(format!("{error}{diagnostic}"));
+    }
+    if environment == Environment::Gnome {
+        wait_for_gnome_shell(&session_bus_address, desktop.child_mut())
+            .map_err(|error| format!("{error}{}", startup_diagnostic(&startup_log, &directory)))?;
     }
     let frames = Arc::new(Mutex::new(Frames::default()));
     let capture = if capture_frames {
@@ -419,7 +445,7 @@ pub(super) fn environment_dependency_error(environment: Environment) -> Option<S
             Environment::Xfce => {
                 required_tools.extend(["xfce4-session", "xfwm4", "xfdesktop", "xfce4-panel"])
             }
-            Environment::Gnome => required_tools.extend(["gnome-session", "gnome-shell"]),
+            Environment::Gnome => required_tools.extend(["gnome-shell", "bwrap", "gsettings"]),
         }
         for tool in required_tools {
             if !command_exists(tool) {
@@ -429,10 +455,44 @@ pub(super) fn environment_dependency_error(environment: Environment) -> Option<S
                 ));
             }
         }
-        if environment == Environment::Gnome
-            && !Path::new("/usr/share/gnome-session/sessions/ubuntu.session").is_file()
-        {
-            return Some("GNOME desktop session definition is unavailable: ubuntu".into());
+        if environment == Environment::Gnome {
+            static CHECK: OnceLock<Option<String>> = OnceLock::new();
+            if let Some(reason) = CHECK.get_or_init(|| {
+                let isolation = command(
+                    "bwrap",
+                    &[
+                        "--bind",
+                        "/",
+                        "/",
+                        "--dev-bind",
+                        "/dev",
+                        "/dev",
+                        "--tmpfs",
+                        "/run/systemd",
+                        "--",
+                        "/bin/true",
+                    ],
+                )
+                .status();
+                if !isolation.is_ok_and(|status| status.success()) {
+                    return Some(
+                        "GNOME requires working private runtime namespaces (Bubblewrap)".into(),
+                    );
+                }
+                let help = command("gnome-shell", &["--help"])
+                    .stdout(Stdio::piped())
+                    .output();
+                if !help.is_ok_and(|out| {
+                    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("--x11")
+                }) {
+                    return Some(
+                        "This GNOME Shell build does not support the managed X11 desktop".into(),
+                    );
+                }
+                None
+            }) {
+                return Some(reason.clone());
+            }
         }
         if environment == Environment::Xfce
             && !Path::new("/etc/xdg/xfce4/panel/default.xml").is_file()
@@ -538,6 +598,63 @@ fn wait_for_session_bus(path: &Path, child: &mut Child) -> Result<String, String
         thread::sleep(Duration::from_millis(25));
     }
     Err("The isolated desktop session did not publish its private D-Bus address".into())
+}
+
+fn wait_for_gnome_shell(address: &str, child: &mut Child) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Err("GNOME Shell exited during startup".into());
+        }
+        let reply = command(
+            "gdbus",
+            &[
+                "call",
+                "--address",
+                address,
+                "--dest",
+                "org.freedesktop.DBus",
+                "--object-path",
+                "/org/freedesktop/DBus",
+                "--method",
+                "org.freedesktop.DBus.NameHasOwner",
+                "org.gnome.Shell",
+                "--timeout",
+                "2",
+            ],
+        )
+        .stdout(Stdio::piped())
+        .output()
+        .map_err(|e| e.to_string())?;
+        if reply.status.success() && String::from_utf8_lossy(&reply.stdout).contains("true") {
+            let ready = command(
+                "gdbus",
+                &[
+                    "call",
+                    "--address",
+                    address,
+                    "--dest",
+                    "org.gnome.Shell",
+                    "--object-path",
+                    "/org/gnome/Shell",
+                    "--method",
+                    "org.freedesktop.DBus.Properties.Get",
+                    "org.gnome.Shell",
+                    "OverviewActive",
+                    "--timeout",
+                    "2",
+                ],
+            )
+            .stdout(Stdio::null())
+            .status()
+            .map_err(|e| e.to_string())?;
+            if ready.success() {
+                return Ok(());
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("GNOME Shell did not publish its desktop interface within 30 seconds".into())
 }
 
 fn wait_for_atspi_bus(path: &Path, child: &mut Child) -> Result<String, String> {

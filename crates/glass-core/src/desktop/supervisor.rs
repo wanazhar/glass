@@ -10,7 +10,7 @@ use std::{
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -114,6 +114,25 @@ pub(super) fn status(profile: &Path) -> Result<Option<Value>, String> {
     }
 }
 
+fn workspace_for_session(
+    profile: &Path,
+    requested: &Path,
+    environment: super::process::Environment,
+) -> Result<PathBuf, String> {
+    if environment == super::process::Environment::Gnome {
+        let workspace = requested
+            .canonicalize()
+            .map_err(|e| format!("Workspace unavailable: {e}"))?;
+        if !workspace.is_dir() {
+            return Err("Desktop workspace is not a directory".into());
+        }
+        return Ok(workspace);
+    }
+    let workspace = profile.join("workspace");
+    ensure_private_directory(&workspace, "Reusable desktop workspace")?;
+    Ok(workspace)
+}
+
 pub(super) fn start_or_attach(
     profile: &Path,
     workspace: &Path,
@@ -141,7 +160,7 @@ pub(super) fn start_or_attach(
     ensure_profile_path(profile)?;
     let home = profile.join("home");
     ensure_private_directory(&home, "Reusable desktop HOME")?;
-    ensure_private_directory(workspace, "Reusable desktop workspace")?;
+    let workspace = workspace_for_session(profile, workspace, environment)?;
     let log_path = profile.join("supervisor.log");
     let log = OpenOptions::new()
         .create(true)
@@ -301,15 +320,12 @@ pub(super) fn run(
     ensure_profile_path(profile)?;
     let _supervisor_lock = lock_supervisor(profile)?;
     let home = profile.join("home");
-    let saved_workspace = profile.join("workspace");
     ensure_private_directory(&home, "Reusable desktop HOME")?;
-    ensure_private_directory(&saved_workspace, "Reusable desktop workspace")?;
-    let _initial_workspace = workspace;
-    let workspace = saved_workspace.as_path();
+    let workspace = workspace_for_session(profile, workspace, environment)?;
     let session_root = profile.join("sessions");
     ensure_private_directory(&session_root, "Reusable desktop sessions")?;
     let session =
-        super::process::start_supervised_session(workspace, &session_root, &home, environment)?;
+        super::process::start_supervised_session(&workspace, &session_root, &home, environment)?;
     let descriptor = json!({
         "available": true,
         "sessionId": session.id,
@@ -779,6 +795,32 @@ mod tests {
         assert!(!process_group_leader_matches(0, 0));
         assert!(!process_group_leader_matches(1, 0));
         assert!(!process_group_leader_matches(-1, 0));
+    }
+
+    #[test]
+    fn gnome_workspace_preserves_project_permissions_and_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temporary_directory("gnome-project");
+        let project = root.join("project");
+        fs::create_dir(&project).unwrap();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(project.join("document"), "saved").unwrap();
+        let selected = super::workspace_for_session(
+            &root.join("profile"),
+            &project,
+            crate::desktop::process::Environment::Gnome,
+        )
+        .unwrap();
+        assert_eq!(selected, project.canonicalize().unwrap());
+        assert_eq!(
+            fs::metadata(&project).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::read_to_string(project.join("document")).unwrap(),
+            "saved"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

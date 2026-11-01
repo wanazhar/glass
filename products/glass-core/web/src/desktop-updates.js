@@ -79,10 +79,17 @@ export async function consumeDesktopUpdates({ session, signal, current, emit, ca
               seen.add(index);
               const mime = tile.mime ?? "image/png";
               if (!["image/png", "image/jpeg"].includes(mime)) throw Error("Invalid desktop tile");
-              const decoded = await decode(tile.data, mime, tile.width, tile.height);
-              patches.push({ ...decoded, x: tile.x, y: tile.y });
-              if (!check()) return;
             }
+            let next = 0;
+            const workers = await Promise.allSettled(Array.from({ length: Math.min(4, update.tiles.length) }, async () => {
+              while (check() && next < update.tiles.length) {
+                const tile = update.tiles[next++];
+                const decoded = await decode(tile.data, tile.mime ?? "image/png", tile.width, tile.height);
+                patches.push({ ...decoded, x: tile.x, y: tile.y });
+              }
+            }));
+            const failed = workers.find(result => result.status === "rejected");
+            if (failed) throw failed.reason;
           }
           if (!check()) return;
           changed = patches.length > 0;

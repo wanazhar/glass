@@ -153,20 +153,25 @@ the session stops. The reported `workspaceRoot` is separate. Files saved there
 remain in the selected GC workspace after the desktop stops. Before saving a
 file, check the `workspaceRoot` in desktop status.
 
-The current source also contains a reusable desktop supervisor and one private
-`default` profile. A reusable session can keep its HOME and workspace after
-**Stop** and can reattach after a Connect gateway restart. Stopping the session
-and deleting the profile are separate operations. **Delete saved workspace**
-removes the profile only after its session has stopped.
+**Reusable workspace** starts a managed GNOME desktop with a persistent private
+HOME and the selected GC workspace. Its supervisor keeps the desktop running
+when Connect restarts. Stopping the desktop preserves the profile; starting it
+again restores its saved files and settings. Applications must save documents
+before the desktop is stopped.
 
-The current Connect interface offers **Reusable workspace** as a GNOME session.
-This source keeps that capability disabled until GNOME passes isolated Xvfb checks for
-screen capture, input, and accessibility. The local GNOME attempt produced a
-blank display. Installed GNOME packages do not enable this option. The local
-reusable lifecycle test passed with XFCE, but that test does not establish that
-GNOME works or make the disabled GNOME option available. Do not use the disabled
-option as a persistent desktop. Connect does not attach to a user login display
-or restart the host desktop.
+GNOME requires `gnome-shell` with X11 support, `bwrap`, and `gsettings`, in
+addition to the shared capture and D-Bus tools. Connect checks these dependencies
+and the private runtime namespace before offering the option. GNOME runs on a
+managed display with a private session bus and login-manager runtime view; it
+does not attach to a host login display or restart host login services. This
+managed session has no GDM screen lock. Access uses Connect authentication.
+
+**Delete saved desktop** removes the private GNOME HOME and settings after its
+session has stopped. It does not delete the connected GC project directory.
+The desktop viewer keeps its overflow menu beside **More**, uses uniform touch
+targets, and shows the full display identifier. In trackpad mode, swiping moves
+the pointer without pressing a button. Tap to click, use two fingers to scroll,
+and enable **Drag** explicitly to drag an item.
 
 Quick XFCE requires `Xvfb`, `xauth`, `xsetroot`, `dbus-run-session`,
 `dbus-update-activation-environment`, `gdbus`, `sed`, `ffmpeg`, `xdpyinfo`,

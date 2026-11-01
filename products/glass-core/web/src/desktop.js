@@ -33,6 +33,7 @@ export function desktopSurface({ api }) {
   function setTrackpadDrag(armed) {
     trackpadDrag = armed;
     dragMode?.setAttribute("aria-pressed", String(armed));
+    touchHint.textContent = armed ? "Swipe to drag · lift to release" : directTouch ? "Tap to click · pinch to zoom" : "Swipe to move · tap to click · two-finger scroll";
   }
   const touchHint = $("desktop-touch-hint");
   const keyboardOpen = $("desktop-keyboard-open");
@@ -1095,7 +1096,7 @@ export function desktopSurface({ api }) {
     if (!controlled()) return;
     pendingMove = { payload: { ...payload }, queuedAt: Number.isFinite(eventAt) ? eventAt : now, resolvers: [] };
     if (inputPumpRunning) return;
-    const delay = Math.max(0, 35 - (now - lastMoveAt));
+    const delay = Math.max(0, 16 - (now - lastMoveAt));
     clearTimeout(moveTimer);
     if (delay > 0) {
       moveTimer = setTimeout(() => {
@@ -1263,7 +1264,7 @@ export function desktopSurface({ api }) {
   async function deleteReusableProfile() {
     const profile = capabilities.find((item) => item.environment === "gnome" && item.lifecycle === "reusable" && item.profileExists);
     if (!profile || snapshot?.sessionId) return;
-    if (!window.confirm("Delete the saved GNOME workspace and its files? This cannot be undone.")) return;
+    if (!window.confirm("Delete the saved desktop profile and its HOME files? Your connected project is kept. This cannot be undone.")) return;
     deleteProfile.disabled = true;
     setStatus("Deleting the saved workspace…");
     try {
@@ -1485,7 +1486,10 @@ export function desktopSurface({ api }) {
             buttonAt("left", true, undefined, event.timeStamp);
           }
           const bounds = viewport.getBoundingClientRect();
-          setPointerPosition(pointerX + dx * 1.4 / bounds.width, pointerY + dy * 1.4 / bounds.height, true, event.timeStamp);
+          const width = Number(snapshot?.width) || stream.naturalWidth;
+          const height = Number(snapshot?.height) || stream.naturalHeight;
+          const scale = Math.min(bounds.width / width, bounds.height / height);
+          if (scale > 0) setPointerPosition(pointerX + dx * 1.4 / (width * scale), pointerY + dy * 1.4 / (height * scale), true, event.timeStamp);
         } else {
           if (!gesture.pressed) {
             gesture.pressed = "left";
@@ -1611,8 +1615,8 @@ export function desktopSurface({ api }) {
     touchMode.setAttribute("aria-pressed", String(directTouch));
     trackpadMode.setAttribute("aria-pressed", String(!directTouch));
     touchHint.textContent = directTouch
-      ? "Touch to click · drag to move or drag-and-drop · hold for right-click · pinch to zoom/pan"
-      : "Swipe to move · tap to click · two fingers to scroll · Drag for dragging";
+      ? "Tap to click · pinch to zoom"
+      : "Swipe to move · tap to click · two-finger scroll";
     cursor.hidden = directTouch || !controlled();
     if (!directTouch) applyViewTransform();
   }

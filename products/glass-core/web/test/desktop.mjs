@@ -34,7 +34,7 @@ async function checkTrackpadGestures(page, cdp) {
   const beforeCancel = input.length;
   await swipe(103, true);
   await page.waitForTimeout(100);
-  assert(!input.slice(beforeCancel).some(event => ["pointer-click", "pointer-button"].includes(event.action)), "cancelled touch must not become a click");
+  assert(!input.slice(beforeCancel).some(event => ["pointer-click", "pointer-button"].includes(event.action)), "cancelled touch must not become a click: " + JSON.stringify(input.slice(beforeCancel)));
 }
 
 const webRoot = new URL("../", import.meta.url);
@@ -353,10 +353,11 @@ const server = createServer(async (request, response) => {
       response.write("\r\n");
     };
     writeFrame();
-    streamTimer = setInterval(writeFrame, 100);
+    const responseTimer = setInterval(writeFrame, 100);
+    streamTimer = responseTimer;
     response.on("close", () => {
-      clearInterval(streamTimer);
-      streamTimer = 0;
+      clearInterval(responseTimer);
+      if (streamTimer === responseTimer) streamTimer = 0;
       if (streamResponse === response) streamResponse = null;
     });
     return;
@@ -484,10 +485,21 @@ try {
     for (const size of [{ width:390,height:844 },{ width:1024,height:768 }]) {
       await page.setViewportSize(size);
       await page.waitForFunction(()=>document.querySelector("#desktop-viewport").dataset.frameFresh==="true");
+      const sizes = await page.locator("#desktop-return, #desktop-keyboard-open, #desktop-more > summary, #desktop-trackpad, #desktop-touch-mode, #desktop-drag-mode").evaluateAll(elements=>elements.filter(e=>e.getBoundingClientRect().height>0).map(e=>e.getBoundingClientRect().height));
+      assert(sizes.every(height=>Math.abs(height-44)<1), "desktop touch controls must have consistent 44px heights: " + JSON.stringify(sizes));
+      assert(await page.locator("#desktop-display").evaluate(e=>e.scrollWidth<=e.clientWidth+1), "display ID must not be truncated");
+      const anchor=await page.locator("#desktop-more > summary").boundingBox();
+      await page.locator("#desktop-more > summary").click();
+      const menu=await page.locator(".desktop-more-menu").boundingBox();
+      assert(menu.y>=anchor.y+anchor.height && menu.y<=anchor.y+anchor.height+16);
+      assert(menu.x>=0 && menu.x+menu.width<=size.width);
+      if(process.env.DESKTOP_LAYOUT_PREVIEW) await page.screenshot({path:process.env.DESKTOP_LAYOUT_PREVIEW+"-"+size.width+".png",fullPage:true});
+      await page.locator("#desktop-title").click();
+      assert.equal(await page.locator("#desktop-more").evaluate(e=>e.open),false);
       await checkTrackpadGestures(page, cdp);
     }
     assert.deepEqual(errors, []);
-    console.log("PASS phone/tablet trackpad: swipe only moves, explicit Drag holds/releases, cancellation never clicks");
+    console.log("PASS phone/tablet layout, anchored menu, uniform controls, trackpad: swipe only moves, explicit Drag holds/releases, cancellation never clicks");
   } else if (process.env.DESKTOP_ADAPTIVE_ONLY) {
     await page.goto(`http://127.0.0.1:${port}/`);
     await page.locator("#desktop-toggle").click();
@@ -768,8 +780,8 @@ try {
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true, "touch should open More");
   const mobileMenu = await page.locator(".desktop-more-menu").boundingBox();
   const mobileStage = await page.locator("#desktop-viewport").boundingBox();
-  assert(mobileMenu && mobileStage && mobileMenu.y >= mobileStage.y + mobileStage.height,
-    "mobile More menu should sit below the desktop image instead of covering touch controls or the stage");
+  assert(mobileMenu && mobileStage && mobileMenu.y >= moreBox.y + moreBox.height && mobileMenu.y < moreBox.y + moreBox.height + 16,
+    "More must stay anchored immediately below its toolbar button");
   if (process.env.DESKTOP_MORE_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_MORE_PREVIEW, fullPage: true });
   await page.keyboard.press("Escape");

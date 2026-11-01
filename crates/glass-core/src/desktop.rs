@@ -40,7 +40,6 @@ const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
 type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Arc<capture::Frame>);
 const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
-const GNOME_XVFB_ACCEPTED: bool = false;
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
@@ -241,12 +240,7 @@ impl Desktop {
 
     fn capabilities(&self) -> Value {
         let xfce_reason = process::environment_dependency_error(process::Environment::Xfce);
-        let gnome_reason = process::environment_dependency_error(process::Environment::Gnome)
-            .or_else(|| {
-                (!GNOME_XVFB_ACCEPTED).then_some(
-                    "GNOME has not passed isolated Xvfb desktop acceptance on this host".into(),
-                )
-            });
+        let gnome_reason = process::environment_dependency_error(process::Environment::Gnome);
         json!([
             {
                 "environment":"gnome",
@@ -375,11 +369,6 @@ impl Desktop {
         if let Some(reason) = process::environment_dependency_error(environment) {
             return Err(reason);
         }
-        if environment == process::Environment::Gnome && !GNOME_XVFB_ACCEPTED {
-            return Err(
-                "GNOME has not passed isolated Xvfb desktop acceptance on this host".into(),
-            );
-        }
         if lifecycle == process::Lifecycle::Disposable
             && supervisor::status(&self.profile_dir())?.is_some()
         {
@@ -399,7 +388,11 @@ impl Desktop {
             }
             process::Lifecycle::Reusable => {
                 let profile = self.profile_dir();
-                let workspace = profile.join("workspace");
+                let workspace = if environment == process::Environment::Gnome {
+                    self.workspace.clone()
+                } else {
+                    profile.join("workspace")
+                };
                 let descriptor = supervisor::start_or_attach(&profile, &workspace, environment)?;
                 self.attach_reusable_session(&descriptor, profile_lock)
             }
@@ -2089,7 +2082,7 @@ mod tests {
     }
 
     #[test]
-    fn gnome_reusable_capability_stays_disabled_with_a_reason() {
+    fn gnome_reusable_capability_reports_runtime_readiness() {
         let desktop = Desktop::new(std::env::temp_dir());
         let status = desktop.status();
         let gnome = status["capabilities"]
@@ -2101,12 +2094,11 @@ mod tests {
             })
             .expect("status should describe the reusable GNOME option");
 
-        assert_eq!(gnome["available"], false);
-        assert!(
-            gnome["reason"]
-                .as_str()
-                .is_some_and(|reason| !reason.is_empty())
-        );
+        let reason = process::environment_dependency_error(process::Environment::Gnome);
+        assert_eq!(gnome["available"], reason.is_none());
+        if let Some(reason) = reason {
+            assert_eq!(gnome["reason"], reason);
+        }
     }
 
     #[test]
@@ -2181,6 +2173,19 @@ mod tests {
             return;
         }
 
+        reusable_desktop_acceptance(process::Environment::Xfce);
+    }
+
+    #[test]
+    fn reusable_gnome_session_survives_restart_and_supports_agent_tools() {
+        if std::env::var_os("GLASS_DESKTOP_GNOME_E2E").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        reusable_desktop_acceptance(process::Environment::Gnome);
+    }
+
+    fn reusable_desktop_acceptance(environment: process::Environment) {
         let root = std::env::temp_dir().join(format!(
             "glass-desktop-reusable-e2e-{}-{}",
             std::process::id(),
@@ -2194,16 +2199,23 @@ mod tests {
         let desktop_root = root.join("desktop");
         let profile = desktop_root.join("profiles/default");
         let saved_home = profile.join("home");
-        let saved_workspace = profile.join("workspace");
+        let saved_workspace = if environment == process::Environment::Gnome {
+            configured_workspace.clone()
+        } else {
+            profile.join("workspace")
+        };
         let supervisor_profile = profile.clone();
         let supervisor_workspace = saved_workspace.clone();
         let supervisor = thread::spawn(move || {
-            supervisor::run(
-                &supervisor_profile,
-                &supervisor_workspace,
-                process::Environment::Xfce,
-            )
+            supervisor::run(&supervisor_profile, &supervisor_workspace, environment)
         });
+        struct StopSupervisor(PathBuf);
+        impl Drop for StopSupervisor {
+            fn drop(&mut self) {
+                let _ = supervisor::stop(&self.0);
+            }
+        }
+        let _stop_supervisor = StopSupervisor(profile.clone());
         let startup_deadline = Instant::now() + Duration::from_secs(60);
         let mut descriptor = None;
         while Instant::now() < startup_deadline {
@@ -2232,7 +2244,7 @@ mod tests {
             thread::sleep(Duration::from_millis(100));
         }
         assert_eq!(attached_a["sessionId"], session_id);
-        assert_eq!(attached_a["environment"], "xfce");
+        assert_eq!(attached_a["environment"], environment.as_str());
         assert_eq!(attached_a["lifecycle"], "reusable");
         std::fs::write(saved_home.join("restart-marker"), "kept").unwrap();
         std::fs::write(saved_workspace.join("restart-marker"), "kept").unwrap();
@@ -2253,7 +2265,12 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(100));
         }
-        assert_eq!(attached["sessionId"], session_id);
+        assert_eq!(
+            attached["sessionId"],
+            session_id,
+            "reattached status: {}",
+            gateway_b.status()
+        );
         assert_eq!(attached["lease"], "human");
         assert_eq!(attached["lifecycle"], "reusable");
         assert_eq!(attached["profileId"], DEFAULT_PROFILE_ID);
@@ -2264,6 +2281,66 @@ mod tests {
         assert!(saved_home.join("restart-marker").is_file());
         assert!(saved_workspace.join("restart-marker").is_file());
 
+        if environment == process::Environment::Gnome {
+            gateway_b.set_lease("return-to-agent").unwrap();
+            assert_eq!(
+                gateway_b
+                    .input_for_session(
+                        Lease::Agent,
+                        Some(&session_id),
+                        &json!({"action":"pointer-move","x":0.4,"y":0.4})
+                    )
+                    .unwrap()["sent"],
+                true
+            );
+            let listed = gateway_b
+                .launch_app(&json!({"action":"list","sessionId":session_id}))
+                .unwrap();
+            let file_manager = listed["applications"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|app| {
+                    app["desktopEntryId"]
+                        .as_str()
+                        .is_some_and(|id| id.contains("Nautilus"))
+                })
+                .expect("GNOME file manager must be discoverable");
+            gateway_b.launch_app(&json!({"action":"launch","sessionId":session_id,"desktopEntryId":file_manager["desktopEntryId"]})).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut accessible = false;
+            while Instant::now() < deadline {
+                if gateway_b
+                    .observe_accessibility_scoped(Some(&session_id), None, None)
+                    .is_ok_and(|snapshot| accessibility_registry_is_ready(&snapshot))
+                {
+                    accessible = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            assert!(
+                accessible,
+                "GNOME must expose accessible applications to the agent"
+            );
+            let (_, workspace_root, seq, captured, frame) = gateway_b
+                .frame_after_for_session(Some(&session_id), 0, Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            let evidence = json!({"sessionId":session_id,"workspaceRoot":workspace_root,"seq":seq,"capturedAtMs":captured,"jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg().unwrap())});
+            assert!(
+                save_agent_frame(&saved_workspace, &evidence).is_ok(),
+                "Agent screenshot must use the connected workspace"
+            );
+            gateway_b
+                .input_for_session(
+                    Lease::Agent,
+                    Some(&session_id),
+                    &json!({"action":"key-chord","keys":["Control","l"]}),
+                )
+                .unwrap();
+        }
+
         assert_eq!(gateway_b.stop().unwrap()["stopped"], true);
         assert!(supervisor.join().unwrap().is_ok());
         assert!(saved_home.is_dir());
@@ -2273,6 +2350,12 @@ mod tests {
             true
         );
         assert!(!profile.exists());
+        if environment == process::Environment::Gnome {
+            assert!(
+                saved_workspace.join("restart-marker").is_file(),
+                "Deleting a desktop profile must preserve the connected workspace"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

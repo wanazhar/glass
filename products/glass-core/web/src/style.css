@@ -3200,7 +3200,9 @@ dialog.floating-palette {
   justify-content: space-between;
   gap: 16px;
   flex: 0 0 auto;
-  min-height: 42px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
 }
 .desktop-header h2 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.25; }
 .desktop-header p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.35; }
@@ -3245,9 +3247,9 @@ dialog.floating-palette {
   top: calc(100% + 6px);
   right: 0;
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: minmax(80px, auto) minmax(0, 1fr);
   gap: 5px 12px;
-  min-width: 250px;
+  width: min(340px, calc(100vw - 24px));
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -3255,12 +3257,15 @@ dialog.floating-palette {
   box-shadow: var(--shadow);
 }
 .desktop-session-brief details[open] > div > span:last-of-type { grid-column: 1 / -1; }
-.desktop-session-brief details[open] > div > code { max-width: min(65vw, 520px); overflow-wrap: anywhere; white-space: normal; }
+.desktop-session-brief details[open] > div > strong { white-space: normal; overflow: visible; }
+.desktop-session-brief details[open] > div > code { max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
 .desktop-more > summary {
   display: inline-flex;
   align-items: center;
-  min-height: 36px;
-  padding: 0 10px;
+  min-height: 44px;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
@@ -3273,13 +3278,17 @@ dialog.floating-palette {
   right: 0;
   display: grid;
   gap: 4px;
-  min-width: 170px;
+  min-width: 190px;
+  max-width: calc(100vw - 32px);
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
+.desktop-more-menu button { width: 100%; min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; text-align: left; font-size: 13px; background: transparent; }
+.desktop-more-menu button:hover { background: var(--accent-bg); }
+#desktop-stop { color: var(--red); }
 .desktop-more:not([open]) .desktop-more-menu { display: none; }
 .desktop-controls {
   display: flex;
@@ -3293,7 +3302,7 @@ dialog.floating-palette {
   border-radius: 14px;
   background: var(--surface);
 }
-.desktop-controls > button, .desktop-keyboard-row > button { min-height: 36px; }
+.desktop-controls > button, .desktop-keyboard-row > button { min-height: 44px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
 .desktop-controls button[hidden] { display: none; }
 .desktop-controls > .primary { padding: 8px 13px; }
 .desktop-owner { color: var(--text); font-size: 12px; font-weight: 550; }
@@ -3324,7 +3333,7 @@ dialog.floating-palette {
 .desktop-preset-option input { flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
 .desktop-preset-option span { display: grid; gap: 1px; min-width: 0; }
 .desktop-preset-option strong { color: var(--text); font-size: 10px; font-weight: 600; line-height: 1.2; }
-.desktop-preset-option small { max-width: 170px; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-preset-option small { color: var(--muted); font-size: 11px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
 .desktop-preset-option:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .desktop-profile-delete { color: var(--red); }
 .desktop-profile-delete[hidden] { display: none; }
@@ -3461,7 +3470,7 @@ dialog.floating-palette {
   }
   #desktop-touch-hint { flex: 1 1 180px; color: var(--muted); font-size: 10px; line-height: 1.3; }
   .desktop-touch-modes { display: inline-flex; flex: 0 0 auto; }
-  .desktop-touch-modes button { min-height: 34px; padding: 5px 9px; }
+  .desktop-touch-modes button { min-height: 44px; padding: 0 12px; font-size: 12px; border-radius: 10px; }
   .desktop-touch-modes button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
   .desktop-shortcuts:not([hidden]) {
     display: flex;
@@ -3482,16 +3491,28 @@ dialog.floating-palette {
   .desktop-header { min-height: 40px; }
   .desktop-header h2 { font-size: 16px; }
   .desktop-header p { display: none; }
-  .desktop-session-brief { grid-template-columns: 62px minmax(0, 1fr) auto; gap: 7px; min-height: 26px; }
-  .desktop-session-brief span { font-size: 9px; }
-  .desktop-session-brief strong, .desktop-session-brief code { font-size: 10px; }
-  .desktop-controls { gap: 5px; min-height: 34px; padding: 4px 6px; }
-  .desktop-controls > button, .desktop-keyboard-row > button { min-height: 34px; padding: 6px 8px; font-size: 11px; }
-  .desktop-controls > .primary { padding: 7px 10px; }
-  .desktop-more > summary { min-height: 34px; padding: 0 8px; font-size: 11px; }
-  .desktop-owner { font-size: 10px; }
+  .desktop-session-brief { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "display details" "workspace workspace"; gap: 6px 10px; padding: 8px 0; border: 0; border-radius: 0; background: transparent; }
+  .desktop-session-brief > div:first-child { grid-area: display; }
+  .desktop-session-brief .desktop-workspace-brief { grid-area: workspace; align-items: baseline; }
+  .desktop-session-brief details { grid-area: details; }
+  .desktop-session-brief > div:first-child strong { flex-shrink: 0; overflow: visible; }
+  .desktop-session-brief .desktop-workspace-brief code { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+  .desktop-session-brief span { font-size: 11px; }
+  .desktop-session-brief strong, .desktop-session-brief code { font-size: 12px; }
+  .desktop-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+  .desktop-owner, .desktop-environment-picker, #desktop-status, #desktop-start { grid-column: 1 / -1; }
+  .desktop-controls > button { min-width: 0; }
+  .desktop-more > summary { width: 100%; }
+  .desktop-controls > button, .desktop-keyboard-row > button { min-height: 44px; height: 44px; padding: 0 8px; font-size: 12px; }
+  .desktop-controls > .primary { padding: 0 8px; }
+  .desktop-more > summary { min-height: 44px; height: 44px; padding: 0 8px; font-size: 12px; }
+  .desktop-owner { font-size: 12px; }
   #desktop-status { order: 1; flex: 1 0 100%; min-height: 14px; }
-  .desktop-lease-note { margin-top: -5px; font-size: 9px; }
+  .desktop-lease-note { margin: 0; font-size: 11px; }
+  .desktop-mobile-tools { gap: 6px; }
+  .desktop-touch-modes { display: flex; flex: 1 1 100%; gap: 6px; }
+  .desktop-touch-modes button { flex: 1 1 0; }
+  #desktop-touch-hint { flex: 1 1 100%; font-size: 11px; }
   .desktop-keyboard-row input { flex: 1 1 0; width: 0; }
   .desktop-keyboard-row > span { display: none; }
   .desktop-viewport[data-available="false"] { min-height: 100px; }
@@ -3502,13 +3523,7 @@ dialog.floating-palette {
     max-height: min(64vw, 420px);
     min-height: 150px;
   }
-  .desktop-more-menu {
-    position: fixed;
-    top: auto;
-    right: max(12px, env(safe-area-inset-right));
-    bottom: max(12px, env(safe-area-inset-bottom));
-    min-width: min(190px, calc(100vw - 24px));
-  }
+  .desktop-more-menu { position: absolute; top: calc(100% + 6px); right: 0; bottom: auto; min-width: 190px; }
 }
 @media (max-height: 540px) and (orientation: landscape) {
   #desktop-viewer { gap: 5px; }

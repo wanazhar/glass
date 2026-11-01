@@ -170,7 +170,8 @@ def main():
             stream, stream_response, status, headers, _ = request(
                 port, "/api/desktop/stream", token, read_body=False
             )
-            assert status == 200 and "multipart/x-mixed-replace" in headers["Content-Type"]
+            assert status == 200 and headers["Content-Type"] == "application/octet-stream"
+            assert headers["X-Content-Type-Options"] == "nosniff"
             assert stream_response.readline().strip() == b"--glassframe"
             part_headers = {}
             while True:

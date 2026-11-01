@@ -266,7 +266,10 @@ const server = createServer(async (request, response) => {
       response.end(JSON.stringify({ error: "No managed desktop session", lease }));
       return;
     }
-    response.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=glassframe" });
+    response.writeHead(200, {
+      "content-type": "application/octet-stream",
+      "x-content-type-options": "nosniff",
+    });
     streamResponse = response;
     const writeFrame = () => {
       if (!streamResponse || streamResponse.destroyed) return;

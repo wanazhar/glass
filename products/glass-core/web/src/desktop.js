@@ -52,6 +52,7 @@ export function desktopSurface({ api }) {
   let streamSession = null;
   let streamFrameSeqAtStart = null;
   let streamDecodedSeq = 0;
+  let streamDecodedSource = null;
   let streamDecodedFrameTimeMs = null;
   let streamProfileWidth = null;
   let streamGeneration = 0;
@@ -61,6 +62,7 @@ export function desktopSurface({ api }) {
   let streamObjectUrl = null;
   let streamLoaded = false;
   let streamFailed = false;
+  let streamPausedReason = null;
   let startPending = false;
   let startAttempt = 0;
   let statusRequest = 0;
@@ -72,11 +74,12 @@ export function desktopSurface({ api }) {
   const heldButtons = new Set();
   const heldKeys = new Set();
   const maxQueuedInput = 128;
-  const maxVisibleFrameAgeMs = 3000;
+  const maxInputFrameAgeMs = 3000;
   const freshFrameAgeMs = 1000;
   const streamOpenTimeoutMs = 8000;
   const streamReadTimeoutMs = 12000;
   const snapshotFallbackIntervalMs = 1000;
+  const snapshotFallbackFastIntervalMs = 500;
   const snapshotFallbackMaxFailures = 8;
   const snapshotFallbackFailureWindowMs = 60000;
   const snapshotFallbackMaxBackoffMs = 15000;
@@ -89,6 +92,7 @@ export function desktopSurface({ api }) {
   let snapshotFallbackTimer = 0;
   let snapshotFallbackController = null;
   let snapshotFallbackGeneration = 0;
+  let frameFreshnessTimer = 0;
   let directTouch = false;
   let pointerX = 0.5;
   let pointerY = 0.5;
@@ -158,7 +162,7 @@ export function desktopSurface({ api }) {
   }
 
   const isOpen = () => dialog.open && requestController && !requestController.signal.aborted;
-  const controlled = () => isOpen() && snapshot?.available && snapshot.lease === "human";
+  const controlled = () => isOpen() && snapshot?.available && snapshot.lease === "human" && hasFreshDecodedFrame();
 
   function setStatus(message, error = false) {
     status.textContent = message;
@@ -178,7 +182,7 @@ export function desktopSurface({ api }) {
     }
   }
 
-  function stopStream() {
+  function stopStream({ preserveFrame = false } = {}) {
     streamGeneration += 1;
     streamController?.abort();
     streamController = null;
@@ -192,13 +196,19 @@ export function desktopSurface({ api }) {
     snapshotFallbackFailures = 0;
     snapshotFallbackFailureWindowStartedAt = 0;
     streamFailed = false;
+    streamPausedReason = null;
     streamLatestFrame = null;
-    streamLoaded = false;
-    streamDecodedFrameTimeMs = null;
     streamProfileWidth = null;
-    if (streamObjectUrl) URL.revokeObjectURL(streamObjectUrl);
-    streamObjectUrl = null;
-    stream.removeAttribute("src");
+    if (!preserveFrame) {
+      clearTimeout(frameFreshnessTimer);
+      frameFreshnessTimer = 0;
+      streamLoaded = false;
+      streamDecodedFrameTimeMs = null;
+      streamDecodedSource = null;
+      if (streamObjectUrl) URL.revokeObjectURL(streamObjectUrl);
+      streamObjectUrl = null;
+      stream.removeAttribute("src");
+    }
   }
 
   function setStream(available) {
@@ -213,13 +223,17 @@ export function desktopSurface({ api }) {
     }
     if (streamSession === session && (snapshotFallbackActive || streamFailed)) return;
     if (streamSession !== session || !streamController || streamProfileWidth !== requestedWidth) {
-      if (streamController) stopStream();
+      const sameSession = streamSession === session;
+      if (streamController) stopStream({ preserveFrame: sameSession });
       streamFailed = false;
-      streamLoaded = false;
+      if (!sameSession) {
+        streamLoaded = false;
+        streamDecodedFrameTimeMs = null;
+        streamDecodedSeq = 0;
+        streamDecodedSource = null;
+      }
       streamSession = session;
-      streamFrameSeqAtStart = Number(snapshot?.frameSeq) || 0;
-      streamDecodedSeq = 0;
-      streamDecodedFrameTimeMs = null;
+      if (!sameSession) streamFrameSeqAtStart = Number(snapshot?.frameSeq) || 0;
       streamProfileWidth = requestedWidth;
       streamController = new AbortController();
       void consumeStream(session, ++streamGeneration, streamController);
@@ -239,29 +253,83 @@ export function desktopSurface({ api }) {
     return approximateFrameAge + (Number.isFinite(statusSeq) ? Math.max(0, statusSeq - seq) * 200 : 0) + elapsed;
   }
 
+  function hasFreshDecodedFrame() {
+    return Boolean(hasDecodedFrameForCurrentSession()
+      && (!streamFailed || snapshotFallbackActive)
+      && estimatedFrameAgeMs(streamDecodedFrameTimeMs) <= maxInputFrameAgeMs);
+  }
+
+  function hasDecodedFrameForCurrentSession() {
+    const frameSeq = Number(streamDecodedSeq);
+    const startingSeq = streamFrameSeqAtStart ?? 0;
+    const frameIsNewEnough = frameSeq > startingSeq
+      || (streamDecodedSource === "snapshot" && frameSeq === startingSeq);
+    return Boolean(snapshot?.available
+      && snapshot?.sessionId
+      && streamSession === snapshot.sessionId
+      && streamLoaded
+      && Number.isFinite(streamDecodedFrameTimeMs)
+      && frameIsNewEnough);
+  }
+
+  function scheduleFrameFreshnessCheck() {
+    clearTimeout(frameFreshnessTimer);
+    frameFreshnessTimer = 0;
+    if (!streamLoaded || !Number.isFinite(streamDecodedFrameTimeMs)) return;
+    const ageMs = estimatedFrameAgeMs(streamDecodedFrameTimeMs);
+    const delayMs = Math.max(0, maxInputFrameAgeMs - ageMs + 1);
+    frameFreshnessTimer = setTimeout(() => {
+      frameFreshnessTimer = 0;
+      updateStreamPresentation();
+    }, delayMs);
+  }
+
+  function updateFrameInputControls() {
+    const canInput = Boolean(snapshot?.available && snapshot?.lease === "human" && hasFreshDecodedFrame());
+    textInput.disabled = !canInput;
+    sendText.disabled = !canInput || !textInput.value;
+    keyboardOpen.hidden = !snapshot?.available || snapshot?.lease !== "human";
+    keyboardOpen.disabled = !canInput;
+    for (const button of shortcuts.querySelectorAll("button")) button.disabled = !canInput;
+    viewport.dataset.frameFresh = hasFreshDecodedFrame() ? "true" : "false";
+    cursor.hidden = !coarsePointer.matches || directTouch || !controlled();
+    if (!canInput) closeKeyboard();
+  }
+
   function updateStreamPresentation() {
-    if (!snapshot?.available || !snapshot?.sessionId || (streamFailed && !snapshotFallbackActive)) return;
+    if (!snapshot?.available || !snapshot?.sessionId) {
+      updateFrameInputControls();
+      return;
+    }
     const hasDecodedFrame = stream.naturalWidth > 0
       && stream.naturalHeight > 0
-      && streamLoaded
-      && streamSession === snapshot.sessionId
-      && Number.isFinite(streamDecodedFrameTimeMs)
-      && streamDecodedSeq > (streamFrameSeqAtStart ?? 0);
+      && hasDecodedFrameForCurrentSession();
     const ageMs = hasDecodedFrame ? estimatedFrameAgeMs(streamDecodedFrameTimeMs) : Infinity;
-    const visible = hasDecodedFrame && ageMs <= maxVisibleFrameAgeMs;
+    // Keep the last successfully decoded image visible even when it is stale.
+    // Freshness gates input below, while the status makes the delay explicit.
+    const visible = hasDecodedFrame;
     stream.hidden = !visible;
     placeholder.hidden = visible;
+    if (streamFailed && !snapshotFallbackActive) {
+      if (streamPausedReason) {
+        setStatus(
+          `Stream paused · ${streamPausedReason}${visible ? ` · last frame ${Math.max(1, Math.ceil(ageMs / 1000))} sec` : ""}`,
+          true,
+        );
+      }
+      updateFrameInputControls();
+      return;
+    }
     if (snapshotFallbackActive) {
-      placeholder.textContent = hasDecodedFrame && !visible
-        ? "The latest image is delayed. Checking for a fresh frame…"
-        : "The stream is unavailable. Checking refreshed desktop images…";
+      placeholder.textContent = "The stream is unavailable. Checking refreshed desktop images…";
       if (visible && ageMs >= freshFrameAgeMs) {
-        setStatus(`Snapshots · delayed · ${snapshotFallbackReason}`, false);
+        setStatus(`Snapshots · delayed · ${Math.max(1, Math.ceil(ageMs / 1000))} sec · ${snapshotFallbackReason}`, false);
       } else if (visible) {
         setStatus(`Snapshots · live · ${snapshotFallbackReason}`, false);
       } else {
         setStatus(`Snapshots · waiting · ${snapshotFallbackReason}`, false);
       }
+      updateFrameInputControls();
       return;
     }
     placeholder.textContent = hasDecodedFrame && !visible
@@ -276,6 +344,7 @@ export function desktopSurface({ api }) {
     } else {
       setStatus("Connecting to the managed desktop…", false);
     }
+    updateFrameInputControls();
   }
 
   function findBytes(haystack, needle, start = 0) {
@@ -335,7 +404,9 @@ export function desktopSurface({ api }) {
     if (!isOpen()) return;
     retry.hidden = false;
     retry.textContent = "Reconnect stream";
-    placeholder.hidden = false;
+    const hasFrame = hasDecodedFrameForCurrentSession();
+    stream.hidden = !hasFrame;
+    placeholder.hidden = hasFrame;
     placeholder.textContent = terminal
       ? "The desktop is still running. Reconnect the stream to try again."
       : "The desktop image snapshots paused. Reconnect the stream to try again.";
@@ -345,6 +416,7 @@ export function desktopSurface({ api }) {
         ? "repeated network failures"
         : reason;
     setStatus(`Frames paused · ${shortReason}`, true);
+    updateFrameInputControls();
   }
 
   function scheduleSnapshotFallback(session, generation, delay = snapshotFallbackIntervalMs) {
@@ -359,6 +431,7 @@ export function desktopSurface({ api }) {
   function startSnapshotFallback(session, generation, reason) {
     if (!isOpen() || snapshot?.sessionId !== session || generation !== streamGeneration) return;
     snapshotFallbackActive = true;
+    streamPausedReason = null;
     snapshotFallbackGeneration = generation;
     snapshotFallbackReason = reason;
     snapshotFallbackFailures = 0;
@@ -451,8 +524,9 @@ export function desktopSurface({ api }) {
       }
       snapshotFallbackFailures = 0;
       snapshotFallbackFailureWindowStartedAt = 0;
-      if (sequence > streamDecodedSeq && sequence > (streamFrameSeqAtStart ?? 0)
-        && estimatedFrameAgeMs(timeMs, sequence) <= maxVisibleFrameAgeMs) {
+      const startingSeq = streamFrameSeqAtStart ?? 0;
+      const firstSnapshotCanReuseCurrentFrame = !streamLoaded && sequence === startingSeq;
+      if (sequence > streamDecodedSeq && (sequence > startingSeq || firstSnapshotCanReuseCurrentFrame)) {
         streamLatestFrame = {
           seq: sequence,
           timeMs,
@@ -463,7 +537,8 @@ export function desktopSurface({ api }) {
         };
         void decodeNewestFrame();
       }
-      scheduleSnapshotFallback(session, generation);
+      const nextDelay = streamLoaded ? snapshotFallbackIntervalMs : snapshotFallbackFastIntervalMs;
+      scheduleSnapshotFallback(session, generation, nextDelay);
     } catch {
       clearTimeout(timeout);
       if (!snapshotFallbackIsCurrent(session, generation)) return;
@@ -482,15 +557,16 @@ export function desktopSurface({ api }) {
     if (snapshotFallbackActive) return;
     if (streamController === controller) streamController = null;
     controller?.abort();
+    const reason = safeStreamFailureLabel(error);
     streamFailed = true;
-    streamLoaded = false;
-    stream.hidden = true;
+    streamPausedReason = reason;
+    stream.hidden = !streamLoaded;
     retry.hidden = false;
     retry.textContent = "Reconnect stream";
     placeholder.hidden = false;
-    const reason = safeStreamFailureLabel(error);
     if (error?.streamFailureReason === "authorization") {
       placeholder.textContent = "The desktop session is still running. Reconnect to restore image authorization.";
+      updateStreamPresentation();
       setStatus(`Stream paused · ${reason}`, true);
       return;
     }
@@ -519,10 +595,13 @@ export function desktopSurface({ api }) {
         processingSource = frame.source || "stream";
         processingGeneration = frame.generation;
         processingSession = frame.session || streamSession;
+        const startingSeq = streamFrameSeqAtStart ?? 0;
+        const firstSnapshotCanReuseCurrentFrame = frame.source === "snapshot"
+          && !streamLoaded
+          && frame.seq === startingSeq;
         if (frame.generation !== streamGeneration
           || frame.seq <= streamDecodedSeq
-          || frame.seq <= (streamFrameSeqAtStart ?? 0)
-          || estimatedFrameAgeMs(frame.timeMs, frame.seq) > maxVisibleFrameAgeMs) continue;
+          || (frame.seq <= startingSeq && !firstSnapshotCanReuseCurrentFrame)) continue;
         const objectUrl = URL.createObjectURL(frame.blob);
         const decoded = new Image();
         decoded.src = objectUrl;
@@ -536,8 +615,7 @@ export function desktopSurface({ api }) {
           URL.revokeObjectURL(objectUrl);
           return;
         }
-        if (estimatedFrameAgeMs(frame.timeMs, frame.seq) > maxVisibleFrameAgeMs
-          || (streamLatestFrame && streamLatestFrame.seq > frame.seq)) {
+        if (streamLatestFrame && streamLatestFrame.seq > frame.seq) {
           URL.revokeObjectURL(objectUrl);
           continue;
         }
@@ -558,8 +636,10 @@ export function desktopSurface({ api }) {
           return;
         }
         streamDecodedSeq = frame.seq;
+        streamDecodedSource = processingSource;
         streamDecodedFrameTimeMs = frame.timeMs;
         streamLoaded = true;
+        scheduleFrameFreshnessCheck();
         if (previousUrl) URL.revokeObjectURL(previousUrl);
         updateStreamPresentation();
       }
@@ -655,8 +735,7 @@ export function desktopSurface({ api }) {
             blob: new Blob([buffer.slice(frameAt, afterFrame)], { type: "image/jpeg" }),
           };
           buffer = buffer.slice(afterFrame);
-          if (seq > streamDecodedSeq && seq > (streamFrameSeqAtStart ?? 0)
-            && estimatedFrameAgeMs(timeMs, seq) <= maxVisibleFrameAgeMs) {
+          if (seq > streamDecodedSeq && seq > (streamFrameSeqAtStart ?? 0)) {
             streamLatestFrame = frame;
             void decodeNewestFrame();
           }
@@ -760,7 +839,7 @@ export function desktopSurface({ api }) {
     const frameSeq = Number(next.frameSeq);
     const currentAgeMs = estimatedFrameAgeMs(streamDecodedFrameTimeMs);
     const connected = streamLoaded && streamDecodedSeq > (streamFrameSeqAtStart ?? 0)
-      && currentAgeMs <= maxVisibleFrameAgeMs && !streamFailed;
+      && currentAgeMs <= maxInputFrameAgeMs && !streamFailed;
     if (connected && frameSeq > priorFrameSeq) {
       const now = performance.now();
       for (let index = pendingFrameTimings.length - 1; index >= 0; index -= 1) {
@@ -1062,13 +1141,9 @@ export function desktopSurface({ api }) {
   async function reconnectStream() {
     await refresh();
     if (!isOpen() || !snapshot?.available || !snapshot.sessionId) return;
-    streamFailed = false;
-    streamLoaded = false;
-    stopStream();
-    streamSession = null;
-    streamFrameSeqAtStart = null;
-    stream.hidden = false;
-    placeholder.hidden = false;
+    stopStream({ preserveFrame: true });
+    stream.hidden = !streamLoaded;
+    placeholder.hidden = streamLoaded;
     placeholder.textContent = "Reconnecting to the managed desktop…";
     requestAnimationFrame(() => {
       if (isOpen() && snapshot?.available) setStream(true);

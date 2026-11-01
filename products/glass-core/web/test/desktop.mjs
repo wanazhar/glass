@@ -6,10 +6,12 @@ import { existsSync } from "node:fs";
 
 const webRoot = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, webRoot), "utf8");
+const frameNowMs = () => Date.now();
 let session = null;
 let lease = "agent";
 let nextSession = 1;
 let nextFrameSeq = 18;
+let lastStatusFrameSeq = 0;
 let hostReachable = true;
 let gnomeCapabilityAvailable = false;
 let savedProfileExists = true;
@@ -22,11 +24,16 @@ let statusRequests = 0;
 let statusFailuresDuringStart = 0;
 let streamResponse = null;
 let streamTimer = 0;
+let streamRequestCount = 0;
+let streamSuppressFrames = false;
+let streamStartFrameSeq = 0;
 let streamFrameDelayMs = 0;
 let streamPauseUntil = 0;
 let snapshotRequests = 0;
 let snapshotAuthorizationFails = false;
 let snapshotBodyStalls = false;
+let snapshotFrameAgeMs = 0;
+let snapshotUsesStreamStartFrame = false;
 let snapshotNoFrameCount = 0;
 let snapshotAlwaysNoFrame = false;
 const streamWidths = [];
@@ -78,6 +85,10 @@ const testModule = `
   window.setDesktopStreamGap = (durationMs) => fetch("/__test/stream-gap?durationMs=" + durationMs);
   window.setSnapshotAuthorizationFailure = (enabled) => fetch("/__test/snapshot-auth?enabled=" + enabled);
   window.setSnapshotBodyStall = (enabled) => fetch("/__test/snapshot-stall?enabled=" + enabled);
+  window.setSnapshotFrameAge = (ms) => fetch("/__test/snapshot-age?ms=" + ms);
+  window.setSnapshotUsesStreamStartFrame = (enabled) => fetch("/__test/snapshot-start-seq?enabled=" + enabled);
+  window.setStreamSuppressFrames = (enabled) => fetch("/__test/stream-suppress?enabled=" + enabled);
+  window.getStreamRequestCount = async () => (await (await fetch("/__test/stream-requests")).json()).count;
   window.setSnapshotNoFrameCount = (count) => fetch("/__test/snapshot-no-frame?count=" + count);
   window.setSnapshotAlwaysNoFrame = (enabled) => fetch("/__test/snapshot-no-frame?always=" + enabled);
   window.advanceSnapshotClock = (ms) => { testClockOffset += ms; };
@@ -190,6 +201,27 @@ const server = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
+  if (url.pathname === "/__test/snapshot-age") {
+    snapshotFrameAgeMs = Math.max(0, Number(url.searchParams.get("ms")) || 0);
+    if (snapshotFrameAgeMs > 0) nextFrameSeq = Math.max(nextFrameSeq, 1000);
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/snapshot-start-seq") {
+    snapshotUsesStreamStartFrame = url.searchParams.get("enabled") === "true";
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/stream-suppress") {
+    streamSuppressFrames = url.searchParams.get("enabled") === "true";
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/stream-requests") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ count: streamRequestCount }));
+    return;
+  }
   if (url.pathname === "/__test/snapshot-no-frame") {
     snapshotNoFrameCount = Math.max(0, Number(url.searchParams.get("count")) || 0);
     snapshotAlwaysNoFrame = url.searchParams.get("always") === "true";
@@ -245,6 +277,7 @@ const server = createServer(async (request, response) => {
     }
     response.writeHead(200, { "content-type": "application/json" });
     const frameSeq = session ? nextFrameSeq++ : null;
+    if (session) lastStatusFrameSeq = frameSeq;
     response.end(JSON.stringify({
       available: Boolean(session), sessionId: session, mode: session ? "managedVirtualSession" : null,
       environment: session ? sessionEnvironment : null,
@@ -255,11 +288,13 @@ const server = createServer(async (request, response) => {
       ],
       displayId: session ? ":81" : null, workspaceRoot: "/work/glass", lease,
       width: session ? 1280 : null, height: session ? 800 : null,
-      frameSeq, frameAgeMs: session ? 24 : null, frameTimeMs: session ? frameSeq * 100 : null, error: null,
+      frameSeq, frameAgeMs: session ? 24 : null, frameTimeMs: session ? frameNowMs() : null, error: null,
     }));
     return;
   }
   if (url.pathname === "/api/desktop/stream") {
+    streamRequestCount += 1;
+    streamStartFrameSeq = lastStatusFrameSeq;
     streamWidths.push(url.searchParams.get("width"));
     if (!session) {
       response.writeHead(409, { "content-type": "application/json" });
@@ -273,12 +308,13 @@ const server = createServer(async (request, response) => {
     streamResponse = response;
     const writeFrame = () => {
       if (!streamResponse || streamResponse.destroyed) return;
+      if (streamSuppressFrames) return;
       if (Date.now() < streamPauseUntil) {
         response.write("--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n");
         return;
       }
       const seq = nextFrameSeq++;
-      const frameTimeMs = Math.max(0, seq * 100 - streamFrameDelayMs);
+      const frameTimeMs = Math.max(0, frameNowMs() - streamFrameDelayMs);
       response.write(`--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: ${seq}\r\nX-Frame-Time-Ms: ${frameTimeMs}\r\n\r\n`);
       response.write(jpg);
       response.write("\r\n");
@@ -321,12 +357,12 @@ const server = createServer(async (request, response) => {
       response.write(jpg.subarray(0, 16));
       return;
     }
-    const frameSeq = nextFrameSeq++;
+    const frameSeq = snapshotUsesStreamStartFrame ? streamStartFrameSeq : nextFrameSeq++;
     response.writeHead(200, {
       "content-type": "image/jpeg",
       "content-length": jpg.length,
       "x-frame-seq": frameSeq,
-      "x-frame-time-ms": frameSeq * 100,
+      "x-frame-time-ms": frameNowMs() - snapshotFrameAgeMs,
     });
     response.end(jpg);
     return;
@@ -463,8 +499,23 @@ try {
   assert.equal(await page.locator("#desktop-preset-reusable").evaluate((radio) => radio.disabled), false);
   await page.locator("#desktop-preset-reusable").check();
   assert.equal(await page.locator("#desktop-start").textContent(), "Resume workspace");
+  const streamRequestsBeforeSnapshotStart = await page.evaluate(() => window.getStreamRequestCount());
+  await page.evaluate(() => window.setStreamSuppressFrames(true));
   await page.locator("#desktop-start").click();
   await page.getByText("View only · GC may control").waitFor();
+  await page.waitForFunction(async (before) => await window.getStreamRequestCount() > before,
+    streamRequestsBeforeSnapshotStart, { timeout: 5000 });
+  await page.evaluate(() => window.setSnapshotUsesStreamStartFrame(true));
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.waitForFunction(() => !document.querySelector("#desktop-stream").hidden, null, { timeout: 5000 });
+  assert.equal(await page.locator("#desktop-viewport").getAttribute("data-frame-fresh"), "true",
+    "the first finite snapshot can reuse the current status frame when no stream frame arrived");
+  await page.evaluate(async () => {
+    await window.setSnapshotUsesStreamStartFrame(false);
+    await window.setStreamSuppressFrames(false);
+  });
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
   assert.deepEqual(sessionStartEnvironments, [
     { environment: "xfce", lifecycle: "disposable" },
     { environment: "gnome", lifecycle: "reusable" },
@@ -487,7 +538,7 @@ try {
   if (process.env.DESKTOP_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_PREVIEW, fullPage: true });
   await page.evaluate(() => window.disconnectDesktopStream());
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots ·"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots ·"), null, { timeout: 5000 });
   assert.equal(await page.locator("#desktop-stream").isVisible(), true, "finite image requests should recover a closed multipart stream");
   assert.equal(await page.locator("#desktop-retry").isVisible(), true);
   assert((await page.evaluate(() => window.getSnapshotRequestCount())) > 0,
@@ -495,22 +546,51 @@ try {
   assert.equal(lease, "human", "stream failure must leave the human lease in place");
   assert(!actions.includes("return-to-agent"), "stream failure must not return control implicitly");
   await page.locator("#desktop-retry").click();
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
   await page.evaluate(() => window.setSnapshotBodyStall(true));
   const beforeStalledBody = await page.evaluate(() => window.getSnapshotRequestCount());
   await page.evaluate(() => window.disconnectDesktopStream());
+  await page.waitForTimeout(3500);
+  assert.equal(await page.locator("#desktop-stream").isVisible(), true,
+    "a last good image stays visible while a slow mobile response is pending");
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.includes("delayed"), null, { timeout: 3000 });
+  assert.equal(await page.locator("#desktop-text").isDisabled(), true,
+    "input is disabled once the displayed image is too old to guide safe control");
   await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() >= before + 2,
     beforeStalledBody, { timeout: 10_000 });
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots ·"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots ·"), null, { timeout: 5000 });
   await page.locator("#desktop-retry").click();
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
+  await page.evaluate(() => window.setSnapshotFrameAge(61_000));
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.includes("Snapshots · delayed"), null, { timeout: 5000 });
+  const delayedStatus = await page.locator("#desktop-status").textContent();
+  const delayedSeconds = Number(delayedStatus.match(/delayed · (\d+) sec/)?.[1]);
+  assert(delayedSeconds > 60, `expected stale frame age above 60 seconds, got ${delayedStatus}`);
+  assert.equal(await page.locator("#desktop-stream").isVisible(), true,
+    "a decoded frame arriving more than a minute late remains available for visual context");
+  assert.equal(await page.locator("#desktop-viewport").getAttribute("data-frame-fresh"), "false");
+  assert.equal(await page.locator("#desktop-text").isDisabled(), true);
+  await page.evaluate(() => window.setSnapshotFrameAge(0));
+  await page.waitForFunction(() => document.querySelector("#desktop-viewport").dataset.frameFresh === "true", null, { timeout: 5000 });
+  assert.equal(await page.locator("#desktop-text").isDisabled(), false,
+    "fresh snapshots restore input after the delayed frame is replaced");
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
   await page.evaluate(() => window.setSnapshotNoFrameCount(100));
   const beforeNoFrame = await page.evaluate(() => window.getSnapshotRequestCount());
   await page.evaluate(() => window.disconnectDesktopStream());
   await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() >= before + 1,
     beforeNoFrame, { timeout: 3000 });
   await page.evaluate(() => window.advanceSnapshotClock(61_000));
-  await page.getByText(/^Frames paused · repeated network failures/).waitFor({ timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Frames paused · repeated network failures"), null, { timeout: 5000 })
+    .catch(async (error) => {
+      const details = await page.evaluate(async () => ({
+        status: document.querySelector("#desktop-status").textContent,
+        count: await window.getSnapshotRequestCount(),
+      }));
+      throw new Error(`${error.message}; persistent-frame fixture state ${JSON.stringify(details)}`);
+    });
   const noFrameStoppedAt = await page.evaluate(() => window.getSnapshotRequestCount());
   assert(noFrameStoppedAt <= beforeNoFrame + 2,
     "persistent HTTP 409 responses must be bounded instead of polling forever");
@@ -522,10 +602,10 @@ try {
     await window.setSnapshotNoFrameCount(0);
   });
   await page.locator("#desktop-retry").click();
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
   await page.evaluate(() => window.holdNextSnapshotDecode());
   await page.evaluate(() => window.disconnectDesktopStream());
-  await page.waitForFunction(() => window.__snapshotDecodeStarted === true, { timeout: 5000 });
+  await page.waitForFunction(() => window.__snapshotDecodeStarted === true, null, { timeout: 5000 });
   await page.locator("#desktop-retry").click();
   await page.waitForTimeout(250);
   await page.evaluate(() => window.disconnectDesktopStream());
@@ -535,10 +615,12 @@ try {
   await page.evaluate(() => window.releaseSnapshotDecode(true));
   await page.getByText(/^Snapshots · live/).waitFor({ timeout: 5000 });
   await page.locator("#desktop-retry").click();
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
   await page.evaluate(() => window.setSnapshotAuthorizationFailure(true));
   await page.evaluate(() => window.disconnectDesktopStream());
   await page.getByText(/Frames paused · owner auth failed/).waitFor({ timeout: 5000 });
+  assert.equal(await page.locator("#desktop-text").isDisabled(), true,
+    "owner authorization failure stops input even while the last image is visible");
   const deniedSnapshotRequests = await page.evaluate(() => window.getSnapshotRequestCount());
   await page.waitForTimeout(1200);
   assert.equal(await page.evaluate(() => window.getSnapshotRequestCount()), deniedSnapshotRequests,
@@ -546,7 +628,7 @@ try {
   assert.equal(lease, "human", "snapshot authorization failure must leave the human lease in place");
   await page.evaluate(() => window.setSnapshotAuthorizationFailure(false));
   await page.locator("#desktop-retry").click();
-  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), null, { timeout: 5000 });
   await page.locator("#desktop-more > summary").click();
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true);
   await page.locator("#desktop-reconnect").click();
@@ -575,10 +657,14 @@ try {
   await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
   await page.locator("#desktop-placeholder").waitFor({ state: "hidden" });
   await page.evaluate(() => window.setStaleDesktopStream(5000));
-  await page.waitForFunction(() => document.querySelector("#desktop-stream").hidden, { timeout: 5000 });
-  assert.match(await page.locator("#desktop-status").textContent(), /Waiting for a recent frame/);
+  await page.getByText(/^Delayed ·/).waitFor({ timeout: 5000 });
+  assert.equal(await page.locator("#desktop-stream").isVisible(), true,
+    "frames delayed by more than the input freshness window remain visible as context");
+  assert.equal(await page.locator("#desktop-text").isDisabled(), true,
+    "stale frames disable input until a fresh image arrives");
   await page.evaluate(() => window.setStaleDesktopStream(0));
   await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
+  assert.equal(await page.locator("#desktop-text").isDisabled(), false);
   await page.locator("#desktop-more > summary").click();
   await page.locator("#desktop-title").click();
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false, "outside pointer should close More");

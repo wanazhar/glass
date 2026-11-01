@@ -74,7 +74,21 @@ export function desktopSurface({ api }) {
   const maxQueuedInput = 128;
   const maxVisibleFrameAgeMs = 3000;
   const freshFrameAgeMs = 1000;
+  const streamOpenTimeoutMs = 8000;
+  const streamReadTimeoutMs = 12000;
+  const snapshotFallbackIntervalMs = 1000;
+  const snapshotFallbackMaxFailures = 8;
+  const snapshotFallbackFailureWindowMs = 60000;
+  const snapshotFallbackMaxBackoffMs = 15000;
+  const snapshotRequestTimeoutMs = 5000;
   const pendingFrameTimings = [];
+  let snapshotFallbackActive = false;
+  let snapshotFallbackReason = null;
+  let snapshotFallbackFailures = 0;
+  let snapshotFallbackFailureWindowStartedAt = 0;
+  let snapshotFallbackTimer = 0;
+  let snapshotFallbackController = null;
+  let snapshotFallbackGeneration = 0;
   let directTouch = false;
   let pointerX = 0.5;
   let pointerY = 0.5;
@@ -168,6 +182,16 @@ export function desktopSurface({ api }) {
     streamGeneration += 1;
     streamController?.abort();
     streamController = null;
+    clearTimeout(snapshotFallbackTimer);
+    snapshotFallbackTimer = 0;
+    snapshotFallbackController?.abort();
+    snapshotFallbackController = null;
+    snapshotFallbackGeneration += 1;
+    snapshotFallbackActive = false;
+    snapshotFallbackReason = null;
+    snapshotFallbackFailures = 0;
+    snapshotFallbackFailureWindowStartedAt = 0;
+    streamFailed = false;
     streamLatestFrame = null;
     streamLoaded = false;
     streamDecodedFrameTimeMs = null;
@@ -187,6 +211,7 @@ export function desktopSurface({ api }) {
       stream.hidden = true;
       return;
     }
+    if (streamSession === session && (snapshotFallbackActive || streamFailed)) return;
     if (streamSession !== session || !streamController || streamProfileWidth !== requestedWidth) {
       if (streamController) stopStream();
       streamFailed = false;
@@ -215,7 +240,7 @@ export function desktopSurface({ api }) {
   }
 
   function updateStreamPresentation() {
-    if (!snapshot?.available || !snapshot?.sessionId || streamFailed) return;
+    if (!snapshot?.available || !snapshot?.sessionId || (streamFailed && !snapshotFallbackActive)) return;
     const hasDecodedFrame = stream.naturalWidth > 0
       && stream.naturalHeight > 0
       && streamLoaded
@@ -226,6 +251,19 @@ export function desktopSurface({ api }) {
     const visible = hasDecodedFrame && ageMs <= maxVisibleFrameAgeMs;
     stream.hidden = !visible;
     placeholder.hidden = visible;
+    if (snapshotFallbackActive) {
+      placeholder.textContent = hasDecodedFrame && !visible
+        ? "The latest image is delayed. Checking for a fresh frame…"
+        : "The stream is unavailable. Checking refreshed desktop images…";
+      if (visible && ageMs >= freshFrameAgeMs) {
+        setStatus(`Snapshots · delayed · ${snapshotFallbackReason}`, false);
+      } else if (visible) {
+        setStatus(`Snapshots · live · ${snapshotFallbackReason}`, false);
+      } else {
+        setStatus(`Snapshots · waiting · ${snapshotFallbackReason}`, false);
+      }
+      return;
+    }
     placeholder.textContent = hasDecodedFrame && !visible
       ? "The latest image is delayed. Waiting for a recent frame…"
       : "Connecting to the managed desktop…";
@@ -257,13 +295,230 @@ export function desktopSurface({ api }) {
     return joined;
   }
 
+  function streamFailure(reason, status = null) {
+    const error = new Error();
+    error.streamFailureReason = reason;
+    error.httpStatus = Number.isInteger(status) ? status : null;
+    return error;
+  }
+
+  function safeStreamFailureLabel(error) {
+    if (error?.streamFailureReason === "authorization") return "owner authorization failed";
+    if (error?.streamFailureReason === "open-timeout") return "stream response timed out";
+    if (error?.streamFailureReason === "read-timeout") return "stream stopped sending data";
+    if (error?.streamFailureReason === "response-ended") return "stream ended";
+    if (error?.streamFailureReason === "body-unavailable") return "stream body unavailable";
+    if (error?.streamFailureReason === "frame-format") return "unsupported stream frame";
+    if (error?.streamFailureReason === "frame-decode") return "image decode failed";
+    if (error?.streamFailureReason === "frame-too-large") return "image exceeded the display limit";
+    if (error?.streamFailureReason === "snapshot-timeout") return "snapshot request timed out";
+    if (error?.streamFailureReason === "snapshot-format") return "snapshot response was not an image";
+    if (error?.streamFailureReason === "snapshot-decode") return "snapshot image could not be decoded";
+    if (Number.isInteger(error?.httpStatus)) return `HTTP ${error.httpStatus}`;
+    return "network error";
+  }
+
+  function snapshotFallbackIsCurrent(session, generation) {
+    return snapshotFallbackActive
+      && snapshotFallbackGeneration === generation
+      && streamGeneration === generation
+      && snapshot?.sessionId === session
+      && isOpen();
+  }
+
+  function stopSnapshotFallback(reason, terminal = false) {
+    clearTimeout(snapshotFallbackTimer);
+    snapshotFallbackTimer = 0;
+    snapshotFallbackController?.abort();
+    snapshotFallbackController = null;
+    snapshotFallbackActive = false;
+    if (!isOpen()) return;
+    retry.hidden = false;
+    retry.textContent = "Reconnect stream";
+    placeholder.hidden = false;
+    placeholder.textContent = terminal
+      ? "The desktop is still running. Reconnect the stream to try again."
+      : "The desktop image snapshots paused. Reconnect the stream to try again.";
+    const shortReason = reason === "owner authorization failed"
+      ? "owner auth failed"
+      : reason === "automatic recovery paused after repeated network failures"
+        ? "repeated network failures"
+        : reason;
+    setStatus(`Frames paused · ${shortReason}`, true);
+  }
+
+  function scheduleSnapshotFallback(session, generation, delay = snapshotFallbackIntervalMs) {
+    if (!snapshotFallbackIsCurrent(session, generation)) return;
+    clearTimeout(snapshotFallbackTimer);
+    snapshotFallbackTimer = setTimeout(() => {
+      snapshotFallbackTimer = 0;
+      void pollSnapshotFallback(session, generation);
+    }, delay);
+  }
+
+  function startSnapshotFallback(session, generation, reason) {
+    if (!isOpen() || snapshot?.sessionId !== session || generation !== streamGeneration) return;
+    snapshotFallbackActive = true;
+    snapshotFallbackGeneration = generation;
+    snapshotFallbackReason = reason;
+    snapshotFallbackFailures = 0;
+    snapshotFallbackFailureWindowStartedAt = 0;
+    retry.hidden = false;
+    retry.textContent = "Reconnect stream";
+    placeholder.hidden = !streamLoaded;
+    if (!streamLoaded) placeholder.textContent = "The stream is unavailable. Checking refreshed desktop images…";
+    setStatus(`Checking desktop snapshots · ${reason}`, false);
+    void pollSnapshotFallback(session, generation);
+  }
+
+  function recordSnapshotFallbackFailure(session, generation, reason) {
+    const now = Date.now();
+    if (snapshotFallbackFailures === 0) snapshotFallbackFailureWindowStartedAt = now;
+    snapshotFallbackFailures += 1;
+    snapshotFallbackReason = reason;
+    if (snapshotFallbackFailures >= snapshotFallbackMaxFailures
+      || now - snapshotFallbackFailureWindowStartedAt >= snapshotFallbackFailureWindowMs) {
+      stopSnapshotFallback("automatic recovery paused after repeated network failures", true);
+      return;
+    }
+    const delay = Math.min(
+      snapshotFallbackIntervalMs * (2 ** (snapshotFallbackFailures - 1)),
+      snapshotFallbackMaxBackoffMs,
+    );
+    scheduleSnapshotFallback(session, generation, delay);
+  }
+
+  async function pollSnapshotFallback(session, generation) {
+    if (!snapshotFallbackIsCurrent(session, generation)) return;
+
+    const controller = new AbortController();
+    snapshotFallbackController = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, snapshotRequestTimeoutMs);
+
+    try {
+      const response = await ownerFetch("/api/desktop/frame", {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!snapshotFallbackIsCurrent(session, generation)) return;
+      if (response.status === 401 || response.status === 403) {
+        clearTimeout(timeout);
+        controller.abort();
+        stopSnapshotFallback("owner authorization failed", true);
+        return;
+      }
+      if (response.status === 409 || response.status === 503) {
+        clearTimeout(timeout);
+        controller.abort();
+        recordSnapshotFallbackFailure(
+          session,
+          generation,
+          response.status === 409 ? "no fresh desktop frame" : "snapshot service unavailable",
+        );
+        return;
+      }
+      if (!response.ok) {
+        clearTimeout(timeout);
+        controller.abort();
+        recordSnapshotFallbackFailure(session, generation, `snapshot HTTP ${response.status}`);
+        return;
+      }
+      const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+      const sequence = Number(response.headers.get("x-frame-seq"));
+      const timeMs = Number(response.headers.get("x-frame-time-ms"));
+      const declaredLength = Number(response.headers.get("content-length"));
+      if (contentType !== "image/jpeg"
+        || !Number.isSafeInteger(sequence)
+        || sequence <= 0
+        || !Number.isFinite(timeMs)
+        || (Number.isFinite(declaredLength) && declaredLength > 4 * 1024 * 1024)) {
+        clearTimeout(timeout);
+        controller.abort();
+        stopSnapshotFallback(safeStreamFailureLabel(streamFailure("snapshot-format")), true);
+        return;
+      }
+      const blob = await response.blob();
+      clearTimeout(timeout);
+      if (!snapshotFallbackIsCurrent(session, generation)) return;
+      if (blob.size === 0 || blob.size > 4 * 1024 * 1024) {
+        stopSnapshotFallback(safeStreamFailureLabel(streamFailure("frame-too-large")), true);
+        return;
+      }
+      snapshotFallbackFailures = 0;
+      snapshotFallbackFailureWindowStartedAt = 0;
+      if (sequence > streamDecodedSeq && sequence > (streamFrameSeqAtStart ?? 0)
+        && estimatedFrameAgeMs(timeMs, sequence) <= maxVisibleFrameAgeMs) {
+        streamLatestFrame = {
+          seq: sequence,
+          timeMs,
+          generation,
+          session,
+          source: "snapshot",
+          blob,
+        };
+        void decodeNewestFrame();
+      }
+      scheduleSnapshotFallback(session, generation);
+    } catch {
+      clearTimeout(timeout);
+      if (!snapshotFallbackIsCurrent(session, generation)) return;
+      const reason = timedOut
+        ? safeStreamFailureLabel(streamFailure("snapshot-timeout"))
+        : "snapshot network error";
+      recordSnapshotFallbackFailure(session, generation, reason);
+    } finally {
+      clearTimeout(timeout);
+      if (snapshotFallbackController === controller) snapshotFallbackController = null;
+    }
+  }
+
+  function failStream(session, generation, controller, error) {
+    if (!isOpen() || generation !== streamGeneration || snapshot?.sessionId !== session) return;
+    if (snapshotFallbackActive) return;
+    if (streamController === controller) streamController = null;
+    controller?.abort();
+    streamFailed = true;
+    streamLoaded = false;
+    stream.hidden = true;
+    retry.hidden = false;
+    retry.textContent = "Reconnect stream";
+    placeholder.hidden = false;
+    const reason = safeStreamFailureLabel(error);
+    if (error?.streamFailureReason === "authorization") {
+      placeholder.textContent = "The desktop session is still running. Reconnect to restore image authorization.";
+      setStatus(`Stream paused · ${reason}`, true);
+      return;
+    }
+    placeholder.textContent = "The desktop is still running. Trying refreshed image snapshots.";
+    startSnapshotFallback(session, generation, reason);
+  }
+
+  function readStreamChunk(reader) {
+    let timer = 0;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(streamFailure("read-timeout")), streamReadTimeoutMs);
+    });
+    return Promise.race([reader.read(), timeout]).finally(() => clearTimeout(timer));
+  }
+
   async function decodeNewestFrame() {
     if (streamDecodeRunning) return;
     streamDecodeRunning = true;
+    let processingSource = "stream";
+    let processingGeneration = streamGeneration;
+    let processingSession = streamSession;
     try {
       while (streamLatestFrame && isOpen()) {
         const frame = streamLatestFrame;
         streamLatestFrame = null;
+        processingSource = frame.source || "stream";
+        processingGeneration = frame.generation;
+        processingSession = frame.session || streamSession;
         if (frame.generation !== streamGeneration
           || frame.seq <= streamDecodedSeq
           || frame.seq <= (streamFrameSeqAtStart ?? 0)
@@ -291,7 +546,10 @@ export function desktopSurface({ api }) {
         stream.src = objectUrl;
         stream.hidden = false;
         await stream.decode();
-        if (!isOpen() || streamFailed || !streamController || streamSession !== snapshot?.sessionId) {
+        if (!isOpen()
+          || frame.generation !== streamGeneration
+          || (!snapshotFallbackActive && (streamFailed || !streamController))
+          || processingSession !== snapshot?.sessionId) {
           if (streamObjectUrl === objectUrl) streamObjectUrl = null;
           if (previousUrl) URL.revokeObjectURL(previousUrl);
           URL.revokeObjectURL(objectUrl);
@@ -305,16 +563,20 @@ export function desktopSurface({ api }) {
         if (previousUrl) URL.revokeObjectURL(previousUrl);
         updateStreamPresentation();
       }
-    } catch (error) {
+    } catch {
       if (isOpen()) {
-        streamController?.abort();
-        streamFailed = true;
-        streamLoaded = false;
-        stream.hidden = true;
-        retry.hidden = false;
-        placeholder.hidden = false;
-        placeholder.textContent = "The desktop keeps running. Reconnect the stream to continue.";
-        setStatus(error.message || "Desktop image unavailable", true);
+        if (processingSource === "snapshot") {
+          if (snapshotFallbackIsCurrent(processingSession, processingGeneration)) {
+            stopSnapshotFallback(safeStreamFailureLabel(streamFailure("snapshot-decode")), true);
+          }
+        } else {
+          failStream(
+            processingSession,
+            processingGeneration,
+            streamController,
+            streamFailure("frame-decode"),
+          );
+        }
       }
     } finally {
       streamDecodeRunning = false;
@@ -326,23 +588,40 @@ export function desktopSurface({ api }) {
     const boundary = new TextEncoder().encode("--glassframe");
     const headerDelimiter = new Uint8Array([13, 10, 13, 10]);
     let buffer = new Uint8Array(0);
+    let openTimedOut = false;
+    let openTimer = 0;
     try {
       const streamPath = streamProfileWidth ? `/api/desktop/stream?width=${streamProfileWidth}` : "/api/desktop/stream";
-      const response = await ownerFetch(streamPath, {
-        credentials: "same-origin",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        let message = "Desktop stream is unavailable.";
-        try { message = (await response.json()).error || message; } catch {}
-        throw new Error(message);
+      openTimer = setTimeout(() => {
+        openTimedOut = true;
+        controller.abort();
+      }, streamOpenTimeoutMs);
+      let response;
+      try {
+        response = await ownerFetch(streamPath, {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+      } catch {
+        if (openTimedOut) throw streamFailure("open-timeout");
+        throw streamFailure("network");
+      } finally {
+        clearTimeout(openTimer);
       }
+      if (response.status === 401 || response.status === 403) {
+        throw streamFailure("authorization", response.status);
+      }
+      if (!response.ok) {
+        throw streamFailure("http-response", response.status);
+      }
+      if (!response.body) throw streamFailure("body-unavailable");
       const reader = response.body.getReader();
       while (isOpen() && generation === streamGeneration && session === snapshot?.sessionId) {
-        const { value, done } = await reader.read();
-        if (done) throw new Error("Desktop stream ended.");
+        const { value, done } = await readStreamChunk(reader);
+        if (done) throw streamFailure("response-ended");
         buffer = appendBytes(buffer, value);
+        if (buffer.length > 8 * 1024 * 1024) throw streamFailure("frame-format");
         while (true) {
           const boundaryAt = findBytes(buffer, boundary);
           if (boundaryAt < 0) {
@@ -361,9 +640,9 @@ export function desktopSurface({ api }) {
           const seq = Number(headerText.match(/(?:^|\r\n)X-Frame-Seq:\s*(\d+)/i)?.[1]);
           const timeMs = Number(headerText.match(/(?:^|\r\n)X-Frame-Time-Ms:\s*(\d+(?:\.\d+)?)/i)?.[1]);
           if (!Number.isSafeInteger(length) || length <= 0 || length > 4 * 1024 * 1024 || !Number.isSafeInteger(seq)) {
-            throw new Error("Desktop stream sent an invalid frame header.");
+            throw streamFailure("frame-format");
           }
-          if (!Number.isFinite(timeMs)) throw new Error("Desktop stream sent an invalid frame timestamp.");
+          if (!Number.isFinite(timeMs)) throw streamFailure("frame-format");
           const frameAt = headerAt + headerDelimiter.length;
           const afterFrame = frameAt + length;
           if (buffer.length < afterFrame) break;
@@ -371,6 +650,8 @@ export function desktopSurface({ api }) {
             seq,
             timeMs,
             generation,
+            session,
+            source: "stream",
             blob: new Blob([buffer.slice(frameAt, afterFrame)], { type: "image/jpeg" }),
           };
           buffer = buffer.slice(afterFrame);
@@ -382,15 +663,10 @@ export function desktopSurface({ api }) {
         }
       }
     } catch (error) {
-      if (controller.signal.aborted || generation !== streamGeneration || !isOpen()) return;
-      streamFailed = true;
-      streamLoaded = false;
-      stream.hidden = true;
-      retry.hidden = false;
-      retry.textContent = "Reconnect stream";
-      placeholder.hidden = false;
-      placeholder.textContent = "The desktop keeps running. Reconnect the stream to continue.";
-      setStatus("Stream disconnected", true);
+      if ((controller.signal.aborted && !openTimedOut) || generation !== streamGeneration || !isOpen()) return;
+      failStream(session, generation, controller, error);
+    } finally {
+      clearTimeout(openTimer);
     }
   }
 

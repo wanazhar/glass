@@ -24,6 +24,11 @@ let streamResponse = null;
 let streamTimer = 0;
 let streamFrameDelayMs = 0;
 let streamPauseUntil = 0;
+let snapshotRequests = 0;
+let snapshotAuthorizationFails = false;
+let snapshotBodyStalls = false;
+let snapshotNoFrameCount = 0;
+let snapshotAlwaysNoFrame = false;
 const streamWidths = [];
 const actions = [];
 const sessionStartEnvironments = [];
@@ -48,6 +53,9 @@ const jpg = Buffer.from(
 );
 const testModule = `
   import { desktopSurface } from "/src/desktop.js";
+  const actualDateNow = Date.now.bind(Date);
+  let testClockOffset = 0;
+  Date.now = () => actualDateNow() + testClockOffset;
   const api = async (path, data, signal, options) => {
     if (path === "desktop/session" && data?.action === "start") window.__desktopStartTimeout = options?.timeoutMs;
     const response = await fetch("/api/" + path, {
@@ -68,6 +76,32 @@ const testModule = `
   window.disconnectDesktopStream = () => fetch("/__test/stream-close");
   window.setStaleDesktopStream = (delayMs) => fetch("/__test/stream-stale?delayMs=" + delayMs);
   window.setDesktopStreamGap = (durationMs) => fetch("/__test/stream-gap?durationMs=" + durationMs);
+  window.setSnapshotAuthorizationFailure = (enabled) => fetch("/__test/snapshot-auth?enabled=" + enabled);
+  window.setSnapshotBodyStall = (enabled) => fetch("/__test/snapshot-stall?enabled=" + enabled);
+  window.setSnapshotNoFrameCount = (count) => fetch("/__test/snapshot-no-frame?count=" + count);
+  window.setSnapshotAlwaysNoFrame = (enabled) => fetch("/__test/snapshot-no-frame?always=" + enabled);
+  window.advanceSnapshotClock = (ms) => { testClockOffset += ms; };
+  window.resetSnapshotClock = () => { testClockOffset = 0; };
+  window.getSnapshotRequestCount = async () => (await (await fetch("/__test/snapshot-requests")).json()).count;
+  window.holdNextSnapshotDecode = () => {
+    const decode = HTMLImageElement.prototype.decode;
+    window.__snapshotDecodeStarted = false;
+    window.__snapshotDecodeRelease = null;
+    HTMLImageElement.prototype.decode = function () {
+      if (this.id === "desktop-stream" && !window.__snapshotDecodeStarted) {
+        window.__snapshotDecodeStarted = true;
+        return new Promise((resolve, reject) => {
+          window.__snapshotDecodeRelease = (shouldReject) => {
+            HTMLImageElement.prototype.decode = decode;
+            if (shouldReject) reject(new Error("stale decode fixture"));
+            else decode.call(this).then(resolve, reject);
+          };
+        });
+      }
+      return decode.call(this);
+    };
+  };
+  window.releaseSnapshotDecode = (shouldReject) => window.__snapshotDecodeRelease?.(shouldReject);
   window.__inputTimings = [];
   window.__frameTimings = [];
   window.addEventListener("glass-desktop-input-timing", (event) => window.__inputTimings.push(event.detail));
@@ -144,6 +178,27 @@ const server = createServer(async (request, response) => {
   if (url.pathname === "/__test/stream-gap") {
     streamPauseUntil = Date.now() + Math.max(0, Math.min(10_000, Number(url.searchParams.get("durationMs")) || 0));
     response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/snapshot-auth") {
+    snapshotAuthorizationFails = url.searchParams.get("enabled") === "true";
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/snapshot-stall") {
+    snapshotBodyStalls = url.searchParams.get("enabled") === "true";
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/snapshot-no-frame") {
+    snapshotNoFrameCount = Math.max(0, Number(url.searchParams.get("count")) || 0);
+    snapshotAlwaysNoFrame = url.searchParams.get("always") === "true";
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/snapshot-requests") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ count: snapshotRequests }));
     return;
   }
   if (url.pathname === "/__test/stream-widths") {
@@ -232,6 +287,45 @@ const server = createServer(async (request, response) => {
       streamTimer = 0;
       if (streamResponse === response) streamResponse = null;
     });
+    return;
+  }
+  if (url.pathname === "/api/desktop/frame") {
+    snapshotRequests += 1;
+    if (!session) {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "No managed desktop session", lease }));
+      return;
+    }
+    if (snapshotAuthorizationFails) {
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Unavailable", ownerAuthRequired: true }));
+      return;
+    }
+    if (snapshotNoFrameCount > 0 || snapshotAlwaysNoFrame) {
+      snapshotNoFrameCount -= 1;
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "No fresh frame", lease }));
+      return;
+    }
+    if (snapshotBodyStalls) {
+      snapshotBodyStalls = false;
+      response.writeHead(200, {
+        "content-type": "image/jpeg",
+        "content-length": jpg.length + 4096,
+        "x-frame-seq": nextFrameSeq++,
+        "x-frame-time-ms": nextFrameSeq * 100,
+      });
+      response.write(jpg.subarray(0, 16));
+      return;
+    }
+    const frameSeq = nextFrameSeq++;
+    response.writeHead(200, {
+      "content-type": "image/jpeg",
+      "content-length": jpg.length,
+      "x-frame-seq": frameSeq,
+      "x-frame-time-ms": frameSeq * 100,
+    });
+    response.end(jpg);
     return;
   }
   if (url.pathname.startsWith("/api/desktop/")) {
@@ -390,11 +484,66 @@ try {
   if (process.env.DESKTOP_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_PREVIEW, fullPage: true });
   await page.evaluate(() => window.disconnectDesktopStream());
-  await page.getByText(/^Stream disconnected/).waitFor();
-  assert.equal(await page.locator("#desktop-stream").isHidden(), true, "broken image alt text should stay hidden");
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots ·"), { timeout: 5000 });
+  assert.equal(await page.locator("#desktop-stream").isVisible(), true, "finite image requests should recover a closed multipart stream");
   assert.equal(await page.locator("#desktop-retry").isVisible(), true);
+  assert((await page.evaluate(() => window.getSnapshotRequestCount())) > 0,
+    "stream failure should use the authenticated finite frame endpoint");
   assert.equal(lease, "human", "stream failure must leave the human lease in place");
   assert(!actions.includes("return-to-agent"), "stream failure must not return control implicitly");
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.evaluate(() => window.setSnapshotBodyStall(true));
+  const beforeStalledBody = await page.evaluate(() => window.getSnapshotRequestCount());
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() >= before + 2,
+    beforeStalledBody, { timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots ·"), { timeout: 5000 });
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.evaluate(() => window.setSnapshotNoFrameCount(100));
+  const beforeNoFrame = await page.evaluate(() => window.getSnapshotRequestCount());
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() >= before + 1,
+    beforeNoFrame, { timeout: 3000 });
+  await page.evaluate(() => window.advanceSnapshotClock(61_000));
+  await page.getByText(/^Frames paused · repeated network failures/).waitFor({ timeout: 5000 });
+  const noFrameStoppedAt = await page.evaluate(() => window.getSnapshotRequestCount());
+  assert(noFrameStoppedAt <= beforeNoFrame + 2,
+    "persistent HTTP 409 responses must be bounded instead of polling forever");
+  await page.waitForTimeout(1200);
+  assert.equal(await page.evaluate(() => window.getSnapshotRequestCount()), noFrameStoppedAt,
+    "the bounded recovery window must stop further snapshot requests");
+  await page.evaluate(async () => {
+    window.resetSnapshotClock();
+    await window.setSnapshotNoFrameCount(0);
+  });
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.evaluate(() => window.holdNextSnapshotDecode());
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.waitForFunction(() => window.__snapshotDecodeStarted === true, { timeout: 5000 });
+  await page.locator("#desktop-retry").click();
+  await page.waitForTimeout(250);
+  await page.evaluate(() => window.disconnectDesktopStream());
+  const beforeStaleDecodeRelease = await page.evaluate(() => window.getSnapshotRequestCount());
+  await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() > before,
+    beforeStaleDecodeRelease, { timeout: 5000 });
+  await page.evaluate(() => window.releaseSnapshotDecode(true));
+  await page.getByText(/^Snapshots · live/).waitFor({ timeout: 5000 });
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
+  await page.evaluate(() => window.setSnapshotAuthorizationFailure(true));
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.getByText(/Frames paused · owner auth failed/).waitFor({ timeout: 5000 });
+  const deniedSnapshotRequests = await page.evaluate(() => window.getSnapshotRequestCount());
+  await page.waitForTimeout(1200);
+  assert.equal(await page.evaluate(() => window.getSnapshotRequestCount()), deniedSnapshotRequests,
+    "authorization failure must stop automatic snapshot retries");
+  assert.equal(lease, "human", "snapshot authorization failure must leave the human lease in place");
+  await page.evaluate(() => window.setSnapshotAuthorizationFailure(false));
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"), { timeout: 5000 });
   await page.locator("#desktop-more > summary").click();
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true);
   await page.locator("#desktop-reconnect").click();

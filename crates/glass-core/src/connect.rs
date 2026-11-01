@@ -2423,6 +2423,20 @@ fn handle_with_transport(
         };
         return desktop_stream(&mut stream, &app.desktop, width);
     }
+    if path == "/api/desktop/updates" && r.method == "POST" {
+        return match app.desktop.frame_updates(&r.body) {
+            Ok(Some(value)) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
+            Ok(None) => {
+                response(&mut stream, 204, "application/json", b"", "").map_err(|e| e.to_string())
+            }
+            Err(_) => json_response(
+                &mut stream,
+                409,
+                json!({"error":"Desktop update checkpoint is unavailable; refresh desktop status"}),
+            )
+            .map_err(|e| e.to_string()),
+        };
+    }
     if path == "/api/desktop/frame" && r.method == "GET" {
         return desktop_frame(&mut stream, &app.desktop);
     }

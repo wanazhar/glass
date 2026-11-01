@@ -119,12 +119,14 @@ tools.
 
 Choose **Quick desktop** to start a disposable XFCE session. Connect creates a
 private Xvfb (X virtual framebuffer) display at 1280 × 800. FFmpeg captures
-JPEG (Joint Photographic Experts Group) frames at 5 frames per second with no
-audio. The stream uses the authenticated Connect origin. The
-desktop viewer requests 480-pixel-wide frames on narrow or coarse-pointer
-screens; other viewers use 1280 pixels. The stream endpoint accepts widths from
-320 through 1280 pixels. These are capture and stream limits, not a guarantee
-that a network will deliver five frames each second.
+raw RGB (red, green, blue) frames at up to 10 frames per second,
+without audio. Capture keeps one current raw frame; slower viewers cannot queue capture work.
+Region updates use those pixels directly. Whole JPEG (Joint Photographic
+Experts Group) images are encoded only for full refreshes and screenshot paths. The viewer preserves the 1280 × 800 capture resolution using
+changed-region updates on the authenticated Connect origin. Older full-image
+paths accept widths from 320 through 1280 pixels and use 480-pixel images on
+narrow or coarse-pointer screens. Capture rate and resolution are limits;
+network and client performance determine delivery rate.
 
 The Quick desktop session HOME and its private runtime files are removed when
 the session stops. The reported `workspaceRoot` is separate. Files saved there
@@ -176,13 +178,50 @@ supervisor continues to own its desktop and profile so a later gateway can
 reattach. `gc connect stop` and **Stop desktop** therefore have different
 effects for a reusable session.
 
-The default stream is an authenticated multipart JPEG stream. The viewer tracks
-frame sequence and capture time. It labels delayed frames as delayed and removes
-a displayed frame when it is more than three seconds old; a stale frame is not
-presented as live. On a slow connection the displayed image can lag behind
-accepted input. The viewer keeps the newest decodable frame instead of building
-an unbounded image queue. Pinch zoom and panning change only the viewer and do
-not send desktop input.
+The viewer uses authenticated changed-region updates when the gateway advertises
+that capability. It receives an initial 1280 × 800 image, then 64-pixel
+tiles for regions that changed. Flat tiles use lossless PNG; textured tiles use
+JPEG when it produces a smaller update. A bounded gateway history tracks acknowledged
+frames; reconnecting or an expired checkpoint produces a full refresh. Only one
+image request is in flight, so the transport does not queue old desktop images
+behind the viewer. Capture runs at up to 10 frames per second; actual delivery
+also depends on the connection, scene changes, and client decoding performance.
+
+Older gateways and recovery paths retain full-image streaming and finite JPEG
+snapshots. Large scene changes can require a full refresh even with region
+updates. This transport does not provide a video codec or audio streaming.
+
+The viewer tracks frame sequence and capture time, retains the last image during
+a delay, and labels its age. Input is disabled when the displayed image is more
+than three seconds old. Pinch zoom and panning affect only the viewer.
+
+### Transport measurements
+
+`python3 products/glass-core/scripts/benchmark-desktop-updates.py` starts a
+private local Connect instance and disposable Xvfb session, then tests the real
+WebKit viewer through a rate-limited proxy. It does not attach to an existing
+user desktop. The scene changes a visible marker in response to input, allowing
+the test to report input-to-image latency as well as displayed-frame age,
+bandwidth, and resolution. The test cleans up its own gateway and display.
+
+Build Core and web assets first. Set `GLASS_CORE_TEST_BINARY` and `GC_WEB_ASSETS`
+when testing a bundle outside the default checkout paths. The test requires the
+normal XFCE dependencies, the X11 client library, and an installed Playwright
+WebKit browser with matching driver. `GC_PLAYWRIGHT_MODULE` and
+`GC_WEBKIT_BINARY` can select that matching pair. `GC_BENCH_KIBPS` defaults to
+128 and `GC_BENCH_SECONDS` defaults to 20.
+
+A private WebKit run on 2026-11-01 used a detailed 1280 × 800 scene, a
+128 KiB/s response limit, and 50 ms simulated request delay. After the initial
+image loaded, 42 input samples had 809 ms input-to-image latency at the 95th
+percentile. Displayed-frame age was 657 ms at the 95th percentile; transfer
+averaged 56 KB/s. All sampled images remained within the freshness limit, and
+there were no legacy-stream requests. Separate native input checks measured
+240 ms for a trackpad tap and 286 ms for a direct-touch tap. A first native mouse
+move took 2722 ms; that cold-path result remains a limitation of this run.
+These are local measurements, not latency guarantees or video-playback results.
+The Core binary SHA-256 was
+`0a7a08e1cbb4b143cda924cbb8021f4e168a86a1e9c5be6b9a1f8fcc5a7a3375`.
 
 On phones, **Trackpad** mode is the default. Drag to move the pointer, tap to
 click, use two fingers to scroll, or long-press for right-click. **Direct touch**

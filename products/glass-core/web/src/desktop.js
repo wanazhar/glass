@@ -1,4 +1,5 @@
 import { ownerFetch } from "./owner-auth.js";
+import { consumeDesktopUpdates } from "./desktop-updates.js";
 // Loaded only when the full-screen shared desktop surface is opened.
 export function desktopSurface({ api }) {
   const $ = (id) => document.getElementById(id);
@@ -7,6 +8,7 @@ export function desktopSurface({ api }) {
   const closeButton = $("desktop-close");
   const viewport = $("desktop-viewport");
   const stream = $("desktop-stream");
+  const regionCanvas = $("desktop-regions");
   const placeholder = $("desktop-placeholder");
   const owner = $("desktop-owner");
   const display = $("desktop-display");
@@ -165,8 +167,9 @@ export function desktopSurface({ api }) {
   const controlled = () => isOpen() && snapshot?.available && snapshot.lease === "human" && hasFreshDecodedFrame();
 
   function setStatus(message, error = false) {
-    status.textContent = message;
-    status.dataset.error = error ? "true" : "false";
+    if (status.textContent !== message) status.textContent = message;
+    const nextError = error ? "true" : "false";
+    if (status.dataset.error !== nextError) status.dataset.error = nextError;
   }
 
   function closeKeyboard() {
@@ -205,6 +208,7 @@ export function desktopSurface({ api }) {
       streamLoaded = false;
       streamDecodedFrameTimeMs = null;
       streamDecodedSource = null;
+      regionCanvas.hidden = true;
       if (streamObjectUrl) URL.revokeObjectURL(streamObjectUrl);
       streamObjectUrl = null;
       stream.removeAttribute("src");
@@ -241,7 +245,36 @@ export function desktopSurface({ api }) {
       if (!sameSession) streamFrameSeqAtStart = Number(snapshot?.frameSeq) || 0;
       streamProfileWidth = requestedWidth;
       streamController = new AbortController();
-      void consumeStream(session, ++streamGeneration, streamController);
+      const generation = ++streamGeneration;
+      const controller = streamController;
+      if (snapshot?.regionUpdates === 1) {
+        void consumeDesktopUpdates({
+          session, canvas: regionCanvas, signal: controller.signal,
+          current: () => isOpen() && streamGeneration === generation && snapshot?.sessionId === session,
+          emit: (frame) => {
+            if (controller.signal.aborted || generation !== streamGeneration || snapshot?.sessionId !== session) return;
+            if (streamLoaded && !streamDecodeRunning && !streamLatestFrame
+              && streamDecodedSource === "regions") {
+              streamDecodedSeq = frame.seq;
+              streamDecodedFrameTimeMs = frame.timeMs;
+              scheduleFrameFreshnessCheck();
+              updateStreamPresentation();
+              return;
+            }
+            streamLatestFrame = { ...frame, generation, session, source: "regions" };
+            void decodeNewestFrame();
+          },
+        }).catch((error) => {
+          const known = ["Invalid desktop region", "Desktop region dimensions changed", "Desktop region connection unavailable",
+            "Desktop update exceeds bounds", "Invalid desktop update", "Invalid desktop hashes", "Invalid full desktop update",
+            "Desktop update has no base frame", "Invalid desktop tile"];
+          viewport.dataset.regionError = Number.isInteger(error.httpStatus) ? `HTTP ${error.httpStatus}`
+            : known.includes(error.message) ? error.message : error.name || "Error";
+          failStream(session, generation, controller, error);
+        });
+      } else {
+        void consumeStream(session, generation, controller);
+      }
     }
     stream.hidden = !streamLoaded || streamFailed;
   }
@@ -268,7 +301,7 @@ export function desktopSurface({ api }) {
     const frameSeq = Number(streamDecodedSeq);
     const startingSeq = streamFrameSeqAtStart ?? 0;
     const frameIsNewEnough = frameSeq > startingSeq
-      || (streamDecodedSource === "snapshot" && frameSeq === startingSeq);
+      || (["snapshot", "regions"].includes(streamDecodedSource) && frameSeq === startingSeq);
     return Boolean(snapshot?.available
       && snapshot?.sessionId
       && streamSession === snapshot.sessionId
@@ -297,6 +330,9 @@ export function desktopSurface({ api }) {
     keyboardOpen.disabled = !canInput;
     for (const button of shortcuts.querySelectorAll("button")) button.disabled = !canInput;
     viewport.dataset.frameFresh = hasFreshDecodedFrame() ? "true" : "false";
+    viewport.dataset.frameSeq = String(streamDecodedSeq || 0);
+    viewport.dataset.frameSource = streamDecodedSource || "";
+    viewport.dataset.frameTimeMs = String(streamDecodedFrameTimeMs ?? "");
     cursor.hidden = !coarsePointer.matches || directTouch || !controlled();
     if (!canInput) closeKeyboard();
   }
@@ -314,6 +350,7 @@ export function desktopSurface({ api }) {
     // Freshness gates input below, while the status makes the delay explicit.
     const visible = hasDecodedFrame;
     stream.hidden = !visible;
+    regionCanvas.hidden = !(visible && streamDecodedSource === "regions");
     placeholder.hidden = visible;
     if (streamFailed && !snapshotFallbackActive) {
       if (streamPausedReason) {
@@ -602,12 +639,19 @@ export function desktopSurface({ api }) {
         processingGeneration = frame.generation;
         processingSession = frame.session || streamSession;
         const startingSeq = streamFrameSeqAtStart ?? 0;
-        const firstSnapshotCanReuseCurrentFrame = frame.source === "snapshot"
+        const firstSnapshotCanReuseCurrentFrame = ["snapshot", "regions"].includes(frame.source)
           && !streamLoaded
           && frame.seq === startingSeq;
         if (frame.generation !== streamGeneration
           || frame.seq <= streamDecodedSeq
           || (frame.seq <= startingSeq && !firstSnapshotCanReuseCurrentFrame)) continue;
+        if (frame.source === "regions" && streamLoaded && streamDecodedSource === "regions") {
+          streamDecodedSeq = frame.seq;
+          streamDecodedFrameTimeMs = frame.timeMs;
+          scheduleFrameFreshnessCheck();
+          updateStreamPresentation();
+          continue;
+        }
         const objectUrl = URL.createObjectURL(frame.blob);
         const decoded = new Image();
         decoded.src = objectUrl;
@@ -621,7 +665,7 @@ export function desktopSurface({ api }) {
           URL.revokeObjectURL(objectUrl);
           return;
         }
-        if (streamLatestFrame && streamLatestFrame.seq > frame.seq) {
+        if (frame.source !== "regions" && streamLatestFrame && streamLatestFrame.seq > frame.seq) {
           URL.revokeObjectURL(objectUrl);
           continue;
         }
@@ -1109,9 +1153,11 @@ export function desktopSurface({ api }) {
   new ResizeObserver(updateCursor).observe(viewport);
 
   function applyViewTransform() {
-    stream.style.setProperty("--desktop-zoom", String(zoom));
-    stream.style.setProperty("--desktop-pan-x", `${panX}px`);
-    stream.style.setProperty("--desktop-pan-y", `${panY}px`);
+    for (const surface of [stream, regionCanvas]) {
+      surface.style.setProperty("--desktop-zoom", String(zoom));
+      surface.style.setProperty("--desktop-pan-x", `${panX}px`);
+      surface.style.setProperty("--desktop-pan-y", `${panY}px`);
+    }
     viewReset.hidden = zoom <= 1.001;
     updateCursor();
   }

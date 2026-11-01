@@ -1,7 +1,7 @@
 use std::{
     io::Read,
     process::Child,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -14,68 +14,65 @@ pub(super) struct Frame {
     pub(super) seq: u64,
     pub(super) since_start_ms: u64,
     pub(super) captured_at: Instant,
-    pub(super) jpeg: Vec<u8>,
+    pub(super) rgb: Vec<u8>,
+    jpeg: OnceLock<Result<Vec<u8>, String>>,
 }
 
 #[derive(Default)]
 pub(super) struct Frames {
-    pub(super) current: Option<Frame>,
+    pub(super) current: Option<Arc<Frame>>,
     pub(super) error: Option<String>,
 }
 
+impl Frame {
+    pub(super) fn jpeg(&self) -> Result<&[u8], String> {
+        self.jpeg
+            .get_or_init(|| {
+                let mut jpeg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80)
+                    .encode(
+                        &self.rgb,
+                        super::WIDTH,
+                        super::HEIGHT,
+                        image::ExtendedColorType::Rgb8,
+                    )
+                    .map_err(|_| "Desktop image encoding failed".to_owned())?;
+                if jpeg.len() > MAX_FRAME {
+                    return Err("Desktop JPEG frame exceeded size limit".into());
+                }
+                Ok(jpeg)
+            })
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(Clone::clone)
+    }
+}
+
 pub(super) fn read_frames(mut input: impl Read, frames: Arc<Mutex<Frames>>, started: Instant) {
-    let mut pending = Vec::with_capacity(256 * 1024);
-    let mut chunk = [0u8; 32 * 1024];
+    // Always drain capture into one current raw frame. JPEG is lazy and cached
+    // per frame; neither encoding nor a slow viewer can block this reader.
     let mut seq = 0u64;
     loop {
-        let count = match input.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(count) => count,
-            Err(error) => {
-                frames.lock().unwrap().error =
-                    Some(format!("Desktop frame source failed: {error}"));
-                return;
-            }
-        };
-        pending.extend_from_slice(&chunk[..count]);
-        loop {
-            let Some(begin) = pending.windows(2).position(|pair| pair == [0xff, 0xd8]) else {
-                if pending.len() > 1 {
-                    pending.drain(..pending.len() - 1);
-                }
-                break;
-            };
-            if begin > 0 {
-                pending.drain(..begin);
-            }
-            let Some(end) = pending.windows(2).position(|pair| pair == [0xff, 0xd9]) else {
-                if pending.len() > MAX_FRAME {
-                    pending.clear();
-                    frames.lock().unwrap().error =
-                        Some("Desktop JPEG frame exceeded size limit".into());
-                }
-                break;
-            };
-            let end = end + 2;
-            if end > MAX_FRAME {
-                pending.drain(..end);
-                continue;
-            }
-            seq = seq.saturating_add(1);
-            let jpeg = pending.drain(..end).collect::<Vec<_>>();
-            let mut state = frames.lock().unwrap();
-            state.current = Some(Frame {
-                seq,
-                since_start_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                captured_at: Instant::now(),
-                jpeg,
-            });
-            state.error = None;
+        let mut rgb = vec![0; (super::WIDTH * super::HEIGHT * 3) as usize];
+        if input.read_exact(&mut rgb).is_err() {
+            frames.lock().unwrap().error = Some("Desktop frame source exited".into());
+            return;
         }
-    }
-    let mut state = frames.lock().unwrap();
-    if state.error.is_none() {
-        state.error = Some("Desktop frame source exited".into());
+        seq = seq.saturating_add(1);
+        let captured_at = Instant::now();
+        let frame = Arc::new(Frame {
+            seq,
+            since_start_ms: captured_at
+                .saturating_duration_since(started)
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+            captured_at,
+            rgb,
+            jpeg: OnceLock::new(),
+        });
+        let mut state = frames.lock().unwrap();
+        state.current = Some(frame);
+        state.error = None;
     }
 }
 
@@ -85,14 +82,14 @@ pub(super) fn wait_for_first_frame(frames: &Arc<Mutex<Frames>>, capture: &mut Ch
     while Instant::now() < deadline {
         let current = frames.lock().unwrap().current.as_ref().and_then(|frame| {
             (frame.seq > checked_seq && frame.seq >= MIN_STARTUP_FRAME_SEQUENCE)
-                .then(|| (frame.seq, frame.jpeg.clone()))
+                .then(|| frame.clone())
         });
-        if let Some((seq, jpeg)) = current {
-            checked_seq = seq;
+        if let Some(frame) = current {
+            checked_seq = frame.seq;
             // FFmpeg can capture a fresh but empty Xvfb framebuffer before
             // XFCE paints. Wait for desktop-sized pixel coverage so Connect
             // does not report a black startup buffer as a usable live view.
-            if has_visible_desktop_pixels(&jpeg) {
+            if frame.jpeg().is_ok_and(has_visible_desktop_pixels) {
                 return true;
             }
         }
@@ -159,20 +156,21 @@ fn process_group_exists(pid: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[test]
-    fn frame_reader_keeps_latest_complete_frame_only() {
-        let input = [
-            0xff, 0xd8, 1, 0xff, 0xd9, // frame one
-            0xff, 0xd8, 2, 3, 0xff, 0xd9, // frame two
-        ];
+    fn raw_reader_keeps_latest_complete_frame_and_jpeg_is_lazy() {
+        let frame_size = (super::super::WIDTH * super::super::HEIGHT * 3) as usize;
+        let mut input = vec![17; frame_size];
+        input.extend(vec![91; frame_size]);
+        input.extend([1, 2, 3]); // Partial third frame must not replace the second.
         let frames = Arc::new(Mutex::new(Frames::default()));
-        read_frames(Cursor::new(input), frames.clone(), Instant::now());
-        let frames = frames.lock().unwrap();
-        let current = frames.current.as_ref().unwrap();
-        assert_eq!(current.seq, 2);
-        assert_eq!(current.jpeg, [0xff, 0xd8, 2, 3, 0xff, 0xd9]);
+        read_frames(std::io::Cursor::new(input), frames.clone(), Instant::now());
+        let frame = frames.lock().unwrap().current.clone().unwrap();
+        assert_eq!(frame.seq, 2);
+        assert!(frame.rgb.iter().all(|pixel| *pixel == 91));
+        assert!(frame.jpeg.get().is_none());
+        assert!(!frame.jpeg().unwrap().is_empty());
+        assert!(frame.jpeg.get().is_some());
     }
 
     #[test]

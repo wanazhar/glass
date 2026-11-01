@@ -79756,7 +79756,8 @@
       "consumers": [
         "docs/INDEX.md",
         "docs/plan/README.md",
-        "docs/plan/analysis/task-agent-coordination.md"
+        "docs/plan/analysis/task-agent-coordination.md",
+        "docs/plan/tasks/task-agent-runtime-004.md"
       ],
       "dependencies": [
         "docs/plan/README.md",
@@ -79764,6 +79765,7 @@
         "docs/plan/reviews/task-agent-coordination-001-01.md",
         "docs/plan/tasks/task-agent-budget-002.md",
         "docs/plan/tasks/task-agent-inbox-003.md",
+        "docs/plan/tasks/task-agent-runtime-004.md",
         "docs/task-dag.md",
         "products/glass-core/docs/reference/checklist.md",
         "products/glass-core/docs/reference/runtime.md"
@@ -79846,6 +79848,56 @@
           "level": "2",
           "title": "Path",
           "anchor": "path"
+        },
+        {
+          "level": "2",
+          "title": "Acceptance",
+          "anchor": "acceptance"
+        },
+        {
+          "level": "2",
+          "title": "Verification and stopping",
+          "anchor": "verification-and-stopping"
+        }
+      ]
+    },
+    {
+      "path": "docs/plan/tasks/task-agent-runtime-004.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/plan/tasks/task-agent-coordination-001.md"
+      ],
+      "dependencies": [
+        "docs/plan/tasks/task-agent-coordination-001.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/tasks/task-agent-runtime-004.md#runtime-coordination-integration",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Runtime coordination integration",
+          "anchor": "runtime-coordination-integration"
+        },
+        {
+          "level": "2",
+          "title": "Objective",
+          "anchor": "objective"
+        },
+        {
+          "level": "2",
+          "title": "Context",
+          "anchor": "context"
+        },
+        {
+          "level": "2",
+          "title": "Path and owners",
+          "anchor": "path-and-owners"
         },
         {
           "level": "2",
@@ -84385,6 +84437,11 @@
           "level": "3",
           "title": "Viewing and control",
           "anchor": "viewing-and-control"
+        },
+        {
+          "level": "3",
+          "title": "Transport measurements",
+          "anchor": "transport-measurements"
         },
         {
           "level": "3",

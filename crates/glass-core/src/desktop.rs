@@ -27,6 +27,7 @@ mod capture;
 mod input;
 mod process;
 mod supervisor;
+mod updates;
 use capture::Frames;
 
 const WIDTH: u32 = 1280;
@@ -37,7 +38,7 @@ const LEASE_SOCKET: &str = "desktop-agent.sock";
 const MAX_CACHED_ACCESSIBILITY_WINDOWS: usize = 64;
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
-type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Vec<u8>);
+type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Arc<capture::Frame>);
 const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
 const GNOME_XVFB_ACCEPTED: bool = false;
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -167,6 +168,7 @@ pub struct Desktop {
     /// Ensures concurrent first app launches share one registry warm-up.
     accessibility_registry_init: Mutex<()>,
     session: Mutex<Option<ManagedSession>>,
+    region_checkpoints: Mutex<updates::Checkpoints>,
 }
 
 impl Desktop {
@@ -177,6 +179,7 @@ impl Desktop {
             control: Mutex::new(()),
             accessibility_registry_init: Mutex::new(()),
             session: Mutex::new(None),
+            region_checkpoints: Mutex::new(updates::Checkpoints::default()),
         }
     }
 
@@ -201,6 +204,7 @@ impl Desktop {
                 "frameAgeMs": null,
                 "frameTimeMs": null,
                 "error": restore_error,
+                "regionUpdates": 1,
                 "capabilities": capabilities
             });
         };
@@ -230,7 +234,8 @@ impl Desktop {
             } else {
                 restore_error.as_deref()
             },
-            "capabilities": capabilities
+            "regionUpdates": 1,
+                "capabilities": capabilities
         })
     }
 
@@ -915,13 +920,50 @@ impl Desktop {
         Ok(result)
     }
 
+    /// Return only regions differing from this viewer's acknowledged image.
+    pub fn frame_updates(&self, request: &[u8]) -> Result<Option<Value>, String> {
+        let request: updates::Request =
+            serde_json::from_slice(request).map_err(|_| "Invalid desktop update checkpoint")?;
+        request.validate()?;
+        let Some((session, _, seq, time_ms, frame)) = self.frame_after_for_session(
+            Some(&request.session_id),
+            request.after,
+            Duration::from_millis(350),
+        )?
+        else {
+            return Ok(None);
+        };
+        let previous = self
+            .region_checkpoints
+            .lock()
+            .map_err(|_| "Desktop checkpoints unavailable")?
+            .get(&session, request.after);
+        let (update, hashes) = updates::encode(&session, seq, time_ms, &frame.rgb, &previous)?;
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| "Desktop state unavailable")?;
+        if guard.as_ref().is_none_or(|current| current.id != session) {
+            return Err("Desktop session changed during update encoding".into());
+        }
+        self.region_checkpoints
+            .lock()
+            .map_err(|_| "Desktop checkpoints unavailable")?
+            .insert(&session, seq, hashes);
+        Ok(Some(update))
+    }
+
     pub fn frame_after(
         &self,
         after: u64,
         timeout: Duration,
     ) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
         self.frame_after_for_session(None, after, timeout)
-            .map(|frame| frame.map(|(_, _, seq, captured, jpeg)| (seq, captured, jpeg)))
+            .and_then(|frame| {
+                frame
+                    .map(|(_, _, seq, captured, frame)| Ok((seq, captured, frame.jpeg()?.to_vec())))
+                    .transpose()
+            })
     }
 
     fn frame_after_for_session(
@@ -959,7 +1001,7 @@ impl Desktop {
                 if frame.captured_at.elapsed() > FRAME_STALE_AFTER {
                     return Err("Desktop frame source is stale".into());
                 }
-                break Some((frame.seq, frame.since_start_ms, frame.jpeg.clone()));
+                break Some((frame.seq, frame.since_start_ms, frame.clone()));
             }
             if let Some(error) = frames.error.as_ref() {
                 return Err(error.clone());
@@ -1502,15 +1544,17 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
-                .map(|frame| match frame {
-                    Some((session_id, workspace_root, seq, captured, jpeg)) => json!({
+                .and_then(|frame| match frame {
+                    Some((session_id, workspace_root, seq, captured, frame)) => Ok(json!({
                         "sessionId":session_id,
                         "workspaceRoot":workspace_root,
                         "seq":seq,
                         "capturedAtMs":captured,
-                        "jpeg":base64::engine::general_purpose::STANDARD.encode(jpeg)
-                    }),
-                    None => json!({"error":"Desktop frame source did not produce a fresh frame"}),
+                        "jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)
+                    })),
+                    None => {
+                        Ok(json!({"error":"Desktop frame source did not produce a fresh frame"}))
+                    }
                 }),
             None => Err("sessionId is required from desktop_status".into()),
         },

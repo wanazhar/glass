@@ -12,9 +12,6 @@ use std::{
 
 use super::{Frames, Lease, ManagedSession};
 
-// This reduces measured 1280x800 UI frame size by about 20% versus q:v 6
-// while retaining roughly 31 dB PSNR on a real managed desktop capture.
-const JPEG_QUALITY: &str = "8";
 pub(super) const MANAGED_CHILD_PATH: &str =
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 pub(super) const MANAGED_XDG_DATA_DIRS: &str = "/usr/local/share:/usr/share:/var/lib/snapd/desktop";
@@ -458,21 +455,33 @@ pub(super) fn start_capture(
             "-hide_banner",
             "-loglevel",
             "error",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-fflags",
+            "nobuffer",
+            "-thread_queue_size",
+            "1",
             "-f",
             "x11grab",
             "-framerate",
-            "5",
+            "10",
             "-video_size",
             "1280x800",
             "-i",
             &format!("{display}.0"),
             "-an",
-            "-c:v",
-            "mjpeg",
-            "-q:v",
-            JPEG_QUALITY,
+            "-pix_fmt",
+            "rgb24",
+            "-threads",
+            "1",
+            "-flush_packets",
+            "1",
+            "-fps_mode",
+            "passthrough",
             "-f",
-            "image2pipe",
+            "rawvideo",
             "pipe:1",
         ],
     )

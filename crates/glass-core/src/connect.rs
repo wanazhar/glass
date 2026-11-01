@@ -2859,15 +2859,19 @@ fn desktop_stream(
             }
         }
     };
-    write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=glassframe\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Accel-Buffering: no\r\n\r\n"
-    )
-    .map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())?;
+    write_desktop_stream_headers(stream)?;
     write_desktop_stream_frames(stream, first, width, |after, timeout| {
         stream_frame_after(desktop, after, timeout)
     })
+}
+
+fn write_desktop_stream_headers<W: Write>(stream: &mut W) -> Result<(), String> {
+    stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Accel-Buffering: no\r\n\r\n",
+        )
+        .map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())
 }
 
 fn stream_frame_after(
@@ -3153,6 +3157,32 @@ mod tests {
         );
         assert!(body.contains("after-gap"));
         assert_eq!(polls, 3);
+    }
+
+    #[test]
+    fn desktop_stream_wire_headers_use_opaque_fetch_type_and_keep_custom_frame_protocol() {
+        let mut wire = Vec::new();
+        write_desktop_stream_headers(&mut wire).unwrap();
+        write_desktop_stream_frames(&mut wire, (1, 100, b"jpeg".to_vec()), 1280, |_, _| {
+            Err("test stream closed".into())
+        })
+        .unwrap();
+
+        let header_end = wire
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap();
+        let headers = std::str::from_utf8(&wire[..header_end]).unwrap();
+        let body = &wire[header_end + 4..];
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains("\r\nContent-Type: application/octet-stream\r\n"));
+        assert!(headers.contains("\r\nX-Content-Type-Options: nosniff\r\n"));
+        assert!(!headers.contains("multipart/x-mixed-replace"));
+        assert!(body.starts_with(b"--glassframe\r\nContent-Type: image/jpeg\r\n"));
+        assert!(
+            body.windows(b"X-Frame-Seq: 1\r\n".len())
+                .any(|part| part == b"X-Frame-Seq: 1\r\n")
+        );
     }
     fn settings() -> Settings {
         Settings {

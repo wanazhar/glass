@@ -71,12 +71,32 @@ For local development without Tailscale:
 gc connect --local
 ```
 
-The private link has a secret in its fragment. The browser exchanges it for an
-HttpOnly, SameSite cookie and removes the fragment. Do not share that link.
-Remote Tailscale access uses the host owner's verified Tailscale identity instead
-of a separate GC account or password. Browser host and origin checks remain
-active. Other tailnet users are rejected even if network rules let them reach
-the listener. Tailnet rules still determine network access.
+The private link contains a bootstrap credential in its fragment. The browser
+exchanges it and removes the fragment before loading the workspace. Remote
+owner links use a compact, 22-character, origin-bound bootstrap so the usual
+Tailscale IP link fits a narrow mobile terminal line. Existing full-length owner
+links remain valid. A cut-off link displays an explanation and the masked link
+entry form instead of submitting an incomplete credential. Invalid or expired
+links also open that form directly.
+
+Local links establish an HttpOnly, SameSite cookie. Remote links establish an
+origin-bound owner capability and also require the host owner's verified
+Tailscale identity. The exchanged remote capability remains 256 bits; the
+compact bootstrap has 128 bits. Secret-entry links remain separate and require
+HTTPS. Do not share private links. Browser host and origin checks remain active;
+other tailnet users are rejected even if network rules let them reach the
+listener. Tailnet rules still determine network access.
+
+With Connect already running, the opt-in real-link check opens the exact CLI
+output in a fresh WebKit browser, without injecting authorization headers:
+
+```sh
+GC_E2E_CONNECT_LINK=1 node products/glass-core/web/test/connect-link.mjs
+```
+
+It covers direct opening, a stale saved capability, incomplete-link recovery,
+and reload after authentication. Set `GC_PLAYWRIGHT_MODULE` and
+`GC_WEBKIT_BINARY` when selecting a separately installed matching driver.
 
 ## Shared threads and input
 

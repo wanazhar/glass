@@ -310,6 +310,23 @@ fn bootstrap_token(settings: &Settings, purpose: &str, request_origin: &str) -> 
         .collect()
 }
 
+// Keep terminal links within a narrow mobile terminal line. This 128-bit
+// bootstrap remains bound to the exact origin and authenticated Tailscale owner;
+// the exchanged access capability is still the full 256-bit value.
+fn compact_owner_token(settings: &Settings, request_origin: &str) -> String {
+    use base64::Engine;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, settings.token.as_bytes());
+    let message = format!("glass-connect-owner-compact-bootstrap-v1\0{request_origin}");
+    let signed = ring::hmac::sign(&key, message.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signed.as_ref()[..16])
+}
+
+fn owner_bootstrap_matches(settings: &Settings, request_origin: &str, value: &str) -> bool {
+    capability_matches(&bootstrap_token(settings, "owner", request_origin), value)
+        || (value.len() == 22
+            && capability_proof_matches(&compact_owner_token(settings, request_origin), value))
+}
+
 fn secret_submission_capability(settings: &Settings) -> String {
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, settings.token.as_bytes());
     let message = format!(
@@ -327,6 +344,10 @@ fn capability_matches(expected: &str, value: &str) -> bool {
     if value.len() != 64 {
         return false;
     }
+    capability_proof_matches(expected, value)
+}
+
+fn capability_proof_matches(expected: &str, value: &str) -> bool {
     let candidate_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, value.as_bytes());
     let candidate = ring::hmac::sign(&candidate_key, b"glass-connect-capability-proof-v1");
     let expected_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, expected.as_bytes());
@@ -352,7 +373,7 @@ fn access_link(settings: &Settings) -> String {
         format!(
             "{}#owner={}",
             web_url(settings),
-            bootstrap_token(settings, "owner", &web_url(settings))
+            compact_owner_token(settings, &web_url(settings))
         )
     }
 }
@@ -2200,10 +2221,7 @@ fn handle_with_transport(
                 &bootstrap_token(&app.settings, "secret", &request_origin),
                 &token,
             );
-        let access_unlock = capability_matches(
-            &bootstrap_token(&app.settings, "owner", &request_origin),
-            &token,
-        );
+        let access_unlock = owner_bootstrap_matches(&app.settings, &request_origin, &token);
         if !secret_unlock && !access_unlock {
             return json_response(
                 &mut stream,
@@ -3402,6 +3420,41 @@ mod tests {
             secret_link(&settings).unwrap(),
             format!("https://host.tail.ts.net:8443#secret={}", secret_token)
         );
+    }
+
+    #[test]
+    fn compact_owner_link_fits_mobile_terminal_and_stays_origin_scoped() {
+        let mut settings = settings();
+        settings.http = 8082;
+        settings.http_host = "100.98.115.95".into();
+        let http_origin = origin(&settings);
+        let token = compact_owner_token(&settings, &http_origin);
+        assert_eq!(token.len(), 22);
+        assert!(access_link(&settings).len() <= 56);
+        assert!(owner_bootstrap_matches(&settings, &http_origin, &token));
+        assert!(!owner_bootstrap_matches(
+            &settings,
+            &https_url(&settings),
+            &token
+        ));
+        assert!(!owner_bootstrap_matches(
+            &settings,
+            &http_origin,
+            &token[..21]
+        ));
+        let (app, _) = secret_test_app(settings.clone(), true);
+        let identity = "Tailscale-User-Login: owner@example.test\r\n";
+        let response = owner_unlock_request_at(app.clone(), false, &token, identity, &http_origin);
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let value: Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            value["ownerCapability"],
+            owner_access_capability(&settings, &http_origin)
+        );
+        assert!(value["secretCapability"].is_null());
+        let anonymous = owner_unlock_request_at(app, false, &token, "", &http_origin);
+        assert!(anonymous.starts_with("HTTP/1.1 403"));
     }
 
     #[test]

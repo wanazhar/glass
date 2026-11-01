@@ -4240,6 +4240,11 @@ async function start() {
         "",
         location.pathname + location.search,
       );
+      if (fragment.startsWith("owner=") && !/^(?:[a-f0-9]{64}|[A-Za-z0-9_-]{22})$/.test(secret)) {
+        const error = Error("The private link was cut off. Open the complete link printed by gc connect.");
+        error.ownerAuthRequired = true;
+        throw error;
+      }
       if (secretEntry && location.protocol !== "https:") {
         throw Error("Private secret-entry links require HTTPS.");
       }
@@ -4271,6 +4276,10 @@ async function start() {
     } else connection("Connected");
     return { ok: true };
   } catch (e) {
+    if (e.message === "Invalid owner capability") {
+      e.ownerAuthRequired = true;
+      e.message = "This private link is invalid or expired. Open a new link printed by gc connect.";
+    }
     connection("Unavailable", false);
     notice(e.message, true);
     return { ok: false, message: e.message, unlockRequired: e.ownerAuthRequired === true, connectCommand: e.connectCommand };

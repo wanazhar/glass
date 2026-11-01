@@ -16,6 +16,7 @@ let ownerUnlocked = false;
 let bootstrapRequests = 0;
 const submissionCapability = "b".repeat(64);
 const ownerCapability = "a".repeat(64);
+const compactOwner = "B".repeat(22);
 const firstRequest = {
   kind: "secret",
   request: {
@@ -48,9 +49,10 @@ const handler = async (request, response) => {
     bootstrapRequests++;
     let source = "";
     for await (const chunk of request) source += chunk;
-    ownerUnlocked = JSON.parse(source).token === ownerCapability;
+    const bootstrapToken = JSON.parse(source).token;
+    ownerUnlocked = bootstrapToken === ownerCapability || bootstrapToken === compactOwner;
     response.writeHead(ownerUnlocked ? 200 : 403, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(ownerUnlocked ? { secretCapability: submissionCapability, ownerCapability: "c".repeat(64) } : { error: "Invalid owner capability" }));
+    response.end(JSON.stringify(ownerUnlocked ? { secretCapability: bootstrapToken === compactOwner ? null : submissionCapability, ownerCapability: "c".repeat(64) } : { error: "Invalid owner capability" }));
     return;
   }
   if (path === "/api/secret" || path === "/api/send") {
@@ -208,6 +210,23 @@ try {
   assert.ok(!retained.values.includes(submissionCapability) && !retained.session.includes(submissionCapability));
   assert.ok(!retained.values.includes(firstSecret) && !retained.session.includes(firstSecret));
   await unlockContext.close();
+
+  const compactContext = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: "block" });
+  const compactPage = await compactContext.newPage();
+  const beforeCutoff = bootstrapRequests;
+  await compactPage.goto(`${secureUrl}#owner=abc`);
+  await compactPage.getByRole("textbox", { name: "Private Connect link" }).waitFor();
+  assert.match(await compactPage.locator("#launch-detail").textContent(), /link was cut off/);
+  assert.equal(bootstrapRequests, beforeCutoff, "cut-off links must fail locally without exchanging partial credentials");
+  await compactPage.getByRole("textbox", { name: "Private Connect link" }).fill(`${secureUrl}#owner=${compactOwner}`);
+  await compactPage.getByRole("button", { name: "Unlock workspace", exact: true }).click();
+  await compactPage.waitForFunction(() => document.querySelector("#launch").hidden);
+  assert.equal(new URL(compactPage.url()).hash, "");
+  assert.equal(await compactPage.getByRole("textbox", { name: "Secret value" }).isDisabled(), true);
+  await compactPage.reload();
+  await compactPage.waitForFunction(() => document.querySelector("#launch").hidden);
+  await compactContext.close();
+
 
   const localUnlockContext = await browser.newContext({ serviceWorkers: "block" });
   const localUnlockPage = await localUnlockContext.newPage();

@@ -51,7 +51,9 @@ function failure(message, unlockRequired = false, connectCommand = "gc connect")
         ).slice(0, 240);
   retry.hidden = unlockRequired;
   if (unlockRequired) {
-    detail.textContent = `Run ${connectCommand} on the host and paste its private link. Your workspace stays locked until you authenticate.`;
+    detail.textContent = /^(?:The|This) private link /.test(String(message || ""))
+      ? String(message).slice(0, 240)
+      : `Run ${connectCommand} on the host and paste its private link. Your workspace stays locked until you authenticate.`;
     const form = document.createElement("form");
     form.id = "owner-unlock";
     form.className = "launch-unlock";
@@ -78,7 +80,7 @@ function failure(message, unlockRequired = false, connectCommand = "gc connect")
       try {
         const link = new URL(value);
         const localLink = link.hostname === "127.0.0.1" && link.protocol === "http:" && /^[a-f0-9]{64}$/.test(link.hash.slice(1));
-        if (link.origin !== location.origin || (!/^(owner|secret)=[a-f0-9]{64}$/.test(link.hash.slice(1)) && !localLink)) {
+        if (link.origin !== location.origin || (!/^(?:(?:owner|secret)=[a-f0-9]{64}|owner=[A-Za-z0-9_-]{22})$/.test(link.hash.slice(1)) && !localLink)) {
           reason = "Use the private Connect link for this host and port.";
           throw Error();
         }

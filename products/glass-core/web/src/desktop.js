@@ -78,8 +78,8 @@ export function desktopSurface({ api }) {
   const freshFrameAgeMs = 1000;
   const streamOpenTimeoutMs = 8000;
   const streamReadTimeoutMs = 12000;
-  const snapshotFallbackIntervalMs = 1000;
-  const snapshotFallbackFastIntervalMs = 500;
+  const snapshotFallbackIntervalMs = 500;
+  const snapshotFallbackFastIntervalMs = 250;
   const snapshotFallbackMaxFailures = 8;
   const snapshotFallbackFailureWindowMs = 60000;
   const snapshotFallbackMaxBackoffMs = 15000;
@@ -213,7 +213,12 @@ export function desktopSurface({ api }) {
 
   function setStream(available) {
     const session = snapshot?.sessionId || null;
-    const requestedWidth = coarsePointer.matches || window.innerWidth <= 600 ? 480 : null;
+    const nativeWidth = Math.min(1280, Math.max(320, Number(snapshot?.width) || 1280));
+    const viewportPixels = Math.ceil((viewport.clientWidth || window.innerWidth)
+      * Math.min(2, Math.max(1, Number(window.devicePixelRatio) || 1)));
+    const requestedWidth = viewportPixels >= nativeWidth
+      ? null
+      : Math.max(320, Math.round(viewportPixels));
     if (!available || !session) {
       stopStream();
       streamSession = null;
@@ -380,6 +385,7 @@ export function desktopSurface({ api }) {
     if (error?.streamFailureReason === "frame-format") return "unsupported stream frame";
     if (error?.streamFailureReason === "frame-decode") return "image decode failed";
     if (error?.streamFailureReason === "frame-too-large") return "image exceeded the display limit";
+    if (error?.streamFailureReason === "frame-lag") return "stream frames are arriving late";
     if (error?.streamFailureReason === "snapshot-timeout") return "snapshot request timed out";
     if (error?.streamFailureReason === "snapshot-format") return "snapshot response was not an image";
     if (error?.streamFailureReason === "snapshot-decode") return "snapshot image could not be decoded";
@@ -735,6 +741,16 @@ export function desktopSurface({ api }) {
             blob: new Blob([buffer.slice(frameAt, afterFrame)], { type: "image/jpeg" }),
           };
           buffer = buffer.slice(afterFrame);
+          const frameAgeMs = estimatedFrameAgeMs(timeMs, seq);
+          const captureAgeMs = Number(snapshot?.frameAgeMs)
+            + (snapshotObservedAt ? performance.now() - snapshotObservedAt : 0);
+          if (snapshot?.frameAgeMs != null
+            && Number.isFinite(captureAgeMs)
+            && captureAgeMs <= maxInputFrameAgeMs
+            && frameAgeMs > 2000) {
+            failStream(session, generation, controller, streamFailure("frame-lag"));
+            return;
+          }
           if (seq > streamDecodedSeq && seq > (streamFrameSeqAtStart ?? 0)) {
             streamLatestFrame = frame;
             void decodeNewestFrame();

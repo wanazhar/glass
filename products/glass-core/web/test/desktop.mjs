@@ -435,9 +435,48 @@ const browser = await chromium.launch({
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+if (process.env.DESKTOP_ADAPTIVE_ONLY) page.setDefaultTimeout(8000);
+const cdp = await page.context().newCDPSession(page);
 const errors = [];
 page.on("pageerror", (error) => errors.push(String(error)));
 try {
+  if (process.env.DESKTOP_ADAPTIVE_ONLY) {
+    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.locator("#desktop-toggle").click();
+    await page.getByText("Ready to start").waitFor();
+    const initialStreamCount = await page.evaluate(() => window.getStreamRequestCount());
+    await page.locator("#desktop-start").click();
+    await page.getByText("View only · GC may control").waitFor();
+    await page.waitForFunction(async (before) => await window.getStreamRequestCount() > before,
+      initialStreamCount, { timeout: 5000 });
+    const phoneWidths = await page.evaluate(async () => await (await fetch("/__test/stream-widths")).json());
+    assert(phoneWidths.at(-1) >= 320 && phoneWidths.at(-1) <= 390,
+      "a phone-sized viewport should request a viewport-sized stream");
+
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1024, height: 768, deviceScaleFactor: 2, mobile: true,
+    });
+    await page.locator("#desktop-reconnect").evaluate((button) => button.click());
+    await page.waitForFunction(async () => {
+      const widths = await (await fetch("/__test/stream-widths")).json();
+      return widths.some((width) => width === null);
+    }, null, { timeout: 5000 });
+
+    const snapshotsBeforeLag = await page.evaluate(() => window.getSnapshotRequestCount());
+    await page.evaluate(() => window.setStaleDesktopStream(2200));
+    await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() > before,
+      snapshotsBeforeLag, { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots · live"),
+      null, { timeout: 5000 }).catch(async (error) => {
+      const status = await page.locator("#desktop-status").textContent();
+      throw new Error(`${error.message}; latest status: ${status}`);
+    });
+    assert.equal(await page.locator("#desktop-stream").isVisible(), true,
+      "a delayed multipart backlog switches to the latest finite frame without blacking out");
+    assert.equal(await page.locator("#desktop-viewport").getAttribute("data-frame-fresh"), "true",
+      "the recovered frame remains fresh enough for input");
+    console.log("adaptive desktop test passed: phone viewport sizing, tablet native width, delayed-stream recovery");
+  } else {
   await page.goto(`http://127.0.0.1:${port}/`);
   await page.evaluate(() => window.setDesktopHostReachable(false));
   await page.locator("#desktop-toggle").click();
@@ -641,8 +680,9 @@ try {
       && !document.querySelector("#desktop-stream").hidden;
   }, { timeout: 5000 });
   assert.equal(await page.locator("#desktop-stream").evaluate((image) => image.naturalWidth / image.naturalHeight), 1.6);
-  assert((await page.evaluate(async () => await (await fetch("/__test/stream-widths")).json())).includes("480"),
-    "phone viewer should request the bandwidth-friendly 480px stream");
+  assert((await page.evaluate(async () => await (await fetch("/__test/stream-widths")).json()))
+    .some((width) => Number(width) >= 320 && Number(width) <= 390),
+  "phone viewer should request a width based on its rendered viewport");
   assert.equal(await page.locator("#desktop-placeholder").isHidden(), true);
   await page.evaluate(() => window.setDesktopStreamGap(2500));
   await page.waitForTimeout(2200);
@@ -656,14 +696,19 @@ try {
   await page.evaluate(() => window.setStaleDesktopStream(0));
   await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
   await page.locator("#desktop-placeholder").waitFor({ state: "hidden" });
-  await page.evaluate(() => window.setStaleDesktopStream(5000));
-  await page.getByText(/^Delayed ·/).waitFor({ timeout: 5000 });
+  const snapshotRequestsBeforeLag = await page.evaluate(() => window.getSnapshotRequestCount());
+  await page.evaluate(() => window.setStaleDesktopStream(2200));
+  await page.waitForFunction(async (before) => await window.getSnapshotRequestCount() > before,
+    snapshotRequestsBeforeLag, { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Snapshots · live"),
+    null, { timeout: 5000 });
   assert.equal(await page.locator("#desktop-stream").isVisible(), true,
-    "frames delayed by more than the input freshness window remain visible as context");
-  assert.equal(await page.locator("#desktop-text").isDisabled(), true,
-    "stale frames disable input until a fresh image arrives");
+    "a lagging stream is replaced with the latest finite frame rather than replaying queued images");
+  assert.equal(await page.locator("#desktop-viewport").getAttribute("data-frame-fresh"), "true");
   await page.evaluate(() => window.setStaleDesktopStream(0));
-  await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
+  await page.locator("#desktop-retry").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-status").textContent.startsWith("Live · updated"),
+    null, { timeout: 5000 });
   assert.equal(await page.locator("#desktop-text").isDisabled(), false);
   await page.locator("#desktop-more > summary").click();
   await page.locator("#desktop-title").click();
@@ -711,7 +756,6 @@ try {
   assert(directPoint);
   await page.touchscreen.tap(directPoint.x + directPoint.width * 0.65, directPoint.y + directPoint.height * 0.65);
   await waitForInput((event) => event.action === "pointer-click" && event.button === "left" && event.x > 0.5 && event.y > 0.5);
-  const cdp = await page.context().newCDPSession(page);
   const midX = directPoint.x + directPoint.width / 2;
   const midY = directPoint.y + directPoint.height / 2;
   const dragX = midX - 70;
@@ -861,6 +905,21 @@ try {
   assert.equal(input.length, viewOnlyInputCount, "view-only pinch must not send desktop input");
   await page.locator("#desktop-view-reset").click();
   await page.locator("#desktop-trackpad").click();
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024, height: 768, deviceScaleFactor: 2, mobile: true,
+  });
+  await page.waitForFunction(async () => {
+    const widths = await (await fetch("/__test/stream-widths")).json();
+    return widths.length > 0 && widths.at(-1) === null;
+  }, null, { timeout: 5000 });
+  const tabletWidths = await page.evaluate(async () => await (await fetch("/__test/stream-widths")).json());
+  assert(tabletWidths.includes(null),
+    "a 1024px high-density tablet receives the native 1280px stream without resize blur");
+  assert.equal(await page.locator("#desktop-stream").isVisible(), true,
+    "the native-width tablet stream remains visible after the viewport adapts");
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 1, mobile: true,
+  });
   await page.locator("#desktop-more > summary").click();
   page.once("dialog", (dialog) => {
     assert.match(dialog.message(), /saved GNOME workspace and files will be kept/);
@@ -880,8 +939,11 @@ try {
   await page.locator("#desktop-details > summary").click();
   assert(actions.includes("delete-profile"));
   assert.deepEqual(errors, []);
+  }
 } finally {
   await browser.close();
+  clearInterval(streamTimer);
+  streamResponse?.destroy();
   server.closeAllConnections?.();
   await new Promise((resolve) => server.close(resolve));
 }

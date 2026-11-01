@@ -243,8 +243,11 @@ These are local measurements, not latency guarantees or video-playback results.
 The Core binary SHA-256 was
 `0a7a08e1cbb4b143cda924cbb8021f4e168a86a1e9c5be6b9a1f8fcc5a7a3375`.
 
-On phones, **Trackpad** mode is the default. Drag to move the pointer, tap to
-click, use two fingers to scroll, or long-press for right-click. **Direct touch**
+On phones, **Trackpad** mode is the default. Swipe with one finger to move the
+pointer without holding a mouse button. Tap to click, use two fingers to scroll,
+or long-press for right-click. For intentional dragging, select **Drag**, then
+swipe with one finger. Lifting the finger resets **Drag**. Cancelled touches do
+not generate clicks. **Direct touch**
 maps taps and drags to the desktop, supports long-press right-click, and allows
 pinch-to-zoom and panning around the enlarged view. The keyboard control sends
 text and desktop key shortcuts. Text input is limited to 512 UTF-8 bytes per

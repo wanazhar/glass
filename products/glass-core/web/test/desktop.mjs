@@ -4,6 +4,39 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 
+async function checkTrackpadGestures(page, cdp) {
+  // A normal trackpad swipe must move without clicking or holding a button.
+  await page.waitForTimeout(150);
+  const viewport = await page.locator("#desktop-viewport").boundingBox();
+  const padX = viewport.x + viewport.width / 2, padY = viewport.y + viewport.height / 2;
+  const swipe = async (id, cancel = false, move = !cancel) => {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ id, x: padX, y: padY }] });
+    if (move) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ id, x: padX + 40, y: padY + 20 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] });
+  };
+  const beforeSwipe = input.length;
+  await swipe(101);
+  await waitForInputSince(beforeSwipe, event => event.action === "pointer-move");
+  await page.waitForTimeout(100);
+  assert(!input.slice(beforeSwipe).some(event => ["pointer-button", "pointer-click"].includes(event.action)), "ordinary trackpad movement must never drag or click");
+  await page.locator("#desktop-drag-mode").click();
+  const beforePadDrag = input.length;
+  await swipe(102);
+  await waitForInputSince(beforePadDrag, event => event.action === "pointer-button" && !event.pressed);
+  assert.deepEqual(input.slice(beforePadDrag).filter(event => event.action === "pointer-button").map(event => event.pressed), [true, false]);
+  assert.equal(await page.locator("#desktop-drag-mode").getAttribute("aria-pressed"), "false");
+  await page.locator("#desktop-drag-mode").click();
+  const beforeDragCancel = input.length;
+  await swipe(104, true, true);
+  await waitForInputSince(beforeDragCancel, event => event.action === "pointer-button" && !event.pressed);
+  assert.deepEqual(input.slice(beforeDragCancel).filter(event => event.action === "pointer-button").map(event => event.pressed), [true, false]);
+  assert.equal(await page.locator("#desktop-drag-mode").getAttribute("aria-pressed"), "false");
+  const beforeCancel = input.length;
+  await swipe(103, true);
+  await page.waitForTimeout(100);
+  assert(!input.slice(beforeCancel).some(event => ["pointer-click", "pointer-button"].includes(event.action)), "cancelled touch must not become a click");
+}
+
 const webRoot = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, webRoot), "utf8");
 const frameNowMs = () => Date.now();
@@ -238,7 +271,7 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(streamWidths));
     return;
   }
-  if (["/src/desktop.js", "/src/owner-auth.js"].includes(url.pathname)) {
+  if (["/src/desktop.js", "/src/desktop-updates.js", "/src/owner-auth.js"].includes(url.pathname)) {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     response.end(await source(url.pathname.slice(1)));
     return;
@@ -440,7 +473,22 @@ const cdp = await page.context().newCDPSession(page);
 const errors = [];
 page.on("pageerror", (error) => errors.push(String(error)));
 try {
-  if (process.env.DESKTOP_ADAPTIVE_ONLY) {
+  if (process.env.DESKTOP_GESTURES_ONLY) {
+    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.locator("#desktop-toggle").click();
+    await page.getByText("Ready to start").waitFor();
+    await page.locator("#desktop-start").click();
+    await page.getByText("View only · GC may control").waitFor();
+    await page.locator("#desktop-take").click();
+    await page.getByText("You control · GC paused").waitFor();
+    for (const size of [{ width:390,height:844 },{ width:1024,height:768 }]) {
+      await page.setViewportSize(size);
+      await page.waitForFunction(()=>document.querySelector("#desktop-viewport").dataset.frameFresh==="true");
+      await checkTrackpadGestures(page, cdp);
+    }
+    assert.deepEqual(errors, []);
+    console.log("PASS phone/tablet trackpad: swipe only moves, explicit Drag holds/releases, cancellation never clicks");
+  } else if (process.env.DESKTOP_ADAPTIVE_ONLY) {
     await page.goto(`http://127.0.0.1:${port}/`);
     await page.locator("#desktop-toggle").click();
     await page.getByText("Ready to start").waitFor();
@@ -749,6 +797,7 @@ try {
   assert(input.some((event) => event.action === "key" && event.key === "Enter" && event.pressed));
   await waitForInput((event) => event.action === "scroll" && event.deltaY === 40);
   assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && event.pressed));
+  await checkTrackpadGestures(page, cdp);
   await page.locator("#desktop-touch-mode").click();
   assert.equal(await page.locator("#desktop-touch-mode").getAttribute("aria-pressed"), "true");
   assert.match(await page.locator("#desktop-touch-hint").textContent(), /pinch to zoom/);

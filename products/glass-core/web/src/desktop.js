@@ -28,6 +28,12 @@ export function desktopSurface({ api }) {
   const keyboardRow = $("desktop-keyboard-row");
   const trackpadMode = $("desktop-trackpad");
   const touchMode = $("desktop-touch-mode");
+  const dragMode = $("desktop-drag-mode");
+  let trackpadDrag = false;
+  function setTrackpadDrag(armed) {
+    trackpadDrag = armed;
+    dragMode?.setAttribute("aria-pressed", String(armed));
+  }
   const touchHint = $("desktop-touch-hint");
   const keyboardOpen = $("desktop-keyboard-open");
   const shortcuts = $("desktop-shortcuts");
@@ -329,6 +335,8 @@ export function desktopSurface({ api }) {
     keyboardOpen.hidden = !snapshot?.available || snapshot?.lease !== "human";
     keyboardOpen.disabled = !canInput;
     for (const button of shortcuts.querySelectorAll("button")) button.disabled = !canInput;
+    if (dragMode) dragMode.disabled = !canInput;
+    if (!canInput && trackpadDrag) setTrackpadDrag(false);
     viewport.dataset.frameFresh = hasFreshDecodedFrame() ? "true" : "false";
     viewport.dataset.frameSeq = String(streamDecodedSeq || 0);
     viewport.dataset.frameSource = streamDecodedSource || "";
@@ -1287,6 +1295,7 @@ export function desktopSurface({ api }) {
   }
 
   function close() {
+    setTrackpadDrag(false);
     clearTimeout(pollTimer);
     clearTimeout(moveTimer);
     pollGeneration += 1;
@@ -1400,14 +1409,16 @@ export function desktopSurface({ api }) {
           lastY: event.clientY,
           startCoordinates: coordinates,
           moved: false,
+          drag: !directTouch && trackpadDrag,
           pressed: null,
           timer: setTimeout(() => {
-            if (!controlled() || !gesture || gesture.id !== event.pointerId || gesture.moved) return;
+            if (!controlled() || !gesture || gesture.id !== event.pointerId || gesture.moved || gesture.drag) return;
             gesture.pressed = "right";
             buttonAt("right", true, directTouch ? gesture.startCoordinates : undefined, gesture.startTime);
           }, 480),
         };
       } else if (touchPoints.size === 2) {
+        setTrackpadDrag(false);
         if (gesture?.timer) clearTimeout(gesture.timer);
         if (gesture?.pressed) buttonAt(gesture.pressed, false, undefined, event.timeStamp);
         gesture = null;
@@ -1469,7 +1480,7 @@ export function desktopSurface({ api }) {
         gesture.moved = true;
         clearTimeout(gesture.timer);
         if (!directTouch) {
-          if (!gesture.pressed) {
+          if (gesture.drag && !gesture.pressed) {
             gesture.pressed = "left";
             buttonAt("left", true, undefined, event.timeStamp);
           }
@@ -1504,11 +1515,12 @@ export function desktopSurface({ api }) {
         clearTimeout(gesture.timer);
         if (controlled() && gesture.pressed) {
           buttonAt(gesture.pressed, false, directTouch ? point(event) || gesture.startCoordinates : undefined, event.timeStamp);
-        } else if (controlled() && !gesture.moved) {
+        } else if (controlled() && !gesture.moved && !gesture.drag && event.type === "pointerup") {
           const coordinates = directTouch ? point(event) : { x: pointerX, y: pointerY };
           clickAt("left", coordinates, event.timeStamp);
         }
         gesture = null;
+        setTrackpadDrag(false);
       }
       touchPoints.delete(event.pointerId);
       if (touchPoints.size < 2) pinch = null;
@@ -1593,15 +1605,20 @@ export function desktopSurface({ api }) {
     }
   });
   function setTouchMode(nextDirect) {
+    setTrackpadDrag(false);
     directTouch = nextDirect;
+    if (dragMode) dragMode.hidden = directTouch;
     touchMode.setAttribute("aria-pressed", String(directTouch));
     trackpadMode.setAttribute("aria-pressed", String(!directTouch));
     touchHint.textContent = directTouch
       ? "Touch to click · drag to move or drag-and-drop · hold for right-click · pinch to zoom/pan"
-      : "Drag to move · tap to click · two fingers to scroll · hold for right-click";
+      : "Swipe to move · tap to click · two fingers to scroll · Drag for dragging";
     cursor.hidden = directTouch || !controlled();
     if (!directTouch) applyViewTransform();
   }
+  dragMode?.addEventListener("click", () => {
+    if (controlled() && !directTouch) setTrackpadDrag(!trackpadDrag);
+  });
   touchMode.addEventListener("click", () => {
     setTouchMode(true);
   });

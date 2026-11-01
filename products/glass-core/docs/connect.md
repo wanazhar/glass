@@ -250,7 +250,7 @@ The Core binary SHA-256 was
 
 On phones, **Trackpad** mode is the default. Swipe with one finger to move the
 pointer without holding a mouse button. Tap to click, use two fingers to scroll,
-or long-press for right-click. For intentional dragging, select **Drag**, then
+or hold and release for right-click. Moving or cancelling before release does not click. For intentional dragging, select **Drag**, then
 swipe with one finger. Lifting the finger resets **Drag**. Cancelled touches do
 not generate clicks. **Direct touch**
 maps taps and drags to the desktop, supports long-press right-click, and allows

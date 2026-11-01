@@ -1414,8 +1414,9 @@ export function desktopSurface({ api }) {
           pressed: null,
           timer: setTimeout(() => {
             if (!controlled() || !gesture || gesture.id !== event.pointerId || gesture.moved || gesture.drag) return;
-            gesture.pressed = "right";
-            buttonAt("right", true, directTouch ? gesture.startCoordinates : undefined, gesture.startTime);
+            // Commit a long press on release, so a later swipe or cancellation
+            // cannot leave a button down or turn movement into a right drag.
+            gesture.longPress = true;
           }, 480),
         };
       } else if (touchPoints.size === 2) {
@@ -1521,7 +1522,7 @@ export function desktopSurface({ api }) {
           buttonAt(gesture.pressed, false, directTouch ? point(event) || gesture.startCoordinates : undefined, event.timeStamp);
         } else if (controlled() && !gesture.moved && !gesture.drag && event.type === "pointerup") {
           const coordinates = directTouch ? point(event) : { x: pointerX, y: pointerY };
-          clickAt("left", coordinates, event.timeStamp);
+          clickAt(gesture.longPress ? "right" : "left", coordinates, event.timeStamp);
         }
         gesture = null;
         setTrackpadDrag(false);

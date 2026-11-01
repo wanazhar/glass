@@ -31,8 +31,16 @@ async function checkTrackpadGestures(page, cdp) {
   await waitForInputSince(beforeDragCancel, event => event.action === "pointer-button" && !event.pressed);
   assert.deepEqual(input.slice(beforeDragCancel).filter(event => event.action === "pointer-button").map(event => event.pressed), [true, false]);
   assert.equal(await page.locator("#desktop-drag-mode").getAttribute("aria-pressed"), "false");
+  const beforeHold = input.length;
+  await cdp.send("Input.dispatchTouchEvent", { type:"touchStart", touchPoints:[{ id:105,x:padX,y:padY }] });
+  await page.waitForTimeout(550);
+  assert(!input.slice(beforeHold).some(event=>["pointer-click","pointer-button"].includes(event.action)), "holding must not press a remote button");
+  await cdp.send("Input.dispatchTouchEvent", { type:"touchEnd",touchPoints:[] });
+  await waitForInputSince(beforeHold,event=>event.action==="pointer-click" && event.button==="right");
   const beforeCancel = input.length;
-  await swipe(103, true);
+  await cdp.send("Input.dispatchTouchEvent", { type:"touchStart",touchPoints:[{ id:103,x:padX,y:padY }] });
+  await page.waitForTimeout(550);
+  await cdp.send("Input.dispatchTouchEvent", { type:"touchCancel",touchPoints:[] });
   await page.waitForTimeout(100);
   assert(!input.slice(beforeCancel).some(event => ["pointer-click", "pointer-button"].includes(event.action)), "cancelled touch must not become a click: " + JSON.stringify(input.slice(beforeCancel)));
 }

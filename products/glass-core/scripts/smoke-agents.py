@@ -68,8 +68,8 @@ def headless(priced=False):
             assert 'REVIEW_COMPLETE' in json.dumps(workers[-1]) and 'EOF_FOLLOWUP' in json.dumps(workers[-1])
             roots=[b for b in server.requests if b not in workers]
             assert 'Teammate review' in json.dumps(roots[-1])
-            assert all(len(b['tools'])==5 for b in roots)
-            print(f'PASS headless/non-Git priced={priced}: shell control, inspection, reused context, summaries, exact/unknown cost, five core tools')
+            assert all({'bash','state','read','edit','write'} <= {t['function']['name'] for t in b['tools']} for b in roots)
+            print(f'PASS headless/non-Git priced={priced}: shell control, inspection, reused context, summaries, exact/unknown cost, required core tools')
         finally:server.shutdown();server.server_close()
 
 def pty_case(size):

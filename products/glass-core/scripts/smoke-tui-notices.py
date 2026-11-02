@@ -50,6 +50,22 @@ for size in [(80, 30), (40, 20)]:
             assert 'Last request' in scroll_text, scroll_text
             assert '**Last request**' not in scroll_text, scroll_text
             assert '**Latest reply' not in scroll_text, scroll_text
+            terminal.send('\x1b')
+            terminal.collect(.15)
+            terminal.bytes = ''
+            terminal.send('LATEST_STREAM_2: give a new reply after this recap.\r')
+            terminal.wait('LATEST_REPLY_2', 10)
+            terminal.collect(.2)
+            for key in ['\x07', '\x1b[5~']:
+                terminal.send(key)
+                terminal.collect(.2)
+                assert 'LATEST_LINE_' in terminal.vt.text() or 'LATEST_REPLY_2' in terminal.vt.text(), terminal.vt.text()
+                terminal.send('\x1b[F')
+                terminal.collect(.2)
+                assert 'LATEST_REPLY_2' in terminal.vt.text(), terminal.vt.text()
+                assert 'Recap' not in terminal.vt.text(), terminal.vt.text()
+                terminal.send('\x1b')
+                terminal.collect(.15)
             assert not (root/'d/glass-core/connect.json').exists()
             Path(f'/tmp/gc-notices-{size[0]}.ansi').write_text(terminal.seen)
             print(f'PASS {size}: resumed recap and desktop receipt in normal and scroll views')

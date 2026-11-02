@@ -83,6 +83,10 @@ gc agent --session MAIN_ID workflow resume 300000
 ```
 
 Resume resets activation allowances and retains token accounting and history.
+In the TUI, use `/agents status`, `/agents stop`, or `/agents resume`. The agents
+panel shows when delegation is paused and offers R to resume. These controls
+are handled directly as human input and do not increase token allowances.
+
 Only the human can resume the workflow. Resume a parked worker separately with
 an explicit assignment when needed. Restart stops automatic continuation until explicit human workflow resume,
 restores saved records, and parks

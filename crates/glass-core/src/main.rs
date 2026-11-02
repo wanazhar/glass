@@ -1721,6 +1721,11 @@ fn headless(
 
 fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Command> {
     let mut commands = actions::commands(extensions);
+    if let Some(command) = commands.iter_mut().find(|command| command.name == "agents") {
+        command.hint = "status | resume | stop".into();
+        command.description =
+            "View teammates or manage paused delegation with status, resume, or stop".into();
+    }
     if !commands.iter().any(|command| command.name == "desktop") {
         commands.push(glass_tui::palette::Command {
             name: "desktop".into(),
@@ -2010,6 +2015,15 @@ fn repl(
     let _surface = surface::enter().map_err(|e| e.to_string())?;
     todo::publish(&state.todo);
     let narrow = term_size().0 < 60;
+    surface::bind_session(&session.id);
+    surface::set_notice_turn(
+        session
+            .history_entries()
+            .iter()
+            .map(|entry| entry.turn)
+            .max()
+            .unwrap_or(0),
+    );
     print_banner(&cfg, &loaded_mods, extensions, &session, narrow);
     ui_println!(
         "\x1b[90m{}\x1b[0m",
@@ -2166,6 +2180,14 @@ fn repl(
         }
         painter.team_owner.replace(session.id.clone());
         surface::bind_session(&session.id);
+        surface::set_notice_turn(
+            session
+                .history_entries()
+                .iter()
+                .map(|entry| entry.turn)
+                .max()
+                .unwrap_or(0),
+        );
         let notice_start = session.records.len();
         team::record_notices(&mut session)?;
         for record in &session.records[notice_start..] {
@@ -2826,6 +2848,35 @@ fn repl(
         }
         if text == "/agents" {
             team::view(&keys, &session.id);
+            continue;
+        }
+        if let Some(action) = text.strip_prefix("/agents ") {
+            let operation = match action.trim() {
+                "resume" => Some("resume"),
+                "stop" => Some("stop"),
+                "status" => Some("inspect"),
+                _ => None,
+            };
+            let message = if let Some(operation) = operation {
+                match team::human_workflow(&session.id, operation) {
+                    Ok(message) => {
+                        if operation != "inspect" {
+                            if let Err(error) =
+                                session.append_checked(&[Record::System(message.clone())])
+                            {
+                                ui_println!(
+                                    "Workflow updated, but its conversation receipt could not be saved: {error}"
+                                );
+                            }
+                        }
+                        message
+                    }
+                    Err(error) => error,
+                }
+            } else {
+                "Use /agents to view teammates, or /agents status, resume, or stop.".into()
+            };
+            painter.system_notice(&message);
             continue;
         }
         if text == "/activity" {
@@ -5200,6 +5251,7 @@ impl Painter {
     }
 
     fn seed_live(&self, entries: Vec<glass_tui::Entry>, reasoning: String) {
+        surface::set_notice_turn(entries.iter().map(|entry| entry.turn).max().unwrap_or(0));
         let mut live = self.live.borrow_mut();
         live.seed(entries);
         live.seed_reasoning(reasoning);
@@ -5225,6 +5277,14 @@ impl Painter {
     }
     fn welcome_back(&self, session: &Session) {
         surface::bind_session(&session.id);
+        surface::set_notice_turn(
+            session
+                .history_entries()
+                .iter()
+                .map(|entry| entry.turn)
+                .max()
+                .unwrap_or(0),
+        );
         if let Some(text) = recap::cached(session) {
             self.system_notice(&text);
         }

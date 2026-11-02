@@ -9,11 +9,16 @@ use std::{
     io::{self, Write},
 };
 thread_local! { static PRIMARY: RefCell<Option<Surface>> = const { RefCell::new(None) }; }
-thread_local! { static NOTICES: RefCell<(Option<String>,std::collections::VecDeque<(glass_tui::Role,String)>,usize)> = RefCell::new((None,std::collections::VecDeque::new(),0)); }
+thread_local! { static NOTICES: RefCell<(Option<String>,std::collections::VecDeque<(usize,glass_tui::Role,String)>,usize)> = RefCell::new((None,std::collections::VecDeque::new(),0)); }
+thread_local! { static NOTICE_TURN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+pub fn set_notice_turn(turn: usize) {
+    NOTICE_TURN.set(turn);
+}
 pub fn bind_session(id: &str) {
     NOTICES.with(|slot| {
         let mut data = slot.borrow_mut();
         if data.0.as_deref().is_some_and(|old| old != id) {
+            NOTICE_TURN.set(0);
             data.1.clear();
             data.2 = 0;
         }
@@ -36,9 +41,9 @@ fn retain_entry(role: glass_tui::Role, text: &str) {
     NOTICES.with(|slot| {
         let mut data = slot.borrow_mut();
         data.2 += clean.len();
-        data.1.push_back((role, clean));
+        data.1.push_back((NOTICE_TURN.get(), role, clean));
         while data.2 > 1_048_576 {
-            if let Some((_, old)) = data.1.pop_front() {
+            if let Some((_, _, old)) = data.1.pop_front() {
                 data.2 -= old.len();
             } else {
                 break;
@@ -49,42 +54,52 @@ fn retain_entry(role: glass_tui::Role, text: &str) {
 pub fn with_notices(mut entries: Vec<glass_tui::Entry>) -> Vec<glass_tui::Entry> {
     NOTICES.with(|slot| {
         let notices = slot.borrow();
-        // Local notices already present in durable/live history must retain
-        // their inline order relative to the recap and startup block.
+        // Replace only exact local copies, then insert at their original turn
+        // boundary. Reopening a reader must never move old recaps past replies.
         entries.retain(|entry| {
-            !notices.1.iter().any(|(role, text)| {
-                entry.role == *role
+            !notices.1.iter().any(|(turn, role, text)| {
+                entry.turn == *turn
+                    && entry.role == *role
                     && glass_tui::markdown::sanitize(&entry.text).trim_end_matches('\n') == text
             })
         });
-        for (role, text) in &notices.1 {
-            if !entries
-                .iter()
-                .any(|entry| glass_tui::markdown::sanitize(&entry.text).contains(text))
-            {
-                // Consecutive local output lines form one compact block, just
-                // as they do inline. Preserve semantic roles for rich notices.
-                if *role == glass_tui::Role::Meta
-                    && let Some(last) = entries.last_mut()
-                    && last.role == glass_tui::Role::Meta
-                    && last.turn == 0
-                    && last.tool_card.is_none()
-                {
-                    last.text.push('\n');
-                    last.text.push_str(text.trim_end_matches('\n'));
-                } else {
-                    entries.push(glass_tui::Entry {
-                        role: *role,
-                        text: text.trim_end_matches('\n').to_owned(),
-                        turn: 0,
-                        tool_card: None,
-                    });
-                }
+        let mut groups: std::collections::BTreeMap<usize, Vec<glass_tui::Entry>> =
+            std::collections::BTreeMap::new();
+        for (turn, role, text) in &notices.1 {
+            if entries.iter().any(|entry| {
+                entry.turn == *turn
+                    && entry.role == *role
+                    && glass_tui::markdown::sanitize(&entry.text).contains(text)
+            }) {
+                continue;
             }
+            let group = groups.entry(*turn).or_default();
+            if *role == glass_tui::Role::Meta
+                && let Some(last) = group.last_mut()
+                && last.role == *role
+            {
+                last.text.push('\n');
+                last.text.push_str(text);
+            } else {
+                group.push(glass_tui::Entry {
+                    role: *role,
+                    text: text.clone(),
+                    turn: *turn,
+                    tool_card: None,
+                });
+            }
+        }
+        for (turn, group) in groups {
+            let index = entries
+                .iter()
+                .position(|entry| entry.turn > turn)
+                .unwrap_or(entries.len());
+            entries.splice(index..index, group);
         }
     });
     entries
 }
+
 pub fn emit_notice(text: &str) -> io::Result<()> {
     retain_notice(text);
     emit(text)
@@ -641,6 +656,7 @@ mod tests {
     #[test]
     fn restored_reports_follow_the_recap_in_both_views() {
         bind_session("notice-order-test");
+        set_notice_turn(1);
         retain_notice("startup");
         retain_system_notice("Recap · welcome back\n\n**Last request**\n\nRequest");
         retain_system_notice("Teammates restored");
@@ -655,6 +671,52 @@ mod tests {
         assert!(entries[1].text.starts_with("Recap"));
         assert_eq!(entries[2].text, "Teammates restored");
         bind_session("notice-order-finished");
+    }
+
+    #[test]
+    fn old_recaps_never_follow_new_replies() {
+        bind_session("notice-new-turn-test");
+        set_notice_turn(1);
+        retain_system_notice("Recap · welcome back\n\nOld checkpoint");
+        set_notice_turn(2);
+        retain_notice("Current usage");
+        let source = vec![
+            glass_tui::Entry {
+                role: glass_tui::Role::User,
+                text: "old request".into(),
+                turn: 1,
+                tool_card: None,
+            },
+            glass_tui::Entry {
+                role: glass_tui::Role::Assistant,
+                text: "old reply".into(),
+                turn: 1,
+                tool_card: None,
+            },
+            glass_tui::Entry {
+                role: glass_tui::Role::User,
+                text: "latest request".into(),
+                turn: 2,
+                tool_card: None,
+            },
+            glass_tui::Entry {
+                role: glass_tui::Role::Assistant,
+                text: "LATEST_REPLY".into(),
+                turn: 2,
+                tool_card: None,
+            },
+        ];
+        let entries = with_notices(source);
+        assert!(entries[2].text.starts_with("Recap"));
+        assert_eq!(entries[3].text, "latest request");
+        assert_eq!(entries[4].text, "LATEST_REPLY");
+        assert_eq!(entries[5].text, "Current usage");
+        let again = with_notices(entries.clone());
+        assert_eq!(
+            again.iter().map(|e| &e.text).collect::<Vec<_>>(),
+            entries.iter().map(|e| &e.text).collect::<Vec<_>>()
+        );
+        bind_session("notice-new-turn-finished");
     }
 
     #[test]

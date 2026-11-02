@@ -12,7 +12,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         s=self.server;b=json.loads(self.rfile.read(int(self.headers['Content-Length'])));s.requests.append(b)
         messages=b.get('messages',[]);system=messages[0].get('content','') if messages else ''
         worker='You are a subagent' in system;history=json.dumps(messages,ensure_ascii=False)
-        calls=[];text='MAIN_DONE'
+        calls=[];text=('\n'.join(f'LATEST_LINE_{i}' for i in range(45))+'\nLATEST_REPLY_2') if not worker and 'LATEST_STREAM_2' in history else 'MAIN_DONE'
         if worker:
             if 'HOLD' in history:time.sleep(3)
             if 'CHECK_READ' in history and not any(m.get('role')=='tool' for m in messages):calls=[('inspect',{'action':'read','path':'evidence.txt'})]

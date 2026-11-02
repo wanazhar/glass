@@ -24,7 +24,13 @@ open until the operation finishes. Dismiss the result to return to chat.
 
 ## Teammate conversations
 
-Open `/agents` or press Alt+A to inspect teammates. The transcript shows parent
+Open `/agents` or press Alt+A to inspect teammates. Use `/agents status` to
+inspect the workflow, `/agents stop` to pause it, and `/agents resume` to enable
+delegation again. A paused agents panel also offers R to resume. Resume keeps
+the existing token allowance and leaves parked workers waiting for an explicit
+assignment.
+
+The transcript shows parent
 assignments and follow-ups alongside subagent replies. Streamed fragments are
 joined into messages; tool calls and results have separate labels. Reasoning is
 collapsed in the overview.

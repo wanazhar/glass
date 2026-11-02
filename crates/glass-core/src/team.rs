@@ -493,7 +493,7 @@ impl Hub {
                     }
                 }
                 "inspect" => {}
-                _ => return Err("Only the human can resume an agent workflow".into()),
+                _ => return Err("Only the human can resume an agent workflow. Ask them to run /agents resume in the TUI, or gc agent --session MAIN_ID workflow resume in another terminal.".into()),
             }
             save(&self.dir.join("workflow.json"), &state.flow)?;
             return Ok(
@@ -611,8 +611,11 @@ impl Hub {
                 let requested_limits =
                     limit_values(req, default_output_limit(), None, default_round_limit())?;
                 let mut state = self.state.lock().unwrap();
-                if state.flow.stopped || flow::used(&state) >= state.flow.tokens {
-                    return Err("Agent workflow stopped or tree token allowance exhausted".into());
+                if state.flow.stopped {
+                    return Err("Agent workflow stopped. Ask the user to run /agents resume in the TUI (or press R in the paused agents panel), then request a new assignment. Do not retry model-side resume.".into());
+                }
+                if flow::used(&state) >= state.flow.tokens {
+                    return Err("Delegation tree token allowance exhausted. A human must review the allowance before further delegation.".into());
                 }
                 let parent = state.agents.get(from).map(|w| w.info.clone());
                 let depth = parent.as_ref().map_or(1, |i| i.depth.saturating_add(1));
@@ -1545,7 +1548,7 @@ pub fn start(
         // Restored reports and pending activations require explicit human review.
         state.flow.stopped = true;
         save(&dir.join("workflow.json"), &state.flow)?;
-        state.notices.push_back(format!("Restored teammates\n\n{}\n\nSaved contexts are available. Inspect parked work before resuming.",state.agents.values().map(|w|format!("- **{}** · {}",w.info.name,w.info.status)).collect::<Vec<_>>().join("\n")));
+        state.notices.push_back(format!("Restored teammates\n\n{}\n\nSaved contexts are available. Delegation is paused. Run /agents resume to enable new assignments, or press R in the agents panel. Parked workers need an explicit follow-up.",state.agents.values().map(|w|format!("- **{}** · {}",w.info.name,w.info.status)).collect::<Vec<_>>().join("\n")));
     }
     let hub = Arc::new(Hub {
         owner: owner.into(),
@@ -1635,6 +1638,29 @@ pub fn start(
 }
 pub fn get(owner: &str) -> Option<Arc<Hub>> {
     hubs().lock().unwrap().get(owner).and_then(Weak::upgrade)
+}
+pub fn human_workflow(owner: &str, operation: &str) -> Result<String, String> {
+    let hub = get(owner).ok_or("Teammate workflow is unavailable in this session")?;
+    let status = hub.request(&json!({"action":"workflow","from":"human","operation":operation}))?;
+    Ok(format!(
+        "Teammate workflow · {}\n\n{} / {} tokens used · {} / {} automatic activations.\n{}",
+        if status["stopped"] == true {
+            "paused"
+        } else {
+            "ready"
+        },
+        status["tokens"],
+        status["tokenLimit"],
+        status["activations"],
+        status["maxActivations"],
+        if operation == "resume" {
+            "Delegation is enabled. Ask the main agent to continue. Token allowances are unchanged."
+        } else if status["stopped"] == true {
+            "Run /agents resume to enable delegation again."
+        } else {
+            "Run /agents stop to pause delegation."
+        }
+    ))
 }
 pub fn enabled(owner: &str) -> bool {
     get(owner).is_some()
@@ -2185,16 +2211,18 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
     let mut max = 0;
     let mut capacity = 1;
     loop {
-        let (revision, working) = {
+        let (revision, working, stopped) = {
             let state = hub.state.lock().unwrap();
             (
                 state.revision,
                 state.agents.values().any(|w| w.info.status == "working"),
+                state.flow.stopped,
             )
         };
         let geometry = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let key = (
             revision,
+            stopped,
             geometry,
             tab,
             selected,
@@ -2364,7 +2392,9 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                     offset = (desired + 3).saturating_sub(capacity).min(max);
                 }
             }
-            let footer = if width < 60 {
+            let footer = if stopped {
+                "Delegation paused · r resume · Esc close"
+            } else if width < 60 {
                 "Tab · ? help · Esc"
             } else {
                 "Tab view · Enter full conversation · PgUp older · Esc close"
@@ -2426,6 +2456,21 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                 follow = true;
                 cache.before = None;
                 cache.stamp = None;
+                previous.clear();
+            }
+            KeyCode::Char('r') if stopped => {
+                match human_workflow(owner, "resume") {
+                    Ok(message) => hub
+                        .state
+                        .lock()
+                        .unwrap()
+                        .notices
+                        .push_back(format!("Human resumed teammate delegation.\n\n{message}")),
+                    Err(error) => {
+                        crate::modal::info(keys, "Workflow", &error);
+                        let _ = crate::surface::overlay(true);
+                    }
+                }
                 previous.clear();
             }
             KeyCode::Enter if !infos.is_empty() || tab == 1 => {

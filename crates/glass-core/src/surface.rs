@@ -9,7 +9,7 @@ use std::{
     io::{self, Write},
 };
 thread_local! { static PRIMARY: RefCell<Option<Surface>> = const { RefCell::new(None) }; }
-thread_local! { static NOTICES: RefCell<(Option<String>,std::collections::VecDeque<String>,usize)> = RefCell::new((None,std::collections::VecDeque::new(),0)); }
+thread_local! { static NOTICES: RefCell<(Option<String>,std::collections::VecDeque<(glass_tui::Role,String)>,usize)> = RefCell::new((None,std::collections::VecDeque::new(),0)); }
 pub fn bind_session(id: &str) {
     NOTICES.with(|slot| {
         let mut data = slot.borrow_mut();
@@ -21,16 +21,24 @@ pub fn bind_session(id: &str) {
     });
 }
 pub fn retain_notice(text: &str) {
-    let clean = glass_tui::markdown::sanitize(text);
+    retain_entry(glass_tui::Role::Meta, text);
+}
+pub fn retain_system_notice(text: &str) {
+    retain_entry(glass_tui::Role::System, text);
+}
+fn retain_entry(role: glass_tui::Role, text: &str) {
+    let clean = glass_tui::markdown::sanitize(text)
+        .trim_end_matches('\n')
+        .to_owned();
     if clean.trim().is_empty() {
         return;
     }
     NOTICES.with(|slot| {
         let mut data = slot.borrow_mut();
         data.2 += clean.len();
-        data.1.push_back(clean);
+        data.1.push_back((role, clean));
         while data.2 > 1_048_576 {
-            if let Some(old) = data.1.pop_front() {
+            if let Some((_, old)) = data.1.pop_front() {
                 data.2 -= old.len();
             } else {
                 break;
@@ -40,17 +48,38 @@ pub fn retain_notice(text: &str) {
 }
 pub fn with_notices(mut entries: Vec<glass_tui::Entry>) -> Vec<glass_tui::Entry> {
     NOTICES.with(|slot| {
-        for text in &slot.borrow().1 {
+        let notices = slot.borrow();
+        // Local notices already present in durable/live history must retain
+        // their inline order relative to the recap and startup block.
+        entries.retain(|entry| {
+            !notices.1.iter().any(|(role, text)| {
+                entry.role == *role
+                    && glass_tui::markdown::sanitize(&entry.text).trim_end_matches('\n') == text
+            })
+        });
+        for (role, text) in &notices.1 {
             if !entries
                 .iter()
                 .any(|entry| glass_tui::markdown::sanitize(&entry.text).contains(text))
             {
-                entries.push(glass_tui::Entry {
-                    role: glass_tui::Role::Meta,
-                    text: text.clone(),
-                    turn: 0,
-                    tool_card: None,
-                });
+                // Consecutive local output lines form one compact block, just
+                // as they do inline. Preserve semantic roles for rich notices.
+                if *role == glass_tui::Role::Meta
+                    && let Some(last) = entries.last_mut()
+                    && last.role == glass_tui::Role::Meta
+                    && last.turn == 0
+                    && last.tool_card.is_none()
+                {
+                    last.text.push('\n');
+                    last.text.push_str(text.trim_end_matches('\n'));
+                } else {
+                    entries.push(glass_tui::Entry {
+                        role: *role,
+                        text: text.trim_end_matches('\n').to_owned(),
+                        turn: 0,
+                        tool_card: None,
+                    });
+                }
             }
         }
     });
@@ -574,6 +603,58 @@ mod tests {
         assert_eq!(with_notices(entries).len(), 1);
         bind_session("different-session");
         assert!(with_notices(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn retained_recaps_keep_rich_roles_and_startup_lines_stay_compact() {
+        bind_session("rich-notice-test");
+        retain_notice("glass-core\n");
+        retain_notice("provider · model\n");
+        retain_notice("session metadata\n");
+        retain_system_notice("Recap · welcome back\n\n**Last request**\n\nRead this.");
+        let entries = with_notices(Vec::new());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].text,
+            "glass-core\nprovider · model\nsession metadata"
+        );
+        assert_eq!(entries[1].role, glass_tui::Role::System);
+        let mut layout = glass_tui::layout::Layout::new(
+            entries
+                .iter()
+                .map(|e| (e.text.clone(), e.role, e.turn))
+                .collect(),
+        );
+        layout.set_width(80);
+        let rendered = layout
+            .entry_lines(1)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Last request"));
+        assert!(!rendered.contains("**"));
+        assert_eq!(with_notices(entries).len(), 2);
+        bind_session("rich-notice-test-finished");
+    }
+
+    #[test]
+    fn restored_reports_follow_the_recap_in_both_views() {
+        bind_session("notice-order-test");
+        retain_notice("startup");
+        retain_system_notice("Recap · welcome back\n\n**Last request**\n\nRequest");
+        retain_system_notice("Teammates restored");
+        let entries = with_notices(vec![glass_tui::Entry {
+            role: glass_tui::Role::System,
+            text: "Teammates restored".into(),
+            turn: 1,
+            tool_card: None,
+        }]);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].text, "startup");
+        assert!(entries[1].text.starts_with("Recap"));
+        assert_eq!(entries[2].text, "Teammates restored");
+        bind_session("notice-order-finished");
     }
 
     #[test]

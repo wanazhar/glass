@@ -5212,7 +5212,7 @@ impl Painter {
 
     fn system_notice(&self, text: &str) {
         self.append_live_entry(glass_tui::Role::System, text.to_owned());
-        surface::retain_notice(text);
+        surface::retain_system_notice(text);
         let mut layout =
             glass_tui::layout::Layout::new(vec![(text.to_owned(), glass_tui::Role::System, 0)]);
         layout.set_width(term_size().0.saturating_sub(1).max(1));

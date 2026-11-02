@@ -39,6 +39,17 @@ for size in [(80, 30), (40, 20)]:
             terminal.send('\x1b[F')
             terminal.collect(.2)
             assert 'No desktop is running' in terminal.vt.text(), terminal.vt.text()
+            terminal.send('\x1b[H')
+            terminal.collect(.15)
+            pages = [terminal.vt.text()]
+            for _ in range(8):
+                terminal.send('\x1b[6~')
+                terminal.collect(.1)
+                pages.append(terminal.vt.text())
+            scroll_text = '\n'.join(pages)
+            assert 'Last request' in scroll_text, scroll_text
+            assert '**Last request**' not in scroll_text, scroll_text
+            assert '**Latest reply' not in scroll_text, scroll_text
             assert not (root/'d/glass-core/connect.json').exists()
             Path(f'/tmp/gc-notices-{size[0]}.ansi').write_text(terminal.seen)
             print(f'PASS {size}: resumed recap and desktop receipt in normal and scroll views')

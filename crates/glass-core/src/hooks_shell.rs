@@ -76,7 +76,7 @@ pub fn run(hook: &PreToolUse, call_json: &str) -> Verdict {
 }
 
 fn run_with_timeout(hook: &PreToolUse, call_json: &str, timeout: std::time::Duration) -> Verdict {
-    let name = tool_name_of(call_json).to_string();
+    let name = tool_name_of(call_json);
     if !matches(hook, &name) {
         return Verdict::Allow;
     }
@@ -349,24 +349,17 @@ fn verdict_from(code: i32, stdout: String) -> Verdict {
     }
 }
 
-fn tool_name_of(call_json: &str) -> &str {
-    // Cheap scan for the single quoted `name` member — the shape is fixed
-    // by the wire format and serde here would allocate per call.
-    let idx = match call_json.find("\"name\"") {
-        Some(i) => &call_json[i..],
-        None => return "",
-    };
-    let Some(colon) = idx.find(':') else {
-        return "";
-    };
-    let rest = idx[colon + 1..].trim_start();
-    // Value must be a string; take it to the closing quote.
-    if !matches!(rest.as_bytes().first(), Some(b'"')) {
-        return "";
-    }
-    let inner = &rest[1..];
-    let end = inner.find('"').unwrap_or(inner.len());
-    &inner[..end]
+fn tool_name_of(call_json: &str) -> String {
+    // Read the outer member: tool arguments may also contain a `name` field.
+    serde_json::from_str::<serde_json::Value>(call_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
 }
 
 fn bounded(stdout: String) -> String {
@@ -422,6 +415,18 @@ mod tests {
     }
 
     const CALL: &str = r#"{"name":"bash","arguments":{"command":"ls"}}"#;
+
+    #[test]
+    fn tool_matcher_uses_outer_name_instead_of_named_arguments() {
+        assert_eq!(
+            tool_name_of(r#"{"arguments":{"name":"coordinator"},"name":"teammate"}"#),
+            "teammate"
+        );
+        assert_eq!(
+            tool_name_of(r#"{"arguments":{"name":"teammate"},"name":"write"}"#),
+            "write"
+        );
+    }
 
     #[test]
     fn matcher_semantics() {

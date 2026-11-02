@@ -28,7 +28,7 @@ for size in [(80, 24), (40, 20)]:
             command('/agents resume', 'Delegation is enabled')
             assert not state()['stopped'] and state()['tokenLimit'] == allowance
             records = [json.loads(line) for path in (root/'d/glass-core').rglob('*.jsonl') for line in path.read_text().splitlines() if line.strip()]
-            assert any(row.get('k') == 'system' and 'Delegation is enabled' in row.get('t','') for row in records), 'main agent needs a durable human-resume receipt'
+            assert any(isinstance(row, dict) and row.get('k') == 'system' and 'Delegation is enabled' in row.get('t','') for row in records), 'main agent needs a durable human-resume receipt'
             fixture.ctl(root, env, owner, 'create', 'review', 'CHECK_READ')
             worker = fixture.ctl(root, env, owner, 'wait', 'review', '10')['agent']
             assert worker['result'] == 'REVIEW_COMPLETE', worker

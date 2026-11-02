@@ -691,6 +691,7 @@ impl Host {
             extensions.seed_custom(&records);
         }
         let mut conversation = Conversation {
+            _team: None,
             budget: crate::budget::Context::load(
                 &session.path.with_extension("cost.json"),
                 settings.cost_limit,

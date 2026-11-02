@@ -58,13 +58,13 @@ def headless(priced=False):
         try:
             p=subprocess.run([str(BIN),'run','--json','review the parser using persistent teammates'],cwd=root,env=env,text=True,capture_output=True,timeout=40)
             assert p.returncode==0,(p.stdout,p.stderr);out=json.loads(p.stdout);assert out['text']=='MAIN_DONE',out
-            agents=list((root/'d/glass-core/agents').glob('*/*.json'));assert len(agents)==1,agents
+            agents=[p for p in (root/'d/glass-core/agents').glob('*/*.json') if p.name!='workflow.json'];assert len(agents)==1,agents
             info=json.loads(agents[0].read_text());assert info['turns']==2 and info['read_only'] and info['status']=='idle',info
             assert info['input']==300 and info['output']==60,info
             assert (abs(info['cost_usd']-.00042)<1e-9 if priced else info['cost_usd'] is None),info
             workers=[b for b in server.requests if 'You are a subagent' in b['messages'][0]['content']]
             assert len(workers)==3,workers
-            assert all([t['function']['name'] for t in b['tools']]==['inspect'] for b in workers)
+            assert all({t['function']['name'] for t in b['tools']}=={'inspect','teammate'} for b in workers)
             assert 'REVIEW_COMPLETE' in json.dumps(workers[-1]) and 'EOF_FOLLOWUP' in json.dumps(workers[-1])
             roots=[b for b in server.requests if b not in workers]
             assert 'Teammate review' in json.dumps(roots[-1])
@@ -93,10 +93,12 @@ def pty_case(size):
             ctl(root,env,owner,'send','review','EOF_FOLLOWUP');info=ctl(root,env,owner,'wait','review','10')['agent'];assert info['turns']==2 and info['result']=='REVIEW_FOLLOWUP',info
             # Slow provider header must remain interruptible and session restartable.
             ctl(root,env,owner,'create','slow','HOLD');ctl(root,env,owner,'create','second','HOLD')
-            assert 'two agents' in ctl(root,env,owner,'create','third','review',ok=False)
+            ctl(root,env,owner,'create','third','HOLD');ctl(root,env,owner,'create','fourth','HOLD')
+            assert 'four agents' in ctl(root,env,owner,'create','fifth','review',ok=False)
             t.send('\x1ba');t.collect(.2);assert 'Agents' in t.vt.text()
             start=time.monotonic();ctl(root,env,owner,'interrupt','slow');parked=ctl(root,env,owner,'wait','slow','2')['agent'];assert parked['status']=='parked' and time.monotonic()-start<2.5,parked
-            ctl(root,env,owner,'interrupt','second');ctl(root,env,owner,'wait','second','2')
+            for name in ['second','third','fourth']:
+                ctl(root,env,owner,'interrupt',name);ctl(root,env,owner,'wait',name,'2')
             t.send('\x1b');t.collect(.15)
             # No unsolicited model turn for a completion or human intervention.
             count=len(server.requests);t.collect(.5);assert len(server.requests)==count
@@ -109,7 +111,7 @@ def pty_case(size):
             assert (directory/'interactions.jsonl').stat().st_mode&0o777==0o600
             t.close();assert ctl(root,env,owner,'list')[0]['offline'];assert ctl(root,env,owner,'transcript','review')['text'];assert 'not running' in ctl(root,env,owner,'send','review','test',ok=False)
             t=Terminal(root,env,size,args=('resume',owner));t.idle();assert owner_id(root)==owner
-            infos=ctl(root,env,owner,'list');assert len(infos)==3
+            infos=ctl(root,env,owner,'list');assert len(infos)==5
             ctl(root,env,owner,'resume','review','EOF_FOLLOWUP');info=ctl(root,env,owner,'wait','review','10')['agent'];assert info['turns']==3,info
             # Main composer and palette survive modal/scroll transitions.
             t.send('/agents\r');t.collect(.2);assert 'Agents' in t.vt.text(),t.vt.text();t.send('\x1b');t.collect(.15)

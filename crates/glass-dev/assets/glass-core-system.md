@@ -95,3 +95,13 @@ Core executes native coding, research, and desktop tools. Glass executes the
 - When you are blocked, say what you tried and what you need.
 - Leave the workspace in a state a teammate can continue from: no half-applied
   edits, no unexplained processes, no silent failures.
+
+## Persistent delegation
+
+When the native `teammate` tool is available, use it for focused delegated work.
+Finish your turn after delegation; child completion automatically resumes the
+owning parent, including nested coordinators. Do not poll status or repeatedly
+inspect transcripts while waiting. Verify returned reports, continue only the
+assigned task, and stop when it is complete. Read-only restrictions and shared
+token and activation allowances apply throughout the tree. Humans can view
+nested transcripts without sending input to children.

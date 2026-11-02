@@ -1566,7 +1566,7 @@ fn headless(
         }
     }
     let prompt_instructions = polish::prompt_context(&session, &instructions);
-    let result = Agent::new(
+    let mut result = Agent::new(
         p.as_ref(),
         &mut session,
         &mut state,
@@ -1594,6 +1594,53 @@ fn headless(
             *slot = Some(String::new());
         }
     });
+    if matches!(&result, Ok((_, Stop::Cancelled))) {
+        team::cancel_root(&session.id);
+    }
+    let continuation_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while matches!(&result, Ok((_, agent::Stop::Finished))) && !signals::interrupted() {
+        if let Some(_prompt) = team::take_completion(&mut session, &mut state)? {
+            let continuation_instructions = polish::prompt_context(&session, &instructions);
+            let auto_factory = team::continuation_factory(&session.id, Arc::clone(&factory));
+            let auto_provider = auto_factory()?;
+            result = Agent::new(
+                auto_provider.as_ref(),
+                &mut session,
+                &mut state,
+                mods,
+                extensions,
+                &cfg.workspace,
+            )
+            .with_plan_mode(planning)
+            .with_image_input(cfg.image_input)
+            .prime_extensions()
+            .with_prompt(cfg.system_prompt.clone(), None, continuation_instructions)
+            .with_limits(cfg.max_tokens.min(16000), cfg.reasoning_budget, 24)
+            .with_recovery(recovering)
+            .with_checkpoint_tools(cfg.checkpoint_tools)
+            .with_pre_tool_hook(if planning {
+                None
+            } else {
+                crate::hooks_shell::load_config()
+            })
+            .with_live(cfg.live_flush_ms as u64)
+            .with_stream_factory(auto_factory)
+            .run_turn(|slot| {
+                if signals::interrupted() {
+                    *slot = Some(String::new());
+                }
+            });
+        } else if team::get(&session.id).is_some_and(|h| h.has_pending_work())
+            && std::time::Instant::now() < continuation_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        } else {
+            break;
+        }
+    }
+    if signals::interrupted() || matches!(&result, Ok((_, Stop::Cancelled))) {
+        team::cancel_root(&session.id);
+    }
     if let Some(c) = checkpoint.as_mut() {
         checkpoint_error = c.finish(&dir).err();
         if checkpoint_error.is_none() {
@@ -2190,6 +2237,23 @@ fn repl(
                                 accepted_background = Some((session.id.clone(), message.clone()));
                                 ui_println!("\x1b[90minbox ({from}):\x1b[0m {message}");
                                 editor.insert_str(&message);
+                                break Some(glass_tui::crossterm::event::Event::Key(
+                                    glass_tui::crossterm::event::KeyEvent::new(
+                                        glass_tui::crossterm::event::KeyCode::Enter,
+                                        glass_tui::crossterm::event::KeyModifiers::NONE,
+                                    ),
+                                ));
+                            }
+                            if editor.text().is_empty()
+                                && let Some(prompt) =
+                                    team::take_completion(&mut session, &mut state)?
+                            {
+                                background_recorded = true;
+                                accepted_background = Some((session.id.clone(), prompt.clone()));
+                                ui_println!(
+                                    "\x1b[90mteammates finished; continuing pending work\x1b[0m"
+                                );
+                                editor.insert_str(&prompt);
                                 break Some(glass_tui::crossterm::event::Event::Key(
                                     glass_tui::crossterm::event::KeyEvent::new(
                                         glass_tui::crossterm::event::KeyCode::Enter,
@@ -3903,6 +3967,7 @@ fn repl(
         // The typed prompt is still on the prompt row. Clear those
         // rows and print the prompt once, whole: a prompt must be
         // recorded once, and a multi-line one must land intact.
+        let automatic_team_turn = text.starts_with(team::FOLLOW_UP);
         echo_prompt(&mut std::io::stdout(), &text, prompt_row, prompt_rows);
         navigation::record(&session, &cfg.workspace, &cfg.model, "running")?;
         // Submission transfers ownership of the prompt to conversation
@@ -3937,9 +4002,15 @@ fn repl(
                 }
             }
             let mut busy_palette = glass_tui::palette::Palette::new(busy_commands);
+            let turn_factory = if automatic_team_turn {
+                team::continuation_factory(&session.id, Arc::clone(&factory))
+            } else {
+                Arc::clone(&factory)
+            };
+            let turn_provider = turn_factory()?;
             let outcome = {
                 let mut agent = Agent::new(
-                    provider.as_ref(),
+                    turn_provider.as_ref(),
                     &mut session,
                     &mut state,
                     &loaded_mods,
@@ -3953,11 +4024,19 @@ fn repl(
                     catalogue.clone(),
                     turn_instructions,
                 )
-                .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
+                .with_limits(
+                    if automatic_team_turn {
+                        cfg.max_tokens.min(16000)
+                    } else {
+                        cfg.max_tokens
+                    },
+                    cfg.reasoning_budget,
+                    if automatic_team_turn { 24 } else { usize::MAX },
+                )
                 .with_recovery(recovering)
                 .with_checkpoint_tools(cfg.checkpoint_tools)
                 .with_live(cfg.live_flush_ms as u64)
-                .with_stream_factory(Arc::clone(&factory))
+                .with_stream_factory(Arc::clone(&turn_factory))
                 .with_input_keys(&keys)
                 .with_progress(|p| painter.handle(p))
                 .with_warmer(&warmer);
@@ -4052,6 +4131,9 @@ fn repl(
                 },
             );
             let cancelled = matches!(&outcome, Ok((_, Stop::Cancelled)));
+            if cancelled {
+                team::cancel_root(&session.id);
+            }
             let mut turn_finished = false;
             let mut turn_summary = Vec::new();
             match outcome {

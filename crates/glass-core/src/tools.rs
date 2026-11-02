@@ -236,9 +236,13 @@ pub(crate) fn bash_owned_sensitive(
     if let Ok(exe) = crate::executable::path() {
         builder.env("GC_BIN", exe);
     }
-    builder.env_remove("GC_AGENT_OWNER");
-    if let Some(owner) = owner.filter(|id| crate::team::enabled(id)) {
-        builder.env("GC_AGENT_OWNER", owner);
+    builder
+        .env_remove("GC_AGENT_OWNER")
+        .env_remove("GC_AGENT_ACTOR");
+    if let Some((hub, actor)) = owner.and_then(crate::team::actor_context) {
+        builder
+            .env("GC_AGENT_OWNER", hub.owner_id())
+            .env("GC_AGENT_ACTOR", actor);
     }
     let mut child = match builder.spawn() {
         Ok(c) => c,

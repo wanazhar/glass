@@ -1,4 +1,4 @@
-import { ownerFetch } from "./owner-auth.js";
+import { ownerFetch, ownerEventSource } from "./owner-auth.js";
 // Loaded only when a work surface is opened. Native actor remains the writer.
 export function workflows({
   api,
@@ -679,13 +679,18 @@ export function workflows({
         },
       );
     };
-    let timer,
+    let timer, stream, refreshing=false, refreshAgain=false,
       taskSignature = "";
     const cards = new Map();
     async function refresh() {
+      if (refreshing) { refreshAgain=true; return; }
+      refreshing=true;
+      try {do{refreshAgain=false;await refreshOnce();}while(refreshAgain && current());}
+      finally{refreshing=false;}
+    }
+    async function refreshOnce() {
       if (!current()) return;
       if (document.visibilityState !== "visible") {
-        timer = setTimeout(refresh, 5000);
         return;
       }
       const signature = JSON.stringify(view.tasks || []);
@@ -748,10 +753,12 @@ export function workflows({
               state = el("p"),
               assignment = el("p", "quiet");
             card.append(heading, state, assignment);
-            entry = { card, heading, state, assignment };
+            entry = { card, heading, state, assignment, watching:false };
             cards.set(key, entry);
             card.append(
-              button("Read transcript", async () => {
+              button("Watch transcript", entry.load = async () => {
+                for(const other of cards.values())other.watching=false;
+                entry.watching=true;
                 try {
                   const result = await api(
                     "agent?id=" +
@@ -779,7 +786,9 @@ export function workflows({
             );
             agentRows.append(card);
           }
-          entry.heading.textContent = agent.name || agent.id;
+          entry.heading.textContent = "↳ ".repeat(Math.max(0,Math.min(3,(agent.depth||1)-1)))+(agent.name || agent.id);
+          entry.card.dataset.parent = agent.parent_id || "";
+          if(entry.watching) await entry.load();
           entry.state.textContent = agent.status || "";
           entry.assignment.textContent = String(
             agent.task || agent.prompt || "",
@@ -798,15 +807,20 @@ export function workflows({
               "No teammates have been created for this thread.",
             ),
           );
-        status.textContent = "Live while open · refreshes every 5 seconds";
+        status.textContent = "Live agent events · read-only transcripts";
       } catch (e) {
         if (!signal.aborted) status.textContent = e.message;
       }
-      clearTimeout(timer);
-      timer = setTimeout(refresh, 5000);
+
     }
-    signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+    const visible=()=>{if(document.visibilityState==="visible")void refresh();};
+    document.addEventListener("visibilitychange",visible);
+    signal.addEventListener("abort", () => {clearTimeout(timer);stream?.close();document.removeEventListener("visibilitychange",visible);}, { once: true });
     await refresh();
+    if(!current())return;
+    stream=ownerEventSource("/api/agent-events?id="+encodeURIComponent(id));
+    stream.onmessage=event=>{if(!current())return;try{const value=JSON.parse(event.data);if(value.offline){stream.close();status.textContent="Main session offline · saved transcripts remain available";return;}}catch{return;}if(!timer)timer=setTimeout(()=>{timer=0;void refresh();},150);};
+    stream.onerror=()=>{if(current())status.textContent="Reconnecting agent events…";};
   }
   async function context() {
     requireHost();

@@ -1772,6 +1772,11 @@
           "level": "2",
           "title": "Collaboration",
           "anchor": "collaboration"
+        },
+        {
+          "level": "2",
+          "title": "Persistent delegation",
+          "anchor": "persistent-delegation"
         }
       ]
     },
@@ -2006,6 +2011,7 @@
         "products/glass-core/README.md",
         "products/glass-core/THIRD_PARTY.md",
         "products/glass-core/docs/INDEX.md",
+        "products/glass-core/docs/agents.md",
         "products/glass-core/docs/configuration.md",
         "products/glass-core/docs/connect.md",
         "products/glass-core/docs/getting-started.md",
@@ -84225,8 +84231,10 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
+        "docs/INDEX.md",
         "products/glass-core/README.md",
         "products/glass-core/docs/INDEX.md",
+        "products/glass-core/docs/plan/persistent-agents.md",
         "products/glass-core/extensions/oracle/README.md",
         "products/glass-core/extensions/subagent/README.md"
       ],
@@ -84252,8 +84260,8 @@
         },
         {
           "level": "2",
-          "title": "Context, limits, and restart",
-          "anchor": "context-limits-and-restart"
+          "title": "Completion, limits, and restart",
+          "anchor": "completion-limits-and-restart"
         },
         {
           "level": "2",
@@ -85621,7 +85629,8 @@
         "products/glass-core/docs/plan/README.md"
       ],
       "dependencies": [
-        "products/glass-core/docs/INDEX.md"
+        "products/glass-core/docs/INDEX.md",
+        "products/glass-core/docs/agents.md"
       ],
       "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
       "route": "products/glass-core/docs/plan/persistent-agents.md#persistent-teammates",

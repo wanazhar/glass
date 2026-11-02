@@ -692,6 +692,9 @@ impl<'a> Agent<'a> {
             tools
         };
         tools.extend(desktop_schemas_for_state(desktop_state, self.read_only));
+        if crate::team::actor_context(&self.session.id).is_some() {
+            tools.push(crate::team::schema());
+        }
         if let Some((host_tools, _)) = &self.mixed_hosted {
             tools.extend(host_tools.iter().cloned());
         }
@@ -2095,6 +2098,21 @@ impl<'a> Agent<'a> {
             }
             return;
         }
+        if calls.iter().any(|c| c.name == "teammate") {
+            for call in calls {
+                if call.name == "teammate" {
+                    pump(&mut self.steer);
+                    if self.steer.is_some() {
+                        break;
+                    }
+                    self.loop_guard(call);
+                    self.run_tool(call);
+                } else {
+                    self.run_tool_batch(std::slice::from_ref(call), pump);
+                }
+            }
+            return;
+        }
         if self.read_only {
             for call in calls {
                 pump(&mut self.steer);
@@ -3236,6 +3254,7 @@ impl<'a> Agent<'a> {
         let known = crate::files::is_tool(&call.name)
             || call.name == "bash"
             || call.name == "state"
+            || (call.name == "teammate" && crate::team::actor_context(&self.session.id).is_some())
             || crate::web_tools::is_tool(&call.name)
             || call.name == "web_secret_request"
             || call.name == "revoke_secret"
@@ -3350,6 +3369,9 @@ impl<'a> Agent<'a> {
                 let mut noop = || None;
                 outcome = crate::checkpoint_tools::run(call, self.session, &mut noop);
             }
+        } else if call.name == "teammate" {
+            outcome =
+                crate::team::execute(&self.session.id, self.read_only, &call.arguments, &call.id);
         } else if call.name == "state" {
             let namespaces = ["guidance", "neuralnets", "capabilities", "items", "todo"]
                 .iter()
@@ -3473,6 +3495,17 @@ impl<'a> Agent<'a> {
     /// Record a tool result and notify mods. The single path every tool
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        if outcome.exit_code == Some(0)
+            && !self.state.todo.tasks.is_empty()
+            && !self.state.todo.tasks.iter().any(|t| {
+                matches!(
+                    t.status,
+                    crate::todo::Status::Pending | crate::todo::Status::InProgress
+                )
+            })
+        {
+            crate::team::cancel_root(&self.session.id);
+        }
         let outcome = tools::Outcome {
             body: self.session.secrets.redact(&outcome.body),
             ..outcome

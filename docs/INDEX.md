@@ -2,7 +2,10 @@
 
 Proposed design: [task-backed agent coordination](plan/analysis/task-agent-coordination.md)
 and its [delivery checklist](plan/tasks/task-agent-coordination-001.md) describe
-event-driven delegation and execution limits. This feature is not implemented.
+the broader task-backed coordination proposal. Bounded nested completion
+continuations and read-only viewers are implemented; see the
+[current delegation guide](../products/glass-core/docs/agents.md) for shipped
+behavior and limits. The proposal includes additional task-ledger work.
 
 These guides describe the current Glass source tree. They do not claim that
 every change in this tree is part of a published release. The

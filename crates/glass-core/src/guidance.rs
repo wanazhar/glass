@@ -47,7 +47,7 @@ pub fn model_context(system: String) -> String {
 /// Advertise managed teammates only for sessions with an active owner hub.
 pub fn teammate_context(system: String, available: bool) -> String {
     let guidance = if available {
-        "[GC teammates] Managed subagents are available through bash: \"$GC_BIN\" agent create NAME \"FOCUSED TASK\". Use agent --help for options and agent list/inspect/transcript/wait/send/resume to manage returned IDs. GC_AGENT_OWNER selects this session automatically. Default workers are read-only; --write permits edits. When asked to delegate, use these commands instead of claiming subagents are unavailable."
+        "[GC teammates] Use the native teammate tool to create focused persistent delegates. They may delegate bounded subtasks to their own children; read-only constraints are inherited. Finish your turn after delegation: completion resumes the owning parent automatically without status polling. Reuse findings and stop when the assigned task is complete. Shared token and activation limits prevent unlimited continuations; only the human can resume a stopped workflow. The human views attributed transcripts in /agents. CLI controls remain available through \"$GC_BIN\" agent --help."
     } else {
         "[GC teammates] This session has no managed teammate owner. Do not claim to have spawned teammates."
     };

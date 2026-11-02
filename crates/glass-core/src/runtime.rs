@@ -396,11 +396,17 @@ fn subagent_read_request_with_secrets(
     match method {
         "runtime/subagents/list" => {
             let mut children = crate::subagent::list_linked_children(scratch, parent_session_id)?;
+            if let Some(hub) = crate::team::get(parent_session_id) {
+                children.extend(hub.viewer_children());
+            }
             let active = active_children
                 .lock()
                 .map_err(|_| "subagent activity state is unavailable".to_string())?;
             for child in &mut children {
-                if child["state"].as_str() == Some("running") {
+                if child["state"].as_str() == Some("running")
+                    && !crate::team::get(parent_session_id)
+                        .is_some_and(|h| h.has_viewer_child(child["taskId"].as_str().unwrap_or("")))
+                {
                     let seq = child["taskId"]
                         .as_str()
                         .and_then(|task| active.get(task))
@@ -419,13 +425,24 @@ fn subagent_read_request_with_secrets(
             let task_id = string(params, "taskId")?;
             let parent_call_id = string(params, "parentCallId")?;
             let child_session_id = string(params, "childSessionId")?;
-            let child = crate::subagent::open_linked_child(
-                scratch,
-                parent_session_id,
-                parent_call_id,
-                task_id,
-                child_session_id,
-            )?;
+            let child = if crate::team::get(parent_session_id)
+                .is_some_and(|h| h.has_viewer_child(task_id))
+            {
+                crate::team::open_viewer_child(
+                    parent_session_id,
+                    parent_call_id,
+                    task_id,
+                    child_session_id,
+                )?
+            } else {
+                crate::subagent::open_linked_child(
+                    scratch,
+                    parent_session_id,
+                    parent_call_id,
+                    task_id,
+                    child_session_id,
+                )?
+            };
             let redact = |text: &str| parent_secrets.redact(text);
             let mut page = support::entries_snapshot_redacted(&child, params, &redact)?;
             conceal_child_private_records(&mut page);
@@ -438,13 +455,24 @@ fn subagent_read_request_with_secrets(
             let task_id = string(params, "taskId")?;
             let parent_call_id = string(params, "parentCallId")?;
             let child_session_id = string(params, "childSessionId")?;
-            let child = crate::subagent::open_linked_child(
-                scratch,
-                parent_session_id,
-                parent_call_id,
-                task_id,
-                child_session_id,
-            )?;
+            let child = if crate::team::get(parent_session_id)
+                .is_some_and(|h| h.has_viewer_child(task_id))
+            {
+                crate::team::open_viewer_child(
+                    parent_session_id,
+                    parent_call_id,
+                    task_id,
+                    child_session_id,
+                )?
+            } else {
+                crate::subagent::open_linked_child(
+                    scratch,
+                    parent_session_id,
+                    parent_call_id,
+                    task_id,
+                    child_session_id,
+                )?
+            };
             let redact = |text: &str| parent_secrets.redact(text);
             let mut field = support::entry_snapshot_redacted(&child, params, &redact)?;
             let private_reasoning = field["recordKind"].as_str() == Some("reasoning")
@@ -1115,6 +1143,7 @@ impl Wire {
     }
 }
 struct Conversation {
+    _team: Option<crate::team::Guard>,
     session: Session,
     cfg: config::Config,
     budget: crate::budget::Context,
@@ -1356,15 +1385,35 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
     let mut durable: Option<durable_host::Host> = None;
     loop {
         let queued = wire.borrow_mut().pending.pop_front();
+        let incoming = if queued.is_none() {
+            Some(
+                wire.borrow()
+                    .rx
+                    .recv_timeout(std::time::Duration::from_millis(100)),
+            )
+        } else {
+            None
+        };
         let m = match queued {
             Some(m) => m,
-            None => match wire.borrow().rx.recv() {
+            None => match incoming.unwrap() {
                 Ok(Ok(m)) => m,
                 Ok(Err(e)) => {
                     error(&Value::Null, -32700, e);
                     continue;
                 }
-                Err(_) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    for c in conversations.values_mut() {
+                        if crate::team::take_completion(&mut c.session, &mut c.state)?.is_some() {
+                            let turn = json!(format!("team-{}", c.session.log_len()));
+                            if let Err(e) = run(c, &wire, &turn, Vec::new()) {
+                                event(&c.session.id, &turn, "error", json!({"message":e}));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             },
         };
         let id = m.get("id").cloned().unwrap_or(Value::Null);
@@ -1553,9 +1602,39 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 if let Ok(records) = Session::raw_records(&session.path) {
                     extensions.seed_custom(&records);
                 }
+                let team_guard = if tool_mode != ToolMode::Host {
+                    let (factory, models) = runtime_provider_factories(
+                        settings.clone(),
+                        budget.clone(),
+                        std::sync::Arc::new(|settings, budget, model| {
+                            budget.provider(settings, model)
+                        }),
+                    );
+                    let guard = crate::team::start(
+                        &sid,
+                        &settings.workspace,
+                        factory,
+                        models,
+                        &settings.model,
+                    )?;
+                    if let Some(hub) = crate::team::get(&sid) {
+                        let owner = sid.clone();
+                        let secrets = session.secrets.clone();
+                        hub.observe(std::sync::Arc::new(move |data| {
+                            let text = secrets.redact(&data.to_string());
+                            if let Ok(data) = serde_json::from_str(&text) {
+                                event(&owner, &Value::Null, "subagent", data);
+                            }
+                        }));
+                    }
+                    Some(guard)
+                } else {
+                    None
+                };
                 conversations.insert(
                     sid.clone(),
                     Conversation {
+                        _team: team_guard,
                         session,
                         cfg: settings,
                         budget,
@@ -1994,6 +2073,11 @@ fn run(
             budget.provider(settings, model)
         }),
     );
+    let factory = if turn.as_str().is_some_and(|s| s.starts_with("team-")) {
+        crate::team::continuation_factory(&c.session.id, factory)
+    } else {
+        factory
+    };
     let provider = factory()?;
     c.session
         .append_checked(&records)
@@ -2129,7 +2213,7 @@ fn run(
         .with_prompt(c.instructions.clone(),None,None)
         .with_stream_factory(factory)
         .with_runtime_turn(turn)
-        .with_limits(c.cfg.max_tokens,c.cfg.reasoning_budget,usize::MAX)
+        .with_limits(if turn.as_str().is_some_and(|s|s.starts_with("team-")){c.cfg.max_tokens.min(16000)}else{c.cfg.max_tokens},c.cfg.reasoning_budget,if turn.as_str().is_some_and(|s|s.starts_with("team-")){24}else{usize::MAX})
         .with_progress(|progress|{
             let publish=|kind:&str,data:Value|{if durable.is_none_or(|context|context.publish(kind,data.clone(),turn)){event(&sid,turn,kind,data);}};
             match progress{
@@ -2178,6 +2262,9 @@ fn run(
         let started = Instant::now();
         trace_turn_phase("run_turn_begin", "provider_turn", turn, None);
         let outcome = agent.run_turn(|slot| wire.borrow_mut().pump(slot, &sid, turn));
+        if matches!(&outcome, Ok((_, Stop::Cancelled))) {
+            crate::team::cancel_root(&sid);
+        }
         let outcome_class = match &outcome {
             Ok((_, Stop::Finished)) => "stop_finished",
             Ok((_, Stop::Steered)) => "stop_steered",

@@ -336,6 +336,7 @@ fn update_subagent_live_event(viewer: &mut SubagentViewer, event: &serde_json::V
     };
     let row = serde_json::json!({
         "taskId": task_id,
+        "taskText": data.get("taskText").cloned().unwrap_or(serde_json::Value::Null),
         "parentSessionId": viewer.parent_session_id,
         "parentTurnId": event.get("parentTurnId").cloned().unwrap_or(serde_json::Value::Null),
         "parentCallId": parent_call_id,
@@ -345,6 +346,8 @@ fn update_subagent_live_event(viewer: &mut SubagentViewer, event: &serde_json::V
         "readOnly": true,
         "state": child_state,
         "lastSeq": data.get("seq").cloned().unwrap_or(serde_json::Value::Null),
+        "parentTaskId":data.get("parentTaskId").cloned().unwrap_or(serde_json::Value::Null),
+        "depth":data.get("depth").cloned().unwrap_or(serde_json::Value::Null),
     });
     if let Some(index) = child_index {
         viewer.children[index] = row;

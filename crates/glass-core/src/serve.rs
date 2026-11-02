@@ -828,6 +828,13 @@ pub fn serve(
                                 None,
                                 json!({"t": "prompt", "text": text, "inbox_recorded":true}),
                             ))
+                        } else if let Some(text) =
+                            crate::team::take_completion(&mut session, &mut state)?
+                        {
+                            Some((
+                                None,
+                                json!({"t":"prompt","text":text,"inbox_recorded":true,"team_continuation":true}),
+                            ))
                         } else if let Some(prompt) = crate::loops::due_for(&mut session, &cfg)? {
                             broadcast(
                                 &clients,
@@ -1216,7 +1223,12 @@ pub fn serve(
                     &clients,
                     json!({"t":"turn_start","request_id":message.get("request_id"),"already_recorded":message["inbox_recorded"]==true,"text":if message["inbox_recorded"]==true{Value::Null}else{message["text"].clone()}}),
                 );
-                let provider = match factory() {
+                let turn_factory = if message["team_continuation"] == true {
+                    crate::team::continuation_factory(&session.id, std::sync::Arc::clone(&factory))
+                } else {
+                    std::sync::Arc::clone(&factory)
+                };
+                let provider = match turn_factory() {
                     Ok(p) => p,
                     Err(e) => {
                         retry_available = true;
@@ -1277,8 +1289,8 @@ pub fn serve(
                     .prime_extensions()
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
                     .with_live(cfg.live_flush_ms as u64)
-                    .with_stream_factory(std::sync::Arc::clone(&factory))
-                    .with_limits(cfg.max_tokens,cfg.reasoning_budget,usize::MAX)
+                    .with_stream_factory(std::sync::Arc::clone(&turn_factory))
+                    .with_limits(if message["team_continuation"]==true{cfg.max_tokens.min(16000)}else{cfg.max_tokens},cfg.reasoning_budget,if message["team_continuation"]==true{24}else{usize::MAX})
                     .with_checkpoint_tools(cfg.checkpoint_tools)
                     .with_progress(move |progress| {
                         let event=match progress {
@@ -1399,6 +1411,9 @@ pub fn serve(
                     pending.push_front(correction);
                 }
                 pending.extend(queued);
+                if matches!(&outcome, Ok((_, Stop::Cancelled))) {
+                    crate::team::cancel_root(&session.id);
+                }
                 retry_available = outcome.is_err();
                 let status = match &outcome {
                     Err(_) => "blocked",

@@ -2458,6 +2458,34 @@ fn handle_with_transport(
     if path == "/api/desktop/frame" && r.method == "GET" {
         return desktop_frame(&mut stream, &app.desktop);
     }
+    if path == "/api/agent-events" && r.method == "GET" {
+        let id = query.get("id").ok_or("Missing thread")?;
+        thread_path(id)?;
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n").map_err(|e|e.to_string())?;
+        let mut revision = u64::MAX;
+        while !crate::desktop::stopping() {
+            match crate::team::client(id, &json!({"action":"watch","since":revision})) {
+                Ok(value) => {
+                    let next = value["revision"].as_u64().unwrap_or(0);
+                    if next != revision {
+                        write!(stream, "data: {}\n\n", json!({"revision":next}))
+                            .map_err(|e| e.to_string())?;
+                        revision = next;
+                    } else {
+                        write!(stream, ": heartbeat\n\n").map_err(|e| e.to_string())?;
+                    }
+                    if value["closed"] == true {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    write!(stream, "data: {{\"offline\":true}}\n\n").map_err(|e| e.to_string())?;
+                    break;
+                }
+            }
+        }
+        return Ok(());
+    }
     if path == "/api/desktop/status" && r.method == "GET" {
         return json_response(&mut stream, 200, app.desktop.status()).map_err(|e| e.to_string());
     }

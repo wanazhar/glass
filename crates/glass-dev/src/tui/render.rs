@@ -2649,7 +2649,20 @@ fn render_subagents_viewer(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
                     format!("{task_position}  {state:<12} "),
                     Style::default().fg(if state == "failed" { ERROR } else { MUTED }),
                 ),
-                Span::styled(task_id.to_string(), Style::default().fg(TEXT)),
+                Span::styled(
+                    format!(
+                        "{}{}",
+                        "  ".repeat(
+                            child["depth"]
+                                .as_u64()
+                                .unwrap_or(1)
+                                .saturating_sub(1)
+                                .min(3) as usize
+                        ),
+                        child["taskText"].as_str().unwrap_or(task_id)
+                    ),
+                    Style::default().fg(TEXT),
+                ),
             ]));
         }
         if !viewer.list_request_id.is_empty() {

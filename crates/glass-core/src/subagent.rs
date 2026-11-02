@@ -700,7 +700,7 @@ fn task_prompt(task: &SubagentTask, parent: Option<&str>) -> String {
 
 pub fn compose_prompt(task: &SubagentTask) -> String {
     let tools = if task.read_only {
-        "the read-only inspection tools (list, read, search). You cannot modify anything"
+        "the inspect tool with action=list/read/search/git_status/system, plus bounded teammate delegation when that tool is advertised. Read-only workers have no bash, arbitrary command execution, or file mutations. This is an enforced capability boundary, not model conservatism. Use git_status to verify repository state; a .git entry alone is insufficient. Use system for current time and host information. Never request write permission or start a desktop merely to perform inspection"
     } else {
         "read, edit, write, bash and state; prefer bounded native file operations with revision guards"
     };
@@ -713,7 +713,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
         return format!(
             "{body}\n\nDelegated task: {task}\n\n\
              Do the task using {tools}. Do not ask the user questions. \
-             Reply with a concise report of what you found or changed. Read relevant ranges first, avoid whole-repository dumps, and retain concise progress and paths in your report. Output allowance includes reasoning; prioritize an actionable report.",
+             Reply with a concise report of what you found or changed. Read relevant ranges first, avoid whole-repository dumps, and retain concise progress and paths in your report. Separate observed tool evidence from inference and unverified claims; identify unsupported checks as not performed. Never call a task verified or complete solely because a delegate returned. Output allowance includes reasoning; prioritize an actionable report.",
             task = task.task
         );
     }
@@ -722,7 +722,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
          Task: {task}\n\n\
          Do the task using {tools}. Do not ask the user \
          questions. When you are done, reply with a concise report \
-         of what you found or changed. Read relevant ranges first, avoid whole-repository dumps, and retain concise progress and paths in your report. Output allowance includes reasoning; prioritize an actionable report.",
+         of what you found or changed. Read relevant ranges first, avoid whole-repository dumps, and retain concise progress and paths in your report. Separate observed tool evidence from inference and unverified claims; identify unsupported checks as not performed. Never call a task verified or complete solely because a delegate returned. Output allowance includes reasoning; prioritize an actionable report.",
         task = task.task
     )
 }

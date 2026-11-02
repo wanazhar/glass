@@ -84260,6 +84260,11 @@
         },
         {
           "level": "2",
+          "title": "Read-only capabilities and verification",
+          "anchor": "read-only-capabilities-and-verification"
+        },
+        {
+          "level": "2",
           "title": "Completion, limits, and restart",
           "anchor": "completion-limits-and-restart"
         },

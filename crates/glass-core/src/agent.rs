@@ -4059,7 +4059,7 @@ fn run_read_only_tool(
         "inspect" => crate::inspect::run(call, workspace),
         "desktop_status" | "desktop_screenshot" | "desktop_observe" => run_desktop(call, workspace),
         _ => tools::Outcome::err(
-            "Plan mode blocks execution: only read-only inspect, desktop status, screenshots, and accessibility observation are available",
+            "Read-only capability boundary: bash and arbitrary execution are unavailable. Use inspect actions list/read/search/git_status/system; use only advertised desktop observation tools if a desktop exists. Do not start a desktop or request write permission for basic inspection",
         ),
     }
 }

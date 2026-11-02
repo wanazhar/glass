@@ -27,6 +27,23 @@ applicable policy. CLI workers created explicitly by the human do not trigger
 unsolicited main-model turns. Model-created children return completion reports
 to their owning parent.
 
+## Read-only capabilities and verification
+
+Read-only teammates receive `inspect` with `list`, `read`, `search`,
+`git_status`, and `system` actions. They do not receive `bash` or file mutation
+tools. `git_status` runs fixed Git verification/status operations with optional
+index writes, hooks, and filesystem monitors disabled. A `.git` entry alone is
+not repository evidence. `system` returns UTC time, Unix time, OS, architecture,
+and workspace from host APIs. Neither action requires a desktop or write access.
+Writing workers use the advertised native file and execution tools instead.
+Creation and inspection receipts expose the worker's capabilities.
+
+A completion is an attributed worker report, not independent verification.
+The parent must distinguish observed tool results, inference, and checks that
+were not performed. Completion notifications include status, failure category,
+recovery guidance, and capabilities so a blocked report cannot silently pass as
+a successful verification.
+
 ## Completion, limits, and restart
 
 After delegating, the model should finish its turn. The host delivers completion
@@ -44,6 +61,14 @@ usage is unavailable. Ordinary human-requested root turns retain their normal
 session budget. Automatic root follow-ups also have a 24-round and 16,000-output-
 token ceiling. The shared cost ledger remains authoritative.
 
+Admission estimates include the system prompt, tool schemas, and repeated
+context. A request must leave at least the smaller of its configured output
+limit and 1,024 output tokens after input; otherwise it is refused before the
+provider call. Receipts expose the latest input estimate, estimated minimum
+next-request allowance, and a suggested allowance for two bounded requests.
+These are estimates, not promises about task completion. The host never
+silently raises the allowance or replays tools to recover from exhaustion.
+
 A nonempty checklist with no pending or in-progress tasks stops automatic work.
 Human interruption stops the tree. Hitting an allowance prevents further
 requests; it does not grant models permission to reset the allowance. Inspect
@@ -59,7 +84,8 @@ gc agent --session MAIN_ID workflow resume 300000
 
 Resume resets activation allowances and retains token accounting and history.
 Only the human can resume the workflow. Resume a parked worker separately with
-an explicit assignment when needed. Restart restores saved records and parks
+an explicit assignment when needed. Restart stops automatic continuation until explicit human workflow resume,
+restores saved records, and parks
 uncertain work rather than replaying tools or pending automatic activations.
 Idle workers hold no provider request. Local viewers make no model requests;
 transcripts load in bounded pages rather than filling the parent's prompt.

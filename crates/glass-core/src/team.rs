@@ -228,6 +228,27 @@ impl Info {
         value.as_object_mut().unwrap().remove("result_schema");
         value["result_contract"] = self.result_schema.as_ref().map(|schema| json!({"enabled":true,"fingerprint":crate::workspace::hash(schema.to_string().as_bytes())})).unwrap_or(Value::Null);
         value["remaining_tokens"] = json!(self.remaining());
+        value["capabilities"] = json!({"inspect":if self.read_only {vec!["list","read","search","git_status","system"]}else{vec![]},"native_file_tools":if self.read_only{vec![]}else{vec!["read","edit","write"]},"bash":!self.read_only,"file_mutations":!self.read_only,"nested_delegation":self.depth<flow::MAX_DEPTH,"desktop":"only advertised desktop tools are available; inspection never requires starting a desktop"});
+        value["report_verification"] = json!(
+            "unverified delegated report; inspect supporting tool results before claiming success"
+        );
+        value["minimum_next_request_tokens_estimate"] = if self.last_request_input_estimate > 0 {
+            json!(
+                self.last_request_input_estimate
+                    .saturating_add(u64::from(self.output_limit.min(1024)))
+            )
+        } else {
+            Value::Null
+        };
+        value["recommended_remaining_tokens_estimate"] = if self.last_request_input_estimate > 0 {
+            json!(
+                2 * self
+                    .last_request_input_estimate
+                    .saturating_add(u64::from(self.output_limit.min(4096)))
+            )
+        } else {
+            Value::Null
+        };
         value["reasoning_control"] =
             json!("provider/model dependent; zero uses provider default, not thinking disabled");
         value["next_output_headroom_estimate"] = json!(
@@ -751,6 +772,8 @@ impl Hub {
                 let w = state.agents.get_mut(&id).unwrap();
                 w.interrupt = true;
                 w.queue.clear();
+                w.info.pending_activation = false;
+                w.info.pending_messages.clear();
                 if w.info.status != "working" {
                     w.info.status = "parked".into();
                 }
@@ -783,6 +806,8 @@ impl Hub {
             "interrupt" => {
                 worker.interrupt = true;
                 worker.queue.clear();
+                worker.info.pending_activation = false;
+                worker.info.pending_messages.clear();
                 if worker.info.status != "working" {
                     worker.info.status = "parked".into();
                 }
@@ -1273,7 +1298,8 @@ impl Provider for Meter {
             if estimated_input >= remaining {
                 let _ = self.hub.persist(i);
                 return Err(provider::Error::Config(format!(
-                    "teammate request context exceeds remaining token budget: next_input_estimate={estimated_input}, remaining={remaining}, allowance={}, reported={}, estimated={}, reserved={}; compact history or explicitly raise budget and resume",
+                    "teammate request context exceeds remaining token budget: next_input_estimate={estimated_input}, remaining={remaining}, minimum_required_estimate={}, allowance={}, reported={}, estimated={}, reserved={}; compact history or explicitly raise budget and resume",
+                    estimated_input.saturating_add(u64::from(req.max_tokens.min(1024))),
                     i.token_limit,
                     i.input.saturating_add(i.output),
                     i.estimated_tokens,
@@ -1291,6 +1317,14 @@ impl Provider for Meter {
                 return Err(provider::Error::Config(format!(
                     "teammate request context exceeds remaining allowance for configured reasoning: next_input_estimate={estimated_input}, remaining={remaining}, bounded_output={max_tokens}, reasoning={}; increase budget or lower reasoning with limits, then resume",
                     req.reasoning.unwrap_or(0)
+                )));
+            }
+            let useful_output = u64::from(req.max_tokens.min(1024));
+            if remaining.saturating_sub(estimated_input) < useful_output {
+                let _ = self.hub.persist(i);
+                return Err(provider::Error::Config(format!(
+                    "teammate request context exceeds useful remaining token budget: next_input_estimate={estimated_input}, minimum_output_headroom={useful_output}, remaining={remaining}, minimum_required_estimate={}; choose a smaller assignment or explicitly budget and resume; do not replay completed tools",
+                    estimated_input.saturating_add(useful_output)
                 )));
             }
             let reservation = estimated_input.saturating_add(u64::from(max_tokens));
@@ -1508,6 +1542,9 @@ pub fn start(
         .map_err(|e| format!("Invalid agent workflow state: {e}"))?;
     }
     if !state.agents.is_empty() {
+        // Restored reports and pending activations require explicit human review.
+        state.flow.stopped = true;
+        save(&dir.join("workflow.json"), &state.flow)?;
         let roster = state
             .agents
             .values()
@@ -2568,12 +2605,12 @@ mod tests {
     fn budget_refuses_more_requests_and_can_be_raised_explicitly() {
         let (g, dir, requests) = fixture();
         g.hub
-            .request(&json!({"action":"create","name":"review","text":"review","tokens":1024}))
+            .request(&json!({"action":"create","name":"review","text":"review","tokens":4096}))
             .unwrap();
         settled(&g.hub);
         {
             let mut s = g.hub.state.lock().unwrap();
-            s.agents.values_mut().next().unwrap().info.reserved_tokens = 1024;
+            s.agents.values_mut().next().unwrap().info.reserved_tokens = 4096;
         }
         g.hub
             .request(&json!({"action":"send","id":"review","text":"followup"}))
@@ -2999,6 +3036,93 @@ mod tests {
             .request(&json!({"action":"workflow","from":"human","operation":"resume"}))
             .unwrap();
         assert!(g.hub.completion(None).unwrap().is_some());
+        drop(g);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn nested_sibling_reports_coalesce_with_blockers_and_capability_receipts() {
+        let (g, dir, _) = fixture();
+        let parent = g
+            .hub
+            .request(
+                &json!({"action":"create","from":"human","name":"coordinator","text":"inspect"}),
+            )
+            .unwrap();
+        settled(&g.hub);
+        let id = parent["id"].as_str().unwrap();
+        for name in ["leaf_one", "leaf_two"] {
+            g.hub
+                .request(&json!({"action":"create","from":"human","name":name,"text":"inspect"}))
+                .unwrap();
+            settled(&g.hub);
+        }
+        for handle in g.hub.workers.lock().unwrap().drain(..) {
+            handle.join().unwrap();
+        }
+        // Freeze dispatch to exercise two reports arriving in one delivery window.
+        {
+            let mut state = g.hub.state.lock().unwrap();
+            for w in state.agents.values_mut() {
+                if w.info.id != id {
+                    w.info.parent_id = Some(id.into());
+                    w.info.depth = 2;
+                    w.info.notify_parent = true;
+                    w.info.notified_turns = 0;
+                    w.info.terminal_events = 1;
+                }
+            }
+            state.agents.get_mut(id).unwrap().interrupt = false;
+            state.agents.get_mut(id).unwrap().info.status = "idle".into();
+            state.agents.get_mut(id).unwrap().info.pending_activation = false;
+        }
+        let child = g
+            .hub
+            .snapshot()
+            .into_iter()
+            .find(|i| i.name == "leaf_two")
+            .unwrap();
+        g.hub.finish(
+            &child.id,
+            "blocked",
+            "teammate token budget reached; no request executed",
+        );
+        let prompt = g.hub.completion(Some(id)).unwrap().unwrap();
+        assert!(
+            prompt.contains("leaf_one")
+                && prompt.contains("leaf_two")
+                && prompt.contains("status=blocked")
+                && prompt.contains("Recovery:")
+        );
+        assert!(prompt.contains("not independent verification"));
+        assert!(g.hub.completion(Some(id)).unwrap().is_none());
+        let receipt = child.receipt();
+        assert_eq!(receipt["capabilities"]["bash"], false);
+        drop(g);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn tiny_budget_is_refused_before_provider_with_actionable_headroom() {
+        let (g, dir, requests) = fixture();
+        g.hub
+            .request(&json!({"action":"create","name":"tiny","text":"inspect","tokens":1024}))
+            .unwrap();
+        settled(&g.hub);
+        assert!(requests.lock().unwrap().is_empty());
+        let info = &g.hub.snapshot()[0];
+        assert_eq!(info.failure_kind.as_deref(), Some("context_allowance"));
+        assert!(info.result.contains("minimum_required_estimate"));
+        assert!(
+            info.receipt()["minimum_next_request_tokens_estimate"]
+                .as_u64()
+                .unwrap()
+                > 1024
+        );
+        assert!(
+            info.receipt()["recovery"]
+                .as_str()
+                .unwrap()
+                .contains("resume")
+        );
         drop(g);
         fs::remove_dir_all(dir).unwrap();
     }

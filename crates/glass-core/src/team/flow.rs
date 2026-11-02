@@ -137,10 +137,14 @@ impl Hub {
         );
         for info in ready {
             prompt.push_str(&format!(
-                "{} ({}): {}\n",
+                "{} ({}) status={} failure={}; delegated claim, not independent verification: {}\nRecovery: {}\nCapabilities: {}\n",
                 info.name,
                 info.id,
-                short(&info.result, 1200)
+                info.status,
+                info.failure_kind.as_deref().unwrap_or("none"),
+                short(&info.result, 1200),
+                info.receipt()["recovery"].as_str().unwrap_or(""),
+                info.receipt()["capabilities"]
             ));
             let worker = state.agents.get_mut(&info.id).unwrap();
             worker.info.notified_turns = worker.info.terminal_events;
@@ -229,7 +233,7 @@ pub fn take_completion(
     Ok(Some(prompt))
 }
 pub fn schema() -> (String, String, String) {
-    ("teammate".into(),"Delegate bounded persistent work. action=create needs name and text; optional write, tokens, model. Default read-only. Nested delegates inherit read-only constraints, share a 200000-token tree allowance, and stop at depth 3. Completion automatically resumes the owning parent, coalesced and capped at 16 tree activations and 8 per worker. Do not poll: finish your turn after delegating; completion returns a follow-up. action=list/inspect/transcript inspect children; action=send sends an explicit follow-up to your child; workflow with operation=stop ends automation. Human resume is required after limits or interruption.".into(),json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","inspect","transcript","send","workflow"]},"name":{"type":"string"},"text":{"type":"string"},"id":{"type":"string"},"write":{"type":"boolean"},"tokens":{"type":"integer"},"model":{"type":"string"},"operation":{"type":"string","enum":["inspect","stop"]}},"required":["action"],"additionalProperties":false}).to_string())
+    ("teammate".into(),"Delegate bounded persistent work. action=create needs name and text; optional write, tokens, model. Default read-only. Read-only workers have inspect(list/read/search/git_status/system), not bash: verify Git and host time without write permission or desktop startup. Receipts declare actual capabilities and request headroom. Completion is an unverified delegated claim: check recorded tool evidence before claiming verified success; preserve exact blockers and recovery instructions. Do not silently increase allowances or replay completed work. Nested delegates inherit read-only constraints, share a 200000-token tree allowance, and stop at depth 3. Completion automatically resumes the owning parent, coalesced and capped at 16 tree activations and 8 per worker. Do not poll: finish your turn after delegating; completion returns a follow-up. action=list/inspect/transcript inspect children; action=send sends an explicit follow-up to your child; workflow with operation=stop ends automation. Human resume is required after limits or interruption.".into(),json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","inspect","transcript","send","workflow"]},"name":{"type":"string"},"text":{"type":"string"},"id":{"type":"string"},"write":{"type":"boolean"},"tokens":{"type":"integer"},"model":{"type":"string"},"operation":{"type":"string","enum":["inspect","stop"]}},"required":["action"],"additionalProperties":false}).to_string())
 }
 pub fn execute(session: &str, read_only: bool, arguments: &str, call_id: &str) -> tools::Outcome {
     let result = (|| {

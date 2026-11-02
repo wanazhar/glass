@@ -5,7 +5,7 @@ and its [delivery checklist](plan/tasks/task-agent-coordination-001.md) describe
 the broader task-backed coordination proposal. Bounded nested completion
 continuations and read-only viewers are implemented; see the
 [current delegation guide](../products/glass-core/docs/agents.md) for shipped
-behavior and limits. The proposal includes additional task-ledger work.
+behavior, read-only inspection capabilities, budget admission, and restart limits. The proposal includes additional task-ledger work.
 
 These guides describe the current Glass source tree. They do not claim that
 every change in this tree is part of a published release. The

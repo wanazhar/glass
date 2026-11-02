@@ -112,6 +112,8 @@ def pty_case(size):
             t.close();assert ctl(root,env,owner,'list')[0]['offline'];assert ctl(root,env,owner,'transcript','review')['text'];assert 'not running' in ctl(root,env,owner,'send','review','test',ok=False)
             t=Terminal(root,env,size,args=('resume',owner));t.idle();assert owner_id(root)==owner
             infos=ctl(root,env,owner,'list');assert len(infos)==5
+            assert ctl(root,env,owner,'workflow','inspect')['stopped']
+            ctl(root,env,owner,'workflow','resume')
             ctl(root,env,owner,'resume','review','EOF_FOLLOWUP');info=ctl(root,env,owner,'wait','review','10')['agent'];assert info['turns']==3,info
             # Main composer and palette survive modal/scroll transitions.
             t.send('/agents\r');t.collect(.2);assert 'Agents' in t.vt.text(),t.vt.text();t.send('\x1b');t.collect(.15)

@@ -20,19 +20,34 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 assert 'Only the human can resume' in str(results[-1]),results[-1]
                 delta={'content':'RESUME_REFUSED'}
         elif worker and 'COORDINATOR_TASK' not in users:
-            time.sleep(getattr(self.server,'leaf_delay',.35));delta={'content':'LEAF_DONE'}
+            if getattr(self.server,'inspection_probe',False) and len(results)<2:
+                action='git_status' if not results else 'system'
+                delta={'tool_calls':[{'index':0,'id':'inspect-'+action,'function':{'name':'inspect','arguments':json.dumps({'action':action})}}]}
+            else:
+                if getattr(self.server,'inspection_probe',False):
+                    assert json.loads(results[0]['content'])['verified'] is True
+                    assert json.loads(results[1]['content'])['unix_time_seconds']>0
+                    self.server.inspection_completed=True
+                if getattr(self.server,'sibling_probe',False):self.server.leaf_barrier.wait(timeout=10)
+                time.sleep(getattr(self.server,'leaf_delay',.35));delta={'content':'LEAF_DONE'}
         elif worker:
             if '[Teammate completion follow-up]' in users:delta={'content':'COORDINATOR_DONE'}
-            elif not results:delta={'tool_calls':[{'index':0,'id':'leaf-create','function':{'name':'teammate','arguments':json.dumps({'action':'create','name':'leaf','text':'LEAF_TASK'})}}]}
+            elif not results:
+                calls=[{'index':0,'id':'leaf-create','function':{'name':'teammate','arguments':json.dumps({'action':'create','name':'leaf','text':'LEAF_TASK'})}}]
+                if getattr(self.server,'sibling_probe',False):calls.append({'index':1,'id':'leaf-create-two','function':{'name':'teammate','arguments':json.dumps({'action':'create','name':'leaf_two','text':'LEAF_TASK_TWO'})}})
+                delta={'tool_calls':calls}
             else:delta={'content':'WAITING_FOR_CHILD'}
         elif '[Teammate completion follow-up]' in users:
-            assert 'COORDINATOR_DONE' in users
-            if getattr(self.server,'hook_probe',False) and not any(m.get('tool_call_id')=='auto-write' for m in results):
+            if getattr(self.server,'limit_probe',False):
+                assert 'status=blocked' in users and 'Recovery:' in users and 'context_allowance' in users
+                delta={'content':'BUDGET_BLOCKED'}
+            elif getattr(self.server,'hook_probe',False) and not any(m.get('tool_call_id')=='auto-write' for m in results):
                 delta={'tool_calls':[{'index':0,'id':'auto-write','function':{'name':'write','arguments':json.dumps({'path':'forbidden.txt','text':'must not be written'})}}]}
             else:
+                assert 'COORDINATOR_DONE' in users
                 if getattr(self.server,'hook_probe',False):assert 'HOOK_BLOCKED' in str(results[-1]),results[-1]
                 delta={'content':'ROOT_DONE'}
-        elif not results:delta={'tool_calls':[{'index':0,'id':'coordinator-create','function':{'name':'teammate','arguments':json.dumps({'action':'create','name':'coordinator','text':'COORDINATOR_TASK'})}}]}
+        elif not results:delta={'tool_calls':[{'index':0,'id':'coordinator-create','function':{'name':'teammate','arguments':json.dumps(dict(action='create',name='coordinator',text='COORDINATOR_TASK',**({'tokens':1024} if getattr(self.server,'limit_probe',False) else {})))}}]}
         else:delta={'content':'DELEGATED_PENDING'}
         payload=('data: '+json.dumps({'choices':[{'delta':delta}]})+'\n\ndata: [DONE]\n\n').encode();self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Content-Length',str(len(payload)));self.end_headers()
         try:self.wfile.write(payload)
@@ -136,7 +151,7 @@ def main():
         from pty_vt import Terminal
         root=Path(tmp);server,env=setup(root);server.leaf_delay=2;t=Terminal(root,env,(80,24))
         try:
-            t.idle();t.send('Finish a bounded nested task.\r');t.wait('DELEGATED_PENDING',10)
+            t.idle();t.send('Finish a bounded nested task.\r');t.wait('DELEGATED_PENDING',10);wait_leaf(root,server)
             owner=next((root/'data/glass-core/agents').iterdir()).name
             stopped=subprocess.run([str(BIN),'agent','--session',owner,'workflow','stop'],cwd=root,env=env,text=True,capture_output=True,timeout=10)
             assert stopped.returncode==0,stopped.stderr
@@ -174,6 +189,71 @@ def main():
             print('PASS actor scope: model shell cannot become human through --session')
         finally:server.shutdown();server.server_close()
 
+    with tempfile.TemporaryDirectory(prefix='gc-continuations-inspection-') as tmp:
+        root=Path(tmp);server,env=setup(root);server.inspection_probe=True
+        subprocess.run(['git','init','-q'],cwd=root,check=True);(root/'evidence.txt').write_text('fixture')
+        try:
+            result=subprocess.run([str(BIN),'run','--json','Verify nested read-only inspection.'],cwd=root,env=env,text=True,capture_output=True,timeout=40)
+            assert result.returncode==0,(result.stdout,result.stderr)
+            assert json.loads(result.stdout)['text']=='ROOT_DONE';verify(root,server)
+            print('PASS nested read-only inspection: verified Git status and host time without bash or write permission')
+        finally:server.shutdown();server.server_close()
+
+    with tempfile.TemporaryDirectory(prefix='gc-continuations-restart-') as tmp:
+        from pty_vt import Terminal
+        root=Path(tmp);server,env=setup(root);server.leaf_delay=2;server.inspection_probe=True
+        subprocess.run(['git','init','-q'],cwd=root,check=True)
+        t=Terminal(root,env,(80,24));resumed=None
+        try:
+            t.idle();t.send('Finish a bounded nested task.\r');t.wait('DELEGATED_PENDING',10);wait_leaf(root,server)
+            owner=next((root/'data/glass-core/agents').iterdir()).name
+            leaf=next(json.loads(p.read_text()) for p in (root/'data/glass-core/agents'/owner).glob('*.json') if p.name!='workflow.json' and json.loads(p.read_text()).get('name')=='leaf')
+            child_path=root/'data/glass-core/agents'/owner/'sessions'/(leaf['session']+'.jsonl');child_before=child_path.read_bytes()
+            assert sum(json.loads(line).get('k')=='tool' for line in child_before.splitlines())==2
+            t.p.kill();t.p.wait(timeout=5);t.close();count=len(server.requests)
+            resumed=Terminal(root,env,(80,24),args=('resume',owner));resumed.idle();resumed.collect(2.5)
+            assert len(server.requests)==count
+            state=subprocess.run([str(BIN),'agent','--session',owner,'workflow','inspect'],cwd=root,env=env,text=True,capture_output=True,timeout=10)
+            assert state.returncode==0,state.stderr
+            assert json.loads(state.stdout)['stopped'] is True
+            assert 'ROOT_DONE' not in resumed.vt.text()
+            assert child_path.read_bytes()==child_before
+            print('PASS crash restart: uncertain nested work is parked; no request or tool replay before human resume')
+        finally:
+            if resumed:resumed.close()
+            if t.p.poll() is None:t.close()
+            server.shutdown();server.server_close()
+
+    for mode in ['sibling_probe','limit_probe']:
+        with tempfile.TemporaryDirectory(prefix='gc-continuations-'+mode+'-') as tmp:
+            root=Path(tmp);server,env=setup(root);setattr(server,mode,True)
+            if mode=='sibling_probe':server.leaf_barrier=threading.Barrier(2)
+            try:
+                result=subprocess.run([str(BIN),'run','--json','Verify bounded delegation.'],cwd=root,env=env,text=True,capture_output=True,timeout=40)
+                assert result.returncode==0,(result.stdout,result.stderr)
+                infos=[json.loads(p.read_text()) for p in (root/'data/glass-core/agents').glob('*/*.json') if p.name!='workflow.json']
+                if mode=='sibling_probe':
+                    assert json.loads(result.stdout)['text']=='ROOT_DONE'
+                    assert len(infos)==3 and sum(i['depth']==2 for i in infos)==2
+                    assert next(i for i in infos if i['name']=='coordinator')['auto_wakes']==1
+                    assert len(server.requests)==8,len(server.requests)
+                    print('PASS simultaneous nested siblings: two real child requests coalesce into one coordinator continuation')
+                else:
+                    assert json.loads(result.stdout)['text']=='BUDGET_BLOCKED'
+                    assert len(server.requests)==3 and not any('You are a subagent' in str(b['messages'][0]['content']) for b in server.requests)
+                    assert infos[0]['status']=='blocked' and infos[0]['token_limit']==1024
+                    print('PASS exhausted budget: no worker provider request, exact blocker delivered to root, no automatic increase')
+            finally:server.shutdown();server.server_close()
+
+def wait_leaf(root,server):
+    deadline=time.monotonic()+5
+    while time.monotonic()<deadline:
+        for path in (root/'data/glass-core/agents').glob('*/*.json'):
+            info=json.loads(path.read_text())
+            if info.get('name')=='leaf' and info.get('status')=='working' and (not getattr(server,'inspection_probe',False) or getattr(server,'inspection_completed',False)) and any(any(m['role']=='user' and 'LEAF_TASK' in str(m.get('content','')) for m in b['messages']) for b in server.requests):return
+        time.sleep(.02)
+    raise AssertionError('Nested leaf did not start before interruption/restart')
+
 def verify(root,server):
     infos=[]
     for path in (root/'data/glass-core/agents').glob('*/*.json'):
@@ -183,7 +263,7 @@ def verify(root,server):
     coordinator=next(i for i in infos if i['name']=='coordinator');leaf=next(i for i in infos if i['name']=='leaf')
     assert leaf['parent_id']==coordinator['id'] and leaf['depth']==2
     assert coordinator['auto_wakes']==1 and coordinator['result']=='COORDINATOR_DONE'
-    assert len(server.requests)==7,len(server.requests)
+    assert len(server.requests)==7+(2 if getattr(server,"inspection_probe",False) else 0),len(server.requests)
     flow=json.loads(next((root/'data/glass-core/agents').glob('*/workflow.json')).read_text());assert flow['wakes']==2 and flow['root_spent']>0 and flow['root_reserved']==0,flow
-    assert not any(t['function']['name'] in ('bash','inspect') for b in server.requests for m in b['messages'] if m['role']=='assistant' for t in m.get('tool_calls',[]))
+    assert not any(t['function']['name'] in (('bash',) if getattr(server,'inspection_probe',False) else ('bash','inspect')) for b in server.requests for m in b['messages'] if m['role']=='assistant' for t in m.get('tool_calls',[]))
 if __name__=='__main__':main()

@@ -3,9 +3,9 @@ use crate::tools::Outcome;
 use glass_mod_api::ToolCall;
 use std::path::{Path, PathBuf};
 
-pub const PROMPT: &str = "You are planning a coding task. Inspect the project with the inspect tool. You cannot execute commands, write files, use extensions, or delegate work. Produce a concrete numbered plan with files to change, verification steps, and risks. Do not claim implementation or tests are complete. A user must explicitly choose execution afterwards.";
+pub const PROMPT: &str = "You are planning a coding task. Inspect the project with the inspect tool. You cannot execute commands, write files, use extensions, or delegate writing work. Delegate read-only subtasks only when the teammate tool is advertised. Produce a concrete numbered plan with files to change, verification steps, and risks. Do not claim implementation or tests are complete. A user must explicitly choose execution afterwards.";
 pub fn schema() -> Vec<(String, String, String)> {
-    vec![("inspect".into(), "Read-only project inspection. action=list, read, or search; path is relative to the workspace; query is literal text.".into(), serde_json::json!({"type":"object","properties":{"action":{"type":"string","enum":["list","read","search"]},"path":{"type":"string"},"query":{"type":"string"}},"required":["action"]}).to_string())]
+    vec![("inspect".into(), "Read-only project inspection. action=list/read/search for files, system for OS/architecture/current Unix time, git_status for verified Git status. No arbitrary shell, writes, desktop startup, or permission escalation. Git status is evidence; a .git path alone is not. Paths stay within the workspace; query is literal text.".into(), serde_json::json!({"type":"object","properties":{"action":{"type":"string","enum":["list","read","search","system","git_status"]},"path":{"type":"string"},"query":{"type":"string"}},"required":["action"]}).to_string())]
 }
 fn scoped(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -60,6 +60,15 @@ pub fn run(call: &ToolCall, workspace: &Path) -> Outcome {
         )?;
         let root = workspace.canonicalize().map_err(|e| e.to_string())?;
         match call.arg_str("action").as_deref() {
+            Some("system") => Ok(serde_json::json!({"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,"utc_time":httpdate::fmt_http_date(std::time::SystemTime::now()),"unix_time_seconds":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_secs(),"workspace":root,"evidence":"host system APIs; no shell executed"}).to_string()),
+            Some("git_status") => {
+                if !path.is_dir() { return Err("Git inspection requires a directory".into()); }
+                let args = ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "rev-parse", "--show-toplevel"];
+                let top = crate::workflows::git(&path, &args, None)
+                    .map_err(|e| format!("Git repository verification failed; a .git path alone is not evidence: {e}"))?;
+                let status = crate::workflows::git(&path, &["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "status", "--porcelain=v1", "--untracked-files=normal", "--", "."], None)?;
+                Ok(serde_json::json!({"verified":true,"repository":String::from_utf8_lossy(&top).trim(),"scope":path,"status_porcelain":String::from_utf8_lossy(&status),"evidence":"git rev-parse and git status succeeded; optional index writes, hooks and filesystem monitors disabled"}).to_string())
+            }
             Some("read") => {
                 if !path.is_file() {
                     return Err("Choose a regular text file".into());
@@ -156,5 +165,71 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         assert!(scoped(&root, "..").is_err());
         std::fs::remove_dir(&root).unwrap();
+    }
+    #[test]
+    fn git_inspection_rejects_stub_and_does_not_refresh_index_or_run_monitor() {
+        let root = std::env::temp_dir().join(format!("gc-inspect-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let call = ToolCall {
+            id: "git".into(),
+            name: "inspect".into(),
+            arguments: r#"{"action":"git_status"}"#.into(),
+        };
+        assert_ne!(run(&call, &root).exit_code, Some(0));
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(root.join("evidence.txt"), "verified content").unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "evidence.txt"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["config", "core.fsmonitor", "touch monitor-ran"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let before = std::fs::read(root.join(".git/index")).unwrap();
+        let result = run(&call, &root);
+        assert_eq!(result.exit_code, Some(0), "{}", result.body);
+        let evidence: serde_json::Value = serde_json::from_str(&result.body).unwrap();
+        assert_eq!(evidence["verified"], true);
+        assert!(
+            evidence["status_porcelain"]
+                .as_str()
+                .unwrap()
+                .contains("evidence.txt")
+        );
+        assert_eq!(before, std::fs::read(root.join(".git/index")).unwrap());
+        assert!(!root.join("monitor-ran").exists());
+        let system = run(
+            &ToolCall {
+                id: "sys".into(),
+                name: "inspect".into(),
+                arguments: r#"{"action":"system"}"#.into(),
+            },
+            &root,
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&system.body).unwrap()["unix_time_seconds"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

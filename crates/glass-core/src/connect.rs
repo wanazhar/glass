@@ -794,7 +794,7 @@ pub(crate) fn desktop_for_tui(cfg: crate::config::Config, action: &str) -> Resul
     }
     if action == "stop" {
         if let Some(id) = status["sessionId"].as_str() {
-            crate::desktop::Desktop::agent_control(&json!({"action":"stop","sessionId":id}))?;
+            tui_desktop_control(&settings, &json!({"action":"stop","sessionId":id}))?;
         }
         return Ok(json!({"stopped":true}));
     }
@@ -810,7 +810,8 @@ pub(crate) fn desktop_for_tui(cfg: crate::config::Config, action: &str) -> Resul
     }
     if session_started {
         if let Some((environment, lifecycle)) = selected {
-            crate::desktop::Desktop::agent_control(
+            tui_desktop_control(
+                &settings,
                 &json!({"action":"start_selected","environment":environment,"lifecycle":lifecycle}),
             )?;
         } else {
@@ -839,6 +840,88 @@ pub(crate) fn desktop_for_tui(cfg: crate::config::Config, action: &str) -> Resul
         "lifecycle": status.get("lifecycle"),
         "lease": status.get("lease"),
     }))
+}
+
+// Older managers already expose the human-authenticated web lifecycle API.
+// Use it only when their Unix protocol explicitly lacks the new operation;
+// upgrading a TUI must not tear down an active disposable desktop.
+fn tui_desktop_control(settings: &Settings, value: &Value) -> Result<Value, String> {
+    match crate::desktop::Desktop::agent_control(value) {
+        Err(error) if error == "Unsupported desktop agent operation" => {
+            legacy_tui_desktop_control(settings, value)
+        }
+        other => other,
+    }
+}
+fn legacy_tui_desktop_control(settings: &Settings, value: &Value) -> Result<Value, String> {
+    let mut body = value.clone();
+    match value["action"].as_str() {
+        Some("start_selected") => body["action"] = json!("start"),
+        Some("stop") => {}
+        _ => return Err("Unsupported TUI desktop lifecycle action".into()),
+    }
+    let request_origin = origin(settings);
+    let authority = origin_authority(&request_origin).ok_or("Invalid desktop manager origin")?;
+    if [
+        authority,
+        request_origin.as_str(),
+        settings.token.as_str(),
+        settings.login.as_str(),
+    ]
+    .iter()
+    .any(|s| s.contains(['\r', '\n']))
+    {
+        return Err("Invalid desktop manager settings".into());
+    }
+    let mut stream = TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], settings.port)),
+        Duration::from_secs(5),
+    )
+    .map_err(|_| "Desktop manager connection unavailable")?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(90)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    let body = body.to_string();
+    write!(stream,"POST /api/desktop/session HTTP/1.1\r\nHost: {authority}\r\nOrigin: {request_origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",body.len()).map_err(|e|e.to_string())?;
+    if settings.local {
+        write!(stream, "Authorization: Bearer {}\r\n", settings.token)
+            .map_err(|e| e.to_string())?;
+    } else {
+        write!(
+            stream,
+            "Tailscale-User-Login: {}\r\nX-Glass-Owner-Capability: {}\r\n",
+            settings.login,
+            owner_access_capability(settings, &request_origin)
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    write!(stream, "\r\n{body}").map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    stream
+        .take((MAX_BODY + 8192 + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Desktop manager response timed out")?;
+    if bytes.len() > MAX_BODY + 8192 {
+        return Err("Desktop manager response exceeds bounds".into());
+    }
+    let split = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("Invalid desktop manager response")?;
+    let response: Value = serde_json::from_slice(&bytes[split + 4..])
+        .map_err(|_| "Invalid desktop manager response")?;
+    let header =
+        std::str::from_utf8(&bytes[..split]).map_err(|_| "Invalid desktop manager response")?;
+    if !header.starts_with("HTTP/1.1 200 ") {
+        return Err(response["error"]
+            .as_str()
+            .unwrap_or("Desktop manager rejected the action")
+            .into());
+    }
+    Ok(response)
 }
 
 struct Feed {
@@ -3284,6 +3367,38 @@ mod tests {
                 .any(|part| part == b"X-Frame-Seq: 1\r\n")
         );
     }
+    #[test]
+    fn legacy_desktop_control_sends_origin_bound_owner_auth_without_public_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = settings();
+        config.port = listener.local_addr().unwrap().port();
+        config.http = 8082;
+        config.http_host = "100.98.115.95".into();
+        let expected = config.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let r = request(&mut stream).unwrap();
+            assert_eq!(r.path, "/api/desktop/session");
+            assert_eq!(r.headers["origin"], origin(&expected));
+            assert!(authorized(&expected, &r));
+            assert!(same_origin_desktop_mutation(&expected, &r));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&r.body).unwrap()["action"],
+                "start"
+            );
+            json_response(&mut stream, 200, json!({"started":true})).unwrap();
+        });
+        assert_eq!(
+            legacy_tui_desktop_control(
+                &config,
+                &json!({"action":"start_selected","environment":"gnome","lifecycle":"reusable"})
+            )
+            .unwrap()["started"],
+            true
+        );
+        server.join().unwrap();
+    }
+
     fn settings() -> Settings {
         Settings {
             port: 8765,

@@ -20,6 +20,9 @@ with tempfile.TemporaryDirectory(prefix='gc-desktop-tui-') as tmp:
         assert not state_path.exists(),'opening picker must not start a manager'
         command('/desktop status','No desktop is running');assert not state_path.exists()
         command('/desktop stop','No desktop is running');assert not state_path.exists()
+        if os.environ.get('GC_DESKTOP_MANAGER_BINARY'):
+            manager=subprocess.run([os.environ['GC_DESKTOP_MANAGER_BINARY'],'connect','--local'],cwd=root,env=env,text=True,capture_output=True,timeout=15)
+            assert manager.returncode==0,manager.stderr
         command('/desktop quick','Environment: XFCE');first=status();assert first['lifecycle']=='disposable'
         command('/desktop reusable','Another desktop is running');assert status()['sessionId']==first['sessionId']
         # Stale stop requests cannot terminate the current desktop.

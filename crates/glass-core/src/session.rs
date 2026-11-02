@@ -434,7 +434,9 @@ impl Record {
     /// caller, which is the only place that knows where user turns begin.
     pub fn to_entry(&self) -> (Role, String) {
         match self {
-            Record::User(t) => (Role::User, t.clone()),
+            Record::User(t) => crate::teammate_ui::prompt(t)
+                .map(|shown| (Role::System, shown))
+                .unwrap_or_else(|| (Role::User, t.clone())),
             Record::Assistant(t) => (Role::Assistant, t.clone()),
             Record::ToolCall {
                 name, arguments, ..
@@ -452,7 +454,10 @@ impl Record {
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
-            Record::System(t) => (Role::System, t.clone()),
+            Record::System(t) => (
+                Role::System,
+                crate::teammate_ui::notice(t).unwrap_or_else(|| t.clone()),
+            ),
             Record::Meta(t) => (Role::Meta, t.clone()),
             Record::Image { media_type, data } => (
                 Role::User,

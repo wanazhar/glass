@@ -118,6 +118,10 @@ impl Screen {
                     || line.starts_with("›"))
             {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Accent)
+            } else if team_rows && line.starts_with("Subagent") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Core)
+            } else if team_rows && line.starts_with("Reasoning ·") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Muted)
             } else if team_rows && line.contains("→ main") {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
             } else if team_rows
@@ -863,17 +867,76 @@ pub fn rich_actions(
     text: &str,
     actions: &[(char, &str)],
 ) -> Option<char> {
+    rich_actions_impl(keys, title, text, actions, None, &mut 0, None)
+}
+
+pub fn chat_actions(
+    keys: &KeyReader,
+    title: &str,
+    text: &str,
+    actions: &[(char, &str)],
+    offset: &mut usize,
+    screen: &Screen,
+    refresh: &dyn Fn() -> bool,
+) -> Option<char> {
+    rich_actions_impl(
+        keys,
+        title,
+        text,
+        actions,
+        Some(refresh),
+        offset,
+        Some(screen),
+    )
+}
+
+fn rich_actions_impl(
+    keys: &KeyReader,
+    title: &str,
+    text: &str,
+    actions: &[(char, &str)],
+    refresh: Option<&dyn Fn() -> bool>,
+    saved_offset: &mut usize,
+    screen: Option<&Screen>,
+) -> Option<char> {
+    let chat = refresh.is_some();
     let title = glass_tui::markdown::sanitize(title).replace(['\n', '\r'], " ");
-    let _screen = Screen::new();
-    let mut offset = 0usize;
+    let _screen = screen.is_none().then(Screen::new);
+    let mut offset = *saved_offset;
     let mut cached_width = 0usize;
     let mut lines = Vec::new();
     loop {
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
-        let width = usize::from(w.saturating_sub(2).max(1));
+        let margin = if chat && w >= 24 { 2 } else { 0 };
+        let width = usize::from(w.saturating_sub(2 + margin * 2).max(1)).min(if chat {
+            88
+        } else {
+            usize::MAX
+        });
         let page = usize::from(h.saturating_sub(3));
         if width != cached_width {
             lines = glass_tui::markdown::lines(text, width);
+            if chat {
+                for row in &mut lines {
+                    let label = row.to_string();
+                    let tone = if label.starts_with("Subagent") {
+                        Some(glass_tui::theme::Tone::Core)
+                    } else if label.starts_with("Tool ·")
+                        || label.starts_with("Result ·")
+                        || label.starts_with("Reasoning ·")
+                        || label.starts_with("Read-only ·")
+                    {
+                        Some(glass_tui::theme::Tone::Muted)
+                    } else {
+                        None
+                    };
+                    if let Some(tone) = tone {
+                        for span in &mut row.spans {
+                            span.style = span.style.fg(glass_tui::theme::color(tone));
+                        }
+                    }
+                }
+            }
             cached_width = width;
         }
         offset = offset.min(lines.len().saturating_sub(page));
@@ -885,7 +948,7 @@ pub fn rich_actions(
             glass_tui::text::clip(&title, usize::from(w.saturating_sub(1).max(1)))
         );
         for (i, line) in lines.iter().skip(offset).take(page).enumerate() {
-            let _ = write!(out, "\x1b[{};1H", i + 2);
+            let _ = write!(out, "\x1b[{};{}H", i + 2, margin + 1);
             glass_tui::markdown::write_ansi(&mut out, line);
         }
         if h > 2 {
@@ -915,6 +978,15 @@ pub fn rich_actions(
                     );
                 }
             }
+            if chat {
+                footer = if w < 32 {
+                    "Esc · t/r · p/n/l".into()
+                } else if w < 60 {
+                    "Esc · ↑↓ · t tools · r think · p/n/l".into()
+                } else {
+                    "Esc back · ↑↓ scroll · t tools · r reasoning · p/n history · l latest".into()
+                };
+            }
             let _ = write!(
                 out,
                 "\x1b[{};1H{}{}\x1b[0m",
@@ -926,7 +998,26 @@ pub fn rich_actions(
         let _ = write!(out, "\x1b[?2026l");
         let _ = out.flush();
         drop(out);
-        match keys.next_blocking() {
+        let event = if let Some(refresh) = refresh {
+            loop {
+                match keys.wait_timeout(Duration::from_millis(250)) {
+                    Ok(Some(event)) => break Some(event),
+                    Ok(None) if refresh() => {
+                        *saved_offset = if offset == lines.len().saturating_sub(page) {
+                            usize::MAX
+                        } else {
+                            offset
+                        };
+                        return Some('\0');
+                    }
+                    Ok(None) => {}
+                    Err(_) => break None,
+                }
+            }
+        } else {
+            keys.next_blocking()
+        };
+        match event {
             Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
                 return None;
             }
@@ -939,6 +1030,11 @@ pub fn rich_actions(
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 if let KeyCode::Char(c) = k.code {
+                    *saved_offset = if offset == lines.len().saturating_sub(page) {
+                        usize::MAX
+                    } else {
+                        offset
+                    };
                     return Some(c);
                 }
             }

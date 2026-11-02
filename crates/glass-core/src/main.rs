@@ -102,6 +102,7 @@ mod structured;
 mod subagent;
 mod surface;
 mod team;
+mod teammate_ui;
 mod todo;
 mod tool_repair;
 mod tools;
@@ -2279,9 +2280,6 @@ fn repl(
                             {
                                 background_recorded = true;
                                 accepted_background = Some((session.id.clone(), prompt.clone()));
-                                ui_println!(
-                                    "\x1b[90mteammates finished; continuing pending work\x1b[0m"
-                                );
                                 editor.insert_str(&prompt);
                                 break Some(glass_tui::crossterm::event::Event::Key(
                                     glass_tui::crossterm::event::KeyEvent::new(
@@ -4074,6 +4072,23 @@ fn repl(
         // recorded once, and a multi-line one must land intact.
         let automatic_team_turn = text.starts_with(team::FOLLOW_UP);
         echo_prompt(&mut std::io::stdout(), &text, prompt_row, prompt_rows);
+        // Reports can arrive while the idle input loop is waiting. Paint them
+        // before the engine consumes its notice queue at the first tool round.
+        let notice_start = session.records.len();
+        team::record_notices(&mut session)?;
+        surface::set_notice_turn(
+            session
+                .history_entries()
+                .iter()
+                .map(|entry| entry.turn)
+                .max()
+                .unwrap_or(0),
+        );
+        for record in &session.records[notice_start..] {
+            if let Record::System(text) = record {
+                painter.system_notice(text);
+            }
+        }
         navigation::record(&session, &cfg.workspace, &cfg.model, "running")?;
         // Submission transfers ownership of the prompt to conversation
         // history. Remove its visible draft before provider work can begin.
@@ -4706,6 +4721,15 @@ fn drain_input(
 /// cleared and the prompt is printed once, whole: a prompt must be
 /// recorded once, and a multi-line one must land intact.
 fn render_prompt(io: &mut impl Write, text: &str, width: u16) {
+    if let Some(shown) = teammate_ui::prompt(text) {
+        let mut layout = glass_tui::layout::Layout::new(vec![(shown, glass_tui::Role::System, 0)]);
+        layout.set_width(width.saturating_sub(1).max(1));
+        for row in layout.entry_lines(0) {
+            glass_tui::markdown::write_ansi(io, &row);
+            let _ = write!(io, "\r\n");
+        }
+        return;
+    }
     let clean = glass_tui::markdown::sanitize(text).replace('\t', "    ");
     for (index, line) in
         glass_tui::text::wrap_words(&clean, width.saturating_sub(3).max(1) as usize)
@@ -5263,6 +5287,8 @@ impl Painter {
     }
 
     fn system_notice(&self, text: &str) {
+        let projected = teammate_ui::notice(text);
+        let text = projected.as_deref().unwrap_or(text);
         self.append_live_entry(glass_tui::Role::System, text.to_owned());
         surface::retain_system_notice(text);
         let mut layout =

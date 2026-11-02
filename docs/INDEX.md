@@ -318,7 +318,7 @@ current user instructions.
   versioned Core result metadata, command destinations, and transcript routing.
   The [Core terminal guide](../products/glass-core/docs/terminal.md) documents
   desktop progress dialogs, workflow resume controls, and read-only teammate
-  conversations.
+  conversations with expandable tool results.
 - [Canonical Browser Workspace](architecture/browser-workspace.md) and
   [Glass Product Workspace](architecture/product-workspace.md) — the shared
   browser/App controller, direct Agent/Code/App UX, focus, desktop, and phone

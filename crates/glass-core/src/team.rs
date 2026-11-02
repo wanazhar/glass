@@ -25,6 +25,7 @@ use std::{
 
 const MAX_AGENTS: usize = 32;
 const MAX_ACTIVE: usize = 4;
+mod chat_page;
 mod flow;
 pub use flow::{
     FOLLOW_UP, cancel_root, context as actor_context, continuation_factory, execute,
@@ -2003,14 +2004,32 @@ struct TailCache {
     interactions: bool,
     before: Option<u64>,
     start: u64,
+    participants: Vec<(String, String)>,
 }
 impl TailCache {
+    fn set_participants(&mut self, infos: &[Info]) {
+        let labels = infos
+            .iter()
+            .map(|info| (format!("Agent {}", info.id), info.name.clone()))
+            .collect::<Vec<_>>();
+        if labels != self.participants {
+            self.participants = labels;
+            self.parsed.clear();
+            self.width = 0;
+        }
+    }
     fn rows(&mut self, path: &Path, width: usize, interactions: bool) -> Vec<String> {
         self.read(path);
         if self.text != self.parsed || self.width != width || self.interactions != interactions {
             self.rows = readable_log_mode(&self.text, interactions, false)
                 .iter()
-                .flat_map(|s| glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(s), width))
+                .flat_map(|s| {
+                    let named = self
+                        .participants
+                        .iter()
+                        .fold(s.clone(), |row, (id, name)| row.replace(id, name));
+                    glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(&named), width)
+                })
                 .collect();
             self.parsed.clone_from(&self.text);
             self.width = width;
@@ -2025,7 +2044,7 @@ impl TailCache {
         if self.path != path || self.stamp != stamp {
             self.path = path.into();
             self.stamp = stamp;
-            match window(path, self.before) {
+            match chat_page::read(path, self.before) {
                 Ok(v) => {
                     self.start = v["before"].as_u64().unwrap_or(0);
                     self.text = v["text"].as_str().unwrap_or("").into();
@@ -2036,10 +2055,28 @@ impl TailCache {
         &self.text
     }
 }
+#[cfg(test)]
 fn readable_log(text: &str, interactions: bool) -> Vec<String> {
-    readable_log_mode(text, interactions, true)
+    readable_chat(text, interactions, true, true)
 }
 fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> {
+    readable_chat(text, interactions, false, false)
+        .into_iter()
+        .map(|row| {
+            if full {
+                row
+            } else {
+                row.lines()
+                    .filter(|line| !(line.len() >= 3 && line.chars().all(|ch| ch == '`')))
+                    .map(|line| line.strip_prefix("### ").unwrap_or(line))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        })
+        .collect()
+}
+fn readable_chat(text: &str, interactions: bool, tools: bool, thoughts: bool) -> Vec<String> {
+    let full = true;
     let mut rows = Vec::new();
     let mut answer = String::new();
     let mut reasoning = String::new();
@@ -2049,7 +2086,7 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
                 format!("### Reasoning\n\n{}", reasoning)
             } else {
                 format!(
-                    "◌ Reasoning · {} characters · Enter to read full conversation",
+                    "Reasoning · {} characters · r to show",
                     reasoning.chars().count()
                 )
             });
@@ -2057,11 +2094,7 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
             reasoning.clear();
         }
         if !answer.is_empty() {
-            rows.push(format!(
-                "{}Subagent\n\n{}",
-                if full { "### " } else { "◆ " },
-                answer
-            ));
+            rows.push(format!("{}Subagent\n\n{}", "### ", answer));
             rows.push(String::new());
             answer.clear();
         }
@@ -2076,10 +2109,8 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
     }
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
-            flush(&mut rows, &mut answer, &mut reasoning, full);
-            rows.push(format!(
-                "Earlier record continues here · load the previous page for its beginning\n{line}"
-            ));
+            flush(&mut rows, &mut answer, &mut reasoning, thoughts);
+            rows.push("An incomplete event is unavailable in this view.".into());
             continue;
         };
         let kind = v["k"].as_str().unwrap_or("");
@@ -2091,17 +2122,84 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
             }
             continue;
         }
-        flush(&mut rows, &mut answer, &mut reasoning, full);
+        flush(&mut rows, &mut answer, &mut reasoning, thoughts);
         if interactions {
+            let raw_message = v["text"].as_str().unwrap_or("");
+            let message = if raw_message.starts_with(FOLLOW_UP) {
+                "Child reports received. The agent is continuing its task."
+            } else {
+                raw_message
+            };
             rows.push(format!(
                 "{}{} → {}\n\n{}",
                 if full { "### " } else { "" },
                 who(v["from"].as_str().unwrap_or("?")),
                 who(v["to"].as_str().unwrap_or("?")),
-                v["text"].as_str().unwrap_or("")
+                message
             ));
         } else {
             let content = v["t"].as_str().unwrap_or("");
+            if matches!(kind, "call" | "tool" | "bash") {
+                let name =
+                    v["name"]
+                        .as_str()
+                        .unwrap_or(if kind == "bash" { "bash" } else { "tool" });
+                let args = v["args"].as_str().unwrap_or("");
+                let parsed = serde_json::from_str::<Value>(args).ok();
+                let action = parsed.as_ref().and_then(|value| value["action"].as_str());
+                let path = parsed.as_ref().and_then(|value| value["path"].as_str());
+                let label = if kind == "tool" { "Result" } else { "Tool" };
+                let mut title = format!("{label} · {name}");
+                if let Some(action) = action {
+                    title.push_str(&format!(" · {action}"));
+                }
+                if let Some(path) = path {
+                    title.push_str(&format!(" · {path}"));
+                }
+                let raw = match kind {
+                    "call" if tools => parsed
+                        .as_ref()
+                        .and_then(|value| serde_json::to_string_pretty(value).ok())
+                        .unwrap_or_else(|| args.into()),
+                    "call" => String::new(),
+                    "bash" => format!(
+                        "{}\n{}",
+                        v["cmd"].as_str().unwrap_or(""),
+                        v["out"].as_str().unwrap_or("")
+                    ),
+                    _ => content.to_owned(),
+                };
+                let output = if tools {
+                    raw.clone()
+                } else {
+                    raw.lines()
+                        .take(3)
+                        .map(|line| short(line, 150))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                rows.push(title);
+                if !output.is_empty() {
+                    let longest = output
+                        .split(|ch| ch != '`')
+                        .map(str::len)
+                        .max()
+                        .unwrap_or(0);
+                    let fence = "`".repeat(longest.saturating_add(1).max(3));
+                    rows.push(format!("{fence}\n{output}\n{fence}"));
+                }
+                if !tools
+                    && (raw.lines().count() > 3
+                        || raw.lines().any(|line| line.chars().count() > 150))
+                {
+                    rows.push(format!(
+                        "… {} lines · t to expand tool output",
+                        raw.lines().count()
+                    ));
+                }
+                rows.push(String::new());
+                continue;
+            }
             let (label, body) = match kind {
                 "user" => {
                     let (sender, body) = if content.starts_with('[') {
@@ -2112,6 +2210,14 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
                     } else {
                         ("main", content)
                     };
+                    if body.starts_with(FOLLOW_UP) {
+                        rows.push(
+                            "### Child reports · received\n\nThe agent is reviewing child results."
+                                .into(),
+                        );
+                        rows.push(String::new());
+                        continue;
+                    }
                     let sender = match sender {
                         "main" => "Main agent",
                         "human" => "You",
@@ -2120,22 +2226,6 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
                     };
                     (format!("{sender} → Subagent"), body.to_owned())
                 }
-                "call" => (
-                    format!("Tool · {}", v["name"].as_str().unwrap_or("tool")),
-                    v["args"].as_str().unwrap_or("").to_owned(),
-                ),
-                "tool" => (
-                    format!("Result · {}", v["name"].as_str().unwrap_or("tool")),
-                    content.to_owned(),
-                ),
-                "bash" => (
-                    "Tool · bash".into(),
-                    format!(
-                        "{}\n{}",
-                        v["cmd"].as_str().unwrap_or(""),
-                        v["out"].as_str().unwrap_or("")
-                    ),
-                ),
                 "meta" => ("Notice".into(), content.to_owned()),
                 _ => continue,
             };
@@ -2146,14 +2236,27 @@ fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> 
         }
         rows.push(String::new());
     }
-    flush(&mut rows, &mut answer, &mut reasoning, full);
+    flush(&mut rows, &mut answer, &mut reasoning, thoughts);
     rows
 }
-fn full_conversation(keys: &crate::input::KeyReader, path: &Path, title: &str, interactions: bool) {
+fn full_conversation(
+    keys: &crate::input::KeyReader,
+    path: &Path,
+    title: &str,
+    interactions: bool,
+    participants: &[Info],
+) {
+    let screen = crate::modal::Screen::new();
     let mut before = None;
     let mut newer = Vec::new();
+    let mut tools = false;
+    let mut thoughts = false;
+    let mut offset = usize::MAX;
     loop {
-        let page = match window(path, before) {
+        let stamp = fs::metadata(path)
+            .ok()
+            .map(|meta| (meta.len(), meta.modified().ok()));
+        let page = match chat_page::read(path, before) {
             Ok(value) => value,
             Err(error) => {
                 crate::modal::info(keys, "Conversation unavailable", &error);
@@ -2161,30 +2264,62 @@ fn full_conversation(keys: &crate::input::KeyReader, path: &Path, title: &str, i
             }
         };
         let start = page["before"].as_u64().unwrap_or(0);
-        let body = format!(
-            "{title}\n\nRead-only conversation · bytes {}–{}\n\n{}\n\nOlder/Newer load bounded history pages; Latest follows the newest saved messages.",
-            start,
-            page["end"].as_u64().unwrap_or(0),
-            readable_log(page["text"].as_str().unwrap_or(""), interactions).join("\n")
-        );
-        match crate::modal::rich_actions(
+        let mut conversation = readable_chat(
+            page["text"].as_str().unwrap_or(""),
+            interactions,
+            tools,
+            thoughts,
+        )
+        .join("\n");
+        for participant in participants {
+            conversation =
+                conversation.replace(&format!("Agent {}", participant.id), &participant.name);
+        }
+        if !interactions {
+            let name = title.split(" · ").next().unwrap_or("teammate");
+            conversation = conversation
+                .replace("### Subagent\n", &format!("### Subagent · {name}\n"))
+                .replace("→ Subagent\n", &format!("→ {name}\n"));
+        }
+        let body = format!("Read-only · conversation\n\n{conversation}");
+        match crate::modal::chat_actions(
             keys,
             title,
             &body,
-            &[('p', "Older"), ('n', "Newer"), ('l', "Latest")],
+            &[
+                ('p', "Older"),
+                ('n', "Newer"),
+                ('l', "Latest"),
+                ('t', "Tool output"),
+                ('r', "Reasoning"),
+            ],
+            &mut offset,
+            &screen,
+            &|| {
+                before.is_none()
+                    && fs::metadata(path)
+                        .ok()
+                        .map(|meta| (meta.len(), meta.modified().ok()))
+                        != stamp
+            },
         ) {
+            Some('t') => tools = !tools,
+            Some('r') => thoughts = !thoughts,
             Some('p') if start > 0 => {
                 newer.push(before);
                 before = Some(start);
+                offset = 0;
             }
             Some('n') => {
                 if let Some(value) = newer.pop() {
                     before = value;
+                    offset = 0;
                 }
             }
             Some('l') => {
                 before = None;
                 newer.clear();
+                offset = usize::MAX;
             }
             Some(_) => {}
             None => return,
@@ -2238,6 +2373,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
         if render_key != Some(key) || previous.is_empty() {
             render_key = Some(key);
             infos = hub.snapshot();
+            cache.set_participants(&infos);
             selected = selected.min(infos.len().saturating_sub(1));
             let (width, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
             let content_width = if width >= 24 && height >= 12 {
@@ -2272,7 +2408,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
             if tab == 0 {
                 if infos.is_empty() {
                     rows.push("No teammates yet.".into());
-                    rows.push("n · create a reviewer".into());
+                    rows.push("Ask the main agent to delegate a task.".into());
                 }
                 for (i, info) in infos.iter().enumerate() {
                     let tokens = if info.usage_known {
@@ -2478,8 +2614,9 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                     full_conversation(
                         keys,
                         &hub.dir.join("interactions.jsonl"),
-                        "Main agent ↔ teammates · interactions",
+                        "Teammate interactions",
                         true,
+                        &infos,
                     );
                 } else if let Some(info) = infos.get(selected) {
                     full_conversation(
@@ -2487,8 +2624,9 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                         &hub.dir
                             .join("sessions")
                             .join(format!("{}.jsonl", info.session)),
-                        &format!("Main / parent agent ↔ {} · conversation", info.name),
+                        &format!("{} · Conversation", info.name),
                         false,
+                        &infos,
                     );
                 }
                 let _ = crate::surface::overlay(true);

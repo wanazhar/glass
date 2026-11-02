@@ -39,8 +39,12 @@ Press Enter from the roster or transcript to read the selected agent's full
 conversation. Enter from Interactions opens the parent/teammate message log.
 These views are read-only: send instructions through the main conversation.
 Scroll with the arrow or page keys. Press P for older history, N for newer
-history, L for the latest saved page, or Esc to return. Full conversations
-include the recorded reasoning and tool output.
+history, L for the latest saved page, or Esc to return. Full conversations open at the latest reply. Tool results start as short previews;
+press T to expand their output and R to show recorded reasoning. The selected
+conversation updates as new records arrive, without making provider requests.
+History pages keep complete messages together instead of showing JSON fragments.
+The main chat shows concise teammate completion activity and keeps internal
+continuation instructions out of the displayed conversation.
 
 Recaps label saved request and reply excerpts separately. Command notices remain
 available in the transcript reader as well as the normal chat view.

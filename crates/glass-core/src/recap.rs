@@ -29,7 +29,9 @@ fn excerpt(text: &str, cap: usize) -> String {
 
 pub fn build(records: &[Record]) -> Option<String> {
     // The latest request defines scope. Never attribute an older answer to it.
-    let index = records.iter().rposition(|r| matches!(r, Record::User(_)))?;
+    let index = records.iter().rposition(
+        |r| matches!(r, Record::User(text) if !text.starts_with(crate::team::FOLLOW_UP)),
+    )?;
     let Record::User(request) = &records[index] else {
         return None;
     };
@@ -90,7 +92,7 @@ pub fn cached(session: &Session) -> Option<String> {
         .is_some_and(|m| m.is_file() && m.len() < 8192)
         && let Ok(data) = std::fs::read(&path)
         && let Ok(cache) = serde_json::from_slice::<Cached>(&data)
-        && cache.version == 2
+        && cache.version == 3
         && cache.bytes == bytes
         && cache.modified == modified
         && cache.identity == identity
@@ -99,7 +101,7 @@ pub fn cached(session: &Session) -> Option<String> {
     }
     let text = build(&session.history_records())?;
     let cache = Cached {
-        version: 2,
+        version: 3,
         bytes,
         modified,
         identity,
@@ -129,6 +131,22 @@ pub fn cached(session: &Session) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recap_keeps_the_human_task_instead_of_internal_completion_prompts() {
+        let records = [
+            Record::User("Review the files".into()),
+            Record::Assistant("Delegating".into()),
+            Record::User(format!(
+                "{}\nCapabilities: private transport receipt",
+                crate::team::FOLLOW_UP
+            )),
+            Record::Assistant("Files reviewed".into()),
+        ];
+        let recap = build(&records).unwrap();
+        assert!(recap.contains("Review the files") && recap.contains("Files reviewed"));
+        assert!(!recap.contains("Capabilities:") && !recap.contains(crate::team::FOLLOW_UP));
+    }
+
     #[test]
     fn empty_and_new_request() {
         assert!(build(&[]).is_none());

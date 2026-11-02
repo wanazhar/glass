@@ -567,25 +567,43 @@ pub(crate) fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'stati
             text.strip_prefix("[teammate update; attributed report, verify claims]\n")
         {
             ("Teammates · attributed reports", body)
-        } else if text.starts_with("Recap ·") {
+        } else if text.starts_with("Recap ·")
+            || text.starts_with("Teammate ·")
+            || text.starts_with("Teammates ·")
+        {
             text.split_once("\n\n").unwrap_or(("Recap", text))
         } else if text.starts_with("error:") {
             ("Error", text)
         } else {
             ("Notice", text)
         };
-        let mut rows = vec![Line::from(Span::styled(
-            format!("{}{}", " ".repeat(margin), title),
-            ratatui::style::Style::new().fg(crate::theme::color(if title == "Error" {
+        let heading = ratatui::style::Style::new()
+            .fg(crate::theme::color(if title == "Error" {
                 crate::theme::Tone::Error
             } else {
                 crate::theme::Tone::Secondary
-            })),
-        ))];
+            }))
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let mut rows: Vec<_> = crate::text::wrap_words(title, column)
+            .into_iter()
+            .map(|row| {
+                Line::from(Span::styled(
+                    format!("{}{row}", " ".repeat(margin)),
+                    heading,
+                ))
+            })
+            .collect();
         rows.extend(
             crate::markdown::lines(body, column)
                 .into_iter()
                 .map(|mut row| {
+                    if row.to_string().starts_with("Alt+A") {
+                        for span in &mut row.spans {
+                            span.style = span
+                                .style
+                                .fg(crate::theme::color(crate::theme::Tone::Muted));
+                        }
+                    }
                     row.spans.insert(0, Span::raw(" ".repeat(margin)));
                     row
                 }),

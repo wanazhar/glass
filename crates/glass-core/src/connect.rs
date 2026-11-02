@@ -3038,6 +3038,9 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.to_string()),
             };
+            // Input acknowledgements and region headers must not wait for
+            // Nagle batching behind a small preceding response write.
+            stream.set_nodelay(true).map_err(|e| e.to_string())?;
             accepted = true;
             if app.clients.fetch_add(1, Ordering::SeqCst) >= 32 {
                 app.clients.fetch_sub(1, Ordering::SeqCst);
@@ -3051,7 +3054,7 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
             });
         }
         if !accepted {
-            std::thread::sleep(Duration::from_millis(30));
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
     // HTTP and the private agent bridge retain Arc<App>/Arc<Desktop> while

@@ -139,8 +139,9 @@ tools.
 
 Choose **Quick desktop** to start a disposable XFCE session. Connect creates a
 private Xvfb (X virtual framebuffer) display at 1280 × 800. FFmpeg captures
-raw RGB (red, green, blue) frames at up to 10 frames per second,
-without audio. Capture keeps one current raw frame; slower viewers cannot queue capture work.
+raw RGB (red, green, blue) frames at up to 15 frames per second,
+without audio. Connect accepts requests on a short idle interval and disables
+TCP write batching for interactive acknowledgements. Capture keeps one current raw frame; slower viewers cannot queue capture work.
 Region updates use those pixels directly. Whole JPEG (Joint Photographic
 Experts Group) images are encoded only for full refreshes and screenshot paths. The viewer preserves the 1280 × 800 capture resolution using
 changed-region updates on the authenticated Connect origin. Older full-image
@@ -209,7 +210,7 @@ tiles for regions that changed. Flat tiles use lossless PNG; textured tiles use
 JPEG when it produces a smaller update. A bounded gateway history tracks acknowledged
 frames; reconnecting or an expired checkpoint produces a full refresh. Only one
 image request is in flight, so the transport does not queue old desktop images
-behind the viewer. Capture runs at up to 10 frames per second; actual delivery
+behind the viewer. Capture runs at up to 15 frames per second; actual delivery
 also depends on the connection, scene changes, and client decoding performance.
 
 Older gateways and recovery paths retain full-image streaming and finite JPEG
@@ -223,7 +224,7 @@ than three seconds old. Pinch zoom and panning affect only the viewer.
 ### Transport measurements
 
 `python3 products/glass-core/scripts/benchmark-desktop-updates.py` starts a
-private local Connect instance and disposable Xvfb session, then tests the real
+private local Connect instance and managed Xvfb session, then tests the real
 WebKit viewer through a rate-limited proxy. It does not attach to an existing
 user desktop. The scene changes a visible marker in response to input, allowing
 the test to report input-to-image latency as well as displayed-frame age,
@@ -234,7 +235,19 @@ when testing a bundle outside the default checkout paths. The test requires the
 normal XFCE dependencies, the X11 client library, and an installed Playwright
 WebKit browser with matching driver. `GC_PLAYWRIGHT_MODULE` and
 `GC_WEBKIT_BINARY` can select that matching pair. `GC_BENCH_KIBPS` defaults to
-128 and `GC_BENCH_SECONDS` defaults to 20.
+128 and `GC_BENCH_SECONDS` defaults to 20. Set `GC_BENCH_ENVIRONMENT=gnome`
+to exercise reusable GNOME instead of quick XFCE. `GC_BENCH_NATIVE_INPUT=1`
+also tests trusted mouse, trackpad, and direct-touch events. Its `dispatchMs`
+includes the browser automation driver's acknowledgement; `eventToPixelsMs`
+measures from the trusted browser event to the visible changed marker and
+excludes that driver overhead. Do not interpret total automation duration as
+remote desktop processing latency.
+
+`python3 products/glass-core/scripts/smoke-desktop-discovery.py` uses a private
+desktop and local mock provider to check the actual model request. It verifies
+that standalone Core and the Glass mixed runtime advertise desktop tools,
+explain OS-level computer use, and execute native `desktop_status`. The same
+`GC_BENCH_ENVIRONMENT=gnome` option checks GNOME. No provider account is used.
 
 A private WebKit run on 2026-11-01 used a detailed 1280 × 800 scene, a
 128 KiB/s response limit, and 50 ms simulated request delay. After the initial
@@ -247,6 +260,21 @@ move took 2722 ms; that cold-path result remains a limitation of this run.
 These are local measurements, not latency guarantees or video-playback results.
 The Core binary SHA-256 was
 `0a7a08e1cbb4b143cda924cbb8021f4e168a86a1e9c5be6b9a1f8fcc5a7a3375`.
+
+A follow-up private run on 2026-11-02 used the same resolution and proxy limits
+with 15 fps capture. The stable image decoder was retained after direct bitmap
+decoding regressed the real WebKit GNOME test despite passing pixel checks.
+Trusted browser events were timed separately from automation dispatch:
+
+| Desktop | Input-to-image p95 | First mouse event to image | Trackpad tap to image | Direct-touch tap to image |
+|---|---:|---:|---:|---:|
+| Quick XFCE | 748 ms | 398 ms | 216 ms | 228 ms |
+| Reusable GNOME | 719 ms | 538 ms | 203 ms | 208 ms |
+
+Both runs retained full resolution, stayed within the freshness limit, and made
+no legacy-stream requests. These are individual local runs, not a controlled
+percentage-improvement claim. The Core binary SHA-256 was
+`fb5feedb1d60caa906cb30b02069f38b0efc4f6739a3a48ab1912f5db97acebf`.
 
 On phones, **Trackpad** mode is the default. Swipe with one finger to move the
 pointer without holding a mouse button. Tap to click, use two fingers to scroll,

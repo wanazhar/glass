@@ -106,11 +106,13 @@ def main():
             ) as response:
                 return json.load(response)
 
+        environment = os.environ.get("GC_BENCH_ENVIRONMENT", "xfce")
+        assert environment in ("xfce", "gnome")
         picture = None
         try:
             active = api(
                 "session",
-                {"action": "start", "environment": "xfce", "lifecycle": "disposable"},
+                {"action": "start", "environment": environment, "lifecycle": "reusable" if environment == "gnome" else "disposable"},
             )
             api("lease", {"action": "take-control"})
             deadline = time.monotonic() + 20
@@ -119,12 +121,14 @@ def main():
                     "Isolated desktop did not produce frames"
                 )
                 time.sleep(0.1)
+            session_directory = home / "data/glass-core/desktop"
+            if environment == "gnome":
+                session_directory = session_directory / "profiles/default/sessions"
             display_env = dict(
                 env,
                 DISPLAY=active["displayId"],
                 XAUTHORITY=str(
-                    home
-                    / "data/glass-core/desktop"
+                    session_directory
                     / active["sessionId"]
                     / "Xauthority"
                 ),
@@ -148,8 +152,26 @@ def main():
                     "Benchmark scene did not become ready"
                 )
                 time.sleep(0.05)
+            if environment == "gnome":
+                # GNOME initially opens Overview, which covers the benchmark's
+                # override-redirect window. Observe its real state and close it
+                # through the ordinary managed keyboard path before measuring.
+                address = (session_directory / active["sessionId"] / "session-bus.address").read_text()
+                deadline = time.monotonic() + 10
+                while True:
+                    overview = subprocess.run(["gdbus", "call", "--address", address,
+                        "--dest", "org.gnome.Shell", "--object-path", "/org/gnome/Shell",
+                        "--method", "org.freedesktop.DBus.Properties.Get",
+                        "org.gnome.Shell", "OverviewActive", "--timeout", "2"],
+                        env=display_env, capture_output=True, check=True, timeout=3)
+                    if b"false" in overview.stdout:
+                        break
+                    assert time.monotonic() < deadline, "GNOME Overview did not close"
+                    api("input", {"action":"key-tap", "key":"Meta"})
+                    time.sleep(.2)
             low_delay = False
             raw_capture = False
+            capture_fps = None
             for child in (
                 Path(f"/proc/{state['pid']}/task/{state['pid']}/children")
                 .read_text()
@@ -160,6 +182,8 @@ def main():
                     if args and Path(os.fsdecode(args[0])).name == "ffmpeg":
                         low_delay = b"-threads" in args and b"-flush_packets" in args
                         raw_capture = b"rawvideo" in args and b"rgb24" in args
+                        if b"-framerate" in args:
+                            capture_fps = int(args[args.index(b"-framerate") + 1])
                 except OSError:
                     pass
             config = home / "browser.json"
@@ -172,6 +196,7 @@ def main():
                         "sessionId": active["sessionId"],
                         "captureLowDelay": low_delay,
                         "captureRaw": raw_capture,
+                        "captureFps": capture_fps,
                     }
                 )
             )

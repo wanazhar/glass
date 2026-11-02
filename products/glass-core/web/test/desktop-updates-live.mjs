@@ -93,7 +93,8 @@ try {
   const start = Date.now(), startBytes = updateBytes, startInputs = inputs;
   // Measure inside the browser. Repeated automation round trips and GPU
   // readbacks can themselves stall headless WebKit on a shared ARM host.
-  const measured = await page.evaluate(async ({duration,uiInput}) => {
+  let measured;
+  try { measured = await page.evaluate(async ({duration,uiInput}) => {
     const viewport=document.querySelector("#desktop-viewport"), canvas=document.querySelector("#desktop-regions");
     const context=canvas.getContext("2d"), samples=[], inputLatencies=[], inputAcks=[];
     const color=()=>[...context.getImageData(96,96,1,1).data].join(",");
@@ -129,11 +130,12 @@ try {
     }
     return {samples,inputLatencies,inputAcks,visibility:document.visibilityState, resources:performance.getEntriesByType("resource").filter(e=>e.name.includes("/api/desktop/")).slice(-12).map(e=>({path:new URL(e.name).pathname,ms:Math.round(e.duration)}))};
   }, {duration:config.duration,uiInput:Boolean(process.env.GC_BENCH_UI_INPUT)});
+  } catch(error) { await page.screenshot({path:"/tmp/gc-bench-failure.png"});console.log(JSON.stringify({benchmarkFailure:true,inputs,updates,lastUpdate,errors,status:await page.locator("#desktop-status").textContent()}));throw error; }
   const samples=measured.samples.map(value=>({...value,age:Math.max(0,value.at-offset-value.time)}));
   const inputLatencies=measured.inputLatencies;
   const ages = samples.map((sample) => sample.age).sort((a,b) => a-b);
   const percentile = (fraction) => Math.round(ages[Math.min(ages.length - 1, Math.floor(ages.length * fraction))]);
-  const result = { transport: "regions", inputMode:process.env.GC_BENCH_UI_INPUT ? "viewer-pointer" : "api",visibility:measured.visibility,inputAckP95Ms:[...measured.inputAcks].sort((a,b)=>a-b)[Math.floor(measured.inputAcks.length*.95)],resources:measured.resources, captureRaw:config.captureRaw,captureLowDelay: config.captureLowDelay, kilobytesPerSecond: Math.round((updateBytes-startBytes)/(Date.now()-start)),
+  const result = { transport: "regions", inputMode:process.env.GC_BENCH_UI_INPUT ? "viewer-pointer" : "api",visibility:measured.visibility,inputAckP95Ms:[...measured.inputAcks].sort((a,b)=>a-b)[Math.floor(measured.inputAcks.length*.95)],resources:measured.resources, captureRaw:config.captureRaw,captureFps:config.captureFps,captureLowDelay: config.captureLowDelay, kilobytesPerSecond: Math.round((updateBytes-startBytes)/(Date.now()-start)),
     upstreamP95Ms:[...upstreamDurations].sort((a,b)=>a-b)[Math.floor(upstreamDurations.length*.95)],requests: updates, changedTiles: regions, fullFrames: full, inputRequests: inputs-startInputs, legacyRequests: legacy,
     samples: samples.length, p50Ms: percentile(0.5), p95Ms: percentile(0.95), maxMs: percentile(1),
     inputToPaintP95Ms: [...inputLatencies].sort((a,b)=>a-b)[Math.floor(inputLatencies.length*0.95)],
@@ -148,11 +150,28 @@ try {
       if(mode!=="mouse") await page.locator(mode==="trackpad"?"#desktop-trackpad":"#desktop-touch-mode").evaluate(button=>button.click());
       await sleep(300);
       const before=await page.evaluate(()=>[...document.querySelector("#desktop-regions").getContext("2d").getImageData(96,96,1,1).data].join(","));
+      await page.evaluate(()=>{
+        window.nativeTimings=[];window.nativeEvents=[];window.nativePaint=null;
+        window.addEventListener("glass-desktop-input-timing",e=>window.nativeTimings.push(e.detail),{once:true});
+        const viewport=document.querySelector("#desktop-viewport"),canvas=document.querySelector("#desktop-regions");
+        const before=[...canvas.getContext("2d").getImageData(96,96,1,1).data].join(",");
+        let eventAt=null;
+        const event=e=>{if(eventAt===null){eventAt=performance.now();window.nativeEvents.push({type:e.type,trusted:e.isTrusted});}};
+        viewport.addEventListener("pointermove",event,{once:true});viewport.addEventListener("pointerup",event,{once:true});
+        window.nativeObserver?.disconnect();
+        window.nativeObserver=new MutationObserver(()=>{
+          if(eventAt!==null && [...canvas.getContext("2d").getImageData(96,96,1,1).data].join(",")!==before){
+            window.nativePaint=performance.now()-eventAt;window.nativeObserver.disconnect();
+            viewport.removeEventListener("pointermove",event);viewport.removeEventListener("pointerup",event);
+          }
+        });window.nativeObserver.observe(canvas,{attributes:true,attributeFilter:["data-paint-seq"]});
+      });
       const count=inputs,at=Date.now();
       if(mode==="mouse") await page.mouse.move(x,y);else await page.touchscreen.tap(x,y);
+      const dispatched=Date.now();
       await page.waitForFunction(before=>[...document.querySelector("#desktop-regions").getContext("2d").getImageData(96,96,1,1).data].join(",")!==before,before,{timeout:3000,polling:50});
       assert(inputs>count,mode+" did not reach the desktop");
-      console.log(JSON.stringify({nativeInput:mode,inputToPixelsMs:Date.now()-at}));
+      console.log(JSON.stringify({nativeInput:mode,inputToPixelsMs:Date.now()-at,dispatchMs:dispatched-at,...await page.evaluate(()=>({eventToPixelsMs:window.nativePaint,timing:window.nativeTimings,events:window.nativeEvents}))}));
     }
   }
   assert(samples.length > 20);assert.equal(legacy,0);assert(inputs-startInputs>10);

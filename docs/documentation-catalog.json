@@ -1760,6 +1760,11 @@
         },
         {
           "level": "2",
+          "title": "Shared computer use",
+          "anchor": "shared-computer-use"
+        },
+        {
+          "level": "2",
           "title": "Web research",
           "anchor": "web-research"
         },

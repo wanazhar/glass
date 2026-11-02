@@ -4013,7 +4013,7 @@ fn connect_desktop_context(
         "Pass the latest `desktop_status.sessionId` to screenshot, observe, input, act, and launch calls. Use `desktop_act` for revision-bound accessible targets; stale IDs are rejected. `desktop_launch_app` lists exact desktopEntryIds before launching and never accepts command lines or arguments. `desktop_input` and `desktop_launch_app` require the agent lease. The human changes the lease in Connect, and the agent cannot take it implicitly."
     };
     format!(
-        "Connect owns the isolated managed desktop shared with the human, standalone GC, and Glass resident agents. {state} {input} When available, `desktop_observe` returns a bounded tree with revision-bound targets and `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`. The desktop never attaches to the host login session."
+        "Connect provides OS-level computer use on the same host workspace, shared with the human, standalone GC, and Glass resident agents. Quick desktop uses temporary XFCE; Reusable workspace uses persistent GNOME. Check the tools on this request and call `desktop_status` before describing availability; do not infer that desktop control is absent from the presence of browser tools. {state} {input} When available, `desktop_observe` returns a bounded tree with revision-bound targets and `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`. The desktop never attaches to the host login session."
     )
 }
 
@@ -4444,6 +4444,8 @@ mod warm_integration {
         });
         let writable = connect_desktop_context(Some(&status), false, &workspace);
         assert!(writable.contains("desktop-session-1"));
+        assert!(writable.contains("OS-level computer use"));
+        assert!(writable.contains("persistent GNOME"));
         assert!(writable.contains("input control lease is `human`"));
         assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"));
         assert!(writable.contains("revision-bound accessible targets"));

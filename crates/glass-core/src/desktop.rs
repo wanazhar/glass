@@ -550,6 +550,10 @@ impl Desktop {
     }
 
     pub fn stop(&self) -> Result<Value, String> {
+        self.stop_scoped(None)
+    }
+
+    fn stop_scoped(&self, expected: Option<&str>) -> Result<Value, String> {
         self.restore_reusable_session()?;
         let _control = self
             .control
@@ -559,6 +563,9 @@ impl Desktop {
             .session
             .lock()
             .map_err(|_| "Desktop state unavailable")?;
+        if expected.is_some_and(|id| guard.as_ref().is_none_or(|session| session.id != id)) {
+            return Err("Desktop changed; inspect status before stopping it".into());
+        }
         if guard
             .as_ref()
             .is_some_and(|session| session.lifecycle == process::Lifecycle::Reusable)
@@ -1072,6 +1079,10 @@ impl Desktop {
         Self::agent_request(&json!({"action":"status"}))
     }
 
+    pub(crate) fn agent_control(value: &Value) -> Result<Value, String> {
+        Self::agent_request(value)
+    }
+
     pub(crate) fn agent_start() -> Result<Value, String> {
         Self::agent_request(&json!({"action":"start"}))
     }
@@ -1259,7 +1270,16 @@ impl Desktop {
         let mut stream = UnixStream::connect(crate::config::data_dir().join(LEASE_SOCKET))
             .map_err(|e| format!("Connect desktop service is unavailable: {e}"))?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(12)))
+            .set_read_timeout(Some(Duration::from_secs(
+                if matches!(
+                    request["action"].as_str(),
+                    Some("start" | "start_selected" | "stop")
+                ) {
+                    90
+                } else {
+                    12
+                },
+            )))
             .map_err(|e| e.to_string())?;
         stream
             .set_write_timeout(Some(Duration::from_secs(12)))
@@ -1524,6 +1544,17 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         },
         Some("status") => Ok(desktop.status()),
         Some("start") => desktop.start(),
+        Some("start_selected") => match (
+            request["environment"].as_str(),
+            request["lifecycle"].as_str(),
+        ) {
+            (Some(environment), Some(lifecycle)) => desktop.start_selected(environment, lifecycle),
+            _ => Err("Choose both desktop environment and lifecycle".into()),
+        },
+        Some("stop") => match request["sessionId"].as_str() {
+            Some(id) => desktop.stop_scoped(Some(id)),
+            None => Err("sessionId is required before stopping a desktop".into()),
+        },
         Some("observe") => match request["value"]["sessionId"].as_str() {
             Some(session_id) => desktop.observe_accessibility_scoped(
                 Some(session_id),

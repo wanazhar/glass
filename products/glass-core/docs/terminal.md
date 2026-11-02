@@ -2,6 +2,25 @@
 
 [Documentation index](INDEX.md) · [Project overview](../README.md)
 
+## Desktop management
+
+Use `/desktop` to open the desktop picker, or enter a command directly:
+
+| Command | Action |
+| --- | --- |
+| `/desktop quick` | start a temporary XFCE desktop, or attach to the matching running desktop |
+| `/desktop reusable` | start saved-profile GNOME, or attach to the matching running desktop |
+| `/desktop attach` | attach to the current desktop without changing its input lease |
+| `/desktop status` | show desktop state without starting a desktop or Connect manager |
+| `/desktop stop` | stop desktop processes; retain the saved GNOME profile and workspace files |
+
+Stop the current desktop explicitly before choosing a different type. Quick
+XFCE discards its temporary desktop profile when stopped. Reusable GNOME keeps
+its profile on disk; stopping still closes its running applications. Opening
+the picker and cancelling it makes no desktop or connection changes. TUI and
+WebUI control the same manager for the workspace; attaching preserves an
+existing connection route and input lease.
+
 ## Keys
 
 | Key or command | Action |
@@ -22,6 +41,7 @@
 | `/login` | guided provider or ChatGPT sign-in |
 | `/logout` | remove a saved connection and its credentials |
 | `/status` | connection, model, and session status |
+| `/desktop` | choose, attach, inspect, or stop the shared desktop |
 | `/clear` | start a fresh session in this terminal |
 | `/extensions` | discover, inspect, enable, or disable extensions |
 | `/todo` | inspect the native checklist; edit when idle, read during a turn |

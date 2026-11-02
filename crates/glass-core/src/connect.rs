@@ -729,12 +729,17 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     Ok(())
 }
 
-/// Start or attach the standalone TUI to the same local Connect manager used
-/// by the web client, then start the manager's isolated default desktop when
-/// needed. This is only called by the human `/desktop` command; it never
-/// changes an already-running route or input lease.
-pub(crate) fn start_local_desktop_for_tui(cfg: crate::config::Config) -> Result<Value, String> {
+/// Human TUI desktop controls use the same workspace manager as the web UI.
+/// Inspection never starts a manager; changing desktop types requires an
+/// explicit stop. Existing routes and input leases are preserved on attach.
+pub(crate) fn desktop_for_tui(cfg: crate::config::Config, action: &str) -> Result<Value, String> {
     let manager_started = !crate::desktop::service_running();
+    if manager_started && action == "attach" {
+        return Err("No desktop is running. Use /desktop quick or /desktop reusable".into());
+    }
+    if manager_started && matches!(action, "status" | "stop") {
+        return Ok(json!({"running":false,"available":false,"stopped":action=="stop"}));
+    }
     if manager_started {
         let executable = crate::executable::path()?;
         let mut output = Command::new(executable)
@@ -762,7 +767,7 @@ pub(crate) fn start_local_desktop_for_tui(cfg: crate::config::Config) -> Result<
         .filter(alive)
         .ok_or("Connect manager settings are unavailable")?;
 
-    let status = crate::desktop::Desktop::agent_status()?;
+    let mut status = crate::desktop::Desktop::agent_status()?;
     let manager_workspace = status
         .get("workspaceRoot")
         .and_then(Value::as_str)
@@ -780,9 +785,41 @@ pub(crate) fn start_local_desktop_for_tui(cfg: crate::config::Config) -> Result<
         );
     }
 
+    if action == "status" {
+        status["running"] = json!(!status["sessionId"].is_null());
+        status["managerStarted"] = json!(false);
+        status["sessionStarted"] = json!(false);
+        status["connectionMode"] = json!(if settings.local { "local" } else { "remote" });
+        return Ok(status);
+    }
+    if action == "stop" {
+        if let Some(id) = status["sessionId"].as_str() {
+            crate::desktop::Desktop::agent_control(&json!({"action":"stop","sessionId":id}))?;
+        }
+        return Ok(json!({"stopped":true}));
+    }
+    let selected = match action {
+        "quick" => Some(("xfce", "disposable")),
+        "reusable" => Some(("gnome", "reusable")),
+        "attach" => None,
+        _ => return Err("Use /desktop quick, reusable, status, or stop".into()),
+    };
     let session_started = status.get("sessionId").is_none_or(Value::is_null);
+    if session_started && action == "attach" {
+        return Err("No desktop is running. Use /desktop quick or /desktop reusable".into());
+    }
     if session_started {
-        crate::desktop::Desktop::agent_start()?;
+        if let Some((environment, lifecycle)) = selected {
+            crate::desktop::Desktop::agent_control(
+                &json!({"action":"start_selected","environment":environment,"lifecycle":lifecycle}),
+            )?;
+        } else {
+            crate::desktop::Desktop::agent_start()?;
+        }
+    } else if selected.is_some_and(|(environment, lifecycle)| {
+        status["environment"] != environment || status["lifecycle"] != lifecycle
+    }) {
+        return Err("Another desktop is running. Use /desktop stop before selecting a different desktop; stopping GNOME retains its saved profile.".into());
     }
     let mut status = crate::desktop::Desktop::agent_status()?;
     if session_started && status["available"].as_bool() != Some(true) {

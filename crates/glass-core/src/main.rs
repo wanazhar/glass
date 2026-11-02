@@ -1724,10 +1724,10 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     if !commands.iter().any(|command| command.name == "desktop") {
         commands.push(glass_tui::palette::Command {
             name: "desktop".into(),
-            hint: "start local session".into(),
-            description: "Start or attach to this workspace's local desktop".into(),
+            hint: "choose or manage desktop".into(),
+            description: "Choose quick XFCE or reusable GNOME; inspect or stop the desktop".into(),
             label: "desktop".into(),
-            keywords: "browser local connect session".into(),
+            keywords: "browser local connect session quick xfce reusable gnome status stop".into(),
             ..Default::default()
         });
     }
@@ -2974,8 +2974,55 @@ fn repl(
             modal::info(&keys, "Connection and session", &detail);
             continue;
         }
-        if text == "/desktop" {
-            match connect::start_local_desktop_for_tui(cfg.clone()) {
+        if text == "/desktop" || text.starts_with("/desktop ") {
+            let action = text.strip_prefix("/desktop").unwrap().trim();
+            let selected;
+            let action = if action.is_empty() {
+                let choices = vec![
+                    "Quick desktop · XFCE · temporary".into(),
+                    "Reusable workspace · GNOME · saved profile".into(),
+                    "Attach to current desktop".into(),
+                    "Desktop status".into(),
+                    "Stop desktop · keep saved GNOME profile".into(),
+                ];
+                let Some(index) = modal::choose(
+                    &keys,
+                    "Desktop",
+                    "Choose a desktop or manage the running session",
+                    &choices,
+                ) else {
+                    continue;
+                };
+                selected = ["quick", "reusable", "attach", "status", "stop"][index];
+                selected
+            } else {
+                action
+            };
+            if matches!(action, "quick" | "reusable") {
+                ui_println!("Opening {action} desktop…");
+            }
+            if action == "stop" {
+                ui_println!("Stopping desktop…");
+            }
+            let result = if matches!(action, "quick" | "reusable" | "attach" | "status" | "stop") {
+                connect::desktop_for_tui(cfg.clone(), action)
+            } else {
+                Err("Use /desktop quick, reusable, attach, status, or stop".into())
+            };
+            match result {
+                Ok(status) if status["running"] == false => modal::info(
+                    &keys,
+                    "Desktop",
+                    "No desktop is running. Use /desktop quick or /desktop reusable.",
+                ),
+                Ok(status) if status["stopped"] == true => modal::info(
+                    &keys,
+                    "Desktop",
+                    "Desktop stopped. Saved GNOME profile and workspace files are retained.",
+                ),
+                Ok(status) if action == "status" => {
+                    modal::info(&keys, "Desktop status", &desktop_status_message(&status))
+                }
                 Ok(status) => {
                     modal::info(&keys, "Desktop session", &desktop_status_message(&status))
                 }

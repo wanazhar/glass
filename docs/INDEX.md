@@ -1,5 +1,8 @@
 # Glass documentation
 
+The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)
+describes the shared desktop picker and quick, reusable, status, and stop commands.
+
 Proposed design: [task-backed agent coordination](plan/analysis/task-agent-coordination.md)
 and its [delivery checklist](plan/tasks/task-agent-coordination-001.md) describe
 the broader task-backed coordination proposal. Bounded nested completion

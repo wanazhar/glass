@@ -84,7 +84,7 @@ def pty_case(size):
             ctl(root,env,owner,'wait','review','10');t.collect(.2)
             t.send('\x1ba');t.collect(.25);assert 'Agents' in t.vt.text(),t.vt.text()
             t.send('\t');t.collect(.15);assert 'Interactions' in t.vt.text(),t.vt.text()
-            t.send('\x1b[H');t.collect(.1);assert 'human' in t.vt.text(),t.vt.text()
+            t.send('\x1b[H');t.collect(.1);assert 'You' in t.vt.text(),t.vt.text()
             t.send('\t');t.collect(.15);t.send('\x1b[H');t.collect(.15)
             assert 'Transcript' in t.vt.text(),t.vt.text()
             t.send('\x1b[F');t.collect(.15);assert 'REVIEW_COMPLETE' in t.vt.text(),t.vt.text()

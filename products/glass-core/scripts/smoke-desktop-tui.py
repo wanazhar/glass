@@ -11,7 +11,15 @@ with tempfile.TemporaryDirectory(prefix='gc-desktop-tui-') as tmp:
     env=dict(os.environ,XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'),GC_WEB_ASSETS=str(Path(__file__).resolve().parents[1]/'web/dist'))
     state_path=root/'data/glass-core/connect.json';t=Terminal(root,env,(100,30))
     def command(text,expected,timeout=90):
-        t.send(text+'\r');t.wait(expected,timeout);t.send('\x1b');t.collect(.15);t.send('\x1b');t.collect(.15)
+        t.bytes=''
+        t.send(text+'\r')
+        if text in ('/desktop quick','/desktop reusable') and expected.startswith('Environment:'):
+            t.wait('desktop operation in progress',timeout)
+            assert 'Desktop' in t.vt.text(),t.vt.text()
+        t.wait(expected,timeout);t.collect(.1)
+        assert expected in t.vt.text(),t.vt.text()
+        assert 'Esc' in t.vt.text(),'result must remain in its modal until dismissed'
+        t.send('\x1b');t.collect(.15);t.send('\x1b');t.collect(.15)
     def status():
         state=json.loads(state_path.read_text());url=f"http://127.0.0.1:{state['port']}/api/desktop/status"
         with urllib.request.urlopen(urllib.request.Request(url,headers={'Authorization':'Bearer '+state['token']}),timeout=10) as r:return json.load(r)

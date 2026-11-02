@@ -534,8 +534,7 @@ fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'
 
 /// Build the display lines for one entry.
 ///
-/// A `Role::Meta` entry renders as a single dim line regardless of content,
-/// which is both cheaper and visually correct for compaction markers.
+/// Notices wrap in full in every transcript surface.
 pub(crate) fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
     if role == Role::Meta && text.starts_with("error:") {
         return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
@@ -556,10 +555,42 @@ pub(crate) fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'stati
             .collect();
     }
     if role == Role::Meta {
-        return vec![Line::from(Span::styled(
-            truncate(text, width as usize),
-            role_style(role),
+        return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
+            .into_iter()
+            .map(|row| Line::from(Span::styled(row, role_style(role))))
+            .collect();
+    }
+    if role == Role::System {
+        let margin = if width >= 24 { 2 } else { 0 };
+        let column = (width as usize).saturating_sub(margin * 2 + 1).clamp(1, 88);
+        let (title, body) = if let Some(body) =
+            text.strip_prefix("[teammate update; attributed report, verify claims]\n")
+        {
+            ("Teammates · attributed reports", body)
+        } else if text.starts_with("Recap ·") {
+            text.split_once("\n\n").unwrap_or(("Recap", text))
+        } else if text.starts_with("error:") {
+            ("Error", text)
+        } else {
+            ("Notice", text)
+        };
+        let mut rows = vec![Line::from(Span::styled(
+            format!("{}{}", " ".repeat(margin), title),
+            ratatui::style::Style::new().fg(crate::theme::color(if title == "Error" {
+                crate::theme::Tone::Error
+            } else {
+                crate::theme::Tone::Secondary
+            })),
         ))];
+        rows.extend(
+            crate::markdown::lines(body, column)
+                .into_iter()
+                .map(|mut row| {
+                    row.spans.insert(0, Span::raw(" ".repeat(margin)));
+                    row
+                }),
+        );
+        return rows;
     }
 
     let prefix = match role {
@@ -627,10 +658,6 @@ fn trim_leading_blank_lines(text: &str) -> &str {
     &text[start..]
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    crate::text::clip(s, max)
-}
-
 fn role_style(role: Role) -> ratatui::style::Style {
     use crate::theme::{Tone, color};
     use ratatui::style::{Modifier, Style};
@@ -641,7 +668,7 @@ fn role_style(role: Role) -> ratatui::style::Style {
         Role::Assistant => Style::new().fg(color(Tone::Body)),
         Role::Bash => Style::new().fg(color(Tone::Warning)),
         Role::Tool => Style::new().fg(color(Tone::Secondary)),
-        Role::System => Style::new().fg(color(Tone::Error)),
+        Role::System => Style::new().fg(color(Tone::Secondary)),
         Role::Meta => Style::new().fg(color(Tone::Muted)),
     }
 }
@@ -649,6 +676,26 @@ fn role_style(role: Role) -> ratatui::style::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notices_and_metadata_wrap_without_losing_their_tail() {
+        for role in [Role::System, Role::Meta] {
+            for width in [20, 40, 80] {
+                let text = format!("{}TAIL_MARKER", "Readable status café 世界. ".repeat(15));
+                let mut layout = Layout::new(vec![(text, role, 0)]);
+                layout.set_width(width);
+                let rows = layout.entry_lines(0);
+                assert!(
+                    rows.iter()
+                        .any(|row| row.to_string().contains("TAIL_MARKER"))
+                );
+                assert!(
+                    rows.iter()
+                        .all(|row| crate::text::width(&row.to_string()) <= usize::from(width))
+                );
+            }
+        }
+    }
 
     #[test]
     fn inline_entry_lines_reuse_width_aware_cached_presentation() {
@@ -830,6 +877,7 @@ mod tests {
     #[test]
     fn tool_cards_use_bounded_colored_renderer_until_explicit_expansion() {
         let mut layout = Layout::new(vec![("legacy plain text".into(), Role::Bash, 1)]);
+        layout.set_glass_presentation(true);
         let card = crate::ToolCard {
             expanded: false,
             call_id: "id".into(),
@@ -857,7 +905,7 @@ mod tests {
         assert!(
             layout.lines(0, "✓ bash · done", Role::Bash, 40)[0]
                 .to_string()
-                .contains("✓ CORE · Terminal · exit 0")
+                .contains("✓ CORE · Terminal · completed")
         );
         let mut expanded = card;
         expanded.expanded = true;

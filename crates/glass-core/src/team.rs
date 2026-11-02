@@ -1545,13 +1545,7 @@ pub fn start(
         // Restored reports and pending activations require explicit human review.
         state.flow.stopped = true;
         save(&dir.join("workflow.json"), &state.flow)?;
-        let roster = state
-            .agents
-            .values()
-            .map(|w| format!("{}={} ({})", w.info.name, w.info.status, w.info.id))
-            .collect::<Vec<_>>()
-            .join(", ");
-        state.notices.push_back(format!("Restored teammates: {roster}. Reuse their contexts; inspect parked agents before resuming uncertain work."));
+        state.notices.push_back(format!("Restored teammates\n\n{}\n\nSaved contexts are available. Inspect parked work before resuming.",state.agents.values().map(|w|format!("- **{}** · {}",w.info.name,w.info.status)).collect::<Vec<_>>().join("\n")));
     }
     let hub = Arc::new(Hub {
         owner: owner.into(),
@@ -1988,7 +1982,7 @@ impl TailCache {
     fn rows(&mut self, path: &Path, width: usize, interactions: bool) -> Vec<String> {
         self.read(path);
         if self.text != self.parsed || self.width != width || self.interactions != interactions {
-            self.rows = readable_log(&self.text, interactions)
+            self.rows = readable_log_mode(&self.text, interactions, false)
                 .iter()
                 .flat_map(|s| glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(s), width))
                 .collect();
@@ -2017,59 +2011,159 @@ impl TailCache {
     }
 }
 fn readable_log(text: &str, interactions: bool) -> Vec<String> {
+    readable_log_mode(text, interactions, true)
+}
+fn readable_log_mode(text: &str, interactions: bool, full: bool) -> Vec<String> {
     let mut rows = Vec::new();
+    let mut answer = String::new();
+    let mut reasoning = String::new();
+    fn flush(rows: &mut Vec<String>, answer: &mut String, reasoning: &mut String, full: bool) {
+        if !reasoning.is_empty() {
+            rows.push(if full {
+                format!("### Reasoning\n\n{}", reasoning)
+            } else {
+                format!(
+                    "◌ Reasoning · {} characters · Enter to read full conversation",
+                    reasoning.chars().count()
+                )
+            });
+            rows.push(String::new());
+            reasoning.clear();
+        }
+        if !answer.is_empty() {
+            rows.push(format!(
+                "{}Subagent\n\n{}",
+                if full { "### " } else { "◆ " },
+                answer
+            ));
+            rows.push(String::new());
+            answer.clear();
+        }
+    }
+    fn who(value: &str) -> String {
+        match value {
+            "main" => "Main agent".into(),
+            "human" => "You".into(),
+            "children" => "Child reports".into(),
+            other => format!("Agent {other}"),
+        }
+    }
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
-            rows.push(format!("… log fragment: {line}"));
+            flush(&mut rows, &mut answer, &mut reasoning, full);
+            rows.push(format!(
+                "Earlier record continues here · load the previous page for its beginning\n{line}"
+            ));
             continue;
         };
+        let kind = v["k"].as_str().unwrap_or("");
+        if !interactions && matches!(kind, "reasoning" | "assistant") {
+            if kind == "reasoning" {
+                reasoning.push_str(v["t"].as_str().unwrap_or(""));
+            } else {
+                answer.push_str(v["t"].as_str().unwrap_or(""));
+            }
+            continue;
+        }
+        flush(&mut rows, &mut answer, &mut reasoning, full);
         if interactions {
             rows.push(format!(
-                "{} → {}",
-                v["from"].as_str().unwrap_or("?"),
-                v["to"].as_str().unwrap_or("?")
+                "{}{} → {}\n\n{}",
+                if full { "### " } else { "" },
+                who(v["from"].as_str().unwrap_or("?")),
+                who(v["to"].as_str().unwrap_or("?")),
+                v["text"].as_str().unwrap_or("")
             ));
-            rows.extend(
-                v["text"]
-                    .as_str()
-                    .unwrap_or("")
-                    .lines()
-                    .map(|s| format!("  {s}")),
-            );
         } else {
-            let kind = v["k"].as_str().unwrap_or("");
-            let label = match kind {
-                "user" => "›",
-                "assistant" => "◆",
-                "reasoning" => "◌ thinking",
-                "call" => "$",
-                "tool" => "↳",
-                "bash" => "$",
-                _ => kind,
+            let content = v["t"].as_str().unwrap_or("");
+            let (label, body) = match kind {
+                "user" => {
+                    let (sender, body) = if content.starts_with('[') {
+                        content
+                            .split_once(" → teammate]\n")
+                            .map(|(from, body)| (from.trim_start_matches('['), body))
+                            .unwrap_or(("main", content))
+                    } else {
+                        ("main", content)
+                    };
+                    let sender = match sender {
+                        "main" => "Main agent",
+                        "human" => "You",
+                        "children" => "Child reports",
+                        _ => "Parent agent",
+                    };
+                    (format!("{sender} → Subagent"), body.to_owned())
+                }
+                "call" => (
+                    format!("Tool · {}", v["name"].as_str().unwrap_or("tool")),
+                    v["args"].as_str().unwrap_or("").to_owned(),
+                ),
+                "tool" => (
+                    format!("Result · {}", v["name"].as_str().unwrap_or("tool")),
+                    content.to_owned(),
+                ),
+                "bash" => (
+                    "Tool · bash".into(),
+                    format!(
+                        "{}\n{}",
+                        v["cmd"].as_str().unwrap_or(""),
+                        v["out"].as_str().unwrap_or("")
+                    ),
+                ),
+                "meta" => ("Notice".into(), content.to_owned()),
+                _ => continue,
             };
-            let rendered = if kind == "call" {
-                format!(
-                    "{} {}",
-                    v["name"].as_str().unwrap_or("tool"),
-                    v["args"].as_str().unwrap_or("")
-                )
-            } else if kind == "bash" {
-                format!(
-                    "{}\n{}",
-                    v["cmd"].as_str().unwrap_or(""),
-                    v["out"].as_str().unwrap_or("")
-                )
-            } else {
-                v["t"].as_str().unwrap_or("").to_owned()
-            };
-            let body = rendered.as_str();
-            if !body.is_empty() {
-                rows.push(format!("{label} {body}"));
-            }
+            rows.push(format!(
+                "{}{label}\n\n{body}",
+                if full { "### " } else { "" }
+            ));
         }
         rows.push(String::new());
     }
+    flush(&mut rows, &mut answer, &mut reasoning, full);
     rows
+}
+fn full_conversation(keys: &crate::input::KeyReader, path: &Path, title: &str, interactions: bool) {
+    let mut before = None;
+    let mut newer = Vec::new();
+    loop {
+        let page = match window(path, before) {
+            Ok(value) => value,
+            Err(error) => {
+                crate::modal::info(keys, "Conversation unavailable", &error);
+                return;
+            }
+        };
+        let start = page["before"].as_u64().unwrap_or(0);
+        let body = format!(
+            "{title}\n\nRead-only conversation · bytes {}–{}\n\n{}\n\nOlder/Newer load bounded history pages; Latest follows the newest saved messages.",
+            start,
+            page["end"].as_u64().unwrap_or(0),
+            readable_log(page["text"].as_str().unwrap_or(""), interactions).join("\n")
+        );
+        match crate::modal::rich_actions(
+            keys,
+            title,
+            &body,
+            &[('p', "Older"), ('n', "Newer"), ('l', "Latest")],
+        ) {
+            Some('p') if start > 0 => {
+                newer.push(before);
+                before = Some(start);
+            }
+            Some('n') => {
+                if let Some(value) = newer.pop() {
+                    before = value;
+                }
+            }
+            Some('l') => {
+                before = None;
+                newer.clear();
+            }
+            Some(_) => {}
+            None => return,
+        }
+    }
 }
 #[allow(clippy::collapsible_if)]
 pub fn view(keys: &crate::input::KeyReader, owner: &str) {
@@ -2273,7 +2367,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
             let footer = if width < 60 {
                 "Tab · ? help · Esc"
             } else {
-                "Tab view · Enter watch · x interrupt · a archive · Esc close"
+                "Tab view · Enter full conversation · PgUp older · Esc close"
             };
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             rows.hash(&mut hasher);
@@ -2319,7 +2413,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                 crate::modal::info(
                     keys,
                     "Agent keys",
-                    "Tab views\nEnter live transcript\nAssign and resume work through the main conversation\nx interrupt\na archive\nArrows/wheel scroll\nPgUp at top loads older page\nEnd follow latest\nEsc close",
+                    "Tab views\nEnter full conversation\nAssign and resume work through the main conversation\nx interrupt\na archive\nArrows/wheel scroll\nPgUp at top loads older page\nEnd follow latest\nEsc close",
                 );
                 let _ = crate::surface::overlay(true);
                 previous.clear();
@@ -2334,10 +2428,26 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                 cache.stamp = None;
                 previous.clear();
             }
-            KeyCode::Enter if tab == 0 && !infos.is_empty() => {
-                tab = 2;
-                offset = 0;
-                follow = true;
+            KeyCode::Enter if !infos.is_empty() || tab == 1 => {
+                if tab == 1 {
+                    full_conversation(
+                        keys,
+                        &hub.dir.join("interactions.jsonl"),
+                        "Main agent ↔ teammates · interactions",
+                        true,
+                    );
+                } else if let Some(info) = infos.get(selected) {
+                    full_conversation(
+                        keys,
+                        &hub.dir
+                            .join("sessions")
+                            .join(format!("{}.jsonl", info.session)),
+                        &format!("Main / parent agent ↔ {} · conversation", info.name),
+                        false,
+                    );
+                }
+                let _ = crate::surface::overlay(true);
+                previous.clear();
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if tab == 0 {
@@ -2654,6 +2764,44 @@ mod tests {
         }
     }
     #[test]
+    fn transcript_chat_preserves_parent_messages_and_coalesces_streams() {
+        let records = [
+            json!({"k":"user","t":"[main → teammate]\nInspect the desktop."}),
+            json!({"k":"reasoning","t":"Checking "}),
+            json!({"k":"reasoning","t":"the session."}),
+            json!({"k":"assistant","t":"The desktop "}),
+            json!({"k":"assistant","t":"is ready."}),
+            json!({"k":"user","t":"[main → teammate]\nNow verify mouse input."}),
+            json!({"k":"call","name":"inspect","args":"session"}),
+            json!({"k":"tool","name":"inspect","t":"Input verified."}),
+            json!({"k":"assistant","t":"Mouse input works."}),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let compact = readable_log_mode(&records, false, false).join("\n");
+        assert_eq!(compact.matches("Main agent → Subagent").count(), 2);
+        assert!(compact.contains("Inspect the desktop."));
+        assert!(compact.contains("Now verify mouse input."));
+        assert!(compact.contains("The desktop is ready."));
+        assert!(!compact.contains("Checking the session."));
+        assert_eq!(compact.matches("Reasoning ·").count(), 1);
+        let full = readable_log(&records, false).join("\n");
+        for text in [
+            "### Main agent → Subagent",
+            "Checking the session.",
+            "### Subagent",
+            "Tool · inspect",
+            "Result · inspect",
+            "Input verified.",
+            "Mouse input works.",
+        ] {
+            assert!(full.contains(text), "Missing {text}: {full}");
+        }
+    }
+
+    #[test]
     fn tails_are_bounded_and_cache_invalidates_on_append() {
         let (g, dir, _) = fixture();
         let path = dir.join("log.jsonl");
@@ -2669,12 +2817,15 @@ mod tests {
         let mut f = private_file(&path).unwrap();
         writeln!(f, "{}", json!({"k":"assistant","t":"new tail"})).unwrap();
         drop(f);
+        let updated = cache.rows(&path, 19, false).join(" ");
         assert!(
-            cache
-                .rows(&path, 19, false)
-                .iter()
-                .any(|r| r.contains("new tail"))
+            updated
+                .split_whitespace()
+                .collect::<String>()
+                .ends_with("newtail"),
+            "{updated}"
         );
+        assert!(cache.text.contains("new tail"));
         drop(g);
         fs::remove_dir_all(dir).unwrap();
     }

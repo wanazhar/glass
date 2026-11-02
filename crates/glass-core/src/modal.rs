@@ -112,13 +112,20 @@ impl Screen {
             } else if team_rows
                 && (line.starts_with("human →")
                     || line.starts_with("main →")
+                    || line.starts_with("Main agent")
+                    || line.starts_with("Parent agent")
+                    || line.starts_with("You →")
                     || line.starts_with("›"))
             {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Accent)
             } else if team_rows && line.contains("→ main") {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
             } else if team_rows
-                && (line.starts_with('$') || line.starts_with('◌') || line.starts_with('◆'))
+                && (line.starts_with('$')
+                    || line.starts_with('◌')
+                    || line.starts_with('◆')
+                    || line.starts_with("Tool ·")
+                    || line.starts_with("Result ·"))
             {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
             } else if team_rows && line.starts_with('!') {
@@ -645,6 +652,9 @@ fn validated_field_inner(
 }
 pub fn info(keys: &KeyReader, title: &str, text: &str) {
     let screen = Screen::new();
+    info_on_screen(keys, &screen, title, text);
+}
+fn info_on_screen(keys: &KeyReader, screen: &Screen, title: &str, text: &str) {
     let mut offset = 0usize;
     let clean = glass_tui::markdown::sanitize(text);
     let mut layout_width = 0;
@@ -689,6 +699,49 @@ pub fn info(keys: &KeyReader, title: &str, text: &str) {
         }
     }
 }
+/// Lifecycle operations keep one modal from loading through acknowledgement.
+/// Accepted desktop operations cannot safely be undone by dismissing a spinner.
+pub fn operation_info(
+    keys: &KeyReader,
+    title: &str,
+    loading: &str,
+    task: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> String {
+    let screen = Screen::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(task());
+    });
+    let started = std::time::Instant::now();
+    let mut tick = 0;
+    let result = loop {
+        match rx.try_recv() {
+            Ok(Ok(text)) => break text,
+            Ok(Err(error)) => break format!("Could not complete desktop action.\n\n{error}"),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                break "Desktop worker stopped unexpectedly.".into();
+            }
+            _ => {}
+        }
+        screen.draw(
+            title,
+            &[format!(
+                "{} {loading} · {:.1}s",
+                glass_tui::theme::frame(tick),
+                started.elapsed().as_secs_f32()
+            )],
+            "Please wait · desktop operation in progress",
+            0,
+        );
+        tick += 1;
+        let _ = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        ));
+    };
+    info_on_screen(keys, &screen, title, &result);
+    result
+}
+
 pub fn work<T: Send + 'static>(
     keys: &KeyReader,
     title: &str,

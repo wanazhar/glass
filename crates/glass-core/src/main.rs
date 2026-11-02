@@ -128,7 +128,7 @@ use crate::session::{Record, Session};
 // These macros are reserved for interactive presentation, never headless source/logs.
 macro_rules! ui_println {
     () => {{ let _ = surface::emit("\n"); }};
-    ($($argument:tt)*) => {{ let _ = surface::emit(&format!("{}\n", glass_tui::theme::neutralize(&format!($($argument)*)))); }};
+    ($($argument:tt)*) => {{ let _ = surface::emit_notice(&format!("{}\n", glass_tui::theme::neutralize(&format!($($argument)*)))); }};
 }
 macro_rules! ui_print {
     ($($argument:tt)*) => {{ let _ = surface::emit(&glass_tui::theme::neutralize(&format!($($argument)*))); }};
@@ -2165,7 +2165,14 @@ fn repl(
             team_owner.clone_from(&session.id);
         }
         painter.team_owner.replace(session.id.clone());
+        surface::bind_session(&session.id);
+        let notice_start = session.records.len();
         team::record_notices(&mut session)?;
+        for record in &session.records[notice_start..] {
+            if let Record::System(text) = record {
+                painter.system_notice(text);
+            }
+        }
         team::dock(&session.id, &mut team_dock);
         jobs.set_owner(&cfg.workspace, &session.id);
         let parent = if menu_dispatched {
@@ -2998,36 +3005,36 @@ fn repl(
             } else {
                 action
             };
-            if matches!(action, "quick" | "reusable") {
-                ui_println!("Opening {action} desktop…");
-            }
-            if action == "stop" {
-                ui_println!("Stopping desktop…");
-            }
-            let result = if matches!(action, "quick" | "reusable" | "attach" | "status" | "stop") {
-                connect::desktop_for_tui(cfg.clone(), action)
-            } else {
-                Err("Use /desktop quick, reusable, attach, status, or stop".into())
+            let action = action.to_owned();
+            let desktop_cfg = cfg.clone();
+            let loading = match action.as_str() {
+                "stop" => "Stopping desktop…",
+                "status" => "Loading desktop status…",
+                "attach" => "Connecting to desktop…",
+                "reusable" => "Opening reusable GNOME workspace…",
+                "quick" => "Opening quick XFCE desktop…",
+                _ => "Checking desktop command…",
             };
-            match result {
-                Ok(status) if status["running"] == false => modal::info(
-                    &keys,
-                    "Desktop",
-                    "No desktop is running. Use /desktop quick or /desktop reusable.",
-                ),
-                Ok(status) if status["stopped"] == true => modal::info(
-                    &keys,
-                    "Desktop",
-                    "Desktop stopped. Saved GNOME profile and workspace files are retained.",
-                ),
-                Ok(status) if action == "status" => {
-                    modal::info(&keys, "Desktop status", &desktop_status_message(&status))
+            let outcome = modal::operation_info(&keys, "Desktop", loading, move || {
+                if !matches!(
+                    action.as_str(),
+                    "quick" | "reusable" | "attach" | "status" | "stop"
+                ) {
+                    return Err("Use /desktop quick, reusable, attach, status, or stop".into());
                 }
-                Ok(status) => {
-                    modal::info(&keys, "Desktop session", &desktop_status_message(&status))
+                let status = connect::desktop_for_tui(desktop_cfg, &action)?;
+                if status["running"] == false {
+                    Ok("No desktop is running. Use /desktop quick or /desktop reusable.".into())
+                } else if status["stopped"] == true {
+                    Ok(
+                        "Desktop stopped. Saved GNOME profile and workspace files are retained."
+                            .into(),
+                    )
+                } else {
+                    Ok(desktop_status_message(&status))
                 }
-                Err(error) => modal::info(&keys, "Desktop session", &error),
-            }
+            });
+            painter.system_notice(&format!("Desktop\n\n{outcome}"));
             continue;
         }
         if text == "/tools" {
@@ -3065,7 +3072,7 @@ fn repl(
             let text = recap::cached(&session).unwrap_or_else(|| {
                 "Your recap will appear after your first message. No extra tokens are used.".into()
             });
-            modal::info(&keys, "Welcome back", &text);
+            modal::rich_info(&keys, "Recap", &text);
             continue;
         }
         if text == "/help" {
@@ -4403,8 +4410,7 @@ fn drain_input(
             // follow-up draft before returning to the idle prompt.
             let notice = prepare_busy_interrupt(palette, editor);
             surface::overlay(false).ok();
-            painter.append_live_entry(glass_tui::Role::System, notice);
-            ui_println!("\r\x1b[2K\x1b[33m⚡ interrupt\x1b[0m");
+            painter.system_notice(&notice);
             return Some(String::new());
         }
         if palette.active() {
@@ -5184,7 +5190,7 @@ impl Painter {
         {
             reader.restore_after_overlay().ok();
         }
-        let entries = self.live.borrow().snapshot();
+        let entries = surface::with_notices(self.live.borrow().snapshot());
         if let Some(reader) = self.reader.borrow_mut().as_mut()
             && reader.update(entries).is_ok()
         {
@@ -5204,27 +5210,23 @@ impl Painter {
         }
     }
 
+    fn system_notice(&self, text: &str) {
+        self.append_live_entry(glass_tui::Role::System, text.to_owned());
+        surface::retain_notice(text);
+        let mut layout =
+            glass_tui::layout::Layout::new(vec![(text.to_owned(), glass_tui::Role::System, 0)]);
+        layout.set_width(term_size().0.saturating_sub(1).max(1));
+        let mut io = surface::BodyWriter;
+        let _ = writeln!(io);
+        for row in layout.entry_lines(0) {
+            glass_tui::markdown::write_ansi(&mut io, &row);
+            let _ = writeln!(io);
+        }
+    }
     fn welcome_back(&self, session: &Session) {
+        surface::bind_session(&session.id);
         if let Some(text) = recap::cached(session) {
-            self.append_live_entry(glass_tui::Role::System, text.clone());
-            let mut io = surface::BodyWriter;
-            for (index, section) in text.split("\n\n").enumerate() {
-                let tone = if index == 0 {
-                    glass_tui::theme::Tone::Accent
-                } else if section.starts_with("Blocker:") {
-                    glass_tui::theme::Tone::Warning
-                } else if section.starts_with("Next:") {
-                    glass_tui::theme::Tone::Secondary
-                } else if section.starts_with("Saved conversation") {
-                    glass_tui::theme::Tone::Muted
-                } else {
-                    glass_tui::theme::Tone::Body
-                };
-                if index > 0 {
-                    let _ = writeln!(io);
-                }
-                self.notice(&mut io, &glass_tui::theme::ansi(tone), section);
-            }
+            self.system_notice(&text);
         }
     }
 
@@ -5241,7 +5243,7 @@ impl Painter {
             return Ok(());
         }
         surface::reading(true).map_err(|e| e.to_string())?;
-        match reader::Reader::new(entries, page_up) {
+        match reader::Reader::new(surface::with_notices(entries), page_up) {
             Ok(reader) => {
                 *self.reader.borrow_mut() = Some(reader);
                 self.reader_dirty.set(false);
@@ -5466,7 +5468,8 @@ fn view_transcript(
     use glass_tui::ratatui::Terminal;
 
     surface::overlay(true).map_err(|e| e.to_string())?;
-    let mut transcript = glass_tui::Transcript::new(session.history_entries());
+    let mut transcript =
+        glass_tui::Transcript::new(surface::with_notices(session.history_entries()));
     if page_up {
         transcript.page(-1, term_size().1.saturating_sub(2));
     }

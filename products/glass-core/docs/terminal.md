@@ -19,7 +19,25 @@ XFCE discards its temporary desktop profile when stopped. Reusable GNOME keeps
 its profile on disk; stopping still closes its running applications. Opening
 the picker and cancelling it makes no desktop or connection changes. TUI and
 WebUI control the same manager for the workspace; attaching preserves an
-existing connection route and input lease.
+existing connection route and input lease. Desktop actions keep a progress dialog
+open until the operation finishes. Dismiss the result to return to chat.
+
+## Teammate conversations
+
+Open `/agents` or press Alt+A to inspect teammates. The transcript shows parent
+assignments and follow-ups alongside subagent replies. Streamed fragments are
+joined into messages; tool calls and results have separate labels. Reasoning is
+collapsed in the overview.
+
+Press Enter from the roster or transcript to read the selected agent's full
+conversation. Enter from Interactions opens the parent/teammate message log.
+These views are read-only: send instructions through the main conversation.
+Scroll with the arrow or page keys. Press P for older history, N for newer
+history, L for the latest saved page, or Esc to return. Full conversations
+include the recorded reasoning and tool output.
+
+Recaps label saved request and reply excerpts separately. Command notices remain
+available in the transcript reader as well as the normal chat view.
 
 ## Keys
 

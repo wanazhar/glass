@@ -316,6 +316,8 @@ current user instructions.
   workers, phone states, live frames, and SDK orchestration.
 - [Core command presentation](architecture/core-action-presentation.md) —
   versioned Core result metadata, command destinations, and transcript routing.
+  The [Core terminal guide](../products/glass-core/docs/terminal.md) documents
+  desktop progress dialogs and read-only teammate conversations.
 - [Canonical Browser Workspace](architecture/browser-workspace.md) and
   [Glass Product Workspace](architecture/product-workspace.md) — the shared
   browser/App controller, direct Agent/Code/App UX, focus, desktop, and phone

@@ -14,8 +14,17 @@ struct Cached {
 fn excerpt(text: &str, cap: usize) -> String {
     let prefix: String = text.chars().take(cap * 4).collect();
     let clean = glass_tui::markdown::sanitize(&prefix);
-    let flat = clean.split_whitespace().collect::<Vec<_>>().join(" ");
-    glass_tui::text::clip(&flat, cap)
+    let paragraphs = clean
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut chars = paragraphs.trim().chars();
+    let mut result: String = chars.by_ref().take(cap).collect();
+    if chars.next().is_some() || text.chars().count() > cap * 4 {
+        result.push('…');
+    }
+    result
 }
 
 pub fn build(records: &[Record]) -> Option<String> {
@@ -37,17 +46,22 @@ pub fn build(records: &[Record]) -> Option<String> {
             Record::Meta(t) if t.starts_with("error:") => Some(t.as_str()),
             _ => None,
         });
-    let mut text = format!("Recap · welcome back\n\nRequest: {}", excerpt(request, 180));
+    let mut text = format!(
+        "Recap · welcome back\n\n**Last request**\n\n{}",
+        excerpt(request, 180)
+    );
     if let Some(answer) = answer {
         text.push_str(&format!(
-            "\n\nLatest reply excerpt: {}",
+            "\n\n**Latest reply · excerpt**\n\n{}",
             excerpt(answer, 360)
         ));
     }
     if let Some(failure) = failure {
-        text.push_str(&format!("\n\nBlocker: {}\n\nNext: Review the saved error; /retry can continue with completed tool results.", excerpt(failure, 180)));
+        text.push_str(&format!("\n\n**Blocker**\n\n{}\n\n**Next**\n\nReview the saved error; /retry can continue with completed tool results.", excerpt(failure, 180)));
     } else if answer.is_none() {
-        text.push_str("\n\nNext: This request has no saved reply. Send a follow-up to continue.");
+        text.push_str(
+            "\n\n**Next**\n\nThis request has no saved reply. Send a follow-up to continue.",
+        );
     }
     text.push_str("\n\nSaved conversation · 0 extra tokens · /recap to reopen");
     Some(text)
@@ -76,7 +90,7 @@ pub fn cached(session: &Session) -> Option<String> {
         .is_some_and(|m| m.is_file() && m.len() < 8192)
         && let Ok(data) = std::fs::read(&path)
         && let Ok(cache) = serde_json::from_slice::<Cached>(&data)
-        && cache.version == 1
+        && cache.version == 2
         && cache.bytes == bytes
         && cache.modified == modified
         && cache.identity == identity
@@ -85,7 +99,7 @@ pub fn cached(session: &Session) -> Option<String> {
     }
     let text = build(&session.history_records())?;
     let cache = Cached {
-        version: 1,
+        version: 2,
         bytes,
         modified,
         identity,
@@ -134,7 +148,7 @@ mod tests {
             Record::Meta("error: provider unavailable".into()),
         ])
         .unwrap();
-        assert!(text.contains("Blocker:"));
+        assert!(text.contains("**Blocker**"));
         assert!(text.contains("0 extra tokens"));
         assert!(text.len() < 1800);
     }
@@ -145,7 +159,7 @@ mod tests {
             Record::Assistant("I plan to investigate".into()),
         ])
         .unwrap();
-        assert!(text.contains("Latest reply excerpt: I plan to investigate"));
+        assert!(text.contains("**Latest reply · excerpt**\n\nI plan to investigate"));
         assert!(!text.contains("Next:"));
     }
     #[test]
@@ -180,7 +194,7 @@ mod tests {
             Record::Assistant("recovered".into()),
         ])
         .unwrap();
-        assert!(!text.contains("Blocker:"));
+        assert!(!text.contains("**Blocker**"));
     }
     #[test]
     fn same_length_replacement_with_preserved_mtime_invalidates() {

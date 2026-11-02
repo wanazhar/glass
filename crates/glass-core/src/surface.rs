@@ -9,6 +9,57 @@ use std::{
     io::{self, Write},
 };
 thread_local! { static PRIMARY: RefCell<Option<Surface>> = const { RefCell::new(None) }; }
+thread_local! { static NOTICES: RefCell<(Option<String>,std::collections::VecDeque<String>,usize)> = RefCell::new((None,std::collections::VecDeque::new(),0)); }
+pub fn bind_session(id: &str) {
+    NOTICES.with(|slot| {
+        let mut data = slot.borrow_mut();
+        if data.0.as_deref().is_some_and(|old| old != id) {
+            data.1.clear();
+            data.2 = 0;
+        }
+        data.0 = Some(id.into());
+    });
+}
+pub fn retain_notice(text: &str) {
+    let clean = glass_tui::markdown::sanitize(text);
+    if clean.trim().is_empty() {
+        return;
+    }
+    NOTICES.with(|slot| {
+        let mut data = slot.borrow_mut();
+        data.2 += clean.len();
+        data.1.push_back(clean);
+        while data.2 > 1_048_576 {
+            if let Some(old) = data.1.pop_front() {
+                data.2 -= old.len();
+            } else {
+                break;
+            }
+        }
+    });
+}
+pub fn with_notices(mut entries: Vec<glass_tui::Entry>) -> Vec<glass_tui::Entry> {
+    NOTICES.with(|slot| {
+        for text in &slot.borrow().1 {
+            if !entries
+                .iter()
+                .any(|entry| glass_tui::markdown::sanitize(&entry.text).contains(text))
+            {
+                entries.push(glass_tui::Entry {
+                    role: glass_tui::Role::Meta,
+                    text: text.clone(),
+                    turn: 0,
+                    tool_card: None,
+                });
+            }
+        }
+    });
+    entries
+}
+pub fn emit_notice(text: &str) -> io::Result<()> {
+    retain_notice(text);
+    emit(text)
+}
 struct Surface {
     width: u16,
     height: u16,
@@ -513,6 +564,18 @@ pub fn resume() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notices_remain_readable_without_duplicating_conversation_records() {
+        bind_session("notice-test");
+        retain_notice("Desktop stopped · preserved profile");
+        let entries = with_notices(Vec::new());
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("preserved profile"));
+        assert_eq!(with_notices(entries).len(), 1);
+        bind_session("different-session");
+        assert!(with_notices(Vec::new()).is_empty());
+    }
+
     #[test]
     fn composer_clear_targets_only_its_owned_row() {
         assert_eq!(clear_row_sequence(22), "\x1b[22;1H\x1b[2K");

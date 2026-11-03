@@ -45,18 +45,12 @@ with tempfile.TemporaryDirectory(prefix='glass-shared-tui-') as temporary:
     (config / 'config.toml').write_text(f'provider="openai"\nmodel="mock"\napi_key_env=""\ntrust="always"\nbase_url="http://127.0.0.1:{server.server_port}/v1"\n')
     env = dict(os.environ, GLASS_CORE_BINARY=str(CORE), XDG_DATA_HOME=str(root/'data'), XDG_CONFIG_HOME=str(root/'config'), XDG_STATE_HOME=str(root/'state'), XDG_CACHE_HOME=str(root/'cache'))
     os.environ['GLASS_CORE_TEST_BINARY'] = str(GLASS)
-    terminal = Terminal(root, env, (100, 35))
+    terminal = Terminal(root, env, (100, 35), args=("resume",))
     try:
         terminal.collect(3)
-        terminal.send('\x1b[84;6u')  # Ctrl-Shift-T: project conversations.
         terminal.wait('Native GC fixture', 20)
+        assert 'GLASS DEV' in terminal.vt.text(), terminal.vt.text()
         assert 'Created in GC' in terminal.vt.text(), terminal.vt.text()
-        terminal.send('\r')
-        terminal.collect(.5)
-        terminal.send('\x0b')  # Ctrl-K: command palette.
-        terminal.collect(.5)
-        terminal.send('agent resume agent-0001\r')
-        terminal.wait('CONFIRMATION', 15)
         terminal.send('\r')
         terminal.wait('PRIOR_GC_ANSWER', 20)
         terminal.visible('CORE  Idle', 20)
@@ -100,6 +94,14 @@ with tempfile.TemporaryDirectory(prefix='glass-shared-tui-') as temporary:
         assert json.loads(glass_source.with_suffix('.meta.json').read_text())['origin'] == 'glass'
         records = [json.loads(line) for line in glass_source.read_text().splitlines()]
         assert sum(record.get('t') == 'Resume the Glass conversation in GC' for record in records) == 1
+        for target in (glass_source.stem, str(glass_source)):
+            direct = Terminal(second_project, env, (100, 35), args=("resume", target))
+            try:
+                direct.wait('SHARED_TUI_APPEND_OK', 25)
+                direct.visible('CORE  Idle', 20)
+                assert 'GLASS DEV' in direct.vt.text(), direct.vt.text()
+            finally:
+                direct.close()
         print('PASS real GC -> Glass TUI -> GC and Glass TUI -> GC: same logs/IDs, origin, history and appended replies; /tmp/glass-shared-chat-tui.ansi')
     finally:
         server.shutdown()

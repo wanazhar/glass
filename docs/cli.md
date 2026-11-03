@@ -684,6 +684,12 @@ glass core connect --json        # exact Core CLI namespace, including collision
 glass core --help                # show the installed Core command tree
 ```
 
+`glass resume [SESSION_ID|PATH]` is owned by Glass. Without a target it opens
+Glass's saved-conversation picker for the current project; selecting a row
+continues the same chat in Glass. An explicit ID or canonical path opens that
+project conversation directly. Use `gc resume` or `glass core resume` when you
+want the Core terminal interface.
+
 Existing Glass command names take precedence; use `glass core ...` to reach a
 Core command with the same name. Direct Core aliases and the `core` namespace
 prefer a version-matched `glass-core` executable beside Glass, then use

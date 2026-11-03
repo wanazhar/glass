@@ -46,12 +46,19 @@ fn write_cli_error(error: &str) {
 fn run() -> MainResult {
     let args = std::env::args_os().collect::<Vec<_>>();
     let command = Cli::command();
+    if args.get(1).is_some_and(|arg| arg == "resume") {
+        return tokio::runtime::Builder::new_multi_thread()
+            .thread_stack_size(RUNTIME_THREAD_STACK_SIZE)
+            .enable_all()
+            .build()?
+            .block_on(async { glass_dev::resume_cli(&args[2..]) });
+    }
     if let Some(core_args) = core_cli_forward_args(&args, &command) {
         let presentation = core_cli_presentation(&args);
         return forward_core_cli(&core_args, presentation);
     }
     let command = command.after_help(
-        "Glass Core commands are also available as `glass <core-command> ...` when the name does not conflict with a Glass command. Use `glass core <args...>` as the complete, exact Core CLI escape hatch; `glass core --help` shows Core's own commands and options.\n\nAdd `--json` before or after a Glass command for machine-readable terminal output; pipes remain machine-readable by default.",
+        "Resume saved conversations in Glass with `glass resume [SESSION_ID|PATH]`.\n\nGlass Core commands are also available as `glass <core-command> ...` when the name does not conflict with a Glass command. Use `glass core <args...>` as the complete, exact Core CLI escape hatch; `glass core --help` shows Core's own commands and options.\n\nAdd `--json` before or after a Glass command for machine-readable terminal output; pipes remain machine-readable by default.",
     );
     let command = hide_browser_options_from_glass_help(command);
     let (args, json_output) = glass_browser::cli::runner::take_json_flag(args);
@@ -186,6 +193,9 @@ fn core_cli_forward_args(
         break;
     }
     let first = args.get(command_index)?.to_str()?;
+    if first == "resume" {
+        return None;
+    }
     if first == "core" {
         let mut forwarded = args.get(command_index + 1..)?.to_vec();
         if forwarded.is_empty() {
@@ -303,6 +313,14 @@ mod tests {
             .spawn(|| {
                 let command = Cli::command();
                 let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+                assert_eq!(
+                    core_cli_forward_args(&args(&["glass", "resume"]), &command),
+                    None
+                );
+                assert_eq!(
+                    core_cli_forward_args(&args(&["glass", "core", "resume"]), &command),
+                    Some(args(&["resume"]))
+                );
                 assert_eq!(
                     core_cli_forward_args(&args(&["glass", "connect", "--json"]), &command),
                     Some(args(&["connect", "--json"]))

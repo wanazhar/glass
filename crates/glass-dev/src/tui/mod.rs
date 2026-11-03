@@ -437,6 +437,24 @@ pub(crate) fn run_with_browser_policy(
     browser_start_defaults: crate::BrowserStartConfig,
     browser_policy: BrowserPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_browser_policy_and_resume(
+        root,
+        layout,
+        visual_options,
+        browser_start_defaults,
+        browser_policy,
+        None,
+    )
+}
+
+pub(crate) fn run_with_browser_policy_and_resume(
+    root: impl AsRef<Path>,
+    layout: TuiLayout,
+    visual_options: TuiVisualOptions,
+    browser_start_defaults: crate::BrowserStartConfig,
+    browser_policy: BrowserPolicy,
+    mut initial_resume: Option<(serde_json::Value, bool)>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("Glass Dev TUI requires an interactive terminal; use a CLI subcommand or --mcp for non-interactive use".into());
     }
@@ -460,6 +478,15 @@ pub(crate) fn run_with_browser_policy(
     let mut pending_visual_job_hidden = false;
     loop {
         let size = guard.terminal.size()?;
+        if state.snapshot_ready
+            && let Some((catalog, direct)) = initial_resume.take()
+        {
+            state.open_session_picker(&catalog);
+            if direct {
+                state.submit_session_picker(&mut worker);
+            }
+            render_requested = true;
+        }
         render_requested |= state.poll_native_browser_dialog();
         let active_overlay = overlay::active_overlay(&state);
         reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous_active_overlay);

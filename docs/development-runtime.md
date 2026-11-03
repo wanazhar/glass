@@ -126,6 +126,10 @@ explicit resume succeeds. See the
 [exact-session recovery contract](plan/analysis/issue63-core-session-resume.md).
 ### Resume the same conversation across clients
 
+Run `glass resume` to choose and reopen a saved chat in Glass, or use
+`glass resume SESSION_ID` for a direct selection in the current project.
+`gc resume` and `glass core resume` open the Core terminal interface.
+
 Glass and GC can reopen a closed conversation from the same canonical JSONL
 log. Glass discovers project-matching GC conversations in its conversation
 picker and stores their Core session ID and source path as durable references.

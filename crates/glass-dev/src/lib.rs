@@ -287,6 +287,76 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     glass_browser::cli::runner::dispatch(cli).await
 }
 
+/// Resume a saved project conversation in the Glass terminal interface.
+pub fn resume_cli(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    const USAGE: &str = "Usage: glass resume [SESSION_ID|PATH]\nResume a saved conversation in Glass. Use glass core resume to open the GC interface.";
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if args.len() > 1
+        || args
+            .first()
+            .is_some_and(|arg| arg.to_string_lossy().starts_with('-'))
+    {
+        return Err(USAGE.into());
+    }
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err("glass resume requires an interactive terminal".into());
+    }
+    let root = std::env::current_dir()?.canonicalize()?;
+    let binary = core_runtime::resolve_core_binary(None)?;
+    let output = std::process::Command::new(binary)
+        .args(["sessions", "--json"])
+        .current_dir(&root)
+        .output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    let mut catalog: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let sessions = catalog
+        .get_mut("sessions")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("Core returned no saved-conversation catalogue")?;
+    for row in sessions.iter_mut() {
+        row["name"] = row["title"].clone();
+        row["sessionId"] = row["id"].clone();
+    }
+    if let Some(target) = args.first() {
+        let canonical = std::path::Path::new(target).canonicalize().ok();
+        sessions.retain(|row| {
+            row["id"].as_str().is_some_and(|id| target == id)
+                || canonical.as_ref().is_some_and(|path| {
+                    row["sourceRef"]
+                        .as_str()
+                        .is_some_and(|source| std::path::Path::new(source) == path)
+                })
+        });
+        if sessions.len() != 1 {
+            return Err("Choose an unambiguous saved conversation in this project; use its full path when IDs collide".into());
+        }
+    }
+    if sessions.is_empty() {
+        return Err("No saved conversations in this project".into());
+    }
+    let cli = <Cli as clap::Parser>::try_parse_from(["glass"])?;
+    let visual = tui::TuiVisualOptions {
+        mode: cli.tui_live,
+        backend: cli.tui_live_backend,
+        quality: cli.tui_live_quality,
+        fit: cli.tui_live_fit,
+    };
+    tui::run_with_browser_policy_and_resume(
+        root,
+        cli.tui_layout,
+        visual,
+        browser_start_defaults_from_cli(&cli)?,
+        glass_browser::cli::runner::policy_from_cli(&cli)?,
+        Some((catalog, !args.is_empty())),
+    )
+}
+
 fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let visual_options = tui::TuiVisualOptions {
         mode: cli.tui_live,

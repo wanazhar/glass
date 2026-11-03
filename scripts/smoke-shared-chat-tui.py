@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory(prefix='glass-shared-tui-') as temporary:
         terminal.wait('CONFIRMATION', 15)
         terminal.send('\r')
         terminal.wait('PRIOR_GC_ANSWER', 20)
+        terminal.visible('CORE  Idle', 20)
         terminal.send('Continue the previous question\r')
         terminal.wait('SHARED_TUI_APPEND_OK', 45)
         Path('/tmp/glass-shared-chat-tui.ansi').write_text(terminal.seen)

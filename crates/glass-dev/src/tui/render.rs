@@ -3613,9 +3613,9 @@ fn agent_presence(state: &DevTuiState) -> (&'static str, bool) {
                     | crate::AgentStatus::Waiting
             )
         );
-    let approval = lifecycle == Some(crate::AgentStatus::Waiting)
-        || state.pending_confirmation.is_some()
-        || state.status.to_ascii_lowercase().contains("approval");
+    // Waiting includes provider/tool work. Only a real confirmation owns
+    // the approval indicator; lifecycle labels and old status text do not.
+    let approval = state.pending_confirmation.is_some();
     (if working { "Working" } else { "Idle" }, approval)
 }
 fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -7643,7 +7643,18 @@ mod tests {
         state.running_tool_job = Some(9);
         assert_eq!(agent_presence(&state), ("Working", false));
         state.status = "approval required".into();
-        assert_eq!(agent_presence(&state), ("Working", true));
+        assert_eq!(agent_presence(&state), ("Working", false));
+        let id = crate::AgentId::parse("agent-0002").unwrap();
+        state.selected_agent = Some(id.clone());
+        let mut snapshot = super::super::snapshot::DisplaySnapshot::default();
+        snapshot
+            .agent_states
+            .push((id, crate::AgentStatus::Waiting));
+        state.apply_snapshot(&snapshot);
+        assert_eq!(agent_presence(&state), ("Working", false));
+        state.surface = DevSurface::Agent;
+        let screen = rendered(&state, 80, 24);
+        assert!(!screen.contains("approval needed"), "{screen}");
     }
 
     #[test]

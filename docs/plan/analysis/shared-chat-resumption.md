@@ -58,3 +58,28 @@ Active elsewhere: close it in the other app, then retry. Draft retained.
 Use the existing picker typography and responsive layouts. Labels must remain
 readable at compact widths and in WebUI. Empty, loading, error, and active states
 must be distinct; never replace a failed adoption with a fresh conversation.
+
+## Connect integration contract
+
+Thread rows retain their existing fields and add `origin`, `originLabel`, and a
+trusted `sourceRef`. Origin is `glass`, `gc`, or null. `sourceRef` is a backend-issued
+canonical reference, not permission to open an arbitrary caller-supplied file.
+Every reference must resolve within an authorized shared store and match the
+recorded project and conversation ID. Ambiguous IDs must not resolve arbitrarily.
+
+`POST /api/open` accepts `{id, sourceRef}` for shared rows; existing native rows
+remain compatible. The response retains the existing open payload and supplies the
+resolved session/reference and origin. Writer contention is returned distinctly as
+`session_active_elsewhere`. The frontend must acquire successfully before replacing
+its current chat, stream, selection, and composer, or restore all of those on failure.
+
+Connect intentionally keeps workers alive after a tab disconnects. Therefore this
+feature also needs an explicit idle-only release/handoff operation in WebUI. It
+releases the writer without deleting history or interrupting a running turn. A busy
+conversation must refuse release clearly. The browser journey must release its
+conversation and then resume the same log in Glass; stopping the entire gateway is
+not an acceptable handoff test.
+
+Existing per-session provider/model metadata is authoritative. For a legacy native
+GC conversation that never recorded those settings, use Core's current settings
+explicitly rather than claiming that missing historical configuration was recovered.

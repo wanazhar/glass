@@ -11,7 +11,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -942,9 +942,13 @@ struct Bridge {
     writer: Mutex<UnixStream>,
     feed: Mutex<Feed>,
     changed: Condvar,
+    closing: AtomicBool,
 }
 impl Bridge {
     fn send(&self, value: &Value) -> Result<(), String> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err("Conversation is being released; retry after it closes".into());
+        }
         let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_BODY {
             return Err("Input exceeds 64 KiB".into());
@@ -954,6 +958,34 @@ impl Bridge {
             .write_all(&bytes)
             .and_then(|_| stream.write_all(b"\n"))
             .map_err(|e| e.to_string())
+    }
+    fn release_idle(&self) -> Result<(), String> {
+        if self
+            .closing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err("Conversation release is already in progress".into());
+        }
+        let feed = self.feed.lock().map_err(|_| "Session state unavailable")?;
+        if feed.active || feed.interaction.is_some() {
+            self.closing.store(false, Ordering::Release);
+            return Err("session_active_elsewhere: Finish or cancel the active work before releasing this conversation.".into());
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| "Session connection unavailable")?;
+        let write = writer
+            .write_all(b"{\"t\":\"stop\"}\n")
+            .map_err(|e| e.to_string());
+        drop(writer);
+        drop(feed);
+        if let Err(error) = write {
+            self.closing.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
     fn send_secret_answer(&self, interaction_id: &str, secret: &str) -> Result<(), String> {
         #[derive(serde::Serialize)]
@@ -1083,7 +1115,6 @@ impl Bridge {
 struct App {
     settings: Settings,
     cfg: crate::config::Config,
-    data_root: PathBuf,
     desktop: Arc<crate::desktop::Desktop>,
     bridges: Mutex<HashMap<String, Arc<Bridge>>>,
     clients: AtomicUsize,
@@ -1111,6 +1142,112 @@ fn thread_path(id: &str) -> Result<PathBuf, String> {
     }
     Ok(path)
 }
+fn shared_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, String> {
+    if source_ref.is_empty() {
+        return thread_path(id);
+    }
+    if !valid_id(id) {
+        return Err("Invalid thread ID".into());
+    }
+    let requested = PathBuf::from(source_ref);
+    if !requested.is_absolute()
+        || requested.extension().is_none_or(|ext| ext != "jsonl")
+        || !std::fs::symlink_metadata(&requested).is_ok_and(|meta| meta.file_type().is_file())
+    {
+        return Err("Invalid shared session reference".into());
+    }
+    let path = requested.canonicalize().map_err(|e| e.to_string())?;
+    if path.file_stem().and_then(|name| name.to_str()) != Some(id) {
+        return Err("Shared session reference does not match its ID".into());
+    }
+    let data_root = crate::config::data_dir()
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let parent = path.parent().ok_or("Shared session has no parent")?;
+    let registered_stores = crate::resume_picker::registered_project_stores();
+    let project_root = if parent == data_root {
+        None
+    } else if registered_stores.iter().any(|store| store == parent)
+        || app
+            .settings
+            .workspace
+            .join(".glass/agent-sessions")
+            .canonicalize()
+            .is_ok_and(|store| store == parent)
+    {
+        Some(
+            parent
+                .parent()
+                .and_then(Path::parent)
+                .ok_or("Invalid project session store")?
+                .to_path_buf(),
+        )
+    } else {
+        return Err("Shared session reference is outside registered project stores".into());
+    };
+    let metadata = if path.with_extension("meta.json").exists() {
+        crate::polish::metadata_at(&path.with_extension("meta.json"))?
+    } else if let Some(project_root) = &project_root {
+        crate::polish::Metadata {
+            workspace: project_root.clone(),
+            origin: Some(crate::polish::SessionOrigin::Glass),
+            ..crate::polish::Metadata::default()
+        }
+    } else {
+        return Err("Global session has no trusted project identity".into());
+    };
+    let recorded_workspace = metadata
+        .workspace
+        .canonicalize()
+        .map_err(|_| "Shared session has no valid project identity")?;
+    if project_root
+        .as_ref()
+        .is_some_and(|project| project != &recorded_workspace)
+    {
+        return Err("Shared session belongs to another project".into());
+    }
+    if metadata.workspace.as_os_str().is_empty() {
+        return Err("Shared session belongs to another project".into());
+    }
+    Ok(path)
+}
+fn shared_metadata(app: &App, path: &Path) -> Result<crate::polish::Metadata, String> {
+    let sidecar = path.with_extension("meta.json");
+    if sidecar.exists() {
+        return crate::polish::metadata_at(&sidecar);
+    }
+    let project = path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(|root| root.canonicalize().ok())
+        .ok_or("Global session has no trusted project identity")?;
+    let store = project.join(".glass/agent-sessions");
+    if path.parent() == store.canonicalize().ok().as_deref()
+        && (project
+            == app
+                .settings
+                .workspace
+                .canonicalize()
+                .map_err(|e| e.to_string())?
+            || crate::resume_picker::registered_project_stores()
+                .iter()
+                .any(|registered| registered == path.parent().unwrap_or(Path::new(""))))
+    {
+        return Ok(crate::polish::Metadata {
+            workspace: project,
+            origin: Some(crate::polish::SessionOrigin::Glass),
+            ..crate::polish::Metadata::default()
+        });
+    }
+    Err("Global session has no trusted project identity".into())
+}
+fn shared_thread_workspace(app: &App, path: &Path) -> Result<PathBuf, String> {
+    shared_metadata(app, path)?
+        .workspace
+        .canonicalize()
+        .map_err(|e| e.to_string())
+}
 fn thread_workspace(id: &str) -> Result<PathBuf, String> {
     thread_path(id)?;
     let meta = crate::requests::bounded(
@@ -1121,12 +1258,28 @@ fn thread_workspace(id: &str) -> Result<PathBuf, String> {
     meta.workspace.canonicalize().map_err(|e| e.to_string())
 }
 fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
+    let path = thread_path(id)?;
+    bridge_for_path(app, id, Some(&path))
+}
+fn shared_socket_path(id: &str, session_path: &Path) -> PathBuf {
+    let data_root = crate::config::data_dir();
+    if data_root.canonicalize().ok().as_deref() == session_path.parent() {
+        data_root.join(format!("serve-{id}.sock"))
+    } else {
+        let digest = crate::hashing::sha256(session_path.as_os_str().as_encoded_bytes());
+        data_root.join(format!("serve-shared-{}.sock", &digest[..20]))
+    }
+}
+fn bridge_for_path(app: &App, id: &str, source_path: Option<&Path>) -> Result<Arc<Bridge>, String> {
     let mut map = app.bridges.lock().unwrap();
-    if let Some(b) = map.get(id) {
+    let key = source_path
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| id.to_owned());
+    if let Some(b) = map.get(&key) {
         if b.feed.lock().unwrap().connected {
             return Ok(b.clone());
         }
-        map.remove(id);
+        map.remove(&key);
     }
     if map.len() >= 16
         && let Some(key) = map.iter().find_map(|(key, b)| {
@@ -1143,8 +1296,19 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
                 .into(),
         );
     }
-    let workspace = thread_workspace(id)?;
-    let socket = crate::config::data_dir().join(format!("serve-{id}.sock"));
+    let session_path = source_path
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(|| thread_path(id))?;
+    let workspace = if source_path.is_some() {
+        shared_metadata(app, &session_path)?
+            .workspace
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+    } else {
+        thread_workspace(id)?
+    };
+    let socket = shared_socket_path(id, &session_path);
     let stream = match UnixStream::connect(&socket) {
         Ok(s) => s,
         Err(_) => {
@@ -1155,7 +1319,12 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
                 .map_err(|e| e.to_string())?;
             let mut command = Command::new(crate::executable::path()?);
             command
-                .args(["serve", id])
+                .arg("serve")
+                .arg(&session_path)
+                .args([
+                    "--socket",
+                    socket.to_str().ok_or("Invalid session socket path")?,
+                ])
                 .env("GC_CONNECT_SECURITY", app.settings.security.to_string())
                 .current_dir(workspace)
                 .stdin(Stdio::null())
@@ -1173,7 +1342,7 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
             let start = Instant::now();
             loop {
                 if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-                    return Err("Thread is open in another GC process, or its worker failed. Close that TUI first, then retry; GC never steals a writer lock.".into());
+                    return Err("session_active_elsewhere: Conversation is open in another app, or its worker failed. Close it there, then retry; the writer lock was not stolen.".into());
                 }
                 if let Ok(stream) = UnixStream::connect(&socket) {
                     break stream;
@@ -1207,6 +1376,7 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
             live_clipped: false,
         }),
         changed: Condvar::new(),
+        closing: AtomicBool::new(false),
     });
     b.send(&json!({"t":"attach","protocol_version":1,"human":true,"observe":true}))?;
     let worker = b.clone();
@@ -1250,7 +1420,7 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
     }
     drop(feed);
     b.send(&json!({"t":"control","action":"claim"}))?;
-    map.insert(id.into(), b.clone());
+    map.insert(key, b.clone());
     Ok(b)
 }
 #[derive(Clone)]
@@ -1479,9 +1649,6 @@ fn secret_submission_allowed(
         && owner_capability_enabled
         && same_origin_https_mutation(settings, r)
 }
-fn history(id: &str, before: usize) -> Result<Value, String> {
-    history_path(&thread_path(id)?, before)
-}
 fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let length = file
@@ -1586,12 +1753,12 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
 // Deliberate message actions resolve the byte cursor once, never on every
 // history page. Known native records define ordinal space; blank/unknown JSON
 // lines must not shift quote/rewrite indices.
-fn activity_location(id: &str, requested: usize) -> Result<Value, String> {
+fn activity_location(path: &Path, requested: usize) -> Result<Value, String> {
     use std::io::BufRead;
     if requested > 64 * 1024 * 1024 {
         return Err("Activity mapping exceeds 64 MiB; use native history controls".into());
     }
-    let file = std::fs::File::open(thread_path(id)?).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut reader = std::io::BufReader::new(file.take((requested + 8 * 1024 * 1024 + 1) as u64));
     let mut offset = 0usize;
     let mut ordinal = 0usize;
@@ -1645,20 +1812,19 @@ fn activity_texts() -> &'static Mutex<HashMap<String, ActivityText>> {
     STORE.get_or_init(Default::default)
 }
 fn activity_text(
-    id: &str,
+    path: &Path,
     record_offset: usize,
     offset: usize,
     expected: &str,
 ) -> Result<Value, String> {
     use std::io::BufRead;
-    let path = thread_path(id)?;
-    if crate::reasoning::private_at(&path, record_offset as u64)? {
+    if crate::reasoning::private_at(path, record_offset as u64)? {
         return Err("Provider replay metadata is private; use the reasoning view".into());
     }
     if offset > 0 && expected.is_empty() {
         return Err("Text continuation requires its previous revision".into());
     }
-    let key = format!("{id}:{record_offset}:{expected}");
+    let key = format!("{}:{record_offset}:{expected}", path.display());
     let page = |entry: &ActivityText| -> Result<Value, String> {
         if offset > entry.text.len() || !entry.text.is_char_boundary(offset) {
             return Err("Invalid UTF-8 text cursor".into());
@@ -1682,7 +1848,7 @@ fn activity_text(
             return page(entry);
         }
     }
-    let mut file = std::fs::File::open(thread_path(id)?).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     if record_offset > 0 {
         file.seek(SeekFrom::Start(record_offset as u64 - 1))
             .map_err(|e| e.to_string())?;
@@ -1726,7 +1892,7 @@ fn activity_text(
         revision,
     };
     let result = page(&entry)?;
-    let key = format!("{id}:{record_offset}:{}", entry.revision);
+    let key = format!("{}:{record_offset}:{}", path.display(), entry.revision);
     let mut store = activity_texts()
         .lock()
         .map_err(|_| "Activity reader unavailable")?;
@@ -1748,16 +1914,19 @@ fn activity_text(
     store.insert(key, entry);
     Ok(result)
 }
-fn history_record(id: &str, record_offset: usize, offset: usize) -> Result<Value, String> {
+fn history_record_path(
+    record_path: &Path,
+    record_offset: usize,
+    offset: usize,
+) -> Result<Value, String> {
     use base64::Engine;
-    let record_path = thread_path(id)?;
-    if crate::reasoning::private_at(&record_path, record_offset as u64)? {
+    if crate::reasoning::private_at(record_path, record_offset as u64)? {
         return Err("Provider replay metadata is private; use the reasoning view".into());
     }
     if offset >= 8 * 1024 * 1024 {
         return Err("Large activity exceeds the 8 MiB reader limit; export the transcript".into());
     }
-    let mut file = std::fs::File::open(thread_path(id)?).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(record_path).map_err(|e| e.to_string())?;
     if record_offset > 0 {
         file.seek(SeekFrom::Start(record_offset as u64 - 1))
             .map_err(|e| e.to_string())?;
@@ -2000,9 +2169,11 @@ fn artifacts() -> &'static Mutex<HashMap<String, Artifact>> {
         std::sync::OnceLock::new();
     STORE.get_or_init(Default::default)
 }
-fn create_artifact(id: &str, html: &[u8]) -> Result<Value, String> {
+fn create_artifact(session_path: &Path, html: &[u8]) -> Result<Value, String> {
     use ring::rand::SecureRandom;
-    thread_path(id)?;
+    if !session_path.is_file() {
+        return Err("Session is unavailable".into());
+    }
     if html.is_empty() || html.len() > 512 * 1024 {
         return Err("Interactive HTML must be between 1 byte and 512 KiB".into());
     }
@@ -2057,13 +2228,9 @@ fn artifact_document(stream: &mut TcpStream, token: &str) -> Result<(), String> 
     write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=()\r\nContent-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'\r\n\r\n",html.len()).map_err(|e|e.to_string())?;
     stream.write_all(&html).map_err(|e| e.to_string())
 }
-fn context_attachments(id: &str) -> Result<Value, String> {
-    thread_path(id)?;
+fn context_attachments(path: &Path) -> Result<Value, String> {
     // Context chips need metadata only, not a parse of the entire transcript.
-    let bytes = crate::requests::bounded(
-        &crate::config::data_dir().join(format!("{id}.meta.json")),
-        4 * 1024 * 1024,
-    )?;
+    let bytes = crate::requests::bounded(&path.with_extension("meta.json"), 4 * 1024 * 1024)?;
     let meta: crate::polish::Metadata =
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let attachments=meta.attachments.iter().take(128).map(|a|json!({"path":a.path,"source":a.source,"bytes":a.text.len()+a.data.as_ref().map(|d|d.len()*3/4).unwrap_or(0),"mediaType":a.media_type})).collect::<Vec<_>>();
@@ -2078,7 +2245,13 @@ fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Val
         .lock()
         .map_err(|_| "Upload storage unavailable")?;
     let id = query.get("id").ok_or("Missing thread")?;
-    let b = bridge(app, id)?;
+    let source_ref = query.get("sourceRef").map(String::as_str).unwrap_or("");
+    let session_path = shared_thread_path(app, id, source_ref)?;
+    let b = if source_ref.is_empty() {
+        bridge(app, id)?
+    } else {
+        bridge_for_path(app, id, Some(&session_path))?
+    };
     if b.feed
         .lock()
         .map_err(|_| "Thread state unavailable")?
@@ -2104,7 +2277,10 @@ fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Val
         .take(120)
         .collect();
     let token = crate::workspace::hash(&[name.as_bytes(), b"\0", body].concat());
-    let dir = crate::config::data_dir().join("web-uploads").join(id);
+    let thread_key = crate::workspace::hash(session_path.as_os_str().as_encoded_bytes());
+    let dir = crate::config::data_dir()
+        .join("web-uploads")
+        .join(&thread_key);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -2139,8 +2315,8 @@ fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Val
         json!({"token":token,"name":name,"bytes":body.len(),"kind":if image {"image"} else {"text"}}),
     )
 }
-fn edit_file(id: &str, path: &str) -> Result<Value, String> {
-    let root = thread_workspace(id)?;
+fn edit_file(root: &Path, path: &str) -> Result<Value, String> {
+    let root = root.to_path_buf();
     let file = PathBuf::from(path);
     let file = if file.is_absolute() {
         file
@@ -2164,8 +2340,7 @@ fn edit_file(id: &str, path: &str) -> Result<Value, String> {
         json!({"path":relative,"text":text,"revision":crate::files::revision(&bytes),"maxBytes":32768}),
     )
 }
-fn preview_file(id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
-    let root = thread_workspace(id)?;
+fn preview_file(root: &Path, path: &str) -> Result<(String, Vec<u8>), String> {
     preview_path(&root, path)
 }
 fn preview_attachment_at(
@@ -2476,7 +2651,11 @@ fn handle_with_transport(
     }
     if path == "/api/export" && r.method == "GET" {
         let result = (|| -> Result<Vec<u8>, String> {
-            let path = thread_path(query.get("id").ok_or("Missing thread")?)?;
+            let path = shared_thread_path(
+                &app,
+                query.get("id").ok_or("Missing thread")?,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?;
             crate::requests::bounded(&path, 64 * 1024 * 1024)?;
             let session = crate::session::Session::open_readonly(
                 &crate::config::data_dir(),
@@ -2509,7 +2688,14 @@ fn handle_with_transport(
                 preview_path(&root, query.get("path").ok_or("Missing file path")?)
             } else {
                 preview_file(
-                    query.get("id").ok_or("Missing thread")?,
+                    &shared_thread_workspace(
+                        &app,
+                        &shared_thread_path(
+                            &app,
+                            query.get("id").ok_or("Missing thread")?,
+                            query.get("sourceRef").map(String::as_str).unwrap_or(""),
+                        )?,
+                    )?,
                     query.get("path").ok_or("Missing file path")?,
                 )
             }
@@ -2525,9 +2711,15 @@ fn handle_with_transport(
         }
     }
     if path == "/api/attachment" && r.method == "GET" {
+        let id = query.get("id").map(String::as_str).unwrap_or_default();
+        let session_path = shared_thread_path(
+            &app,
+            id,
+            query.get("sourceRef").map(String::as_str).unwrap_or(""),
+        )?;
         let result = preview_attachment_at(
-            &app.data_root,
-            query.get("id").map(String::as_str).unwrap_or_default(),
+            session_path.parent().ok_or("Session has no parent")?,
+            id,
             query
                 .get("attachment")
                 .map(String::as_str)
@@ -2580,7 +2772,18 @@ fn handle_with_transport(
     }
     if path == "/api/agent-events" && r.method == "GET" {
         let id = query.get("id").ok_or("Missing thread")?;
-        thread_path(id)?;
+        let session_path = shared_thread_path(
+            &app,
+            id,
+            query.get("sourceRef").map(String::as_str).unwrap_or(""),
+        )?;
+        if session_path.parent() != crate::config::data_dir().canonicalize().ok().as_deref()
+            && crate::config::data_dir()
+                .join(format!("{id}.jsonl"))
+                .is_file()
+        {
+            return Err("Teammate state is ambiguous for this shared session reference".into());
+        }
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n").map_err(|e|e.to_string())?;
         let mut revision = u64::MAX;
         while !crate::desktop::stopping() {
@@ -2690,12 +2893,14 @@ fn handle_with_transport(
         ("POST", "/api/upgrade") => {
             let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
             let id = value["id"].as_str().ok_or("Missing thread")?;
+            let source_ref = value["sourceRef"].as_str().unwrap_or("");
+            let session_path = shared_thread_path(&app, id, source_ref)?;
             if value["confirmed"] != true {
                 return Err(
                     "Confirm restarting this thread runtime and its owned background work".into(),
                 );
             }
-            let current = bridge(&app, id)?;
+            let current = bridge_for_path(&app, id, Some(&session_path))?;
             {
                 let feed = current
                     .feed
@@ -2711,8 +2916,8 @@ fn handle_with_transport(
                 }
             }
             current.send(&json!({"t":"stop"}))?;
-            let socket = crate::config::data_dir().join(format!("serve-{id}.sock"));
-            let lock = crate::config::data_dir().join(format!("{id}.writer.lock"));
+            let socket = shared_socket_path(id, &session_path);
+            let lock = session_path.with_extension("writer.lock");
             let started = Instant::now();
             loop {
                 if !socket.exists() {
@@ -2736,8 +2941,8 @@ fn handle_with_transport(
             app.bridges
                 .lock()
                 .map_err(|_| "Thread connections unavailable")?
-                .remove(id);
-            let next = bridge(&app, id)?;
+                .remove(&session_path.to_string_lossy().into_owned());
+            let next = bridge_for_path(&app, id, Some(&session_path))?;
             next.send(&json!({"t":"control","action":"claim"}))?;
             Ok(json!({"upgraded":true,"thread":id,"history_preserved":true}))
         }
@@ -2745,7 +2950,7 @@ fn handle_with_transport(
             let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
             let id = value["id"].as_str().ok_or("Missing thread")?;
             let name = crate::actions::canonical(value["name"].as_str().ok_or("Missing command")?);
-            let path = thread_path(id)?;
+            let path = shared_thread_path(&app, id, value["sourceRef"].as_str().unwrap_or(""))?;
             if !crate::web_commands::readonly(name) {
                 return Err("This command requires the session control channel".into());
             }
@@ -2759,19 +2964,40 @@ fn handle_with_transport(
             crate::web_commands::inspect_request(name, &value["values"], &session, &cfg)
                 .map(crate::web_commands::bounded_result)
         }
-        ("POST", "/api/artifact") => {
-            create_artifact(query.get("id").ok_or("Missing thread")?, &r.body)
-        }
-        ("GET", "/api/context") => context_attachments(query.get("id").ok_or("Missing thread")?),
+        ("POST", "/api/artifact") => create_artifact(
+            &shared_thread_path(
+                &app,
+                query.get("id").ok_or("Missing thread")?,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?,
+            &r.body,
+        ),
+        ("GET", "/api/context") => context_attachments(&shared_thread_path(
+            &app,
+            query.get("id").ok_or("Missing thread")?,
+            query.get("sourceRef").map(String::as_str).unwrap_or(""),
+        )?),
         ("POST", "/api/upload") => upload(&app, &query, &r.body),
         ("GET", "/api/edit") => edit_file(
-            query.get("id").ok_or("Missing thread")?,
+            &shared_thread_workspace(
+                &app,
+                &shared_thread_path(
+                    &app,
+                    query.get("id").ok_or("Missing thread")?,
+                    query.get("sourceRef").map(String::as_str).unwrap_or(""),
+                )?,
+            )?,
             query.get("path").ok_or("Missing file path")?,
         ),
         ("GET", "/api/changes") => {
             let id = query.get("id").ok_or("Missing thread")?;
+            let source_path = shared_thread_path(
+                &app,
+                id,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?;
             let mut cfg = app.cfg.clone();
-            cfg.workspace = thread_workspace(id)?;
+            cfg.workspace = shared_thread_workspace(&app, &source_path)?;
             crate::web_commands::changes(&cfg)
         }
         ("GET", "/api/browse") => browse(&app.settings, &query),
@@ -2787,29 +3013,60 @@ fn handle_with_transport(
             query.get("q").map(String::as_str).unwrap_or(""),
             query.get("project").map(String::as_str).unwrap_or(""),
             query.get("id").map(String::as_str).unwrap_or(""),
+            query.get("sourceRef").map(String::as_str).unwrap_or(""),
         )),
         ("GET", "/api/agents") => {
             let id = query.get("id").ok_or("Missing thread")?;
-            thread_path(id)?;
+            let source_path = shared_thread_path(
+                &app,
+                id,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?;
+            if source_path.parent() != crate::config::data_dir().canonicalize().ok().as_deref()
+                && crate::config::data_dir()
+                    .join(format!("{id}.jsonl"))
+                    .is_file()
+            {
+                return Err("Teammate state is ambiguous for this shared session reference".into());
+            }
             crate::team::client(id, &json!({"action":"list"}))
         }
         ("GET", "/api/agent") => {
             let id = query.get("id").ok_or("Missing thread")?;
-            thread_path(id)?;
+            let source_path = shared_thread_path(
+                &app,
+                id,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?;
+            if source_path.parent() != crate::config::data_dir().canonicalize().ok().as_deref()
+                && crate::config::data_dir()
+                    .join(format!("{id}.jsonl"))
+                    .is_file()
+            {
+                return Err("Teammate state is ambiguous for this shared session reference".into());
+            }
             crate::team::client(
                 id,
                 &json!({"action":"transcript","id":query.get("agent").ok_or("Missing agent")?,"before":query.get("before").and_then(|v|v.parse::<u64>().ok())}),
             )
         }
         ("GET", "/api/activity-location") => activity_location(
-            query.get("id").ok_or("Missing thread")?,
+            &shared_thread_path(
+                &app,
+                query.get("id").ok_or("Missing thread")?,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?,
             query
                 .get("recordOffset")
                 .and_then(|v| v.parse().ok())
                 .ok_or("Missing recordOffset")?,
         ),
         ("GET", "/api/activity-text") => activity_text(
-            query.get("id").ok_or("Missing thread")?,
+            &shared_thread_path(
+                &app,
+                query.get("id").ok_or("Missing thread")?,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?,
             query
                 .get("recordOffset")
                 .and_then(|v| v.parse().ok())
@@ -2820,8 +3077,12 @@ fn handle_with_transport(
                 .unwrap_or(0),
             query.get("expected").map(String::as_str).unwrap_or(""),
         ),
-        ("GET", "/api/history-record") => history_record(
-            query.get("id").ok_or("Missing thread")?,
+        ("GET", "/api/history-record") => history_record_path(
+            &shared_thread_path(
+                &app,
+                query.get("id").ok_or("Missing thread")?,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?,
             query
                 .get("recordOffset")
                 .and_then(|v| v.parse().ok())
@@ -2831,15 +3092,26 @@ fn handle_with_transport(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
         ),
-        ("GET", "/api/history") => history(
-            query.get("id").ok_or("Missing thread")?,
+        ("GET", "/api/history") => history_path(
+            &shared_thread_path(
+                &app,
+                query.get("id").ok_or("Missing thread")?,
+                query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            )?,
             query
                 .get("before")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(usize::MAX),
         ),
         ("GET", "/api/events") => {
-            let b = bridge(&app, query.get("id").ok_or("Missing thread")?)?;
+            let id = query.get("id").ok_or("Missing thread")?;
+            let source_ref = query.get("sourceRef").map(String::as_str).unwrap_or("");
+            let session_path = shared_thread_path(&app, id, source_ref)?;
+            let b = if source_ref.is_empty() {
+                bridge(&app, id)?
+            } else {
+                bridge_for_path(&app, id, Some(&session_path))?
+            };
             let since = r
                 .headers
                 .get("last-event-id")
@@ -2857,8 +3129,67 @@ fn handle_with_transport(
         ("POST", "/api/open") => {
             let v: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
             let id = v["id"].as_str().ok_or("Missing thread")?;
-            bridge(&app, id)?;
-            Ok(json!({"connected":true}))
+            let source_ref = v["sourceRef"].as_str().unwrap_or("");
+            let session_path = shared_thread_path(&app, id, source_ref)?;
+            let b = if source_ref.is_empty() {
+                bridge(&app, id)?
+            } else {
+                bridge_for_path(&app, id, Some(&session_path))?
+            };
+            let metadata = shared_metadata(&app, &session_path)?;
+            let (origin, origin_label) = match metadata.origin {
+                Some(crate::polish::SessionOrigin::Glass) => (Some("glass"), "Created in Glass"),
+                Some(crate::polish::SessionOrigin::Gc) => (Some("gc"), "Created in GC"),
+                None => (None, "Unknown origin"),
+            };
+            Ok(
+                json!({"connected":true,"session":id,"sourceRef":session_path,
+                "origin":origin,"originLabel":origin_label,
+                "activeOwner":if b.feed.lock().unwrap().connected {"Connect"} else {"unknown"}}),
+            )
+        }
+        ("POST", "/api/close") => {
+            let v: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let id = v["id"].as_str().ok_or("Missing thread")?;
+            let source_ref = v["sourceRef"].as_str().unwrap_or("");
+            let session_path = shared_thread_path(&app, id, source_ref)?;
+            let b = if source_ref.is_empty() {
+                bridge(&app, id)?
+            } else {
+                bridge_for_path(&app, id, Some(&session_path))?
+            };
+            b.release_idle()?;
+            let start = Instant::now();
+            loop {
+                if !b
+                    .feed
+                    .lock()
+                    .map_err(|_| "Session state unavailable")?
+                    .connected
+                {
+                    break;
+                }
+                if start.elapsed() > Duration::from_secs(5) {
+                    return Err(
+                        "Connect is still releasing the idle conversation; retry after it settles."
+                            .into(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let key = session_path.to_string_lossy().into_owned();
+            app.bridges
+                .lock()
+                .map_err(|_| "Thread connections unavailable")?
+                .remove(&key);
+            let metadata = shared_metadata(&app, &session_path)?;
+            let (origin, origin_label) = match metadata.origin {
+                Some(crate::polish::SessionOrigin::Glass) => (Some("glass"), "Created in Glass"),
+                Some(crate::polish::SessionOrigin::Gc) => (Some("gc"), "Created in GC"),
+                None => (None, "Unknown origin"),
+            };
+            Ok(json!({"closed":true,"session":id,"sourceRef":session_path,
+                "origin":origin,"originLabel":origin_label}))
         }
         ("POST", "/api/new") => {
             let request: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
@@ -2888,7 +3219,14 @@ fn handle_with_transport(
             ) {
                 return Err("Unsupported command".into());
             }
-            bridge(&app, id)?.send(message)?;
+            let source_ref = value["sourceRef"].as_str().unwrap_or("");
+            let session_path = shared_thread_path(&app, id, source_ref)?;
+            let b = if source_ref.is_empty() {
+                bridge(&app, id)?
+            } else {
+                bridge_for_path(&app, id, Some(&session_path))?
+            };
+            b.send(message)?;
             Ok(json!({"sent":true,"note":"Session acknowledgment determines durable acceptance"}))
         }
         ("POST", "/api/secret") => {
@@ -2908,7 +3246,7 @@ fn handle_with_transport(
             if value.as_object().is_none_or(|object| {
                 object
                     .keys()
-                    .any(|key| !matches!(key.as_str(), "id" | "interactionId"))
+                    .any(|key| !matches!(key.as_str(), "id" | "interactionId" | "sourceRef"))
             }) {
                 return Err("Secret submission contains unsupported fields".into());
             }
@@ -2928,7 +3266,13 @@ fn handle_with_transport(
             {
                 return Err("Secret must contain 1..=4096 bytes".into());
             }
-            let bridge = bridge(&app, &id)?;
+            let source_ref = value["sourceRef"].as_str().unwrap_or("");
+            let session_path = shared_thread_path(&app, &id, source_ref)?;
+            let bridge = if source_ref.is_empty() {
+                bridge(&app, &id)?
+            } else {
+                bridge_for_path(&app, &id, Some(&session_path))?
+            };
             let mut feed = bridge
                 .feed
                 .lock()
@@ -2972,6 +3316,11 @@ fn handle_with_transport(
     }
     match result {
         Ok(v) => json_response(&mut stream, 200, v),
+        Err(e) if e.starts_with("session_active_elsewhere:") => json_response(
+            &mut stream,
+            409,
+            json!({"code":"session_active_elsewhere","error":e.trim_start_matches("session_active_elsewhere: ").to_owned()}),
+        ),
         Err(e) => json_response(&mut stream, 400, json!({"error":e})),
     }
     .map_err(|e| e.to_string())
@@ -3170,7 +3519,6 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
     let app = Arc::new(App {
         settings,
         cfg,
-        data_root: crate::config::data_dir(),
         desktop,
         bridges: Mutex::new(HashMap::new()),
         clients: AtomicUsize::new(0),
@@ -3272,7 +3620,6 @@ mod tests {
         let app = Arc::new(App {
             settings,
             cfg: crate::config::Config::default(),
-            data_root: root.clone(),
             desktop: Arc::new(crate::desktop::Desktop::new(PathBuf::from("/tmp"))),
             bridges: Mutex::new(HashMap::new()),
             clients: AtomicUsize::new(0),
@@ -3443,11 +3790,11 @@ mod tests {
                 live_clipped: false,
             }),
             changed: Condvar::new(),
+            closing: AtomicBool::new(false),
         });
         let app = Arc::new(App {
             settings,
             cfg: crate::config::Config::default(),
-            data_root: PathBuf::from("/tmp"),
             desktop: Arc::new(crate::desktop::Desktop::new(PathBuf::from("/tmp"))),
             bridges: Mutex::new(HashMap::from([("test-thread".into(), bridge)])),
             clients: AtomicUsize::new(0),
@@ -4124,6 +4471,7 @@ mod regression {
                 live_clipped: false,
             }),
             changed: Condvar::new(),
+            closing: AtomicBool::new(false),
         };
         b.push(json!({"t":"interaction","id":"one","request":{"kind":"question"}}));
         for _ in 0..2000 {

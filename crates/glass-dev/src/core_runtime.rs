@@ -186,6 +186,9 @@ pub struct CoreRuntimeOptions {
     pub resume: bool,
     /// Resume this exact persisted session during Glass thread recovery.
     pub resume_session_id: Option<String>,
+    /// Canonical append-only Core journal selected from a shared project
+    /// conversation catalog. When present it disambiguates IDs across stores.
+    pub resume_session_path: Option<PathBuf>,
     /// Session id to fork from, when the caller wants a branch.
     pub fork_from: Option<PathBuf>,
     /// Explicit compatible `glass-core` executable. If unset, Glass checks
@@ -212,6 +215,7 @@ impl std::fmt::Debug for CoreRuntimeOptions {
             .field("additional_system_prompt", &self.additional_system_prompt)
             .field("resume", &self.resume)
             .field("resume_session_id", &self.resume_session_id)
+            .field("resume_session_path", &self.resume_session_path)
             .field("fork_from", &self.fork_from)
             .field("binary", &self.binary)
             .field("binary_args", &self.binary_args)
@@ -227,6 +231,7 @@ pub(crate) struct GlassCoreRuntime {
     root: PathBuf,
     storage_dir: PathBuf,
     session_id: String,
+    session_path: PathBuf,
     broker: Option<ResidentAgentBroker>,
     local_tool_executor: Option<crate::resident_harness::AgentToolExecutor>,
     browser_tool_in_flight: Arc<AtomicBool>,
@@ -361,7 +366,13 @@ impl GlassCoreRuntime {
     pub(crate) fn spawn(root: &Path, options: CoreRuntimeOptions) -> DevelopmentResult<Self> {
         let root = fs::canonicalize(root)?;
         fs::create_dir_all(&options.session_dir)?;
-        let storage_dir = fs::canonicalize(&options.session_dir)?;
+        let storage_root = options
+            .resume_session_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .unwrap_or(&options.session_dir);
+        fs::create_dir_all(storage_root)?;
+        let storage_dir = fs::canonicalize(storage_root)?;
         let binary = resolve_core_binary(options.binary.as_deref())?;
 
         let mut command = Command::new(&binary);
@@ -399,6 +410,7 @@ impl GlassCoreRuntime {
             root: root.clone(),
             storage_dir,
             session_id: String::new(),
+            session_path: PathBuf::new(),
             broker: options.broker.clone(),
             local_tool_executor: options.local_tool_executor.clone(),
             browser_tool_in_flight: Arc::new(AtomicBool::new(false)),
@@ -412,6 +424,18 @@ impl GlassCoreRuntime {
         };
         runtime.initialize()?;
         runtime.open_session(&root, &options)?;
+        if runtime.session_path.as_os_str().is_empty() {
+            runtime.session_path = options
+                .resume_session_path
+                .as_ref()
+                .map(|path| path.canonicalize())
+                .transpose()?
+                .unwrap_or_else(|| {
+                    runtime
+                        .storage_dir
+                        .join(format!("{}.jsonl", runtime.session_id))
+                });
+        }
         if options.resume || options.resume_session_id.is_some() {
             let id = runtime.send_request(
                 "session/tools",
@@ -428,6 +452,10 @@ impl GlassCoreRuntime {
     /// events; this accessor exists for the adapter contract tests.
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub(crate) fn session_path(&self) -> &Path {
+        &self.session_path
     }
 
     fn initialize(&mut self) -> DevelopmentResult<()> {
@@ -477,10 +505,15 @@ impl GlassCoreRuntime {
                     "invalid persisted Core session reference".into(),
                 ));
             }
-            let id = self.send_request(
-                "session/resume",
-                json!({"sessionId": session, "expectedToolMode": "mixed"}),
-            )?;
+            let mut request = json!({"sessionId": session, "expectedToolMode": "mixed"});
+            if let Some(path) = &options.resume_session_path {
+                request["sourcePath"] = json!(path);
+                request["cwd"] = json!(root);
+                request["toolMode"] = json!("mixed");
+                request["tools"] = json!(runtime_tool_catalog());
+                request["creationOrigin"] = json!("glass");
+            }
+            let id = self.send_request("session/resume", request)?;
             let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
             let resumed = result
                 .get("sessionId")
@@ -527,11 +560,13 @@ impl GlassCoreRuntime {
             return Ok(());
         }
         if options.resume
-            && let Some(session) = self.newest_workspace_session(root)?
+            && let Some((session, source_path)) = self.newest_workspace_session(root)?
         {
             let id = self.send_request(
                 "session/resume",
-                json!({"sessionId": session, "expectedToolMode": "mixed"}),
+                json!({"sessionId": session, "expectedToolMode": "mixed",
+                    "sourcePath":source_path,"cwd":root,"toolMode":"mixed",
+                    "tools":runtime_tool_catalog()}),
             )?;
             let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
             self.session_id = result
@@ -539,6 +574,7 @@ impl GlassCoreRuntime {
                 .and_then(Value::as_str)
                 .unwrap_or(&session)
                 .to_string();
+            self.session_path = source_path;
             return Ok(());
         }
         let id = self.send_request("session/new", self.session_params(root, options))?;
@@ -643,15 +679,64 @@ impl GlassCoreRuntime {
                 let Some(record) = entry.get("record") else {
                     continue;
                 };
-                let Some(text) = record.get("t").and_then(Value::as_str) else {
-                    continue;
-                };
-                let kind = match record.get("k").and_then(Value::as_str) {
-                    Some("user") => "user",
-                    Some("assistant") => "message_end",
-                    _ => continue,
-                };
-                events.push(json!({"type":kind,"text":text,"entryId":entry_id}));
+                let kind = record.get("k").and_then(Value::as_str).unwrap_or("");
+                match kind {
+                    "user" => {
+                        if let Some(text) = record.get("t").and_then(Value::as_str) {
+                            events.push(json!({"type":"user","text":text,"entryId":entry_id}));
+                        }
+                    }
+                    "assistant" => {
+                        if let Some(text) = record.get("t").and_then(Value::as_str) {
+                            events
+                                .push(json!({"type":"message_end","text":text,"entryId":entry_id}));
+                        }
+                    }
+                    "call" => {
+                        let call_id = record.get("id").and_then(Value::as_str).unwrap_or("");
+                        if call_id.is_empty() {
+                            continue;
+                        }
+                        let arguments = record.get("args").cloned().unwrap_or(Value::Null);
+                        let command = arguments
+                            .get("command")
+                            .or_else(|| arguments.get("cmd"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| arguments.to_string());
+                        events.push(json!({"type":"tool_execution_start","callId":call_id,
+                            "name":record.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                            "command":command,"arguments":arguments,"entryId":entry_id}));
+                    }
+                    "tool" => {
+                        let call_id = record.get("id").and_then(Value::as_str).unwrap_or("");
+                        if call_id.is_empty() {
+                            continue;
+                        }
+                        events.push(json!({"type":"tool_execution_end","callId":call_id,
+                            "text":record.get("t").and_then(Value::as_str).unwrap_or(""),
+                            "isError":false,"entryId":entry_id}));
+                    }
+                    "bash" => {
+                        let call_id = record.get("id").and_then(Value::as_str).unwrap_or("");
+                        if call_id.is_empty() {
+                            continue;
+                        }
+                        events.push(json!({"type":"tool_execution_start","callId":call_id,
+                            "name":"bash","command":record.get("cmd").and_then(Value::as_str).unwrap_or(""),
+                            "entryId":entry_id}));
+                        events.push(json!({"type":"tool_execution_end","callId":call_id,
+                            "text":record.get("out").and_then(Value::as_str).unwrap_or(""),
+                            "isError":record.get("code").and_then(Value::as_i64).is_some_and(|code| code != 0),
+                            "entryId":entry_id}));
+                    }
+                    "system" => {
+                        if let Some(text) = record.get("t").and_then(Value::as_str) {
+                            events.push(json!({"type":"notice","text":text,"entryId":entry_id}));
+                        }
+                    }
+                    _ => {}
+                }
             }
             if truncated
                 || !page
@@ -689,9 +774,13 @@ impl GlassCoreRuntime {
         let mut params = json!({
             "cwd": root,
             "toolMode": "mixed",
+            "creationOrigin": "glass",
             "tools": tools,
             "instructions": instructions(options),
         });
+        if let Some(path) = &options.resume_session_path {
+            params["sourcePath"] = json!(path);
+        }
         if let Some(model) = &options.model {
             params["model"] = json!(model);
         }
@@ -703,15 +792,18 @@ impl GlassCoreRuntime {
     /// Session ids are creation-ordered, and `session/list` pages ascending
     /// with `nextAfterSessionId`, so the last match in the last page is the
     /// newest session. Paging is bounded so a large store cannot stall startup.
-    fn newest_workspace_session(&mut self, root: &Path) -> DevelopmentResult<Option<String>> {
+    fn newest_workspace_session(
+        &mut self,
+        root: &Path,
+    ) -> DevelopmentResult<Option<(String, PathBuf)>> {
         const MAX_PAGES: usize = 8;
         const PAGE_LIMIT: u64 = 128;
         let mut after: Option<String> = None;
-        let mut newest: Option<String> = None;
+        let mut newest: Option<(String, PathBuf)> = None;
         for _ in 0..MAX_PAGES {
             let mut params = json!({"limit": PAGE_LIMIT});
             if let Some(after) = &after {
-                params["afterSessionId"] = json!(after);
+                params["afterSourceRef"] = json!(after);
             }
             let id = self.send_request("session/list", params)?;
             let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
@@ -724,13 +816,17 @@ impl GlassCoreRuntime {
                 let cwd = session.get("cwd").and_then(Value::as_str);
                 if cwd.is_some_and(|cwd| Path::new(cwd) == root)
                     && session.get("toolMode").and_then(Value::as_str) == Some("mixed")
-                    && let Some(session) = session.get("sessionId").and_then(Value::as_str)
+                    && let (Some(id), Some(path)) = (
+                        session.get("sessionId").and_then(Value::as_str),
+                        session.get("sourceRef").and_then(Value::as_str),
+                    )
                 {
-                    newest = Some(session.to_string());
+                    newest = Some((id.to_string(), PathBuf::from(path)));
                 }
             }
             match result
-                .get("nextAfterSessionId")
+                .get("nextAfterSourceRef")
+                .or_else(|| result.get("nextAfterSessionId"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
             {

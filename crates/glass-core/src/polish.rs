@@ -17,8 +17,35 @@ pub struct Metadata {
     pub workspace: PathBuf,
     #[serde(default)]
     pub title: String,
+    /// Stable client that first created the conversation. Missing values in
+    /// older metadata remain unknown unless a caller can identify a native
+    /// store with certainty.
+    #[serde(default)]
+    pub origin: Option<SessionOrigin>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOrigin {
+    Glass,
+    Gc,
+}
+pub(crate) fn origin_for_store(dir: &Path) -> Option<SessionOrigin> {
+    let root = dir.canonicalize().ok()?;
+    if config::data_dir().canonicalize().ok().as_ref() == Some(&root) {
+        return Some(SessionOrigin::Gc);
+    }
+    if root
+        .file_name()
+        .is_some_and(|name| name == "agent-sessions")
+        && root
+            .parent()
+            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == ".glass"))
+    {
+        return Some(SessionOrigin::Glass);
+    }
+    None
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Attachment {
@@ -51,6 +78,11 @@ pub struct Citation {
 fn meta_path(s: &Session) -> PathBuf {
     s.path.with_extension("meta.json")
 }
+pub(crate) fn metadata_at(path: &Path) -> Result<Metadata, String> {
+    let bytes = crate::requests::bounded(path, SESSION_METADATA_MAX_BYTES)
+        .map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
 pub fn metadata(s: &Session) -> Metadata {
     crate::requests::bounded(&meta_path(s), SESSION_METADATA_MAX_BYTES)
         .ok()
@@ -73,14 +105,27 @@ pub fn bind(s: &Session, workspace: &Path) -> Result<(), String> {
     }
     let mut meta = metadata(s);
     let root = workspace.canonicalize().map_err(|e| e.to_string())?;
+    let mut changed = false;
     if meta.workspace.as_os_str().is_empty() {
-        meta.workspace = root;
-        save(s, &meta)?;
+        meta.workspace = root.clone();
+        changed = true;
     } else if meta.workspace != root {
         return Err(format!(
             "Session belongs to {}. Run glass-core there to resume it.",
             meta.workspace.display()
         ));
+    }
+    if meta.origin.is_none()
+        && let Some(origin) = s.path.parent().and_then(origin_for_store)
+    {
+        meta.origin = Some(origin);
+        changed = true;
+    }
+    if changed {
+        save(s, &meta)?;
+    }
+    if meta.origin == Some(SessionOrigin::Glass) {
+        crate::resume_picker::register_project(&root)?;
     }
     Ok(())
 }

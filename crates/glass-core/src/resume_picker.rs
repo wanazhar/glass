@@ -3,10 +3,79 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
+const SHARED_PROJECT_LIMIT: usize = 256;
+
+/// Register one trusted project store so Connect can discover its Glass
+/// conversations when the gateway is started from a different workspace.
+pub(crate) fn register_project(workspace: &Path) -> Result<(), String> {
+    let workspace = workspace.canonicalize().map_err(|e| e.to_string())?;
+    if !workspace.is_dir() {
+        return Err("shared session workspace is not a directory".into());
+    }
+    let store = workspace.join(".glass/agent-sessions");
+    std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
+    let store = store.canonicalize().map_err(|e| e.to_string())?;
+    if store.parent().and_then(Path::parent) != Some(workspace.as_path()) {
+        return Err("shared session store is outside its project".into());
+    }
+    let data = crate::config::data_dir();
+    std::fs::create_dir_all(&data).map_err(|e| e.to_string())?;
+    let lock_path = data.join("shared-projects.lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|e| e.to_string())?;
+    fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+    let index_path = data.join("shared-projects.json");
+    let mut projects = crate::requests::bounded_optional(&index_path, 64 * 1024)?
+        .map(|bytes| serde_json::from_slice::<Vec<PathBuf>>(&bytes).map_err(|e| e.to_string()))
+        .transpose()?
+        .unwrap_or_default();
+    if !projects.contains(&workspace) {
+        if projects.len() >= SHARED_PROJECT_LIMIT {
+            return Err("shared project registry is full".into());
+        }
+        projects.push(workspace);
+        projects.sort();
+        crate::auth::secure_write(
+            &index_path,
+            &serde_json::to_vec(&projects).map_err(|e| e.to_string())?,
+        )?;
+    }
+    fs2::FileExt::unlock(&lock).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn registered_project_stores() -> Vec<PathBuf> {
+    let path = crate::config::data_dir().join("shared-projects.json");
+    let Ok(Some(bytes)) = crate::requests::bounded_optional(&path, 64 * 1024) else {
+        return Vec::new();
+    };
+    let Ok(projects) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) else {
+        return Vec::new();
+    };
+    projects
+        .into_iter()
+        .take(SHARED_PROJECT_LIMIT)
+        .filter_map(|project| {
+            let canonical = project.canonicalize().ok()?;
+            let store = canonical
+                .join(".glass/agent-sessions")
+                .canonicalize()
+                .ok()?;
+            (store.parent().and_then(Path::parent) == Some(canonical.as_path())).then_some(store)
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct Meta {
     workspace: PathBuf,
     title: String,
+    origin: Option<crate::polish::SessionOrigin>,
 }
 fn regular_file(path: &Path) -> Option<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -40,6 +109,13 @@ fn read_meta(file: std::fs::File) -> Option<Meta> {
                         self.0.title = map.next_value()?;
                         title = true;
                     }
+                    "origin" => {
+                        self.0.origin = match map.next_value::<Option<String>>()?.as_deref() {
+                            Some("gc") => Some(crate::polish::SessionOrigin::Gc),
+                            Some("glass") => Some(crate::polish::SessionOrigin::Glass),
+                            _ => None,
+                        };
+                    }
                     _ => {
                         map.next_value::<serde::de::IgnoredAny>()?;
                     }
@@ -66,72 +142,106 @@ pub(crate) struct Thread {
     pub title: String,
     pub modified: String,
     pub workspace: PathBuf,
+    pub path: PathBuf,
+    pub origin: Option<crate::polish::SessionOrigin>,
     stamp: Option<std::time::SystemTime>,
 }
 pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
-    index_scoped(dir, Some(workspace), false)
+    let local = workspace.join(".glass").join("agent-sessions");
+    index_roots(&[dir.to_path_buf(), local], Some(workspace), false)
 }
 pub(crate) fn all(dir: &Path) -> Vec<Thread> {
-    index_scoped(dir, None, false)
+    index_roots(&[dir.to_path_buf()], None, false)
 }
-pub(crate) fn all_for_web(dir: &Path) -> Vec<Thread> {
-    index_scoped(dir, None, true)
+pub(crate) fn all_for_web(dir: &Path, workspace: &Path) -> Vec<Thread> {
+    let mut dirs = vec![dir.to_path_buf(), workspace.join(".glass/agent-sessions")];
+    dirs.extend(registered_project_stores());
+    index_roots(&dirs, None, true)
 }
-fn index_scoped(dir: &Path, workspace: Option<&Path>, unassigned: bool) -> Vec<Thread> {
+fn index_roots(dirs: &[PathBuf], workspace: Option<&Path>, unassigned: bool) -> Vec<Thread> {
     let root = workspace
         .unwrap_or(Path::new("/"))
         .canonicalize()
         .unwrap_or_else(|_| workspace.unwrap_or(Path::new("/")).into());
     let mut threads = Vec::new();
-    for entry in std::fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
+    let mut seen = std::collections::HashSet::new();
+    for (dir, inferred_origin) in dirs
+        .iter()
+        .map(|dir| (dir, crate::polish::origin_for_store(dir)))
     {
-        let path = entry.path();
-        if path.extension().is_none_or(|s| s != "jsonl")
-            || !entry.file_type().is_ok_and(|t| t.is_file())
+        for entry in std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
         {
-            continue;
-        }
-        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let meta_path = path.with_extension("meta.json");
-        let meta = regular_file(&meta_path)
-            .and_then(read_meta)
-            .or_else(|| (unassigned && !meta_path.exists()).then(Meta::default));
-        let Some(meta) = meta.filter(|m| workspace.is_none() || m.workspace == root) else {
-            continue;
-        };
-        let title = if meta.title.trim().is_empty() {
-            regular_file(&path)
-                .and_then(|f| {
-                    BufReader::new(f.take(64 * 1024))
-                        .lines()
-                        .map_while(Result::ok)
-                        .find_map(|line| {
-                            let v: serde_json::Value = serde_json::from_str(&line).ok()?;
-                            (v["k"] == "user")
-                                .then(|| v["t"].as_str().map(str::to_owned))
-                                .flatten()
-                        })
+            let path = entry.path();
+            if path.extension().is_none_or(|s| s != "jsonl")
+                || !entry.file_type().is_ok_and(|t| t.is_file())
+            {
+                continue;
+            }
+            let Ok(canonical_path) = path.canonicalize() else {
+                continue;
+            };
+            if !seen.insert(canonical_path.clone()) {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let meta_path = path.with_extension("meta.json");
+            let meta = regular_file(&meta_path).and_then(read_meta).or_else(|| {
+                (!meta_path.exists()
+                    && (unassigned || inferred_origin == Some(crate::polish::SessionOrigin::Glass)))
+                .then(|| Meta {
+                    workspace: if inferred_origin == Some(crate::polish::SessionOrigin::Glass) {
+                        dir.parent()
+                            .and_then(Path::parent)
+                            .unwrap_or(Path::new(""))
+                            .to_path_buf()
+                    } else {
+                        PathBuf::new()
+                    },
+                    ..Meta::default()
                 })
-                .unwrap_or_else(|| "Untitled conversation".into())
-        } else {
-            meta.title
-        };
-        let stamp = entry.metadata().ok().and_then(|m| m.modified().ok());
-        threads.push(Thread {
-            id: id.into(),
-            title: glass_tui::markdown::sanitize(&title).replace(['\n', '\r'], " "),
-            modified: stamp
-                .map(crate::format_time)
-                .unwrap_or_else(|| "Unknown time".into()),
-            stamp,
-            workspace: meta.workspace,
-        });
+            });
+            let Some(mut meta) = meta.filter(|m| workspace.is_none() || m.workspace == root) else {
+                continue;
+            };
+            if meta.origin.is_none() {
+                meta.origin = inferred_origin;
+            }
+            let title = if meta.title.trim().is_empty() {
+                regular_file(&path)
+                    .and_then(|f| {
+                        BufReader::new(f.take(64 * 1024))
+                            .lines()
+                            .map_while(Result::ok)
+                            .find_map(|line| {
+                                let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+                                (v["k"] == "user")
+                                    .then(|| v["t"].as_str().map(str::to_owned))
+                                    .flatten()
+                            })
+                    })
+                    .unwrap_or_else(|| "Untitled conversation".into())
+            } else {
+                meta.title
+            };
+            let stamp = entry.metadata().ok().and_then(|m| m.modified().ok());
+            threads.push(Thread {
+                id: id.into(),
+                title: glass_tui::markdown::sanitize(&title).replace(['\n', '\r'], " "),
+                modified: stamp
+                    .map(crate::format_time)
+                    .unwrap_or_else(|| "Unknown time".into()),
+                stamp,
+                workspace: meta.workspace,
+                path: canonical_path,
+                origin: meta.origin,
+            });
+        }
     }
     threads.sort_by_key(|s| std::cmp::Reverse(s.stamp));
     threads
@@ -145,6 +255,7 @@ impl Drop for Terminal {
 pub struct Pick {
     pub id: String,
     pub workspace: PathBuf,
+    pub path: PathBuf,
 }
 pub fn choose(workspace: &Path, all: bool, browse: bool) -> Result<Option<Pick>, String> {
     if !glass_tui::term::stdin_is_tty() || !glass_tui::term::stdout_is_tty() {

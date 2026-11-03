@@ -12,8 +12,8 @@ authoritative. An active conversation is visible but cannot acquire a second
 writer; show a clear active-in-another-app message and preserve the draft.
 
 Creation origin is stable metadata: `glass`, `gc`, or unknown for a legacy record
-whose origin cannot be established. Pickers show `Created in Glass`, `Created in
-GC`, or `Unknown origin`. Switching clients must not overwrite origin. Legacy
+whose origin cannot be established. Pickers and active-chat context show `Created in Glass`, `Created in
+GC`, or `Unknown origin`, including when the WebUI sidebar is closed. Switching clients must not overwrite origin. Legacy
 inference is allowed only for known native GC and project Glass session stores.
 
 Glass attaches its governed integration tools when adopting a native GC session.

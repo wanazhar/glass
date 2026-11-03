@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,6 +21,10 @@ use zeroize::{Zeroize, Zeroizing};
 mod durable_host;
 #[path = "runtime_support.rs"]
 mod support;
+
+pub(crate) fn read_host_manifest(dir: &Path, id: &str) -> Result<Value, String> {
+    support::read_manifest(dir, id)
+}
 
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 32;
@@ -1534,42 +1538,169 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 let (session, mut manifest, settings, host_tools, tool_mode, instructions) =
                     if method == "session/resume" {
                         let sid = string(p, "sessionId")?;
-                        let manifest = support::read_manifest(dir, sid)?;
-                        let expected = p
-                            .get("expectedToolMode")
-                            .or_else(|| p.get("toolMode"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("host");
-                        let actual = manifest
-                            .get("toolMode")
-                            .and_then(Value::as_str)
-                            .unwrap_or("host");
-                        if expected != actual {
-                            return Err(
-                                "stored tool ownership differs from expectedToolMode".into()
-                            );
-                        }
-                        for (key, value) in p.as_object().ok_or("params must be an object")? {
-                            if !matches!(key.as_str(), "sessionId" | "expectedToolMode")
-                                && manifest.get(key) != Some(value)
+                        let external_path = p.get("sourcePath").and_then(Value::as_str);
+                        if external_path.is_some() {
+                            let source = PathBuf::from(external_path.unwrap());
+                            if !source.is_absolute()
+                                || source.extension().is_none_or(|e| e != "jsonl")
                             {
-                                return Err(format!("resume configuration mismatch: {key}"));
+                                return Err(
+                                    "sourcePath must be an absolute session log path".into()
+                                );
                             }
+                            if !std::fs::symlink_metadata(&source)
+                                .is_ok_and(|metadata| metadata.file_type().is_file())
+                            {
+                                return Err(
+                                    "sourcePath must identify a regular, non-symlink session log"
+                                        .into(),
+                                );
+                            }
+                            let source = source.canonicalize().map_err(|e| e.to_string())?;
+                            if source.file_stem().and_then(|s| s.to_str()) != Some(sid) {
+                                return Err("sourcePath does not match sessionId".into());
+                            }
+                            let source_manifest = if source.with_extension("host.json").exists() {
+                                Some(support::read_manifest(
+                                    source.parent().ok_or("sourcePath has no parent")?,
+                                    sid,
+                                )?)
+                            } else {
+                                None
+                            };
+                            let (settings, tools, mode, instructions) =
+                                metadata(source_manifest.as_ref().unwrap_or(p), &cfg)?;
+                            if mode != ToolMode::Mixed {
+                                return Err(
+                                    "external session adoption requires mixed tool ownership"
+                                        .into(),
+                                );
+                            }
+                            let workspace = settings
+                                .workspace
+                                .canonicalize()
+                                .map_err(|e| e.to_string())?;
+                            if cfg.workspace.canonicalize().map_err(|e| e.to_string())? != workspace
+                            {
+                                return Err(
+                                    "sourcePath workspace does not match the active project".into(),
+                                );
+                            }
+                            let local_store =
+                                workspace.join(".glass/agent-sessions").canonicalize().ok();
+                            let global_store = config::data_dir().canonicalize().ok();
+                            let parent = source.parent();
+                            if parent != local_store.as_deref() && parent != global_store.as_deref()
+                            {
+                                return Err(
+                                    "sourcePath is outside the shared session stores".into()
+                                );
+                            }
+                            let sidecar = source.with_extension("meta.json");
+                            let source_meta = if sidecar.exists() {
+                                crate::polish::metadata_at(&sidecar)?
+                            } else {
+                                crate::polish::Metadata::default()
+                            };
+                            if parent == global_store.as_deref()
+                                && source_meta.workspace.as_os_str().is_empty()
+                            {
+                                return Err("global session has no trusted project identity; cannot adopt it".into());
+                            }
+                            if !source_meta.workspace.as_os_str().is_empty()
+                                && source_meta
+                                    .workspace
+                                    .canonicalize()
+                                    .map_err(|e| e.to_string())?
+                                    != workspace
+                            {
+                                return Err(
+                                    "source session belongs to a different project directory"
+                                        .into(),
+                                );
+                            }
+                            let session =
+                                Session::open(dir, source.to_str().ok_or("invalid sourcePath")?)
+                                    .map_err(|e| e.to_string())?;
+                            if session.id != sid {
+                                return Err("sourcePath opened a different session ID".into());
+                            }
+                            let mut shared_meta = crate::polish::metadata(&session);
+                            if shared_meta.workspace.as_os_str().is_empty() {
+                                shared_meta.workspace = workspace.clone();
+                            }
+                            if shared_meta.origin.is_none() {
+                                shared_meta.origin = Some(if parent == global_store.as_deref() {
+                                    crate::polish::SessionOrigin::Gc
+                                } else {
+                                    crate::polish::SessionOrigin::Glass
+                                });
+                            }
+                            crate::polish::save(&session, &shared_meta)?;
+                            let mut manifest = source_manifest.unwrap_or_else(|| p.clone());
+                            manifest["cwd"] = json!(workspace);
+                            manifest["toolMode"] = json!(mode.as_str());
+                            manifest["instructions"] = json!(instructions);
+                            (session, manifest, settings, tools, mode, instructions)
+                        } else {
+                            let manifest = support::read_manifest(dir, sid)?;
+                            let expected = p
+                                .get("expectedToolMode")
+                                .or_else(|| p.get("toolMode"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("host");
+                            let actual = manifest
+                                .get("toolMode")
+                                .and_then(Value::as_str)
+                                .unwrap_or("host");
+                            if expected != actual {
+                                return Err(
+                                    "stored tool ownership differs from expectedToolMode".into()
+                                );
+                            }
+                            for (key, value) in p.as_object().ok_or("params must be an object")? {
+                                if !matches!(key.as_str(), "sessionId" | "expectedToolMode")
+                                    && manifest.get(key) != Some(value)
+                                {
+                                    return Err(format!("resume configuration mismatch: {key}"));
+                                }
+                            }
+                            let (settings, tools, mode, instructions) = metadata(&manifest, &cfg)?;
+                            validate_tool_mode(wire.borrow().protocol_version, mode)?;
+                            (
+                                Session::open(dir, sid).map_err(|e| e.to_string())?,
+                                manifest,
+                                settings,
+                                tools,
+                                mode,
+                                instructions,
+                            )
                         }
-                        let (settings, tools, mode, instructions) = metadata(&manifest, &cfg)?;
-                        validate_tool_mode(wire.borrow().protocol_version, mode)?;
-                        (
-                            Session::open(dir, sid).map_err(|e| e.to_string())?,
-                            manifest,
-                            settings,
-                            tools,
-                            mode,
-                            instructions,
-                        )
                     } else {
                         let (settings, tools, mode, instructions) = metadata(p, &cfg)?;
                         validate_tool_mode(wire.borrow().protocol_version, mode)?;
                         let session = Session::create(dir).map_err(|e| e.to_string())?;
+                        let origin = match p
+                            .get("creationOrigin")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                        {
+                            "gc" => Some(crate::polish::SessionOrigin::Gc),
+                            "glass" => Some(crate::polish::SessionOrigin::Glass),
+                            "unknown" => None,
+                            _ => return Err("creationOrigin must be gc, glass, or unknown".into()),
+                        };
+                        crate::polish::save(
+                            &session,
+                            &crate::polish::Metadata {
+                                workspace: settings.workspace.clone(),
+                                origin,
+                                ..crate::polish::Metadata::default()
+                            },
+                        )?;
+                        if origin == Some(crate::polish::SessionOrigin::Glass) {
+                            crate::resume_picker::register_project(&settings.workspace)?;
+                        }
                         (session, p.clone(), settings, tools, mode, instructions)
                     };
                 let sid = session.id.clone();
@@ -1591,6 +1722,35 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 }
                 if settings.connection.is_some() {
                     manifest["connection"] = json!(settings.connection);
+                }
+                if let Some(source) = manifest.get("sourcePath").and_then(Value::as_str) {
+                    let source = PathBuf::from(source)
+                        .canonicalize()
+                        .map_err(|e| e.to_string())?;
+                    let local_log = dir.join(format!("{sid}.jsonl"));
+                    if local_log.exists() && local_log.canonicalize().ok().as_ref() != Some(&source)
+                    {
+                        return Err(
+                            "session ID collides with a different log in the active store".into(),
+                        );
+                    }
+                    let local_manifest = dir.join(format!("{sid}.host.json"));
+                    if local_manifest.exists() {
+                        let existing = support::read_manifest(dir, &sid)?;
+                        if existing
+                            .get("sourcePath")
+                            .and_then(Value::as_str)
+                            .is_some_and(|path| {
+                                PathBuf::from(path).canonicalize().ok().as_ref() != Some(&source)
+                            })
+                        {
+                            return Err(
+                                "session ID collides with a different stored source reference"
+                                    .into(),
+                            );
+                        }
+                    }
+                    manifest["sourcePath"] = json!(source);
                 }
                 support::save_manifest(dir, &sid, &manifest)?;
                 let budget = crate::budget::Context::load(
@@ -1946,6 +2106,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             .session
                             .branch(dir, session_turn_index(through).map_err(str::to_string)?)
                             .map_err(|e| e.to_string())?;
+                        let mut fork_meta = crate::polish::metadata(&c.session);
+                        fork_meta.origin = crate::polish::origin_for_store(dir);
+                        crate::polish::save(&fork, &fork_meta)?;
                         let mut manifest = support::read_manifest(dir, sid)?;
                         manifest["sessionId"] = json!(fork.id);
                         manifest["parent"] = json!({"sessionId":sid,"throughTurn":through});

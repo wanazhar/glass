@@ -36,6 +36,29 @@ fn save(session: &Session, receipt: &Receipt) -> Result<(), String> {
         &serde_json::to_vec(receipt).map_err(|e| e.to_string())?,
     )
 }
+fn session_writer_active(path: &Path) -> Option<bool> {
+    let lock_path = path.with_extension("writer.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = match options.open(lock_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(_) => return None,
+    };
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => {
+            let _ = fs2::FileExt::unlock(&file);
+            Some(false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Some(true),
+        Err(_) => None,
+    }
+}
 pub(crate) fn process_stamp(pid: u32) -> Option<String> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -105,10 +128,17 @@ pub fn record(
     save(session, &r)
 }
 pub fn inspect(workspace: &Path) -> Value {
-    inspect_page(workspace, 0, false, "", "", "")
+    inspect_page(workspace, 0, false, "", "", "", "")
 }
-pub fn inspect_web(workspace: &Path, offset: usize, query: &str, project: &str, id: &str) -> Value {
-    inspect_page(workspace, offset, true, query, project, id)
+pub fn inspect_web(
+    workspace: &Path,
+    offset: usize,
+    query: &str,
+    project: &str,
+    id: &str,
+    source_ref: &str,
+) -> Value {
+    inspect_page(workspace, offset, true, query, project, id, source_ref)
 }
 fn inspect_page(
     workspace: &Path,
@@ -117,9 +147,10 @@ fn inspect_page(
     query: &str,
     project: &str,
     id: &str,
+    source_ref: &str,
 ) -> Value {
     let indexed = if unassigned {
-        crate::resume_picker::all_for_web(&config::data_dir())
+        crate::resume_picker::all_for_web(&config::data_dir(), workspace)
     } else {
         crate::resume_picker::all(&config::data_dir())
     };
@@ -135,6 +166,7 @@ fn inspect_page(
         .into_iter()
         .filter(|thread| {
             (id.is_empty() || thread.id == id)
+                && (source_ref.is_empty() || thread.path.to_string_lossy() == source_ref)
                 && (project.is_empty()
                     || (project == "@unassigned" && thread.workspace.as_os_str().is_empty())
                     || thread.workspace.to_string_lossy() == project)
@@ -161,7 +193,19 @@ fn inspect_page(
         let running = r.process.as_ref().is_some_and(|(pid,stamp)|process_stamp(*pid).as_ref()==Some(stamp));
         let status = if r.status=="running" && !running {"interrupted"} else {&r.status};
         let team = crate::team::get(&thread.id).map(|h|h.snapshot().len());
+        let origin = match thread.origin {
+            Some(crate::polish::SessionOrigin::Glass) => Some("glass"),
+            Some(crate::polish::SessionOrigin::Gc) => Some("gc"),
+            None => None,
+        };
+        let origin_label = match origin {
+            Some("glass") => "Created in Glass",
+            Some("gc") => "Created in GC",
+            _ => "Unknown origin",
+        };
         json!({"session":thread.id,"title":thread.title,"workspace":thread.workspace,
+            "sourceRef":thread.path,"origin":origin,"originLabel":origin_label,
+            "writerActive":session_writer_active(&thread.path),
             "modified":thread.modified,"model":r.model,"branch":r.branch,"last_status":status,
             "running_process_verified":running,"server_socket_present":live,
             "server_liveness":"Socket presence is not a connectivity probe.",
@@ -242,10 +286,16 @@ pub(crate) fn choose(
             .iter()
             .map(|t| {
                 let receipt = load(&t.id);
+                let origin = match t.origin {
+                    Some(crate::polish::SessionOrigin::Glass) => "Created in Glass",
+                    Some(crate::polish::SessionOrigin::Gc) => "Created in GC",
+                    None => "Unknown origin",
+                };
                 format!(
-                    "{} · {} · {} unread events{}",
+                    "{} · {} · {} · {} unread events{}",
                     glass_tui::text::clip(&t.title, 48),
                     t.id,
+                    origin,
                     receipt.events.saturating_sub(receipt.viewed),
                     if current.is_some_and(|s| s.id == t.id) {
                         " · current"
@@ -330,19 +380,25 @@ pub(crate) fn choose(
         let pick = || resume_picker::Pick {
             id: thread.id.clone(),
             workspace: thread.workspace.clone(),
+            path: thread.path.clone(),
         };
         if direct {
             return Ok(Some(pick()));
         }
         loop {
             let receipt = load(&thread.id);
-            let path = config::data_dir().join(format!("{}.jsonl", thread.id));
+            let path = thread.path.clone();
             let preview = preview(&path).unwrap_or_else(|e| format!("Preview unavailable: {e}"));
             let detail = format!(
-                "### {}\n\n{} · {}\n\nStatus: {} · model: {}\n\nParent: {} · fork turn: {}\n\n{} unread recorded events (not messages). Preview does not change the read cursor.\n\n---\n\n{}\n\n---\n\nr resume · p full preview · n rename · f fork · s follow-up · d delete",
+                "### {}\n\n{} · {} · {}\n\nStatus: {} · model: {}\n\nParent: {} · fork turn: {}\n\n{} unread recorded events (not messages). Preview does not change the read cursor.\n\n---\n\n{}\n\n---\n\nr resume · p full preview · n rename · f fork · s follow-up · d delete",
                 thread.title,
                 thread.workspace.display(),
                 thread.modified,
+                match thread.origin {
+                    Some(crate::polish::SessionOrigin::Glass) => "Created in Glass",
+                    Some(crate::polish::SessionOrigin::Gc) => "Created in GC",
+                    None => "Unknown origin",
+                },
                 receipt.status,
                 receipt.model,
                 receipt.parent.as_deref().unwrap_or("none"),
@@ -379,8 +435,11 @@ pub(crate) fn choose(
                         return Ok(Some(pick()));
                     }
                     Some('p') => {
-                        let s = Session::open_readonly(&config::data_dir(), &thread.id)
-                            .map_err(|e| e.to_string())?;
+                        let s = Session::open_readonly(
+                            &config::data_dir(),
+                            thread.path.to_str().ok_or("Invalid session path")?,
+                        )
+                        .map_err(|e| e.to_string())?;
                         let mut reader = crate::reader::Reader::overlay(
                             s.history_entries(),
                             "Conversation preview",
@@ -399,8 +458,11 @@ pub(crate) fn choose(
                         if let Some(title) =
                             modal::field(keys, "Rename conversation", "Title", &thread.title, false)
                         {
-                            let s = Session::open_readonly(&config::data_dir(), &thread.id)
-                                .map_err(|e| e.to_string())?;
+                            let s = Session::open_readonly(
+                                &config::data_dir(),
+                                thread.path.to_str().ok_or("Invalid session path")?,
+                            )
+                            .map_err(|e| e.to_string())?;
                             let mut meta = selected_metadata(&s, &thread.workspace)?;
                             meta.title = title;
                             crate::polish::save(&s, &meta)?;
@@ -421,8 +483,11 @@ pub(crate) fn choose(
                                 }
                             },
                         ) {
-                            let s = Session::open_readonly(&config::data_dir(), &thread.id)
-                                .map_err(|e| e.to_string())?;
+                            let s = Session::open_readonly(
+                                &config::data_dir(),
+                                thread.path.to_str().ok_or("Invalid session path")?,
+                            )
+                            .map_err(|e| e.to_string())?;
                             let meta = selected_metadata(&s, &thread.workspace)?;
                             if meta.workspace != thread.workspace {
                                 return Err("Workspace changed; reopen the chooser".into());
@@ -437,10 +502,12 @@ pub(crate) fn choose(
                                 .map_err(|e| e.to_string())?;
                             let mut meta = meta;
                             meta.title = format!("{} (branch)", thread.title);
+                            meta.origin = Some(crate::polish::SessionOrigin::Gc);
                             crate::polish::save(&fork, &meta)?;
                             return Ok(Some(resume_picker::Pick {
                                 id: fork.id.clone(),
                                 workspace: thread.workspace.clone(),
+                                path: fork.path.clone(),
                             }));
                         }
                     }
@@ -478,8 +545,11 @@ pub(crate) fn choose(
                         ) == Some(1)
                         {
                             // Hold the writer lock; never unlink a live writer's transcript.
-                            let s = Session::open(&config::data_dir(), &thread.id)
-                                .map_err(|e| e.to_string())?;
+                            let s = Session::open(
+                                &config::data_dir(),
+                                thread.path.to_str().ok_or("Invalid session path")?,
+                            )
+                            .map_err(|e| e.to_string())?;
                             std::fs::remove_file(&s.path).map_err(|e| e.to_string())?;
                             for ext in ["meta.json", "cost.json", "context", "nav.json"] {
                                 let p = s.path.with_extension(ext);

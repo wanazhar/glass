@@ -613,6 +613,58 @@ pub fn serve(
         },
     };
     crate::polish::bind(&session, &cfg.workspace)?;
+    let host_manifest = session.path.with_extension("host.json");
+    if host_manifest.exists() {
+        let manifest = crate::runtime::read_host_manifest(
+            session.path.parent().ok_or("session log has no parent")?,
+            &session.id,
+        )?;
+        if let Some(connection_id) = manifest
+            .get("connection")
+            .and_then(serde_json::Value::as_str)
+        {
+            let store = crate::auth::load()?;
+            let connection = store
+                .connections
+                .iter()
+                .find(|connection| connection.id == connection_id)
+                .ok_or("saved Core connection is unavailable")?;
+            crate::auth::configure(&mut cfg, connection);
+        }
+        if let Some(provider) = manifest.get("provider").and_then(serde_json::Value::as_str) {
+            cfg.provider = provider.to_owned();
+        }
+        if let Some(base_url) = manifest.get("baseUrl").and_then(serde_json::Value::as_str) {
+            cfg.base_url = base_url.to_owned();
+        }
+        if let Some(model) = manifest.get("model").and_then(serde_json::Value::as_str) {
+            cfg.model = model.to_owned();
+        }
+        if let Some(api_key_env) = manifest
+            .get("apiKeyEnv")
+            .and_then(serde_json::Value::as_str)
+        {
+            cfg.api_key_env = Some(api_key_env.to_owned());
+        }
+        if let Some(max_tokens) = manifest
+            .get("maxTokens")
+            .and_then(serde_json::Value::as_u64)
+        {
+            cfg.max_tokens = u32::try_from(max_tokens).map_err(|e| e.to_string())?;
+        }
+        if let Some(reasoning) = manifest
+            .get("reasoningBudget")
+            .and_then(serde_json::Value::as_u64)
+        {
+            cfg.reasoning_budget = Some(u32::try_from(reasoning).map_err(|e| e.to_string())?);
+        }
+        if let Some(image_input) = manifest
+            .get("imageInput")
+            .and_then(serde_json::Value::as_bool)
+        {
+            cfg.image_input = image_input;
+        }
+    }
 
     let socket_path = match socket {
         Some(path) => PathBuf::from(path),

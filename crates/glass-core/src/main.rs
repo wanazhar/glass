@@ -907,7 +907,8 @@ fn run(args: &[String]) -> Result<(), String> {
             return match resume_picker::choose(&cfg.workspace, all, browse)? {
                 Some(pick) => {
                     std::env::set_current_dir(&pick.workspace).map_err(|e| e.to_string())?;
-                    let mut resume_args = vec!["resume".into(), pick.id];
+                    let mut resume_args =
+                        vec!["resume".into(), pick.path.to_string_lossy().into_owned()];
                     if let Some(mode) = mode {
                         resume_args.insert(0, mode.into());
                     }

@@ -5,7 +5,7 @@
 use crate::development::{DevelopmentError, DevelopmentResult, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use zeroize::Zeroizing;
@@ -204,6 +204,7 @@ pub struct ResidentHarnessOptions {
     pub resume: bool,
     /// Resume this exact persisted Core session during Glass thread recovery.
     pub resume_session_id: Option<String>,
+    pub resume_session_path: Option<PathBuf>,
     /// Explicit Core executable override; primarily used by offline runtime fixtures.
     pub binary: Option<std::path::PathBuf>,
     /// Extra arguments passed to the Core executable before `runtime`.
@@ -228,6 +229,7 @@ impl std::fmt::Debug for ResidentHarnessOptions {
             .field("additional_system_prompt", &self.additional_system_prompt)
             .field("resume", &self.resume)
             .field("resume_session_id", &self.resume_session_id)
+            .field("resume_session_path", &self.resume_session_path)
             .field("binary", &self.binary)
             .field("binary_args", &self.binary_args)
             .field("fork_from", &self.fork_from)
@@ -247,6 +249,7 @@ impl ResidentHarnessOptions {
             additional_system_prompt: self.additional_system_prompt,
             resume: self.resume,
             resume_session_id: self.resume_session_id,
+            resume_session_path: self.resume_session_path,
             fork_from: self.fork_from,
             binary: self.binary,
             binary_args: self.binary_args,
@@ -314,6 +317,13 @@ impl ResidentHarness {
     pub(crate) fn core_session_id(&self) -> Option<&str> {
         match self {
             Self::GlassCore(runtime) => Some(runtime.session_id()),
+        }
+    }
+
+    /// Return the exact canonical Core journal associated with this runtime.
+    pub(crate) fn core_session_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::GlassCore(runtime) => Some(runtime.session_path()),
         }
     }
 

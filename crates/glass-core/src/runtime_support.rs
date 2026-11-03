@@ -9,7 +9,7 @@ pub(crate) fn checked_u64_index<T: TryFrom<u64>>(value: u64) -> Option<T> {
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 const FRAME: usize = 1024 * 1024;
 
 pub fn read_manifest(dir: &Path, id: &str) -> Result<Value, String> {
@@ -48,7 +48,7 @@ pub fn list(
     open: &std::collections::BTreeMap<String, super::Conversation>,
 ) -> Result<Value, String> {
     let after = p
-        .get("afterSessionId")
+        .get("afterSourceRef")
         .and_then(Value::as_str)
         .unwrap_or("");
     let limit = p
@@ -56,33 +56,79 @@ pub fn list(
         .and_then(Value::as_u64)
         .unwrap_or(50)
         .clamp(1, 128) as usize;
-    let mut ids = std::collections::BTreeSet::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if let Some(id) = name
-            .strip_suffix(".host.json")
-            .filter(|id| super::valid_id(id) && *id > after)
-        {
-            ids.insert(id.to_owned());
-            if ids.len() > limit + 1 {
-                ids.pop_last();
-            }
-        }
+    let workspace = p
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or("current workspace is unavailable")?;
+    if dir.canonicalize().ok().as_deref()
+        == workspace
+            .join(".glass/agent-sessions")
+            .canonicalize()
+            .ok()
+            .as_deref()
+    {
+        crate::resume_picker::register_project(&workspace)?;
     }
-    let more = ids.len() > limit;
+    let mut threads = crate::resume_picker::index(&crate::config::data_dir(), &workspace);
+    threads.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut rows = threads
+        .into_iter()
+        .filter_map(|thread| {
+            let source_ref = thread.path.to_string_lossy().into_owned();
+            (source_ref.as_str() > after).then_some((thread, source_ref))
+        })
+        .take(limit + 1)
+        .collect::<Vec<_>>();
+    let more = rows.len() > limit;
     if more {
-        ids.pop_last();
+        rows.pop();
     }
-    let mut nodes = Vec::new();
-    for id in ids {
-        let m = read_manifest(dir, &id)?;
-        nodes.push(json!({"sessionId":id,"open":open.contains_key(&id),"name":m.get("name"),
-            "cwd":m["cwd"],"parent":m.get("parent"),"toolMode":m.get("toolMode").and_then(Value::as_str).unwrap_or("host")}));
-    }
-    Ok(
-        json!({"nextAfterSessionId":if more{nodes.last().and_then(|v|v["sessionId"].as_str())}else{None},"sessions":nodes}),
-    )
+    let nodes = rows
+        .into_iter()
+        .map(|(thread, source_ref)| {
+            let manifest = read_manifest(
+                thread.path.parent().ok_or("session log has no parent")?,
+                &thread.id,
+            )
+            .ok();
+            let origin = match thread.origin {
+                Some(crate::polish::SessionOrigin::Glass) => Some("glass"),
+                Some(crate::polish::SessionOrigin::Gc) => Some("gc"),
+                None => None,
+            };
+            let origin_label = match origin {
+                Some("glass") => "Created in Glass",
+                Some("gc") => "Created in GC",
+                _ => "Unknown origin",
+            };
+            let is_open = open
+                .get(&thread.id)
+                .is_some_and(|conversation| conversation.session.path.canonicalize().ok().as_deref() == Some(thread.path.as_path()));
+            Ok(json!({
+                "sessionId":thread.id,
+                "sourceRef":source_ref,
+                "open":is_open,
+                "name":manifest.as_ref().and_then(|m|m.get("name")).and_then(Value::as_str).unwrap_or(&thread.title),
+                "cwd":thread.workspace,
+                "parent":manifest.as_ref().and_then(|m|m.get("parent")),
+                "toolMode":manifest.as_ref().and_then(|m|m.get("toolMode")).and_then(Value::as_str).unwrap_or("host"),
+                "origin":origin,
+                "originLabel":origin_label,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let next = if more {
+        nodes.last().and_then(|row| row["sourceRef"].as_str())
+    } else {
+        None
+    };
+    Ok(json!({
+        "nextAfterSourceRef":next,
+        "nextAfterSessionId":if more { nodes.last().and_then(|row|row["sessionId"].as_str()) } else { None },
+        "sessions":nodes
+    }))
 }
 fn reader(path: &Path, cursor: u64) -> Result<BufReader<File>, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;

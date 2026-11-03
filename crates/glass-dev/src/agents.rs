@@ -2248,6 +2248,7 @@ fn run_worker(
         additional_system_prompt: runtime.additional_system_prompt,
         resume: false,
         resume_session_id: runtime.resume_session_id,
+        resume_session_path: None,
         binary: runtime.core_binary,
         binary_args: runtime.core_binary_args,
         fork_from: runtime.fork_from,

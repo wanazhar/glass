@@ -3309,7 +3309,11 @@ pub(super) fn agent_conversation_text(
     let mut lines = transcript.visible_lines(
         usize::from(width),
         usize::from(height.max(1)),
-        state.transcript_selection,
+        if state.transcript_navigation_focus {
+            state.transcript_selection
+        } else {
+            usize::MAX
+        },
     );
     style_glass_transcript_lines(&mut lines);
     Text::from(lines)
@@ -3320,13 +3324,43 @@ pub(super) fn agent_conversation_text(
 fn style_glass_transcript_lines(lines: &mut [Line<'static>]) {
     let mut lifecycle_tone = None;
     let mut user_block = false;
-    for line in lines {
-        let raw = line.to_string();
+    for index in 0..lines.len() {
+        let raw = lines[index].to_string();
         let trimmed = raw.trim_start();
+        if matches!(trimmed, "ERROR" | "⚠ ALERT")
+            && index > 0
+            && lines[index - 1].to_string().trim() == "SYSTEM ·"
+        {
+            lines[index - 1] = Line::default();
+        }
+        let line = &mut lines[index];
+        if matches!(trimmed, "Notice" | "ERROR" | "⚠ ALERT") {
+            let (label, tone) = match trimmed {
+                "ERROR" => ("ERROR ·", ERROR),
+                "⚠ ALERT" => ("ACTION ·", WARNING),
+                _ => ("SYSTEM ·", MUTED),
+            };
+            let leading = raw.len().saturating_sub(trimmed.len());
+            *line = Line::from(Span::styled(
+                format!("{}{label}", " ".repeat(leading)),
+                Style::default().fg(tone).add_modifier(Modifier::BOLD),
+            ));
+            user_block = false;
+            lifecycle_tone = Some(tone);
+            continue;
+        }
         if trimmed.is_empty() {
             lifecycle_tone = None;
             user_block = false;
             continue;
+        }
+
+        if trimmed.starts_with("GLASS AGENT")
+            || trimmed.starts_with("❯ YOU")
+            || trimmed.starts_with("system ")
+        {
+            user_block = false;
+            lifecycle_tone = None;
         }
 
         if let Some(body) = trimmed.strip_prefix("system ") {
@@ -3380,12 +3414,27 @@ fn style_glass_transcript_lines(lines: &mut [Line<'static>]) {
 
         if let Some(tone) = lifecycle_tone {
             for span in &mut line.spans {
-                span.style = span.style.fg(tone);
+                span.style = span.style.fg(if tone == ERROR || tone == WARNING {
+                    TEXT
+                } else {
+                    tone
+                });
             }
             continue;
         }
 
         if trimmed.starts_with("❯ YOU") {
+            let selected = line
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED));
+            let mut style = Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD);
+            if selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            *line = Line::from(Span::styled("You", style));
             user_block = true;
             for span in &mut line.spans {
                 span.style = span
@@ -3412,7 +3461,7 @@ fn style_glass_transcript_lines(lines: &mut [Line<'static>]) {
             if leading > 0 {
                 spans.push(Span::raw(" ".repeat(leading)));
             }
-            spans.push(Span::styled("CORE", style));
+            spans.push(Span::styled("Glass", style));
             *line = Line::from(spans);
         } else if trimmed.starts_with("Thinking…") {
             for span in &mut line.spans {
@@ -6409,11 +6458,15 @@ mod tests {
         let user_arrow = chat_buffer
             .content()
             .iter()
-            .position(|cell| cell.symbol() == "❯")
-            .expect("user block marker") as u16;
+            .position(|cell| {
+                cell.symbol() == "Y"
+                    && cell.fg == ACCENT_BRIGHT
+                    && cell.bg == Color::Rgb(34, 40, 50)
+            })
+            .expect("user speaker label") as u16;
         let user_x = user_arrow % 80;
         let user_y = user_arrow / 80;
-        let user_label = &chat_buffer[(user_x + 2, user_y)];
+        let user_label = &chat_buffer[(user_x, user_y)];
         assert_eq!(user_label.fg, ACCENT_BRIGHT);
         assert_eq!(user_label.bg, Color::Rgb(34, 40, 50));
         assert!(user_label.modifier.contains(Modifier::BOLD));
@@ -7381,11 +7434,11 @@ mod tests {
             state.scroll_home();
             let top = rendered(&state, width, height);
             assert!(
-                top.contains("YOU"),
+                top.contains("You"),
                 "user role missing at {width}x{height}: {top}"
             );
             assert!(
-                top.contains("CORE"),
+                top.contains("Glass"),
                 "assistant role missing at {width}x{height}: {top}"
             );
             if width >= 120 {
@@ -7433,9 +7486,9 @@ mod tests {
             Line::from("Thinking…"),
         ];
         style_glass_transcript_lines(&mut lines);
-        assert_eq!(lines[0].to_string(), "❯ YOU");
+        assert_eq!(lines[0].to_string(), "You");
         assert_eq!(lines[0].spans[0].style.fg, Some(ACCENT_BRIGHT));
-        assert_eq!(lines[1].to_string(), "CORE");
+        assert_eq!(lines[1].to_string(), "Glass");
         assert_eq!(lines[1].spans[0].style.fg, Some(PURPLE));
         assert_eq!(lines[2].spans[0].style.fg, Some(MUTED));
         assert!(
@@ -7529,6 +7582,24 @@ mod tests {
             subagent_activity: None,
         }];
         let text = agent_conversation_text(&state, "", 32, 4);
+        assert!(
+            !text
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED)),
+            "Reading chat should not highlight the first message as selected"
+        );
+        state.transcript_navigation_focus = true;
+        let focused = agent_conversation_text(&state, "", 32, 4);
+        assert!(
+            focused
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED)),
+            "Explicit message navigation must remain visible"
+        );
         assert!(text.lines.len() <= 4);
         let lines = text.lines;
         assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {

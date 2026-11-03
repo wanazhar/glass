@@ -178,6 +178,13 @@ transcript, PageUp/PageDown, Home/End, and the mouse wheel move the transcript
 viewport. New output follows when the viewport is at the tail; a manually
 scrolled position is preserved and indicates when newer output is below.
 
+Glass labels chat speakers as **You** and **Glass**. Message selection uses reverse
+highlighting only while transcript navigation has focus; ordinary composer input
+does not highlight an old message. Error headings retain their warning color while
+the body uses normal readable text. If a provider error is already visible, the
+failed-turn settlement does not add a duplicate transport-error card. A settlement
+without a visible error uses a concise recovery message without raw protocol codes.
+
 ## Navigation and modal routing
 
 ### Workspace interaction contract

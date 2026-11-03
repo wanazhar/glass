@@ -1587,29 +1587,34 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                             )
                         })
                         .unwrap_or("request");
-                    let code = error
-                        .get("code")
-                        .and_then(Value::as_i64)
-                        .map(|code| format!(" · {code}"))
-                        .unwrap_or_default();
-                    let retryable = error
-                        .pointer("/data/retryable")
-                        .and_then(Value::as_bool)
-                        .map(|retryable| {
-                            if retryable {
-                                " · retryable"
-                            } else {
-                                " · not marked retryable"
+                    // A provider error event already carries the visible failure.
+                    // Its settlement response should not add a second transport-error card.
+                    if !items
+                        .last()
+                        .is_some_and(|item| item.kind == ConversationKind::Error)
+                    {
+                        let message = match kind {
+                            "authentication" => {
+                                "Sign in to your provider, then send your message again."
                             }
-                        })
-                        .unwrap_or_default();
-                    items.push(ConversationEntry::error(
-                        format!(
-                            "Core {} failed: {kind}{code}{retryable}",
-                            event.payload["operation"].as_str().unwrap_or("turn")
-                        ),
-                        None,
-                    ));
+                            "provider" => {
+                                "The provider could not complete this response. Your message is saved; try again or choose another model."
+                            }
+                            "busy" => {
+                                "This conversation is already working. Wait for it to finish or stop the current response."
+                            }
+                            "limit" => {
+                                "This request reached a configured limit. Check the conversation allowance before retrying."
+                            }
+                            "invalid_input" => {
+                                "The request could not be accepted. Check your message and try again."
+                            }
+                            _ => {
+                                "The response could not be completed. Your message is saved; try again."
+                            }
+                        };
+                        items.push(ConversationEntry::error(message, None));
+                    }
                 } else if let Some(text) = event_text(event) {
                     shared.apply(
                         glass_tui::ConversationEvent::AssistantFinal(text),
@@ -2413,7 +2418,7 @@ mod tests {
             }),
         };
         let rendered = conversation(&[event]);
-        assert!(rendered.contains("Core prompt failed: provider · -32000 · not marked retryable"));
+        assert!(rendered.contains("The provider could not complete this response."));
         assert!(!rendered.contains("raw provider response"));
     }
 
@@ -2435,7 +2440,7 @@ mod tests {
             }),
         };
         let rendered = conversation(&[event]);
-        assert!(rendered.contains("Core prompt failed: request · -32000"));
+        assert!(rendered.contains("The response could not be completed."));
         assert!(!rendered.contains("unrecognized-sensitive-class"));
         assert!(!rendered.contains("untrusted detail"));
     }

@@ -1,5 +1,9 @@
 # Glass documentation
 
+In progress: [shared chat resumption](plan/analysis/shared-chat-resumption.md) and
+its [delivery task](plan/tasks/shared-chat-resume-001.md) cover TUI/WebUI cross-app
+resumption and stable creation-origin labels.
+
 The [development runtime guide](development-runtime.md) explains bounded Glass tool discovery and resumed-session catalog refresh.
 
 The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)

@@ -1,5 +1,11 @@
 # Glass delivery plans
 
+## Active plan: shared chat resumption
+
+The [design](analysis/shared-chat-resumption.md) and
+[implementation task](tasks/shared-chat-resume-001.md) cover same-log resumption
+across Glass, GC TUI, and WebUI, with stable creation origin and one writer.
+
 ## Proposed plan: task-backed agent coordination
 
 The [coordination design](analysis/task-agent-coordination.md) and

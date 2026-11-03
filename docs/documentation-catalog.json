@@ -1976,8 +1976,10 @@
         "docs/mobile-remote.md",
         "docs/ownership.md",
         "docs/plan/README.md",
+        "docs/plan/analysis/shared-chat-resumption.md",
         "docs/plan/analysis/task-agent-coordination.md",
         "docs/plan/native-engine-browser-profile.md",
+        "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/task-agent-coordination-001.md",
         "docs/policy.md",
         "docs/positioning.md",
@@ -2777,7 +2779,8 @@
         "docs/plan/tasks/issue64-task-thread-journey-001.md",
         "docs/plan/tasks/issue64-task-thread-labels-001.md",
         "docs/plan/tasks/issue64-task-thread-queue-restart-001.md",
-        "docs/plan/tasks/issue64-three-thread-journey-001.md"
+        "docs/plan/tasks/issue64-three-thread-journey-001.md",
+        "docs/plan/tasks/shared-chat-resume-001.md"
       ],
       "dependencies": [
         "docs/architecture/mobile-cockpit.md",
@@ -4461,6 +4464,7 @@
         "docs/plan/README.md",
         "docs/plan/tasks/issue64-live-run-queue-targeting-001.md",
         "docs/plan/tasks/issue64-send-attempt-recovery-001.md",
+        "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/positioning.md",
         "docs/task-dag.md"
       ],
@@ -6600,6 +6604,7 @@
         "docs/plan/analysis/release-036.md",
         "docs/plan/analysis/semantic-core-hardening.md",
         "docs/plan/analysis/semantic-resource-audit.md",
+        "docs/plan/analysis/shared-chat-resumption.md",
         "docs/plan/analysis/shared-workspace.md",
         "docs/plan/analysis/task-agent-coordination.md",
         "docs/plan/native-engine-browser-profile.md",
@@ -7871,6 +7876,7 @@
         "docs/plan/tasks/security-035-001.md",
         "docs/plan/tasks/semantic-core-033-001.md",
         "docs/plan/tasks/semantic-resource-033-002.md",
+        "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/surface-031-001.md",
         "docs/plan/tasks/surface-031-002.md",
         "docs/plan/tasks/target-009.md",
@@ -7895,6 +7901,11 @@
           "level": "1",
           "title": "Glass delivery plans",
           "anchor": "glass-delivery-plans"
+        },
+        {
+          "level": "2",
+          "title": "Active plan: shared chat resumption",
+          "anchor": "active-plan-shared-chat-resumption"
         },
         {
           "level": "2",
@@ -8405,7 +8416,8 @@
       "consumers": [
         "docs/development-runtime.md",
         "docs/plan/README.md",
-        "docs/plan/analysis/issue63-durable-project-threads.md"
+        "docs/plan/analysis/issue63-durable-project-threads.md",
+        "docs/plan/tasks/shared-chat-resume-001.md"
       ],
       "dependencies": [],
       "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
@@ -9550,6 +9562,46 @@
           "level": "2",
           "title": "Verification evidence",
           "anchor": "verification-evidence"
+        }
+      ]
+    },
+    {
+      "path": "docs/plan/analysis/shared-chat-resumption.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "docs/plan/README.md",
+        "docs/plan/tasks/shared-chat-resume-001.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/analysis/shared-chat-resumption.md#shared-glass-and-gc-chat-resumption",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Shared Glass and GC chat resumption",
+          "anchor": "shared-glass-and-gc-chat-resumption"
+        },
+        {
+          "level": "2",
+          "title": "Contract",
+          "anchor": "contract"
+        },
+        {
+          "level": "2",
+          "title": "Modules and integrations",
+          "anchor": "modules-and-integrations"
+        },
+        {
+          "level": "2",
+          "title": "Picker layout",
+          "anchor": "picker-layout"
         }
       ]
     },
@@ -79566,6 +79618,56 @@
       ]
     },
     {
+      "path": "docs/plan/tasks/shared-chat-resume-001.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "docs/plan/README.md"
+      ],
+      "dependencies": [
+        "docs/architecture/development-tui.md",
+        "docs/development-runtime.md",
+        "docs/plan/analysis/issue63-core-session-resume.md",
+        "docs/plan/analysis/shared-chat-resumption.md",
+        "products/glass-core/docs/reference/runtime.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/tasks/shared-chat-resume-001.md#shared-conversation-resumption-and-creation-origin",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Shared conversation resumption and creation origin",
+          "anchor": "shared-conversation-resumption-and-creation-origin"
+        },
+        {
+          "level": "2",
+          "title": "Objective",
+          "anchor": "objective"
+        },
+        {
+          "level": "2",
+          "title": "Context",
+          "anchor": "context"
+        },
+        {
+          "level": "2",
+          "title": "Path",
+          "anchor": "path"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
+        }
+      ]
+    },
+    {
       "path": "docs/plan/tasks/surface-031-001.md",
       "class": "historical",
       "topic": "history",
@@ -91432,6 +91534,7 @@
       "canonicalSuccessor": null,
       "consumers": [
         "crates/glass-runtime-client/README.md",
+        "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/task-agent-coordination-001.md",
         "products/glass-core/README.md",
         "products/glass-core/docs/INDEX.md",

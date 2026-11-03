@@ -79,10 +79,14 @@ try {
   for (const width of [390, 768, 1280]) {
     await first.setViewportSize({ width, height: 844 });
     const badge = await first.locator("#thread-origin").boundingBox();
-    assert(badge && badge.width > 0 && badge.height > 0,
+    assert(badge && badge.width >= 80 && badge.height > 0,
       `origin label must remain visible at ${width}px`);
     assert(badge.x >= 0 && badge.x + badge.width <= width,
       `origin label must fit the toolbar at ${width}px`);
+    assert(await first.locator("#thread-origin").evaluate(node => {
+      const box = node.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width/2, box.y + box.height/2)?.closest("#thread-origin") === node;
+    }), `origin label must not be clipped or covered at ${width}px`);
   }
   await first.setViewportSize({ width: 390, height: 844 });
   await first.screenshot({path:"/tmp/gc-shared-chat-mobile.png"});

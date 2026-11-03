@@ -3594,3 +3594,40 @@ dialog.floating-palette {
   .desktop-controls > button, .desktop-keyboard-row > button,
   .desktop-keyboard-row input { min-height: 36px; }
 }
+
+/* Keep the conversation and its origin readable beside mobile workspace tools. */
+@media (max-width: 1100px) {
+  .toolbar {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-areas: "menu actions" "context context";
+    height: auto;
+    min-height: calc(88px + var(--safe-top));
+    gap: 0 6px;
+    padding-top: calc(4px + var(--safe-top));
+    padding-bottom: 8px;
+    padding-left: max(8px, var(--safe-left));
+    padding-right: max(8px, var(--safe-right));
+  }
+  .toolbar > .mobile-menu { grid-area: menu; }
+  .toolbar-actions {
+    grid-area: actions;
+    min-width: 0;
+    justify-content: flex-end;
+    gap: 2px;
+  }
+  .toolbar-actions .icon-button { width: 36px; height: 40px; }
+  .toolbar-actions .connection { font-size: 0; }
+  .handoff span { display: none; }
+  .handoff::after { content: "Release"; }
+  .breadcrumbs {
+    grid-area: context;
+    display: block;
+    width: 100%;
+    padding: 0 4px;
+  }
+  .breadcrumbs > span:first-child { display: none; }
+  .thread-heading { width: 100%; max-width: 100%; }
+  .thread-heading strong { font-size: 13px; line-height: 22px; }
+  .origin-badge { font-size: 10px; padding: 2px 8px; }
+}

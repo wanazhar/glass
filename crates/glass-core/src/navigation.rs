@@ -251,7 +251,10 @@ pub(crate) fn choose(
     let mut query = String::new();
     loop {
         let threads = if all || branches {
-            resume_picker::all(&config::data_dir())
+            resume_picker::all_for_web(&config::data_dir(), workspace)
+                .into_iter()
+                .filter(|thread| !thread.workspace.as_os_str().is_empty())
+                .collect()
         } else {
             resume_picker::index(&config::data_dir(), workspace)
         };

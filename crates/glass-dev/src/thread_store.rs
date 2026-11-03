@@ -28,6 +28,9 @@ pub(crate) struct ThreadRecord {
     pub title: String,
     pub role: String,
     pub created_at_ms: u128,
+    /// Application that first created this conversation. Missing legacy data stays unknown.
+    #[serde(default)]
+    pub origin: CreationOrigin,
     pub runs: Vec<RunRecord>,
     #[cfg(unix)]
     #[serde(default)]
@@ -131,7 +134,29 @@ pub(crate) struct RunRecord {
     pub run_id: String,
     pub engine: String,
     pub core_session_id: Option<String>,
+    /// Canonical Core JSONL path retained so another Glass process can adopt the same log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_session_path: Option<PathBuf>,
     pub classification: RunClassification,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CreationOrigin {
+    Glass,
+    Gc,
+    #[default]
+    Unknown,
+}
+
+impl CreationOrigin {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Glass => "Created in Glass",
+            Self::Gc => "Created in GC",
+            Self::Unknown => "Unknown origin",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,11 +439,30 @@ impl ThreadStore {
         })
     }
 
+    pub(crate) fn set_origin(
+        &self,
+        thread_id: &str,
+        origin: CreationOrigin,
+    ) -> DevelopmentResult<()> {
+        self.mutate(|doc| {
+            let thread = doc
+                .threads
+                .iter_mut()
+                .find(|thread| thread.thread_id == thread_id)
+                .ok_or_else(|| config("conversation disappeared"))?;
+            if thread.origin == CreationOrigin::Unknown {
+                thread.origin = origin;
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn set_session(
         &self,
         thread_id: &str,
         run_id: &str,
         session_id: &str,
+        session_path: Option<&Path>,
     ) -> DevelopmentResult<()> {
         if session_id.is_empty()
             || session_id.len() > 256
@@ -447,7 +491,20 @@ impl ThreadStore {
                     "Core session reference cannot be replaced for an existing run",
                 ));
             }
+            if run
+                .core_session_path
+                .as_deref()
+                .zip(session_path)
+                .is_some_and(|(existing, incoming)| existing != incoming)
+            {
+                return Err(config(
+                    "Core session path cannot be replaced for an existing run",
+                ));
+            }
             run.core_session_id = Some(session_id.to_owned());
+            if run.core_session_path.is_none() {
+                run.core_session_path = session_path.map(Path::to_path_buf);
+            }
             run.classification = RunClassification::RecoveryPending;
             validate_run(run)
         })
@@ -1102,6 +1159,7 @@ mod tests {
             title: "Build feature".into(),
             role: "builder".into(),
             created_at_ms: 1,
+            origin: crate::thread_store::CreationOrigin::Glass,
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
@@ -1111,6 +1169,7 @@ mod tests {
                 run_id: random_id("run").unwrap(),
                 engine: "glass-core".into(),
                 core_session_id: None,
+                core_session_path: None,
                 classification: RunClassification::Starting,
             }],
         }
@@ -1190,7 +1249,7 @@ mod tests {
         let reopened = ThreadStore::open(&root).unwrap();
         assert!(reopened.send_attempts(&thread_id).unwrap().is_empty());
         reopened
-            .set_session(&thread_id, &run_id, "session-after-mutation")
+            .set_session(&thread_id, &run_id, "session-after-mutation", None)
             .unwrap();
 
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -1691,7 +1750,7 @@ mod tests {
         let run_id = row.runs[0].run_id.clone();
         store.create(row).unwrap();
         store
-            .set_session(&thread_id, &run_id, "core-session-from-runtime")
+            .set_session(&thread_id, &run_id, "core-session-from-runtime", None)
             .unwrap();
         let reopened = ThreadStore::open(&root).unwrap();
         let row = reopened.list().unwrap().remove(0);
@@ -1703,6 +1762,34 @@ mod tests {
             row.runs[0].classification,
             RunClassification::RecoveryPending
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn initialized_session_persists_immutable_canonical_path() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let mut row = record();
+        row.runs[0].classification = RunClassification::Starting;
+        let thread_id = row.thread_id.clone();
+        let run_id = row.runs[0].run_id.clone();
+        store.create(row).unwrap();
+        let path = root.join(".glass/agent-sessions/exact.jsonl");
+        store
+            .set_session(&thread_id, &run_id, "exact", Some(&path))
+            .unwrap();
+        assert!(
+            store
+                .set_session(
+                    &thread_id,
+                    &run_id,
+                    "exact",
+                    Some(Path::new("/other/exact.jsonl"))
+                )
+                .is_err()
+        );
+        let run = store.list().unwrap().remove(0).runs.remove(0);
+        assert_eq!(run.core_session_path.as_deref(), Some(path.as_path()));
         let _ = fs::remove_dir_all(root);
     }
 

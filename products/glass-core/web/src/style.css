@@ -272,6 +272,46 @@ a {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.thread-heading {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.thread-heading strong {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.origin-badge {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.origin-badge[data-origin="glass"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+.origin-badge[data-origin="gc"] {
+  color: var(--purple);
+  border-color: color-mix(in srgb, var(--purple) 35%, var(--line));
+}
+.handoff {
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.handoff:hover:not(:disabled) {
+  background: var(--accent-bg);
+}
 .toolbar-actions {
   display: flex;
   align-items: center;
@@ -1112,13 +1152,22 @@ dialog > header > div:last-child {
     gap: 7px;
     font-size: 10px;
   }
-  .breadcrumbs > span:first-child {
-    max-width: 85px;
-    text-overflow: ellipsis;
-    overflow: hidden;
+  .breadcrumbs > span:first-child,
+  .breadcrumbs .crumb-separator {
+    display: none;
   }
   .toolbar-actions {
     gap: 5px;
+  }
+  .handoff span {
+    display: none;
+  }
+  .handoff::after {
+    content: "Release";
+    font-size: 9px;
+  }
+  .handoff {
+    padding: 5px 6px;
   }
   .connection {
     font-size: 0;
@@ -1691,6 +1740,18 @@ dialog[open] {
   dialog > header {
     padding-top: max(12px, var(--safe-top));
   }
+}
+.thread-origin {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
 }
 @media (pointer: coarse) {
   input,

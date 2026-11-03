@@ -991,7 +991,7 @@ pub fn serve(
                     "security":crate::connect::security(&cfg),
                     "commands":crate::web_commands::catalogue(Some(&extensions)),
                     "command_transport":true,
-                    "web_workflows":1,
+                    "web_workflows":1,"idle_release":true,
                     "client":sender_id,"owner":owner.get(),"can_write":sender_id.is_some()&&sender_id==owner.get(),
                     "session": session.id,
                     "entries": entries,
@@ -1324,7 +1324,7 @@ pub fn serve(
                     eprintln!("navigation receipt: {error}");
                 }
                 let (replay_entries, replay_cursor, replay_reset) = replay_from(&session, None);
-                let snapshot = json!({"t":"replay","session":session.id,"entries":replay_entries,"cursor":replay_cursor,"reset":replay_reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(&cfg),"commands":crate::web_commands::catalogue(Some(&extensions)),"command_transport":true,"web_workflows":1});
+                let snapshot = json!({"t":"replay","session":session.id,"entries":replay_entries,"cursor":replay_cursor,"reset":replay_reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(&cfg),"commands":crate::web_commands::catalogue(Some(&extensions)),"command_transport":true,"web_workflows":1,"idle_release":true});
                 let live = std::rc::Rc::new(std::cell::RefCell::new(VecDeque::<Value>::new()));
                 let progress_live = live.clone();
                 let live_bytes = std::rc::Rc::new(std::cell::Cell::new(0usize));
@@ -1520,6 +1520,16 @@ pub fn serve(
             }
             Some("cancel") => { /* no turn running: nothing to cancel */ }
             Some("stop") => {
+                if message["idle_only"] == true
+                    && (sender_id != owner.get()
+                        || !pending.is_empty()
+                        || crate::team::get(&session.id).is_some_and(|hub| hub.has_pending_work()))
+                {
+                    to_origin(
+                        json!({"t":"release_rejected","message":"Finish delegated or queued work and take control before releasing this conversation."}),
+                    );
+                    continue;
+                }
                 // Graceful shutdown. The turn still running, if any,
                 // finishes first — the frame is queued behind it like
                 // any other message — then the loop exit path shuts
@@ -2024,7 +2034,7 @@ impl CommandRuntime<'_> {
             std::sync::Arc::clone(&cancel),
         );
         let (entries, cursor, reset) = replay_from(self.session, None);
-        let snapshot = json!({"t":"replay","session":self.session.id,"entries":entries,"cursor":cursor,"reset":reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(self.cfg),"commands":self.catalogue,"command_transport":true,"web_workflows":1});
+        let snapshot = json!({"t":"replay","session":self.session.id,"entries":entries,"cursor":cursor,"reset":reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(self.cfg),"commands":self.catalogue,"command_transport":true,"web_workflows":1,"idle_release":true});
         broadcast(
             self.clients,
             json!({"t":"command_start","name":name,"request_id":message["request_id"]}),

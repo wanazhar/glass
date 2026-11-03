@@ -175,6 +175,9 @@ impl AgentSpec {
 pub struct AgentSnapshot {
     /// Stable agent identifier.
     pub id: AgentId,
+    /// App that originally created this conversation.
+    #[serde(default)]
+    pub origin_label: String,
     /// Configured role.
     pub role: String,
     /// Configured task prompt.
@@ -262,6 +265,7 @@ struct AgentRecord {
     thread_id: String,
     run_id: String,
     resume_session_id: Option<String>,
+    resume_session_path: Option<PathBuf>,
     recovering: bool,
     pending_secret_input: Option<crate::resident_harness::ResidentSecretInputRequest>,
 }
@@ -277,6 +281,7 @@ struct WorkerRuntime {
     run_id: String,
     thread_store: ThreadStore,
     resume_session_id: Option<String>,
+    resume_session_path: Option<PathBuf>,
     core_binary: Option<PathBuf>,
     core_binary_args: Vec<String>,
 }
@@ -388,6 +393,7 @@ impl AgentRegistry {
                 id.clone(),
                 AgentRecord {
                     snapshot: AgentSnapshot {
+                        origin_label: thread.origin.label().into(),
                         id: id.clone(),
                         role: thread.role,
                         task: format!("{} · {}", thread.title, status.label()),
@@ -414,12 +420,103 @@ impl AgentRegistry {
                     thread_id: thread.thread_id,
                     run_id: run.run_id.clone(),
                     resume_session_id: None,
+                    resume_session_path: run.core_session_path.clone().or_else(|| {
+                        run.core_session_id
+                            .as_deref()
+                            .and_then(|session_id| legacy_glass_session_path(&root, session_id))
+                    }),
                     recovering: false,
                     pending_secret_input: None,
                 },
             );
         }
+        #[cfg(not(test))]
+        registry.discover_shared_threads()?;
         Ok(registry)
+    }
+
+    #[cfg(not(test))]
+    fn discover_shared_threads(&mut self) -> DevelopmentResult<()> {
+        let Ok(binary) = crate::core_runtime::resolve_core_binary(None) else {
+            return Ok(());
+        };
+        let output = std::process::Command::new(binary)
+            .args(["sessions", "--json"])
+            .current_dir(&self.root)
+            .output()?;
+        if !output.status.success() {
+            return Ok(());
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
+            return Ok(());
+        };
+        let Some(rows) = value.get("sessions").and_then(Value::as_array) else {
+            return Ok(());
+        };
+        let threads = self.thread_store.list()?;
+        let mut known = threads
+            .iter()
+            .flat_map(|thread| thread.runs.iter())
+            .filter_map(|run| run.core_session_path.as_ref())
+            .filter_map(|path| path.canonicalize().ok())
+            .collect::<BTreeSet<_>>();
+        known.extend(
+            self.records
+                .values()
+                .filter_map(|record| record.resume_session_path.as_ref())
+                .filter_map(|path| path.canonicalize().ok()),
+        );
+        for row in rows {
+            if self.records.len() >= 128 {
+                break;
+            }
+            let Some(path) = row
+                .get("sourceRef")
+                .and_then(Value::as_str)
+                .and_then(|path| Path::new(path).canonicalize().ok())
+            else {
+                continue;
+            };
+            if known.contains(&path) {
+                continue;
+            }
+            if row
+                .get("workspace")
+                .and_then(Value::as_str)
+                .and_then(|path| Path::new(path).canonicalize().ok())
+                .as_ref()
+                != Some(&self.root)
+            {
+                continue;
+            }
+            let Some(session) = row.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let origin = match row.get("origin").and_then(Value::as_str) {
+                Some("glass") => crate::thread_store::CreationOrigin::Glass,
+                Some("gc") => crate::thread_store::CreationOrigin::Gc,
+                _ => crate::thread_store::CreationOrigin::Unknown,
+            };
+            let title = row
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Shared conversation")
+                .chars()
+                .take(128)
+                .collect::<String>();
+            let title = if title.trim().is_empty() {
+                "Shared conversation".to_owned()
+            } else {
+                title
+            };
+            known.insert(path.clone());
+            self.create_with_source(
+                AgentSpec::new(title, "Continue shared conversation"),
+                Some((session.into(), path, origin)),
+                false,
+            )?;
+        }
+        Ok(())
     }
 
     /// Configure the authenticated broker used for resident-agent requests.
@@ -491,7 +588,16 @@ impl AgentRegistry {
         Ok(())
     }
     /// Validate and enqueue an agent; dependencies must be known and successful.
-    pub(crate) fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
+    pub(crate) fn create(&mut self, spec: AgentSpec) -> DevelopmentResult<AgentId> {
+        self.create_with_source(spec, None, true)
+    }
+
+    fn create_with_source(
+        &mut self,
+        mut spec: AgentSpec,
+        source: Option<(String, PathBuf, crate::thread_store::CreationOrigin)>,
+        start: bool,
+    ) -> DevelopmentResult<AgentId> {
         self.refresh()?;
         if spec.model.is_none() {
             spec.model.clone_from(&self.default_model);
@@ -500,9 +606,23 @@ impl AgentRegistry {
             spec.thinking.clone_from(&self.default_thinking);
         }
         validate_spec(&self.root, &self.records, &spec)?;
-        if self.records.len() >= MAX_AGENTS {
+        let live_sessions = self
+            .records
+            .values()
+            .filter(|record| {
+                matches!(
+                    record.snapshot.status,
+                    AgentStatus::Starting
+                        | AgentStatus::Queued
+                        | AgentStatus::Idle
+                        | AgentStatus::Working
+                        | AgentStatus::Waiting
+                )
+            })
+            .count();
+        if start && live_sessions >= MAX_AGENTS {
             return Err(DevelopmentError::Conflict(format!(
-                "agent registry reached its {MAX_AGENTS} session limit"
+                "agent registry reached its {MAX_AGENTS} active session limit"
             )));
         }
         let id = AgentId(format!("agent-{:04}", self.next_agent));
@@ -519,6 +639,10 @@ impl AgentRegistry {
             title: spec.role.clone(),
             role: spec.role.clone(),
             created_at_ms: now,
+            origin: source
+                .as_ref()
+                .map(|s| s.2)
+                .unwrap_or(crate::thread_store::CreationOrigin::Glass),
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
@@ -527,8 +651,11 @@ impl AgentRegistry {
             runs: vec![RunRecord {
                 run_id: run_id.clone(),
                 engine: harness.id().into(),
-                core_session_id: None,
-                classification: if spec.dependencies.is_empty() {
+                core_session_id: source.as_ref().map(|s| s.0.clone()),
+                core_session_path: source.as_ref().map(|s| s.1.clone()),
+                classification: if !start || source.is_some() {
+                    RunClassification::RecoveryPending
+                } else if spec.dependencies.is_empty() {
                     RunClassification::Starting
                 } else {
                     RunClassification::Queued
@@ -536,7 +663,9 @@ impl AgentRegistry {
             }],
         })?;
         let worktree = spec.worktree.clone().unwrap_or_else(|| self.root.clone());
-        let status = if spec.dependencies.is_empty() {
+        let status = if !start {
+            AgentStatus::RecoveryPending
+        } else if spec.dependencies.is_empty() {
             AgentStatus::Starting
         } else {
             AgentStatus::Queued
@@ -545,6 +674,12 @@ impl AgentRegistry {
             id.clone(),
             AgentRecord {
                 snapshot: AgentSnapshot {
+                    origin_label: source
+                        .as_ref()
+                        .map(|s| s.2)
+                        .unwrap_or(crate::thread_store::CreationOrigin::Glass)
+                        .label()
+                        .into(),
                     id: id.clone(),
                     role: spec.role.clone(),
                     task: spec.task.clone(),
@@ -570,8 +705,9 @@ impl AgentRegistry {
                 dropped_events: Arc::new(AtomicU64::new(0)),
                 thread_id,
                 run_id,
-                resume_session_id: None,
-                recovering: false,
+                resume_session_id: source.as_ref().map(|s| s.0.clone()),
+                resume_session_path: source.as_ref().map(|s| s.1.clone()),
+                recovering: source.is_some(),
                 pending_secret_input: None,
             },
         );
@@ -579,6 +715,136 @@ impl AgentRegistry {
             self.spawn(&id)?;
         }
         Ok(id)
+    }
+
+    /// Adopt a shared conversation without replacing the current thread's log.
+    pub(crate) fn open_shared_session(&mut self, path: &Path) -> DevelopmentResult<AgentId> {
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(DevelopmentError::InvalidInput(
+                "Shared session references cannot be symlinks".into(),
+            ));
+        }
+        let path = path.canonicalize()?;
+        if path.extension().and_then(|v| v.to_str()) != Some("jsonl") || !path.is_file() {
+            return Err(DevelopmentError::InvalidInput(
+                "Shared conversation must be a session log".into(),
+            ));
+        }
+        let existing_thread = self
+            .thread_store
+            .list()?
+            .into_iter()
+            .find(|thread| {
+                thread
+                    .runs
+                    .last()
+                    .and_then(|run| run.core_session_path.as_ref())
+                    .is_some_and(|source| source.canonicalize().ok().as_ref() == Some(&path))
+            })
+            .map(|thread| thread.thread_id);
+        if let Some(id) = self.records.iter().find_map(|(id, record)| {
+            (record.resume_session_path.as_ref() == Some(&path)
+                || existing_thread.as_ref() == Some(&record.thread_id))
+            .then(|| id.clone())
+        }) {
+            if self.snapshot(&id)?.status == AgentStatus::RecoveryPending {
+                self.resume(&id)?;
+            }
+            return self.wait_shared_ready(id);
+        }
+        let session = path
+            .file_stem()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| DevelopmentError::InvalidInput("Invalid session reference".into()))?
+            .to_string();
+        let sidecar = path.with_extension("meta.json");
+        let metadata: Value = if sidecar.exists() {
+            if std::fs::metadata(&sidecar)?.len() > 16 * 1024 * 1024 {
+                return Err(DevelopmentError::InvalidInput(
+                    "Session metadata is too large".into(),
+                ));
+            }
+            serde_json::from_slice(&std::fs::read(sidecar)?)?
+        } else if self.sessions_dir.canonicalize().ok().as_deref() == path.parent() {
+            serde_json::json!({"workspace":self.root,"origin":"glass"})
+        } else {
+            return Err(DevelopmentError::InvalidInput(
+                "Shared conversation has no trusted workspace metadata".into(),
+            ));
+        };
+        let workspace = metadata
+            .get("workspace")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DevelopmentError::InvalidInput(
+                    "Shared conversation has no workspace identity".into(),
+                )
+            })?;
+        if std::fs::canonicalize(workspace)? != self.root {
+            return Err(DevelopmentError::Conflict(
+                "Shared conversation belongs to another workspace".into(),
+            ));
+        }
+        let origin = match metadata.get("origin").and_then(Value::as_str) {
+            Some("glass") => crate::thread_store::CreationOrigin::Glass,
+            Some("gc") => crate::thread_store::CreationOrigin::Gc,
+            _ => crate::thread_store::CreationOrigin::Unknown,
+        };
+        let title = metadata
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Shared conversation");
+        let id = self.create_with_source(
+            AgentSpec::new(
+                title.chars().take(128).collect::<String>(),
+                "Continue shared conversation",
+            ),
+            Some((session, path, origin)),
+            true,
+        )?;
+        self.wait_shared_ready(id)
+    }
+
+    fn wait_shared_ready(&mut self, id: AgentId) -> DevelopmentResult<AgentId> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let snapshot = self.snapshot(&id)?;
+            match snapshot.status {
+                AgentStatus::Starting => {}
+                AgentStatus::Idle => {
+                    if let Some(record) = self.records.get_mut(&id) {
+                        if let Some(path) = &record.resume_session_path {
+                            if let Ok(bytes) = std::fs::read(path.with_extension("meta.json")) {
+                                if let Ok(meta) = serde_json::from_slice::<Value>(&bytes) {
+                                    let origin = match meta.get("origin").and_then(Value::as_str) {
+                                        Some("gc") => crate::thread_store::CreationOrigin::Gc,
+                                        Some("glass") => crate::thread_store::CreationOrigin::Glass,
+                                        _ => crate::thread_store::CreationOrigin::Unknown,
+                                    };
+                                    self.thread_store.set_origin(&record.thread_id, origin)?;
+                                    record.snapshot.origin_label = origin.label().into();
+                                }
+                            }
+                        }
+                    }
+                    return Ok(id);
+                }
+                _ => {
+                    return Err(DevelopmentError::Conflict(
+                        snapshot
+                            .last_error
+                            .unwrap_or_else(|| "Shared conversation could not be opened".into()),
+                    ));
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DevelopmentError::Process(
+                    "Opening shared conversation timed out".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Drain worker events, update snapshots, and start newly ready agents.
@@ -793,6 +1059,26 @@ impl AgentRegistry {
                 id.as_str()
             )));
         }
+        if self
+            .records
+            .values()
+            .filter(|record| {
+                matches!(
+                    record.snapshot.status,
+                    AgentStatus::Starting
+                        | AgentStatus::Queued
+                        | AgentStatus::Idle
+                        | AgentStatus::Working
+                        | AgentStatus::Waiting
+                )
+            })
+            .count()
+            >= MAX_AGENTS
+        {
+            return Err(DevelopmentError::Conflict(format!(
+                "agent registry reached its {MAX_AGENTS} active session limit"
+            )));
+        }
         if !self.worker_finished(id) {
             return Err(DevelopmentError::Conflict(
                 "the prior Core worker is still shutting down; wait for it to exit before recovery"
@@ -818,6 +1104,10 @@ impl AgentRegistry {
         let session_id = prior.core_session_id.clone().ok_or_else(|| {
             DevelopmentError::Conflict("the durable thread has no Core session reference".into())
         })?;
+        let session_path = prior
+            .core_session_path
+            .clone()
+            .or_else(|| legacy_glass_session_path(&self.root, &session_id));
         let new_run_id = crate::thread_store::random_id("run")?;
         self.thread_store.append_run(
             &thread_id,
@@ -825,6 +1115,7 @@ impl AgentRegistry {
                 run_id: new_run_id.clone(),
                 engine: "glass-core".into(),
                 core_session_id: Some(session_id.clone()),
+                core_session_path: session_path.clone(),
                 classification: RunClassification::RecoveryPending,
             },
         )?;
@@ -832,6 +1123,7 @@ impl AgentRegistry {
             let record = self.record_mut(id)?;
             record.run_id = new_run_id.clone();
             record.resume_session_id = Some(session_id);
+            record.resume_session_path = session_path;
             record.recovering = true;
             record.snapshot.status = AgentStatus::Starting;
             record.snapshot.last_error = None;
@@ -1283,6 +1575,7 @@ impl AgentRegistry {
                 run_id: new_run_id.clone(),
                 engine: engine.id().into(),
                 core_session_id: None,
+                core_session_path: None,
                 classification: RunClassification::Starting,
             },
         )?;
@@ -1426,7 +1719,7 @@ impl AgentRegistry {
     }
 
     fn spawn(&mut self, id: &AgentId) -> DevelopmentResult<()> {
-        let (thread_id, run_id, resume_session_id) = {
+        let (thread_id, run_id, resume_session_id, resume_session_path) = {
             let record = self
                 .records
                 .get(id)
@@ -1435,6 +1728,7 @@ impl AgentRegistry {
                 record.thread_id.clone(),
                 record.run_id.clone(),
                 record.resume_session_id.clone(),
+                record.resume_session_path.clone(),
             )
         };
         if resume_session_id.is_none() {
@@ -1485,6 +1779,7 @@ impl AgentRegistry {
                         run_id,
                         thread_store,
                         resume_session_id,
+                        resume_session_path,
                         core_binary,
                         core_binary_args,
                     },
@@ -2248,7 +2543,7 @@ fn run_worker(
         additional_system_prompt: runtime.additional_system_prompt,
         resume: false,
         resume_session_id: runtime.resume_session_id,
-        resume_session_path: None,
+        resume_session_path: runtime.resume_session_path,
         binary: runtime.core_binary,
         binary_args: runtime.core_binary_args,
         fork_from: runtime.fork_from,
@@ -2265,6 +2560,7 @@ fn run_worker(
         }
     };
     let session_id = harness.core_session_id().map(str::to_owned);
+    let session_path = harness.core_session_path().map(Path::to_path_buf);
     for startup_event in harness.take_startup_events() {
         send_critical_worker_event(&events, WorkerEvent::Engine(id.clone(), startup_event));
     }
@@ -2275,6 +2571,7 @@ fn run_worker(
         &runtime.thread_id,
         &runtime.run_id,
         session_id.as_deref(),
+        session_path.as_deref(),
     ) {
         send_critical_worker_event(
             &events,
@@ -2395,12 +2692,31 @@ fn announce_worker_ready(
     thread_id: &str,
     run_id: &str,
     session_id: Option<&str>,
+    session_path: Option<&Path>,
 ) -> DevelopmentResult<()> {
     if let Some(session_id) = session_id {
-        store.set_session(thread_id, run_id, session_id)?;
+        store.set_session(thread_id, run_id, session_id, session_path)?;
     }
     send_critical_worker_event(events, WorkerEvent::Ready(id));
     Ok(())
+}
+
+/// Legacy Glass registries stored only a Core ID. Adopt a path only when the
+/// exact historical Glass session filename exists inside this project store.
+fn legacy_glass_session_path(root: &Path, session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty()
+        || session_id.len() > 256
+        || session_id.chars().any(char::is_control)
+        || session_id.contains('/')
+        || session_id.contains('\\')
+    {
+        return None;
+    }
+    let sessions_dir = root.join(".glass").join("agent-sessions");
+    let path = sessions_dir.join(format!("{session_id}.jsonl"));
+    let canonical = std::fs::canonicalize(&path).ok()?;
+    let canonical_dir = std::fs::canonicalize(sessions_dir).ok()?;
+    canonical.starts_with(canonical_dir).then_some(canonical)
 }
 
 fn send_engine_worker_event(
@@ -2883,6 +3199,63 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn shared_session_opens_exact_source_and_reuses_durable_reference() {
+        let root = test_root().canonicalize().unwrap();
+        let store = root.join(".glass/agent-sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        let path = store.join("fixture-session.jsonl");
+        std::fs::write(&path, "{\"k\":\"user\",\"t\":\"prior question\"}\n").unwrap();
+        std::fs::write(
+            path.with_extension("meta.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"workspace":root,"title":"Imported GC chat","origin":"gc"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        configure_fake_core(&mut registry, "exact-resume");
+        let id = registry.open_shared_session(&path).unwrap();
+        assert_eq!(
+            registry.snapshot(&id).unwrap().origin_label,
+            "Created in GC"
+        );
+        assert_eq!(registry.open_shared_session(&path).unwrap(), id);
+        let threads = registry.thread_store.list().unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(
+            threads[0].runs[0].core_session_id.as_deref(),
+            Some("fixture-session")
+        );
+        assert_eq!(
+            threads[0].runs[0].core_session_path.as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_session_workspace_mismatch_keeps_current_threads_unchanged() {
+        let root = test_root().canonicalize().unwrap();
+        let path = root.join("wrong.jsonl");
+        std::fs::write(&path, "").unwrap();
+        std::fs::write(
+            path.with_extension("meta.json"),
+            serde_json::to_vec(&serde_json::json!({"workspace":root.parent().unwrap()})).unwrap(),
+        )
+        .unwrap();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        assert!(registry.open_shared_session(&path).is_err());
+        assert!(registry.thread_store.list().unwrap().is_empty());
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn reopened_thread_recovers_exact_session_hydrates_before_ready_and_never_replays() {
         let root = test_root();
         let mut first = AgentRegistry::new(&root).unwrap();
@@ -3066,6 +3439,7 @@ mod tests {
                 title: spec.role.clone(),
                 role: spec.role.clone(),
                 created_at_ms: now,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
@@ -3075,6 +3449,7 @@ mod tests {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),
                     core_session_id: Some("fixture".into()),
+                    core_session_path: None,
                     classification: RunClassification::RecoveryPending,
                 }],
             })
@@ -3083,6 +3458,7 @@ mod tests {
             id.clone(),
             AgentRecord {
                 snapshot: AgentSnapshot {
+                    origin_label: "Unknown origin".into(),
                     id,
                     role: spec.role.clone(),
                     task: spec.task.clone(),
@@ -3109,6 +3485,7 @@ mod tests {
                 thread_id,
                 run_id,
                 resume_session_id: None,
+                resume_session_path: None,
                 recovering: false,
                 pending_secret_input: None,
             },
@@ -3352,6 +3729,7 @@ mod tests {
                 title: title.into(),
                 role: "builder".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
@@ -3361,6 +3739,7 @@ mod tests {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
                     core_session_id: session_id,
+                    core_session_path: None,
                     classification,
                 }],
             });
@@ -4107,6 +4486,7 @@ mod tests {
                 title: "test".into(),
                 role: "builder".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
@@ -4116,6 +4496,7 @@ mod tests {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),
                     core_session_id: None,
+                    core_session_path: None,
                     classification: RunClassification::Starting,
                 }],
             })
@@ -4129,6 +4510,7 @@ mod tests {
             &thread_id,
             &run_id,
             Some("actual-core-session"),
+            None,
         )
         .unwrap();
         assert!(matches!(received.recv().unwrap(), WorkerEvent::Ready(id) if id == agent_id));

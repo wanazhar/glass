@@ -967,17 +967,22 @@ impl Bridge {
         {
             return Err("Conversation release is already in progress".into());
         }
-        let feed = self.feed.lock().map_err(|_| "Session state unavailable")?;
-        if feed.active || feed.interaction.is_some() {
+        let mut feed = self.feed.lock().map_err(|_| "Session state unavailable")?;
+        if feed.snapshot["idle_release"] != true {
+            self.closing.store(false, Ordering::Release);
+            return Err("This conversation uses an older runtime. Close it in its owning app or update its runtime before handing it off.".into());
+        }
+        if feed.active || feed.interaction.is_some() || feed.snapshot["can_write"] != true {
             self.closing.store(false, Ordering::Release);
             return Err("session_active_elsewhere: Finish or cancel the active work before releasing this conversation.".into());
         }
+        feed.snapshot["releaseError"] = Value::Null;
         let mut writer = self
             .writer
             .lock()
             .map_err(|_| "Session connection unavailable")?;
         let write = writer
-            .write_all(b"{\"t\":\"stop\"}\n")
+            .write_all(b"{\"t\":\"stop\",\"idle_only\":true}\n")
             .map_err(|e| e.to_string());
         drop(writer);
         drop(feed);
@@ -1066,6 +1071,10 @@ impl Bridge {
             }
         }
         match value["t"].as_str() {
+            Some("release_rejected") => {
+                f.snapshot["releaseError"] = value["message"].clone();
+                self.closing.store(false, Ordering::Release);
+            }
             Some("replay") => f.snapshot = value.clone(),
             Some("command_catalogue") => {
                 f.snapshot["commands"] = value["commands"].clone();
@@ -3161,6 +3170,17 @@ fn handle_with_transport(
             b.release_idle()?;
             let start = Instant::now();
             loop {
+                if !b.closing.load(Ordering::Acquire) {
+                    return Err(format!(
+                        "session_active_elsewhere: {}",
+                        b.feed
+                            .lock()
+                            .map_err(|_| "Session state unavailable")?
+                            .snapshot["releaseError"]
+                            .as_str()
+                            .unwrap_or("Conversation cannot be released yet")
+                    ));
+                }
                 if !b
                     .feed
                     .lock()

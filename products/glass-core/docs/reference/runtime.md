@@ -114,6 +114,7 @@ host tool names.
 
 Optional session settings:
 
+- `creationOrigin`: `glass`, `gc`, or `unknown`; creation attribution remains stable on resume.
 - `model`: model ID within the selected provider configuration.
 - `maxTokens`: output token limit, validated before the first request.
 - `imageInput`: whether inline image inputs and tool results are accepted.
@@ -136,8 +137,8 @@ It is accepted only after protocol v2 initialization with `mixedTools`.
 
 | Method | Parameters beyond sessionId | Behavior |
 | --- | --- | --- |
-| `session/list` | Optional `afterSessionId`, `limit` | Page session IDs, names, lineage, and open state |
-| `session/resume` | Optional expectedToolMode | Open the saved conversation |
+| `session/list` | Optional `afterSourceRef`, legacy `afterSessionId`, `workspace`, `limit` | Page runtime and shared project conversations, canonical source references, origin, lineage, and open state |
+| `session/resume` | Optional `expectedToolMode`; shared adoption also supplies `sourcePath`, `cwd`, `toolMode`, `tools` | Acquire the saved conversation without copying its log |
 | `session/close` | None | Release the writer; preserve files |
 | `session/inspect` | Optional `cursor`, `limit` | Page transcript records and model settings |
 | `session/configure` | Any optional setting above | Change configuration while idle |
@@ -150,7 +151,16 @@ Resume accepts sessionId alone for host-owned sessions. GC loads the frozen
 manifest and reports its configuration through session/describe. expectedToolMode
 defaults to host; resuming a local-execution session requires an explicit local
 expectation. Any creation fields supplied with resume must match the manifest.
-Tool mode remains immutable. Mixed-mode hosts can explicitly refresh their host
+Tool mode remains immutable for ordinary manifest resumption. Explicit shared
+adoption uses `sourcePath` to identify a regular canonical JSONL file in the GC
+store or current project's `.glass/agent-sessions` store. It validates the source
+ID and workspace, acquires the existing writer lock, and preserves the source
+log, creation origin, and saved settings. Native GC logs without a runtime
+manifest adopt the requested mixed tool ownership using current Core defaults.
+An open session ID cannot be rebound to another source. A failed adoption does
+not create a replacement conversation.
+
+Mixed-mode hosts can explicitly refresh their host
 schemas through session/tools after resuming. The replacement catalog is validated
 against native and extension tool names and saved atomically; conversation history
 and execution ownership are unchanged. Other modes reject this operation. Provider, model, instructions, imageInput,
@@ -298,7 +308,7 @@ Glass's authority boundary require their own integration acceptance tests.
 | session/entry | sessionId, entryId, field, offset, limitBytes | A UTF-8 chunk of a large string field |
 | session/name | sessionId, name | Persisted display name |
 | session/stats | sessionId | Turn/tool counts, journal size, reported usage |
-| session/tree | optional afterSessionId and limit | Paged session nodes with parent edges |
+| session/tree | optional afterSourceRef, legacy afterSessionId, workspace, limit | Paged session nodes with parent edges and canonical source references |
 | session/describe | sessionId | Frozen manifest and execution ownership |
 | session/validate | sessionId | Credential/configuration validation and configured limits |
 
@@ -316,8 +326,11 @@ That method returns up to 64 KiB per chunk. Cursors must be record boundaries.
 Repair of an incomplete crash tail may invalidate a cursor beyond the repaired
 end; reload from zero if that happens.
 
-Session lists and trees contain at most 128 nodes per page and use
-nextAfterSessionId. Parent edges describe conversation forks; they do not imply
+Session lists and trees contain at most 128 nodes per page. Use
+`nextAfterSourceRef` as the next `afterSourceRef` cursor when enumerating shared
+stores; distinct logs can have the same session ID. The legacy
+`nextAfterSessionId` cursor remains available for single-ID-namespace clients.
+Rows include `sourceRef`, `origin`, and `originLabel`. Parent edges describe conversation forks; they do not imply
 workspace rollback. Statistics are cached until the journal grows. reportedUsage
 counts received runtime turn usage; absent usage is not guessed, completion
 usage is separate, and usageComplete remains false.

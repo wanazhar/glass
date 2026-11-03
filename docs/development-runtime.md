@@ -124,6 +124,28 @@ keeps queue and send-attempt content process-local because the registry does
 not yet apply private ACLs there. Reopened rows are not live workers until an
 explicit resume succeeds. See the
 [exact-session recovery contract](plan/analysis/issue63-core-session-resume.md).
+### Resume the same conversation across clients
+
+Glass and GC can reopen a closed conversation from the same canonical JSONL
+log. Glass discovers project-matching GC conversations in its conversation
+picker and stores their Core session ID and source path as durable references.
+GC's chooser and Connect WebUI also discover the current project's Glass
+session store. Glass registers project stores for subsequent discovery from
+Connect's All projects view; the host does not scan arbitrary directories.
+
+The picker and WebUI show `Created in Glass`, `Created in GC`, or `Unknown
+origin`. This identifies the creating app, not the current writer. Resuming
+preserves the source ID, history, creation origin, workspace, and saved Core
+settings. Older native GC logs without saved runtime settings use current Core
+defaults. Client composer drafts remain with their client conversation.
+
+Only one writer may open the canonical log. Close the conversation in the
+other client before resuming it. Connect provides a release action for idle
+conversations and refuses release while work or an interaction remains active.
+A failed handoff retains the current view and draft. Glass keeps the picker
+visible while an explicit shared-chat open is loading or fails; it does not
+replace the existing conversation with a new log.
+
 The TUI uses its ordinary confirmation for the resume action; subsequent
 conversation follows the existing session flow without per-tool-call
 confirmation. For an uncertain send on a supported Unix host, select its

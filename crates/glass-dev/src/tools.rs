@@ -1404,13 +1404,10 @@ impl DevelopmentToolRouter {
                     entry_id: string("entryId")?.into(),
                 },
             ),
-            "glass.agent.switch-session" => agent_request(
-                workspace,
-                call,
-                ResidentSessionRequest::SwitchSession {
-                    path: string("path")?.into(),
-                },
-            ),
+            "glass.agent.switch-session" => {
+                let id = workspace.agents().open_shared_session(std::path::Path::new(string("path")?))?;
+                Ok(serde_json::json!({"agentId":id.as_str(),"opened":true}))
+            },
             "glass.agent.sessions" => agent_request(workspace, call, ResidentSessionRequest::ListSessions),
             "glass.agent.tree" => agent_request(workspace, call, ResidentSessionRequest::Tree),
             "glass.agent.messages" => agent_request(workspace, call, ResidentSessionRequest::Messages),

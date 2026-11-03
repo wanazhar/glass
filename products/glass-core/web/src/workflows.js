@@ -14,6 +14,13 @@ export function workflows({
     mayLeave,
     uploadController,
     hasUnsaved = () => false;
+  function threadQuery(id, sourceRef, extra = {}) {
+    const query = new URLSearchParams({ id: String(id) });
+    if (sourceRef) query.set("sourceRef", sourceRef);
+    for (const [key, value] of Object.entries(extra))
+      if (value !== undefined && value !== null) query.set(key, String(value));
+    return query.toString();
+  }
   window.addEventListener("beforeunload", (event) => {
     if (hasUnsaved()) {
       event.preventDefault();
@@ -28,11 +35,13 @@ export function workflows({
     controller?.abort();
     controller = new AbortController();
     const own = controller,
-      id = view.id;
+      id = view.id,
+      sourceRef = view.sourceRef;
     const current = () =>
       modal?.open &&
       own === controller &&
       id === view.id &&
+      sourceRef === view.sourceRef &&
       !own.signal.aborted;
     modal ||= document.body.appendChild(el("dialog", "workflow"));
     modal.classList.toggle("floating-palette", floating);
@@ -63,6 +72,8 @@ export function workflows({
       body,
       status,
       signal: own.signal,
+      id,
+      sourceRef,
       current,
       run: (status, name, values, refresh) =>
         mutate(current, status, name, values, refresh),
@@ -129,6 +140,7 @@ export function workflows({
     uploadController = new AbortController();
     const uploadSignal = uploadController.signal;
     const id = view.id,
+      sourceRef = view.sourceRef,
       generation = view.generation;
     if (files.length > 8) notice("Attach up to 8 files at a time.");
     try {
@@ -151,10 +163,8 @@ export function workflows({
           let r, data;
           try {
             r = await ownerFetch(
-              "/api/upload?id=" +
-                encodeURIComponent(id) +
-                "&name=" +
-                encodeURIComponent(file.name),
+              "/api/upload?" +
+                threadQuery(id, sourceRef, { name: file.name }),
               {
                 method: "POST",
                 headers: { "Content-Type": "application/octet-stream" },
@@ -197,14 +207,11 @@ export function workflows({
   }
   async function editor(path) {
     requireHost(true);
-    const { body, status, signal, current, run } = open(path);
+    const { body, status, signal, current, run, id, sourceRef } = open(path);
     status.textContent = "Loading file…";
     try {
       const data = await api(
-        "edit?id=" +
-          encodeURIComponent(view.id) +
-          "&path=" +
-          encodeURIComponent(path),
+        "edit?" + threadQuery(id, sourceRef, { path }),
         undefined,
         signal,
       );
@@ -235,10 +242,7 @@ export function workflows({
             if (result.body?.revision) revision = result.body.revision;
             else {
               const latest = await api(
-                "edit?id=" +
-                  encodeURIComponent(view.id) +
-                  "&path=" +
-                  encodeURIComponent(path),
+                "edit?" + threadQuery(id, sourceRef, { path }),
                 undefined,
                 signal,
               );
@@ -292,12 +296,11 @@ export function workflows({
   }
   async function changes() {
     requireHost(false);
-    const { body, status, signal, current, run } = open("Changes", true);
-    const id = view.id;
+    const { body, status, signal, current, run, id, sourceRef } = open("Changes", true);
     async function refresh() {
       status.textContent = "Reading Git state…";
       const data = await api(
-        "changes?id=" + encodeURIComponent(id),
+        "changes?" + threadQuery(id, sourceRef),
         undefined,
         signal,
       );
@@ -647,9 +650,8 @@ export function workflows({
     }
   }
   async function work() {
-    const { body, status, signal, current, run } = open("Work & teammates", true);
-    const id = view.id,
-      tasks = el("section"),
+    const { body, status, signal, current, run, id, sourceRef } = open("Work & teammates", true);
+    const tasks = el("section"),
       agents = el("section"),
       taskRows = el("div"),
       agentRows = el("div");
@@ -732,7 +734,7 @@ export function workflows({
       }
       try {
         const data = await api(
-          "agents?id=" + encodeURIComponent(id),
+          "agents?" + threadQuery(id, sourceRef),
           undefined,
           signal,
         );
@@ -761,10 +763,7 @@ export function workflows({
                 entry.watching=true;
                 try {
                   const result = await api(
-                    "agent?id=" +
-                      encodeURIComponent(id) +
-                      "&agent=" +
-                      encodeURIComponent(agent.id),
+                    "agent?" + threadQuery(id, sourceRef, { agent: agent.id }),
                     undefined,
                     signal,
                   );
@@ -818,17 +817,18 @@ export function workflows({
     signal.addEventListener("abort", () => {clearTimeout(timer);stream?.close();document.removeEventListener("visibilitychange",visible);}, { once: true });
     await refresh();
     if(!current())return;
-    stream=ownerEventSource("/api/agent-events?id="+encodeURIComponent(id));
+    stream = ownerEventSource(
+      "/api/agent-events?" + threadQuery(id, sourceRef),
+    );
     stream.onmessage=event=>{if(!current())return;try{const value=JSON.parse(event.data);if(value.offline){stream.close();status.textContent="Main session offline · saved transcripts remain available";return;}}catch{return;}if(!timer)timer=setTimeout(()=>{timer=0;void refresh();},150);};
     stream.onerror=()=>{if(current())status.textContent="Reconnecting agent events…";};
   }
   async function context() {
     requireHost();
-    const { body, status, signal, current, run } = open("Context");
-    const id = view.id;
+    const { body, status, signal, current, run, id, sourceRef } = open("Context");
     async function refresh() {
       const data = await api(
-        "context?id=" + encodeURIComponent(id),
+        "context?" + threadQuery(id, sourceRef),
         undefined,
         signal,
       );
@@ -909,9 +909,8 @@ export function workflows({
   }
   async function largeRecord(recordOffset) {
     requireHost(false);
-    const { body, status, signal, current } = open("Saved activity");
-    const id = view.id,
-      actions = el("div", "workflow-actions"),
+    const { body, status, signal, current, id, sourceRef } = open("Saved activity");
+    const actions = el("div", "workflow-actions"),
       source = el("pre", "saved-activity-source");
     let offset = 0,
       revision,
@@ -932,13 +931,12 @@ export function workflows({
       status.textContent = "Reading saved activity…";
       try {
         const part = await api(
-          "activity-text?id=" +
-            encodeURIComponent(id) +
-            "&recordOffset=" +
-            recordOffset +
-            "&offset=" +
-            target +
-            (revision ? "&expected=" + encodeURIComponent(revision) : ""),
+          "activity-text?" +
+            threadQuery(id, sourceRef, {
+              recordOffset,
+              offset: target,
+              expected: revision,
+            }),
           undefined,
           signal,
         );

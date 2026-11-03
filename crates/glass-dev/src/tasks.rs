@@ -2381,6 +2381,7 @@ mod tests {
 
         fn snapshot(id: AgentId, spec: AgentSpec) -> AgentSnapshot {
             AgentSnapshot {
+                origin_label: "Unknown origin".into(),
                 id,
                 role: spec.role,
                 task: spec.task,

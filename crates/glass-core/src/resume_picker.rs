@@ -97,17 +97,13 @@ fn read_meta(file: std::fs::File) -> Option<Meta> {
             f.write_str("session metadata")
         }
         fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
-            let mut workspace = false;
-            let mut title = false;
             while let Some(key) = map.next_key::<String>()? {
                 match key.as_str() {
                     "workspace" => {
                         self.0.workspace = map.next_value()?;
-                        workspace = true;
                     }
                     "title" => {
                         self.0.title = map.next_value()?;
-                        title = true;
                     }
                     "origin" => {
                         self.0.origin = match map.next_value::<Option<String>>()?.as_deref() {
@@ -116,12 +112,10 @@ fn read_meta(file: std::fs::File) -> Option<Meta> {
                             _ => None,
                         };
                     }
+                    "attachments" => return Err(serde::de::Error::custom(READY)),
                     _ => {
                         map.next_value::<serde::de::IgnoredAny>()?;
                     }
-                }
-                if workspace && title {
-                    return Err(serde::de::Error::custom(READY));
                 }
             }
             Ok(())
@@ -176,7 +170,22 @@ fn index_roots(dirs: &[PathBuf], workspace: Option<&Path>, unassigned: bool) -> 
             .filter_map(Result::ok)
         {
             let path = entry.path();
+            let auxiliary = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    [
+                        ".requests.jsonl",
+                        ".attempts.jsonl",
+                        ".provider.jsonl",
+                        ".core_stdout.jsonl",
+                        ".glass_consumer.jsonl",
+                    ]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+                });
             if path.extension().is_none_or(|s| s != "jsonl")
+                || auxiliary
                 || !entry.file_type().is_ok_and(|t| t.is_file())
             {
                 continue;
@@ -290,7 +299,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(super::all(&root).len(), 1);
-        let rows = super::all_for_web(&root);
+        let rows = super::all_for_web(&root, &root);
         assert_eq!(rows.len(), 2);
         let legacy = rows.iter().find(|r| r.id == "legacy").unwrap();
         assert!(legacy.workspace.as_os_str().is_empty());
@@ -309,7 +318,7 @@ mod tests {
         std::fs::write(
             dir.join("a.meta.json"),
             format!(
-                "{{\"workspace\":{},\"title\":\"Pretty thread\",\"attachments\":[",
+                "{{\"workspace\":{},\"title\":\"Pretty thread\",\"origin\":\"gc\",\"attachments\":[",
                 serde_json::to_string(&workspace).unwrap()
             ),
         )
@@ -317,9 +326,27 @@ mod tests {
         let rows = index(&dir, &workspace);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "Pretty thread");
+        assert_eq!(rows[0].origin, Some(crate::polish::SessionOrigin::Gc));
         assert!(index(&dir, &dir.join("other")).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn glass_store_discovery_excludes_provider_and_attempt_sidecars() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-index-sidecars-{}",
+            crate::auth::random(8).unwrap()
+        ));
+        let store = root.join(".glass/agent-sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        for name in ["chat.jsonl", "chat.requests.jsonl", "chat.attempts.jsonl"] {
+            std::fs::write(store.join(name), "{\"k\":\"user\",\"t\":\"hello\"}\n").unwrap();
+        }
+        let rows = index(&root.join("data"), &root);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "chat");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn index_rejects_symlink_metadata_and_oversized_prefix() {
         let dir = std::env::temp_dir().join(format!("gc-index-safe-{}", std::process::id()));

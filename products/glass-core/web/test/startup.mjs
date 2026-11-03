@@ -155,38 +155,43 @@ try {
 
   const context = await browser.newContext({ viewport: { width: 1024, height: 1365 }, colorScheme: "light", serviceWorkers: "block" });
   const page = await context.newPage();
-  const thread = { session: "tui-fixture", title: "TUI saved conversation", workspace: "/tmp", workspace_assigned: true, workspace_available: true };
+  const threads = [
+    { session: "tui-fixture", title: "TUI saved conversation", workspace: "/tmp", workspace_assigned: true, workspace_available: true },
+    { session: "available-fixture", title: "Available conversation", workspace: "/tmp", workspace_assigned: true, workspace_available: true },
+  ];
   const calls = [];
   await page.route("**/api/**", async route => {
     const path = new URL(route.request().url()).pathname;
     calls.push(path);
     let json = {};
     if (path === "/api/status") json = { profile: "workspace-edit", workspace: "/tmp" };
-    if (path === "/api/threads") json = { threads: [thread], projects: [] };
+    if (path === "/api/threads") json = { threads, projects: [] };
     if (path === "/api/history") json = { records: [{ index: 0, record: { k: "user", t: "Saved TUI question" } }, { index: 1, record: { k: "assistant", t: "Saved TUI answer" } }], before: 0 };
-    if (path === "/api/open") return route.fulfill({ status: 400, json: { error: "No such file or directory (os error 2)" } });
+    if (path === "/api/open") {
+      const request = route.request().postDataJSON();
+      if (request.id === "tui-fixture")
+        return route.fulfill({ status: 409, json: { error: "Conversation already has a writer", code: "session_active_elsewhere" } });
+      return route.fulfill({ json: { connected: true } });
+    }
     await route.fulfill({ json });
   });
   await page.goto(url + "/?thread=tui-fixture");
   await page.locator(".app").waitFor({ state: "visible" });
-  await page.getByText("Saved TUI answer", { exact: true }).waitFor();
-  assert(calls.indexOf("/api/history") < calls.indexOf("/api/open"));
-  assert.equal(await page.locator("#connection").textContent(), "History only");
-  assert(await page.locator("#send").isDisabled());
-  assert.match(await page.locator("#notice").textContent(), /Saved conversation loaded/);
-  assert.equal(calls.filter(p => p === "/api/history").length, 1);
-  const contrast = await page.locator("#notice").evaluate(n => {
-    const luminance = color => {
-      const channels = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(v => {
-        v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-      });
-      return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
-    };
-    const style = getComputedStyle(n), a = luminance(style.color), b = luminance(style.backgroundColor);
-    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-  });
-  assert(contrast >= 4.5, "Light-mode error banner is unreadable");
+  await page.locator("#notice").getByText(/active in another app/i).waitFor();
+  assert(calls.includes("/api/open"));
+  assert.equal(calls.filter(p => p === "/api/history").length, 0,
+    "a failed acquire must not replace the current view with another transcript");
+  assert.equal(await page.locator("#thread-name").textContent(), "New thread");
+  assert.equal(await page.locator("#prompt").inputValue(), "");
+  assert.equal(new URL(page.url()).searchParams.has("thread"), false,
+    "a busy startup deep link must not strand recovery after reload");
+  await page.locator("#search").fill("Available conversation");
+  await page.getByRole("button", { name: "Available conversation" }).click();
+  await page.locator("#timeline").getByText("Saved TUI answer", { exact: true }).waitFor();
+  assert.equal(await page.locator("#thread-name").textContent(), "Available conversation");
   assert.equal(await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').count(), 0);
+  await page.goto(url);
+  await page.locator(".app").waitFor({ state: "visible" });
   for (const expected of ["dark", "light"]) {
     await page.locator("#theme").click();
     const colors = await page.evaluate(() => ({
@@ -199,9 +204,9 @@ try {
     assert.equal(colors.body, colors.root);
     assert(colors.chrome.every(color => color === (expected === "dark" ? "#141916" : "#f7f8f3")));
   }
-  await page.screenshot({ path: "/tmp/gc-web-tui-history-only.png" });
+  await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();
-  console.log("PASS TUI history remains readable when live attachment fails, without Load earlier");
+  console.log("PASS busy startup deep link stays recoverable through the picker; normal startup theme remains interactive");
 
   // Exercise the actual service worker, including a damaged cached application.
   const cachedContext = await browser.newContext();

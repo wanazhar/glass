@@ -134,9 +134,10 @@
           <div class="breadcrumbs">
             <span id="workspace-name">Workspace</span
             ><span class="crumb-separator">/</span
-            ><strong id="thread-name">New thread</strong>
+            ><span class="thread-heading"><strong id="thread-name">New thread</strong><span id="thread-origin" class="origin-badge" hidden></span></span>
           </div>
           <div class="toolbar-actions">
+            <button type="button" id="handoff" class="quiet handoff hidden" title="Release this idle conversation so another app can continue it" aria-label="Release chat"><span>Release chat</span></button>
             <button type="button" id="agent-activity" class="icon-button" aria-label="Agent activity" title="Agent activity">›_</button>
             <button type="button" id="desktop-toggle" class="icon-button" aria-label="Shared desktop" title="Shared desktop">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">

@@ -629,6 +629,8 @@ pub struct WorkspacePlan {
 pub struct SessionPickerItem {
     pub path: String,
     pub label: String,
+    pub origin: String,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,7 +680,15 @@ pub(super) fn project_thread_picker_items(
         .map(|agent| ThreadPickerItem {
             agent_id: agent.id.clone(),
             title: project_thread_picker_title(&agent.role, &agent.id, &task_labels),
-            status: agent.status.label().to_owned(),
+            status: format!(
+                "{} · {}",
+                agent.status.label(),
+                if agent.origin_label.is_empty() {
+                    "Unknown origin"
+                } else {
+                    &agent.origin_label
+                }
+            ),
         })
         .collect()
 }
@@ -1854,6 +1864,7 @@ pub struct DevTuiState {
     /// Shows provider reasoning in isolation after an explicit Ctrl-T toggle.
     pub reasoning_view_open: bool,
     pub session_picker_open: bool,
+    session_switch_cancelled: bool,
     pub session_picker_items: Vec<SessionPickerItem>,
     pub session_picker_selection: usize,
     pub conversation_items: Vec<super::projection::ConversationEntry>,
@@ -2426,6 +2437,7 @@ impl DevTuiState {
             reasoning_view_open: false,
             core_transcript: RefCell::new(super::core_conversation::InlineTranscript::default()),
             session_picker_open: false,
+            session_switch_cancelled: false,
             session_picker_items: Vec::new(),
             session_picker_selection: 0,
             conversation_items: Vec::new(),
@@ -5873,6 +5885,9 @@ impl DevTuiState {
     }
 
     pub fn close_session_picker(&mut self) {
+        if self.running_tool_job.is_some() {
+            self.session_switch_cancelled = true;
+        }
         self.session_picker_open = false;
     }
 
@@ -5886,20 +5901,26 @@ impl DevTuiState {
     }
 
     pub fn submit_session_picker(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.running_tool_job.is_some() {
+            return;
+        }
         let Some(item) = self.session_picker_items.get(self.session_picker_selection) else {
             self.status = "No session selected".into();
             return;
         };
         let mut arguments = serde_json::json!({"path": item.path});
+        if let Some(session_id) = item.session_id.as_ref() {
+            arguments["sessionId"] = serde_json::Value::String(session_id.clone());
+        }
+        arguments["sourceRef"] = serde_json::Value::String(item.path.clone());
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
+        self.session_switch_cancelled = false;
         match self.tool_request("glass.agent.switch-session", arguments, true) {
             Ok((call, context)) => match worker.submit_tool(call, context) {
                 Ok(_) => {
-                    self.agent_session_name = item.label.clone();
-                    self.session_picker_open = false;
-                    self.status = format!("Switching to {}", item.label);
+                    self.status = format!("Opening {} · {}", item.label, item.origin);
                     worker.request_conversation();
                 }
                 Err(error) => self.status = format!("Could not switch session: {error}"),
@@ -9436,6 +9457,29 @@ impl DevTuiState {
     }
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
+        if result.tool == "glass.agent.switch-session" {
+            self.running_tool_job = None;
+            let cancelled = std::mem::take(&mut self.session_switch_cancelled);
+            match result.result {
+                Ok(value) => {
+                    if let Some(id) = value
+                        .get("agentId")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|v| crate::AgentId::parse(v).ok())
+                    {
+                        if !cancelled {
+                            if !self.select_agent(Some(id)) {
+                                return;
+                            }
+                            self.session_picker_open = false;
+                            self.status = "Conversation opened".into();
+                        }
+                    }
+                }
+                Err(error) => self.status = format!("Could not open conversation: {error}"),
+            }
+            return;
+        }
         if self.gc_settings_jobs.remove(&result.id) {
             if self.running_tool_job == Some(result.id) {
                 self.running_tool_job = None;
@@ -16342,10 +16386,14 @@ fn parse_session_picker_items(value: &serde_json::Value) -> Vec<SessionPickerIte
         .or_else(|| value.get("sessions").and_then(serde_json::Value::as_array))
         .cloned()
         .unwrap_or_default();
+    let mut seen = std::collections::BTreeSet::new();
     items
         .into_iter()
         .filter_map(|item| {
             if let Some(path) = item.as_str() {
+                if !seen.insert(path.to_owned()) {
+                    return None;
+                }
                 return Some(SessionPickerItem {
                     label: std::path::Path::new(path)
                         .file_name()
@@ -16353,13 +16401,19 @@ fn parse_session_picker_items(value: &serde_json::Value) -> Vec<SessionPickerIte
                         .unwrap_or(path)
                         .to_string(),
                     path: path.to_string(),
+                    origin: "Unknown origin".into(),
+                    session_id: None,
                 });
             }
             let path = item
-                .get("path")
+                .get("sourceRef")
+                .or_else(|| item.get("path"))
                 .or_else(|| item.get("file"))
                 .or_else(|| item.get("sessionFile"))
                 .and_then(serde_json::Value::as_str)?;
+            if !seen.insert(path.to_owned()) {
+                return None;
+            }
             let label = item
                 .get("name")
                 .or_else(|| item.get("sessionName"))
@@ -16375,6 +16429,24 @@ fn parse_session_picker_items(value: &serde_json::Value) -> Vec<SessionPickerIte
             Some(SessionPickerItem {
                 path: path.to_string(),
                 label,
+                session_id: item
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                origin: item
+                    .get("originLabel")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        item.get("origin")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|origin| match origin {
+                                "glass" => "Created in Glass".to_owned(),
+                                "gc" => "Created in GC".to_owned(),
+                                _ => "Unknown origin".to_owned(),
+                            })
+                    })
+                    .unwrap_or_else(|| "Unknown origin".into()),
             })
         })
         .collect()
@@ -16703,6 +16775,20 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_picker_keeps_distinct_sources_and_origin_without_showing_paths() {
+        let rows = parse_session_picker_items(&serde_json::json!({"sessions": [
+            {"sessionId":"same", "sourceRef":"/gc/one.jsonl", "name":"Parser", "origin":"gc", "originLabel":"Created in GC"},
+            {"sessionId":"same", "sourceRef":"/glass/one.jsonl", "name":"Parser", "origin":"glass", "originLabel":"Created in Glass"},
+            {"sessionId":"same", "sourceRef":"/gc/one.jsonl", "name":"duplicate"}
+        ]}));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].session_id.as_deref(), Some("same"));
+        assert_eq!(rows[0].origin, "Created in GC");
+        assert_eq!(rows[1].origin, "Created in Glass");
+        assert_eq!(rows[0].path, "/gc/one.jsonl");
+    }
 
     #[test]
     fn lsp_text_edits_use_utf16_positions_and_descending_application() {
@@ -18009,6 +18095,7 @@ mod tests {
             title: role.into(),
             role: role.into(),
             created_at_ms: 1,
+            origin: crate::thread_store::CreationOrigin::Glass,
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
@@ -18018,6 +18105,7 @@ mod tests {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
                 core_session_id: None,
+                core_session_path: None,
                 classification: crate::thread_store::RunClassification::Starting,
             }],
         };
@@ -18096,10 +18184,12 @@ mod tests {
                 title: "discard target".into(),
                 role: "assistant".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
                     core_session_id: None,
+                    core_session_path: None,
                     classification: crate::thread_store::RunClassification::Starting,
                 }],
                 composer_draft: None,
@@ -18174,10 +18264,12 @@ mod tests {
                 title: "quit timeout owner".into(),
                 role: "assistant".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
                     core_session_id: None,
+                    core_session_path: None,
                     classification: crate::thread_store::RunClassification::Completed,
                 }],
                 composer_draft: None,
@@ -18273,10 +18365,12 @@ mod tests {
                 title: "generation race owner".into(),
                 role: "assistant".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
                     core_session_id: None,
+                    core_session_path: None,
                     classification: crate::thread_store::RunClassification::Completed,
                 }],
                 composer_draft: None,
@@ -18427,10 +18521,12 @@ mod tests {
             title: title.into(),
             role: title.into(),
             created_at_ms: 1,
+            origin: crate::thread_store::CreationOrigin::Glass,
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
                 core_session_id: None,
+                core_session_path: None,
                 classification: crate::thread_store::RunClassification::Completed,
             }],
             composer_draft: None,
@@ -18514,6 +18610,46 @@ mod tests {
     }
 
     #[test]
+    fn shared_session_cancel_and_failure_preserve_current_view_and_draft() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-shared-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
+        state.composer_input = "keep this draft".into();
+        state.agent_conversation = "keep this transcript".into();
+        state.session_picker_open = true;
+        state.running_tool_job = Some(7);
+        state.close_session_picker();
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 7,
+            tool: "glass.agent.switch-session".into(),
+            result: Ok(serde_json::json!({"agentId":"agent-0001","opened":true})),
+        });
+        assert!(state.selected_agent.is_none());
+        assert_eq!(state.composer_input, "keep this draft");
+        assert_eq!(state.agent_conversation, "keep this transcript");
+        state.session_picker_open = true;
+        state.running_tool_job = Some(8);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 8,
+            tool: "glass.agent.switch-session".into(),
+            result: Err("active in another app".into()),
+        });
+        assert!(state.session_picker_open);
+        assert!(state.selected_agent.is_none());
+        assert_eq!(state.composer_input, "keep this draft");
+        assert!(state.status.contains("active in another app"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn project_thread_picker_lists_status_and_selects_without_losing_draft() {
         let root = std::env::temp_dir().join(format!(
             "glass-tui-thread-picker-{}-{}",
@@ -18535,10 +18671,12 @@ mod tests {
                     title: title.into(),
                     role: title.into(),
                     created_at_ms: index as u128 + 1,
+                    origin: crate::thread_store::CreationOrigin::Glass,
                     runs: vec![crate::thread_store::RunRecord {
                         run_id: format!("run-{:032x}", index + 1),
                         engine: "glass-core".into(),
                         core_session_id: Some(format!("session-{index}")),
+                        core_session_path: None,
                         classification: crate::thread_store::RunClassification::RecoveryPending,
                     }],
                     composer_draft: None,
@@ -18591,7 +18729,10 @@ mod tests {
         } else {
             "recovery pending"
         };
-        assert_eq!(state.thread_picker_items[0].status, expected_status);
+        assert_eq!(
+            state.thread_picker_items[0].status,
+            format!("{expected_status} · Created in Glass")
+        );
         assert_eq!(state.selected_agent, Some(first.clone()));
         state.move_thread_picker_selection(1);
         state.activate_thread_picker_selection();
@@ -18667,6 +18808,7 @@ mod tests {
         let store = crate::thread_store::ThreadStore::open(&root).unwrap();
         let thread_id = crate::thread_store::random_id("thread").unwrap();
         let thread = |thread_id: String, role: &str| crate::thread_store::ThreadRecord {
+            origin: crate::thread_store::CreationOrigin::Glass,
             thread_id,
             title: role.into(),
             role: role.into(),
@@ -18680,6 +18822,7 @@ mod tests {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
                 core_session_id: None,
+                core_session_path: None,
                 classification: crate::thread_store::RunClassification::Starting,
             }],
         };
@@ -18880,10 +19023,12 @@ mod tests {
                 title: "draft owner".into(),
                 role: "assistant".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
                     core_session_id: None,
+                    core_session_path: None,
                     classification: crate::thread_store::RunClassification::Starting,
                 }],
                 composer_draft: None,

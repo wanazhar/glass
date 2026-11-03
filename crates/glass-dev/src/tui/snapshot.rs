@@ -1591,6 +1591,7 @@ mod tests {
                 title: "reopened conversation".into(),
                 role: "builder".into(),
                 created_at_ms: 1,
+                origin: crate::thread_store::CreationOrigin::Glass,
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
@@ -1600,6 +1601,7 @@ mod tests {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
                     core_session_id: Some("fixture-session-reference".into()),
+                    core_session_path: None,
                     classification: crate::thread_store::RunClassification::RecoveryPending,
                 }],
             })

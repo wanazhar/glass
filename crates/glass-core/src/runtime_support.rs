@@ -51,6 +51,14 @@ pub fn list(
         .get("afterSourceRef")
         .and_then(Value::as_str)
         .unwrap_or("");
+    let legacy_after = p
+        .get("afterSessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let after_id = Path::new(after)
+        .file_stem()
+        .and_then(|id| id.to_str())
+        .unwrap_or("");
     let limit = p
         .get("limit")
         .and_then(Value::as_u64)
@@ -71,13 +79,24 @@ pub fn list(
     {
         crate::resume_picker::register_project(&workspace)?;
     }
-    let mut threads = crate::resume_picker::index(&crate::config::data_dir(), &workspace);
-    threads.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut threads = crate::resume_picker::index(dir, &workspace);
+    threads.extend(crate::resume_picker::index(
+        &crate::config::data_dir(),
+        &workspace,
+    ));
+    let mut seen = std::collections::HashSet::new();
+    threads.retain(|thread| seen.insert(thread.path.clone()));
+    threads.sort_by(|a, b| (&a.id, &a.path).cmp(&(&b.id, &b.path)));
     let mut rows = threads
         .into_iter()
         .filter_map(|thread| {
             let source_ref = thread.path.to_string_lossy().into_owned();
-            (source_ref.as_str() > after).then_some((thread, source_ref))
+            let follows = if !after.is_empty() {
+                (thread.id.as_str(), source_ref.as_str()) > (after_id, after)
+            } else {
+                thread.id.as_str() > legacy_after
+            };
+            follows.then_some((thread, source_ref))
         })
         .take(limit + 1)
         .collect::<Vec<_>>();
@@ -571,6 +590,42 @@ pub fn interrupted(session: &Session) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_list_preserves_custom_storage_and_legacy_pagination() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-runtime-list-{}",
+            crate::auth::random(8).unwrap()
+        ));
+        let store = root.join("custom-sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        for id in ["a", "b", "c"] {
+            std::fs::write(store.join(format!("{id}.jsonl")), "").unwrap();
+            std::fs::write(
+                store.join(format!("{id}.meta.json")),
+                serde_json::to_vec(&json!({"workspace":root,"title":id})).unwrap(),
+            )
+            .unwrap();
+        }
+        let open = std::collections::BTreeMap::new();
+        let first = list(&store, &json!({"workspace":root,"limit":1}), &open).unwrap();
+        assert_eq!(first["sessions"][0]["sessionId"], "a");
+        let legacy = list(
+            &store,
+            &json!({"workspace":root,"limit":1,"afterSessionId":first["nextAfterSessionId"]}),
+            &open,
+        )
+        .unwrap();
+        assert_eq!(legacy["sessions"][0]["sessionId"], "b");
+        let shared = list(
+            &store,
+            &json!({"workspace":root,"limit":1,"afterSourceRef":first["nextAfterSourceRef"]}),
+            &open,
+        )
+        .unwrap();
+        assert_eq!(shared["sessions"][0]["sessionId"], "b");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn checked_index_rejects_values_above_platform_index_type() {
         assert_eq!(

@@ -4501,6 +4501,11 @@
           "anchor": "ownership-and-lifecycle"
         },
         {
+          "level": "3",
+          "title": "Resume the same conversation across clients",
+          "anchor": "resume-the-same-conversation-across-clients"
+        },
+        {
           "level": "2",
           "title": "Project files and tree",
           "anchor": "project-files-and-tree"

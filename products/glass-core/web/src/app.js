@@ -14,6 +14,7 @@ const $ = (s) => document.querySelector(s),
   };
 const view = {
   id: null,
+  sourceRef: null,
   threads: [],
   projectFilter: "",
   projectExpanded: new Set(),
@@ -47,6 +48,9 @@ const view = {
   secretUnlocked: false,
   connectCommand: "gc connect",
 };
+let openAttempt = 0,
+  latestOpenTarget = null,
+  openQueue = Promise.resolve();
 const notifyAttention = attention($("#notifications"));
 let initialOpening = true;
 // This capability lives only in this tab; never store it in cookies or drafts.
@@ -94,7 +98,34 @@ const drafts = draftStore(() => {
     );
   }
 });
-const draftKey = () => location.host + "/" + (view.id || "new");
+const draftKey = () =>
+  location.host + "/" + (view.sourceRef || view.id || "new");
+function sessionSourceRef(id = view.id) {
+  return id === view.id ? view.sourceRef : threadInfo(id)?.sourceRef;
+}
+function sessionFields(id = view.id) {
+  const sourceRef = sessionSourceRef(id);
+  return sourceRef ? { sourceRef } : {};
+}
+function sessionQueryFor(id, sourceRef, extra = {}) {
+  const query = new URLSearchParams({ id: String(id) });
+  if (sourceRef) query.set("sourceRef", sourceRef);
+  for (const [key, value] of Object.entries(extra))
+    if (value !== undefined && value !== null) query.set(key, String(value));
+  return query.toString();
+}
+function sessionQuery(id = view.id, extra = {}) {
+  return sessionQueryFor(id, sessionSourceRef(id), extra);
+}
+function sessionContext(context) {
+  const value = context || { id: view.id };
+  return {
+    ...value,
+    sourceRef:
+      value.sourceRef ??
+      (value.id === view.id ? view.sourceRef : threadInfo(value.id)?.sourceRef),
+  };
+}
 function saveDraft() {
   const value = $("#prompt").value;
   drafts.write(draftKey(), value.trimStart().startsWith("/") ? "" : value);
@@ -141,6 +172,7 @@ async function api(path, data, signal, options = {}) {
       const error = Error(value.error || "Request rejected");
       error.ownerAuthRequired = value.ownerAuthRequired === true;
       error.connectCommand = connectCommand(value.connectCommand);
+      error.code = value.code;
       if (error.ownerAuthRequired) {
         secretCapability = null;
         view.secretUnlocked = false;
@@ -160,7 +192,7 @@ async function api(path, data, signal, options = {}) {
 }
 async function send(message) {
   if (!view.id) throw Error("Choose a thread first");
-  return api("send", { id: view.id, message });
+  return api("send", { id: view.id, ...sessionFields(), message });
 }
 async function loadOwnerImage(image, path) {
   try {
@@ -178,9 +210,15 @@ function connection(label, online = true) {
   $("#connection").className = "connection" + (online ? "" : " offline");
   $("#connection").replaceChildren(el("i"), document.createTextNode(label));
 }
+function setThreadOrigin(thread) {
+  const badge = $("#thread-origin");
+  badge.textContent = thread?.originLabel || "";
+  badge.hidden = !thread?.originLabel;
+  badge.dataset.origin = thread?.origin || "unknown";
+}
 let activityKey = "";
 function updateActivity(label) {
-  const key = `${label || ""}|${view.control}|${view.id}|${view.workerWorkflows}|${view.hostWorkflows}`;
+  const key = `${label || ""}|${view.control}|${view.id}|${view.sourceRef}|${view.workerWorkflows}|${view.hostWorkflows}|${Boolean(view.interaction)}`;
   if (key === activityKey) return;
   activityKey = key;
   view.active = Boolean(label);
@@ -192,6 +230,12 @@ function updateActivity(label) {
     ? "Release control"
     : "Take control";
   $("#send").disabled = !view.control && Boolean(view.id);
+  const handoff = $("#handoff");
+  handoff.classList.toggle("hidden", !view.control || !view.id);
+  handoff.disabled = view.active || Boolean(view.interaction);
+  handoff.title = handoff.disabled
+    ? "Finish or cancel the current interaction before releasing this conversation"
+    : "Release this idle conversation so another app can continue it";
 }
 let viewportFrame = 0,
   idleViewportHeight = 0;
@@ -466,13 +510,16 @@ function prepareBlock(node, streaming, context) {
         let decoded;
         try { decoded = decodeURIComponent(src); } catch { decoded = src; }
         const path = !decoded.startsWith("/") && context?.base ? context.base + "/" + decoded : decoded;
-        const imagePath =
-          "/api/file?" +
-          (context?.workspace
-            ? "workspace=" + encodeURIComponent(context.workspace)
-            : "id=" + encodeURIComponent(context?.id || view.id)) +
-          "&path=" +
-          encodeURIComponent(path);
+        const fileQuery = context?.workspace
+          ? new URLSearchParams({ workspace: context.workspace, path })
+          : new URLSearchParams(
+              sessionQueryFor(
+                context?.id || view.id,
+                context?.sourceRef,
+                { path },
+              ),
+            );
+        const imagePath = "/api/file?" + fileQuery;
         loadOwnerImage(img, imagePath);
       } else {
         img.removeAttribute("src");
@@ -587,7 +634,7 @@ function thought(delta, target = $("#timeline"), saved = false) {
 }
 function renderThought(card) {
   if (!card.row.open || !card.row.isConnected) return;
-  markdownContexts.set(card.body, { id: view.id });
+  markdownContexts.set(card.body, sessionContext());
   markdown(card.body, card.source, !card.saved);
   if (card.capped && !card.row.querySelector(".thought-cap"))
     card.row.append(el("p", "quiet thought-cap", "Preview capped · open Reasoning in thread details for more."));
@@ -659,7 +706,7 @@ function message(role, source, target = $("#timeline")) {
     body.textContent = source;
     body.style.whiteSpace = "pre-wrap";
   } else {
-    markdownContexts.set(body, { id: view.id });
+  markdownContexts.set(body, sessionContext());
     markdown(body, source);
   }
   article.append(body);
@@ -693,10 +740,8 @@ function message(role, source, target = $("#timeline")) {
       button.disabled = true;
       try {
         const location = await api(
-          "activity-location?id=" +
-            encodeURIComponent(id) +
-            "&recordOffset=" +
-            article.dataset.recordIndex,
+          "activity-location?" +
+            sessionQuery(id, { recordOffset: article.dataset.recordIndex }),
         );
         if (generation !== view.generation) return;
         if (
@@ -834,8 +879,8 @@ function sharedImage(t) {
   image.width = value.width;
   image.height = value.height;
   const source = attachmentId
-      ? "/api/attachment?id=" + encodeURIComponent(view.id) + "&attachment=" + encodeURIComponent(attachmentId)
-      : "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path);
+      ? "/api/attachment?" + sessionQuery(view.id, { attachment: attachmentId })
+      : "/api/file?" + sessionQuery(view.id, { path: value.path });
   loadOwnerImage(image, source);
   image.onerror = () => {
     image.hidden = true;
@@ -860,7 +905,7 @@ async function openSharedAttachment(title, attachmentId) {
   $("#download").disabled = true;
   try {
     const response = await ownerFetch(
-      "/api/attachment?id=" + encodeURIComponent(view.id) + "&attachment=" + encodeURIComponent(attachmentId),
+      "/api/attachment?" + sessionQuery(view.id, { attachment: attachmentId }),
       { signal: fileAbort.signal },
     );
     if (!response.ok) throw Error("Image attachment unavailable");
@@ -966,9 +1011,7 @@ async function historyNow(older = false) {
     generation = view.generation;
   if (!id) return;
   const h = await api(
-    "history?id=" +
-      encodeURIComponent(id) +
-      (older ? "&before=" + view.before : ""),
+    "history?" + sessionQuery(id, older ? { before: view.before } : {}),
   );
   if (generation !== view.generation) return;
   if (older) view.follow = false;
@@ -1432,25 +1475,134 @@ function event(m) {
         .catch((e) => notice(e.message, true));
   }
 }
-async function openThread(id, { resume = false } = {}) {
+function openThread(id, options = {}) {
+  const attempt = ++openAttempt;
+  const target = Object.hasOwn(options, "sourceRef")
+    ? options.sourceRef
+    : view.id === id
+      ? view.sourceRef
+      : threadInfo(id)?.sourceRef;
+  latestOpenTarget = { id, sourceRef: target || null };
+  const run = () => openThreadTransaction(id, options, attempt);
+  const pending = openQueue.then(run, run);
+  openQueue = pending.catch(() => {});
+  return pending;
+}
+async function openThreadTransaction(id, options, attempt) {
+  if (attempt !== openAttempt) return { ok: false, stale: true };
+  const { resume = false } = options;
+  const sourceRefSpecified = Object.hasOwn(options, "sourceRef");
+  let sourceRef = sourceRefSpecified
+    ? options.sourceRef
+    : view.id === id
+      ? view.sourceRef
+      : undefined;
+  latestOpenTarget = { id, sourceRef: sourceRef ?? null };
+  const previousThread =
+    sourceRefSpecified || view.id === id
+      ? threadInfo(id, sourceRef)
+      : threadInfo(id);
+  if (!sourceRefSpecified) sourceRef ??= previousThread?.sourceRef;
+  if (attempt === openAttempt)
+    latestOpenTarget = { id, sourceRef: sourceRef ?? null };
+  if (!sourceRefSpecified && view.id !== id) {
+    const matches = view.threads.filter((thread) => thread.session === id);
+    if (matches.length > 1) {
+      const message = "This conversation ID has more than one trusted source. Choose its origin in the sidebar.";
+      notice(message, true);
+      return { ok: false, message, code: "ambiguous_session_reference" };
+    }
+  }
+  const switched =
+    view.id !== id || (view.sourceRef || null) !== (sourceRef || null);
   if (
-    view.id !== id &&
+    switched &&
     workflowPromise &&
     !(await workflowPromise).prepareLeave()
   )
     return;
+  if (attempt !== openAttempt) return { ok: false, stale: true };
+  let thread = previousThread;
+  if (!thread) {
+    try {
+      const query = new URLSearchParams({ id });
+      if (sourceRef) query.set("sourceRef", sourceRef);
+      const found = await api("threads?" + query);
+      if (attempt !== openAttempt) return { ok: false, stale: true };
+      rememberThreads(found.threads || []);
+      thread = threadInfo(id, sourceRef);
+    } catch (error) {
+      if (attempt !== openAttempt) return { ok: false, stale: true };
+      notice(error.message, true);
+      return { ok: false, message: error.message };
+    }
+  }
+  const archive =
+    thread?.workspace_assigned === false ||
+    thread?.workspace_available === false;
+  let openResult = null;
+  if (!archive) {
+    if (attempt !== openAttempt) return { ok: false, stale: true };
+    try {
+      openResult = await api("open", { id, ...(sourceRef ? { sourceRef } : {}) });
+    } catch (error) {
+      if (attempt !== openAttempt) return { ok: false, stale: true };
+      const message =
+        error.code === "session_active_elsewhere"
+          ? "This conversation is active in another app. Finish or close it there, then retry. Your current chat and draft are unchanged."
+          : error.message;
+      notice(message, true);
+      return { ok: false, message, code: error.code };
+    }
+    if (typeof openResult.sourceRef === "string" && openResult.sourceRef)
+      sourceRef = openResult.sourceRef;
+    if (attempt === openAttempt)
+      latestOpenTarget = { id, sourceRef: sourceRef || null };
+    if (attempt !== openAttempt) {
+      const sameTarget =
+        latestOpenTarget?.id === id &&
+        (latestOpenTarget.sourceRef || null) === (sourceRef || null);
+      if (!sameTarget)
+        api("close", { id, ...(sourceRef ? { sourceRef } : {}) }).catch(() => {});
+      return { ok: false, stale: true };
+    }
+  }
+  const oldId = view.id;
+  const oldSourceRef = view.sourceRef;
+  let oldReleaseError = null;
+  if (
+    oldId &&
+    (oldId !== id || (oldSourceRef || null) !== (sourceRef || null))
+  ) {
+    try {
+      await api("close", {
+        id: oldId,
+        ...(oldSourceRef ? { sourceRef: oldSourceRef } : {}),
+      });
+    } catch (error) {
+      oldReleaseError = error;
+    }
+    if (attempt !== openAttempt) {
+      const sameTarget =
+        latestOpenTarget?.id === id &&
+        (latestOpenTarget.sourceRef || null) === (sourceRef || null);
+      if (!sameTarget)
+        api("close", { id, ...(sourceRef ? { sourceRef } : {}) }).catch(() => {});
+      return { ok: false, stale: true };
+    }
+  }
   const previousFollow = view.follow;
-  if (view.id !== id) saveDraft();
+  if (switched) saveDraft();
   view.commandTransportReady = false;
   view.workerWorkflows = false;
-  if (view.id !== id) workflowPromise?.then((w) => w.close());
+  if (switched) workflowPromise?.then((w) => w.close());
   if (view.source) view.source.close();
   view.source = null;
   const generation = ++view.generation;
   $("#older").disabled = false;
   $("#older").textContent = "↑ Load earlier activity";
   $("#older").removeAttribute("aria-busy");
-  if (view.id !== id) {
+  if (switched) {
     if (activityPreviewThread !== null && $("#preview").open) $("#preview").close();
     activityPreviewThread = null;
     ++fileVersion;
@@ -1460,8 +1612,25 @@ async function openThread(id, { resume = false } = {}) {
     delete details.dataset.tab;
     details.replaceChildren();
   }
-  const switched = view.id !== id;
   view.id = id;
+  view.sourceRef =
+    sourceRef || openResult?.sourceRef || thread?.sourceRef || null;
+  if (openResult) {
+    const resolvedThread = {
+      ...(thread || { session: id }),
+      session: id,
+      ...(view.sourceRef ? { sourceRef: view.sourceRef } : {}),
+      ...(Object.hasOwn(openResult, "origin") ? { origin: openResult.origin } : {}),
+      ...(openResult.originLabel ? { originLabel: openResult.originLabel } : {}),
+    };
+    view.threadIndex.delete(`session:${id}`);
+    rememberThreads([resolvedThread]);
+    const rowIndex = view.threads.indexOf(thread);
+    if (rowIndex >= 0) view.threads[rowIndex] = resolvedThread;
+    else if (!view.threads.some((item) => threadKey(item) === threadKey(resolvedThread)))
+      view.threads.push(resolvedThread);
+    thread = resolvedThread;
+  }
   if (switched) {
     restoreDraft();
     $("#context-chips").replaceChildren();
@@ -1492,22 +1661,9 @@ async function openThread(id, { resume = false } = {}) {
     $("#timeline").replaceChildren(el("div", "loading-surface"));
   } else syncPanels();
   connection("Connecting");
-  let thread = threadInfo(id);
-  if (!thread) {
-    try {
-      const found = await api("threads?id=" + encodeURIComponent(id));
-      if (generation !== view.generation) return;
-      rememberThreads(found.threads || []);
-      thread = threadInfo(id);
-    } catch (error) {
-      if (generation === view.generation) {
-        connection("Unavailable", false);
-        notice(error.message, true);
-      }
-      return { ok: false, message: error.message };
-    }
-  }
+  thread = threadInfo(id, view.sourceRef) || thread;
   $("#thread-name").textContent = thread?.title || "Conversation";
+  setThreadOrigin(thread);
   $("#workspace-name").textContent = projectName(thread?.workspace || "");
   $("#workspace-name").title = thread?.workspace || "Project was not recorded";
   $("#thread-name").title =
@@ -1519,8 +1675,17 @@ async function openThread(id, { resume = false } = {}) {
       : "Message…";
   $("#model").textContent = thread?.model || "Glass Core";
   document.title = (thread?.title || "Conversation") + " · Glass";
-  window.history.replaceState(null, "", "/?thread=" + encodeURIComponent(id));
+  const threadUrl = new URLSearchParams({ thread: id });
+  if (view.sourceRef) threadUrl.set("sourceRef", view.sourceRef);
+  window.history.replaceState(null, "", "/?" + threadUrl);
   renderThreads();
+  if (oldReleaseError)
+    notice(
+      oldReleaseError.code === "session_active_elsewhere"
+        ? "The previous conversation is still working in the background; the new conversation is open."
+        : `The new conversation is open, but the previous one could not be released: ${oldReleaseError.message}`,
+      true,
+    );
   let historyLoaded = false;
   try {
     if (
@@ -1534,17 +1699,13 @@ async function openThread(id, { resume = false } = {}) {
       follow();
       return { ok: true };
     }
-    // Saved history is useful even when the live worker cannot attach (for
-    // example, a TUI still owns its writer lock). Never hide it behind /open.
     await history();
     if (generation !== view.generation) return;
     historyLoaded = true;
-    await api("open", { id });
-    if (generation !== view.generation) return;
     refreshContext();
     if (generation !== view.generation) return;
     follow();
-    const source = ownerEventSource("/api/events?id=" + encodeURIComponent(id));
+    const source = ownerEventSource("/api/events?" + sessionQuery(id));
     view.source = source;
     let eventChain = Promise.resolve();
     let attached;
@@ -1610,13 +1771,28 @@ async function openThread(id, { resume = false } = {}) {
 let threadListVersion = 0,
   threadListAbort,
   threadSearchTimer;
-function threadInfo(id) {
-  return view.threadIndex.get(id) || view.threads.find((t) => t.session === id);
+function threadInfo(id, sourceRef) {
+  if (arguments.length < 2 && view.id === id) sourceRef = view.sourceRef;
+  if (sourceRef) {
+    const exact = view.threadIndex.get(`ref:${sourceRef}`);
+    if (exact?.session === id) return exact;
+    return view.threads.find((t) => t.session === id && t.sourceRef === sourceRef);
+  }
+  if (arguments.length > 1)
+    return view.threadIndex.get(`session:${id}`) ||
+      view.threads.find((t) => t.session === id && !t.sourceRef);
+  return (
+    view.threadIndex.get(`session:${id}`) ||
+    view.threads.find((t) => t.session === id)
+  );
 }
+const threadKey = (thread) =>
+  thread.sourceRef ? `ref:${thread.sourceRef}` : `session:${thread.session}`;
 function rememberThreads(rows) {
-  for (const thread of rows) view.threadIndex.set(thread.session, thread);
+  for (const thread of rows) view.threadIndex.set(threadKey(thread), thread);
   while (view.threadIndex.size > 2048) {
-    const key = [...view.threadIndex.keys()].find((id) => id !== view.id);
+    const current = view.sourceRef ? `ref:${view.sourceRef}` : `session:${view.id}`;
+    const key = [...view.threadIndex.keys()].find((entry) => entry !== current);
     if (!key) break;
     view.threadIndex.delete(key);
   }
@@ -1640,9 +1816,9 @@ async function loadThreads(more = false) {
   }
   if (version !== threadListVersion) return;
   const current = new Map(
-    (more ? view.threads : []).map((t) => [t.session, t]),
+    (more ? view.threads : []).map((t) => [threadKey(t), t]),
   );
-  for (const thread of value.threads || []) current.set(thread.session, thread);
+  for (const thread of value.threads || []) current.set(threadKey(thread), thread);
   view.threads = [...current.values()];
   rememberThreads(value.threads || []);
   view.projectOptions = value.projects || [];
@@ -1742,12 +1918,16 @@ function renderThreads() {
     });
     const threadGroup = el("div", "project-threads");
     for (const thread of matches) {
-      const button = el(
-        "button",
-        "thread" + (thread.session === view.id ? " active" : ""),
-      );
+      const selected =
+        thread.session === view.id &&
+        (view.sourceRef
+          ? thread.sourceRef === view.sourceRef
+          : !thread.sourceRef);
+      const button = el("button", "thread" + (selected ? " active" : ""));
       button.title = `${thread.title || "New conversation"}\n${path || "Unassigned"}\n${thread.session}`;
       button.append(el("strong", "", thread.title || "New conversation"));
+      if (thread.originLabel)
+        button.append(el("span", "thread-origin", thread.originLabel));
       const small = el("small");
       small.append(
         el(
@@ -1771,7 +1951,8 @@ function renderThreads() {
         small.querySelector(".running").prepend(dots);
       }
       button.append(small);
-      button.onclick = () => openThread(thread.session);
+      button.onclick = () =>
+        openThread(thread.session, { sourceRef: thread.sourceRef });
       threadGroup.append(button);
     }
     section.append(threadGroup);
@@ -1915,6 +2096,30 @@ $("#ownership").onclick = () =>
   send({ t: "control", action: view.control ? "release" : "claim" }).catch(
     (e) => notice(e.message, true),
   );
+$("#handoff").onclick = async () => {
+  if (!view.id || !view.control || view.active || view.interaction) return;
+  const button = $("#handoff");
+  button.disabled = true;
+  try {
+    await api("close", { id: view.id, ...sessionFields() });
+    view.source?.close();
+    view.source = null;
+    view.control = false;
+    view.commandTransportReady = false;
+    view.workerWorkflows = false;
+    updateActivity(null);
+    connection("Released");
+    notice("Conversation released. Open it in another app to continue.");
+  } catch (error) {
+    const message =
+      error.code === "session_active_elsewhere"
+        ? "This conversation is working. Finish or cancel the current turn before releasing it."
+        : error.message;
+    notice(message, true);
+  } finally {
+    button.disabled = view.active || Boolean(view.interaction);
+  }
+};
 function interaction() {
   const panel = $("#interaction"),
     m = view.interaction;
@@ -2024,6 +2229,7 @@ function interaction() {
       try {
         await api("secret", {
           id: view.id,
+          ...sessionFields(),
           interactionId: m.id,
           secret,
         });
@@ -2160,7 +2366,7 @@ async function loadEarlierReasoning(automatic = false) {
     for (let page = 0; page < 4 && view.reasoningBefore; page++) {
       const before = view.reasoningBefore;
       const data = await api(
-        "history?id=" + encodeURIComponent(id) + "&before=" + before,
+        "history?" + sessionQuery(id, { before }),
       );
       if (generation !== view.generation) return;
       if (data.before >= before)
@@ -2284,7 +2490,7 @@ function pollInlineWork() {
     if (document.visibilityState === "visible")
       try {
         const data = await api(
-          "agents?id=" + encodeURIComponent(id),
+          "agents?" + sessionQuery(id),
           undefined,
           controller.signal,
         );
@@ -2871,10 +3077,11 @@ async function openFile(path, workspace, rawPath = false) {
   $("#download").disabled = true;
   try {
     const query = workspace
-      ? `workspace=${encodeURIComponent(workspace)}`
-      : `id=${encodeURIComponent(view.id)}`;
+      ? new URLSearchParams({ workspace })
+      : new URLSearchParams(sessionQuery(view.id));
+    query.set("path", path);
     const r = await ownerFetch(
-      `/api/file?${query}&path=${encodeURIComponent(path)}`,
+      `/api/file?${query}`,
       { signal: fileAbort.signal },
     );
     if (!r.ok) {
@@ -2912,6 +3119,7 @@ async function openFile(path, workspace, rawPath = false) {
         {
           workspace,
           id: view.id,
+          sourceRef: view.sourceRef,
           base: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
         },
         true,
@@ -3039,7 +3247,7 @@ function preview(
       activate.disabled = true;
       try {
         const response = await ownerFetch(
-          "/api/artifact?id=" + encodeURIComponent(view.id),
+          "/api/artifact?" + sessionQuery(view.id),
           {
             method: "POST",
             headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -3143,7 +3351,7 @@ function preview(
     body.append(tree(value, "root"));
   } else if (format === "markdown") {
     body.className = "prose";
-    markdownContexts.set(body, context || { id: view.id });
+    markdownContexts.set(body, sessionContext(context));
     markdown(body, source);
   } else if (format === "image") {
     const img = el("img");
@@ -3688,6 +3896,7 @@ async function openNativeCommand(command, initialArgs = "") {
       const result = command.readonly
         ? await api("command", {
             id,
+            ...sessionFields(id),
             name: command.name,
             values: inspect ? {} : values,
           })
@@ -4263,9 +4472,25 @@ async function start() {
     $("#profile").textContent = status.profile;
     view.workspace = status.workspace;
     $(".sidebar-footer small").textContent = "";
-    const id = new URLSearchParams(location.search).get("thread");
+    const params = new URLSearchParams(location.search);
+    const id = params.get("thread");
     if (id) {
-      const opened = await openThread(id);
+      const opened = await openThread(id, {
+        ...(params.has("sourceRef") ? { sourceRef: params.get("sourceRef") } : {}),
+      });
+      if (!opened?.ok && opened?.code === "session_active_elsewhere") {
+        params.delete("thread");
+        params.delete("sourceRef");
+        const query = params.toString();
+        window.history.replaceState(
+          null,
+          "",
+          location.pathname + (query ? "?" + query : ""),
+        );
+        connection("Connected");
+        notice(opened.message, true);
+        return { ok: true };
+      }
       if (!opened?.ok)
         return (
           opened || {
@@ -4440,7 +4665,7 @@ async function refreshContext() {
   const id = view.id,
     generation = view.generation;
   try {
-    const result = await api("context?id=" + encodeURIComponent(id));
+    const result = await api("context?" + sessionQuery(id));
     if (generation !== view.generation) return;
     const chips = $("#context-chips");
     chips.replaceChildren();

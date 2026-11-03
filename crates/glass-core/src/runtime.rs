@@ -1538,6 +1538,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 let (session, mut manifest, settings, host_tools, tool_mode, instructions) =
                     if method == "session/resume" {
                         let sid = string(p, "sessionId")?;
+                        if conversations.contains_key(sid) {
+                            return Err("session ID is already open; close that conversation before adopting another source".into());
+                        }
                         let external_path = p.get("sourcePath").and_then(Value::as_str);
                         if external_path.is_some() {
                             let source = PathBuf::from(external_path.unwrap());
@@ -1638,6 +1641,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             }
                             crate::polish::save(&session, &shared_meta)?;
                             let mut manifest = source_manifest.unwrap_or_else(|| p.clone());
+                            manifest["sourcePath"] = json!(source);
                             manifest["cwd"] = json!(workspace);
                             manifest["toolMode"] = json!(mode.as_str());
                             manifest["instructions"] = json!(instructions);

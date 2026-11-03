@@ -1223,7 +1223,7 @@ fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, String> 
         let store = auth::load()?;
         serde_json::json!({"status":auth::status(cfg),"provider":cfg.provider,"model":cfg.model,"endpoint":cfg.base_url,"connections":store.connections.iter().map(|c|serde_json::json!({"id":c.id,"label":c.label,"model":c.model})).collect::<Vec<_>>()})
     } else if command == "sessions" {
-        serde_json::json!({"sessions":polish::sessions(&cfg.workspace).iter().map(|s|serde_json::json!({"id":s.id,"title":polish::title(s),"turns":s.turn,"workspace":cfg.workspace})).collect::<Vec<_>>()})
+        serde_json::json!({"sessions":resume_picker::index(&config::data_dir(), &cfg.workspace).iter().map(|s|serde_json::json!({"id":s.id,"title":s.title,"workspace":s.workspace,"sourceRef":s.path,"origin":s.origin,"originLabel":match s.origin {Some(polish::SessionOrigin::Glass)=>"Created in Glass",Some(polish::SessionOrigin::Gc)=>"Created in GC",None=>"Unknown origin"}})).collect::<Vec<_>>()})
     } else {
         let id = args
             .iter()

@@ -569,12 +569,14 @@ impl GlassCoreRuntime {
                     "tools":runtime_tool_catalog()}),
             )?;
             let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
-            self.session_id = result
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .unwrap_or(&session)
-                .to_string();
+            if result.get("sessionId").and_then(Value::as_str) != Some(session.as_str()) {
+                return Err(DevelopmentError::Process(
+                    "Glass Core resumed a different conversation".into(),
+                ));
+            }
+            self.session_id = session.clone();
             self.session_path = source_path;
+            self.startup_events = self.read_session_transcript(&session)?;
             return Ok(());
         }
         let id = self.send_request("session/new", self.session_params(root, options))?;
@@ -790,8 +792,8 @@ impl GlassCoreRuntime {
     /// Newest stored session whose recorded `cwd` is this workspace.
     ///
     /// Session ids are creation-ordered, and `session/list` pages ascending
-    /// with `nextAfterSessionId`, so the last match in the last page is the
-    /// newest session. Paging is bounded so a large store cannot stall startup.
+    /// using source references. Compare file timestamps across stores so path
+    /// ordering cannot select an older conversation. Paging is bounded.
     fn newest_workspace_session(
         &mut self,
         root: &Path,
@@ -815,13 +817,26 @@ impl GlassCoreRuntime {
             for session in &sessions {
                 let cwd = session.get("cwd").and_then(Value::as_str);
                 if cwd.is_some_and(|cwd| Path::new(cwd) == root)
-                    && session.get("toolMode").and_then(Value::as_str) == Some("mixed")
+                    && (session.get("toolMode").and_then(Value::as_str) == Some("mixed")
+                        || session
+                            .get("sourceRef")
+                            .and_then(Value::as_str)
+                            .is_some_and(|path| {
+                                !Path::new(path).with_extension("host.json").exists()
+                            }))
                     && let (Some(id), Some(path)) = (
                         session.get("sessionId").and_then(Value::as_str),
                         session.get("sourceRef").and_then(Value::as_str),
                     )
                 {
-                    newest = Some((id.to_string(), PathBuf::from(path)));
+                    let candidate = PathBuf::from(path);
+                    let modified = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok();
+                    if newest
+                        .as_ref()
+                        .is_none_or(|(_, previous)| modified(&candidate) > modified(previous))
+                    {
+                        newest = Some((id.to_string(), candidate));
+                    }
                 }
             }
             match result
@@ -3801,9 +3816,17 @@ mod tests {
             },
         )
         .unwrap();
-        // The fixture marks workspace reuse by prefixing the resumed session
-        // id, so this distinguishes session/resume from session/new.
-        assert_eq!(runtime.session_id(), "resumed-fixture-session");
+        assert_eq!(runtime.session_id(), "fixture-session");
+        let requests = fs::read_to_string(root.join("sessions/fixture-requests.jsonl")).unwrap();
+        assert!(requests.contains("session/resume"));
+        assert!(!requests.contains("session/new"));
+        assert!(requests.contains("sourcePath"));
+        assert!(
+            runtime
+                .startup_events
+                .iter()
+                .any(|event| event.to_string().contains("prior answer"))
+        );
         drop(runtime);
         let _ = fs::remove_dir_all(&root);
     }

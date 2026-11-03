@@ -1955,7 +1955,7 @@ fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
             Style::default().fg(MUTED),
         ));
     } else {
-        let visible = inner.height.saturating_sub(1) as usize;
+        let visible = inner.height.saturating_sub(2) as usize;
         let start = state
             .session_picker_selection
             .saturating_sub(visible.saturating_sub(1));
@@ -1977,12 +1977,17 @@ fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
                 Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
             };
             lines.push(palette_fixed_line(
-                format!("{marker}{} · {}", item.label, item.path),
+                format!("{marker}{} · {}", item.label, item.origin),
                 inner.width,
                 style,
             ));
         }
     }
+    lines.push(palette_fixed_line(
+        &state.status,
+        inner.width,
+        Style::default().fg(MUTED),
+    ));
     frame.render_widget(Clear, modal);
     frame.render_widget(
         Paragraph::new(lines)
@@ -3577,6 +3582,18 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             }),
         ),
     ];
+    if let Some(item) = state
+        .thread_picker_items
+        .iter()
+        .find(|item| Some(&item.agent_id) == state.selected_agent.as_ref())
+    {
+        if let Some((_, origin)) = item.status.split_once(" · ") {
+            header.push(Span::styled(
+                format!(" · {origin}"),
+                Style::default().fg(MUTED),
+            ));
+        }
+    }
     if approval {
         header.push(Span::styled(
             " · approval needed",

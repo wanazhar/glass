@@ -658,7 +658,7 @@ def main() -> None:
             )
             if mode == "resume-mismatch":
                 resumed = "different-session"
-            elif mode == "mixed" and not preserve_resume_id:
+            elif mode == "mixed" and not preserve_resume_id and not params.get("sourcePath"):
                 resumed = f"resumed-{resumed}"
             reply(identifier, {"sessionId": resumed})
         elif method == "session/name":
@@ -677,6 +677,7 @@ def main() -> None:
                     "sessions": [
                         {
                             "sessionId": SESSION_ID,
+                            "sourceRef": os.path.join(STORAGE_DIR, f"{SESSION_ID}.jsonl"),
                             "open": True,
                             "name": "fixture",
                             "cwd": os.getcwd(),

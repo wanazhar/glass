@@ -381,6 +381,9 @@ fn git_header_label(state: &DevTuiState) -> Option<String> {
 }
 
 fn status_line(state: &DevTuiState, width: u16) -> Line<'static> {
+    if state.surface == DevSurface::Agent {
+        return agent_status_line(state, width);
+    }
     let (glyph, color) = status_glyph(state);
     Line::from(vec![
         Span::styled(
@@ -6106,6 +6109,60 @@ fn composer_input_lines(state: &DevTuiState, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+fn agent_status_line(state: &DevTuiState, width: u16) -> Line<'static> {
+    let (presence, approval) = agent_presence(state);
+    let failed = matches!(status_glyph(state).0, "×");
+    let glyph = if failed {
+        "×"
+    } else if presence == "Working" {
+        "◐"
+    } else {
+        "●"
+    };
+    let glyph_color = if failed {
+        ERROR
+    } else if presence == "Working" {
+        ACCENT_BRIGHT
+    } else {
+        SUCCESS
+    };
+    let default_status = matches!(
+        state.status.as_str(),
+        "Glass Agent idle"
+            | "Agent ready for a prompt"
+            | "agent ready for a prompt"
+            | "Glass Agent working"
+            | "Glass Agent waiting"
+    ) || state.status.starts_with("Core available · type to chat")
+        || state
+            .status
+            .starts_with("Core setup required · type / for Core commands");
+    let mut label = match (presence, approval) {
+        ("Working", true) => "Working · approval needed",
+        ("Working", false) => "Working · follow-up ready",
+        ("Idle", true) => "Idle · approval needed",
+        _ => "Idle · Enter sends",
+    }
+    .to_string();
+    if !default_status && !state.status.trim().is_empty() {
+        label.push_str(" · ");
+        label.push_str(&compact_line(&state.status, width.saturating_sub(16)));
+    }
+
+    Line::from(vec![
+        Span::styled(
+            format!(" {glyph} "),
+            Style::default()
+                .fg(glyph_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            label,
+            Style::default().fg(if approval { WARNING } else { MUTED }),
+        ),
+    ])
+}
+
 fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let (glyph, glyph_color) = status_glyph(state);
     let active = overlay::active_overlay(state);
@@ -6117,57 +6174,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                     span.style = span.style.bg(Color::Rgb(34, 40, 50));
                 }
             }
-            let (presence, approval) = agent_presence(state);
-            let failed = matches!(status_glyph(state).0, "×");
-            let glyph = if failed {
-                "×"
-            } else if presence == "Working" {
-                "◐"
-            } else {
-                "●"
-            };
-            let glyph_color = if failed {
-                ERROR
-            } else if presence == "Working" {
-                ACCENT_BRIGHT
-            } else {
-                SUCCESS
-            };
-            let default_status = matches!(
-                state.status.as_str(),
-                "Glass Agent idle"
-                    | "Agent ready for a prompt"
-                    | "agent ready for a prompt"
-                    | "Glass Agent working"
-                    | "Glass Agent waiting"
-            ) || state.status.starts_with("Loading workspace snapshot")
-                || state.status.starts_with("Core available · type to chat")
-                || state
-                    .status
-                    .starts_with("Core setup required · type / for Core commands");
-            let mut label = match (presence, approval) {
-                ("Working", true) => "Working · approval needed",
-                ("Working", false) => "Working · follow-up ready",
-                ("Idle", true) => "Idle · approval needed",
-                _ => "Idle · Enter sends",
-            }
-            .to_string();
-            if !default_status && !state.status.trim().is_empty() {
-                label.push_str(" · ");
-                label.push_str(&compact_line(&state.status, area.width.saturating_sub(18)));
-            }
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {glyph} "),
-                    Style::default()
-                        .fg(glyph_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    label,
-                    Style::default().fg(if approval { WARNING } else { MUTED }),
-                ),
-            ]));
+            lines.push(agent_status_line(state, area.width.saturating_sub(2)));
         } else {
             lines.push(Line::from(vec![
                 Span::styled(
@@ -6252,7 +6259,11 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 ),
                 Style::default().fg(MUTED),
             )),
-            Line::from(line),
+            if state.surface == DevSurface::Agent {
+                agent_status_line(state, area.width.saturating_sub(2))
+            } else {
+                Line::from(line)
+            },
         ]
     };
     frame.render_widget(
@@ -7675,6 +7686,53 @@ mod tests {
     }
 
     #[test]
+    fn agent_header_and_footer_agree_across_layouts_and_composer_modes() {
+        for layout in [TuiLayout::Desktop, TuiLayout::Mobile] {
+            for composer in [false, true] {
+                let mut state = state(layout);
+                state.surface = DevSurface::Agent;
+                state.composer_mode = composer;
+                state.agent_readiness = "✓ Ready".into();
+                for working in [true, false] {
+                    // The last lifecycle message may lag behind the current job.
+                    state.running_tool_job = working.then_some(9);
+                    state.status = if working {
+                        "Glass Agent idle"
+                    } else {
+                        "Glass Agent working"
+                    }
+                    .into();
+                    let (width, height) = if layout == TuiLayout::Mobile {
+                        (48, 24)
+                    } else {
+                        (100, 35)
+                    };
+                    let lines = rendered_lines(&state, width, height);
+                    let header = lines
+                        .iter()
+                        .find(|line| line.contains("CORE  "))
+                        .expect("agent header");
+                    let footer = lines
+                        .iter()
+                        .rev()
+                        .find(|line| {
+                            line.contains("follow-up ready") || line.contains("Enter sends")
+                        })
+                        .expect("agent status footer");
+                    let (expected, stale) = if working {
+                        ("Working", "Idle")
+                    } else {
+                        ("Idle", "working")
+                    };
+                    assert!(header.contains(expected), "{header}");
+                    assert!(footer.contains(expected), "{footer}");
+                    assert!(!footer.contains(stale), "{footer}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn quit_confirmation_renders_a_clear_modal() {
         let mut state = state(TuiLayout::Desktop);
         state.request_quit();
@@ -7932,7 +7990,7 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
         let agent = rendered(&state, 140, 40);
-        assert!(agent.contains("idle"));
+        assert!(agent.contains("Idle"));
         state.surface = DevSurface::App;
         let fallback = rendered(&state, 140, 40);
         assert!(fallback.contains("target"));

@@ -831,6 +831,12 @@ pub fn dispatch(
                 .ok_or("timeout_ms must be 1..86400000 for a background job")
         })
         .transpose()?;
+    if matches!(action, "start" | "watch")
+        && job.get("notify").and_then(Value::as_bool).unwrap_or(true)
+        && !crate::team::process_notifications_available(owner)
+    {
+        return Err("Automatic process resumption is unavailable because this conversation's workflow is stopped or its shared budget is exhausted. No process or watch was started. Use a bounded foreground bash command when appropriate; do not poll or resume the workflow model-side.".into());
+    }
     let mut r = registry().lock().map_err(err)?;
     let jobs = r.entry(owner_key(workspace, owner)).or_default();
     let id = || {

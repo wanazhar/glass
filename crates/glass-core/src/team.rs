@@ -380,6 +380,18 @@ impl Drop for Guard {
         lock_for_cleanup(hubs()).remove(&self.hub.owner);
     }
 }
+/// Refuse a subscription before launching work if its completion cannot wake
+/// this root conversation. Child requests have their own metered worker loop.
+pub fn process_notifications_available(owner: &str) -> bool {
+    get(owner).is_none_or(|hub| {
+        hub.state.lock().is_ok_and(|state| {
+            !state.flow.stopped
+                && state.flow.wakes < flow::MAX_WAKES
+                && flow::used(&state) < state.flow.tokens
+        })
+    })
+}
+
 impl Hub {
     pub fn has_pending_work(&self) -> bool {
         let state = self.state.lock().unwrap();
@@ -3472,6 +3484,22 @@ mod tests {
         g.hub
             .request(&json!({"action":"workflow","from":"human","operation":"stop"}))
             .unwrap();
+        assert!(!process_notifications_available(&g.hub.owner));
+        let call = glass_mod_api::ToolCall {
+            id: "stopped-job".into(),
+            name: "bash".into(),
+            arguments: json!({"command":"touch forbidden-background","job":{"action":"start"}})
+                .to_string(),
+        };
+        let error = crate::jobs::dispatch(
+            &call,
+            &dir,
+            &g.hub.owner,
+            &crate::sandbox::SessionApprovals::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("No process or watch was started"));
+        assert!(!dir.join("forbidden-background").exists());
         assert!(g.hub.completion(None).unwrap().is_none());
         g.hub.dispatch_children();
         assert_eq!(requests.lock().unwrap().len(), count);

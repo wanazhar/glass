@@ -48,6 +48,7 @@ def main() -> None:
             stderr=slave_fd,
             close_fds=True,
             env=environment,
+            cwd=temporary_home.name,
             preexec_fn=lambda: child_session(slave_fd),
         )
     finally:

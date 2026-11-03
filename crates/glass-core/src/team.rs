@@ -3475,7 +3475,15 @@ mod tests {
     }
     #[test]
     fn stopped_workflow_rejects_late_completions_and_model_resume() {
-        let (g, dir, requests) = fixture();
+        let (mut g, dir, requests) = fixture();
+        // This fixture normally bypasses the production registry. Register a
+        // unique owner so job admission follows the real root lookup.
+        let owner = format!(
+            "process-admission-{}",
+            dir.file_name().unwrap().to_string_lossy()
+        );
+        Arc::get_mut(&mut g.hub).unwrap().owner = owner.clone();
+        hubs().lock().unwrap().insert(owner, Arc::downgrade(&g.hub));
         g.hub
             .request(&json!({"action":"create","from":"main","name":"task","text":"inspect"}))
             .unwrap();

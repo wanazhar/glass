@@ -1145,6 +1145,36 @@ impl Hub {
                 );
                 return Ok(());
             }
+            // A finite process is still assigned work. Wait in the host, with
+            // no provider requests, then continue this same teammate context.
+            let mut process_follow_up = false;
+            while crate::jobs::has_watches(&info.workspace, &session.id) {
+                let interrupted = {
+                    let state = self.state.lock().unwrap();
+                    self.stop.load(Ordering::Acquire)
+                        || state.flow.stopped
+                        || state.agents[id].interrupt
+                };
+                if interrupted {
+                    crate::jobs::cancel_notifications(&session.id);
+                    self.finish(
+                        id,
+                        "parked",
+                        "Interrupted while awaiting process; history preserved.",
+                    );
+                    return Ok(());
+                }
+                if crate::jobs::take_completion(&info.workspace, &mut session, &mut notes)?
+                    .is_some()
+                {
+                    process_follow_up = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if process_follow_up {
+                continue;
+            }
             let deliverable = if let Some(schema) = &info.result_schema {
                 let candidate = session
                     .records

@@ -1805,7 +1805,11 @@ impl<'a> Agent<'a> {
             let errors: Vec<_> = out
                 .tool_calls
                 .iter()
-                .map(|call| crate::tool_repair::validate(call, schemas).err())
+                .map(|call| {
+                    crate::tool_repair::validate(call, schemas)
+                        .and_then(|_| crate::jobs::validate_task(call, &self.state.todo))
+                        .err()
+                })
                 .collect();
             if let Some(trace_id) = self.active_trace_id {
                 crate::requests::diagnostic_phase(
@@ -1988,6 +1992,26 @@ impl<'a> Agent<'a> {
                     .append(Record::User(format!("Follow-up: {steer}")));
                 self.emit(Progress::Steered(&steer));
                 return Ok((last, Stop::Steered));
+            }
+
+            // Yield deterministically after a registered finite job. A small
+            // model cannot spend another request deciding to poll or sleep.
+            // All calls in the accepted batch already have recorded results.
+            if executable.iter().any(|call| {
+                call.name == "bash"
+                    && call
+                        .arg_raw("job")
+                        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                        .is_some_and(|job| {
+                            matches!(job["action"].as_str(), Some("start" | "watch"))
+                                && job["notify"] != false
+                        })
+            }) && crate::jobs::has_watches(self.workspace, &self.session.id)
+            {
+                let notice = "Process running · host will resume this conversation on completion. No model polling or waiting request is needed.";
+                self.session.append(Record::Meta(notice.into()));
+                self.emit(Progress::ProviderNotice(notice));
+                return Ok((last, Stop::Finished));
             }
 
             if round + 1 == self.max_tool_rounds {
@@ -3656,6 +3680,7 @@ impl<'a> Agent<'a> {
             );
         }
         let mut p = self.base_prompt.clone();
+        p.push_str("\nSlow builds/installs/tests: use bash {command:...,job:{action:\"start\"}} once. The host registers a completion notification automatically. Finish your turn after starting; never sleep, wait or repeatedly poll. On notification continue only the assigned task, inspect the bounded result, and stop if complete. Use job watch with notify:false to disable a notification. Do not restart successful commands. For unfamiliar capabilities, use offered discovery tools before claiming a tool is missing.\n");
         let model = self.provider.model().to_string();
         let ctx = TurnContext {
             messages: &[],

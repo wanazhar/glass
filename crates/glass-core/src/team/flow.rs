@@ -202,9 +202,10 @@ impl Hub {
 pub fn take_completion(
     session: &mut Session,
     notes: &mut tools::State,
+    workspace: &std::path::Path,
 ) -> Result<Option<String>, String> {
     let Some(hub) = get(&session.id) else {
-        return Ok(None);
+        return crate::jobs::take_completion(workspace, session, notes);
     };
     notes.load_todo_once(session)?;
     if !notes.todo.tasks.is_empty()
@@ -217,6 +218,7 @@ pub fn take_completion(
     {
         let mut state = hub.state.lock().unwrap();
         state.flow.stopped = true;
+        crate::jobs::cancel_notifications(&session.id);
         for worker in state.agents.values_mut() {
             worker.interrupt = true;
         }
@@ -225,7 +227,16 @@ pub fn take_completion(
     }
     hub.dispatch_children();
     let Some(prompt) = hub.completion(None)? else {
-        return Ok(None);
+        let allowed = {
+            let state = hub.state.lock().map_err(|_| "Agent state unavailable")?;
+            !state.flow.stopped && state.flow.wakes < MAX_WAKES && used(&state) < state.flow.tokens
+        };
+        return if allowed {
+            crate::jobs::take_completion(workspace, session, notes)
+        } else {
+            crate::jobs::cancel_notifications(&session.id);
+            Ok(None)
+        };
     };
     session
         .append_checked(&[Record::User(prompt.clone())])
@@ -407,10 +418,12 @@ impl Drop for ContinuationStream<'_> {
 }
 
 pub fn cancel_root(owner: &str) {
+    crate::jobs::cancel_notifications(owner);
     if let Some(hub) = get(owner) {
         let mut state = lock_for_cleanup(&hub.state);
         state.flow.stopped = true;
         for w in state.agents.values_mut() {
+            crate::jobs::cancel_notifications(&w.info.session);
             w.interrupt = true;
             w.queue.clear();
             w.info.pending_activation = false;

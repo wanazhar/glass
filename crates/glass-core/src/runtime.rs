@@ -1408,7 +1408,13 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     for c in conversations.values_mut() {
-                        if crate::team::take_completion(&mut c.session, &mut c.state)?.is_some() {
+                        if crate::team::take_completion(
+                            &mut c.session,
+                            &mut c.state,
+                            &c.cfg.workspace,
+                        )?
+                        .is_some()
+                        {
                             let turn = json!(format!("team-{}", c.session.log_len()));
                             if let Err(e) = run(c, &wire, &turn, Vec::new()) {
                                 event(&c.session.id, &turn, "error", json!({"message":e}));
@@ -1507,7 +1513,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     "maskedSecretInput":wire.borrow().human_secret_input_supported,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
                     "hostInteractions":"host tools provide workspace capabilities and structured questions; Glass does not re-decide Core tool permissions","concurrentTurns":false,
-                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true,"subagentsReadOnly":true},
+                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"processCompletionNotifications":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true,"subagentsReadOnly":true},
                 "limits":{"frameBytes":MAX_FRAME,"toolResultBytes":512*1024,"queuedFollowUps":MAX_PENDING},
                 "storageDir":root}),
             );

@@ -315,3 +315,19 @@ Run the targeted tests from the repository when validating a change. Do not trea
 - [Customization governance](customization-governance.md)
 - [CLI reference](cli.md)
 - [Security](../SECURITY.md)
+
+## Process completion and capability discovery
+
+For finite builds, installations, and test commands, the resident model uses native
+Core `bash` with `job: {"action":"start"}`. The engine yields after the tool batch;
+the host resumes the same conversation on process completion without model status
+polling. Notification, cancellation, task binding, output bounds, and host lifetime
+are documented in [Core tools and jobs](../products/glass-core/docs/tools.md#native-files-and-owned-background-jobs).
+Use `glass.process.start` for persistent servers and watchers.
+
+`glass.tools.search` ranks partial task descriptions and common developer terms,
+with exact tool names first. Results include full integration schemas, pagination,
+and explicit native Core alternatives. Its scope is Glass host integrations; an
+empty result is not proof of a missing native tool or configured extension. Models
+are instructed to search the catalog and native `state.capabilities` before
+claiming a capability is unavailable.

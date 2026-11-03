@@ -11,7 +11,7 @@ through `gc help` and `gc COMMAND --help`.
 | [Getting started](getting-started.md) | Install, connect a provider, resume work |
 | [Terminal interface](terminal.md) | Keys, palette, scrolling, output, appearance |
 | [Conversations and context](sessions.md) | Sessions, attachments, recovery, compaction |
-| [Native tools and jobs](tools.md) | File revisions, previews, validation, repair, processes |
+| [Native tools and jobs](tools.md) | File revisions, previews, validation, repair, process completion without polling |
 | [Coding workflows](workflows.md) | Plans, changes, checkpoints, tasks, artifacts |
 | [Agents](agents.md) | Delegation, persistent teammates, model-assisted review |
 | [Project knowledge](knowledge.md) | Neuralnets, reviewed facts, migration, guidance |

@@ -431,10 +431,12 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
         (
             "bash".to_string(),
             "Search, pipelines, builds, tests, processes; prefer read/edit/write. \
-             timeout_ms defaults to 120000. Output: 16 KiB/stream inline; 4 MiB/stream overflow; \
+             Foreground timeout_ms defaults to 120000; background timeout_ms is optional. Output: 16 KiB/stream inline; 4 MiB/stream overflow; \
              report discarded bytes and tail. Redirect to capture full logs. \
-             Jobs: start(command), poll(id,offset), input(id,text,eof), stop(id), list. \
-             Poll jobs with next_offset.".to_string(),
+             For builds, installs and other finite slow work, call once with command and job:{action:start}. \
+             Completion notification is automatic: finish your turn; the host resumes this same conversation on exit/failure/timeout. \
+             DO NOT wait, sleep, loop or poll for completion. watch(id,notify) registers/disables an existing job once. \
+             poll(id,offset) is only for an actionable diagnostic; input(id,text,eof), stop(id), list are also available.".to_string(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -443,7 +445,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
                     "command": { "type": "string", "description": "Shell command to run" },
                     "cwd": { "type": "string", "description": "Working directory, relative to the workspace root" },
                     "timeout_ms": { "type": "integer", "description": "Kill the command after this many milliseconds" },
-                    "job": {"type":"object","properties":{"action":{"type":"string","enum":["start","poll","input","stop","list"]},"id":{"type":"integer"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":24576},"text":{"type":"string"},"eof":{"type":"boolean"}},"required":["action"]}
+                    "job": {"type":"object","properties":{"action":{"type":"string","enum":["start","watch","poll","input","stop","list"]},"id":{"type":"integer"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":24576},"text":{"type":"string"},"eof":{"type":"boolean"},"notify":{"type":"boolean","description":"Default true on start. Host resumes once on terminal status; false disables notification."},"task_id":{"type":"string","maxLength":128,"description":"Optional existing checklist task ID; only resumes while this task remains pending/in_progress."}},"required":["action"]}
                 },
                 "anyOf": [{"required":["command"]},{"required":["job"]}]
             })

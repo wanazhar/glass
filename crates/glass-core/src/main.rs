@@ -1602,7 +1602,7 @@ fn headless(
     }
     let continuation_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while matches!(&result, Ok((_, agent::Stop::Finished))) && !signals::interrupted() {
-        if let Some(_prompt) = team::take_completion(&mut session, &mut state)? {
+        if let Some(_prompt) = team::take_completion(&mut session, &mut state, &cfg.workspace)? {
             let continuation_instructions = polish::prompt_context(&session, &instructions);
             let auto_factory = team::continuation_factory(&session.id, Arc::clone(&factory));
             let auto_provider = auto_factory()?;
@@ -1633,8 +1633,9 @@ fn headless(
                     *slot = Some(String::new());
                 }
             });
-        } else if team::get(&session.id).is_some_and(|h| h.has_pending_work())
-            && std::time::Instant::now() < continuation_deadline
+        } else if crate::jobs::has_watches(&cfg.workspace, &session.id)
+            || (team::get(&session.id).is_some_and(|h| h.has_pending_work())
+                && std::time::Instant::now() < continuation_deadline)
         {
             std::thread::sleep(std::time::Duration::from_millis(40));
         } else {
@@ -2280,7 +2281,7 @@ fn repl(
                             }
                             if editor.text().is_empty()
                                 && let Some(prompt) =
-                                    team::take_completion(&mut session, &mut state)?
+                                    team::take_completion(&mut session, &mut state, &cfg.workspace)?
                             {
                                 background_recorded = true;
                                 accepted_background = Some((session.id.clone(), prompt.clone()));
@@ -4102,7 +4103,8 @@ fn repl(
         // The typed prompt is still on the prompt row. Clear those
         // rows and print the prompt once, whole: a prompt must be
         // recorded once, and a multi-line one must land intact.
-        let automatic_team_turn = text.starts_with(team::FOLLOW_UP);
+        let automatic_team_turn =
+            text.starts_with(team::FOLLOW_UP) || text.starts_with(jobs::FOLLOW_UP);
         echo_prompt(&mut std::io::stdout(), &text, prompt_row, prompt_rows);
         // Reports can arrive while the idle input loop is waiting. Paint them
         // before the engine consumes its notice queue at the first tool round.

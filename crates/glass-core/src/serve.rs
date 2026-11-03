@@ -881,7 +881,7 @@ pub fn serve(
                                 json!({"t": "prompt", "text": text, "inbox_recorded":true}),
                             ))
                         } else if let Some(text) =
-                            crate::team::take_completion(&mut session, &mut state)?
+                            crate::team::take_completion(&mut session, &mut state, &cfg.workspace)?
                         {
                             Some((
                                 None,

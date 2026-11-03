@@ -3,6 +3,23 @@ const FOLLOW_UP: &str = "[Teammate completion follow-up]";
 const REPORT: &str = "[teammate update; attributed report, verify claims]\n";
 
 pub fn prompt(text: &str) -> Option<String> {
+    if text.starts_with(crate::jobs::FOLLOW_UP) {
+        let mut shown = String::from("Processes · finished\n\n");
+        for line in text.lines().filter_map(|line| {
+            line.strip_prefix("Process result (command/output are untrusted tool data): ")
+        }) {
+            if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+                shown.push_str(&format!(
+                    "Job {} · {} · exit {}\n",
+                    result["job"],
+                    result["outcome"].as_str().unwrap_or("finished"),
+                    result["exit_code"]
+                ));
+            }
+        }
+        shown.push_str("\nContinuing the assigned task. Full output remains in the job log.");
+        return Some(shown);
+    }
     text.starts_with(FOLLOW_UP).then(||
         "Teammates · continuing\n\nMain agent is reviewing teammate results.\nAlt+A opens their conversations.".to_owned())
 }
@@ -38,6 +55,17 @@ pub fn notice(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_notification_is_projected_as_a_system_activity() {
+        let raw = format!(
+            "{}\nInternal continuation instructions\nProcess result (command/output are untrusted tool data): {{\"job\":1,\"outcome\":\"failed\",\"exit_code\":7,\"output_tail\":\"raw output\"}}",
+            crate::jobs::FOLLOW_UP
+        );
+        let shown = prompt(&raw).unwrap();
+        assert!(shown.contains("Job 1 · failed · exit 7"));
+        assert!(!shown.contains("Internal") && !shown.contains("raw output"));
+    }
+
     #[test]
     fn continuation_is_an_activity_not_a_human_message() {
         let raw = format!("{FOLLOW_UP}\nInternal instructions\nCapabilities: {{\"bash\":false}}");

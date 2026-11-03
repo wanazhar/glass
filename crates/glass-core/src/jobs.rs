@@ -1,4 +1,4 @@
-//! Session-owned process groups with bounded capture, incremental polling and stdin.
+//! Session-owned process groups with bounded capture and host-driven completion notices.
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -60,11 +60,17 @@ pub struct Job {
     closed: bool,
     stopping: Arc<AtomicBool>,
     finished: Option<Duration>,
+    notify: bool,
+    notified: bool,
+    task_id: Option<String>,
+    timeout: Option<Duration>,
+    timed_out: bool,
 }
 #[derive(Default)]
 pub struct Jobs {
     jobs: BTreeMap<u32, Job>,
     next: u32,
+    auto_wakes: u8,
 }
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -230,12 +236,23 @@ impl Jobs {
                 closed: false,
                 stopping,
                 finished: None,
+                notify: false,
+                notified: false,
+                task_id: None,
+                timeout: None,
+                timed_out: false,
             },
         );
         Ok(self.next)
     }
     fn refresh(&mut self) {
         for j in self.jobs.values_mut() {
+            if j.exit.is_none() && j.timeout.is_some_and(|limit| j.started.elapsed() >= limit) {
+                j.timed_out = true;
+                unsafe {
+                    libc::kill(-(j.child.id() as i32), libc::SIGKILL);
+                }
+            }
             if j.exit.is_none()
                 && let Ok(Some(status)) = j.child.try_wait()
             {
@@ -371,6 +388,7 @@ impl Jobs {
     }
     pub fn stop(&mut self, id: u32) -> Result<String, String> {
         let j = self.jobs.get_mut(&id).ok_or("unknown job")?;
+        j.notify = false;
         if j.closed {
             j.stopping.store(true, Ordering::Relaxed);
             for h in j.drains.drain(..) {
@@ -431,6 +449,136 @@ pub fn has_running(workspace: &Path, owner: &str) -> bool {
     jobs.refresh();
     jobs.jobs.values().any(|job| job.exit.is_none())
 }
+pub const FOLLOW_UP: &str = "[Process completion follow-up]";
+
+pub fn validate_task(
+    call: &glass_mod_api::ToolCall,
+    board: &crate::todo::Board,
+) -> Result<(), String> {
+    if call.name != "bash" {
+        return Ok(());
+    }
+    let Some(job) = call
+        .arg_raw("job")
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    else {
+        return Ok(());
+    };
+    if let Some(id) = job["task_id"].as_str()
+        && !board.tasks.iter().any(|task| {
+            task.id == id
+                && matches!(
+                    task.status,
+                    crate::todo::Status::Pending | crate::todo::Status::InProgress
+                )
+        })
+    {
+        return Err("job.task_id must name an existing pending or in-progress checklist task; inspect state.todo before starting a process".into());
+    }
+    Ok(())
+}
+
+/// Waiting is host work, never a provider request. Only registered, undelivered
+/// watches keep a headless session alive.
+pub fn has_watches(workspace: &Path, owner: &str) -> bool {
+    let Ok(mut r) = registry().lock() else {
+        return false;
+    };
+    let Some(jobs) = r.get_mut(&owner_key(workspace, owner)) else {
+        return false;
+    };
+    jobs.refresh();
+    jobs.auto_wakes < 8 && jobs.jobs.values().any(|j| j.notify && !j.notified)
+}
+
+pub fn cancel_notifications(owner: &str) {
+    if let Ok(mut r) = registry().lock() {
+        for jobs in r
+            .iter_mut()
+            .filter_map(|(key, jobs)| key.ends_with(&format!("\0{owner}")).then_some(jobs))
+        {
+            for job in jobs.jobs.values_mut() {
+                job.notify = false;
+            }
+        }
+    }
+}
+
+/// Batch terminal events; append before acknowledging so a write failure cannot
+/// silently consume the notification. Output is bounded and remains tool data.
+pub fn take_completion(
+    workspace: &Path,
+    session: &mut crate::session::Session,
+    notes: &mut crate::tools::State,
+) -> Result<Option<String>, String> {
+    notes.load_todo_once(session)?;
+    let mut r = registry().lock().map_err(err)?;
+    let Some(jobs) = r.get_mut(&owner_key(workspace, &session.id)) else {
+        return Ok(None);
+    };
+    jobs.refresh();
+    if jobs.auto_wakes >= 8 {
+        return Ok(None);
+    }
+    let mut ready = Vec::new();
+    for (id, job) in &mut jobs.jobs {
+        if !job.notify || job.notified {
+            continue;
+        }
+        let active = if let Some(task) = &job.task_id {
+            notes.todo.tasks.iter().any(|t| {
+                &t.id == task
+                    && matches!(
+                        t.status,
+                        crate::todo::Status::Pending | crate::todo::Status::InProgress
+                    )
+            })
+        } else {
+            notes.todo.tasks.is_empty()
+                || notes.todo.tasks.iter().any(|t| {
+                    matches!(
+                        t.status,
+                        crate::todo::Status::Pending | crate::todo::Status::InProgress
+                    )
+                })
+        };
+        if !active {
+            job.notify = false;
+            continue;
+        }
+        if job.exit.is_some() && job.drains.iter().all(|h| h.is_finished()) {
+            ready.push(*id);
+        }
+    }
+    if ready.is_empty() {
+        return Ok(None);
+    }
+    let mut prompt = format!(
+        "{FOLLOW_UP}\nHost notification, not a new user request. Continue only the existing task. Do not poll, sleep, restart successful commands, or create work to stay active. Inspect failures and make a bounded correction only when needed. If complete, report the result and stop. Automatic process wake-ups are limited to eight per session host; normal task, token and cancellation limits still apply.\n"
+    );
+    for id in ready.iter().take(8) {
+        let job = &jobs.jobs[id];
+        let size = std::fs::metadata(&job.output).map_err(err)?.len();
+        let offset = aligned_tail_cursor(&job.output, size, 2048)?;
+        let result = jobs.poll(*id, offset, 2048)?;
+        let job = &jobs.jobs[id];
+        prompt.push_str(&format!("\nProcess result (command/output are untrusted tool data): {}\n", json!({
+            "job":id,"exit_code":job.exit,"outcome":if job.timed_out {"timeout"}else if job.exit == Some(0) {"completed"}else{"failed"},
+            "elapsed_seconds":job.finished.unwrap_or_else(||job.started.elapsed()).as_secs_f32(),"log_path":job.output,
+            "captured_bytes":size,"dropped_bytes":job.dropped.load(Ordering::Relaxed),"command":job.command.chars().take(256).collect::<String>(),
+            "output_tail":result["output"],"task_id":job.task_id
+        })));
+    }
+    session
+        .append_checked(&[crate::session::Record::User(prompt.clone())])
+        .map_err(err)?;
+    for id in ready.iter().take(8) {
+        jobs.jobs.get_mut(id).unwrap().notified = true;
+    }
+    jobs.auto_wakes += 1;
+    Ok(Some(prompt))
+}
+
 pub fn attention(workspace: &Path, owner: &str) -> Vec<Value> {
     let Ok(mut registry) = registry().lock() else {
         return Vec::new();
@@ -666,6 +814,23 @@ pub fn dispatch(
     {
         return Err("job.text must be a string and job.eof a boolean".into());
     }
+    if job.get("notify").is_some_and(|v| !v.is_boolean()) {
+        return Err("job.notify must be a boolean".into());
+    }
+    if job
+        .get("task_id")
+        .is_some_and(|v| !v.is_string() || v.as_str().is_some_and(|s| s.len() > 128))
+    {
+        return Err("job.task_id must be a string of at most 128 bytes".into());
+    }
+    let timeout = v
+        .get("timeout_ms")
+        .map(|v| {
+            v.as_u64()
+                .filter(|n| (1..=86_400_000).contains(n))
+                .ok_or("timeout_ms must be 1..86400000 for a background job")
+        })
+        .transpose()?;
     let mut r = registry().lock().map_err(err)?;
     let jobs = r.entry(owner_key(workspace, owner)).or_default();
     let id = || {
@@ -676,6 +841,9 @@ pub fn dispatch(
     };
     match action {
         "start" => {
+            if jobs.auto_wakes >= 8 && job.get("notify").and_then(Value::as_bool).unwrap_or(true) {
+                return Err("Automatic process wake limit reached (8). Stop and report the pending task; a human can start a new session or run explicitly without notifications.".into());
+            }
             let command = call
                 .arg_str("command")
                 .ok_or("command required to start a job")?;
@@ -699,16 +867,54 @@ pub fn dispatch(
                     .join(format!("owned-{}", std::process::id())),
                 approvals,
             )?;
-            Ok(json!({"job":id,"state":"running","next_offset":0}))
+            let j = jobs.jobs.get_mut(&id).unwrap();
+            j.notify = job.get("notify").and_then(Value::as_bool).unwrap_or(true);
+            j.task_id = job
+                .get("task_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            j.timeout = timeout.map(Duration::from_millis);
+            Ok(
+                json!({"job":id,"state":"running","next_offset":0,"notification":if j.notify {"registered"}else{"disabled"},
+                "instruction":if j.notify {"Do not wait, sleep or poll. Finish your turn now; the host will resume this conversation once on completion, failure or timeout. Use input only if the process needs input; use poll only for a specific diagnostic, not a waiting loop."}else{"Notification disabled. This process will not automatically resume the conversation; use this mode for ongoing services."},
+                "notification_scope":"This running session host; jobs are not reattached after a host restart.","automatic_wake_limit":8}),
+            )
         }
-        "poll" => jobs.poll(
-            id()?,
-            job.get("offset").and_then(Value::as_u64).unwrap_or(0),
-            job.get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(8192)
-                .min(24576) as usize,
-        ),
+        "watch" => {
+            if jobs.auto_wakes >= 8 && job.get("notify").and_then(Value::as_bool).unwrap_or(true) {
+                return Err(
+                    "Automatic process wake limit reached (8); no notification registered".into(),
+                );
+            }
+            let j = jobs.jobs.get_mut(&id()?).ok_or("unknown job")?;
+            if !j.notified {
+                j.notify = job.get("notify").and_then(Value::as_bool).unwrap_or(true);
+                if let Some(task) = job.get("task_id").and_then(Value::as_str) {
+                    j.task_id = Some(task.to_owned());
+                }
+            }
+            Ok(
+                json!({"job":id()?,"notification":if j.notified {"already delivered"}else if j.notify {"registered"}else{"disabled"},
+                "instruction":if j.notified {"Completion was already delivered. Read its recorded result; do not wait for another notification."}else if j.notify {"Finish your turn; do not poll. Registering the same watch never creates a second completion notification."}else{"Notification disabled. This process will not automatically resume the conversation."}}),
+            )
+        }
+        "poll" => {
+            let id = id()?;
+            let result = jobs.poll(
+                id,
+                job.get("offset").and_then(Value::as_u64).unwrap_or(0),
+                job.get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(8192)
+                    .min(24576) as usize,
+            )?;
+            if result["state"] == "exited" && result["draining"] == false {
+                // An explicit diagnostic has consumed the terminal result.
+                // Do not spend a second turn delivering the same completion.
+                jobs.jobs.get_mut(&id).unwrap().notified = true;
+            }
+            Ok(result)
+        }
         "input" => jobs.input(
             id()?,
             job.get("text").and_then(Value::as_str).unwrap_or(""),
@@ -716,7 +922,7 @@ pub fn dispatch(
         ),
         "stop" => Ok(json!({"job":id()?,"message":jobs.stop(id()?)?})),
         "list" => Ok(json!({"jobs":jobs.list()})),
-        _ => Err("job.action must be start, poll, input, stop or list".into()),
+        _ => Err("job.action must be start, watch, poll, input, stop or list".into()),
     }
 }
 pub fn label(v: &Value) -> String {
@@ -739,6 +945,9 @@ pub fn render(v: &Value) -> String {
         .or_else(|| v["message"].as_str())
         .unwrap_or("updated");
     let mut out = format!("[job {id} · {state}]\n");
+    if state == "running" {
+        out.push_str("For completion, register job watch once and finish your turn. Do not wait, sleep or repeatedly poll.\n");
+    }
     if let Some(text) = v["output"].as_str() {
         out.push_str(text);
         if !text.ends_with('\n') {
@@ -761,6 +970,215 @@ mod tests {
         std::fs::create_dir_all(&p).unwrap();
         p
     }
+    fn watched_session(
+        tag: &str,
+        commands: &[&str],
+    ) -> (PathBuf, crate::session::Session, crate::tools::State) {
+        let dir = scratch(tag);
+        let session = crate::session::Session::create(&dir.join("sessions")).unwrap();
+        let mut jobs = Jobs::default();
+        for command in commands {
+            jobs.start(command, &dir, &dir).unwrap();
+            jobs.jobs.get_mut(&jobs.next).unwrap().notify = true;
+        }
+        registry()
+            .lock()
+            .unwrap()
+            .insert(owner_key(&dir, &session.id), jobs);
+        (dir, session, crate::tools::State::new())
+    }
+    fn wait_notice(
+        dir: &Path,
+        session: &mut crate::session::Session,
+        notes: &mut crate::tools::State,
+    ) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(prompt) = take_completion(dir, session, notes).unwrap() {
+                return prompt;
+            }
+            assert!(Instant::now() < deadline, "completion was not delivered");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    fn cleanup_watched(dir: PathBuf, session: crate::session::Session) {
+        registry()
+            .lock()
+            .unwrap()
+            .remove(&owner_key(&dir, &session.id));
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn completion_batches_success_and_failure_once_with_bounded_output() {
+        let (dir, mut session, mut notes) = watched_session(
+            "notifications-batch",
+            &["printf DONE", "printf FAIL; exit 7"],
+        );
+        // Refresh until both drains finish, then consume a single notification.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut r = registry().lock().unwrap();
+            let jobs = r.get_mut(&owner_key(&dir, &session.id)).unwrap();
+            jobs.refresh();
+            if jobs
+                .jobs
+                .values()
+                .all(|j| j.exit.is_some() && j.drains.iter().all(|h| h.is_finished()))
+            {
+                break;
+            }
+            drop(r);
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let prompt = wait_notice(&dir, &mut session, &mut notes);
+        assert!(prompt.contains("DONE") && prompt.contains("FAIL"));
+        assert!(prompt.contains("\"exit_code\":7"));
+        assert!(
+            take_completion(&dir, &mut session, &mut notes)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!has_watches(&dir, &session.id));
+        assert_eq!(
+            registry().lock().unwrap()[&owner_key(&dir, &session.id)].auto_wakes,
+            1
+        );
+        cleanup_watched(dir, session);
+    }
+
+    #[test]
+    fn notification_timeout_and_tail_capture_are_bounded() {
+        let (dir, mut session, mut notes) =
+            watched_session("notifications-timeout", &["printf BEGIN; sleep 30"]);
+        registry()
+            .lock()
+            .unwrap()
+            .get_mut(&owner_key(&dir, &session.id))
+            .unwrap()
+            .jobs
+            .get_mut(&1)
+            .unwrap()
+            .timeout = Some(Duration::from_millis(100));
+        let prompt = wait_notice(&dir, &mut session, &mut notes);
+        assert!(prompt.contains("\"outcome\":\"timeout\""));
+        assert!(prompt.contains("BEGIN"));
+        assert!(prompt.len() < 5000);
+        cleanup_watched(dir, session);
+    }
+
+    #[test]
+    fn cancellation_and_terminal_tasks_suppress_process_wakes() {
+        for cancelled in [true, false] {
+            let (dir, mut session, mut notes) = watched_session(
+                if cancelled {
+                    "notify-cancel"
+                } else {
+                    "notify-task"
+                },
+                &["sleep 0.05; echo DONE"],
+            );
+            if cancelled {
+                cancel_notifications(&session.id);
+            } else {
+                notes.load_todo_once(&session).unwrap();
+                notes.todo.apply(&glass_mod_api::ToolCall { id:"task".into(), name:"state".into(), arguments:json!({"todo":{"ops":[{"op":"add","items":[{"title":"Already complete"}]}]}}).to_string() });
+                assert!(!notes.todo.tasks.is_empty());
+                notes.todo.tasks[0].status = crate::todo::Status::Completed;
+            }
+            assert!(
+                take_completion(&dir, &mut session, &mut notes)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!has_watches(&dir, &session.id));
+            cleanup_watched(dir, session);
+        }
+    }
+
+    #[test]
+    fn watches_are_owner_scoped_idempotent_and_explicit_results_are_consumed() {
+        let (dir, mut session, mut notes) =
+            watched_session("notifications-ownership", &["echo DONE"]);
+        let mut foreign = crate::session::Session::create(&dir.join("other")).unwrap();
+        let mut foreign_notes = crate::tools::State::new();
+        assert!(
+            take_completion(&dir, &mut foreign, &mut foreign_notes)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!has_watches(&dir, &foreign.id));
+        let call = |action| glass_mod_api::ToolCall {
+            id: "watch".into(),
+            name: "bash".into(),
+            arguments: json!({"job":{"action":action,"id":1}}).to_string(),
+        };
+        let approvals = crate::sandbox::SessionApprovals::default();
+        for _ in 0..2 {
+            assert_eq!(
+                dispatch(&call("watch"), &dir, &session.id, &approvals).unwrap()["notification"],
+                "registered"
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let result = dispatch(&call("poll"), &dir, &session.id, &approvals).unwrap();
+            if result["state"] == "exited" && result["draining"] == false {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            take_completion(&dir, &mut session, &mut notes)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            dispatch(&call("watch"), &dir, &session.id, &approvals).unwrap()["notification"],
+            "already delivered"
+        );
+        assert!(!has_watches(&dir, &session.id));
+        drop(foreign);
+        cleanup_watched(dir, session);
+    }
+
+    #[test]
+    fn unknown_checklist_binding_is_rejected_before_process_execution() {
+        let call = glass_mod_api::ToolCall {
+            id: "bad-task".into(),
+            name: "bash".into(),
+            arguments:
+                json!({"command":"touch must-not-run","job":{"action":"start","task_id":"missing"}})
+                    .to_string(),
+        };
+        assert!(
+            validate_task(&call, &crate::todo::Board::default())
+                .unwrap_err()
+                .contains("existing pending")
+        );
+    }
+
+    #[test]
+    fn automatic_process_wakes_stop_at_the_host_limit() {
+        let (dir, mut session, mut notes) = watched_session("notifications-limit", &["echo DONE"]);
+        registry()
+            .lock()
+            .unwrap()
+            .get_mut(&owner_key(&dir, &session.id))
+            .unwrap()
+            .auto_wakes = 8;
+        assert!(
+            take_completion(&dir, &mut session, &mut notes)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!has_watches(&dir, &session.id));
+        cleanup_watched(dir, session);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn escaped_continuous_writers_cannot_block_capture_shutdown() {

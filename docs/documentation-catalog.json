@@ -1755,6 +1755,11 @@
         },
         {
           "level": "2",
+          "title": "Slow work and tool discovery",
+          "anchor": "slow-work-and-tool-discovery"
+        },
+        {
+          "level": "2",
           "title": "Browser work",
           "anchor": "browser-work"
         },
@@ -4480,7 +4485,8 @@
         "docs/installation.md",
         "docs/mcp.md",
         "docs/plan/analysis/issue63-core-session-resume.md",
-        "docs/task-dag.md"
+        "docs/task-dag.md",
+        "products/glass-core/docs/tools.md"
       ],
       "topicRoute": "docs/INDEX.md#interface-references",
       "route": "docs/development-runtime.md#development-runtime",
@@ -4554,6 +4560,11 @@
           "level": "2",
           "title": "Related guides",
           "anchor": "related-guides"
+        },
+        {
+          "level": "2",
+          "title": "Process completion and capability discovery",
+          "anchor": "process-completion-and-capability-discovery"
         }
       ]
     },
@@ -92109,6 +92120,7 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
+        "docs/development-runtime.md",
         "products/glass-core/README.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/integrations.md",

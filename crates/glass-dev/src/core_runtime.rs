@@ -2102,7 +2102,7 @@ fn runtime_tool_catalog() -> Vec<Value> {
         .collect::<Vec<_>>();
     tools.push(json!({
         "name":"glass.tools.search",
-        "description":"Find additional Glass integration tools by task or exact tool name. Returns their full input schemas. Search is local and paginated; use glass.tools.call to execute a discovered tool.",
+        "description":"Discover capabilities before claiming tools are missing. Search a short task description or exact name; partial words and common task synonyms are ranked. Returns integration schemas, native Core alternatives and next-page cursors. Use glass.tools.call only for returned glass.* integrations.",
         "inputSchema":{"type":"object","properties":{"query":{"type":"string","maxLength":256},"cursor":{"type":"integer","minimum":0}},"required":["query"],"additionalProperties":false}
     }));
     tools.push(json!({
@@ -2131,17 +2131,97 @@ fn search_integration_tools(arguments: &Value) -> DevelopmentResult<Value> {
                 DevelopmentError::Serialization("cursor must be a nonnegative integer".into())
             })?,
     };
-    let tools = crate::tools::integration_tool_catalog()
-        .into_iter()
-        .filter(|tool| {
-            let text = format!("{} {}", tool.name, tool.description).to_lowercase();
-            query.split_whitespace().all(|word| text.contains(word))
+    // Task queries are not Boolean AND expressions. Rank partial matches and
+    // common developer vocabulary, while exact names always win.
+    let words = query
+        .split(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
+        .filter(|word| {
+            !word.is_empty()
+                && !matches!(
+                    *word,
+                    "a" | "an"
+                        | "the"
+                        | "to"
+                        | "for"
+                        | "and"
+                        | "or"
+                        | "i"
+                        | "my"
+                        | "how"
+                        | "can"
+                        | "do"
+                        | "please"
+                        | "tool"
+                        | "tools"
+                        | "with"
+                        | "in"
+                        | "of"
+                )
         })
         .collect::<Vec<_>>();
-    let page = tools.iter().skip(cursor).take(8).collect::<Vec<_>>();
+    let aliases = |word: &str| -> &'static [&'static str] {
+        match word {
+            "build" | "test" | "tests" | "install" | "installation" | "npm" | "pip" | "notify"
+            | "notification" | "poll" | "status" | "logs" => &["process"],
+            "web" | "website" | "navigate" | "tabs" | "screenshot" => &["browser"],
+            "rename" | "refactor" | "symbol" | "symbols" | "references" | "diagnostics" => &["lsp"],
+            "files" | "file" | "folders" | "directory" | "grep" | "codebase" => {
+                &["workspace", "editor"]
+            }
+            "commit" | "branch" | "branches" | "diff" | "changes" => &["git"],
+            "breakpoint" | "stack" | "debugger" => &["debug"],
+            _ => &[],
+        }
+    };
+    let mut tools = crate::tools::integration_tool_catalog()
+        .into_iter()
+        .filter_map(|tool| {
+            let name = tool.name.to_lowercase();
+            let description = tool.description.to_lowercase();
+            let score = if words.is_empty() {
+                1
+            } else if name == query.trim() {
+                10_000
+            } else {
+                words
+                    .iter()
+                    .map(|word| {
+                        let literal = if name.contains(word) {
+                            10
+                        } else if description.contains(word) {
+                            2
+                        } else {
+                            0
+                        };
+                        literal
+                            + if aliases(word).iter().any(|alias| name.contains(alias)) {
+                                3
+                            } else {
+                                0
+                            }
+                    })
+                    .sum::<usize>()
+            };
+            (score > 0).then_some((score, tool))
+        })
+        .collect::<Vec<_>>();
+    tools.sort_by(|a, b| b.0.cmp(&a.0));
+    let page = tools
+        .iter()
+        .skip(cursor)
+        .take(8)
+        .map(|(_, tool)| tool)
+        .collect::<Vec<_>>();
     let next = cursor.saturating_add(page.len());
+    let native_routes = json!([
+        {"task":"Build, install, run tests, or wait for a finite command", "tool":"bash", "arguments":{"command":"YOUR_COMMAND","job":{"action":"start"}},"instruction":"Call once, then finish your turn. Completion/failure resumes automatically. Never sleep or repeatedly poll. Use foreground bash only for quick commands."},
+        {"task":"Find files or search contents", "tool":"bash", "instruction":"Use rg --files for filenames and rg -n for content, with bounded output. read opens known paths."},
+        {"task":"Discover native or configured integration capabilities", "tool":"state", "arguments":{"capabilities":{"search":"YOUR_TASK"}},"instruction":"Search advertised catalogs before saying a capability is missing. An unlisted Glass integration may still be a native Core tool or an installed extension."}
+    ]);
     Ok(
-        json!({"tools":page,"hasMore":next < tools.len(),"nextCursor":if next < tools.len() {Some(next)} else {None}}),
+        json!({"tools":page,"hasMore":next < tools.len(),"nextCursor":if next < tools.len() {Some(next)} else {None},
+        "matchedCount":tools.len(),"scope":"Glass host integrations only; native Core tools and configured extensions have separate catalogs", "nativeRoutes":native_routes,
+        "instruction":if tools.is_empty() {"No Glass integration matched. This is not proof that the capability is unavailable. Check the native routes and state capabilities; try a shorter task term or an exact tool name. Do not invent a tool."} else {"Invoke a returned integration using glass.tools.call with its exact name and schema. Native routes use the named native tool directly, never glass.tools.call."}}),
     )
 }
 
@@ -2174,7 +2254,7 @@ fn resolve_integration_call(call: &ToolCall) -> DevelopmentResult<ToolCall> {
 
 fn instructions(options: &CoreRuntimeOptions) -> String {
     let mut text = SYSTEM_INSTRUCTIONS.trim().to_string();
-    text.push_str("\n\nCommon Glass tools are directly available. For any additional integration, use glass.tools.search to discover its input schema, then glass.tools.call with the exact name and arguments. Search supports pagination; a tool absent from the initial list may still be available through discovery. Native Core tools remain directly available.");
+    text.push_str("\n\nCommon Glass tools are directly available. For any additional integration, use glass.tools.search to discover its input schema, then glass.tools.call with the exact name and arguments. Search supports pagination; a tool absent from the initial list may still be available through discovery. Native Core tools remain directly available. Before telling the user a capability is missing, search this catalog and native state capabilities. A search miss or the initial bounded tool list does not prove absence. For slow builds/tests/installs use native bash with job:{action:start}; finish the turn immediately and let the host deliver completion. Never poll or sleep to wait. Reserve glass.process.start for ongoing servers/watchers, not finite builds.");
     if let Some(extra) = options
         .additional_system_prompt
         .as_deref()
@@ -3499,6 +3579,34 @@ mod tests {
         assert!(evidence.get("body").is_none());
         assert!(evidence.get("cookies").is_none());
         assert!(evidence.get("arguments").is_none());
+    }
+
+    #[test]
+    fn discovery_ranks_task_language_and_explains_native_alternatives() {
+        for query in [
+            "how do I install npm packages and get notified",
+            "show logs for my build",
+        ] {
+            let result = search_integration_tools(&json!({"query":query})).unwrap();
+            assert!(
+                result["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|tool| tool["name"].as_str().unwrap().starts_with("glass.process."))
+            );
+            assert!(
+                result["nativeRoutes"]
+                    .to_string()
+                    .contains("Never sleep or repeatedly poll")
+            );
+        }
+        let exact = search_integration_tools(&json!({"query":"glass.lsp.references"})).unwrap();
+        assert_eq!(exact["tools"][0]["name"], "glass.lsp.references");
+        let miss = search_integration_tools(&json!({"query":"nonexistentxyz"})).unwrap();
+        assert!(miss["tools"].as_array().unwrap().is_empty());
+        assert!(miss["instruction"].as_str().unwrap().contains("not proof"));
+        assert!(!miss["nativeRoutes"].as_array().unwrap().is_empty());
     }
 
     #[test]

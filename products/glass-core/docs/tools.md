@@ -200,15 +200,42 @@ provides structured file and diagnostic results for headless callers.
 Bash arrays, `[[ … ]]`, and process substitution. Bash accepts a `job` object. Each line below is a separate tool call:
 
 ```jsonl
-{"command":"npm run dev","job":{"action":"start"}}
+{"command":"npm run build","job":{"action":"start"}}
+{"job":{"action":"watch","id":1,"notify":false}}
 {"job":{"action":"poll","id":1,"offset":0}}
 {"job":{"action":"input","id":1,"text":"hello\n"}}
 {"job":{"action":"input","id":1,"eof":true}}
 {"job":{"action":"stop","id":1}}
 ```
 
-Poll using the returned `next_offset` to avoid replaying old output. Metadata
-includes state, exit code, captured/dropped bytes and whether pipes are still
+Finite model-started jobs register completion notification by default. The engine
+ends the model turn after the accepted tool batch, before another provider request
+can poll. The host waits without model calls and resumes the same conversation
+once the process exits and its capture drains. This works in standalone GC,
+Glass resident sessions, Connect WebUI workers, and writing teammates at nested
+levels. A read-only teammate still cannot execute arbitrary commands.
+
+Use `job: {"action":"watch","id":1}` to subscribe to an existing session-owned
+job, or add `"notify":false` to disable its subscription. Repeated registration
+never redelivers an acknowledged completion. An explicit `poll` that reads a fully
+finished result also consumes its notification, avoiding a redundant model turn. An optional top-level `timeout_ms`
+(1–86400000) kills the process group at its deadline and reports a timeout.
+There is no default background deadline. These are watches on owned jobs, not
+arbitrary operating-system PIDs or external services.
+
+Notifications batch up to eight completed jobs, include exit status, elapsed time,
+log path, and 2 KiB of output per job (plus up to three UTF-8 boundary bytes), and allow eight automatic process
+wake-ups per session host. Existing provider cost and teammate tree budgets still
+apply. No model request runs merely because time passes. On failure, the model
+receives evidence for a bounded correction; the host does not restart commands.
+Cancellation, explicit job stop, a stopped teammate workflow, and terminal
+checklist tasks suppress automatic resumption. Set `job.task_id` to bind a watch
+to an existing pending or in-progress checklist task. Jobs and subscriptions are
+not restored after the session host exits; saved output remains available.
+
+For ongoing servers, use `job.notify:false`, or `glass.process.start` in Glass.
+Use `poll` only for a specific diagnostic, not as a waiting loop. Poll using the
+returned `next_offset` to avoid replaying old output. Metadata includes state, exit code, captured/dropped bytes and whether pipes are still
 draining. Input reports accepted bytes; retry only the remaining bytes when
 stdin applies backpressure. Poll limits may extend by up to three bytes to
 finish a UTF-8 character; incomplete live characters stay at the same cursor.

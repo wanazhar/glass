@@ -106,7 +106,12 @@ states reject sends.
 Select a recovery-pending row in the Agent picker to reattach its exact stored
 Core session. Glass verifies the returned session ID, mixed tool mode,
 and canonical project directory, then restores bounded user/assistant history
-from Core session entries before enabling sends. Missing or mismatched sessions
+from Core session entries before enabling sends. It refreshes the mixed-mode host
+tool catalog through `session/tools`, so older conversations also use the bounded
+provider catalog. The common 48 integrations are directly advertised; local
+`glass.tools.search` returns schemas for additional integrations in pages of eight,
+and `glass.tools.call` routes them through the same governed executor. No
+integration is removed from discovery. Missing or mismatched sessions
 remain recovery-pending with an error; Glass does not create a replacement or
 replay a prompt. The Glass ledger stores project-scoped orchestration state and
 an opaque Core session reference; provider configuration and credentials remain

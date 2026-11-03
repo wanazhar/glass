@@ -1,5 +1,7 @@
 # Glass documentation
 
+The [development runtime guide](development-runtime.md) explains bounded Glass tool discovery and resumed-session catalog refresh.
+
 The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)
 describes the shared desktop picker and quick, reusable, status, and stop commands.
 

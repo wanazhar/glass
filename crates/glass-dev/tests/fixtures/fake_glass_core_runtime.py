@@ -663,6 +663,9 @@ def main() -> None:
             reply(identifier, {"sessionId": resumed})
         elif method == "session/name":
             reply(identifier, {})
+        elif method == "session/tools":
+            assert len(params["tools"]) <= 50
+            reply(identifier, {})
         elif method == "session/configure":
             assert params.get("sessionId") == SESSION_ID
             reply(identifier, {})

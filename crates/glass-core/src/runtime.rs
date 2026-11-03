@@ -1684,6 +1684,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         | "tool/reconcile"
                         | "completion/request"
                         | "session/configure"
+                        | "session/tools"
                         | "session/fork"
                         | "session/rewind"
                         | "turn/prompt"
@@ -1860,6 +1861,19 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             "toolOwners":tool_owners(c.tool_mode,c.tools.as_ref()),
                             "records":records[offset..end].iter().map(record).collect::<Vec<_>>(),
                             "recordCount":records.len(),"nextCursor":if end<records.len(){Some(end)}else{None}}))
+                    }
+                    "session/tools" => {
+                        if c.tool_mode != ToolMode::Mixed {
+                            return Err("session/tools requires mixed tool ownership".into());
+                        }
+                        let mut manifest = support::read_manifest(dir, sid)?;
+                        manifest["tools"] = p.get("tools").cloned().ok_or("tools are required")?;
+                        let (_, tools, mode, _) = metadata(&manifest, &cfg)?;
+                        manifest["toolOwners"] = tool_owners(mode, tools.as_ref());
+                        support::save_manifest(dir, sid, &manifest)?;
+                        c.tools = tools;
+                        c.stats_cache = None;
+                        Ok(json!({"toolOwners":manifest["toolOwners"]}))
                     }
                     "session/configure" => {
                         if p.as_object().is_some_and(|fields| {

@@ -412,6 +412,13 @@ impl GlassCoreRuntime {
         };
         runtime.initialize()?;
         runtime.open_session(&root, &options)?;
+        if options.resume || options.resume_session_id.is_some() {
+            let id = runtime.send_request(
+                "session/tools",
+                json!({"sessionId":runtime.session_id,"tools":runtime_tool_catalog()}),
+            )?;
+            runtime.wait_response(&id, STARTUP_TIMEOUT)?;
+        }
         Ok(runtime)
     }
 
@@ -678,16 +685,7 @@ impl GlassCoreRuntime {
     }
 
     fn session_params(&self, root: &Path, options: &CoreRuntimeOptions) -> Value {
-        let tools = crate::tools::integration_tool_catalog()
-            .into_iter()
-            .map(|tool| {
-                json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "inputSchema": tool.input_schema,
-                })
-            })
-            .collect::<Vec<_>>();
+        let tools = runtime_tool_catalog();
         let mut params = json!({
             "cwd": root,
             "toolMode": "mixed",
@@ -924,12 +922,29 @@ impl GlassCoreRuntime {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| DevelopmentError::Serialization("tool frame has no name".into()))?;
-        let call = ToolCall {
+        let mut call = ToolCall {
             id: call_id,
             name: name.to_string(),
             arguments: params.get("arguments").cloned().unwrap_or(Value::Null),
         };
         let frame_key = frame_id_key(&frame_id);
+        if call.name == "glass.tools.search" {
+            let result = search_integration_tools(&call.arguments);
+            self.respond_tool_result(&frame_key, &result)?;
+            self.host_events.push_back(tool_evidence(&call, &result));
+            return Ok(());
+        }
+        if call.name == "glass.tools.call" {
+            match resolve_integration_call(&call) {
+                Ok(resolved) => call = resolved,
+                Err(error) => {
+                    let result = Err(error);
+                    self.respond_tool_result(&frame_key, &result)?;
+                    self.host_events.push_back(tool_evidence(&call, &result));
+                    return Ok(());
+                }
+            }
+        }
         if !crate::tools::is_integration_tool(&call.name) {
             let result = Err(DevelopmentError::NotFound(format!(
                 "Glass integration {}",
@@ -1965,8 +1980,90 @@ fn parse_secret_input_request(
     })
 }
 
+// Leave room for Core's native, desktop, and teammate tools under the
+// provider's 128-function limit. The complete integration catalog stays local.
+const DIRECT_INTEGRATION_TOOLS: usize = 48;
+
+fn runtime_tool_catalog() -> Vec<Value> {
+    let mut tools = crate::tools::integration_tool_catalog().into_iter()
+        .take(DIRECT_INTEGRATION_TOOLS)
+        .map(|tool| json!({"name":tool.name,"description":tool.description,"inputSchema":tool.input_schema}))
+        .collect::<Vec<_>>();
+    tools.push(json!({
+        "name":"glass.tools.search",
+        "description":"Find additional Glass integration tools by task or exact tool name. Returns their full input schemas. Search is local and paginated; use glass.tools.call to execute a discovered tool.",
+        "inputSchema":{"type":"object","properties":{"query":{"type":"string","maxLength":256},"cursor":{"type":"integer","minimum":0}},"required":["query"],"additionalProperties":false}
+    }));
+    tools.push(json!({
+        "name":"glass.tools.call",
+        "description":"Execute a Glass integration tool found with glass.tools.search. Pass its exact name and arguments matching the discovered input schema. Uses the same governed router as a direct tool call.",
+        "inputSchema":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"],"additionalProperties":false}
+    }));
+    tools
+}
+
+fn search_integration_tools(arguments: &Value) -> DevelopmentResult<Value> {
+    let query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|query| query.len() <= 256)
+        .ok_or_else(|| {
+            DevelopmentError::Serialization("query must be a string of at most 256 bytes".into())
+        })?
+        .to_lowercase();
+    let cursor = match arguments.get("cursor") {
+        None => 0,
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| {
+                DevelopmentError::Serialization("cursor must be a nonnegative integer".into())
+            })?,
+    };
+    let tools = crate::tools::integration_tool_catalog()
+        .into_iter()
+        .filter(|tool| {
+            let text = format!("{} {}", tool.name, tool.description).to_lowercase();
+            query.split_whitespace().all(|word| text.contains(word))
+        })
+        .collect::<Vec<_>>();
+    let page = tools.iter().skip(cursor).take(8).collect::<Vec<_>>();
+    let next = cursor.saturating_add(page.len());
+    Ok(
+        json!({"tools":page,"hasMore":next < tools.len(),"nextCursor":if next < tools.len() {Some(next)} else {None}}),
+    )
+}
+
+fn resolve_integration_call(call: &ToolCall) -> DevelopmentResult<ToolCall> {
+    let name = call
+        .arguments
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| crate::tools::is_integration_tool(name))
+        .ok_or_else(|| {
+            DevelopmentError::NotFound(
+                "Unknown Glass integration tool; use glass.tools.search".into(),
+            )
+        })?;
+    let arguments = call
+        .arguments
+        .get("arguments")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| {
+            DevelopmentError::Serialization(
+                "arguments must be an object matching the discovered schema".into(),
+            )
+        })?;
+    Ok(ToolCall {
+        id: call.id.clone(),
+        name: name.into(),
+        arguments: arguments.clone(),
+    })
+}
+
 fn instructions(options: &CoreRuntimeOptions) -> String {
     let mut text = SYSTEM_INSTRUCTIONS.trim().to_string();
+    text.push_str("\n\nCommon Glass tools are directly available. For any additional integration, use glass.tools.search to discover its input schema, then glass.tools.call with the exact name and arguments. Search supports pagination; a tool absent from the initial list may still be available through discovery. Native Core tools remain directly available.");
     if let Some(extra) = options
         .additional_system_prompt
         .as_deref()
@@ -3294,6 +3391,59 @@ mod tests {
     }
 
     #[test]
+    fn bounded_catalog_keeps_every_integration_discoverable_and_routable() {
+        let advertised = runtime_tool_catalog();
+        assert_eq!(advertised.len(), DIRECT_INTEGRATION_TOOLS + 2);
+        assert!(
+            advertised
+                .iter()
+                .any(|tool| tool["name"] == "glass.browser.navigate")
+        );
+        let full = crate::tools::integration_tool_catalog();
+        let mut found = Vec::new();
+        let mut cursor = 0;
+        loop {
+            let page = search_integration_tools(&json!({"query":"","cursor":cursor})).unwrap();
+            for tool in page["tools"].as_array().unwrap() {
+                let name = tool["name"].as_str().unwrap();
+                found.push(name.to_owned());
+                let call = ToolCall {
+                    id: "call-1".into(),
+                    name: "glass.tools.call".into(),
+                    arguments: json!({"name":name,"arguments":{}}),
+                };
+                let resolved = resolve_integration_call(&call).unwrap();
+                assert_eq!(resolved.id, call.id);
+                assert_eq!(resolved.name, name);
+                assert_eq!(resolved.arguments, json!({}));
+            }
+            if page["hasMore"] == false {
+                break;
+            }
+            cursor = page["nextCursor"].as_u64().unwrap();
+        }
+        assert_eq!(
+            found,
+            full.iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>()
+        );
+        for name in [
+            "glass.tools.call",
+            "bash",
+            "glass.not_registered",
+            "glass.editor.save",
+        ] {
+            let call = ToolCall {
+                id: "rejected".into(),
+                name: "glass.tools.call".into(),
+                arguments: json!({"name":name,"arguments":{}}),
+            };
+            assert!(resolve_integration_call(&call).is_err(), "{name}");
+        }
+    }
+
+    #[test]
     fn integration_tool_catalog_is_namespaced_object_schemas() {
         let catalog = crate::tools::integration_tool_catalog();
         assert!(!catalog.is_empty());
@@ -3594,7 +3744,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             methods,
-            ["session/resume", "session/describe", "session/entries"]
+            [
+                "session/resume",
+                "session/describe",
+                "session/entries",
+                "session/tools"
+            ]
         );
         assert_eq!(calls[0]["params"]["sessionId"], "fixture-session");
         assert!(

@@ -141,6 +141,7 @@ It is accepted only after protocol v2 initialization with `mixedTools`.
 | `session/close` | None | Release the writer; preserve files |
 | `session/inspect` | Optional `cursor`, `limit` | Page transcript records and model settings |
 | `session/configure` | Any optional setting above | Change configuration while idle |
+| `session/tools` | `tools` | Refresh mixed-mode host schemas while idle; preserve history and ownership |
 | `session/fork` | Optional `throughTurn` | Create a closed branch through a user turn |
 | `session/rewind` | `throughTurn` | Hide subsequent user turns from future context |
 | `session/compact` | Optional `instructions` | Compact using the configured provider |
@@ -149,7 +150,10 @@ Resume accepts sessionId alone for host-owned sessions. GC loads the frozen
 manifest and reports its configuration through session/describe. expectedToolMode
 defaults to host; resuming a local-execution session requires an explicit local
 expectation. Any creation fields supplied with resume must match the manifest.
-Tool mode and schemas remain immutable. Provider, model, instructions, imageInput,
+Tool mode remains immutable. Mixed-mode hosts can explicitly refresh their host
+schemas through session/tools after resuming. The replacement catalog is validated
+against native and extension tool names and saved atomically; conversation history
+and execution ownership are unchanged. Other modes reject this operation. Provider, model, instructions, imageInput,
 and maxTokens can change through session/configure while idle.
 
 Effective transport/model settings are saved when the session is created.

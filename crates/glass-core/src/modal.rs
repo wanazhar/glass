@@ -8,6 +8,7 @@ use std::io::Write;
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
 
+thread_local! { static SCREEN_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 thread_local! { static BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 pub fn take_back() -> bool {
@@ -23,6 +24,7 @@ impl Screen {
         let mut out = std::io::stdout();
         let managed = crate::surface::managed();
         if managed {
+            SCREEN_DEPTH.set(SCREEN_DEPTH.get() + 1);
             crate::surface::overlay(true).ok();
             let _ = write!(out, "\x1b[r\x1b[2J\x1b[H\x1b[?25l");
         } else {
@@ -348,8 +350,11 @@ fn skip_columns(text: &str, columns: usize) -> String {
 impl Drop for Screen {
     fn drop(&mut self) {
         if self.managed {
-            crate::surface::overlay(false).ok();
-            let _ = write!(std::io::stdout(), "\x1b[?25h");
+            SCREEN_DEPTH.set(SCREEN_DEPTH.get().saturating_sub(1));
+            if SCREEN_DEPTH.get() == 0 {
+                crate::surface::overlay(false).ok();
+                let _ = write!(std::io::stdout(), "\x1b[?25h");
+            }
         } else {
             let _ = write!(std::io::stdout(), "\x1b[?1049l\x1b[?25h");
         }

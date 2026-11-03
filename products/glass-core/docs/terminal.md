@@ -24,7 +24,7 @@ open until the operation finishes. Dismiss the result to return to chat.
 
 ## Teammate conversations
 
-Open `/agents` or press Alt+A to inspect teammates. Use `/agents status` to
+Open `/agents` to choose a teammate action, or press Alt+A to inspect conversations directly. Choose Conversations, Inspect a teammate, Interrupt a task, Archive a teammate, Set a teammate allowance, Workflow status, Resume delegation, or Pause delegation. Interrupt and archive require confirmation; changing an allowance requires an explicit token value. Use `/agents status` to
 inspect the workflow, `/agents stop` to pause it, and `/agents resume` to enable
 delegation again. A paused agents panel also offers R to resume. Resume keeps
 the existing token allowance and leaves parked workers waiting for an explicit
@@ -85,6 +85,20 @@ available in the transcript reader as well as the normal chat view.
 
 Type `/` at an empty prompt or press `ctrl-p` to open the command modal.
 The empty palette shows **Conversations**, **Work**, and **Settings**. Search any action by name, legacy alias, or intent (for example, `copy code` or `change model`); type `*` to browse every action. Work and Settings show the effect of each action before selection. Existing slash shortcuts remain available.
+
+Commands with subcommands open a selectable action list: `/agents`, `/desktop`,
+`/constraints`, `/loop`, and `/prewalk`. Enter or Tab opens the list; Up/Down
+selects an action and Enter runs its guided flow. The breadcrumb identifies the
+current command. Esc returns to the selected parent, then restores the composer
+and its original draft. F1 shows the selected action's full description.
+Explicit forms such as `/desktop reusable` and `/loop 30m review changes`
+remain supported.
+
+Schedules ask for an interval and task; Esc from the task returns to the
+interval selector. `/send` asks for a conversation and message. `/forget`,
+`/unforget`, and `/rewrite` select an existing user turn. Esc from a message or
+replacement field returns to its selector. Clearing schedules or reminders
+requires confirmation, with Cancel selected first.
 
 The top-level palette has no parent menu: Esc closes it and restores the draft.
 Esc in a nested menu returns to its parent, including sign-in and custom-provider setup. Esc at the first screen closes the palette.

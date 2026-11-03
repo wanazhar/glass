@@ -85,7 +85,7 @@ def run(size):
             assert recovered['last_request_input_estimate'] < recovered['remaining_tokens']
             listed = ctl('list')
             assert all(isinstance(i['pending_messages'], int) for i in listed)
-            t.send('/agents\r'); t.collect(.3)
+            t.send('\x1ba'); t.collect(.3)
             assert 'Agents' in t.vt.text(), t.vt.text()
             t.send('\t\t'); t.collect(.2)
             t.send('\x1b[6~'); t.collect(.1)

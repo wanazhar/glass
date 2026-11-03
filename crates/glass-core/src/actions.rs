@@ -15,8 +15,9 @@ pub fn group(name: &str) -> Group {
         "work" | "workspace" | "dashboard" | "hub" | "outputs" | "responses" | "details"
         | "thinking" | "review" | "turns" | "diff" | "git" | "pr" | "code-review" | "advisor"
         | "checkpoint" | "checkpoints" | "undo" | "restore" | "activity" | "attention"
-        | "agents" | "jobs" | "job" | "bg" | "loop" | "send" | "queue" | "queue-run" | "plan"
-        | "constraints" | "todo" | "retry" | "recovery" | "diagnostics" | "tasks" => Group::Work,
+        | "agents" | "desktop" | "jobs" | "job" | "bg" | "loop" | "send" | "queue"
+        | "queue-run" | "plan" | "constraints" | "todo" | "retry" | "recovery" | "diagnostics"
+        | "tasks" => Group::Work,
         _ => Group::Settings,
     }
 }
@@ -34,7 +35,7 @@ pub fn canonical(name: &str) -> &str {
 pub fn available_during_turn(name: &str) -> bool {
     matches!(
         canonical(name),
-        "queue" | "agents" | "outputs" | "thinking" | "help" | "work" | "todo"
+        "agents view" | "queue" | "agents" | "outputs" | "thinking" | "help" | "work" | "todo"
     )
 }
 pub fn effect(name: &str) -> &'static str {
@@ -66,6 +67,12 @@ fn keywords(name: &str) -> &'static str {
     }
 }
 const BUILTIN: &[(&str, &str, &str, bool)] = &[
+    (
+        "desktop",
+        "[action]",
+        "Choose quick XFCE or reusable GNOME; inspect or stop the desktop",
+        false,
+    ),
     (
         "memory",
         "",

@@ -22,12 +22,14 @@ pub struct Palette {
     saved_draft: Option<String>,
     dispatched_draft: Option<String>,
     owns_screen: bool,
+    parents: Vec<(String, usize)>,
 }
 
 #[derive(Clone)]
 pub struct Bookmark {
     query: String,
     selected: usize,
+    parents: Vec<(String, usize)>,
 }
 
 impl Palette {
@@ -39,6 +41,7 @@ impl Palette {
             saved_draft: None,
             dispatched_draft: None,
             owns_screen: false,
+            parents: Vec::new(),
         }
     }
     pub fn selected_details(&self, query: &str) -> Option<String> {
@@ -59,12 +62,14 @@ impl Palette {
         Bookmark {
             query: editor.text().to_string(),
             selected: self.selected,
+            parents: self.parents.clone(),
         }
     }
     pub fn restore_managed(&mut self, editor: &mut Editor, bookmark: Bookmark) -> io::Result<()> {
         self.open_managed(editor)?;
         editor.set_text(&bookmark.query);
         self.selected = bookmark.selected;
+        self.parents = bookmark.parents;
         Ok(())
     }
     pub fn active(&self) -> bool {
@@ -90,6 +95,7 @@ impl Palette {
                 Some(draft)
             };
         self.selected = 0;
+        self.parents.clear();
         self.active = true;
         self.owns_screen = own_screen;
         if own_screen {
@@ -118,17 +124,65 @@ impl Palette {
         }
         self.close();
     }
+    fn has_children(&self, name: &str) -> bool {
+        self.commands.iter().any(|command| {
+            command
+                .name
+                .rsplit_once(' ')
+                .is_some_and(|(parent, _)| parent == name)
+        })
+    }
+    fn namespace(&self, query: &str) -> Option<(String, String)> {
+        let raw = query.trim_start_matches('/');
+        self.commands
+            .iter()
+            .filter(|command| self.has_children(&command.name))
+            .flat_map(|command| {
+                std::iter::once(&command.name)
+                    .chain(command.aliases.iter())
+                    .filter_map(move |name| {
+                        raw.strip_prefix(&format!("{name} "))
+                            .map(|search| (command.name.clone(), search.to_owned()))
+                    })
+            })
+            .max_by_key(|(name, _)| name.len())
+    }
+    fn back(&mut self, editor: &mut Editor) {
+        if let Some((query, selected)) = self.parents.pop() {
+            editor.set_text(&query);
+            self.selected = selected;
+        } else if let Some((parent, _)) = self.namespace(editor.text()) {
+            editor.set_text(&format!("/{parent}"));
+            self.selected = 0;
+        } else {
+            self.cancel(editor);
+        }
+    }
     fn matches(&self, query: &str) -> Vec<&Command> {
-        let query = query.trim_start_matches('/').trim().to_ascii_lowercase();
+        let namespace = self.namespace(query);
+        let query = namespace
+            .as_ref()
+            .map(|(_, search)| search.as_str())
+            .unwrap_or_else(|| query.trim_start_matches('/'))
+            .trim()
+            .to_ascii_lowercase();
         let rooted = self.commands.iter().any(|c| c.primary);
         let mut matches: Vec<(u8, &Command)> = self
             .commands
             .iter()
             .filter_map(|c| {
-                if query.is_empty() && rooted && !c.primary {
+                let parent = c.name.rsplit_once(' ').map(|(parent, _)| parent);
+                if parent != namespace.as_ref().map(|(name, _)| name.as_str()) {
                     return None;
                 }
-                let name = c.name.to_ascii_lowercase();
+                if namespace.is_none() && query.is_empty() && rooted && !c.primary {
+                    return None;
+                }
+                let name = namespace
+                    .as_ref()
+                    .and_then(|(parent, _)| c.name.strip_prefix(&format!("{parent} ")))
+                    .unwrap_or(&c.name)
+                    .to_ascii_lowercase();
                 let aliases = c
                     .aliases
                     .iter()
@@ -169,7 +223,7 @@ impl Palette {
     /// Returns a submitted command only when Enter selects a command without required arguments.
     pub fn key(&mut self, editor: &mut Editor, key: KeyEvent) -> Option<String> {
         match key.code {
-            KeyCode::Esc => self.cancel(editor),
+            KeyCode::Esc => self.back(editor),
             KeyCode::Up | KeyCode::Down => {
                 let len = self.matches(editor.text()).len();
                 if len > 0 {
@@ -181,6 +235,20 @@ impl Palette {
                 }
             }
             KeyCode::Enter | KeyCode::Tab => {
+                let selected = self
+                    .matches(editor.text())
+                    .get(self.selected)
+                    .cloned()
+                    .cloned();
+                if let Some(command) = selected
+                    .as_ref()
+                    .filter(|command| self.has_children(&command.name))
+                {
+                    self.parents.push((editor.text().to_owned(), self.selected));
+                    editor.set_text(&format!("/{} ", command.name));
+                    self.selected = 0;
+                    return None;
+                }
                 let first = editor
                     .text()
                     .trim_start_matches('/')
@@ -188,10 +256,20 @@ impl Palette {
                     .next()
                     .unwrap_or("");
                 let exact_with_args = editor.text().contains(char::is_whitespace)
+                    && self
+                        .namespace(editor.text())
+                        .is_none_or(|(_, search)| !search.trim().is_empty())
                     && self.commands.iter().any(|c| {
                         (!c.hint.is_empty() || c.required_args)
                             && (c.name == first || c.aliases.iter().any(|a| a == first))
                     });
+                let exact_with_args = exact_with_args
+                    && (self.namespace(editor.text()).is_none()
+                        || self
+                            .commands
+                            .iter()
+                            .any(|c| c.name == editor.text().trim_start_matches('/').trim())
+                        || self.matches(editor.text()).is_empty());
                 if exact_with_args && key.code == KeyCode::Enter {
                     self.dispatched_draft = self.saved_draft.take();
                     self.close();
@@ -250,9 +328,20 @@ impl Palette {
             .clamp(1, 8);
         let start = self.selected.saturating_sub(visible - 1);
         let rooted = self.commands.iter().any(|c| c.primary);
+        let namespace = self.namespace(query);
         let mut lines = vec![
-            if rooted {
-                format!("Search actions · {} · * all", self.commands.len())
+            if let Some((parent, _)) = &namespace {
+                if width < 40 {
+                    format!("{parent} · {}/{}", self.selected + 1, matches.len())
+                } else {
+                    format!(
+                        "Commands › {parent} · {}/{}",
+                        self.selected + 1,
+                        matches.len()
+                    )
+                }
+            } else if rooted && width >= 40 {
+                "Commands · search or * browse all".into()
             } else {
                 "Commands".to_string()
             },
@@ -270,20 +359,21 @@ impl Palette {
             } else {
                 &command.label
             };
-            lines.push(
-                if width < 40 || command.primary && query.trim_start_matches('/').trim().is_empty()
-                {
-                    format!("{} {}", if i == self.selected { "›" } else { " " }, label)
-                } else {
-                    format!(
-                        "{} /{} {} — {}",
-                        if i == self.selected { "›" } else { " " },
-                        command.name,
-                        command.hint,
-                        command.description
-                    )
-                },
-            );
+            let branch = if self.has_children(&command.name) {
+                " ›"
+            } else {
+                ""
+            };
+            let route = command.name.rsplit(' ').next().unwrap_or(&command.name);
+            let suffix = if width >= 65 && !command.label.is_empty() && !command.primary {
+                format!("  /{route}")
+            } else {
+                String::new()
+            };
+            lines.push(format!(
+                "{} {label}{branch}{suffix}",
+                if i == self.selected { "›" } else { " " }
+            ));
         }
         if hint_row > 0 {
             lines.push(
@@ -293,18 +383,24 @@ impl Palette {
                     .unwrap_or_else(|| "Type * to browse all".into()),
             );
         }
+        let back = if namespace.is_some() || !self.parents.is_empty() {
+            "back"
+        } else {
+            "close"
+        };
         lines.push(
             if (if framed {
                 width.saturating_sub(8).clamp(1, 76)
             } else {
                 width
-            }) < 50
+            }) < 18
             {
-                "F1 · Esc close"
+                format!("Esc {back}")
+            } else if width < 50 {
+                format!("Enter · Esc {back}")
             } else {
-                "↑↓ select · Enter choose · F1 details · Esc close"
-            }
-            .into(),
+                format!("↑↓ select · Enter choose · F1 details · Esc {back}")
+            },
         );
         let inner = width.saturating_sub(8).clamp(1, 76);
 
@@ -374,8 +470,8 @@ impl Palette {
         crate::theme::neutralize(&out)
     }
 }
-fn rooted_hint(width: usize, height: usize) -> bool {
-    width < 40 && height >= 8
+fn rooted_hint(_width: usize, height: usize) -> bool {
+    height >= 8
 }
 
 impl Drop for Palette {
@@ -411,6 +507,100 @@ mod tests {
                 ..Default::default()
             },
         ])
+    }
+    fn hierarchy() -> Palette {
+        Palette::new(vec![
+            Command {
+                name: "agents".into(),
+                aliases: vec!["teammates".into()],
+                hint: "[action]".into(),
+                ..Default::default()
+            },
+            Command {
+                name: "agents view".into(),
+                label: "Conversations".into(),
+                ..Default::default()
+            },
+            Command {
+                name: "agents status".into(),
+                label: "Workflow status".into(),
+                ..Default::default()
+            },
+            Command {
+                name: "loop".into(),
+                hint: "[interval] [task]".into(),
+                ..Default::default()
+            },
+            Command {
+                name: "loop list".into(),
+                ..Default::default()
+            },
+        ])
+    }
+    fn press(p: &mut Palette, e: &mut Editor, code: KeyCode) -> Option<String> {
+        p.key(e, KeyEvent::new(code, crossterm::event::KeyModifiers::NONE))
+    }
+    #[test]
+    fn submenu_back_restores_selection_and_original_draft() {
+        let mut p = hierarchy();
+        let mut e = Editor::new();
+        e.set_text("unfinished message");
+        p.open_managed(&mut e).unwrap();
+        e.set_text("/agents");
+        assert_eq!(press(&mut p, &mut e, KeyCode::Enter), None);
+        assert_eq!(e.text(), "/agents ");
+        assert_eq!(
+            p.matches(e.text())
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["agents view", "agents status"]
+        );
+        press(&mut p, &mut e, KeyCode::Down);
+        let bookmark = p.bookmark(&e);
+        assert_eq!(
+            press(&mut p, &mut e, KeyCode::Enter).as_deref(),
+            Some("/agents status")
+        );
+        e.set_text(&p.take_draft().unwrap());
+        p.restore_managed(&mut e, bookmark).unwrap();
+        assert_eq!(p.selected, 1);
+        press(&mut p, &mut e, KeyCode::Esc);
+        assert_eq!(e.text(), "/agents");
+        press(&mut p, &mut e, KeyCode::Esc);
+        assert_eq!(e.text(), "unfinished message");
+        assert!(!p.active());
+    }
+    #[test]
+    fn namespaces_support_aliases_search_and_legacy_arguments() {
+        let mut p = hierarchy();
+        let mut e = Editor::new();
+        e.set_text("/teammates");
+        p.open_managed(&mut e).unwrap();
+        press(&mut p, &mut e, KeyCode::Tab);
+        assert_eq!(e.text(), "/agents ");
+        e.set_text("/agents stat");
+        assert_eq!(
+            press(&mut p, &mut e, KeyCode::Enter).as_deref(),
+            Some("/agents status")
+        );
+        e.set_text("/loop");
+        p.open_managed(&mut e).unwrap();
+        e.set_text("/loop 30m review changes");
+        assert_eq!(
+            press(&mut p, &mut e, KeyCode::Enter).as_deref(),
+            Some("/loop 30m review changes")
+        );
+        assert!(!p.matches("/*").iter().any(|c| c.name.contains(' ')));
+    }
+    #[test]
+    fn submenu_frame_is_readable_at_phone_and_desktop_sizes() {
+        let p = hierarchy();
+        for (w, h) in [(20, 8), (40, 24), (80, 30)] {
+            let frame = p.frame("/agents ", w, h);
+            assert!(frame.contains("Esc back"), "{frame}");
+            assert!(frame.contains("Conversations"), "{frame}");
+        }
     }
     #[test]
     fn roots_intent_aliases_and_argument_dispatch() {

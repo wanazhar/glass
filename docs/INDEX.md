@@ -98,7 +98,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
   harness role, source/workspace relationship, build, install, and licensing.
   The Glass CLI forwards unambiguous `glass <core-command>` names and the full
   `glass core ...` namespace to the monorepo Core binary; this does not resolve
-  the independent GCN product. In the workspace, the slash palette's Core
+  the independent GCN product. Core terminal menus include selectable teammate and desktop actions with parent-menu navigation. In the workspace, the slash palette's Core
   model picker uses the resident runtime, and unsupported interactive commands
   do not open a second TUI. Forwarded human CLI headings and command guidance
   identify whether the caller used `glass`, `glass core`, or standalone `gc`.

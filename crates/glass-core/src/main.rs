@@ -19,6 +19,7 @@ mod capture;
 mod checkpoint;
 mod checkpoint_tools;
 mod cli;
+mod command_menus;
 mod compact;
 mod completions;
 mod concurrency;
@@ -1737,6 +1738,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
             ..Default::default()
         });
     }
+    command_menus::extend(&mut commands);
     commands
 }
 
@@ -2200,7 +2202,8 @@ fn repl(
         jobs.set_owner(&cfg.workspace, &session.id);
         let parent = if menu_dispatched {
             menu_dispatched = false;
-            if modal::take_back() {
+            let legacy_back = modal::take_back();
+            if keys.take_navigation_back().unwrap_or(legacy_back) {
                 menu_parents.pop()
             } else {
                 menu_parents.clear();
@@ -2515,19 +2518,15 @@ fn repl(
             (text, prompt_row, prompt_rows, background_recorded)
         };
         let mut text = text.trim().to_string();
+        keys.take_navigation_back();
         menu_dispatched = true;
-        let run_saved_queue = text == "/queue-run";
         if text.is_empty() {
             continue;
         }
 
-        // Every submitted prompt enters the history, commands
-        // included: a shell records what was typed, and so does
-        // the prompt.
-        if !revisiting {
-            crate::history::record(&config::data_dir(), &text);
-        }
-
+        let mut menu_selected = menu_parents
+            .last()
+            .is_some_and(|(bookmark, _)| bookmark.is_some());
         if matches!(
             text.as_str(),
             "/work" | "/dashboard" | "/hub" | "/workspace"
@@ -2548,6 +2547,29 @@ fn repl(
                 }
                 None => continue,
             }
+        }
+        if command_menus::has_children(&text) {
+            let Some(action) = command_menus::choose(&keys, &text) else {
+                continue;
+            };
+            menu_parents.push((None, text));
+            menu_selected = true;
+            text = action;
+        }
+        text = match command_menus::prepare(&keys, &session, &cfg, &text) {
+            Ok(Some(command)) => command,
+            Ok(None) => {
+                keys.return_to_parent();
+                continue;
+            }
+            Err(error) => {
+                modal::info(&keys, "Command unavailable", &error);
+                continue;
+            }
+        };
+        let run_saved_queue = text == "/queue-run";
+        if !revisiting {
+            crate::history::record(&config::data_dir(), &text);
         }
         if text == "/conversations" {
             text = "/sessions".into();
@@ -2844,11 +2866,17 @@ fn repl(
             polish::details(&keys, &session);
             continue;
         }
-        if text == "/agents" {
+        if matches!(text.as_str(), "/agents" | "/agents view") {
             team::view(&keys, &session.id);
             continue;
         }
         if let Some(action) = text.strip_prefix("/agents ") {
+            if matches!(action, "inspect" | "interrupt" | "archive" | "budget") {
+                if let Err(error) = team::guided_action(&keys, &session.id, action) {
+                    modal::info(&keys, "Teammates", &error);
+                }
+                continue;
+            }
             let operation = match action.trim() {
                 "resume" => Some("resume"),
                 "stop" => Some("stop"),
@@ -2875,6 +2903,9 @@ fn repl(
                 "Use /agents to view teammates, or /agents status, resume, or stop.".into()
             };
             painter.system_notice(&message);
+            if menu_selected {
+                modal::rich_info(&keys, "Delegation", &message);
+            }
             continue;
         }
         if text == "/activity" {
@@ -3151,8 +3182,14 @@ fn repl(
         if text == "/loop" || text.starts_with("/loop ") {
             let args = text.strip_prefix("/loop").unwrap_or("").trim();
             match crate::loops::command_for(&session, &cfg, args) {
-                Ok(out) => ui_println!("{out}"),
-                Err(e) => ui_println!("\x1b[31m{e}\x1b[0m"),
+                Ok(out) => {
+                    if menu_selected {
+                        modal::rich_info(&keys, "Schedules", &out);
+                    } else {
+                        ui_println!("{out}");
+                    }
+                }
+                Err(e) => modal::info(&keys, "Schedules", &e),
             }
             continue;
         }
@@ -3721,41 +3758,35 @@ fn repl(
 
         if let Some(args) = text.strip_prefix("/prewalk") {
             let args = args.trim();
-            if args.eq_ignore_ascii_case("off") {
+            let message = if args.eq_ignore_ascii_case("off") {
                 cfg.prewalk.clear();
                 *runtime_config.lock().unwrap() = cfg.clone();
-                ui_println!("\x1b[90mprewalk off: the primary model answers again\x1b[0m");
-            } else if args.is_empty() {
-                ui_println!(
-                    "\x1b[90mprewalk: {} — set a target with `prewalk = \"MODEL\"` in config, arm it with /prewalk, disarm with /prewalk off\x1b[0m",
-                    if cfg.prewalk.is_empty() {
-                        "not configured"
-                    } else {
-                        &cfg.prewalk
-                    }
-                );
+                "The handoff target is disabled. The current model is unchanged.".to_string()
+            } else if args.is_empty() || args == "inspect" {
+                if cfg.prewalk.is_empty() {
+                    "No target model configured. Set prewalk = \"MODEL\" in config.toml, then choose Hand off to target.".into()
+                } else {
+                    format!(
+                        "Target model: {}\nCurrent model: {}\n\nChoose Hand off to target to continue with the target model.",
+                        cfg.prewalk, cfg.model
+                    )
+                }
             } else if cfg.prewalk.is_empty() {
-                ui_println!(
-                    "\x1b[31mprewalk is not configured: set `prewalk = \"MODEL\"` in config.toml first\x1b[0m"
-                );
+                "No target model configured. Set prewalk = \"MODEL\" in config.toml first.".into()
             } else {
-                // The handoff is one durable note: the planning model wrote
-                // the plan and state; the target continues from them. The
-                // model id recorded in the note is who answers next.
                 let from = cfg.model.clone();
                 let target = cfg.prewalk.clone();
                 match crate::checkpoint_tools::prewalk_note(&mut session, &from, &target) {
                     Ok(note) => {
-                        // Route: the runtime config is what the factory reads
-                        // when the next turn rebuilds the provider.
-                        cfg.model = target.clone();
+                        cfg.model = target;
                         *runtime_config.lock().unwrap() = cfg.clone();
-                        ui_println!("\x1b[90mprewalk: {note}\x1b[0m");
                         warmer.begin_turn();
+                        note
                     }
-                    Err(e) => ui_println!("\x1b[31mprewalk failed: {e}\x1b[0m"),
+                    Err(e) => format!("Handoff failed: {e}"),
                 }
-            }
+            };
+            modal::rich_info(&keys, "Model handoff", &message);
             continue;
         }
 
@@ -4515,7 +4546,7 @@ fn drain_input(
                             return Some(correction.to_string());
                         }
                     }
-                    "/agents" => team::view(keys, team_owner),
+                    "/agents" | "/agents view" => team::view(keys, team_owner),
                     "/todo" => todo::view_current(keys),
                     "/details" | "/outputs" | "/responses" | "/work" | "/dashboard" | "/hub"
                     | "/workspace" | "/activity" => {

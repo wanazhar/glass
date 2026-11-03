@@ -2719,6 +2719,99 @@ pub fn activity_suffix(owner: &str) -> String {
     }
 }
 
+/// Explicit human actions keep assignment input in the main conversation.
+pub fn guided_action(
+    keys: &crate::input::KeyReader,
+    owner: &str,
+    action: &str,
+) -> Result<Option<String>, String> {
+    let hub = get(owner).ok_or("Teammates are unavailable in this session")?;
+    let _surface = crate::modal::Screen::new();
+    loop {
+        let infos = hub.snapshot();
+        if infos.is_empty() {
+            crate::modal::info(
+                keys,
+                "Teammates",
+                "No teammates yet. Ask the main agent to delegate a task.",
+            );
+            return Ok(None);
+        }
+        let rows = infos
+            .iter()
+            .map(|info| format!("{} · {}", info.name, info.status))
+            .collect::<Vec<_>>();
+        let Some(index) = crate::modal::choose(
+            keys,
+            "Choose teammate",
+            "Select the teammate for this action",
+            &rows,
+        ) else {
+            return Ok(None);
+        };
+        let info = &infos[index];
+        if action == "inspect" {
+            let detail = format!(
+                "**{}** · {}\n\nModel: {}\nTokens used: {} / {}\n\n**Latest report**\n\n{}\n\nConversations are read-only. Assign follow-up work through the main agent.",
+                info.name,
+                info.status,
+                info.model,
+                info.input.saturating_add(info.output),
+                info.token_limit,
+                info.result
+            );
+            crate::modal::rich_info(keys, "Teammate status", &detail);
+            continue;
+        }
+        let request = if action == "budget" {
+            let value = crate::modal::validated_field(
+                keys,
+                "Teammate allowance",
+                &format!("Cumulative token allowance for {}", info.name),
+                &info.token_limit.to_string(),
+                false,
+                |text| {
+                    text.parse::<u64>()
+                        .ok()
+                        .filter(|n| (1024..=10_000_000).contains(n))
+                        .map(|_| ())
+                        .ok_or("Enter 1024–10000000 tokens".into())
+                },
+            );
+            let Some(value) = value else { continue };
+            json!({"action":"budget","from":"human","id":info.id,"tokens":value.parse::<u64>().map_err(|_|"Invalid allowance")?})
+        } else {
+            let verb = if action == "interrupt" {
+                "Interrupt task"
+            } else {
+                "Archive teammate"
+            };
+            if crate::modal::choose(
+                keys,
+                verb,
+                &format!("{} · saved history is retained", info.name),
+                &["Cancel".into(), verb.into()],
+            ) != Some(1)
+            {
+                continue;
+            }
+            json!({"action":action,"from":"human","id":info.id})
+        };
+        hub.request(&request)?;
+        let message = format!(
+            "Teammate · {}\n\n{}",
+            info.name,
+            match action {
+                "budget" => "Token allowance updated.",
+                "interrupt" => "Task interrupted. Saved history is retained.",
+                _ => "Teammate archived. Saved history is retained.",
+            }
+        );
+        hub.state.lock().unwrap().notices.push_back(message.clone());
+        crate::modal::info(keys, "Teammate updated", &message);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

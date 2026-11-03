@@ -116,7 +116,7 @@ def pty_case(size):
             ctl(root,env,owner,'workflow','resume')
             ctl(root,env,owner,'resume','review','EOF_FOLLOWUP');info=ctl(root,env,owner,'wait','review','10')['agent'];assert info['turns']==3,info
             # Main composer and palette survive modal/scroll transitions.
-            t.send('/agents\r');t.collect(.2);assert 'Agents' in t.vt.text(),t.vt.text();t.send('\x1b');t.collect(.15)
+            t.send('\x1ba');t.collect(.2);assert 'Agents' in t.vt.text(),t.vt.text();t.send('\x1b');t.collect(.15)
             t.send('MAIN_HOLD\r');t.collect(.2);t.send('\x1ba');t.collect(.3);assert 'Agents' in t.vt.text(),t.vt.text();t.send('\x1b');t.collect(.15);t.wait('MAIN_DONE',10);t.collect(.2)
             t.send('hello\r');t.wait('MAIN_DONE',10);t.collect(.2);assert t.p.poll() is None
             print(f'PASS PTY {size}: live hub, transcript, Esc, follow-up, interrupt, restart, controls, concurrency, privacy')

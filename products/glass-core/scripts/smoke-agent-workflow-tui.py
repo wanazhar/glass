@@ -22,6 +22,8 @@ for size in [(80, 24), (40, 20)]:
                 terminal.send(text+'\r')
                 terminal.wait(expected, 10)
                 terminal.collect(.15)
+                for _ in range(3):
+                    terminal.send('\x1b'); terminal.collect(.1)
             command('/agents stop', 'Teammate workflow')
             assert state()['stopped']
             assert 'stopped' in fixture.ctl(root, env, owner, 'create', 'blocked', 'inspect', ok=False)
@@ -32,6 +34,15 @@ for size in [(80, 24), (40, 20)]:
             fixture.ctl(root, env, owner, 'create', 'review', 'CHECK_READ')
             worker = fixture.ctl(root, env, owner, 'wait', 'review', '10')['agent']
             assert worker['result'] == 'REVIEW_COMPLETE', worker
+            count = len(server.requests)
+            terminal.send('/agents\r'); terminal.wait('Esc back')
+            terminal.send('budget\r'); terminal.wait('Choose teammate')
+            terminal.send('\r'); terminal.wait('Teammate allowance')
+            terminal.send('\x1532000\r'); terminal.wait('Teammate updated')
+            assert fixture.ctl(root, env, owner, 'list')[0]['token_limit'] == 32000
+            assert len(server.requests) == count, 'allowance changes must not invoke a model'
+            for _ in range(4):
+                terminal.send('\x1b'); terminal.collect(.1)
             command('/agents stop', 'Teammate workflow')
             terminal.send('\x1ba')
             terminal.collect(.25)

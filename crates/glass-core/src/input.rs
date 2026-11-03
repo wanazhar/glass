@@ -630,6 +630,7 @@ pub fn mcp_input_callback(keys: &KeyReader) -> impl FnMut(&str, &Value) -> Value
 /// Handle to the reader thread.
 pub struct KeyReader {
     rx: Receiver<Event>,
+    navigation_back: std::cell::Cell<Option<bool>>,
     stop: Arc<AtomicBool>,
     /// Kept so the thread outlives every clone of this struct.
     _handle: Option<std::thread::JoinHandle<()>>,
@@ -644,6 +645,7 @@ impl KeyReader {
         }
         Self {
             rx,
+            navigation_back: std::cell::Cell::new(None),
             stop: Arc::new(AtomicBool::new(true)),
             _handle: None,
         }
@@ -683,22 +685,40 @@ impl KeyReader {
 
         Self {
             rx,
+            navigation_back: std::cell::Cell::new(None),
             stop,
             _handle: Some(handle),
         }
     }
 
+    /// Whether the last consumed key requested returning to the parent menu.
+    pub fn take_navigation_back(&self) -> Option<bool> {
+        self.navigation_back.take()
+    }
+    pub fn return_to_parent(&self) {
+        self.navigation_back.set(Some(true));
+    }
+    fn observed(&self, event: Event) -> Event {
+        if let Event::Key(key) = &event {
+            self.navigation_back
+                .set(Some(key.code == glass_tui::crossterm::event::KeyCode::Esc));
+        }
+        event
+    }
     /// Take a pending event without blocking.
     pub fn try_next(&self) -> Option<Event> {
         match self.rx.try_recv() {
-            Ok(ev) => Some(ev),
+            Ok(ev) => Some(self.observed(ev)),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => None,
         }
     }
 
     pub fn next_timeout(&self, timeout: std::time::Duration) -> Option<Event> {
-        self.rx.recv_timeout(timeout).ok()
+        self.rx
+            .recv_timeout(timeout)
+            .ok()
+            .map(|event| self.observed(event))
     }
 
     pub fn wait_timeout(
@@ -706,7 +726,7 @@ impl KeyReader {
         timeout: std::time::Duration,
     ) -> Result<Option<Event>, std::sync::mpsc::RecvTimeoutError> {
         match self.rx.recv_timeout(timeout) {
-            Ok(event) => Ok(Some(event)),
+            Ok(event) => Ok(Some(self.observed(event))),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(error) => Err(error),
         }
@@ -715,7 +735,7 @@ impl KeyReader {
     /// Block until the next event. Only for the idle path, where blocking is
     /// what we want and saves a spin.
     pub fn next_blocking(&self) -> Option<Event> {
-        self.rx.recv().ok()
+        self.rx.recv().ok().map(|event| self.observed(event))
     }
 
     /// Stop the reader. Called before leaving raw mode so the thread cannot
@@ -738,6 +758,30 @@ impl Drop for KeyReader {
 mod tests {
     use super::*;
 
+    #[test]
+    fn navigation_tracks_the_last_consumed_key_across_reader_methods() {
+        use glass_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let event = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let keys = KeyReader::from_test_events([
+            event(KeyCode::Esc),
+            Event::Resize(40, 20),
+            event(KeyCode::Enter),
+            event(KeyCode::Esc),
+            event(KeyCode::Char('x')),
+        ]);
+        keys.try_next().unwrap();
+        keys.next_timeout(std::time::Duration::ZERO).unwrap();
+        assert_eq!(keys.take_navigation_back(), Some(true));
+        assert_eq!(keys.take_navigation_back(), None);
+        keys.wait_timeout(std::time::Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        assert_eq!(keys.take_navigation_back(), Some(false));
+        keys.next_blocking().unwrap();
+        assert_eq!(keys.take_navigation_back(), Some(true));
+        keys.try_next().unwrap();
+        assert_eq!(keys.take_navigation_back(), Some(false));
+    }
     #[test]
     fn hidden_enum_constants_and_defaults_are_rejected() {
         for constant in ["safe\u{1b}]52;c;hidden\u{7}".to_string(), "x".repeat(257)] {
@@ -774,6 +818,7 @@ mod tests {
         let (_tx, rx): (Sender<Event>, Receiver<Event>) = channel();
         let reader = KeyReader {
             rx,
+            navigation_back: std::cell::Cell::new(None),
             stop: Arc::new(AtomicBool::new(false)),
             _handle: None,
         };
@@ -785,6 +830,7 @@ mod tests {
         let (tx, rx): (Sender<Event>, Receiver<Event>) = channel();
         let reader = KeyReader {
             rx,
+            navigation_back: std::cell::Cell::new(None),
             stop: Arc::new(AtomicBool::new(false)),
             _handle: None,
         };

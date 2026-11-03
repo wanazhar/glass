@@ -2,6 +2,13 @@
 
 [Documentation index](INDEX.md) · [Project overview](../README.md)
 
+The TUI `/agents` palette exposes selectable conversation, inspection,
+interrupt, archive, allowance, and workflow actions. Choose a teammate before
+changing its state. Interrupt and archive confirm the action before applying it.
+Esc returns through the teammate selector and action list. Alt+A remains the
+direct shortcut to read-only teammate conversations; assignments go through the
+main agent.
+
 ## Persistent teammates
 
 Open `/agents` or press Alt+A for the roster, attributed interactions, and

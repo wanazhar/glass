@@ -1,7 +1,7 @@
 ---
 id: shared-chat-resume-001
 scope: Core, Glass, TUI, and Connect WebUI
-status: in-progress
+status: complete
 depends-on: []
 ---
 
@@ -50,3 +50,13 @@ catalog for documentation changes. Keep user untracked files intact.
 Report concrete evidence and remaining blockers. Commit focused Conventional
 Commits. Do not install binaries or restart live services; the orchestrator handles
 activation after independent verification.
+
+## Completion
+
+Installed and activated locally on 2026-11-03 as bundle `91379b9b`. Matching
+release binaries passed both TUI handoff directions, the real Connect browser
+journey, bounded-tool and catalog-refresh checks, and packaged startup.
+The 78 focused Rust tests passed. Installed file hashes and the live gateway
+executable were verified; the existing private link, routes, and desktop/input
+lease state were preserved. See the design's delivery evidence for commands,
+coverage, and the older-worker handoff boundary.

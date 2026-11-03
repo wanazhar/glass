@@ -1,6 +1,6 @@
 # Shared Glass and GC chat resumption
 
-Status: authorized for implementation; not yet shipped.
+Status: installed and verified on the local Ubuntu host on 2026-11-03.
 
 ## Contract
 
@@ -83,3 +83,28 @@ not an acceptable handoff test.
 Existing per-session provider/model metadata is authoritative. For a legacy native
 GC conversation that never recorded those settings, use Core's current settings
 explicitly rather than claiming that missing historical configuration was recovered.
+
+## Delivery evidence
+
+The local rollout installs immutable bundle `91379b9b` with matching Glass,
+Glass Core, and Connect assets. Implementation is recorded in `a042ee5d`;
+`d5ddca8c` keeps origin labels readable on phone and tablet layouts. The live
+Connect gateway uses the new bundle. Activation preserved its private link,
+ports, desktop session state, and input lease; 317 installed manifest hashes
+were verified.
+
+Validation passed 69 focused Glass adapter, picker, harness, and registry tests,
+four Core discovery tests, and five Core runtime-support tests. Release binaries
+passed real GC → Glass TUI → GC and Glass TUI → GC journeys; the original logs,
+IDs, origins, and prefixes remained intact while replies were appended.
+The real Connect browser journey covered same-ID sources, reload, origin badges
+at 390/768/1280 pixels, idle release, competing writers, retained drafts, and
+unique sidebar rows. Tool-budget, catalog-refresh, and packaged-startup smoke
+checks also passed. Repeatable checks are in `scripts/smoke-shared-chat-tui.py`,
+`products/glass-core/scripts/smoke-shared-chat-runtime.py`, and
+`products/glass-core/scripts/smoke-shared-chat-web.py`.
+
+Reload the WebUI and reopen terminal clients to load the installed versions.
+Existing workers retain their current executable. An older worker without idle
+release support must be closed in its owning app or explicitly updated before
+handoff; the gateway does not stop its delegated work implicitly.

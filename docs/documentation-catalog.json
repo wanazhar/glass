@@ -9612,6 +9612,11 @@
           "level": "2",
           "title": "Connect integration contract",
           "anchor": "connect-integration-contract"
+        },
+        {
+          "level": "2",
+          "title": "Delivery evidence",
+          "anchor": "delivery-evidence"
         }
       ]
     },
@@ -79674,6 +79679,11 @@
           "level": "2",
           "title": "Verification",
           "anchor": "verification"
+        },
+        {
+          "level": "2",
+          "title": "Completion",
+          "anchor": "completion"
         }
       ]
     },

@@ -1,6 +1,6 @@
 # Glass documentation
 
-In progress: [shared chat resumption](plan/analysis/shared-chat-resumption.md) and
+Installed locally: [shared chat resumption](plan/analysis/shared-chat-resumption.md) and
 its [delivery task](plan/tasks/shared-chat-resume-001.md) cover TUI/WebUI cross-app
 resumption and stable creation-origin labels.
 

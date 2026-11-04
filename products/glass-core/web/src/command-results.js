@@ -25,7 +25,7 @@ export function renderCommandData(root, value, { command = '', markdown, private
 
     } else if (['status', 'state', 'outcome'].includes(key) && typeof value === 'string') {
       content.append(node('span', 'command-badge', value.replaceAll('_', ' ')));
-    } else content.textContent = display(value).slice(0, 65536);
+    } else content.textContent = (value == null && ["tokenLimit","token_limit","remaining_tokens","round_limit"].includes(key) ? "Unlimited" : display(value)).slice(0, 65536);
     if (typeof value === 'string' && value.length > 65536) content.append(node('p', 'quiet', 'Preview limited to 64K characters. Narrow the query for more.'));
     if (['proposal', 'draft', 'answer', 'text', 'diff', 'preview'].includes(key)) row.classList.add('command-stat-wide');
     row.append(content);

@@ -1368,6 +1368,7 @@ function event(m, replaying = false) {
       else clearNotice();
       break;
     case "turn_start":
+      teammateFeed?.refresh();
       if(m.team_continuation && !replaying) $("#timeline").append(el("div","team-delivery","Main resumed from teammate reports"));
       view.active = true;
       view.group = null;

@@ -7,7 +7,7 @@ import { resolve, extname } from "node:path";
 const root=resolve("dist"),streams=new Set(),agentStreams=new Set(),uploads=[],sent=[];
 const commands=JSON.parse(await readFile("test/fixtures/commands.json","utf8")).commands;
 const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC","base64");
-let agentReads=0,agents=[],agentRevision=0,omitChecklist=false;
+let failRoster=false,agentReads=0,agents=[],agentRevision=0,omitChecklist=false;
 const agentEvent=()=>{for(const stream of agentStreams)stream.write(`data: ${JSON.stringify({revision:++agentRevision})}\n\n`);};
 let attachments=[],todo=[{id:"1",title:"Read project files",status:"completed"},{id:"2",title:"Update light mode tokens",status:"completed"},{id:"3",title:"Implement dark mode tokens",status:"in_progress"},{id:"4",title:"Register the theme toggle",status:"pending"},{id:"5",title:"Run lint and production build",status:"pending"}];
 const records=()=>[
@@ -29,7 +29,7 @@ const server=createServer(async(request,response)=>{
   if(path==="/api/threads")value={threads:[{session:"fixture",title:"Theme controls",workspace:"/tmp/project-sea",workspace_assigned:true,workspace_available:true,model:"Local model"}],projects:[]};
   if(path==="/api/history")value={records:records().filter(r=>!omitChecklist || r.k!=="custom").map((record,index)=>({index,record})),before:0};
   if(path==="/api/context")value={attachments};
-  if(path==="/api/agents"){agentReads++;value=agents;}
+  if(path==="/api/agents"){agentReads++;if(failRoster){response.writeHead(503,{"Content-Type":"application/json"});response.end(JSON.stringify({error:"Status connection unavailable"}));return;}value=agents;}
   if(path==="/api/command")value={format:"json",body:{tasks:todo}};
   if(path==="/api/commands")value={commands};
   if(path==="/api/browse"){const directory=url.searchParams.get("path")||"/tmp/project-sea";value={path:directory,parent:"/tmp",entries:directory.endsWith("/src")?[{name:"button.tsx",kind:"file",bytes:40},{name:"button.module.css",kind:"file",bytes:25}]:[{name:"src",kind:"directory",bytes:0},{name:"README.md",kind:"file",bytes:100}],next:null};}
@@ -41,7 +41,7 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync("/snap/chromium/current/usr/lib/chromium-browser/chrome")?"/snap/chromium/current/usr/lib/chromium-browser/chrome":undefined),headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
 try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"]){
- agents=[];attachments=[];omitChecklist=false;todo[2].status="in_progress";todo[3].status="pending";todo[4].status="pending";
+ failRoster=false;agents=[];attachments=[];omitChecklist=false;todo[2].status="in_progress";todo[3].status="pending";todo[4].status="pending";
  const context=await browser.newContext({viewport:{width,height:1000},isMobile:width<=768,hasTouch:width<=768,colorScheme,serviceWorkers:"block",reducedMotion:"reduce"});
  await context.addInitScript(()=>{window.SpeechRecognition=class{start(){window.testRecognition=this;}stop(){this.onend?.();}};});
  const page=await context.newPage(),errors=[];page.on("pageerror",error=>errors.push(String(error)));
@@ -59,6 +59,12 @@ try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"])
  agents[0].notified_turns=1;agentEvent();await page.getByRole("button",{name:"Analyst Completed Queued for main",exact:true}).waitFor();
  agents[0].parent_received_turns=1;agentEvent();await page.getByRole("button",{name:"Analyst Completed Received by main",exact:true}).waitFor();
  const statusReads=agentReads;await page.waitForTimeout(400);assert.equal(agentReads,statusReads,"Status must not poll when there are no runtime events");
+ failRoster=true;await page.reload();await page.locator('#teammate-status[data-connection="offline"] .teammate-state').waitFor();
+ assert.match(await page.locator("#teammate-status").textContent(),/Analyst.*last known/);
+ failRoster=false;agents[0].status="parked";await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent("pageshow",{persisted:true})));
+ await page.locator('#teammate-status[data-connection="live"]').waitFor();await page.getByRole("button",{name:/Analyst Parked/}).waitFor();
+ agents[0].status="idle";agentEvent();await page.getByRole("button",{name:"Analyst Completed Received by main",exact:true}).waitFor();
+
  emit([{t:"turn_start",team_continuation:true,already_recorded:true}]);await page.getByText("Main resumed from teammate reports",{exact:true}).waitFor();emit([{t:"done"}]);
 
 

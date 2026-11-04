@@ -3830,3 +3830,6 @@ dialog.floating-palette {
 .teammate-report pre { max-height:260px; overflow:auto; white-space:pre-wrap; font:11px/1.5 var(--font-mono); }
 
 .composer #attach, .composer .send, .composer .stop, .composer .voice-input { min-height: 30px; max-height: 30px; aspect-ratio: 1; }
+
+.teammate-status[data-connection="reconnecting"] .teammate-state { opacity: .7; }
+.teammate-connection { white-space: nowrap; align-self: center; font: 10px/1.4 var(--font-sans); color: var(--muted); }

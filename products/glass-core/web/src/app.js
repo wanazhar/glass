@@ -1,4 +1,5 @@
 import { renderChecklist, updateStage } from "./agent-ui.js";
+import { teammateStatus } from "./teammate-status.js";
 import { fileTree } from "./file-tree.js";
 import { ownerFetch, ownerEventSource, setOwnerCapability } from "./owner-auth.js";
 import { renderCommandData } from "./command-results.js";
@@ -14,6 +15,7 @@ const $ = (s) => document.querySelector(s),
     if (text !== undefined) n.textContent = text;
     return n;
   };
+let teammateFeed = null;
 const checklistRoot = $("#task-checklist");
 function placeChecklist() {
   const timeline = $("#timeline");
@@ -232,12 +234,13 @@ function updateActivity(label) {
   const workspace = threadInfo(view.id)?.workspace || view.workspace;
   $("#workspace-location").textContent = workspace ? projectName(workspace) : "Workspace";
   $("#workspace-location").title = workspace || "Browse workspace";
-  const key = `${label || ""}|${view.control}|${view.id}|${view.sourceRef}|${view.workerWorkflows}|${view.hostWorkflows}|${Boolean(view.interaction)}`;
+  const workingTeammates = inlineAgentThread === view.id ? inlineAgents.filter(agent=>agent.status==="working"&&!agent.offline).length : 0;
+  const key = `${workingTeammates}|${label || ""}|${view.control}|${view.id}|${view.sourceRef}|${view.workerWorkflows}|${view.hostWorkflows}|${Boolean(view.interaction)}`;
   if (key === activityKey) return;
   activityKey = key;
   view.active = Boolean(label);
   $("#activity").classList.toggle("working", view.active);
-  $("#activity-text").textContent = label || "Ready";
+  $("#activity-text").textContent = label || (workingTeammates ? `Ready · ${workingTeammates} teammate${workingTeammates===1?"":"s"} working` : "Ready");
   $("#stop").classList.toggle("hidden", !view.active);
   $("#send-mode").classList.toggle("hidden", !view.active);
   $("#ownership").textContent = view.control
@@ -992,6 +995,9 @@ function record(r, target) {
   if (privateProviderEntry(r)) return;
   switch (r.k) {
     case "user":
+      if((r.t||"").startsWith("[Teammate completion follow-up]")) {
+        const card=el("details","teammate-report");card.append(el("summary","","Teammate follow-up"),el("pre","",text(r.t,limits.preview)));target.append(card);break;
+      }
       message("user", r.t || "", target);
       break;
     case "assistant":
@@ -1031,6 +1037,13 @@ function record(r, target) {
       }
       break;
     case "custom":
+      if (r.c === "team/delivery") {
+        try {
+          const receipt=JSON.parse(r.d||"{}");
+          const names=(receipt.reports||[]).map(report=>report.name||report.id).join(", ");
+          target.append(el("div","team-delivery",`Reports received by ${receipt.parent||"parent"}: ${names}`));
+        } catch {}
+      }
       if (r.c === "state/todo") {
         try {
           view.tasks = JSON.parse(r.d || "{}").tasks || [];
@@ -1299,7 +1312,7 @@ function schedule() {
         : 80,
   );
 }
-function event(m) {
+function event(m, replaying = false) {
   switch (m.t) {
     case "command_start":
       updateActivity(`Working · /${m.name}`);
@@ -1355,6 +1368,7 @@ function event(m) {
       else clearNotice();
       break;
     case "turn_start":
+      if(m.team_continuation && !replaying) $("#timeline").append(el("div","team-delivery","Main resumed from teammate reports"));
       view.active = true;
       view.group = null;
       view.stream = null;
@@ -1682,6 +1696,7 @@ async function openThreadTransaction(id, options, attempt) {
     delete details.dataset.tab;
     details.replaceChildren();
   }
+  teammateFeed?.close(); teammateFeed=null;
   view.id = id;
   view.sourceRef =
     sourceRef || openResult?.sourceRef || thread?.sourceRef || null;
@@ -1815,7 +1830,7 @@ async function openThreadTransaction(id, options, attempt) {
             await history();
             if (generation !== view.generation) return;
             for (const m of data.live || []) {
-              await event(m);
+              await event(m, true);
             }
             interaction();
             updateActivity(data.active ? "Working" : null);
@@ -1831,7 +1846,14 @@ async function openThreadTransaction(id, options, attempt) {
         });
     };
     await ready;
-    if (generation === view.generation) return { ok: true };
+    if (generation === view.generation) {
+      teammateFeed = teammateStatus({root:$("#teammate-status"),api,subscribe:ownerEventSource,query:sessionQuery(id),open:()=>loadAgents(),onRows:rows=>{
+        if(generation!==view.generation)return;inlineAgentThread=id;inlineAgents=rows;
+        const root=$(".inline-work");if(root)renderInlineWork(root);
+        updateActivity(view.active ? $("#activity-text").textContent : null);
+      }});
+      return { ok: true };
+    }
   } catch (e) {
     if (generation !== view.generation) return;
     $("#timeline .loading-surface")?.remove();
@@ -2546,41 +2568,9 @@ function renderInlineWork(root) {
   root.append(manage);
 }
 function pollInlineWork() {
-  if (inlineWorkAbort || !view.id) return;
-  const id = view.id,
-    generation = view.generation,
-    controller = new AbortController();
-  inlineWorkAbort = controller;
-  const refresh = async () => {
-    if (
-      controller.signal.aborted ||
-      generation !== view.generation ||
-      view.tab !== "activity" ||
-      !$("#details").classList.contains("open")
-    ) {
-      if (inlineWorkAbort === controller) inlineWorkAbort = null;
-      return;
-    }
-    if (document.visibilityState === "visible")
-      try {
-        const data = await api(
-          "agents?" + sessionQuery(id),
-          undefined,
-          controller.signal,
-        );
-        if (controller.signal.aborted || generation !== view.generation) return;
-        inlineAgentThread = id;
-        inlineAgents = (Array.isArray(data) ? data : data.agents || []).slice(
-          0,
-          64,
-        );
-        const root = $(".inline-work");
-        if (root && view.tab === "activity") renderInlineWork(root);
-      } catch {}
-    inlineWorkTimer = setTimeout(refresh, 5000);
-  };
-  refresh();
+  const root=$(".inline-work");if(root)renderInlineWork(root);
 }
+
 let checklistRefresh = null;
 async function refreshNativeChecklist() {
   const generation = view.generation;

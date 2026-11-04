@@ -29,7 +29,7 @@ mod chat_page;
 mod flow;
 pub use flow::{
     FOLLOW_UP, cancel_root, context as actor_context, continuation_factory, execute,
-    open_viewer_child, schema, take_completion,
+    finish_checklist, open_viewer_child, schema, take_completion,
 };
 const MAX_MESSAGE: usize = 8192;
 const MAX_TAIL: usize = 48 * 1024;
@@ -158,6 +158,8 @@ pub struct Info {
     pub notify_parent: bool,
     #[serde(default)]
     pub notified_turns: u64,
+    #[serde(default)]
+    pub parent_received_turns: u64,
     #[serde(default)]
     pub terminal_events: u64,
     #[serde(default)]
@@ -438,6 +440,46 @@ impl Hub {
         state.revision += 1;
         self.changed.notify_all();
     }
+    fn acknowledge_delivery(
+        &self,
+        parent: Option<&str>,
+        session: &mut Session,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|_| "Agent state unavailable")?;
+        let reports = state
+            .agents
+            .values()
+            .filter(|w| {
+                w.info.parent_id.as_deref() == parent
+                    && w.info.notified_turns > w.info.parent_received_turns
+            })
+            .map(|w| json!({"id":w.info.id,"name":w.info.name,"event":w.info.notified_turns}))
+            .collect::<Vec<_>>();
+        if reports.is_empty() {
+            return Ok(());
+        }
+        session
+            .append_checked(&[Record::Custom {
+                kind: "team/delivery".into(),
+                data: Some(
+                    json!({"stage":"received","parent":parent.unwrap_or("main"),"reports":reports})
+                        .to_string(),
+                ),
+            }])
+            .map_err(|e| e.to_string())?;
+        for worker in state
+            .agents
+            .values_mut()
+            .filter(|w| w.info.parent_id.as_deref() == parent)
+        {
+            worker.info.parent_received_turns = worker.info.notified_turns;
+            self.persist(&worker.info)?;
+        }
+        state.revision += 1;
+        self.changed.notify_all();
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Vec<Info> {
         self.state
             .lock()
@@ -679,6 +721,7 @@ impl Hub {
                     depth,
                     notify_parent: from != "human",
                     notified_turns: 0,
+                    parent_received_turns: 0,
                     terminal_events: 0,
                     auto_wakes: 0,
                     pending_activation: false,
@@ -889,6 +932,9 @@ impl Hub {
                 }
                 self.interaction(from, &key, &text)?;
                 let mut info = worker.info.clone();
+                if from != "human" {
+                    info.notify_parent = true;
+                }
                 info.pending_messages.push((from.into(), text.clone()));
                 if launch {
                     info.status = "working".into();
@@ -1042,6 +1088,9 @@ impl Hub {
                 session
                     .append_checked(&[Record::User(format!("[{from} → teammate]\n{text}"))])
                     .map_err(|e| e.to_string())?;
+                if from == "children" {
+                    self.acknowledge_delivery(Some(id), &mut session)?;
+                }
                 let mut state = self.state.lock().unwrap();
                 let worker = state.agents.get_mut(id).unwrap();
                 if let Some(pos) = worker
@@ -2901,7 +2950,7 @@ mod tests {
         assert!(
             take_completion(&mut session, &mut notes, &dir)
                 .unwrap()
-                .is_none()
+                .is_some()
         );
         assert!(
             guard
@@ -2913,6 +2962,169 @@ mod tests {
                 .values()
                 .all(|worker| !worker.interrupt)
         );
+        hubs().lock().unwrap().remove(&session.id);
+        drop(session);
+        drop(guard);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn agent_turn_can_create_three_teammates_after_a_completed_checklist() {
+        struct ThreeCalls(AtomicUsize);
+        impl Provider for ThreeCalls {
+            fn id(&self) -> &str {
+                "three-calls"
+            }
+            fn context_window(&self) -> u32 {
+                100_000
+            }
+            fn stream(
+                &self,
+                _: &provider::Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = provider::Event> + '_>, provider::Error>
+            {
+                let events = if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (0..3).map(|n| provider::Event::ToolCall {
+                        id: format!("call-{n}"), name: "teammate".into(),
+                        arguments: json!({"action":"create","name":format!("analyst-{n}"),"text":"Read-only analysis"}).to_string(),
+                    }).chain(std::iter::once(provider::Event::Done)).collect::<Vec<_>>()
+                } else {
+                    vec![
+                        provider::Event::Text("Delegated three tasks.".into()),
+                        provider::Event::Done,
+                    ]
+                };
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        let (mut guard, dir, requests) = fixture();
+        let mut session = Session::create(&dir.join("main-session")).unwrap();
+        Arc::get_mut(&mut guard.hub).unwrap().owner = session.id.clone();
+        hubs()
+            .lock()
+            .unwrap()
+            .insert(session.id.clone(), Arc::downgrade(&guard.hub));
+        let mut notes = tools::State::default();
+        notes.todo.apply(&glass_mod_api::ToolCall {
+            id:"old-task".into(),name:"state".into(),
+            arguments:json!({"todo":{"ops":[{"op":"init","items":[{"title":"Previous task"}]},{"op":"update","id":"T1","status":"completed"}]}}).to_string(),
+        });
+        session.append(notes.todo.record());
+        session.append(crate::session::Record::User(
+            "Delegate three new analyses".into(),
+        ));
+        let provider = ThreeCalls(AtomicUsize::new(0));
+        let mut extensions = crate::ext::Registry::empty();
+        let result = crate::agent::Agent::new(
+            &provider,
+            &mut session,
+            &mut notes,
+            &[],
+            &mut extensions,
+            &dir,
+        )
+        .run_turn(|_| {});
+        assert!(result.is_ok());
+        settled(&guard.hub);
+        assert_eq!(
+            guard.hub.snapshot().len(),
+            3,
+            "all tool calls in one batch must run"
+        );
+        assert_eq!(requests.lock().unwrap().len(), 3);
+        assert!(
+            guard
+                .hub
+                .snapshot()
+                .iter()
+                .all(|info| info.status == "idle" && info.result == "review complete")
+        );
+        let notification = take_completion(&mut session, &mut notes, &dir)
+            .unwrap()
+            .expect("host must receive child reports without model polling");
+        assert!(
+            notification.contains("analyst-0")
+                && notification.contains("analyst-1")
+                && notification.contains("analyst-2")
+        );
+        assert!(
+            guard
+                .hub
+                .snapshot()
+                .iter()
+                .all(|info| info.parent_received_turns == 1)
+        );
+        let resumed = crate::agent::Agent::new(
+            &provider,
+            &mut session,
+            &mut notes,
+            &[],
+            &mut extensions,
+            &dir,
+        )
+        .run_turn(|_| {});
+        assert!(resumed.is_ok());
+        assert_eq!(
+            provider.0.load(Ordering::SeqCst),
+            3,
+            "two initial requests and one host-triggered continuation only"
+        );
+        assert!(
+            take_completion(&mut session, &mut notes, &dir)
+                .unwrap()
+                .is_none(),
+            "completion cannot be replayed"
+        );
+        assert!(!guard.hub.state.lock().unwrap().flow.stopped);
+        hubs().lock().unwrap().remove(&session.id);
+        drop(session);
+        drop(guard);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn finishing_one_goal_suppresses_old_reports_but_allows_fresh_followups() {
+        let (mut guard, dir, requests) = fixture();
+        let mut session = Session::create(&dir.join("main-session")).unwrap();
+        Arc::get_mut(&mut guard.hub).unwrap().owner = session.id.clone();
+        hubs()
+            .lock()
+            .unwrap()
+            .insert(session.id.clone(), Arc::downgrade(&guard.hub));
+        let mut notes = tools::State::default();
+        crate::todo::apply_user(
+            &mut notes,
+            &mut session,
+            json!([{"op":"init","items":[{"title":"Old goal"}]}]),
+        )
+        .unwrap();
+        guard
+            .hub
+            .request(&json!({"action":"create","from":"main","name":"old","text":"Old assignment"}))
+            .unwrap();
+        settled(&guard.hub);
+        crate::todo::apply_user(
+            &mut notes,
+            &mut session,
+            json!([{"op":"update","id":"T1","status":"completed"}]),
+        )
+        .unwrap();
+        assert!(!guard.hub.state.lock().unwrap().flow.stopped);
+        assert!(
+            take_completion(&mut session, &mut notes, &dir)
+                .unwrap()
+                .is_none()
+        );
+        let worker = guard.hub.snapshot()[0].id.clone();
+        guard.hub.request(&json!({"action":"send","from":"main","id":worker,"text":"Fresh explicit follow-up"})).unwrap();
+        settled(&guard.hub);
+        assert!(
+            take_completion(&mut session, &mut notes, &dir)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        assert_eq!(guard.hub.snapshot()[0].parent_received_turns, 2);
         hubs().lock().unwrap().remove(&session.id);
         drop(session);
         drop(guard);

@@ -155,6 +155,8 @@ impl Hub {
             w.info.pending_activation = true;
             self.persist(&w.info)?;
         }
+        state.revision += 1;
+        self.changed.notify_all();
         Ok(Some(prompt))
     }
     pub(super) fn dispatch_children(self: &Arc<Self>) {
@@ -208,19 +210,6 @@ pub fn take_completion(
         return crate::jobs::take_completion(workspace, session, notes);
     };
     notes.load_todo_once(session)?;
-    if !notes.todo.tasks.is_empty()
-        && !notes.todo.tasks.iter().any(|t| {
-            matches!(
-                t.status,
-                crate::todo::Status::Pending | crate::todo::Status::InProgress
-            )
-        })
-    {
-        // A finished checklist suppresses automatic wakeups only. It must not
-        // stop delegation or interrupt a fresh explicit assignment.
-        crate::jobs::cancel_notifications(&session.id);
-        return Ok(None);
-    }
     hub.dispatch_children();
     let Some(prompt) = hub.completion(None)? else {
         let allowed = {
@@ -237,6 +226,7 @@ pub fn take_completion(
     session
         .append_checked(&[Record::User(prompt.clone())])
         .map_err(|e| e.to_string())?;
+    hub.acknowledge_delivery(None, session)?;
     Ok(Some(prompt))
 }
 pub fn schema() -> (String, String, String) {
@@ -410,6 +400,25 @@ impl Drop for ContinuationStream<'_> {
                     u64::from(u.prompt_total()).saturating_add(u64::from(u.output))
                 }));
         let _ = save(&self.hub.dir.join("workflow.json"), &state.flow);
+    }
+}
+
+// Scope task completion to workers that already exist at this transition.
+// Future explicit assignments keep notifications and share the same hard limits.
+pub fn finish_checklist(owner: &str) {
+    crate::jobs::cancel_notifications(owner);
+    if let Some(hub) = get(owner) {
+        let mut state = lock_for_cleanup(&hub.state);
+        for worker in state.agents.values_mut() {
+            worker.info.notify_parent = false;
+            worker.interrupt = true;
+            worker.queue.clear();
+            worker.info.pending_messages.clear();
+            worker.info.pending_activation = false;
+            let _ = hub.persist(&worker.info);
+        }
+        state.revision += 1;
+        hub.changed.notify_all();
     }
 }
 

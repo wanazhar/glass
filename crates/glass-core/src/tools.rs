@@ -706,6 +706,17 @@ impl State {
                 "error: state update was not persisted and was rolled back: {error}"
             ));
         }
+        let actionable = |board: &crate::todo::Board| {
+            board.tasks.iter().any(|task| {
+                matches!(
+                    task.status,
+                    crate::todo::Status::Pending | crate::todo::Status::InProgress
+                )
+            })
+        };
+        if actionable(&before.todo) && !self.todo.tasks.is_empty() && !actionable(&self.todo) {
+            crate::team::finish_checklist(&session.id);
+        }
         crate::todo::publish(&self.todo);
         Ok(())
     }

@@ -12,7 +12,9 @@ The responsive composer previews image attachments, reports measured upload prog
 
 Files opens a lazy folder tree with arrow-key navigation, Home/End, and Enter. Switch to List view for the existing disk-usage rows. Voice input appears only in supported browsers on a secure origin, starts on your action, and appends to your draft. HTTP-only browsers may not offer it. Progress percentages appear only when measurable; context usage remains unavailable when the engine does not report it.
 
-To re-enable delegation after restoring saved teammates, open **Work → Resume delegation** in the WebUI, or choose **/agents → resume-workflow**. This resumes delegation within its existing budget; parked teammates still need an explicit assignment. It does not require opening the TUI. A finished checklist suppresses automatic wakeups without disabling new explicit assignments. Human workflow stops and shared token limits remain in force.
+To re-enable delegation after restoring saved teammates, open **Work → Resume delegation** in the WebUI, or choose **/agents → resume-workflow**. This resumes delegation within its existing budget; parked teammates still need an explicit assignment. It does not require opening the TUI. Completing a checklist ends notifications for workers already assigned to that goal. It does not disable future explicit assignments or their completion reports. Human workflow stops and shared token limits remain in force.
+
+Live teammate chips remain visible above the composer while the main model is idle. Runtime events refresh status without model polling. Parked is distinct from Working. Completed reports show Report pending, Queued for main, or Received by main from native counters; received means the report was saved into the parent conversation, not that its claims were independently verified. The transcript retains a delivery receipt and a compact, expandable follow-up. A live parent turn started from reports shows Main resumed from teammate reports.
 
 ## Start
 

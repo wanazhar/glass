@@ -262,6 +262,8 @@ def verify(root,server):
     assert len(infos)==2,infos
     coordinator=next(i for i in infos if i['name']=='coordinator');leaf=next(i for i in infos if i['name']=='leaf')
     assert leaf['parent_id']==coordinator['id'] and leaf['depth']==2
+    assert leaf['parent_received_turns']==leaf['terminal_events']>0,leaf
+    assert coordinator['parent_received_turns']==coordinator['terminal_events']>0,coordinator
     assert coordinator['auto_wakes']==1 and coordinator['result']=='COORDINATOR_DONE'
     assert len(server.requests)==7+(2 if getattr(server,"inspection_probe",False) else 0),len(server.requests)
     flow=json.loads(next((root/'data/glass-core/agents').glob('*/workflow.json')).read_text());assert flow['wakes']==2 and flow['root_spent']>0 and flow['root_reserved']==0,flow

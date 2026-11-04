@@ -1273,7 +1273,7 @@ pub fn serve(
                 }
                 broadcast(
                     &clients,
-                    json!({"t":"turn_start","request_id":message.get("request_id"),"already_recorded":message["inbox_recorded"]==true,"text":if message["inbox_recorded"]==true{Value::Null}else{message["text"].clone()}}),
+                    json!({"t":"turn_start","team_continuation":message["team_continuation"]==true,"request_id":message.get("request_id"),"already_recorded":message["inbox_recorded"]==true,"text":if message["inbox_recorded"]==true{Value::Null}else{message["text"].clone()}}),
                 );
                 let turn_factory = if message["team_continuation"] == true {
                     crate::team::continuation_factory(&session.id, std::sync::Arc::clone(&factory))

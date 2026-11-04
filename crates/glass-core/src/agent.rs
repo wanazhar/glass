@@ -3519,17 +3519,8 @@ impl<'a> Agent<'a> {
     /// Record a tool result and notify mods. The single path every tool
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
-        if outcome.exit_code == Some(0)
-            && !self.state.todo.tasks.is_empty()
-            && !self.state.todo.tasks.iter().any(|t| {
-                matches!(
-                    t.status,
-                    crate::todo::Status::Pending | crate::todo::Status::InProgress
-                )
-            })
-        {
-            crate::team::cancel_root(&self.session.id);
-        }
+        // Checklist cleanup is scoped to a persisted transition in State::persist_with.
+        // Other successful tools must never stop fresh delegation.
         let outcome = tools::Outcome {
             body: self.session.secrets.redact(&outcome.body),
             ..outcome

@@ -49,6 +49,10 @@ rounded command/work palettes. Component cards may be rounded within those surfa
   in a secure context. It starts only on a user action and preserves typed drafts.
 - Context usage is shown only when reported; unavailable usage has no percentage.
 
+Live teammate chips subscribe to native revisions independently of the main model. Parked, working, completed, queued report, and parent receipt are distinct. A durable `team/delivery` entry records that reports entered the parent context; it does not verify their claims. The parent-start event separately identifies a report-triggered turn. No periodic status read or model polling is needed.
+
+The idle composer uses one text row and equal SVG controls. Inter is bundled as Glass Sans; input text remains 16px to avoid mobile Safari focus zoom, while response typography and spacing are independently compact.
+
 ## Verification
 
 Exercise mobile, tablet, and desktop widths in both themes. Verify keyboard tree

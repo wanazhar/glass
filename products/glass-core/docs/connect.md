@@ -480,7 +480,12 @@ output only when already at the bottom, and offers a snapshot download. This is
 not an interactive shell or byte-by-byte terminal stream. Log snapshots retain
 up to 128K characters of recent output. The structured view shows at most 48
 recent steps, with an 8K-character result preview per step; individual conversation
-steps retain their existing fuller previews.
+steps retain their existing fuller previews. Saved steps without call IDs receive
+stable history identities and remain visible. If the loaded page contains no tool
+steps, opening Agent activity checks up to four earlier history pages with visible
+loading feedback. **Load earlier steps** continues the bounded search; earlier
+records retain chronological order. This reads saved history without invoking the
+model or running a command.
 
 Public reasoning appears as collapsed Thinking/Thoughts rows between steps.
 Their 64K-character previews render Markdown only when expanded. The Reasoning tab

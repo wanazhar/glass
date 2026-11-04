@@ -4,6 +4,8 @@ Installed locally: [shared chat resumption](plan/analysis/shared-chat-resumption
 its [delivery task](plan/tasks/shared-chat-resume-001.md) cover TUI/WebUI cross-app
 resumption and stable creation-origin labels.
 
+The [Connect guide](../products/glass-core/docs/connect.md) covers saved WebUI agent activity, loading earlier steps, and conversation handoff.
+
 The [development runtime guide](development-runtime.md) explains process completion without model polling, ranked Glass tool discovery, resumed-session catalog refresh, and shared conversation resumption across Glass, GC, and Connect WebUI. `glass resume` continues chats in the Glass interface.
 
 The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)

@@ -36,7 +36,8 @@ const server = createServer(async (request, response) => {
   if (path === "/api/events") {
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     streams.add(response);
-    response.write(`data: ${JSON.stringify({ reset: true, control: { can_write: true, web_workflows: 1, commands: [] }, live: [{ t: "tool", call_id: "resumed", name: "bash", command: "sleep 1" }], active: true })}\n\n`);
+    const archived = url.searchParams.get("id") === "archive";
+    response.write(`data: ${JSON.stringify({ reset: true, control: { can_write: true, web_workflows: 1, commands: [] }, live: archived ? [] : [{ t: "tool", call_id: "resumed", name: "bash", command: "sleep 1" }], active: !archived })}\n\n`);
     request.on("close", () => streams.delete(response));
     return;
   }
@@ -54,7 +55,7 @@ const server = createServer(async (request, response) => {
   if (path.startsWith("/api/")) {
     let data = {};
     if (path === "/api/status") data = { profile: "workspace-edit", workspace: "/tmp", web_workflows: 1 };
-    if (path === "/api/threads") data = { threads: ["fixture", "other"].map(session => ({ session, title: session === "fixture" ? "Activity reference" : "Other thread", workspace: "/tmp", workspace_assigned: true, workspace_available: true })), projects: [] };
+    if (path === "/api/threads") data = { threads: ["fixture", "other", "archive"].map(session => ({ session, title: session === "fixture" ? "Activity reference" : "Other thread", workspace: "/tmp", workspace_assigned: true, workspace_available: true })), projects: [] };
     if (path === "/api/history") data = url.searchParams.has("before")
       ? { records: [
           { index: 0, record: { k: "user", t: "Earlier task" } },
@@ -63,6 +64,12 @@ const server = createServer(async (request, response) => {
           { index: 3, record: { k: "assistant", t: "Earlier answer" } },
         ], before: 0 }
       : { records: records.map((record, index) => ({ index: 100 + index, record })), before: 100 };
+    if (path === "/api/history" && url.searchParams.get("id") === "archive") data = url.searchParams.has("before")
+      ? { records: [
+          { index: 1, record: { k: "bash", cmd: "legacy-check", out: "LEGACY_ACTIVITY_RESULT", code: 0 } },
+          { index: 2, record: { k: "tool", name: "read", t: "SAVED_WITHOUT_CALL_ID" } },
+        ], before: 0 }
+      : { records: [{ index: 100, record: { k: "assistant", t: "Latest answer without tool calls." } }], before: 100 };
     if (path === "/api/send") {
       let source = "";
       for await (const chunk of request) source += chunk;
@@ -231,6 +238,23 @@ try {
     await context.close();
     console.log(`PASS activity rows, safe source, event console, documents, diagrams and questions ${width}px ${colorScheme}`);
   }
+  // No live tool events: the latest history page contains prose only, while
+  // earlier history holds legacy steps without a call ID.
+  const archiveContext = await browser.newContext({ viewport: { width: 390, height: 900 }, serviceWorkers: "block" });
+  const archivePage = await archiveContext.newPage();
+  const archiveErrors = [];
+  archivePage.on("pageerror", error => archiveErrors.push(String(error)));
+  await archivePage.goto(`http://127.0.0.1:${server.address().port}/?thread=archive`);
+  await archivePage.getByText("Latest answer without tool calls.", { exact: true }).waitFor();
+  await archivePage.locator("#agent-activity").click();
+  await archivePage.locator(".activity-result").filter({ hasText: "LEGACY_ACTIVITY_RESULT" }).waitFor();
+  await archivePage.locator(".activity-result").filter({ hasText: "SAVED_WITHOUT_CALL_ID" }).waitFor();
+  assert.equal(await archivePage.locator(".activity-entry").count(), 2);
+  assert.equal(await archivePage.locator(".activity-load-earlier").isVisible(), false);
+  assert.deepEqual(archiveErrors, []);
+  await archivePage.screenshot({ path: "/tmp/gc-saved-activity-history.png" });
+  await archiveContext.close();
+  console.log("PASS saved activity without live events: earlier pages and legacy tool identities");
 } finally {
   answerRelease?.();
   await browser.close();

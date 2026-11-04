@@ -807,7 +807,7 @@ function group(target = $("#timeline")) {
   }
   return view.group;
 }
-let toolClock, activityPreviewThread = null;
+let toolClock, activityPreviewThread = null, activityHistoryRequest = null;
 function refreshToolActivity() {
   const running = [...view.tools.values()].filter(t => t.state === "running" && t.row.isConnected);
   if (!running.length || document.hidden) {
@@ -824,6 +824,26 @@ function openAgentActivity() {
   activityPreviewThread = view.id;
   $("#preview-body").classList.add("agent-console");
   $("#preview-body").scrollTop = $("#preview-body").scrollHeight;
+  refreshAgentActivity();
+  if (!view.tools.size && view.before > 0) loadEarlierAgentActivity();
+}
+async function loadEarlierAgentActivity() {
+  if (activityHistoryRequest?.generation === view.generation) return;
+  const request = { generation: view.generation };
+  activityHistoryRequest = request;
+  refreshAgentActivity();
+  try {
+    for (let page = 0; page < 4 && view.before > 0 && request.generation === view.generation; page++) {
+      const before = view.before;
+      await history(true);
+      if (view.before === before) break;
+    }
+  } catch (error) {
+    if (request.generation === view.generation) notice(`Cannot load earlier activity: ${error.message}`, true);
+  } finally {
+    if (activityHistoryRequest === request) activityHistoryRequest = null;
+    refreshAgentActivity();
+  }
 }
 function refreshAgentActivity() {
   if (activityPreviewThread !== view.id || !$("#preview").open) return;
@@ -832,6 +852,20 @@ function refreshAgentActivity() {
   const following = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   const snapshot = activitySnapshot(view.tools.values());
   renderActivityConsole(body, view.tools.values());
+  let earlier = body.querySelector(".activity-load-earlier");
+  if (!earlier) {
+    earlier = el("button", "quiet activity-load-earlier");
+    earlier.type = "button";
+    earlier.onclick = loadEarlierAgentActivity;
+    body.querySelector(".activity-console-controls").append(earlier);
+  }
+  const loading = activityHistoryRequest?.generation === view.generation;
+  earlier.hidden = view.before === 0 && !loading;
+  earlier.disabled = loading;
+  earlier.textContent = loading ? "Loading earlier steps…" : "Load earlier steps";
+  earlier.setAttribute("aria-busy", String(loading));
+  if (!view.tools.size && view.before > 0) body.querySelector(".activity-console-empty").textContent = loading
+    ? "Looking for saved tool activity…" : "No tool steps in the loaded history. Load earlier steps to check the rest of this conversation.";
   if (previewBlob) URL.revokeObjectURL(previewBlob);
   previewBlob = URL.createObjectURL(new Blob([snapshot], { type: "text/plain" }));
   if (following) body.scrollTop = body.scrollHeight;
@@ -854,7 +888,7 @@ function tool(id, name, command = "", target = $("#timeline"), args, saved = fal
   parent.append(item.row);
   const count = parent.querySelectorAll(":scope > .tool-row").length;
   parent.firstChild.textContent = `${count} ${count === 1 ? "step" : "steps"}`;
-  if (id) view.tools.set(id, item);
+  view.tools.set(id || item.row, item);
   refreshToolActivity();
   refreshAgentActivity();
   return item;
@@ -1084,7 +1118,9 @@ async function historyNow(older = false) {
     )
       continue;
     const previousNode = fragment.lastElementChild;
-    record(item.record, fragment);
+    const saved = item.record;
+    record(!saved.id && ["call", "tool_call", "tool", "bash"].includes(saved.k)
+      ? { ...saved, id: `history:${item.index}` } : saved, fragment);
     if (fragment.lastElementChild !== previousNode) visibleRecords++;
     const node = fragment.lastElementChild;
     if (node && !node.dataset.recordIndex)
@@ -1178,6 +1214,12 @@ async function historyNow(older = false) {
       .slice(-64);
   }
   $("#older").classList.toggle("hidden", h.before === 0);
+  // Loading older records must not make them look newer in the console.
+  view.tools = new Map([...view.tools].sort(([, a], [, b]) => {
+    if (a.row === b.row) return 0;
+    return a.row.compareDocumentPosition(b.row) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  }));
+  refreshAgentActivity();
   details();
   return visibleRecords;
 }

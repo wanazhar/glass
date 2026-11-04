@@ -216,13 +216,9 @@ pub fn take_completion(
             )
         })
     {
-        let mut state = hub.state.lock().unwrap();
-        state.flow.stopped = true;
+        // A finished checklist suppresses automatic wakeups only. It must not
+        // stop delegation or interrupt a fresh explicit assignment.
         crate::jobs::cancel_notifications(&session.id);
-        for worker in state.agents.values_mut() {
-            worker.interrupt = true;
-        }
-        save(&hub.dir.join("workflow.json"), &state.flow)?;
         return Ok(None);
     }
     hub.dispatch_children();

@@ -12,7 +12,7 @@ The responsive composer previews image attachments, reports measured upload prog
 
 Files opens a lazy folder tree with arrow-key navigation, Home/End, and Enter. Switch to List view for the existing disk-usage rows. Voice input appears only in supported browsers on a secure origin, starts on your action, and appends to your draft. HTTP-only browsers may not offer it. Progress percentages appear only when measurable; context usage remains unavailable when the engine does not report it.
 
-To re-enable delegation after restoring saved teammates, open **Work → Resume delegation** in the WebUI, or choose **/agents → resume-workflow**. This resumes delegation within its existing budget; parked teammates still need an explicit assignment. It does not require opening the TUI.
+To re-enable delegation after restoring saved teammates, open **Work → Resume delegation** in the WebUI, or choose **/agents → resume-workflow**. This resumes delegation within its existing budget; parked teammates still need an explicit assignment. It does not require opening the TUI. A finished checklist suppresses automatic wakeups without disabling new explicit assignments. Human workflow stops and shared token limits remain in force.
 
 ## Start
 

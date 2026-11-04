@@ -2862,6 +2862,65 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn completed_checklist_does_not_restop_explicitly_resumed_delegation() {
+        let (mut guard, dir, requests) = fixture();
+        let mut session = Session::create(&dir.join("root-session")).unwrap();
+        Arc::get_mut(&mut guard.hub).unwrap().owner = session.id.clone();
+        hubs()
+            .lock()
+            .unwrap()
+            .insert(session.id.clone(), Arc::downgrade(&guard.hub));
+        let mut notes = tools::State::default();
+        notes.todo.apply(&glass_mod_api::ToolCall {
+            id: "finish-old-task".into(), name: "state".into(),
+            arguments: json!({"todo":{"ops":[{"op":"init","items":[{"title":"Previous task"}]},{"op":"update","id":"T1","status":"completed"}]}}).to_string(),
+        });
+        session.append(notes.todo.record());
+        for operation in ["stop", "resume"] {
+            guard
+                .hub
+                .request(&json!({"action":"workflow","from":"human","operation":operation}))
+                .unwrap();
+            assert!(
+                take_completion(&mut session, &mut notes, &dir)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                guard.hub.state.lock().unwrap().flow.stopped,
+                operation == "stop"
+            );
+        }
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "completion must not wake the model"
+        );
+        guard.hub.request(&json!({"action":"create","from":"main","name":"next","text":"New explicit assignment"})).unwrap();
+        settled(&guard.hub);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(
+            take_completion(&mut session, &mut notes, &dir)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            guard
+                .hub
+                .state
+                .lock()
+                .unwrap()
+                .agents
+                .values()
+                .all(|worker| !worker.interrupt)
+        );
+        hubs().lock().unwrap().remove(&session.id);
+        drop(session);
+        drop(guard);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn long_agent_control_socket_uses_bindable_private_temp_path() {
         use std::os::unix::ffi::OsStrExt;
         use std::os::unix::net::UnixListener;

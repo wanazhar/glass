@@ -42,7 +42,7 @@ await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync("/snap/chromium/current/usr/lib/chromium-browser/chrome")?"/snap/chromium/current/usr/lib/chromium-browser/chrome":undefined),headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
 try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"]){
  agents=[];attachments=[];omitChecklist=false;todo[2].status="in_progress";todo[3].status="pending";todo[4].status="pending";
- const context=await browser.newContext({viewport:{width,height:1000},colorScheme,serviceWorkers:"block",reducedMotion:"reduce"});
+ const context=await browser.newContext({viewport:{width,height:1000},isMobile:width<=768,hasTouch:width<=768,colorScheme,serviceWorkers:"block",reducedMotion:"reduce"});
  await context.addInitScript(()=>{window.SpeechRecognition=class{start(){window.testRecognition=this;}stop(){this.onend?.();}};});
  const page=await context.newPage(),errors=[];page.on("pageerror",error=>errors.push(String(error)));
  await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
@@ -50,7 +50,7 @@ try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"])
  await page.getByText("3 steps left",{exact:true}).waitFor();
  await page.evaluate(()=>document.fonts.ready);assert(await page.evaluate(()=>document.fonts.check('13px "Glass Sans"')));
  assert.equal(await page.locator("#prompt").getAttribute("rows"),"1");
- assert(await page.locator("#composer").evaluate(n=>n.getBoundingClientRect().height<95),"Idle composer must stay compact");
+ assert(await page.locator("#composer").evaluate(n=>n.getBoundingClientRect().height<85),"Idle composer must stay compact");
  assert(await page.evaluate(()=>{const a=document.querySelector("#attach").getBoundingClientRect(),s=document.querySelector("#send").getBoundingClientRect();return Math.abs(a.y+a.height/2-s.y-s.height/2)<1&&a.height===s.height;}),"Composer icons share a center and size");
  agents=[{id:"analyst",name:"Analyst",status:"working",activity:"reading files",notify_parent:true,terminal_events:0,notified_turns:0,parent_received_turns:0}];agentEvent();
  await page.getByRole("button",{name:"Analyst Working",exact:true}).waitFor();

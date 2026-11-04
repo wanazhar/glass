@@ -3772,3 +3772,12 @@ dialog.floating-palette {
 @media (prefers-reduced-motion: reduce) {
   .activity.working .agent-sigil i, .progress-ring.indeterminate, .task-card-row[data-status="in_progress"] .task-status-icon { animation: none; }
 }
+
+/* Handoff belongs to the toolbar; workspace is a quiet location breadcrumb. */
+.toolbar-actions #handoff { width: 36px; min-width: 36px; height: 36px; padding: 8px; border: 0; background: transparent; border-radius: 8px; }
+.toolbar-actions #handoff:hover { background: var(--surface2); }
+.compose-foot .workspace-location { margin-left: 4px; padding: 3px 6px; border: 0; box-shadow: none; background: transparent; border-radius: 4px; font-size: 11px; color: var(--muted); }
+.compose-foot .workspace-location:hover { color: var(--text); background: var(--surface2); }
+.compose-foot .workspace-location::before { font-size: 13px; }
+
+.toolbar-actions #handoff::after { content: none; }

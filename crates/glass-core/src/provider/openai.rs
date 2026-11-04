@@ -250,13 +250,28 @@ fn responses_input(messages: &[glass_mod_api::Message]) -> Vec<Value> {
         .collect()
 }
 
+// OpenAI-compatible endpoints reject root composition keywords even when the
+// canonical tool schema is a valid object. Keep canonical validation unchanged;
+// only relax the advertised root. Nested property schemas remain intact.
+fn wire_parameters(schema: &str) -> Value {
+    let mut value = serde_json::from_str::<Value>(schema)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({"type":"object"}));
+    let object = value.as_object_mut().expect("object schema");
+    object.insert("type".into(), json!("object"));
+    for key in ["oneOf", "anyOf", "allOf", "enum", "const", "not"] {
+        object.remove(key);
+    }
+    value
+}
+
 fn build_tools(tools: &[(String, String, String)]) -> Value {
     Value::Array(
         tools
             .iter()
             .map(|(name, desc, schema)| {
-                let params: Value =
-                    serde_json::from_str(schema).unwrap_or_else(|_| json!({ "type": "object" }));
+                let params = wire_parameters(schema);
                 json!({
                     "type": "function",
                     "function": { "name": name, "description": desc, "parameters": params }
@@ -309,10 +324,17 @@ impl Provider for OpenAiCompat {
             // endpoint rejects — and lenient ones ignore, leaving the model
             // with no tools at all and the agent silently inert.
             body["tools"] = if self.flavour == Flavour::Responses {
-                Value::Array(req.tools.iter().map(|(name, description, schema)| json!({
-                    "type": "function", "name": name, "description": description,
-                    "parameters": serde_json::from_str::<Value>(schema).unwrap_or_else(|_| json!({"type":"object"}))
-                })).collect())
+                Value::Array(
+                    req.tools
+                        .iter()
+                        .map(|(name, description, schema)| {
+                            json!({
+                                "type": "function", "name": name, "description": description,
+                                "parameters": wire_parameters(schema)
+                            })
+                        })
+                        .collect(),
+                )
             } else {
                 build_tools(req.tools)
             };
@@ -939,6 +961,26 @@ impl<R: Read> Iterator for StreamEvents<R> {
 mod tests {
     use super::*;
     use glass_mod_api::Message;
+
+    #[test]
+    fn wire_tool_parameters_accept_builtin_roots_without_changing_native_contracts() {
+        for (_, _, schema) in crate::provider::builtin_tools()
+            .into_iter()
+            .chain(crate::provider::desktop_tool_schemas(true))
+        {
+            let canonical: Value = serde_json::from_str(&schema).unwrap();
+            let wire = wire_parameters(&schema);
+            assert_eq!(wire["type"], "object");
+            for key in ["oneOf", "anyOf", "allOf", "enum", "const", "not"] {
+                assert!(wire.get(key).is_none(), "root contains {key}");
+            }
+            assert_eq!(wire["properties"], canonical["properties"]);
+            assert_eq!(wire["required"], canonical["required"]);
+        }
+        let schema = r#"{"type":"object","anyOf":[{"required":["x"]}],"properties":{"x":{"anyOf":[{"type":"string"},{"type":"null"}]}}}"#;
+        assert!(wire_parameters(schema)["properties"]["x"]["anyOf"].is_array());
+        assert!(serde_json::from_str::<Value>(schema).unwrap()["anyOf"].is_array());
+    }
 
     #[test]
     fn checkpoint_reports_do_not_split_wire_tool_batches() {

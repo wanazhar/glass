@@ -43,6 +43,9 @@ try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"])
  await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
  await page.waitForFunction(()=>document.querySelector("#ownership").textContent==="Release control");
  await page.getByText("3 steps left",{exact:true}).waitFor();
+ assert.equal(await page.locator("#handoff svg").count(),1);
+ assert.equal(await page.locator("#handoff").evaluate(n=>getComputedStyle(n,"::after").content),"none");
+ assert.equal(await page.locator("#workspace-location").evaluate(n=>getComputedStyle(n).borderTopWidth),"0px");
  assert.equal(await page.locator('.task-card-row[data-status="completed"]').count(),2);
  assert.equal(await page.locator(".code-filename").filter({hasText:"theme-toggle.tsx"}).count(),1);
  assert.equal(await page.locator(".diff-counts .added").textContent(),"+1");assert.equal(await page.locator(".diff-counts .removed").textContent(),"−1");

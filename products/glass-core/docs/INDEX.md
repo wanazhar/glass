@@ -37,7 +37,7 @@ The [Shared desktop section](connect.md#shared-desktop) includes [available desk
   instructions, and discovery.
 - [Approvals and user questions](reference/interaction.md): paused decisions,
   execution modes, and native questions.
-- [Workspace](reference/workspace.md): tasks, roles, worker limits, request metadata,
+- [Workspace](reference/workspace.md): tasks, roles, inherited worker tools, Unlimited budgets, reconnect status, request metadata,
   findings, policy explanations, and artifacts.
 - [Workbench](reference/workbench.md): quoted context, portable handoffs, job input,
   PR publication, advisor cadence, schedules, and optional clients.

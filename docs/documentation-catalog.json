@@ -91902,6 +91902,11 @@
           "level": "2",
           "title": "Completions and performance verification",
           "anchor": "completions-and-performance-verification"
+        },
+        {
+          "level": "3",
+          "title": "Web teammate status after reconnect",
+          "anchor": "web-teammate-status-after-reconnect"
         }
       ]
     },

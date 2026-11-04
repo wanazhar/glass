@@ -462,8 +462,11 @@ pub fn run_task_observed(
                 (workspace.to_path_buf(), String::new())
             };
             let mut state = tools::State::new();
-            let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
-            let mut registry = ext::Registry::empty();
+            let parent_hub=crate::team::get(&link.parent_session_id);
+            let cfg=parent_hub.as_ref().and_then(|hub|hub.parent_config()).unwrap_or_default();
+            let mods=crate::mods::load(&cfg.mods)?;
+            let mut registry=ext::Registry::load(&cfg.extensions,&run_workspace,&cfg.model);
+            if let Some(hub)=parent_hub.clone(){registry.set_subagent(move ||hub.extension_runner("main"));}
             let base = task_prompt(&task, parent_prompt.as_deref());
             let text_buffer = std::cell::RefCell::new(String::new());
             let tool_call_ids = std::cell::RefCell::new(ChildToolCallIds::default());
@@ -476,6 +479,10 @@ pub fn run_task_observed(
                 &run_workspace,
             )
             .with_task_context(base, task.read_only)
+            .with_image_input(cfg.image_input)
+            .with_checkpoint_tools(cfg.checkpoint_tools)
+            .with_pre_tool_hook(if task.read_only {None}else{crate::hooks_shell::load_config()})
+            .prime_extensions()
             .with_progress(|progress| match progress {
                 crate::agent::Progress::Text(text) => {
                     let mut buffer = text_buffer.borrow_mut();
@@ -509,6 +516,7 @@ pub fn run_task_observed(
                 }
                 _ => {}
             });
+            if let Some(hub)=&parent_hub {agent=hub.inherit_hosted(agent,child_session_id.clone(),task.read_only);}
             let turn_result = agent.run_turn(|_| {});
             drop(agent);
             let mut text_buffer = text_buffer.into_inner();
@@ -999,14 +1007,9 @@ mod tests {
         let got = seen.lock().unwrap().clone();
         assert!(!got.is_empty(), "the subagent must have made a request");
         assert!(
-            got.iter()
-                .all(|s| s.starts_with(&crate::permissions::model_context(
-                    crate::guidance::teammate_context(
-                        crate::guidance::model_context(parent.into()),
-                        false
-                    ),
-                    false
-                ))),
+            got.iter().all(|s| s.starts_with(parent)
+                && s.matches("[GC workflow protocol ").count() == 1
+                && s.matches("[GC teammates]").count() == 1),
             "every request must preserve the inherited prefix with one shared workflow protocol, got: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);

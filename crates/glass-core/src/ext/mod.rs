@@ -190,6 +190,9 @@ impl Registry {
         &self.failures
     }
 
+    pub(crate) fn has_event_runner(&self) -> bool {
+        self.event_runner_factory.is_some()
+    }
     pub fn names(&self) -> Vec<&str> {
         self.exts.iter().map(|e| e.manifest.name.as_str()).collect()
     }

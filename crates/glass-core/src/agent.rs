@@ -767,6 +767,12 @@ impl<'a> Agent<'a> {
     /// a pipe round-trip per turn would be latency for a value that does not
     /// change.
     pub fn prime_extensions(mut self) -> Self {
+        if !self.extensions.has_event_runner()
+            && let Some(hub) = crate::team::get(&self.session.id)
+        {
+            self.extensions
+                .set_subagent(move || hub.extension_runner("main"));
+        }
         if !self.read_only {
             self.ext_prompt = self.extensions.system_prompt();
         }

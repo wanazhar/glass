@@ -755,12 +755,13 @@ pub fn serve(
             factory
         })
     };
-    let _team = crate::team::start(
+    let _team = crate::team::start_with_config(
         &session.id,
         &cfg.workspace,
         std::sync::Arc::clone(&factory),
         factory_for_model,
         &cfg.model,
+        &cfg,
     )?;
     let mut instructions =
         crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
@@ -1165,6 +1166,9 @@ pub fn serve(
                         &ledger,
                     )
                 };
+                if let Some(hub) = crate::team::get(&session.id) {
+                    hub.configure(&cfg);
+                }
                 *runtime_config
                     .lock()
                     .map_err(|_| "Runtime configuration unavailable")? = cfg.clone();
@@ -1342,7 +1346,7 @@ pub fn serve(
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
                     .with_live(cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&turn_factory))
-                    .with_limits(if message["team_continuation"]==true{cfg.max_tokens.min(16000)}else{cfg.max_tokens},cfg.reasoning_budget,if message["team_continuation"]==true{24}else{usize::MAX})
+                    .with_limits(cfg.max_tokens,cfg.reasoning_budget,usize::MAX)
                     .with_checkpoint_tools(cfg.checkpoint_tools)
                     .with_progress(move |progress| {
                         let event=match progress {

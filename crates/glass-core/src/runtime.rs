@@ -899,7 +899,26 @@ impl Wire {
             ),
         }
     }
+    fn service_child_tools(&mut self, session: &str) {
+        let Some(hub) = crate::team::get(session) else {
+            return;
+        };
+        while let Some(mut request) = hub.pop_hosted() {
+            let identity = crate::hashing::sha256(
+                format!("{}:{}:{}", request.child, request.sequence, request.call.id).as_bytes(),
+            );
+            request.call.id = format!("delegate-{identity}");
+            let outcome = self.tool(
+                &request.call,
+                session,
+                &json!(format!("child-{}", request.child)),
+                request.sequence,
+            );
+            let _ = request.reply.send(outcome);
+        }
+    }
     fn pump(&mut self, slot: &mut Option<String>, session: &str, turn: &Value) {
+        self.service_child_tools(session);
         while let Some(m) = self.incoming() {
             self.active(m, session, turn);
         }
@@ -1388,6 +1407,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
     let mut conversations = BTreeMap::<String, Conversation>::new();
     let mut durable: Option<durable_host::Host> = None;
     loop {
+        for c in conversations.values() {
+            wire.borrow_mut().service_child_tools(&c.session.id);
+        }
         let queued = wire.borrow_mut().pending.pop_front();
         let incoming = if queued.is_none() {
             Some(
@@ -1780,12 +1802,13 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             budget.provider(settings, model)
                         }),
                     );
-                    let guard = crate::team::start(
+                    let guard = crate::team::start_with_config(
                         &sid,
                         &settings.workspace,
                         factory,
                         models,
                         &settings.model,
+                        &settings,
                     )?;
                     if let Some(hub) = crate::team::get(&sid) {
                         let owner = sid.clone();
@@ -2247,6 +2270,13 @@ fn run(
     turn: &Value,
     records: Vec<Record>,
 ) -> Result<(), String> {
+    if let Some(hub) = crate::team::get(&c.session.id) {
+        hub.configure(&c.cfg);
+        hub.configure_hosted(
+            c.tools.clone().unwrap_or_default(),
+            c.tool_mode == ToolMode::Host,
+        );
+    }
     // Parent and every child provider in this runtime turn must share one
     // synchronized ledger and persistence path. Loading the same file twice
     // produces independent stale in-memory copies and defeats admission.
@@ -2400,7 +2430,7 @@ fn run(
         .with_prompt(c.instructions.clone(),None,None)
         .with_stream_factory(factory)
         .with_runtime_turn(turn)
-        .with_limits(if turn.as_str().is_some_and(|s|s.starts_with("team-")){c.cfg.max_tokens.min(16000)}else{c.cfg.max_tokens},c.cfg.reasoning_budget,if turn.as_str().is_some_and(|s|s.starts_with("team-")){24}else{usize::MAX})
+        .with_limits(c.cfg.max_tokens,c.cfg.reasoning_budget,usize::MAX)
         .with_progress(|progress|{
             let publish=|kind:&str,data:Value|{if durable.is_none_or(|context|context.publish(kind,data.clone(),turn)){event(&sid,turn,kind,data);}};
             match progress{

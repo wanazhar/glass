@@ -1486,12 +1486,13 @@ fn headless(
             f
         })
     };
-    let _team = team::start(
+    let _team = team::start_with_config(
         &session.id,
         &cfg.workspace,
         Arc::clone(&factory),
         Arc::clone(&factory_for_model),
         &cfg.model,
+        &cfg,
     )?;
     let workspace = cfg.workspace.clone();
     // Nested sessions and worktrees live under the data dir so `gc worktree`
@@ -1618,7 +1619,7 @@ fn headless(
             .with_image_input(cfg.image_input)
             .prime_extensions()
             .with_prompt(cfg.system_prompt.clone(), None, continuation_instructions)
-            .with_limits(cfg.max_tokens.min(16000), cfg.reasoning_budget, 24)
+            .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
             .with_recovery(recovering)
             .with_checkpoint_tools(cfg.checkpoint_tools)
             .with_pre_tool_hook(if planning {
@@ -2142,12 +2143,13 @@ fn repl(
     }
 
     let mut team_owner = session.id.clone();
-    let mut team_guard = Some(team::start(
+    let mut team_guard = Some(team::start_with_config(
         &session.id,
         &cfg.workspace,
         Arc::clone(&factory),
         Arc::clone(&factory_for_model),
         &cfg.model,
+        &cfg,
     )?);
     let mut team_dock = String::new();
     let mut totals = Totals::new();
@@ -2174,12 +2176,13 @@ fn repl(
         }
         if team_owner != session.id {
             team_guard.take();
-            team_guard = Some(team::start(
+            team_guard = Some(team::start_with_config(
                 &session.id,
                 &cfg.workspace,
                 Arc::clone(&factory),
                 Arc::clone(&factory_for_model),
                 &cfg.model,
+                &cfg,
             )?);
             team_owner.clone_from(&session.id);
         }
@@ -4163,6 +4166,9 @@ fn repl(
             };
             let turn_provider = turn_factory()?;
             let outcome = {
+                if let Some(hub) = team::get(&session.id) {
+                    hub.configure(&cfg);
+                }
                 let mut agent = Agent::new(
                     turn_provider.as_ref(),
                     &mut session,
@@ -4178,15 +4184,7 @@ fn repl(
                     catalogue.clone(),
                     turn_instructions,
                 )
-                .with_limits(
-                    if automatic_team_turn {
-                        cfg.max_tokens.min(16000)
-                    } else {
-                        cfg.max_tokens
-                    },
-                    cfg.reasoning_budget,
-                    if automatic_team_turn { 24 } else { usize::MAX },
-                )
+                .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
                 .with_recovery(recovering)
                 .with_checkpoint_tools(cfg.checkpoint_tools)
                 .with_live(cfg.live_flush_ms as u64)

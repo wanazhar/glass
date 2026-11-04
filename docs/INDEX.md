@@ -112,7 +112,8 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
   identify whether the caller used `glass`, `glass core`, or standalone `gc`.
 - [Glass Core documentation index](../products/glass-core/docs/INDEX.md) —
   product setup, terminal workflow, provider configuration, permissions,
-  integrations, runtime, and development records.
+  integrations, inherited teammate tools, Unlimited delegation budgets, runtime,
+  and development records.
 - [Glass Core extension catalog](../products/glass-core/extensions/README.md) —
   installed and optional extensions, kept separate from Glass workspace
   extensions.

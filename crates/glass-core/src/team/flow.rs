@@ -2,7 +2,7 @@
 use super::*;
 pub(super) const MAX_DEPTH: u8 = 3;
 pub(super) const MAX_WAKES: u32 = 16;
-pub(super) const TREE_TOKENS: u64 = 200_000;
+pub(super) const TREE_TOKENS: u64 = 0; // zero is unlimited, usage is still metered
 pub const FOLLOW_UP: &str = "[Teammate completion follow-up]";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -10,6 +10,7 @@ pub(super) struct Flow {
     pub stopped: bool,
     pub wakes: u32,
     pub tokens: u64,
+    pub token_limit_explicit: bool,
     pub root_spent: u64,
     pub root_reserved: u64,
 }
@@ -19,6 +20,7 @@ impl Default for Flow {
             stopped: false,
             wakes: 0,
             tokens: TREE_TOKENS,
+            token_limit_explicit: false,
             root_spent: 0,
             root_reserved: 0,
         }
@@ -37,6 +39,13 @@ pub(super) fn used(state: &State) -> u64 {
                 .saturating_add(w.info.reserved_tokens)
         },
     )
+}
+pub(super) fn remaining(state: &State) -> u64 {
+    if state.flow.tokens == 0 {
+        u64::MAX
+    } else {
+        state.flow.tokens.saturating_sub(used(state))
+    }
 }
 pub fn context(session: &str) -> Option<(Arc<Hub>, String)> {
     let values: Vec<_> = hubs()
@@ -69,7 +78,7 @@ impl Hub {
         if self.stop.load(Ordering::Acquire)
             || state.flow.stopped
             || state.flow.wakes >= MAX_WAKES
-            || used(&state) >= state.flow.tokens
+            || remaining(&state) == 0
         {
             return Ok(None);
         }
@@ -146,6 +155,7 @@ impl Hub {
                 info.receipt()["recovery"].as_str().unwrap_or(""),
                 info.receipt()["capabilities"]
             ));
+            prompt.push_str(&format!("Usage: {} cumulative tokens; task allowance: {}. Optimize further delegation with narrow scopes and bounded reads; do not poll.\n",info.input.saturating_add(info.output).saturating_add(info.estimated_tokens),if info.token_limit==0 {"Unlimited".into()}else{info.token_limit.to_string()}));
             let worker = state.agents.get_mut(&info.id).unwrap();
             worker.info.notified_turns = worker.info.terminal_events;
             self.persist(&worker.info)?;
@@ -214,7 +224,7 @@ pub fn take_completion(
     let Some(prompt) = hub.completion(None)? else {
         let allowed = {
             let state = hub.state.lock().map_err(|_| "Agent state unavailable")?;
-            !state.flow.stopped && state.flow.wakes < MAX_WAKES && used(&state) < state.flow.tokens
+            !state.flow.stopped && state.flow.wakes < MAX_WAKES && remaining(&state) > 0
         };
         return if allowed {
             crate::jobs::take_completion(workspace, session, notes)
@@ -230,7 +240,7 @@ pub fn take_completion(
     Ok(Some(prompt))
 }
 pub fn schema() -> (String, String, String) {
-    ("teammate".into(),"Delegate bounded persistent work. action=create needs name and text; optional write, tokens, model. Default read-only. Read-only workers have inspect(list/read/search/git_status/system), not bash: verify Git and host time without write permission or desktop startup. Receipts declare actual capabilities and request headroom. Completion is an unverified delegated claim: check recorded tool evidence before claiming verified success; preserve exact blockers and recovery instructions. Do not silently increase allowances or replay completed work. Nested delegates inherit read-only constraints, share a 200000-token tree allowance, and stop at depth 3. Completion automatically resumes the owning parent, coalesced and capped at 16 tree activations and 8 per worker. Do not poll: finish your turn after delegating; completion returns a follow-up. action=list/inspect/transcript inspect children; action=send sends an explicit follow-up to your child; workflow with operation=stop ends automation. Human resume is required after limits or interruption.".into(),json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","inspect","transcript","send","workflow"]},"name":{"type":"string"},"text":{"type":"string"},"id":{"type":"string"},"write":{"type":"boolean"},"tokens":{"type":"integer"},"model":{"type":"string"},"operation":{"type":"string","enum":["inspect","stop"]}},"required":["action"],"additionalProperties":false}).to_string())
+    ("teammate".into(),"Delegate bounded persistent work. action=create needs name and text; optional write, tokens, model. Workers inherit the main agent tool access by default. Do not disable tools for analysis or review: follow read-only task instructions while keeping parent tools. write:false is only for a human-requested inspection-only session. Questions or missing approvals go to the parent in a report, never directly to the human. Receipts declare actual capabilities and request headroom. Completion is an unverified delegated claim: check recorded tool evidence before claiming verified success; preserve exact blockers and recovery instructions. Honor explicitly chosen task allowances; do not silently increase them or replay completed work. Nested delegates inherit parent access. Cumulative token budgets are unlimited by default; optionally set tokens for a task (0 means unlimited). Optimize work with focused assignments, bounded reads and concise reports. Completion automatically resumes the owning parent, coalesced and capped at 16 tree activations and 8 per worker. Do not poll: finish your turn after delegating; completion returns a follow-up. action=list/inspect/transcript inspect children; action=send sends an explicit follow-up to your child; workflow with operation=stop ends automation. Human resume is required after limits or interruption.".into(),json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","inspect","transcript","send","workflow"]},"name":{"type":"string"},"text":{"type":"string"},"id":{"type":"string"},"write":{"type":"boolean","description":"Defaults to parent tool access. Keep enabled for read-only analysis; false is only an explicit inspection-only policy, without bash."},"tokens":{"type":"integer","minimum":0,"description":"Optional task-specific cumulative cap. Omit or use 0 for Unlimited. Optimize usage with focused scope rather than imposing a default cap."},"model":{"type":"string"},"operation":{"type":"string","enum":["inspect","stop"]}},"required":["action"],"additionalProperties":false}).to_string())
 }
 pub fn execute(session: &str, read_only: bool, arguments: &str, call_id: &str) -> tools::Outcome {
     let result = (|| {
@@ -262,7 +272,7 @@ impl Hub {
     }
     pub(super) fn emit(&self, info: &Info, kind: &str, extra: Value) {
         if let Some(observer) = self.observer.lock().unwrap().as_ref() {
-            let mut value = json!({"kind":kind,"taskId":info.id,"parentCallId":info.parent_call_id,"childSessionId":info.session,"taskIndex":0,"taskCount":1,"parentTaskId":info.parent_id,"depth":info.depth,"state":if info.status=="working"{"running"}else if info.status=="idle"{"completed"}else{&info.status},"readOnly":true,"seq":info.updated,"taskText":info.name});
+            let mut value = json!({"kind":kind,"taskId":info.id,"parentCallId":info.parent_call_id,"childSessionId":info.session,"taskIndex":0,"taskCount":1,"parentTaskId":info.parent_id,"depth":info.depth,"state":if info.status=="working"{"running"}else if info.status=="idle"{"completed"}else{&info.status},"readOnly":info.read_only,"seq":info.updated,"taskText":info.name});
             if let Some(fields) = extra.as_object() {
                 for (k, v) in fields {
                     value[k] = v.clone();
@@ -275,7 +285,7 @@ impl Hub {
         self.snapshot().iter().any(|i| i.id == task)
     }
     pub fn viewer_children(&self) -> Vec<Value> {
-        self.snapshot().iter().map(|info|json!({"taskId":info.id,"taskText":info.name,"parentSessionId":self.owner,"parentCallId":info.parent_call_id,"childSessionId":info.session,"taskIndex":0,"taskCount":1,"parentTaskId":info.parent_id,"depth":info.depth,"state":if info.status=="working"{"running"}else if info.status=="idle"{"completed"}else{&info.status},"readOnly":true,"lastSeq":info.updated})).collect()
+        self.snapshot().iter().map(|info|json!({"taskId":info.id,"taskText":info.name,"parentSessionId":self.owner,"parentCallId":info.parent_call_id,"childSessionId":info.session,"taskIndex":0,"taskCount":1,"parentTaskId":info.parent_id,"depth":info.depth,"state":if info.status=="working"{"running"}else if info.status=="idle"{"completed"}else{&info.status},"readOnly":info.read_only,"lastSeq":info.updated})).collect()
     }
 }
 pub fn open_viewer_child(
@@ -336,7 +346,7 @@ impl Provider for ContinuationMeter {
             );
         let (reservation, max_tokens) = {
             let mut state = hub.state.lock().unwrap();
-            let remaining = state.flow.tokens.saturating_sub(used(&state));
+            let remaining = remaining(&state);
             if state.flow.stopped || input >= remaining {
                 return Err(provider::Error::Config(
                     "Automatic parent continuation reached the shared tree allowance".into(),

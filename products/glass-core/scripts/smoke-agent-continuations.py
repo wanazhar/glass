@@ -19,6 +19,14 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             else:
                 assert 'Only the human can resume' in str(results[-1]),results[-1]
                 delta={'content':'RESUME_REFUSED'}
+        elif worker and getattr(self.server,'full_probe',False) and 'COORDINATOR_TASK' not in users and len(results)<4:
+            assert {'bash','read','write'} <= names,names
+            hosted_name=next(t['function']['name'] for t in body['tools'] if t['function']['name'].startswith('glass_tool_'))
+            assert 'ask_user_question' not in names
+            probes=[('bash',{'command':'printf CHILD_BASH_OK'}),('write',{'path':'child.txt','text':'CHILD_FILE_OK'}),('read',{'path':'child.txt'}),(hosted_name,{'text':'CHILD_HOST_OK'})]
+            name,args=probes[len(results)]
+            if len(results)==3:time.sleep(.5)
+            delta={'tool_calls':[{'index':0,'id':'full-'+name,'function':{'name':name,'arguments':json.dumps(args)}}]}
         elif worker and 'COORDINATOR_TASK' not in users:
             if getattr(self.server,'inspection_probe',False) and len(results)<2:
                 action='git_status' if not results else 'system'
@@ -47,9 +55,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 assert 'COORDINATOR_DONE' in users
                 if getattr(self.server,'hook_probe',False):assert 'HOOK_BLOCKED' in str(results[-1]),results[-1]
                 delta={'content':'ROOT_DONE'}
-        elif not results:delta={'tool_calls':[{'index':0,'id':'coordinator-create','function':{'name':'teammate','arguments':json.dumps(dict(action='create',name='coordinator',text='COORDINATOR_TASK',**({'tokens':1024} if getattr(self.server,'limit_probe',False) else {})))}}]}
+        elif not results:delta={'tool_calls':[{'index':0,'id':'coordinator-create','function':{'name':'teammate','arguments':json.dumps(dict(action='create',name='coordinator',text='COORDINATOR_TASK',**({'write':False} if getattr(self.server,'inspection_probe',False) else {}),**({'tokens':1024} if getattr(self.server,'limit_probe',False) else {})))}}]}
         else:delta={'content':'DELEGATED_PENDING'}
-        payload=('data: '+json.dumps({'choices':[{'delta':delta}]})+'\n\ndata: [DONE]\n\n').encode();self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Content-Length',str(len(payload)));self.end_headers()
+        payload=('data: '+json.dumps({'choices':[{'delta':delta}],**({'usage':{'prompt_tokens':120000,'completion_tokens':20,'total_tokens':120020}} if getattr(self.server,'full_probe',False) else {})})+'\n\ndata: [DONE]\n\n').encode();self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Content-Length',str(len(payload)));self.end_headers()
         try:self.wfile.write(payload)
         except (BrokenPipeError,ConnectionResetError):pass
 def setup(root):
@@ -76,29 +84,38 @@ def main():
         finally:t.close();server.shutdown();server.server_close()
 
     with tempfile.TemporaryDirectory(prefix='gc-continuations-runtime-') as tmp:
-        root=Path(tmp);server,env=setup(root)
+        root=Path(tmp);server,env=setup(root);server.full_probe=True
         spec=importlib.util.spec_from_file_location('runtime_host',Path(__file__).resolve().parents[1]/'examples/runtime_host.py');host=importlib.util.module_from_spec(spec);spec.loader.exec_module(host)
         client=host.RuntimeClient(BIN,root,env)
         try:
             call=lambda name,params:client.wait(client.request(name,params))
             call('initialize',{'protocolVersion':2,'requiredCapabilities':['mixedTools'],'storageDir':str(root/'sessions')})
-            session=call('session/new',{'cwd':str(root),'toolMode':'mixed','tools':[],'instructions':'Finish delegated work using bounded teammate tools.'})
+            session=call('session/new',{'cwd':str(root),'toolMode':'mixed','tools':[{'name':'glass.test.echo','description':'Echo test','inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}],'instructions':'Finish delegated work using bounded teammate tools.'})
             events=[]
             client.wait(client.request('turn/prompt',{**session,'text':'Finish a bounded nested task.'}),event=events.append)
+            hosted=[]
             done=False;deadline=time.monotonic()+20
             while time.monotonic()<deadline:
                 message=client.receive(timeout=5)
+                if message.get('method')=='tool/execute':
+                    hosted.append(message['params']);assert message['params']['name']=='glass.test.echo'
+                    client.result(message['id'],'CHILD_HOST_OK')
                 if message.get('method')=='runtime/event':
                     params=message['params'];events.append(params)
                     if params['type']=='text' and 'ROOT_DONE' in params['data'].get('text',''):done=True
                     if done and params['type']=='settled':break
             assert done,events
+            assert len(hosted)==1,hosted
+            assert hosted[0]['turnId'].startswith('child-'),hosted
+            assert all(b['max_tokens']==server.requests[0]['max_tokens'] for b in server.requests)
+            assert (root/'child.txt').read_text()=='CHILD_FILE_OK'
+            assert any('CHILD_BASH_OK' in str(m) for b in server.requests for m in b['messages'] if m['role']=='tool')
             roster=call('runtime/subagents/list',session)['children'];assert len(roster)==2,roster
             assert any(c.get('depth')==2 for c in roster),roster
             child=roster[-1]
             page=call('runtime/subagents/entries',{**session,'parentCallId':child['parentCallId'],'taskId':child['taskId'],'childSessionId':child['childSessionId']})
             assert page['childSessionId']==child['childSessionId']
-            assert all(c['readOnly'] is True for c in roster)
+            assert all(c['readOnly'] is False for c in roster)
             try:
                 call('runtime/subagents/entries',{**session,'parentCallId':'foreign-call','taskId':child['taskId'],'childSessionId':child['childSessionId']})
                 raise AssertionError('foreign parent call must be rejected')
@@ -106,7 +123,7 @@ def main():
                 assert 'not linked' in str(error),str(error)
             verify(root,server)
             assert any(e['type']=='subagent' and e['data'].get('depth')==2 for e in events)
-            print('PASS mixed runtime: automatic parent wake and nested read-only child streams without client polling')
+            print('PASS mixed runtime: nested bash/file/hosted tools, inherited output, Unlimited usage beyond 200k, automatic parent wake without polling')
         finally:client.close();server.shutdown();server.server_close()
 
     with tempfile.TemporaryDirectory(prefix='gc-continuations-serve-') as tmp:
@@ -211,14 +228,22 @@ def main():
             child_path=root/'data/glass-core/agents'/owner/'sessions'/(leaf['session']+'.jsonl');child_before=child_path.read_bytes()
             assert sum(json.loads(line).get('k')=='tool' for line in child_before.splitlines())==2
             t.p.kill();t.p.wait(timeout=5);t.close();count=len(server.requests)
+            for path in (root/'data/glass-core/agents'/owner).glob('*.json'):
+                info=json.loads(path.read_text())
+                if path.name=='workflow.json':info['tokens']=200000
+                else:info.update(read_only=True,token_limit=100000);info.pop('permissions_explicit',None)
+                info.pop('token_limit_explicit',None);path.write_text(json.dumps(info))
             resumed=Terminal(root,env,(80,24),args=('resume',owner));resumed.idle();resumed.collect(2.5)
+            saved=[json.loads(p.read_text()) for p in (root/'data/glass-core/agents'/owner).glob('*.json') if p.name!='workflow.json']
+            assert all(i['read_only'] is False and i['token_limit']==0 for i in saved),saved
             assert len(server.requests)==count
             state=subprocess.run([str(BIN),'agent','--session',owner,'workflow','inspect'],cwd=root,env=env,text=True,capture_output=True,timeout=10)
             assert state.returncode==0,state.stderr
             assert json.loads(state.stdout)['stopped'] is True
+            assert json.loads(state.stdout)['tokenLimit'] is None
             assert 'ROOT_DONE' not in resumed.vt.text()
             assert child_path.read_bytes()==child_before
-            print('PASS crash restart: uncertain nested work is parked; no request or tool replay before human resume')
+            print('PASS crash restart: legacy tool/budget defaults migrate durably; uncertain work stays parked without replay')
         finally:
             if resumed:resumed.close()
             if t.p.poll() is None:t.close()
@@ -265,7 +290,11 @@ def verify(root,server):
     assert leaf['parent_received_turns']==leaf['terminal_events']>0,leaf
     assert coordinator['parent_received_turns']==coordinator['terminal_events']>0,coordinator
     assert coordinator['auto_wakes']==1 and coordinator['result']=='COORDINATOR_DONE'
-    assert len(server.requests)==7+(2 if getattr(server,"inspection_probe",False) else 0),len(server.requests)
+    assert len(server.requests)==7+(2 if getattr(server,"inspection_probe",False) else 4 if getattr(server,'full_probe',False) else 0),len(server.requests)
     flow=json.loads(next((root/'data/glass-core/agents').glob('*/workflow.json')).read_text());assert flow['wakes']==2 and flow['root_spent']>0 and flow['root_reserved']==0,flow
+    if getattr(server,'full_probe',False):
+        assert flow['tokens']==0 and sum(i['input']+i['output'] for i in infos)>200000
+        assert all(i['token_limit']==0 for i in infos)
+        return
     assert not any(t['function']['name'] in (('bash',) if getattr(server,'inspection_probe',False) else ('bash','inspect')) for b in server.requests for m in b['messages'] if m['role']=='assistant' for t in m.get('tool_calls',[]))
 if __name__=='__main__':main()

@@ -5,7 +5,8 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, extname } from 'node:path';
-const root = resolve('web/dist');
+import { fileURLToPath } from 'node:url';
+const root = resolve(fileURLToPath(new URL('../dist/', import.meta.url)));
 const { commands } = JSON.parse(await readFile(new URL('./fixtures/commands.json', import.meta.url)));
 const streams = new Set(), sent = [], errors = [];
 let holdStatus = false;
@@ -50,8 +51,9 @@ const server = createServer(async (req, res) => {
   try {
     const file = resolve(root, '.' + (path === '/' ? '/index.html' : path));
     if (!file.startsWith(root + '/')) throw Error('bad path');
+    const bytes = await readFile(file);
     res.writeHead(200, { 'Content-Type': ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json' })[extname(file)] || 'application/octet-stream' });
-    res.end(await readFile(file));
+    res.end(bytes);
   } catch { res.writeHead(404).end(); }
 });
 await new Promise(r => server.listen(0, '127.0.0.1', r));

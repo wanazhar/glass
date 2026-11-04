@@ -99,3 +99,36 @@ export function ownerEventSource(url) {
   queueMicrotask(connect);
   return source;
 }
+
+// Only the owned upload route accepts this progress-capable transport. The
+// server returns JSON directly; arbitrary URLs and redirects are not supported.
+export function ownerUpload(input, file, { signal, onProgress } = {}) {
+  const target = new URL(input, location.href);
+  if (target.origin !== location.origin || target.pathname !== "/api/upload")
+    return Promise.reject(Error("Uploads must use the workspace upload endpoint"));
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Upload cancelled", "AbortError"));
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    xhr.upload.addEventListener("progress", event => onProgress?.(event.loaded, event.lengthComputable ? event.total : 0));
+    xhr.open("POST", target.href);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    if (ownerCapability) xhr.setRequestHeader("X-Glass-Owner-Capability", ownerCapability);
+    xhr.timeout = 20000;
+    xhr.onload = () => {
+      cleanup();
+      if (xhr.responseURL && new URL(xhr.responseURL).origin !== location.origin) return reject(Error("Upload redirected outside this workspace"));
+      let data;
+      try { data = JSON.parse(xhr.responseText); } catch { return reject(Error("Invalid upload response")); }
+      if (xhr.status === 403 && data.ownerAuthRequired) setOwnerCapability(null);
+      if (xhr.status < 200 || xhr.status >= 300) return reject(Error(data.error || "Upload rejected"));
+      resolve(data);
+    };
+    xhr.onerror = () => { cleanup(); reject(Error("Upload connection failed")); };
+    xhr.ontimeout = () => { cleanup(); reject(Error("Upload timed out. Retry when connected.")); };
+    xhr.onabort = () => { cleanup(); reject(new DOMException("Upload cancelled", "AbortError")); };
+    signal?.addEventListener("abort", abort, { once: true });
+    xhr.send(file);
+  });
+}

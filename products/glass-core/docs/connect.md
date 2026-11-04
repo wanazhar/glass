@@ -6,6 +6,12 @@ GC Connect opens your existing GC threads in an installable browser workspace.
 The agent and its tools run on your host. Closing the browser, locking your phone,
 or stopping remote access does not cancel a running task.
 
+## Chat components
+
+The responsive composer previews image attachments, reports measured upload progress, and lets you cancel uploads or remove attached context. Native task checklists show completed, current, pending, and blocked steps; collapse them to keep the conversation compact. Activity labels follow actual events and show browser-observed elapsed time. Search traces link recorded sources without fetching external favicons. Code cards show provided filenames, line numbers, and actual diff counts.
+
+Files opens a lazy folder tree with arrow-key navigation, Home/End, and Enter. Switch to List view for the existing disk-usage rows. Voice input appears only in supported browsers on a secure origin, starts on your action, and appends to your draft. HTTP-only browsers may not offer it. Progress percentages appear only when measurable; context usage remains unavailable when the engine does not report it.
+
 ## Start
 
 Install Tailscale on the host and phone, sign in to the same tailnet, and connect

@@ -451,3 +451,5 @@ Plan and research files retain the status and evidence written in each record;
 their presence does not mean a proposal is implemented. If a historical page
 names a successor, follow that page's explicit link. The index does not infer
 one-to-one replacements for records that have none.
+
+The [agentic chat component design](plan/analysis/webui-agentic-chat.md) documents the composer, native checklist, activity traces, source links, code cards, and accessible file explorer.

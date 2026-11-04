@@ -1983,6 +1983,7 @@
         "docs/plan/README.md",
         "docs/plan/analysis/shared-chat-resumption.md",
         "docs/plan/analysis/task-agent-coordination.md",
+        "docs/plan/analysis/webui-agentic-chat.md",
         "docs/plan/native-engine-browser-profile.md",
         "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/task-agent-coordination-001.md",
@@ -6623,6 +6624,7 @@
         "docs/plan/analysis/shared-chat-resumption.md",
         "docs/plan/analysis/shared-workspace.md",
         "docs/plan/analysis/task-agent-coordination.md",
+        "docs/plan/analysis/webui-agentic-chat.md",
         "docs/plan/native-engine-browser-profile.md",
         "docs/plan/reviews/native-engine-browser-846-01.md",
         "docs/plan/reviews/native-engine-browser-847-01.md",
@@ -7917,6 +7919,11 @@
           "level": "1",
           "title": "Glass delivery plans",
           "anchor": "glass-delivery-plans"
+        },
+        {
+          "level": "2",
+          "title": "Delivered: agentic WebUI components",
+          "anchor": "delivered-agentic-webui-components"
         },
         {
           "level": "2",
@@ -9789,6 +9796,50 @@
           "level": "2",
           "title": "Verification strategy",
           "anchor": "verification-strategy"
+        }
+      ]
+    },
+    {
+      "path": "docs/plan/analysis/webui-agentic-chat.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "docs/plan/README.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/analysis/webui-agentic-chat.md#webui-agentic-chat-components",
+      "sections": [
+        {
+          "level": "1",
+          "title": "WebUI agentic chat components",
+          "anchor": "webui-agentic-chat-components"
+        },
+        {
+          "level": "2",
+          "title": "Overall structure",
+          "anchor": "overall-structure"
+        },
+        {
+          "level": "2",
+          "title": "Design and state",
+          "anchor": "design-and-state"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
+        },
+        {
+          "level": "2",
+          "title": "Research",
+          "anchor": "research"
         }
       ]
     },
@@ -84564,6 +84615,11 @@
           "level": "1",
           "title": "Remote workspace",
           "anchor": "remote-workspace"
+        },
+        {
+          "level": "2",
+          "title": "Chat components",
+          "anchor": "chat-components"
         },
         {
           "level": "2",

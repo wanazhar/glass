@@ -7,6 +7,9 @@ const node = (tag, className, value) => {
 };
 const verbs = {
   bash: ["Running command", "Ran command", "›_"],
+  web_search: ["Searching the web", "Searched the web", "⌕"],
+  web_fetch: ["Reading a page", "Read a page", "↗"],
+  state: ["Updating the plan", "Updated the plan", "✓"],
   read: ["Reading", "Read", "▤"],
   edit: ["Editing", "Edited", "✎"],
   write: ["Writing", "Wrote", "▧"],
@@ -24,7 +27,8 @@ export function setToolInput(item, command, args) {
     const source = JSON.stringify(args, null, 2);
     item.inputValue = source.slice(0, 65536) + (source.length > 65536 ? "\n[Input preview capped at 64K characters]" : "");
   }
-  const target = item.command || "";
+  const target = item.command || args?.query || args?.url || "";
+  if (!item.command && target) item.command = String(target);
   item.description.textContent = item.name === "bash" ? target : target.split(/[\\/]/).pop() || target;
   item.description.title = target;
   const hasArgs = Boolean(item.inputValue);
@@ -67,11 +71,13 @@ export function createToolActivity({ name, command, args, saved, preview, copy, 
     button.onclick = action;
     actions.append(button);
   }
-  panel.append(heading, inputHeading, input, node("div", "tool-section-label", "Result"), output, waitHint, actions);
+  const sources = node("div", "tool-sources"); sources.setAttribute("aria-label", "Recorded sources"); sources.hidden = true;
+  panel.append(heading, inputHeading, input, node("div", "tool-section-label", "Result"), output, sources, waitHint, actions);
   row.append(summary, panel);
-  const item = { row, output, waitHint, name, command, label, description, stateLabel, time, input, inputHeading, startedAt: saved ? null : performance.now(), state: saved ? "saved" : "running" };
+  const item = { row, output, sources, waitHint, name, command, label, description, stateLabel, time, input, inputHeading, startedAt: saved ? null : performance.now(), state: saved ? "saved" : "running" };
   row.classList.toggle("running", !saved);
   row.dataset.state = item.state;
+  row.dataset.toolName = name;
   setToolInput(item, command, args);
   refreshToolTime(item);
   return item;
@@ -87,6 +93,21 @@ export function startToolActivity(item) {
   item.output.textContent = "Waiting for output…";
   refreshToolTime(item);
 }
+export function recordedSources(source) {
+  const found = new Map();
+  const add = (raw, title) => {
+    try { const url = new URL(raw); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || found.size >= 8) return; found.set(url.href, { url: url.href, title: String(title || url.hostname).slice(0, 200), domain: url.hostname.replace(/^www\./, "") }); } catch {}
+  };
+  let visited = 0;
+  const walk = (value, depth = 0) => {
+    if (!value || depth > 5 || visited++ > 200) return;
+    if (Array.isArray(value)) { for (const child of value.slice(0, 24)) walk(child, depth + 1); }
+    else if (typeof value === "object") { if (typeof value.url === "string") add(value.url, value.title); for (const child of Object.values(value).slice(0, 24)) if (typeof child === "object") walk(child, depth + 1); }
+  };
+  const bounded = String(source || "").slice(0, 65536);
+  try { walk(JSON.parse(bounded)); } catch { for (const match of bounded.matchAll(/https?:\/\/[^\s<>"')\]]+/g)) add(match[0]); }
+  return [...found.values()];
+}
 export function finishToolActivity(item, failed) {
   refreshToolTime(item);
   item.waitHint.hidden = true;
@@ -97,6 +118,21 @@ export function finishToolActivity(item, failed) {
   item.row.classList.toggle("failed", failed);
   item.label.textContent = failed ? "Failed · " + item.name : verbs[item.name]?.[1] || `Called ${item.name}`;
   item.stateLabel.textContent = failed ? "Failed" : "Done";
+  if (item.sources && /search|fetch/.test(item.name)) {
+    item.sources.replaceChildren();
+    for (const source of recordedSources(item.output.textContent)) {
+      const link = node("a", "tool-source", source.domain); link.href = source.url; link.target = "_blank"; link.rel = "noopener noreferrer"; link.title = source.title;
+      const badge = node("span", "source-domain-icon", source.domain[0]?.toUpperCase() || "↗"); badge.setAttribute("aria-hidden", "true"); link.prepend(badge); item.sources.append(link);
+    }
+    item.sources.hidden = !item.sources.children.length;
+  }
+  const group = item.row.closest(".work-group");
+  if (group) {
+    const rows = [...group.querySelectorAll(".tool-row")];
+    const running = rows.some(row => row.dataset.state === "running");
+    const searches = rows.every(row => /search|fetch/.test(row.dataset.toolName || ""));
+    group.querySelector(":scope > summary").textContent = searches ? `${running ? "Searching" : "Ran"} ${rows.length} ${rows.length === 1 ? "search" : "searches"}` : `${running ? "Working" : "Finished"} · ${rows.length} ${rows.length === 1 ? "step" : "steps"}`;
+  }
 }
 export function activitySnapshot(items, budget = 131072) {
   const chunks = [];

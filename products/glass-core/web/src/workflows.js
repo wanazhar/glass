@@ -1,4 +1,5 @@
-import { ownerFetch, ownerEventSource } from "./owner-auth.js";
+import { attachmentPreview } from "./agent-ui.js";
+import { ownerFetch, ownerEventSource, ownerUpload } from "./owner-auth.js";
 // Loaded only when a work surface is opened. Native actor remains the writer.
 export function workflows({
   api,
@@ -157,26 +158,19 @@ export function workflows({
           );
           continue;
         }
+        const preview = attachmentPreview(file, uploadSignal);
+        document.querySelector("#upload-previews").append(preview.row);
+        preview.cancel.onclick = () => uploadController?.abort();
         try {
           notice("Attaching " + file.name + "…");
           const timeout = setTimeout(() => uploadController?.abort(), 20000);
-          let r, data;
+          let data;
           try {
-            r = await ownerFetch(
-              "/api/upload?" +
-                threadQuery(id, sourceRef, { name: file.name }),
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/octet-stream" },
-                body: file,
-                signal: uploadSignal,
-              },
-            );
-            data = await r.json();
-          } finally {
-            clearTimeout(timeout);
-          }
-          if (!r.ok) throw Error(data.error || "Upload rejected");
+            data = await ownerUpload("/api/upload?" + threadQuery(id, sourceRef, { name: file.name }), file,
+              { signal: uploadSignal, onProgress: (loaded, total) => preview.progress(loaded, total) });
+            preview.saving();
+          } finally { clearTimeout(timeout); }
+          if (uploadSignal.aborted) throw new DOMException("Upload cancelled", "AbortError");
           if (id !== view.id || generation !== view.generation) {
             notice("Thread changed. Attachment was not added.");
             return;
@@ -187,7 +181,7 @@ export function workflows({
             args: "",
           });
           if (id === view.id && generation === view.generation) {
-            onAttached(file.name);
+            onAttached(file.name, { file, token: data.token });
             notice("Attached " + file.name + " to future requests.");
           }
         } catch (e) {
@@ -199,7 +193,7 @@ export function workflows({
               true,
             );
           if (uploadSignal.aborted) break;
-        }
+        } finally { preview.finish(); }
       }
     } finally {
       view.attaching = false;

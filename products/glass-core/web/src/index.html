@@ -207,6 +207,7 @@
             </div>
           </section>
           <div id="timeline" class="timeline" aria-label="Conversation"></div>
+          <section id="task-checklist" class="task-checklist" aria-label="Agent checklist" hidden></section>
           <div id="interaction" class="interaction hidden" aria-label="Your input is needed"></div>
         </div>
         <button id="latest" class="latest hidden">↓ Back to latest</button>
@@ -217,13 +218,14 @@
             ><span id="activity-text">Ready</span
             ><button id="ownership">Take control</button>
           </div>
+          <input type="file" id="attachment-input" multiple hidden />
+          <form id="composer" class="composer">
           <div
             id="context-chips"
             class="context-chips"
             aria-label="Recent attachments"
           ></div>
-          <input type="file" id="attachment-input" multiple hidden />
-          <form id="composer" class="composer">
+            <div id="upload-previews" class="upload-previews" aria-live="polite"></div>
             <textarea
               id="prompt"
               rows="2"
@@ -253,6 +255,9 @@
                   data-mode="steer"
                 >
                   Steer task
+                </button>
+                <button type="button" id="voice-input" class="icon-button voice-input" aria-label="Dictate message" title="Dictate message" aria-pressed="false" hidden>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>
                 </button>
                 <button
                   type="button"
@@ -284,6 +289,7 @@
               Context</button
             ><button type="button" id="work-toggle" class="quiet">Work</button
             ><button type="button" id="queue-toggle" class="quiet">Queue</button
+            ><button type="button" id="workspace-location" class="quiet workspace-location" title="Browse workspace">Workspace</button
             ><span id="usage"></span
             ><span class="keyboard-hint"
               >Enter to send <span>·</span> Shift Enter for a new line</span

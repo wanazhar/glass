@@ -1,3 +1,5 @@
+import { renderChecklist, updateStage } from "./agent-ui.js";
+import { fileTree } from "./file-tree.js";
 import { ownerFetch, ownerEventSource, setOwnerCapability } from "./owner-auth.js";
 import { renderCommandData } from "./command-results.js";
 import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot, renderActivityConsole } from "./activity.js";
@@ -218,6 +220,11 @@ function setThreadOrigin(thread) {
 }
 let activityKey = "";
 function updateActivity(label) {
+  updateStage($("#activity"), label);
+  renderChecklist($("#task-checklist"), view.hasChecklist ? view.tasks : []);
+  const workspace = threadInfo(view.id)?.workspace || view.workspace;
+  $("#workspace-location").textContent = workspace ? projectName(workspace) : "Workspace";
+  $("#workspace-location").title = workspace || "Browse workspace";
   const key = `${label || ""}|${view.control}|${view.id}|${view.sourceRef}|${view.workerWorkflows}|${view.hostWorkflows}|${Boolean(view.interaction)}`;
   if (key === activityKey) return;
   activityKey = key;
@@ -357,7 +364,10 @@ $("#latest").onclick = async () => {
 let codeId = 0;
 const renderer = {
   code({ text: source, lang }) {
-    const language = (lang || "text").split(/\s/)[0].toLowerCase();
+    const info = (lang || "text").split(/\s+/);
+    const language = info[0].toLowerCase();
+    const filename = info.slice(1).map(part => part.replace(/^(?:file(?:name)?|title)=/i, "").replace(/^["']|["']$/g, "")).find(part => /\.[a-z0-9]+$/i.test(part))?.slice(0, 240);
+    const heading = `<span class="code-heading"><span class="code-language">${escape(language.toUpperCase())}</span>${filename ? `<span class="code-filename">${escape(filename)}</span>` : ""}</span>`;
     const labels = {
       js: "JavaScript",
       javascript: "JavaScript",
@@ -384,7 +394,9 @@ const renderer = {
             `<span class="diff-line ${/^(diff |index |--- |\+\+\+ )/.test(line) ? "file" : line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : ""}">${escape(line) || " "}</span>`,
         )
         .join("");
-      return `<div class="code-block"><div class="block-head"><span>Changes</span><span><button data-copy="${id}">Copy</button><button data-preview="${id}">Expand</button></span></div><pre><code id="${id}" class="diff-code">${lines}</code></pre></div>`;
+      const added = source.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).length;
+      const removed = source.split("\n").filter(line => line.startsWith("-") && !line.startsWith("---")).length;
+      return `<div class="code-block"><div class="block-head">${heading}<span class="diff-counts"><b class="added">+${added}</b> <b class="removed">−${removed}</b></span><span><button data-copy="${id}" aria-label="Copy changes">Copy</button><button data-preview="${id}">Expand</button></span></div><pre><code id="${id}" class="diff-code">${lines}</code></pre></div>`;
     }
     const id = "code-" + ++codeId;
     if (language === "mermaid")
@@ -394,7 +406,8 @@ const renderer = {
       !source.includes("\\documentclass")
     )
       return `<div class="math" data-math="display"><code>${escape(source)}</code></div>`;
-    return `<div class="code-block"><div class="block-head"><span>${escape(label)}</span><span><button data-copy="${id}">Copy</button><button data-preview="${id}">Expand</button>${["html", "svg"].includes(language) ? `<button data-html="${id}">Preview</button>` : ""}</span></div><pre><code id="${id}" data-language="${escape(language)}">${escape(source)}</code></pre></div>`;
+    const lineNumbers = Array.from({ length: Math.min(2000, source.split("\n").length) }, (_, index) => index + 1).join("\n");
+    return `<div class="code-block"><div class="block-head">${filename ? heading : `<span class="code-heading"><span class="code-language">${escape(language.toUpperCase())}</span><span class="code-filename">${escape(label)}</span></span>`}<span><button data-copy="${id}" aria-label="Copy code">Copy</button><button data-preview="${id}">Expand</button>${["html", "svg"].includes(language) ? `<button data-html="${id}">Preview</button>` : ""}</span></div><pre class="numbered-code"><span class="code-line-numbers" aria-hidden="true">${lineNumbers}</span><code id="${id}" data-language="${escape(language)}">${escape(source)}</code></pre></div>`;
   },
   table(token) {
     return (
@@ -1010,11 +1023,11 @@ function record(r, target) {
       if (r.c === "state/todo") {
         try {
           view.tasks = JSON.parse(r.d || "{}").tasks || [];
+          view.hasChecklist = true;
         } catch {}
       }
       break;
     case "state":
-      view.tasks = r.items || [];
       break;
     case "image": {
       const img = el("img");
@@ -1106,7 +1119,7 @@ async function historyNow(older = false) {
   const savedReasoning = view.reasoning;
   const savedThought = view.thought;
   view.thought = null;
-  const savedTasks = view.tasks;
+  const savedTasks = view.tasks, savedHasChecklist = view.hasChecklist;
   if (older) view.stream = null;
   view.group = null;
   let visibleRecords = 0;
@@ -1164,6 +1177,7 @@ async function historyNow(older = false) {
     view.thought = savedThought;
     view.reasoning = savedReasoning;
     view.tasks = savedTasks;
+    view.hasChecklist = savedHasChecklist;
   }
   const retainedTimeline = $("#timeline");
   if (older && retainedTimeline.children.length > 240) {
@@ -1423,6 +1437,7 @@ function event(m) {
           ? "\nPreview capped · full output remains on the host."
           : "");
       toolStatus(t, /failed|error:|exit [1-9]/i.test(m.summary || ""));
+      if (t.name === "state") refreshNativeChecklist();
       details();
       follow();
       break;
@@ -1689,6 +1704,9 @@ async function openThreadTransaction(id, options, attempt) {
   view.reasoningWindows = [];
   view.reasoningSources = [];
   view.tasks = [];
+  view.hasChecklist = false;
+  renderChecklist($("#task-checklist"), []);
+  clearAttachmentThumbnails();
   view.streamTruncated = false;
   view.interaction = null;
   view.control = false;
@@ -2549,7 +2567,21 @@ function pollInlineWork() {
   };
   refresh();
 }
+let checklistRefresh = null;
+async function refreshNativeChecklist() {
+  const generation = view.generation;
+  if (!view.id || checklistRefresh === generation) return;
+  checklistRefresh = generation;
+  try {
+    const data = await api("history?" + sessionQuery());
+    if (generation !== view.generation) return;
+    const entry = [...(data.records || [])].reverse().find(item => item.record?.k === "custom" && item.record.c === "state/todo");
+    if (entry) { view.tasks = JSON.parse(entry.record.d || "{}").tasks || []; view.hasChecklist = true; renderChecklist($("#task-checklist"), view.tasks); }
+  } catch { /* Saved history remains the authoritative fallback. */ }
+  finally { if (checklistRefresh === generation) checklistRefresh = null; }
+}
 function details() {
+  renderChecklist($("#task-checklist"), view.hasChecklist ? view.tasks : []);
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
   $("#reasoning-latest").hidden = view.tab !== "reasoning";
@@ -2991,8 +3023,20 @@ function renderDirectory(result) {
     view.fileSort = view.fileSort === "size" ? "name" : "size";
     renderDirectory(result);
   };
-  head.append(hidden, sort, measure);
+  const mode = el("button", "quiet", view.fileListMode ? "Tree view" : "List view");
+  mode.type = "button"; mode.setAttribute("aria-label", "Change file view");
+  mode.onclick = () => { view.fileListMode = !view.fileListMode; renderDirectory(result); };
+  head.append(hidden, sort, measure, mode);
   content.append(head);
+  if (!view.fileListMode) {
+    content.append(fileTree({ result, api, sortBySize: view.fileSort === "size", openFile: async (name, directory, kind) => {
+      if (kind === "link") {
+        try { const next = await api(`browse?path=${encodeURIComponent(directory.replace(/\/$/, "") + "/" + name)}`); if (view.tab === "files") { view.directory = next.path; view.directoryResult = next; renderDirectory(next); } }
+        catch { openFile(name, directory); }
+      } else openFile(name, directory);
+    }, showHidden: view.showHidden, signal: browseAbort?.signal }));
+    return;
+  }
   const list = el("div", "file-list");
   const entries = result.entries.filter(
     (entry) => view.showHidden || !entry.name.startsWith("."),
@@ -4631,7 +4675,7 @@ function workflow() {
       el,
       notice,
       saveDraft,
-      onAttached: () => refreshContext(),
+      onAttached: (name, upload) => { rememberAttachmentThumbnail(upload); refreshContext(); },
     }),
   ));
 }
@@ -4665,6 +4709,26 @@ for (const [id, name] of [
       e.preventDefault();
       node.click();
     }
+  };
+}
+$("#workspace-location").onclick = showFiles;
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (Speech && window.isSecureContext) {
+  const button = $("#voice-input"); button.hidden = false;
+  let recognition = null;
+  button.onclick = () => {
+    if (recognition) { recognition.stop(); return; }
+    const generation = view.generation, prompt = $("#prompt");
+    recognition = new Speech(); recognition.interimResults = false; recognition.continuous = false;
+    recognition.onresult = event => {
+      if (generation !== view.generation) return;
+      const transcript = Array.from(event.results).filter(result => result.isFinal).map(result => result[0].transcript).join(" ");
+      if (transcript) { prompt.value += (prompt.value && !/\s$/.test(prompt.value) ? " " : "") + transcript; prompt.dispatchEvent(new Event("input", { bubbles: true })); }
+    };
+    recognition.onerror = () => notice("Dictation is unavailable. Check microphone permission or type your message.", true);
+    recognition.onend = () => { recognition = null; button.setAttribute("aria-pressed", "false"); button.setAttribute("aria-label", "Dictate message"); };
+    try { recognition.start(); button.setAttribute("aria-pressed", "true"); button.setAttribute("aria-label", "Stop dictation"); }
+    catch { recognition = null; notice("Cannot start dictation in this browser.", true); }
   };
 }
 $("#attach").onclick = () => {
@@ -4702,6 +4766,17 @@ $("#queue-toggle").onclick = async () => {
   await openWorkflow("queue");
 };
 
+const attachmentThumbnails = new Map();
+function clearAttachmentThumbnails() {
+  for (const url of attachmentThumbnails.values()) URL.revokeObjectURL(url);
+  attachmentThumbnails.clear();
+}
+function rememberAttachmentThumbnail(upload) {
+  if (!upload?.token || !/^image\/(png|jpeg|gif|webp)$/.test(upload.file?.type)) return;
+  if (attachmentThumbnails.has(upload.token)) URL.revokeObjectURL(attachmentThumbnails.get(upload.token));
+  if (attachmentThumbnails.size >= 8) { const [token, url] = attachmentThumbnails.entries().next().value; URL.revokeObjectURL(url); attachmentThumbnails.delete(token); }
+  attachmentThumbnails.set(upload.token, URL.createObjectURL(upload.file));
+}
 async function refreshContext() {
   if (!view.hostWorkflows || !view.id) return;
   const id = view.id,
@@ -4712,16 +4787,20 @@ async function refreshContext() {
     const chips = $("#context-chips");
     chips.replaceChildren();
     for (const attachment of (result.attachments || []).slice(0, 8)) {
-      const chip = el(
-        "button",
-        "context-chip",
-        attachment.source?.match(/^Uploaded (.*?) ·/)?.[1] ||
-          attachment.path.split("/").pop(),
-      );
-      chip.type = "button";
-      chip.title = attachment.path + " · active context";
-      chip.onclick = () => $("#context-toggle").click();
-      chips.append(chip);
+      const label = attachment.source?.match(/^Uploaded (.*?) ·/)?.[1] || attachment.path.split("/").pop();
+      const chip = el("div", "context-chip attachment-preview");
+      const token = attachment.path.split("/").pop(), thumbnail = attachmentThumbnails.get(token);
+      const open = el("button", "attachment-open"); open.type = "button"; open.title = attachment.path + " · active context"; open.onclick = () => $("#context-toggle").click();
+      if (thumbnail) { const image = el("img", "attachment-thumbnail"); image.src = thumbnail; image.alt = label; open.append(image); }
+      else open.append(el("span", "attachment-file-icon", attachment.mediaType?.startsWith("image/") ? "IMG" : label.split(".").pop()?.slice(0, 5).toUpperCase() || "FILE"));
+      open.append(el("span", "attachment-filename", label));
+      const remove = el("button", "attachment-remove", "×"); remove.type = "button"; remove.setAttribute("aria-label", `Remove attachment ${label}`); remove.disabled = !view.control;
+      remove.onclick = async () => {
+        remove.disabled = true;
+        try { await commandTransport("context", { action: "remove", args: attachment.path }); if (generation === view.generation) { if (thumbnail) URL.revokeObjectURL(thumbnail); attachmentThumbnails.delete(token); await refreshContext(); } }
+        catch (error) { notice(error.message, true); remove.disabled = !view.control; }
+      };
+      chip.append(open, remove); chips.append(chip);
     }
     $("#context-toggle").textContent =
       "Context" +

@@ -1,5 +1,9 @@
 # Glass delivery plans
 
+## Delivered: agentic WebUI components
+
+The [component design](analysis/webui-agentic-chat.md) covers the responsive composer, native task checklist, measured progress, activity traces, code cards, and keyboard file tree.
+
 ## Active plan: shared chat resumption
 
 The [design](analysis/shared-chat-resumption.md) and

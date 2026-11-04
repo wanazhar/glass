@@ -25,7 +25,9 @@ export function renderChecklist(root, tasks) {
   if (!rows.length) { root.hidden = true; return; }
   const signature = JSON.stringify(rows);
   if (checklists.get(root)?.signature === signature) return;
-  const open = checklists.get(root)?.card.open ?? true;
+  const previous = checklists.get(root);
+  const finished = rows.every(t => ["completed", "abandoned"].includes(t.status));
+  const open = finished && !previous?.finished ? false : (previous?.card.open ?? !finished);
   const card = node("details", "task-card"); card.open = open;
   const completed = rows.filter(t => t.status === "completed").length;
   const remaining = rows.filter(t => !["completed", "abandoned"].includes(t.status)).length;
@@ -43,7 +45,7 @@ export function renderChecklist(root, tasks) {
     row.append(icon, label); list.append(row);
   }
   card.append(summary, list); root.replaceChildren(card);
-  checklists.set(root, { signature, card });
+  checklists.set(root, { signature, card, finished });
 }
 const stages = new WeakMap();
 export function updateStage(root, label) {

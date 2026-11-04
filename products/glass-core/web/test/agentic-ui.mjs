@@ -4,9 +4,10 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, extname } from "node:path";
-const root=resolve("dist"),streams=new Set(),uploads=[];
+const root=resolve("dist"),streams=new Set(),uploads=[],sent=[];
 const commands=JSON.parse(await readFile("test/fixtures/commands.json","utf8")).commands;
 const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC","base64");
+let omitChecklist=false;
 let attachments=[],todo=[{id:"1",title:"Read project files",status:"completed"},{id:"2",title:"Update light mode tokens",status:"completed"},{id:"3",title:"Implement dark mode tokens",status:"in_progress"},{id:"4",title:"Register the theme toggle",status:"pending"},{id:"5",title:"Run lint and production build",status:"pending"}];
 const records=()=>[
  {k:"user",t:"Update our dark-mode tokens, register a reusable theme toggle, and verify the build."},
@@ -24,11 +25,12 @@ const server=createServer(async(request,response)=>{
   let value={};
   if(path==="/api/status")value={workspace:"/tmp/project-sea",profile:"workspace-edit",web_workflows:1};
   if(path==="/api/threads")value={threads:[{session:"fixture",title:"Theme controls",workspace:"/tmp/project-sea",workspace_assigned:true,workspace_available:true,model:"Local model"}],projects:[]};
-  if(path==="/api/history")value={records:records().map((record,index)=>({index,record})),before:0};
+  if(path==="/api/history")value={records:records().filter(r=>!omitChecklist || r.k!=="custom").map((record,index)=>({index,record})),before:0};
   if(path==="/api/context")value={attachments};
+  if(path==="/api/command")value={format:"json",body:{tasks:todo}};
   if(path==="/api/commands")value={commands};
   if(path==="/api/browse"){const directory=url.searchParams.get("path")||"/tmp/project-sea";value={path:directory,parent:"/tmp",entries:directory.endsWith("/src")?[{name:"button.tsx",kind:"file",bytes:40},{name:"button.module.css",kind:"file",bytes:25}]:[{name:"src",kind:"directory",bytes:0},{name:"README.md",kind:"file",bytes:100}],next:null};}
-  if(path==="/api/send"){let raw="";for await(const chunk of request)raw+=chunk;const message=JSON.parse(raw).message;if(message.t==="command"){if(message.name==="attach")attachments=[{path:"/tmp/uploads/"+"a".repeat(64),source:`Uploaded ${message.values.upload_name} · fixture`,bytes:png.length,mediaType:"image/png"}];if(message.name==="context"&&message.values.action==="remove")attachments=[];emit([{t:"command_result",request_id:message.request_id,result:{format:"text",body:"Saved"}}]);}}
+  if(path==="/api/send"){let raw="";for await(const chunk of request)raw+=chunk;const message=JSON.parse(raw).message;if(message.t==="command"){sent.push(message);if(message.name==="attach")attachments=[{path:"/tmp/uploads/"+"a".repeat(64),source:`Uploaded ${message.values.upload_name} · fixture`,bytes:png.length,mediaType:"image/png"}];if(message.name==="context"&&message.values.action==="remove")attachments=[];emit([{t:"command_result",request_id:message.request_id,result:{format:"text",body:"Saved"}}]);}}
   response.writeHead(200,{"Content-Type":"application/json"});response.end(JSON.stringify(value));return;
  }
  try{const file=resolve(root,"."+(path==="/"?"/index.html":path));if(!file.startsWith(root+"/"))throw Error("Invalid path");const bytes=await readFile(file);response.writeHead(200,{"Content-Type":({".js":"text/javascript",".css":"text/css",".html":"text/html",".svg":"image/svg+xml",".woff2":"font/woff2"})[extname(file)]||"application/octet-stream"});response.end(bytes);}catch{response.writeHead(404).end();}
@@ -36,7 +38,7 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync("/snap/chromium/current/usr/lib/chromium-browser/chrome")?"/snap/chromium/current/usr/lib/chromium-browser/chrome":undefined),headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
 try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"]){
- attachments=[];todo[2].status="in_progress";
+ attachments=[];omitChecklist=false;todo[2].status="in_progress";todo[3].status="pending";todo[4].status="pending";
  const context=await browser.newContext({viewport:{width,height:1000},colorScheme,serviceWorkers:"block",reducedMotion:"reduce"});
  await context.addInitScript(()=>{window.SpeechRecognition=class{start(){window.testRecognition=this;}stop(){this.onend?.();}};});
  const page=await context.newPage(),errors=[];page.on("pageerror",error=>errors.push(String(error)));
@@ -65,5 +67,18 @@ try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"])
  await page.locator("#files-toggle").click();const tree=page.getByRole("tree",{name:"Workspace files"});await tree.waitFor();const src=tree.getByRole("treeitem",{name:"src",exact:true});await src.focus();await src.press("ArrowRight");
  const file=tree.getByRole("treeitem",{name:"button.tsx",exact:true});await file.waitFor();await src.press("ArrowRight");assert.equal(await file.evaluate(n=>n===document.activeElement),true);await file.press("ArrowLeft");assert.equal(await src.evaluate(n=>n===document.activeElement),true);await src.press("ArrowLeft");assert.equal(await src.getAttribute("aria-expanded"),"false");await src.press("End");assert.equal(await tree.getByRole("treeitem",{name:"README.md",exact:true}).evaluate(n=>n===document.activeElement),true);
  await page.screenshot({path:`/tmp/glass-agentic-tree-${width}-${colorScheme}.png`});await page.locator("#details-close").click();emit([{t:"tool_end",call_id:"live-search",output:"Finished search",summary:"exit 0"},{t:"done"}]);await page.waitForFunction(()=>document.querySelector("#activity").dataset.phase==="idle");assert.equal(await page.locator(".agent-elapsed").textContent(),"");
- await page.locator("#conversation").evaluate(n=>n.scrollTop=n.scrollHeight);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"Horizontal overflow");await page.screenshot({path:`/tmp/glass-agentic-chat-${width}-${colorScheme}.png`});assert.deepEqual(errors,[]);await context.close();console.log(`PASS agentic chat ${width}px ${colorScheme}: checklist, code, sources, voice draft, upload/removal and keyboard tree`);
+ await page.locator("#work-toggle").click();await page.getByRole("button",{name:"Resume delegation",exact:true}).click();
+ await page.waitForTimeout(100);assert(sent.some(m=>m.name==="agents"&&m.values.action==="resume-workflow"&&m.values.confirmed===true));
+ await page.locator("dialog.workflow header button").click();
+ await page.locator("#conversation").evaluate(n=>n.scrollTop=n.scrollHeight);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"Horizontal overflow");await page.screenshot({path:`/tmp/glass-agentic-chat-${width}-${colorScheme}.png`});assert.deepEqual(errors,[]);todo[3].status="completed";todo[4].status="completed";
+ emit([{t:"tool",call_id:"todo-done",name:"state"},{t:"tool_end",call_id:"todo-done",output:"Updated",summary:"updated"}]);
+ await page.getByText("All steps complete",{exact:true}).waitFor();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),false);
+ assert.equal(await page.locator("#timeline #task-checklist").count(),1);
+ await page.locator(".task-card-heading").click();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),true);
+ omitChecklist=true;await page.reload();await page.getByText("All steps complete",{exact:true}).waitFor();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),false);
+ await page.locator("#conversation").evaluate(n=>{n.scrollTop=Math.max(0,n.scrollHeight-n.clientHeight-45);});
+ await page.waitForTimeout(80);const top=await page.locator("#conversation").evaluate(n=>n.scrollTop);
+ emit([{t:"tool",call_id:"read-while-reading",name:"read",path:"README.md"}]);
+ await page.waitForTimeout(200);assert.equal(await page.locator("#conversation").evaluate(n=>n.scrollTop),top);
+ await context.close();console.log(`PASS agentic chat ${width}px ${colorScheme}: checklist, code, sources, voice draft, upload/removal and keyboard tree`);
 }}finally{for(const release of uploads)release();await browser.close();for(const response of streams)response.end();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

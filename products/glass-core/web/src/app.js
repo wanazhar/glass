@@ -14,6 +14,13 @@ const $ = (s) => document.querySelector(s),
     if (text !== undefined) n.textContent = text;
     return n;
   };
+const checklistRoot = $("#task-checklist");
+function placeChecklist() {
+  const timeline = $("#timeline");
+  const marker = [...timeline.querySelectorAll(".checklist-position")].at(-1);
+  if (marker) marker.append(checklistRoot);
+  else if (!timeline.contains(checklistRoot)) timeline.prepend(checklistRoot);
+}
 const view = {
   id: null,
   sourceRef: null,
@@ -221,7 +228,7 @@ function setThreadOrigin(thread) {
 let activityKey = "";
 function updateActivity(label) {
   updateStage($("#activity"), label);
-  renderChecklist($("#task-checklist"), view.hasChecklist ? view.tasks : []);
+  renderChecklist(checklistRoot, view.hasChecklist ? view.tasks : []);
   const workspace = threadInfo(view.id)?.workspace || view.workspace;
   $("#workspace-location").textContent = workspace ? projectName(workspace) : "Workspace";
   $("#workspace-location").title = workspace || "Browse workspace";
@@ -330,6 +337,8 @@ new ResizeObserver(([entry]) => {
   follow();
 }).observe($(".compose-zone"));
 syncViewport();
+$("#conversation").addEventListener("touchmove", () => { view.follow = false; }, { passive: true });
+$("#conversation").addEventListener("wheel", event => { if (event.deltaY < 0) view.follow = false; }, { passive: true });
 function atBottom() {
   const n = $("#conversation");
   return n.scrollHeight - n.scrollTop - n.clientHeight < 90;
@@ -348,7 +357,9 @@ $("#conversation").addEventListener(
   "scroll",
   () => {
     if ($("#conversation").clientWidth !== readingWidth) return;
-    view.follow = !view.tailPruned && atBottom();
+    // Only explicit scrolling to the exact tail re-enables following.
+    if ($("#conversation").scrollHeight - $("#conversation").scrollTop - $("#conversation").clientHeight >= 4) view.follow = false;
+    else if (!view.tailPruned && $("#conversation").scrollHeight - $("#conversation").scrollTop - $("#conversation").clientHeight < 4) view.follow = true;
     $("#latest").classList.toggle("hidden", view.follow);
   },
   { passive: true },
@@ -1024,6 +1035,7 @@ function record(r, target) {
         try {
           view.tasks = JSON.parse(r.d || "{}").tasks || [];
           view.hasChecklist = true;
+          target.append(el("div", "checklist-position"));
         } catch {}
       }
       break;
@@ -1233,6 +1245,7 @@ async function historyNow(older = false) {
     if (a.row === b.row) return 0;
     return a.row.compareDocumentPosition(b.row) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
   }));
+  placeChecklist();
   refreshAgentActivity();
   details();
   return visibleRecords;
@@ -1437,7 +1450,7 @@ function event(m) {
           ? "\nPreview capped · full output remains on the host."
           : "");
       toolStatus(t, /failed|error:|exit [1-9]/i.test(m.summary || ""));
-      if (t.name === "state") refreshNativeChecklist();
+      if (t.name === "state") { $("#timeline").append(el("div", "checklist-position")); refreshNativeChecklist(); }
       details();
       follow();
       break;
@@ -1705,7 +1718,7 @@ async function openThreadTransaction(id, options, attempt) {
   view.reasoningSources = [];
   view.tasks = [];
   view.hasChecklist = false;
-  renderChecklist($("#task-checklist"), []);
+  renderChecklist(checklistRoot, []);
   clearAttachmentThumbnails();
   view.streamTruncated = false;
   view.interaction = null;
@@ -1762,6 +1775,7 @@ async function openThreadTransaction(id, options, attempt) {
     await history();
     if (generation !== view.generation) return;
     historyLoaded = true;
+    refreshNativeChecklist();
     refreshContext();
     if (generation !== view.generation) return;
     follow();
@@ -2573,15 +2587,17 @@ async function refreshNativeChecklist() {
   if (!view.id || checklistRefresh === generation) return;
   checklistRefresh = generation;
   try {
-    const data = await api("history?" + sessionQuery());
+    const data = await api("command", { id: view.id, sourceRef: view.sourceRef, name: "todo", values: {} });
     if (generation !== view.generation) return;
-    const entry = [...(data.records || [])].reverse().find(item => item.record?.k === "custom" && item.record.c === "state/todo");
-    if (entry) { view.tasks = JSON.parse(entry.record.d || "{}").tasks || []; view.hasChecklist = true; renderChecklist($("#task-checklist"), view.tasks); }
+    if (Array.isArray(data.body?.tasks)) {
+      view.tasks = data.body.tasks; view.hasChecklist = true;
+      renderChecklist(checklistRoot, view.tasks); placeChecklist();
+    }
   } catch { /* Saved history remains the authoritative fallback. */ }
   finally { if (checklistRefresh === generation) checklistRefresh = null; }
 }
 function details() {
-  renderChecklist($("#task-checklist"), view.hasChecklist ? view.tasks : []);
+  renderChecklist(checklistRoot, view.hasChecklist ? view.tasks : []);
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
   $("#reasoning-latest").hidden = view.tab !== "reasoning";

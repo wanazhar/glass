@@ -677,6 +677,9 @@ export function workflows({
     };
     let timer, stream, refreshing=false, refreshAgain=false,
       taskSignature = "";
+    const delegation = el("div", "workflow-actions");
+    delegation.append(el("span", "quiet", "Saved teammates may be paused after a restart."), button("Resume delegation", () => run(status, "agents", { action: "resume-workflow", confirmed: true }, refresh)));
+    agentRows.before(delegation);
     const cards = new Map();
     async function refresh() {
       if (refreshing) { refreshAgain=true; return; }

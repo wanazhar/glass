@@ -33,7 +33,7 @@ rounded command/work palettes. Component cards may be rounded within those surfa
 - The checklist reflects native `state/todo` records, not durable memory notes.
   Completed rows have checks, in-progress rows have a ring, pending rows are
   outlined, and blocked rows retain a reason. Progress counts describe tasks,
-  never an invented percentage of overall work. Collapse remains user-controlled.
+  never an invented percentage of overall work. Completion collapses the card once; users can expand it afterward. The card sits in the transcript beside task activity, and native checklist inspection restores it even when its record is outside the recent history page.
 - Agent phases come from real tool/model events, with browser-observed elapsed
   time. Reduced motion disables shimmer and looping movement. Reconnects do not
   invent model reasoning or historical elapsed durations.

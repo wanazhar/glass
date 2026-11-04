@@ -506,7 +506,7 @@ impl Hub {
                     }
                 }
                 "inspect" => {}
-                _ => return Err("Only the human can resume an agent workflow. Ask them to run /agents resume in the TUI, or gc agent --session MAIN_ID workflow resume in another terminal.".into()),
+                _ => return Err("Only the human can resume an agent workflow. Ask them to choose Resume delegation in WebUI Work, or run /agents resume in the TUI.".into()),
             }
             save(&self.dir.join("workflow.json"), &state.flow)?;
             return Ok(
@@ -625,7 +625,7 @@ impl Hub {
                     limit_values(req, default_output_limit(), None, default_round_limit())?;
                 let mut state = self.state.lock().unwrap();
                 if state.flow.stopped {
-                    return Err("Agent workflow stopped. Ask the user to run /agents resume in the TUI (or press R in the paused agents panel), then request a new assignment. Do not retry model-side resume.".into());
+                    return Err("Agent workflow stopped. Ask the user to choose Resume delegation in WebUI Work or run /agents resume in the TUI, then request a new assignment. Do not retry model-side resume.".into());
                 }
                 if flow::used(&state) >= state.flow.tokens {
                     return Err("Delegation tree token allowance exhausted. A human must review the allowance before further delegation.".into());

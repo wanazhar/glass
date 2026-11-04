@@ -8,9 +8,11 @@ or stopping remote access does not cancel a running task.
 
 ## Chat components
 
-The responsive composer previews image attachments, reports measured upload progress, and lets you cancel uploads or remove attached context. Native task checklists show completed, current, pending, and blocked steps; collapse them to keep the conversation compact. Activity labels follow actual events and show browser-observed elapsed time. Search traces link recorded sources without fetching external favicons. Code cards show provided filenames, line numbers, and actual diff counts.
+The responsive composer previews image attachments, reports measured upload progress, and lets you cancel uploads or remove attached context. Native task checklists show completed, current, pending, and blocked steps; completed checklists collapse automatically and remain expandable beside their task activity in the transcript. The latest checklist is restored independently of the visible history page. Activity labels follow actual events and show browser-observed elapsed time. Search traces link recorded sources without fetching external favicons. Code cards show provided filenames, line numbers, and actual diff counts.
 
 Files opens a lazy folder tree with arrow-key navigation, Home/End, and Enter. Switch to List view for the existing disk-usage rows. Voice input appears only in supported browsers on a secure origin, starts on your action, and appends to your draft. HTTP-only browsers may not offer it. Progress percentages appear only when measurable; context usage remains unavailable when the engine does not report it.
+
+To re-enable delegation after restoring saved teammates, open **Work → Resume delegation** in the WebUI, or choose **/agents → resume-workflow**. This resumes delegation within its existing budget; parked teammates still need an explicit assignment. It does not require opening the TUI.
 
 ## Start
 

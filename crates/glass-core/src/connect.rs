@@ -2960,7 +2960,9 @@ fn handle_with_transport(
             let id = value["id"].as_str().ok_or("Missing thread")?;
             let name = crate::actions::canonical(value["name"].as_str().ok_or("Missing command")?);
             let path = shared_thread_path(&app, id, value["sourceRef"].as_str().unwrap_or(""))?;
-            if !crate::web_commands::readonly(name) {
+            if !crate::web_commands::readonly(name)
+                && !(name == "todo" && crate::web_commands::inspect_only(name, &value["values"]))
+            {
                 return Err("This command requires the session control channel".into());
             }
             let session = crate::session::Session::open_readonly(

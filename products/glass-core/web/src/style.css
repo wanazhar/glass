@@ -3781,3 +3781,16 @@ dialog.floating-palette {
 .compose-foot .workspace-location::before { font-size: 13px; }
 
 .toolbar-actions #handoff::after { content: none; }
+
+/* Compact conversation rhythm, including phone Safari's 16px input minimum. */
+.message.user, .light .message.user { padding: 10px 15px; margin: 10px 0 18px auto; border-radius: 18px 18px 5px 18px; max-width: min(80%, 560px); }
+.message.assistant { padding-bottom: 16px; }
+.prose { font-size: 14px; line-height: 1.65; }
+.message-actions button { padding: 3px 6px; font-size: 10px; }
+.composer, .light .composer { padding: 11px 13px 9px; border-radius: 22px; }
+.composer textarea { min-height: 35px; padding-bottom: 5px; line-height: 1.45; }
+.composer .send, .composer .stop, .composer .voice-input { width: 36px; min-width: 36px; height: 36px; }
+.composer #attach { width: 34px; min-width: 34px; height: 34px; }
+.checklist-position { margin: 12px 0; }
+.task-checklist { margin: 10px 0 18px; }
+@media(max-width:700px) { .composer, .light .composer { padding: 10px 12px 8px; border-radius: 21px; } .message.user .prose, .message.assistant .prose { font-size: 14px; } }

@@ -96,6 +96,7 @@ fn checkpoint_dir(s: &Session) -> std::path::PathBuf {
 }
 pub fn inspect(name: &str, s: &Session, cfg: &config::Config) -> Result<Value, String> {
     let value=match name {
+        "todo"=>serde_json::to_value(crate::todo::Board::restore(&s.history_records())?).map_err(|e|e.to_string())?,
         "usage"=>crate::requests::usage_summary(s)?,
         "requests"=>json!(crate::requests::reports(&s.path)?.into_iter().rev().take(50).collect::<Vec<_>>()),
         "history"=>crate::history_inspector::receipts(s),
@@ -248,7 +249,7 @@ pub fn form(name: &str) -> Value {
         "agents" => vec![
             (
                 "action",
-                "list | transcript | send | resume | interrupt | archive | create | budget | limits",
+                "list | transcript | send | resume | resume-workflow | stop-workflow | interrupt | archive | create | budget | limits",
                 "text",
             ),
             ("name", "Teammate name (create)", "text"),
@@ -751,7 +752,11 @@ pub fn execute(
         "agents" => {
             let action = label(v, "action")?;
             let action = if action.is_empty() { "list" } else { &action };
-            let mut request = json!({"action":action});
+            let mut request = if matches!(action, "resume-workflow" | "stop-workflow") {
+                json!({"action":"workflow","operation":if action == "resume-workflow" {"resume"} else {"stop"}})
+            } else {
+                json!({"action":action})
+            };
             for key in ["id", "model", "name"] {
                 let value = label(v, key)?;
                 if !value.is_empty() {
@@ -1878,6 +1883,7 @@ mod tests {
     fn every_native_command_has_a_browser_route() {
         let local = [
             "conversations",
+            "desktop",
             "work",
             "settings",
             "help",
@@ -1931,6 +1937,8 @@ mod tests {
             ("plan", "execute"),
             ("advisor", "request"),
             ("agents", "create"),
+            ("agents", "resume-workflow"),
+            ("agents", "stop-workflow"),
             ("extensions", "enable"),
             ("queue", "clear"),
             ("context", "remove"),

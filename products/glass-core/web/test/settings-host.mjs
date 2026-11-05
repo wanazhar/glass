@@ -9,9 +9,9 @@ const context=await browser.newContext({viewport:{width:390,height:950},hasTouch
 page.on('request',r=>{const u=new URL(r.url());if(u.pathname.startsWith('/api/'))requests.push(u.pathname);});page.on('pageerror',e=>errors.push(e.message));
 try{
  await page.goto(origin+'/?settings=general');await page.getByLabel('Default model',{exact:true}).waitFor();
- await page.getByLabel('Default model',{exact:true}).fill('browser-default-model');await page.getByRole('button',{name:'Save Default model',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();
+ await page.getByLabel('Default model',{exact:true}).fill('browser-default-model');await page.getByRole('button',{name:'Save Default model',exact:true}).click();await page.locator('#settings-feedback').getByText('Saved',{exact:true}).waitFor();
  await page.reload();await page.getByLabel('Default model',{exact:true}).waitFor();assert.equal(await page.getByLabel('Default model',{exact:true}).inputValue(),'browser-default-model');
- assert(!requests.some(path=>['/api/threads','/api/open','/api/events','/api/history','/api/send','/api/command'].includes(path)),requests.join(','));
+ assert(!requests.some(path=>['/api/open','/api/events','/api/history','/api/send','/api/command'].includes(path)),requests.join(','));
  assert.deepEqual(errors,[]);
- console.log('PASS real browser + real host API: default saved and reloaded with no chat list, session or command transport');
+ console.log('PASS real browser + real host API: default saved and reloaded without opening a conversation or command transport');
 }finally{await context.close();await browser.close();}

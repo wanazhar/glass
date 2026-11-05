@@ -1,3 +1,4 @@
+import {enhanceSelects, closeSelect, selectOpen} from './select.js';
 import {createElement, SlidersHorizontal, Plug, Blocks, FileText, Palette, ShieldCheck, Search, ArrowLeft, RefreshCw, ChevronRight, Menu, X, Check, Monitor, Sun, Moon, Globe, KeyRound, Plus} from 'lucide';
 // Universal preferences use a host API, never a conversation command channel.
 export const settingsSections = [
@@ -11,8 +12,8 @@ export const settingsSections = [
 const aliases={index:'general',models:'general',integrations:'tools',memory:'tools',profiles:'instructions',permissions:'advanced',effective:'advanced'};
 export const settingDestination=name=>({settings:'general',login:'connections',logout:'connections',model:'general',mods:'tools',extensions:'tools',skills:'tools','skill-doctor':'tools',profiles:'instructions',theme:'appearance',animation:'appearance',tools:'appearance',security:'advanced','settings-info':'advanced'}[name]);
 export const configurationCommands=new Set(['login','logout','mods','extensions','profiles','skills','skill-doctor','security','settings-info','animation']);
-export function settingsPage({api,context,appearance,error,visibility,resumeChat}) {
-  const root=document.querySelector('#settings-page'),app=document.querySelector('.app');
+export function settingsPage({api,context,appearance,error,visibility,resumeChat,navigation}) {
+  const root=document.querySelector('#settings-page');
   const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   let data=null,load=null,active=false,version=0,section='general',query='',saving=false,returnFocus=null,scroll=0,historyIndex=Number(history.state?.glassSettingsIndex)||0,reverting=false;
   let drafts=new Map(),pending=null,addConnection=false,oauth=null,refreshing=false,feedbackTimer=null;
@@ -22,11 +23,12 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
   function iconButton(label,node,action,cls='settings-icon-button') {const b=el('button',cls);b.type='button';b.setAttribute('aria-label',label);b.title=label;b.append(icon(node));b.onclick=action;return b;}
   function setNavigation(open){
     if(open){root.classList.remove('settings-search-open');root.querySelector('#settings-search-toggle')?.setAttribute('aria-expanded','false');}
-    const trigger=root.querySelector('#settings-menu'),nav=root.querySelector('.settings-navigation');
-    if(!trigger||!nav)return;
-    root.classList.toggle('settings-nav-open',open);trigger.setAttribute('aria-expanded',String(open));
-    root.querySelector('.settings-content').inert=open;
-    if(open)nav.querySelector('[aria-current]')?.focus({preventScroll:true});else if(trigger.checkVisibility())trigger.focus({preventScroll:true});
+    navigation?.toggle(open);
+  }
+  const sidebarSections=document.querySelector('#settings-sections');
+  for(const item of settingsSections){
+    const link=el('a',''),target=currentURL();link.append(icon(item.icon),el('span','',item.title));target.searchParams.set('settings',item.id);link.href=target.pathname+target.search;link.dataset.section=item.id;
+    link.onclick=e=>{if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;e.preventDefault();navigation?.close();open(item.id);};sidebarSections.append(link);
   }
   function sectionHeading(){
     const item=settingsSections.find(s=>s.id===section),heading=root.querySelector('#settings-section-title'),description=root.querySelector('.settings-intro');
@@ -70,7 +72,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     if(locked){input.disabled=true;input.dataset.locked='true';button.hidden=true;}
     const changed=()=>{const next=type==='checkbox'?input.checked:input.value;if(next===old){drafts.delete(key);button.hidden=true;}else{drafts.set(key,next);button.hidden=false;}};
     input.oninput=changed;input.onchange=()=>{changed();if(type==='checkbox'||options)void submit();};
-    async function submit(){const value=type==='checkbox'?input.checked:input.value;if(await save(value)){drafts.delete(key);const top=root.scrollTop;renderBody();root.scrollTop=top;root.querySelector('#'+CSS.escape(id))?.focus({preventScroll:true});}else if(type==='checkbox'){input.checked=old;drafts.delete(key);}}
+    async function submit(){const value=type==='checkbox'?input.checked:input.value;if(await save(value)){drafts.delete(key);const top=root.scrollTop;renderBody();root.scrollTop=top;const control=root.querySelector('#'+CSS.escape(id));(control?.closest('.ui-select')?.querySelector('.ui-select-trigger')||control)?.focus({preventScroll:true});}else if(type==='checkbox'){input.checked=old;drafts.delete(key);}}
     control.onsubmit=e=>{e.preventDefault();void submit();};if(type==='checkbox'){const target=el('label','settings-switch-target');target.append(input);control.append(target);row.classList.add('preference-switch');}else control.append(input,button);row.append(control);parent.append(row);return input;
   }
   const saveDefault=(key,convert=v=>v)=>value=>request({action:'preference',key,value:convert(value)});
@@ -153,27 +155,23 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     const renderers={general,connections,tools,instructions,appearance:looks,advanced};
     if(query){for(const renderer of Object.values(renderers))renderer(main);const q=query.toLowerCase();for(const group of main.children){const title=group.querySelector('h2')?.textContent.toLowerCase()||'';const rows=[...group.querySelectorAll('.preference-row,.connection-card,.skill-summary')];for(const row of rows)row.hidden=!((row.dataset.search||row.textContent.toLowerCase())+' '+title).includes(q);group.hidden=!title.includes(q)&&!rows.some(n=>!n.hidden);}if(![...main.children].some(n=>!n.hidden))text(main,'No settings match your search.');}
     else renderers[section](main);
+    enhanceSelects(main);
   }
-  async function render(){
+  async function render(resume=true){
     const token=++version,u=currentURL();active=u.searchParams.has('settings');
-    root.hidden=!active;app.hidden=active;app.inert=active;document.body.classList.toggle('settings-open',active);visibility?.(active);
-    if(!active){drafts.clear();oauth=null;addConnection=false;document.title=(context().title||'Conversation')+' · Glass';document.querySelector('#conversation')?.scrollTo({top:scroll});returnFocus?.focus({preventScroll:true});await resumeChat?.();return;}
+    closeSelect();root.hidden=!active;document.querySelector('.workspace').hidden=active;document.querySelector('.workspace').inert=active;document.body.classList.toggle('settings-open',active);sidebarSections.hidden=!active;document.querySelector('#open-settings').setAttribute('aria-expanded',String(active));if(active){document.querySelector('#open-settings').setAttribute('aria-current','page');document.querySelector('#open-chat').removeAttribute('aria-current');}else{document.querySelector('#open-chat').setAttribute('aria-current','page');document.querySelector('#open-settings').removeAttribute('aria-current');}visibility?.(active);
+    if(!active){drafts.clear();oauth=null;addConnection=false;document.title=(context().title||'Conversation')+' · Glass';document.querySelector('#conversation')?.scrollTo({top:scroll});returnFocus?.focus({preventScroll:true});if(resume)await resumeChat?.();return;}
     section=aliases[u.searchParams.get('settings')]||u.searchParams.get('settings');if(!settingsSections.some(s=>s.id===section))section='general';u.searchParams.set('settings',section);u.searchParams.delete('setting');history.replaceState(history.state,'',u);
-    root.replaceChildren();root.classList.remove('settings-nav-open','settings-search-open');
+    root.replaceChildren();root.classList.remove('settings-search-open');for(const link of sidebarSections.children){if(link.dataset.section===section)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');const url=currentURL();url.searchParams.set('settings',link.dataset.section);link.href=url.pathname+url.search;}
     const header=el('header','settings-header'),back=iconButton('Back to conversation',ArrowLeft,close);back.title='Back to conversation';
-    const menu=iconButton('Settings sections',Menu,()=>setNavigation(!root.classList.contains('settings-nav-open')));menu.id='settings-menu';menu.setAttribute('aria-controls','settings-navigation');menu.setAttribute('aria-expanded','false');
+    const menu=iconButton('Settings sections',Menu,()=>setNavigation(!navigation?.isOpen()));menu.id='settings-menu';menu.setAttribute('aria-controls','sidebar');menu.setAttribute('aria-expanded','false');
     const breadcrumb=el('div','settings-breadcrumb');breadcrumb.append(el('span','','Settings'),icon(ChevronRight),el('span','settings-current',settingsSections.find(s=>s.id===section).title));
     const refresh=iconButton('Refresh values',RefreshCw,async()=>{if(saving||refreshing)return;refreshing=true;refresh.disabled=true;refresh.classList.add('is-refreshing');feedback('Refreshing…');try{const next=await api('settings');if(token!==version)return;data=next;renderBody();feedback(drafts.size?'Values refreshed. Unsaved edits are retained.':'Values refreshed');}catch(e){feedback(e.message,true);}finally{refreshing=false;refresh.disabled=false;refresh.classList.remove('is-refreshing');}});
     header.append(back,menu,breadcrumb,refresh);root.append(header);
-    const layout=el('div','settings-layout'),navigation=el('aside','settings-navigation');navigation.id='settings-navigation';
-    const searchBox=el('div','settings-search-box'),search=el('input','settings-search');search.type='search';search.placeholder='Search settings';search.setAttribute('aria-label','Search settings');search.value=query;search.oninput=()=>{query=search.value;renderBody();};searchBox.append(icon(Search),search);header.insertBefore(searchBox,refresh);const searchToggle=iconButton('Search settings',Search,()=>{if(root.classList.contains('settings-nav-open'))setNavigation(false);const open=root.classList.toggle('settings-search-open');searchToggle.setAttribute('aria-expanded',String(open));if(open)search.focus({preventScroll:true});});searchToggle.id='settings-search-toggle';searchToggle.setAttribute('aria-expanded','false');header.insertBefore(searchToggle,refresh);
-    const nav=el('nav','settings-tabs');nav.setAttribute('aria-label','Settings sections');
-    const label=el('p','settings-nav-label','Preferences');navigation.append(label);
-    for(const item of settingsSections){const link=el('a',''),target=currentURL();link.append(icon(item.icon),el('span','',item.title));target.searchParams.set('settings',item.id);link.href=target.pathname+target.search;if(item.id===section)link.setAttribute('aria-current','page');link.onclick=e=>{if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;e.preventDefault();if(root.classList.contains('settings-nav-open'))setNavigation(false);open(item.id);};nav.append(link);}
-    navigation.append(nav);const scope=el('div','settings-scope-note');scope.append(icon(Globe),el('strong','','Universal settings'),el('p','','Host defaults for every new conversation. Appearance stays on this device.'));navigation.append(scope);
-    const backdrop=el('button','settings-nav-backdrop');backdrop.setAttribute('aria-label','Close settings navigation');backdrop.onclick=()=>setNavigation(false);
+    const layout=el('div','settings-layout');
+    const searchBox=el('div','settings-search-box'),search=el('input','settings-search');search.type='search';search.placeholder='Search settings';search.setAttribute('aria-label','Search settings');search.value=query;search.oninput=()=>{query=search.value;renderBody();};searchBox.append(icon(Search),search);header.insertBefore(searchBox,refresh);const searchToggle=iconButton('Search settings',Search,()=>{if(navigation?.isOpen())setNavigation(false);const open=root.classList.toggle('settings-search-open');searchToggle.setAttribute('aria-expanded',String(open));if(open)search.focus({preventScroll:true});});searchToggle.id='settings-search-toggle';searchToggle.setAttribute('aria-expanded','false');header.insertBefore(searchToggle,refresh);
     const main=el('main','settings-main universal-settings settings-content'),hero=el('div','settings-section-heading'),title=el('h1');title.id='settings-section-title';title.tabIndex=-1;hero.append(title,el('p','settings-intro'));main.append(hero);
-    const body=el('div');body.id='settings-body';main.append(body);layout.append(navigation,backdrop,main);root.append(layout);
+    const body=el('div');body.id='settings-body';main.append(body);layout.append(main);root.append(layout);
     const status=el('div','settings-feedback');status.id='settings-feedback';status.setAttribute('role','status');status.setAttribute('aria-live','polite');root.append(status);sectionHeading();title.focus({preventScroll:true});document.title=settingsSections.find(s=>s.id===section).title+' · Settings · Glass';root.scrollTop=0;
     if(!data){body.append(el('p','quiet','Loading preferences…'));try{load ||= api('settings').finally(()=>{load=null;});const value=await load;if(token!==version)return;data=value;}catch(e){if(token!==version)return;feedback(e.message,true);body.replaceChildren();const retry=el('button','command-run','Try again');retry.onclick=()=>render();body.append(retry);return;}}
     renderBody();
@@ -181,8 +179,20 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
   function open(next='general'){guard(()=>{if(!active){data=null;returnFocus=document.activeElement?.checkVisibility()?document.activeElement:null;scroll=document.querySelector('#conversation')?.scrollTop||0;}query='';for(const modal of document.querySelectorAll('dialog[open]'))modal.close();const u=currentURL();u.searchParams.set('settings',aliases[next]||next||'general');u.searchParams.delete('setting');history.pushState({glassSettingsIndex:++historyIndex},'',u);void render();});}
   function close(){guard(()=>{const u=currentURL();u.searchParams.delete('settings');u.searchParams.delete('setting');history.pushState({glassSettingsIndex:++historyIndex},'',u);void render();});}
   window.addEventListener('popstate',event=>{if(reverting){reverting=false;return;}const next=Number(event.state?.glassSettingsIndex)||0,delta=historyIndex-next;if(drafts.size||saving){reverting=true;history.go(delta||1);guard(()=>{drafts.clear();history.go(-delta||-1);});}else{historyIndex=next;query='';void render();}});
-  window.matchMedia('(min-width: 761px)').addEventListener('change',event=>{if(event.matches&&root.classList.contains('settings-nav-open'))setNavigation(false);});
   window.addEventListener('beforeunload',e=>{if(drafts.size||saving){e.preventDefault();e.returnValue='';}});
-  document.addEventListener('keydown',e=>{if(active&&root.classList.contains('settings-nav-open')&&e.key==='Tab'){const items=[root.querySelector('#settings-menu'),...root.querySelectorAll('.settings-tabs a')],index=items.indexOf(document.activeElement);e.preventDefault();items[(index+(e.shiftKey?-1:1)+items.length)%items.length].focus();}if(active&&e.key==='Escape'&&!document.querySelector('dialog[open]')){e.preventDefault();e.stopImmediatePropagation();if(root.classList.contains('settings-nav-open'))setNavigation(false);else if(root.classList.contains('settings-search-open')){query='';root.querySelector('.settings-search').value='';root.classList.remove('settings-search-open');root.querySelector('#settings-search-toggle').setAttribute('aria-expanded','false');renderBody();root.querySelector('#settings-search-toggle').focus();}else if(query){query='';root.querySelector('.settings-search').value='';renderBody();}else close();}},true);
-  return {open,restore:()=>render(),saved:()=>{},active:()=>active};
+  document.addEventListener('keydown',e=>{
+    if(!active||selectOpen())return;
+    if(e.key==='Escape'&&!document.querySelector('dialog[open]')){
+      e.preventDefault();e.stopImmediatePropagation();
+      if(navigation?.isOpen())setNavigation(false);
+      else if(root.classList.contains('settings-search-open')){query='';root.querySelector('.settings-search').value='';root.classList.remove('settings-search-open');root.querySelector('#settings-search-toggle').setAttribute('aria-expanded','false');renderBody();root.querySelector('#settings-search-toggle').focus();}
+      else if(query){query='';root.querySelector('.settings-search').value='';renderBody();}else close();
+    }
+  },true);
+  function navigate(action){
+    if(!active){void action();return;}
+    guard(async()=>{const u=currentURL();u.searchParams.delete('settings');u.searchParams.delete('setting');history.pushState({glassSettingsIndex:++historyIndex},'',u);await render(false);await action();});
+  }
+
+  return {open,close,navigate,restore:()=>render(),saved:()=>{},active:()=>active};
 }

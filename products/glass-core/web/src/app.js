@@ -1,3 +1,5 @@
+import {watchSelects, closeSelect} from './select.js';
+import {shellIcons} from './shell-icons.js';
 import { settingsPage, settingDestination, configurationCommands } from "./settings.js";
 import { renderChecklist, updateStage } from "./agent-ui.js";
 import { teammateStatus } from "./teammate-status.js";
@@ -233,7 +235,7 @@ function updateActivity(label) {
   updateStage($("#activity"), label);
   renderChecklist(checklistRoot, view.hasChecklist ? view.tasks : []);
   const workspace = threadInfo(view.id)?.workspace || view.workspace;
-  $("#workspace-location").textContent = workspace ? projectName(workspace) : "Workspace";
+  ($("#workspace-location span")||$("#workspace-location")).textContent = workspace ? projectName(workspace) : "Workspace";
   $("#workspace-location").title = workspace || "Browse workspace";
   const workingTeammates = inlineAgentThread === view.id ? inlineAgents.filter(agent=>agent.status==="working"&&!agent.offline).length : 0;
   const key = `${workingTeammates}|${label || ""}|${view.control}|${view.id}|${view.sourceRef}|${view.workerWorkflows}|${view.hostWorkflows}|${Boolean(view.interaction)}`;
@@ -2051,8 +2053,7 @@ function renderThreads() {
         small.querySelector(".running").prepend(dots);
       }
       button.append(small);
-      button.onclick = () =>
-        openThread(thread.session, { sourceRef: thread.sourceRef });
+      button.onclick = () => {closePanels();if(settings.active()&&view.id===thread.session&&(view.sourceRef||null)===(thread.sourceRef||null))settings.close();else settings.navigate(()=>openThread(thread.session, { sourceRef: thread.sourceRef }));};
       threadGroup.append(button);
     }
     section.append(threadGroup);
@@ -2096,7 +2097,7 @@ async function newThread(workspace) {
     notice(e.message, true);
   }
 }
-$("#new").onclick = newThread;
+$("#new").onclick = () => {closePanels();settings.navigate(()=>newThread());};
 $("#welcome-new").onclick = newThread;
 let submitting = false;
 $("#composer").onsubmit = async (e) => {
@@ -2744,9 +2745,13 @@ function syncPanels() {
     "aria-expanded",
     String($("#details").classList.contains("open")),
   );
-  $(".workspace").inert = left || right;
+  const configuring=document.body.classList.contains('settings-open');
+  $(".workspace").inert = left || right || configuring;
+  $("#settings-page").inert = left || right;
+  $("#settings-menu")?.setAttribute('aria-expanded',String(left));
 }
 function closePanels() {
+  closeSelect();
   clearTimeout(inlineWorkTimer);
   inlineWorkAbort?.abort();
   inlineWorkAbort = null;
@@ -2774,7 +2779,7 @@ $("#details-close").onclick = () => {
 };
 $("#sidebar-close").onclick = () => {
   closePanels();
-  $("#menu").focus();
+  (document.body.classList.contains("settings-open")?$("#settings-menu"):$("#menu")).focus();
 };
 // Following resumes only on explicit Latest or when entering the reasoning tab.
 // Do not insert controls into the scroll surface during an iOS touch gesture.
@@ -2875,6 +2880,16 @@ for (const tab of document.querySelectorAll("[data-tab]"))
   };
 $("#menu").onclick = () => showPanel("#sidebar");
 $("#scrim").onclick = () => closePanels();
+// One mobile drawer, with one focus boundary, serves every application view.
+document.addEventListener('keydown',event=>{
+  if(event.key!=='Tab'||!matchMedia('(max-width:700px)').matches||!$('#sidebar').classList.contains('open'))return;
+  const nodes=[...$('#sidebar').querySelectorAll('button,input,a[href],summary,[tabindex="0"]')].filter(n=>!n.disabled&&n.checkVisibility());
+  if(!nodes.length)return;
+  const index=nodes.indexOf(document.activeElement);
+  if(index<0||(!event.shiftKey&&index===nodes.length-1)||(event.shiftKey&&index===0)){
+    event.preventDefault();nodes[event.shiftKey?nodes.length-1:0].focus({preventScroll:true});
+  }
+});
 syncPanels();
 const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
@@ -4358,8 +4373,21 @@ function chooseCommand(c, { focusSearch = false } = {}) {
 }
 const settings = settingsPage({
   api,
+  navigation:{toggle:open=>{showPanel('#sidebar',open,true);if(open)$('#sidebar').querySelector('[aria-current],button')?.focus({preventScroll:true});else $('#settings-menu')?.focus({preventScroll:true});},close:closePanels,isOpen:()=>matchMedia('(max-width:700px)').matches&&$('#sidebar').classList.contains('open')},
   context: ()=>({id:view.id,title:threadInfo(view.id)?.title}),
-  resumeChat: async()=>{if(view.id)return;await loadThreads();const id=new URLSearchParams(location.search).get("thread");if(id)await openThread(id);else connection("Connected");},
+  resumeChat: async()=>{
+    const params=new URLSearchParams(location.search),id=params.get('thread');
+    const sameConversation=id===view.id&&(!params.has('sourceRef')||params.get('sourceRef')===(view.sourceRef||''));
+    if(view.id&&(!id||sameConversation)){
+      // Keep the mounted conversation and its live stream; make its URL canonical.
+      const url=new URL(location.href);url.searchParams.set('thread',view.id);if(view.sourceRef)url.searchParams.set('sourceRef',view.sourceRef);else url.searchParams.delete('sourceRef');window.history.replaceState(window.history.state,'',url);return;
+    }
+    if(!view.threads.length)await loadThreads();
+    if(id){
+      const opened=await openThread(id,params.has('sourceRef')?{sourceRef:params.get('sourceRef')}:{});
+      if(!opened?.ok&&view.id){const url=new URL(location.href);url.searchParams.set('thread',view.id);if(view.sourceRef)url.searchParams.set('sourceRef',view.sourceRef);else url.searchParams.delete('sourceRef');window.history.replaceState(window.history.state,'',url);}
+    }else connection('Connected');
+  },
   appearance: (key,value)=>{
     if(key){
       localStorage.setItem("glass:"+key,value);
@@ -4369,10 +4397,13 @@ const settings = settingsPage({
     }
     return {theme:themeMode,animation:document.documentElement.dataset.animation||"dots",tools:document.documentElement.classList.contains("compact-tools")?"compact":"expanded"};
   },
-  visibility: active=>{view.follow=false;if(!active)requestAnimationFrame(()=>{const n=$("#conversation");view.follow=n.scrollHeight-n.scrollTop-n.clientHeight<4;follow();});},
+  visibility: active=>{$("#details").hidden=active;if(active)$("#details").classList.remove("open");$("#threads").classList.toggle("muted-selection",active);syncPanels();view.follow=false;if(!active)requestAnimationFrame(()=>{const n=$("#conversation");view.follow=n.scrollHeight-n.scrollTop-n.clientHeight<4;follow();});},
   error: message=>notice(message,true),
 });
 $("#open-settings").onclick=()=>{closePanels();settings.open();};
+$("#open-chat").onclick=()=>{closePanels();if(settings.active())settings.close();};
+$(".brand-home").onclick=event=>{event.preventDefault();closePanels();if(settings.active())settings.close();};
+shellIcons();watchSelects();
 async function inspectLayout() {
   preview(
     "Layout measurements",
@@ -4606,7 +4637,12 @@ async function start() {
     $("#profile").textContent = status.profile;
     view.workspace = status.workspace;
     $(".sidebar-footer small").textContent = "";
-    if (universalSettings) { await settings.restore(); connection("Connected"); return {ok:true}; }
+    if (universalSettings) {
+      await settings.restore();connection("Connected");
+      // Navigation metadata is independent of universal values and never opens a chat.
+      void loadThreads().catch(()=>{const retry=el('button','quiet','Retry conversations');retry.onclick=()=>loadThreads().catch(()=>{retry.textContent='Retry conversations';});$('#threads').replaceChildren(el('p','empty','Conversations unavailable'),retry);});
+      return {ok:true};
+    }
     const params = new URLSearchParams(location.search);
     const id = params.get("thread");
     if (id) {

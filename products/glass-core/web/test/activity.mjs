@@ -1,3 +1,4 @@
+import {chooseOption} from './select-helper.mjs';
 // Real browser/event transport checks for conversation activity and rich content.
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
@@ -156,10 +157,10 @@ try {
     await page.locator("#preview-body.agent-console").waitFor();
     assert(await page.locator('.activity-entry[data-state="running"]').count() >= 1);
     assert(await page.locator(".activity-command").count() >= 1);
-    await page.getByRole("combobox", { name: "Filter activity" }).selectOption("failed");
+    await chooseOption(page,page.getByRole("combobox", { name: "Filter activity" }),"failed");
     assert.equal(await page.locator('.activity-entry[data-state="running"]:visible').count(), 0);
     assert(await page.locator('.activity-entry[data-state="failed"]:visible').count() >= 1);
-    await page.getByRole("combobox", { name: "Filter activity" }).selectOption("all");
+    await chooseOption(page,page.getByRole("combobox", { name: "Filter activity" }),"all");
     await page.getByRole("button", { name: "Collapse all", exact: true }).click();
     assert.equal(await page.locator(".activity-entry[open]").count(), 0);
     await page.getByRole("button", { name: "Expand all", exact: true }).click();

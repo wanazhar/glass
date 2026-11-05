@@ -85,6 +85,7 @@
         >
           ×
         </button>
+        <div class="sidebar-body">
         <label class="search"
           ><span>⌕</span
           ><input
@@ -93,7 +94,12 @@
             aria-label="Find a thread"
           /><kbd>⌘ K</kbd></label
         >
-        <nav class="settings-entry" aria-label="Workspace navigation"><button type="button" id="open-settings" class="quiet">⚙ Settings</button></nav>
+        <nav class="shell-navigation" aria-label="Workspace navigation">
+          <button type="button" id="open-chat" class="shell-nav-item" aria-current="page">Conversations</button>
+          <button type="button" id="open-settings" class="shell-nav-item" aria-expanded="false" aria-controls="settings-sections">Settings</button>
+          <nav id="settings-sections" class="settings-tabs" aria-label="Settings sections" hidden></nav>
+        </nav>
+        <div class="sidebar-section-label">Recent conversations</div>
         <div class="project-filter">
           <select
             id="project-scope"
@@ -106,6 +112,7 @@
         <button id="more-threads" class="quiet hidden" type="button">
           Load older threads
         </button>
+        </div>
         <footer class="sidebar-footer">
           <button type="button" id="notifications" class="quiet">
             Notifications</button
@@ -200,7 +207,7 @@
           </button>
           <section id="welcome" class="welcome">
             <img class="welcome-mark" src="/icon.svg" alt="" />
-            <h1>glass<span>.</span></h1>
+            <h1>What are we working on?</h1><p class="welcome-description">Start a conversation in your workspace.</p>
             <div class="welcome-actions">
               <button id="welcome-new" class="primary">
                 New thread <span>＋</span></button
@@ -299,6 +306,7 @@
           </div>
         </section>
       </main>
+      <section id="settings-page" aria-label="Settings" hidden></section>
       <aside class="details" id="details" aria-label="Thread details">
         <header>
           <h2>Thread details</h2>
@@ -326,7 +334,6 @@
         ></div>
       </aside>
     </div>
-    <main id="settings-page" aria-label="Settings" hidden></main>
     <dialog id="commands" aria-label="Commands">
       <header>
         <h2 id="commands-title">Commands</h2>

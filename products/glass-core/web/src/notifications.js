@@ -7,7 +7,9 @@ export function attention(button) {
     enabled = false;
   const supported = "Notification" in window && isSecureContext;
   function paint() {
-    button.textContent = enabled ? "Notifications on" : "Notifications";
+    const label=enabled ? "Notifications on" : "Notifications";
+    button.setAttribute("aria-label",label);
+    if(!button.querySelector("svg"))button.textContent=label;
     button.title = supported
       ? "Opt-in alerts while this page is connected. Background iPhone push is not provided."
       : "Notifications require a supported browser and HTTPS.";

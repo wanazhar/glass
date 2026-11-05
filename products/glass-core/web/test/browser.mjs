@@ -1,3 +1,4 @@
+import {chooseOption} from './select-helper.mjs';
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -139,7 +140,7 @@ try {
   assert(await page.locator("#send").isDisabled());
   await page.unroute("**/api/threads?*");
   await page.locator("#search").fill("");
-  await page.locator("#project-scope").selectOption({ label: "All projects" });
+  await chooseOption(page,page.locator("#project-scope"),{ label: "All projects" });
   const fixtureGroup = page
     .locator(".project-group")
     .filter({ hasText: "Shared runtime workspace" });
@@ -167,7 +168,7 @@ try {
     );
   };
   await nativeCommand("todo");
-  await page.locator('#command-form [name="action"]').selectOption("add");
+  await chooseOption(page,page.locator('#command-form [name="action"]'),"add");
   await page
     .locator('#command-form [name="args"]')
     .fill("Browser checklist survives reload");
@@ -176,7 +177,7 @@ try {
     .locator("#command-result")
     .getByText("Browser checklist survives reload", { exact: false })
     .waitFor();
-  await page.locator('#command-form [name="action"]').selectOption("clear");
+  await chooseOption(page,page.locator('#command-form [name="action"]'),"clear");
   await page.locator('#command-form [name="confirmed"]').check();
   await page.locator('#command-form button[type="submit"]').click();
   await page.waitForFunction(
@@ -191,7 +192,7 @@ try {
     .waitFor();
   await page.locator("#command-close").click();
   await nativeCommand("tasks");
-  await page.locator('#command-form [name="action"]').selectOption("task-add");
+  await chooseOption(page,page.locator('#command-form [name="action"]'),"task-add");
   await page
     .locator('#command-form [name="args"]')
     .fill("Browser task fixture");
@@ -220,7 +221,7 @@ try {
   );
   await page.locator("#command-close").click();
   await nativeCommand("login");
-  await page.locator('#command-form [name="action"]').selectOption("api");
+  await chooseOption(page,page.locator('#command-form [name="action"]'),"api");
   assert.equal(
     await page.locator('#command-form [name="secret"]').getAttribute("type"),
     "password",
@@ -229,7 +230,7 @@ try {
   await page
     .locator('#command-form [name="secret"]')
     .fill("fixture-only-secret");
-  await page.locator('#command-form [name="action"]').selectOption("list");
+  await chooseOption(page,page.locator('#command-form [name="action"]'),"list");
   assert(await page.locator('#command-form [name="secret"]').isDisabled());
   assert.equal(
     await page.locator('#command-form [name="secret"]').inputValue(),

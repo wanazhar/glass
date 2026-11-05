@@ -1,3 +1,4 @@
+import {chooseOption} from './select-helper.mjs';
 import {configurationCommands} from '../src/settings.js';
 // Audit every registered palette route against an isolated host stub; never run mutations.
 import { chromium } from 'playwright-core';
@@ -127,7 +128,7 @@ try {
     }
     await page.waitForFunction(() => !document.querySelector('#command-status').dataset.working || document.querySelector('#command-status').dataset.working === 'false');
     for (const input of await page.locator('#command-form .command-field:visible input, #command-form .command-field:visible select, #command-form .command-field:visible textarea').all()) {
-      assert.equal(await input.evaluate(n => getComputedStyle(n.parentElement).display), 'flex', 'Form fields must not inherit result grids');
+      assert.equal(await input.evaluate(n => getComputedStyle(n.closest('.ui-select')?.parentElement||n.parentElement).display), 'flex', 'Form fields must not inherit result grids');
     }
     if (command.name === 'usage' && width === 390 && colorScheme === 'light') await page.screenshot({ path: '/tmp/gc-compact-command-status.png' });
     if (command.name === 'quote') {
@@ -137,7 +138,7 @@ try {
     }
     if (command.name === 'model') {
       assert.equal(await page.locator('#command-form [name=args]').isVisible(), false);
-      await page.locator('#command-form [name=action]').selectOption('set');
+      await chooseOption(page,page.locator('#command-form [name=action]'),'set');
       assert.equal(await page.locator('#command-form [name=args]').isVisible(), true);
     }
     if (['constraints', 'pacing'].includes(command.name)) assert.equal(await page.locator('#command-form [name=args]').evaluate(n => n.tagName), 'INPUT');

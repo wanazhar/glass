@@ -27,7 +27,21 @@ await cp("dist/app.css", "dist/math.css");
 const launchCss = (await transform(await readFile("src/launch.css", "utf8"), {
   loader: "css", minify: true, target: ["safari16.4", "chrome110"],
 })).code;
-await writeFile("dist/index.html", (await readFile("src/index.html", "utf8")).replace("__LAUNCH_CSS__", launchCss));
+const themeHead = await build({
+  entryPoints: ["src/theme-head-entry.js"],
+  bundle: true,
+  format: "iife",
+  write: false,
+  minify: true,
+  target: ["safari16.4", "chrome110"],
+});
+const themeHeadScript = themeHead.outputFiles[0].text;
+await writeFile(
+  "dist/index.html",
+  (await readFile("src/index.html", "utf8"))
+    .replace("__LAUNCH_CSS__", launchCss)
+    .replace("__THEME_HEAD_SCRIPT__", themeHeadScript),
+);
 await mkdir("dist/fonts", { recursive: true });
 await cp(
   "node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",

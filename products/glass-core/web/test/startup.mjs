@@ -204,7 +204,7 @@ try {
     assert(colors.chrome.every(color => color === (expected === "dark" ? "#141916" : "#f7f8f3")));
     assert.equal(
       await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
-      expected === "dark" ? "black-translucent" : "default",
+      expected === "dark" ? "black" : "default",
     );
   }
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });

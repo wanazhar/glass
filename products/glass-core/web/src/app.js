@@ -12,6 +12,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { draftStore } from "./drafts.js";
 import { attention } from "./notifications.js";
+import { applyThemeChrome, themeIsLight } from "./theme-chrome.js";
 const $ = (s) => document.querySelector(s),
   el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -2915,19 +2916,11 @@ const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
 try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
 function applyTheme() {
-  document.documentElement.classList.add("theme-ready");
-  const light =
-    themeMode === "system" ? systemTheme.matches : themeMode === "light";
-  document.documentElement.classList.toggle("light", light);
-  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
-    meta.content = light ? "#f7f8f3" : "#141916";
-    meta.removeAttribute("media");
-  }
-  const statusBar = document.querySelector(
-    'meta[name="apple-mobile-web-app-status-bar-style"]',
+  const light = themeIsLight(
+    themeMode,
+    themeMode === "system" ? systemTheme.matches : undefined,
   );
-  if (statusBar)
-    statusBar.content = light ? "default" : "black-translucent";
+  applyThemeChrome(document.documentElement, light);
   const action = light ? "Switch to dark mode" : "Switch to light mode";
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);

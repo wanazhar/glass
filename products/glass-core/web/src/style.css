@@ -40,6 +40,9 @@
 * {
   box-sizing: border-box;
 }
+html {
+  background: var(--bg);
+}
 body {
   background: var(--bg);
   margin: 0;
@@ -248,6 +251,7 @@ a {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
+  background: var(--bg);
   padding: 0 32px;
   gap: 7px;
   flex-shrink: 0;

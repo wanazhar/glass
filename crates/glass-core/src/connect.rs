@@ -1498,14 +1498,30 @@ fn response(
     kind: &str,
     body: &[u8],
     extra: &str,
+    cache_control: &str,
 ) -> std::io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status} {}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n{extra}\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n{extra}\r\n",
         if status < 400 { "OK" } else { "Error" },
         body.len()
     )?;
     stream.write_all(body)
+}
+/// Shell assets use HTTP caching on plain Connect links; HTTPS still relies on the SW cohort.
+fn shell_asset_cache_control(path: &str, versioned: bool) -> &'static str {
+    if path == "/" {
+        return "no-cache";
+    }
+    match path.rsplit('/').next().unwrap_or(path) {
+        "index.html" | "sw.js" | "manifest.webmanifest" | "build.json" => "no-cache",
+        _ if path.starts_with("/chunks/") || path.starts_with("/assets/") => {
+            "public, max-age=31536000, immutable"
+        }
+        _ if path.starts_with("/fonts/") => "public, max-age=31536000, immutable",
+        _ if versioned => "public, max-age=31536000, immutable",
+        _ => "public, max-age=86400",
+    }
 }
 fn json_response(stream: &mut TcpStream, status: u16, value: Value) -> std::io::Result<()> {
     response(
@@ -1514,6 +1530,7 @@ fn json_response(stream: &mut TcpStream, status: u16, value: Value) -> std::io::
         "application/json",
         value.to_string().as_bytes(),
         "",
+        "no-store",
     )
 }
 fn origin(settings: &Settings) -> String {
@@ -2570,6 +2587,7 @@ fn handle_with_transport(
                 "Set-Cookie: gc_local={}; HttpOnly; SameSite=Strict; Path=/\r\n",
                 app.settings.token
             ),
+            "no-store",
         )
         .map_err(|e| e.to_string());
     }
@@ -2638,6 +2656,7 @@ fn handle_with_transport(
             .is_some_and(|s| s.split(',').any(|s| s.trim() == "gzip"))
             && gzip.is_file();
         let data = crate::requests::bounded(if zipped { &gzip } else { &file }, 16 * 1024 * 1024)?;
+        let cache = shell_asset_cache_control(path, query.contains_key("version"));
         return response(
             &mut stream,
             200,
@@ -2648,6 +2667,7 @@ fn handle_with_transport(
             } else {
                 ""
             },
+            cache,
         )
         .map_err(|e| e.to_string());
     }
@@ -2688,6 +2708,7 @@ fn handle_with_transport(
                 "text/markdown; charset=utf-8",
                 &bytes,
                 "Content-Disposition: attachment; filename=glass-transcript.md\r\n",
+                "no-store",
             )
             .map_err(|e| e.to_string()),
             Err(error) => {
@@ -2716,7 +2737,7 @@ fn handle_with_transport(
         })();
         match result {
             Ok((kind, body)) => {
-                return response(&mut stream, 200, &kind, &body, "").map_err(|e| e.to_string());
+                return response(&mut stream, 200, &kind, &body, "", "no-store").map_err(|e| e.to_string());
             }
             Err(e) => {
                 return json_response(&mut stream, 400, json!({"error":e}))
@@ -2741,7 +2762,7 @@ fn handle_with_transport(
         );
         return match result {
             Ok((kind, body)) => {
-                response(&mut stream, 200, &kind, &body, "").map_err(|e| e.to_string())
+                response(&mut stream, 200, &kind, &body, "", "no-store").map_err(|e| e.to_string())
             }
             Err(error) => {
                 json_response(&mut stream, 404, json!({"error":error})).map_err(|e| e.to_string())
@@ -2771,7 +2792,7 @@ fn handle_with_transport(
         return match app.desktop.frame_updates(&r.body) {
             Ok(Some(value)) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
             Ok(None) => {
-                response(&mut stream, 204, "application/json", b"", "").map_err(|e| e.to_string())
+                response(&mut stream, 204, "application/json", b"", "", "no-store").map_err(|e| e.to_string())
             }
             Err(_) => json_response(
                 &mut stream,
@@ -3380,6 +3401,7 @@ fn desktop_frame(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> R
             "image/jpeg",
             &jpeg,
             &format!("X-Frame-Seq: {seq}\r\nX-Frame-Time-Ms: {time_ms}\r\n"),
+            "no-store",
         )
         .map_err(|e| e.to_string()),
         Ok(None) => json_response(
@@ -3782,6 +3804,20 @@ mod tests {
             true
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn shell_asset_cache_control_prefers_immutable_versioned_shell_assets() {
+        assert_eq!(shell_asset_cache_control("/", false), "no-cache");
+        assert_eq!(shell_asset_cache_control("/sw.js", false), "no-cache");
+        assert_eq!(
+            shell_asset_cache_control("/app.js", true),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            shell_asset_cache_control("/chunks/desktop-HASH.js", false),
+            "public, max-age=31536000, immutable"
+        );
     }
 
     fn settings() -> Settings {

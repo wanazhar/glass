@@ -80,6 +80,17 @@ Tailscale owner identity checks. The HTTP listener uses an available port from
 Plain HTTP supports the online workspace, but browsers require HTTPS for service
 worker caching and some clipboard features. Use HTTPS for the full progressive
 web application (PWA) experience.
+
+Both transports share the same shell layout, keyboard handling, and versioned
+static assets. Connect serves `index.html`, `sw.js`, and `build.json` with
+`Cache-Control: no-cache` so a new shell cohort is discovered quickly. Assets
+addressed with `?version=` (the main JavaScript, stylesheet, and boot script),
+content-hashed `/chunks/` and `/assets/` files, and bundled fonts are served
+with long-lived immutable caching. That HTTP cache path speeds repeat visits on
+Tailscale IP links where service workers cannot register; HTTPS still uses the
+service worker for offline shell recovery and keeps the current plus one prior
+shell cohort. API responses, transcripts, uploads, and previews remain
+`no-store` on both transports.
 `gc connect stop` removes both GC routes while preserving session workers.
 Tailscale's HTTP router normalizes IP hosts with the tailnet DNS suffix. GC adds
 and removes that exact alias through the local daemon API using version checks,

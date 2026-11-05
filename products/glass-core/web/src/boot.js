@@ -7,7 +7,7 @@ const shell = document.querySelector(".app");
 let complete = false;
 launch.dataset.booted = "true";
 // Discover repaired shells even when the cached application cannot initialize.
-if ("serviceWorker" in navigator)
+if ("serviceWorker" in navigator && window.isSecureContext)
   navigator.serviceWorker
     .register("/sw.js", { updateViaCache: "none" })
     .catch(() => {});
@@ -20,7 +20,7 @@ retry.addEventListener("click", async () => {
     const responses = await Promise.all(assets.map(async url => {
       try { return await fetch(url, { cache: "reload" }); } catch { return null; }
     }));
-    if ("caches" in window) {
+    if ("caches" in window && window.isSecureContext) {
       const names = (await caches.keys()).filter(name => name.startsWith("glass-shell-"));
       await Promise.all(names.map(async name => {
         const cache = await caches.open(name);

@@ -149,10 +149,14 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
  emit([{t:"tool",call_id:"read-while-reading",name:"read",path:"README.md"}]);
  await page.waitForTimeout(200);assert.equal(await page.locator("#conversation").evaluate(n=>n.scrollTop),top);
  if(await page.locator('#menu').isVisible())await page.locator('#menu').click();
- await page.locator('#open-chat').click();await page.reload();
+ await page.locator('#open-chat').click();await page.locator('#open-settings').click();
+ assert.equal(await page.locator('#settings-sections').isVisible(),false);await page.reload();
  await page.waitForFunction(()=>!document.querySelector('.app').hidden&&document.querySelector('#ownership').textContent==='Release control');
  if(await page.locator('#menu').isVisible())await page.locator('#menu').click();
  assert.equal(await page.locator('#open-chat').getAttribute('aria-expanded'),'false');
+ assert.equal(await page.locator('#open-settings').getAttribute('aria-expanded'),'false');
+ assert.equal(await page.locator('#settings-sections').isVisible(),false);
+ await page.locator('#open-settings').click();
  assert(await page.locator('#settings-sections a').first().isVisible());
  await page.locator('.brand-home').click();await page.waitForURL(url=>url.pathname==='/'&&!url.search);
  assert.deepEqual(errors,[]);

@@ -4404,7 +4404,13 @@ const settings = settingsPage({
   visibility: active=>{$("#details").hidden=active;if(active)$("#details").classList.remove("open");$("#threads").classList.toggle("muted-selection",active);syncPanels();view.follow=false;if(!active)requestAnimationFrame(()=>{const n=$("#conversation");view.follow=n.scrollHeight-n.scrollTop-n.clientHeight<4;follow();});},
   error: message=>notice(message,true),
 });
-$("#open-settings").onclick=()=>{closePanels();settings.open();};
+function expandSettings(expanded){
+  $("#settings-sections").hidden=!expanded;
+  $("#open-settings").setAttribute('aria-expanded',String(expanded));
+  try{localStorage.setItem('glass.settingsCollapsed',String(!expanded));}catch{}
+}
+try{expandSettings(localStorage.getItem('glass.settingsCollapsed')!=='true');}catch{}
+$("#open-settings").onclick=()=>expandSettings($("#open-settings").getAttribute('aria-expanded')!=='true');
 function expandConversations(expanded){
   $("#conversation-navigation").hidden=!expanded;
   $("#open-chat").setAttribute('aria-expanded',String(expanded));

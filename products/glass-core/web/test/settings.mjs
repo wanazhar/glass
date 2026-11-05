@@ -114,13 +114,13 @@ try{for(const width of [320,390,768,1440].filter(w=>!process.env.GC_SETTINGS_WID
  assert(!requests.some(p=>['/api/open','/api/history','/api/events','/api/send'].includes(p)),requests.join(','));
  // A chat is opened only when explicitly returning to it. Existing drafts stay mounted.
  await page.goto(origin+'/?thread=fixture');await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');await page.locator('#prompt').fill('Keep my draft');await page.locator('#conversation').evaluate(n=>n.scrollTop=120);const top=await page.locator('#conversation').evaluate(n=>n.scrollTop),historyReads=requests.filter(p=>p==='/api/history').length;
- await page.locator('#open-settings').evaluate(n=>n.click());await page.getByLabel('Default model',{exact:true}).waitFor();assert.equal(requests.filter(p=>p==='/api/history').length,historyReads);await page.getByRole('button',{name:'Back to conversation',exact:true}).click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');assert.equal(await page.locator('#conversation').evaluate(n=>n.scrollTop),top);
+ await page.locator('#settings-sections a[data-section=general]').evaluate(n=>n.click());await page.getByLabel('Default model',{exact:true}).waitFor();assert.equal(requests.filter(p=>p==='/api/history').length,historyReads);await page.getByRole('button',{name:'Back to conversation',exact:true}).click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');assert.equal(await page.locator('#conversation').evaluate(n=>n.scrollTop),top);
  await page.locator('#prompt').fill('/desktop');await page.locator('#composer').evaluate(n=>n.requestSubmit());await page.locator('#desktop-title').waitFor();await page.keyboard.press('Escape');
  // Sidebar identity, dirty guards and explicit chat selection share one navigation.
  await page.locator('#prompt').fill('Keep my draft');
  const sidebar=await page.locator('#sidebar').elementHandle();
  if(await page.locator('#menu').isVisible())await page.locator('#menu').click();
- await page.locator('#open-settings').click();await page.getByLabel('Default model',{exact:true}).waitFor();
+ await page.locator('#settings-sections a[data-section=general]').click();await page.getByLabel('Default model',{exact:true}).waitFor();
  await page.getByLabel('Default model',{exact:true}).fill('unsaved-navigation-draft');
  const opens=requests.filter(p=>p==='/api/open').length;
  async function chooseOther(){if(await page.locator('#settings-menu').isVisible())await page.locator('#settings-menu').click();const project=page.locator('.project-group').first();if(!await project.evaluate(n=>n.open))await project.locator('summary').click();await page.getByRole('button',{name:'Another conversation',exact:false}).click();}

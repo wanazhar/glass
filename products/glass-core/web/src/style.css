@@ -4292,6 +4292,6 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .shell-navigation > .shell-nav-item,.shell-navigation > .settings-tabs { flex-shrink: 0; }
 .shell-navigation > .conversation-navigation { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; }
 .conversation-navigation[hidden] { display: none !important; }
-#open-chat::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); margin-left: auto; margin-right: 4px; }
-#open-chat[aria-expanded=false]::after { transform: rotate(-45deg); }
+#open-chat::after,#open-settings::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); margin-left: auto; margin-right: 4px; }
+#open-chat[aria-expanded=false]::after,#open-settings[aria-expanded=false]::after { transform: rotate(-45deg); }
 .settings-tabs { overflow: auto; max-height: 40vh; }

@@ -159,6 +159,11 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
  await page.locator('#open-settings').click();
  assert(await page.locator('#settings-sections a').first().isVisible());
  await page.locator('.brand-home').click();await page.waitForURL(url=>url.pathname==='/'&&!url.search);
+ await page.locator('#welcome').waitFor();
+ await page.locator('#conversation').evaluate(n=>{n.dispatchEvent(new Event('touchmove'));n.dispatchEvent(new WheelEvent('wheel',{deltaY:-100}));n.dispatchEvent(new Event('scroll'));});
+ await page.setViewportSize({width,height:900});await page.waitForTimeout(100);
+ assert.equal(await page.locator('#latest').isVisible(),false,'Home never offers a latest-message scroll action');
+
  assert.deepEqual(errors,[]);
  await context.close();console.log(`PASS agentic chat ${width}px ${colorScheme}: checklist, code, sources, voice draft, upload/removal and keyboard tree`);
 }}finally{for(const release of uploads)release();await browser.close();for(const response of [...streams,...agentStreams])response.end();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

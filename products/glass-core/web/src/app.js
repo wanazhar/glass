@@ -351,11 +351,18 @@ function atBottom() {
   const n = $("#conversation");
   return n.scrollHeight - n.scrollTop - n.clientHeight < 90;
 }
+function syncLatest() {
+  const conversation=$("#conversation");
+  const awayFromTail=conversation.scrollHeight-conversation.scrollTop-conversation.clientHeight>4;
+  $("#latest").classList.toggle("hidden",!view.id||document.body.classList.contains('settings-open')||(!view.tailPruned&&(view.follow||!awayFromTail)));
+}
 function follow() {
+  syncLatest();
+  if(!view.id)return;
   if (document.body.classList.contains("settings-open")) return;
   if (view.follow)
     $("#conversation").scrollTop = $("#conversation").scrollHeight;
-  $("#latest").classList.toggle("hidden", view.follow);
+  syncLatest();
 }
 let readingWidth = $("#conversation").clientWidth;
 new ResizeObserver(() => {
@@ -365,15 +372,17 @@ new ResizeObserver(() => {
 $("#conversation").addEventListener(
   "scroll",
   () => {
+    if(!view.id){syncLatest();return;}
     if ($("#conversation").clientWidth !== readingWidth) return;
     // Only explicit scrolling to the exact tail re-enables following.
     if ($("#conversation").scrollHeight - $("#conversation").scrollTop - $("#conversation").clientHeight >= 4) view.follow = false;
     else if (!view.tailPruned && $("#conversation").scrollHeight - $("#conversation").scrollTop - $("#conversation").clientHeight < 4) view.follow = true;
-    $("#latest").classList.toggle("hidden", view.follow);
+    syncLatest();
   },
   { passive: true },
 );
 $("#latest").onclick = async () => {
+  if(!view.id){syncLatest();return;}
   if (view.tailPruned) {
     view.tailPruned = false;
     await history();
@@ -1215,7 +1224,7 @@ async function historyNow(older = false) {
     while (retainedTimeline.children.length > 240)
       retainedTimeline.lastElementChild.remove();
     view.tailPruned = true;
-    $("#latest").classList.remove("hidden");
+    syncLatest();
     for (const [id, t] of view.tools)
       if (!t.row.isConnected) view.tools.delete(id);
   }

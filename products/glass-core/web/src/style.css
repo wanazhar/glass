@@ -3833,3 +3833,35 @@ dialog.floating-palette {
 
 .teammate-status[data-connection="reconnecting"] .teammate-state { opacity: .7; }
 .teammate-connection { white-space: nowrap; align-self: center; font: 10px/1.4 var(--font-sans); color: var(--muted); }
+
+/* Dedicated Settings route: the chat DOM stays mounted behind navigation. */
+.settings-open .app { display: none !important; }
+#settings-page[hidden] { display: none; }
+#settings-page { position: fixed; inset: 0; top: var(--viewport-top, 0px); bottom: auto; height: var(--app-height, 100dvh); overflow: auto; background: var(--bg); color: var(--text); padding-bottom: max(32px, env(safe-area-inset-bottom)); overscroll-behavior: contain; }
+.settings-entry { padding: 0 14px 10px; }
+.settings-entry button { width: 100%; text-align: left; padding: 10px; }
+.settings-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: max(12px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 12px max(20px, env(safe-area-inset-left)); background: var(--bg); border-bottom: 1px solid var(--line); }
+.settings-header button { min-height: 40px; }
+.settings-brand { font-size: 20px; font-weight: 650; letter-spacing: -.8px; }
+.settings-main { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
+.settings-main h1 { font-size: clamp(23px, 3vw, 30px); letter-spacing: -.7px; margin: 0 0 8px; outline: none; }
+.settings-intro { color: var(--muted); margin: 0 0 28px; line-height: 1.6; font-size: 14px; }
+.settings-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.settings-card { color: var(--text); text-decoration: none; position: relative; display: flex; flex-direction: column; gap: 7px; padding: 20px 36px 20px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.settings-card:hover, .settings-row:hover { border-color: var(--accent); background: var(--surface2); }
+.settings-card strong { font-size: 14px; font-weight: 600; }
+.settings-card > span:not(.settings-chevron) { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.settings-chevron { position: absolute; right: 18px; top: 22px; color: var(--muted); }
+.settings-row { display: block; width: 100%; padding: 18px 4px; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; cursor: pointer; }
+.settings-scope { font-size: 12px; color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.settings-control { max-width: 740px; }
+.settings-control #command-content { padding: 12px 0; overflow: visible; }
+.settings-control .command-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.settings-control input, .settings-control textarea, .settings-control select, .settings-preference select, .settings-main > select { font: inherit; font-size: 16px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 42px; max-width: 100%; }
+.settings-preference { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding: 18px 0; font-size: 14px; }
+.settings-preference select { min-width: 140px; }
+.settings-unsaved { max-width: 912px; margin: 16px auto; padding: 16px; background: var(--surface2); border: 1px solid var(--line); }
+.settings-unsaved button { margin-right: 12px; min-height: 40px; }
+.settings-error { color: var(--red); }
+@media(max-width:600px) { .settings-main { padding: 24px 18px; } .settings-grid { grid-template-columns: 1fr; } .settings-header { padding-left: 14px; padding-right: 18px; } }
+.settings-warning { margin: 16px auto; max-width: 912px; padding: 12px 18px; color: var(--text); background: var(--surface2); border-left: 2px solid var(--accent); }

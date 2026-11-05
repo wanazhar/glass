@@ -1,3 +1,4 @@
+import {configurationCommands} from '../src/settings.js';
 // Audit every registered palette route against an isolated host stub; never run mutations.
 import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
@@ -72,6 +73,14 @@ try {
     await page.locator('#command-search').fill(command.name);
     const choice = page.locator('.command-choice').filter({ has: page.locator('strong', { hasText: new RegExp('^/' + command.name + '(?:\\s|$)') }) });
     await choice.click();
+    if(configurationCommands.has(command.name)) {
+      await page.locator('#settings-page #command-form').waitFor();
+      await page.waitForFunction(()=>document.querySelector('#command-status').dataset.working!=='true');
+      assert.equal(await page.locator('dialog[open]').count(),0);
+      await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
+      await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');
+      continue;
+    }
     await page.locator('#command-view').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#command-title').textContent(), '/' + command.name);
     if (holdStatus) {
@@ -157,7 +166,8 @@ try {
     const choice = page.locator('.command-choice').filter({ has: page.locator('strong', { hasText: new RegExp('^/' + command.name + '(?:\\s|$)') }) });
     assert.equal(await choice.count(), 1);
     await choice.click();
-    if (command.primary) assert(await page.locator('#commands').isVisible());
+    if (command.primary && command.name!=='settings') assert(await page.locator('#commands').isVisible());
+    if(command.name==='settings')assert(await page.locator('#settings-page').isVisible());
     if (command.name === 'help') {
       assert.equal(await page.locator('#commands').isVisible(), false);
       assert.equal(await page.locator('#preview-title').innerText(), 'Help');
@@ -177,7 +187,8 @@ try {
     }
     if (['outputs', 'thinking'].includes(command.name)) assert(await page.locator('#details').isVisible());
     if (command.name === 'editor') assert(await page.locator('#draft-editor').isVisible());
-    if (command.name === 'animation') assert(await page.locator('#animations').isVisible());
+    if (command.name === 'animation') assert(await page.locator('#settings-page').isVisible());
+    if(command.name==='desktop')await page.locator('#desktop-title').waitFor();
     if (command.name === 'tools') assert(await page.evaluate(() => document.documentElement.classList.contains('compact-tools')));
   }
   assert.deepEqual(errors, []);

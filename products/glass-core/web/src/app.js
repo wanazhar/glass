@@ -1,3 +1,4 @@
+import { settingsPage, settingDestination, configurationCommands } from "./settings.js";
 import { renderChecklist, updateStage } from "./agent-ui.js";
 import { teammateStatus } from "./teammate-status.js";
 import { fileTree } from "./file-tree.js";
@@ -347,6 +348,7 @@ function atBottom() {
   return n.scrollHeight - n.scrollTop - n.clientHeight < 90;
 }
 function follow() {
+  if (document.body.classList.contains("settings-open")) return;
   if (view.follow)
     $("#conversation").scrollTop = $("#conversation").scrollHeight;
   $("#latest").classList.toggle("hidden", view.follow);
@@ -1766,7 +1768,8 @@ async function openThreadTransaction(id, options, attempt) {
   document.title = (thread?.title || "Conversation") + " · Glass";
   const threadUrl = new URLSearchParams({ thread: id });
   if (view.sourceRef) threadUrl.set("sourceRef", view.sourceRef);
-  window.history.replaceState(null, "", "/?" + threadUrl);
+  for (const key of ["settings","setting"]) { const value=new URLSearchParams(location.search).get(key); if(value) threadUrl.set(key,value); }
+  window.history.replaceState(window.history.state, "", "/?" + threadUrl);
   renderThreads();
   if (oldReleaseError)
     notice(
@@ -2875,6 +2878,7 @@ $("#scrim").onclick = () => closePanels();
 syncPanels();
 const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
+try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
 function applyTheme() {
   document.documentElement.classList.add("theme-ready");
   const light =
@@ -2893,6 +2897,7 @@ $("#theme").onclick = () => {
   themeMode = document.documentElement.classList.contains("light")
     ? "dark"
     : "light";
+  try { localStorage.setItem("glass:theme",themeMode); } catch {}
   applyTheme();
 };
 applyTheme();
@@ -3678,6 +3683,7 @@ function openAnimationPicker() {
 for (const button of document.querySelectorAll("[data-animation]"))
   button.onclick = () => {
     document.documentElement.dataset.animation = button.dataset.animation;
+    try { localStorage.setItem("glass:animation",button.dataset.animation); } catch {}
     $("#animations").close();
   };
 const commandRequests = new Map();
@@ -3715,12 +3721,14 @@ function commandTransport(name, values, inspect = false) {
     });
   });
 }
-async function openNativeCommand(command, initialArgs = "") {
+async function openNativeCommand(command, initialArgs = "", settingsSlot = null) {
+  if (!settingsSlot) releaseSettingsCommand();
   if (!view.id) {
     notice("Open a conversation first.");
     return;
   }
   const version = ++commandViewVersion;
+  const commandSession = view.id;
   closeCommands();
   const modal = $("#command-view"),
     form = $("#command-form"),
@@ -3728,17 +3736,21 @@ async function openNativeCommand(command, initialArgs = "") {
   modal.classList.toggle("floating-palette", command.name === "git");
   $("#command-title").textContent = `/${command.name}`;
   $("#command-status").textContent = "";
+  $("#command-status").dataset.working = "false";
+  $("#command-status").dataset.mutating = "false";
   $("#command-status").removeAttribute("data-error");
   body.replaceChildren();
   body.className = 'command-data';
+  body.setAttribute('aria-label', settingsSlot ? 'Setting details' : 'Command results');
   body.setAttribute('aria-busy', 'false');
   $('#command-content').scrollTop = 0;
   const actions = form.querySelector('.command-actions') || el('div', 'command-actions');
   actions.replaceChildren($('#command-status'));
   form.replaceChildren(actions);
-  modal.querySelector('.command-description')?.remove();
+  $("#command-content").querySelector('.command-description')?.remove();
   if (command.description) form.before(el('p', 'command-description', command.description.replace(/ · local$/, '')));
-  if (!modal.open) modal.showModal();
+  if (settingsSlot) settingsSlot.append($("#command-content"));
+  else if (!modal.open) modal.showModal();
   if (!view.commandTransportReady && !command.readonly) {
     body.append(
       el(
@@ -3751,8 +3763,9 @@ async function openNativeCommand(command, initialArgs = "") {
   }
   const fields = command.form?.fields || [];
   for (const field of fields) {
-    const label = el("label", "command-field", field.label);
+    const label = el("label", "command-field", settingsSlot && command.name === "pacing" && field.key === "args" ? "Response pacing" : field.label);
     const choices =
+      settingsSlot && command.name === "pacing" && field.key === "args" ? ["adaptive", "maximum"] :
       ["action", "kind"].includes(field.key) && field.kind === "text" && field.label.includes("|")
         ? field.label.split("|").map((s) => s.trim().split(/\s/)[0])
         : null;
@@ -3956,7 +3969,9 @@ async function openNativeCommand(command, initialArgs = "") {
   };
   actions.insertBefore(cancel, $('#command-status'));
   const execute = async (inspect = false) => {
-    const id = view.id;
+    const id = commandSession;
+    if (id !== view.id) { $("#command-status").textContent="The conversation changed. Reopen this setting before applying changes."; return; }
+    $("#command-status").dataset.mutating = String(Boolean(settingsSlot && !inspect));
     button.disabled = true;
     $('#command-status').removeAttribute('data-error');
     body.setAttribute('aria-busy', 'true');
@@ -4025,7 +4040,14 @@ async function openNativeCommand(command, initialArgs = "") {
       }
       const secret = form.elements.namedItem("secret");
       if (secret) secret.value = "";
-      $("#command-status").textContent = "";
+      $("#command-status").textContent = settingsSlot && !inspect ? "Completed" : "";
+      if (settingsSlot && !inspect) settings.saved();
+      if (settingsSlot && inspect) {
+        const field=form.elements.namedItem("args");
+        if(field && command.name === "pacing" && typeof result.body?.adaptive === "boolean") field.value=result.body.adaptive ? "adaptive" : "maximum";
+        if(field && command.name === "model" && result.body?.model) field.value=result.body.model;
+        if(field && command.name === "budget" && result.body && "limit" in result.body) field.value=result.body.limit == null ? "off" : String(result.body.limit);
+      }
       if (result.body?.open_thread) {
         modal.close();
         await loadThreads();
@@ -4069,6 +4091,7 @@ async function openNativeCommand(command, initialArgs = "") {
         button.disabled = false;
         cancel.hidden = true;
         $("#command-status").dataset.working = "false";
+        $("#command-status").dataset.mutating = "false";
       }
     }
   };
@@ -4164,6 +4187,7 @@ const commandActions = {
   clear: () => newThread(),
   tools: () => {
     document.documentElement.classList.toggle("compact-tools");
+    try { localStorage.setItem("glass:tools",document.documentElement.classList.contains("compact-tools")?"compact":"expanded"); } catch {}
     notice(
       document.documentElement.classList.contains("compact-tools")
         ? "Compact tool cards"
@@ -4174,7 +4198,8 @@ const commandActions = {
   animation: () => openAnimationPicker(),
   conversations: () => showPanel("#sidebar", true, true),
   work: () => openCommandTab("activity"),
-  settings: () => openCommandTab("context"),
+  settings: () => settings.open(),
+  desktop: () => $("#desktop-toggle").click(),
   outputs: () => openCommandTab("activity"),
   thinking: () => openCommandTab("reasoning"),
   context: () => openCommandTab("context"),
@@ -4293,6 +4318,7 @@ function renderCommands({ revealSelection = false } = {}) {
             : c.description.replace(/ · local$/, ""),
         ),
       );
+      if (configurationCommands.has(c.name)) button.append(el("small", "", "Opens Settings"));
       if (
         !c.primary &&
         !c.portable &&
@@ -4320,6 +4346,12 @@ function renderCommands({ revealSelection = false } = {}) {
   }
 }
 function chooseCommand(c, { focusSearch = false } = {}) {
+  if (c.name === "settings" || configurationCommands.has(c.name)) {
+    closeCommands();
+    if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value="";
+    settings.open(settingDestination(c.name)||"", c.name === "settings" ? "" : ["animation","theme","tools"].includes(c.name) ? "" : c.name);
+    return;
+  }
   if (c.primary) {
     openCommands(c.name, { focusSearch });
     return;
@@ -4334,6 +4366,32 @@ function chooseCommand(c, { focusSearch = false } = {}) {
   if (c.portable) openNativeCommand(c);
   else commandActions[c.name]();
 }
+function releaseSettingsCommand() {
+  commandViewVersion++;
+  const content=$("#command-content");
+  if(content.parentElement!==$("#command-view")) $("#command-view").append(content);
+  // Credentials are never retained when leaving a settings section.
+  for(const input of content.querySelectorAll('input[type="password"]')) input.value="";
+}
+const settings = settingsPage({
+  commands: async()=>{if(!commands.length)commands=(await api("commands")).commands;return commands;},
+  openCommand: (command,slot)=>openNativeCommand(command,"",slot),
+  releaseCommand: releaseSettingsCommand,
+  context: ()=>({id:view.id,title:threadInfo(view.id)?.title,workspace:threadInfo(view.id)?.workspace||view.workspace,threads:view.threads}),
+  selectContext: async id=>{const result=await openThread(id);if(!result?.ok)throw Error(result?.message||"Conversation could not open.");},
+  appearance: (key,value)=>{
+    if(key){
+      localStorage.setItem("glass:"+key,value);
+      if(key==="theme"){themeMode=value;applyTheme();}
+      if(key==="animation")document.documentElement.dataset.animation=value;
+      if(key==="tools")document.documentElement.classList.toggle("compact-tools",value==="compact");
+    }
+    return {theme:themeMode,animation:document.documentElement.dataset.animation||"dots",tools:document.documentElement.classList.contains("compact-tools")?"compact":"expanded"};
+  },
+  visibility: active=>{view.follow=false;if(!active)requestAnimationFrame(()=>{const n=$("#conversation");view.follow=n.scrollHeight-n.scrollTop-n.clientHeight<4;follow();});},
+  error: message=>notice(message,true),
+});
+$("#open-settings").onclick=()=>{closePanels();settings.open();};
 async function inspectLayout() {
   preview(
     "Layout measurements",
@@ -4469,6 +4527,7 @@ async function dispatchSlash(value) {
     .trim()
     .slice(name.length + 1)
     .trim();
+  if (configurationCommands.has(c.name) || c.name === "settings") { chooseCommand(c); return; }
   if (args && c.portable) {
     $("#prompt").value = "";
     await openNativeCommand(c, args);
@@ -4592,6 +4651,7 @@ async function start() {
           }
         );
     } else connection("Connected");
+    if (new URLSearchParams(location.search).has("settings")) await settings.restore();
     return { ok: true };
   } catch (e) {
     if (e.message === "Invalid owner capability") {

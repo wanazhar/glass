@@ -20,7 +20,7 @@ through `gc help` and `gc COMMAND --help`.
 | [Web search and fetch](web-tools.md) | Native Exa MCP search and bounded direct HTTP reading |
 | [Optional integrations](integrations.md) | MCP, plugins, verification, language services |
 | [Extending](extending.md) | Instructions, skills, subprocesses, compiled mods |
-| [Remote workspace](connect.md) | Tailscale, shared threads, same-host desktop, rich previews |
+| [Remote workspace](connect.md) | Tailscale, shared threads, full-page Settings, same-host desktop, rich previews |
 | [Automation](automation.md) | Headless results, SSH, ACP, served sessions, schedules |
 
 The [Shared desktop section](connect.md#shared-desktop) includes [available desktop choices](connect.md#available-desktop-choices), [viewing and control](connect.md#viewing-and-control), [authorization, HTTP endpoints, and HTTPS-only secret entry](connect.md#authorization-and-http), and [accessibility and agent tools](connect.md#accessibility-and-agent-tools).

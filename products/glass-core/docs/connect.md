@@ -621,7 +621,7 @@ storage and a mock provider, and does not change Tailscale routes.
 ## Browser commands
 
 Type `/` in the composer to open the command palette. Choose Conversations,
-Work, or Settings, or search by command name, alias, or description. Arrow keys
+or Work, open the dedicated Settings page, or search by command name, alias, or description. Arrow keys
 move the selection and Enter chooses it. Escape returns to the root from a
 section; Escape at the root closes the palette. Touch selection is supported.
 On touch devices, browsing a category leaves the keyboard closed; tap search to
@@ -636,6 +636,10 @@ workspace task, checklist, model, profile, memory, and agent operations run on
 the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
+
+Settings is a full-page browser destination, not a sidebar or dialog. Open it from the thread navigation or `/settings`. Its section index covers Connections, Models & execution, Tools & integrations, Profiles & instructions, Memory & skills, Appearance, Permissions & reviews, and Effective configuration. Search results for configuration controls open the matching Settings page. Quick model switching, status checks and immediate work actions remain in the palette. `/desktop` opens the same Computer view as the toolbar.
+
+Settings URLs retain the selected conversation and support reload and browser back/forward. Back or Escape returns through the section index to chat; the chat draft and reading position are retained. Unsaved edits require an explicit discard, and in-flight operations remain visible until their receipt arrives. Native settings display the selected conversation/workspace; without a conversation, select one to inspect its effective configuration. Spending limits are conversation-specific, saved connections are shared on the host, and theme/motion/tool-card density are browser-local. Settings reuse the existing host validation and confirmation controls.
 
 Only the command-selection menus, Git/Changes, and Work & teammates use rounded
 floating panels. Other command views, readers, editors and workflow surfaces

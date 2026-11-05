@@ -4405,8 +4405,16 @@ const settings = settingsPage({
   error: message=>notice(message,true),
 });
 $("#open-settings").onclick=()=>{closePanels();settings.open();};
-$("#open-chat").onclick=()=>{closePanels();if(settings.active())settings.close();};
-$(".brand-home").onclick=event=>{event.preventDefault();closePanels();if(settings.active())settings.close();};
+function expandConversations(expanded){
+  $("#conversation-navigation").hidden=!expanded;
+  $("#open-chat").setAttribute('aria-expanded',String(expanded));
+  try{localStorage.setItem('glass.conversationsCollapsed',String(!expanded));}catch{}
+}
+try{expandConversations(localStorage.getItem('glass.conversationsCollapsed')!=='true');}catch{}
+$("#open-chat").onclick=()=>{
+  if(settings.active()){expandConversations(true);closePanels();settings.close();}
+  else expandConversations($("#open-chat").getAttribute('aria-expanded')!=='true');
+};
 shellIcons();watchSelects();
 async function inspectLayout() {
   preview(
@@ -4918,15 +4926,13 @@ async function openWorkflow(name, ...args) {
   }
 }
 
-$(".brand-home").addEventListener("click", async (event) => {
-  if (!workflowPromise) return;
+$(".brand-home").addEventListener("click", (event) => {
+  if(event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
   event.preventDefault();
-  const work = await workflowPromise;
-  if (work.prepareLeave()) {
-    saveDraft();
-    drafts.flush();
-    location.href = "/";
-  }
+  settings.navigate(async()=>{
+    if(workflowPromise && !(await workflowPromise).prepareLeave())return;
+    saveDraft();drafts.flush();location.assign('/');
+  });
 });
 
 export function revealShell() {

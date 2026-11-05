@@ -4286,3 +4286,12 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .agent-transcript-entry.error { color: var(--danger); }
 .conversation-navigation { max-height: 52vh; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .settings-open .conversation-navigation { max-height: 28vh; }
+/* Keep primary destinations visible; only the conversation list scrolls. */
+.sidebar-body { overflow: hidden; }
+.sidebar-body > .shell-navigation { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.shell-navigation > .shell-nav-item,.shell-navigation > .settings-tabs { flex-shrink: 0; }
+.shell-navigation > .conversation-navigation { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; }
+.conversation-navigation[hidden] { display: none !important; }
+#open-chat::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); margin-left: auto; margin-right: 4px; }
+#open-chat[aria-expanded=false]::after { transform: rotate(-45deg); }
+.settings-tabs { overflow: auto; max-height: 40vh; }

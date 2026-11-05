@@ -95,8 +95,8 @@
           /><kbd>⌘ K</kbd></label
         >
         <nav class="shell-navigation" aria-label="Workspace navigation">
-          <button type="button" id="open-chat" class="shell-nav-item" aria-current="page">Conversations</button>
-        <section class="conversation-navigation" aria-label="Recent conversations">
+          <button type="button" id="open-chat" class="shell-nav-item" aria-current="page" aria-expanded="true" aria-controls="conversation-navigation">Conversations</button>
+        <section id="conversation-navigation" class="conversation-navigation" aria-label="Recent conversations">
         <div class="project-filter">
           <select
             id="project-scope"
@@ -110,8 +110,8 @@
           Load older threads
         </button>
         </section>
-          <button type="button" id="open-settings" class="shell-nav-item" aria-expanded="false" aria-controls="settings-sections">Settings</button>
-          <nav id="settings-sections" class="settings-tabs" aria-label="Settings sections" hidden></nav>
+          <button type="button" id="open-settings" class="shell-nav-item" aria-expanded="true" aria-controls="settings-sections">Settings</button>
+          <nav id="settings-sections" class="settings-tabs" aria-label="Settings sections"></nav>
         </nav>
         </div>
         <footer class="sidebar-footer">

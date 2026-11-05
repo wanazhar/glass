@@ -29,7 +29,7 @@ const server=createServer(async(request,response)=>{
  if(path.startsWith("/api/")){
   let value={};
   if(path==="/api/status")value={workspace:"/tmp/project-sea",profile:"workspace-edit",web_workflows:1};
-  if(path==="/api/threads")value={threads:[{session:"fixture",title:"Theme controls",workspace:"/tmp/project-sea",workspace_assigned:true,workspace_available:true,model:"Local model"}],projects:[]};
+  if(path==="/api/threads")value={threads:[{session:"fixture",title:"Theme controls",workspace:"/tmp/project-sea",workspace_assigned:true,workspace_available:true,model:"Local model"},...Array.from({length:60},(_,i)=>({session:`extra-${i}`,title:`Older thread ${i}`,workspace:"/tmp/project-sea",workspace_assigned:true,workspace_available:true}))],projects:[]};
   if(path==="/api/history")value={records:records().filter(r=>!omitChecklist || r.k!=="custom").map((record,index)=>({index,record})),before:0};
   if(path==="/api/agent")value={text:[{k:'reasoning',t:'Inspect the '},{k:'reasoning',t:'project carefully.'},{k:'call',id:'read',name:'read',args:'{"path":"README.md"}'},{k:'tool',id:'read',name:'read',t:'Project documentation'},{k:'assistant',t:'Finished the **review**.\n\n- Checked the project\n- Reported findings'},{k:'custom',c:'provider/chat-reasoning',d:'PRIVATE_SENTINEL'}].map(r=>JSON.stringify(r)).join('\n')};
   if(path==="/api/context")value={attachments};
@@ -59,6 +59,12 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
   const type=await page.locator('#prompt').evaluate(n=>{const s=getComputedStyle(n);return parseFloat(s.fontSize)*(parseFloat(s.zoom)||1);});assert(type<=13.1,'Composer uses compact visual type on phones');
   await page.locator('#menu').click();
   assert.equal(await page.locator('#threads').evaluate(n=>n.closest('.conversation-navigation')?.previousElementSibling?.id),'open-chat');
+  assert(await page.locator('#open-settings').isVisible());
+  assert(await page.locator('#settings-sections a').first().isVisible());
+  assert(await page.locator('.conversation-navigation').evaluate(n=>n.scrollHeight>n.clientHeight));
+  await page.locator('#open-chat').click();assert.equal(await page.locator('#conversation-navigation').isVisible(),false);
+  assert.equal(await page.locator('#open-chat').getAttribute('aria-expanded'),'false');
+  await page.locator('#open-chat').click();assert.equal(await page.locator('#conversation-navigation').isVisible(),true);
   await page.screenshot({path:`/tmp/glass-conversations-sidebar-${width}-${colorScheme}.png`});
   assert(await page.locator('#notifications').evaluate(n=>{const r=n.getBoundingClientRect(),svg=n.querySelector('svg').getBoundingClientRect();return r.height===30&&r.width===30&&Math.abs(r.y+r.height/2-svg.y-svg.height/2)<1;}),'Bell is square and vertically centered');
   await page.keyboard.press('Escape');
@@ -142,5 +148,13 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
  await page.waitForTimeout(80);const top=await page.locator("#conversation").evaluate(n=>n.scrollTop);
  emit([{t:"tool",call_id:"read-while-reading",name:"read",path:"README.md"}]);
  await page.waitForTimeout(200);assert.equal(await page.locator("#conversation").evaluate(n=>n.scrollTop),top);
+ if(await page.locator('#menu').isVisible())await page.locator('#menu').click();
+ await page.locator('#open-chat').click();await page.reload();
+ await page.waitForFunction(()=>!document.querySelector('.app').hidden&&document.querySelector('#ownership').textContent==='Release control');
+ if(await page.locator('#menu').isVisible())await page.locator('#menu').click();
+ assert.equal(await page.locator('#open-chat').getAttribute('aria-expanded'),'false');
+ assert(await page.locator('#settings-sections a').first().isVisible());
+ await page.locator('.brand-home').click();await page.waitForURL(url=>url.pathname==='/'&&!url.search);
+ assert.deepEqual(errors,[]);
  await context.close();console.log(`PASS agentic chat ${width}px ${colorScheme}: checklist, code, sources, voice draft, upload/removal and keyboard tree`);
 }}finally{for(const release of uploads)release();await browser.close();for(const response of [...streams,...agentStreams])response.end();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

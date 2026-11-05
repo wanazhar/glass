@@ -1,3 +1,4 @@
+import {renderAgentTranscript} from './agent-transcript.js';
 import {createElement, X, Check, Circle, LoaderCircle} from 'lucide';
 import { attachmentPreview } from "./agent-ui.js";
 import { ownerFetch, ownerEventSource, ownerUpload } from "./owner-auth.js";
@@ -761,16 +762,12 @@ export function workflows({
                     signal,
                   );
                   if (!current()) return;
-                  let transcript = card.querySelector("pre");
+                  let transcript = card.querySelector(".agent-transcript");
                   if (!transcript) {
-                    transcript = el("pre", "agent-transcript");
+                    transcript = el("div", "agent-transcript");
                     card.append(transcript);
                   }
-                  transcript.textContent = String(
-                    typeof result.text === "string"
-                      ? result.text
-                      : "Transcript unavailable.",
-                  ).slice(0, 262144);
+                  renderAgentTranscript(transcript, typeof result.text === "string" ? result.text : "Transcript unavailable.");
                 } catch (e) {
                   if (current()) status.textContent = e.message;
                 }

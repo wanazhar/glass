@@ -96,10 +96,7 @@
         >
         <nav class="shell-navigation" aria-label="Workspace navigation">
           <button type="button" id="open-chat" class="shell-nav-item" aria-current="page">Conversations</button>
-          <button type="button" id="open-settings" class="shell-nav-item" aria-expanded="false" aria-controls="settings-sections">Settings</button>
-          <nav id="settings-sections" class="settings-tabs" aria-label="Settings sections" hidden></nav>
-        </nav>
-        <div class="sidebar-section-label">Recent conversations</div>
+        <section class="conversation-navigation" aria-label="Recent conversations">
         <div class="project-filter">
           <select
             id="project-scope"
@@ -112,6 +109,10 @@
         <button id="more-threads" class="quiet hidden" type="button">
           Load older threads
         </button>
+        </section>
+          <button type="button" id="open-settings" class="shell-nav-item" aria-expanded="false" aria-controls="settings-sections">Settings</button>
+          <nav id="settings-sections" class="settings-tabs" aria-label="Settings sections" hidden></nav>
+        </nav>
         </div>
         <footer class="sidebar-footer">
           <button type="button" id="notifications" class="quiet">

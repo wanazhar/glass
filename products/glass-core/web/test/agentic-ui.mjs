@@ -31,6 +31,7 @@ const server=createServer(async(request,response)=>{
   if(path==="/api/status")value={workspace:"/tmp/project-sea",profile:"workspace-edit",web_workflows:1};
   if(path==="/api/threads")value={threads:[{session:"fixture",title:"Theme controls",workspace:"/tmp/project-sea",workspace_assigned:true,workspace_available:true,model:"Local model"}],projects:[]};
   if(path==="/api/history")value={records:records().filter(r=>!omitChecklist || r.k!=="custom").map((record,index)=>({index,record})),before:0};
+  if(path==="/api/agent")value={text:[{k:'reasoning',t:'Inspect the '},{k:'reasoning',t:'project carefully.'},{k:'call',id:'read',name:'read',args:'{"path":"README.md"}'},{k:'tool',id:'read',name:'read',t:'Project documentation'},{k:'assistant',t:'Finished the **review**.\n\n- Checked the project\n- Reported findings'},{k:'custom',c:'provider/chat-reasoning',d:'PRIVATE_SENTINEL'}].map(r=>JSON.stringify(r)).join('\n')};
   if(path==="/api/context")value={attachments};
   if(path==="/api/agents"){agentReads++;if(failRoster){response.writeHead(503,{"Content-Type":"application/json"});response.end(JSON.stringify({error:"Status connection unavailable"}));return;}value=agents;}
   if(path==="/api/command")value={format:"json",body:{tasks:todo}};
@@ -44,7 +45,7 @@ const server=createServer(async(request,response)=>{
 });
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync("/snap/chromium/current/usr/lib/chromium-browser/chrome")?"/snap/chromium/current/usr/lib/chromium-browser/chrome":undefined),headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
-try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"]){
+try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)]:[390,768,1440]))for(const colorScheme of ["light","dark"]){
  failRoster=false;agents=[];attachments=[];omitChecklist=false;todo[2].status="in_progress";todo[3].status="pending";todo[4].status="pending";
  const context=await browser.newContext({viewport:{width,height:1000},isMobile:width<=768,hasTouch:width<=768,colorScheme,serviceWorkers:"block",reducedMotion:"reduce"});
  await context.addInitScript(()=>{window.SpeechRecognition=class{start(){window.testRecognition=this;}stop(){this.onend?.();}};});
@@ -57,6 +58,8 @@ try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"])
  if(width<=700){
   const type=await page.locator('#prompt').evaluate(n=>{const s=getComputedStyle(n);return parseFloat(s.fontSize)*(parseFloat(s.zoom)||1);});assert(type<=13.1,'Composer uses compact visual type on phones');
   await page.locator('#menu').click();
+  assert.equal(await page.locator('#threads').evaluate(n=>n.closest('.conversation-navigation')?.previousElementSibling?.id),'open-chat');
+  await page.screenshot({path:`/tmp/glass-conversations-sidebar-${width}-${colorScheme}.png`});
   assert(await page.locator('#notifications').evaluate(n=>{const r=n.getBoundingClientRect(),svg=n.querySelector('svg').getBoundingClientRect();return r.height===30&&r.width===30&&Math.abs(r.y+r.height/2-svg.y-svg.height/2)<1;}),'Bell is square and vertically centered');
   await page.keyboard.press('Escape');
  }
@@ -110,6 +113,14 @@ try{for(const width of [390,768,1440])for(const colorScheme of ["light","dark"])
  await page.screenshot({path:`/tmp/glass-agentic-tree-${width}-${colorScheme}.png`});await page.locator("#details-close").click();emit([{t:"tool_end",call_id:"live-search",output:"Finished search",summary:"exit 0"},{t:"done"}]);await page.waitForFunction(()=>document.querySelector("#activity").dataset.phase==="idle");assert.equal(await page.locator(".agent-elapsed").textContent(),"");
  await page.locator("#work-toggle").click();await page.locator('.work-task-row').first().waitFor();
  assert(await page.locator('.work-task-row').first().evaluate(n=>n.getBoundingClientRect().height<60),'Tasks are compact rows');
+ await page.getByRole('button',{name:'Watch transcript',exact:true}).first().click();
+ await page.locator('.agent-transcript-entry.assistant strong').getByText('review',{exact:true}).waitFor();
+ assert.equal((await page.locator('.agent-transcript-entry.reasoning').textContent()).trim(),'ReasoningInspect the project carefully.');
+ assert.equal(await page.locator('.agent-transcript-entry.tool').count(),1);
+ assert.equal(await page.locator('.agent-transcript-entry.tool').evaluate(n=>n.open),false);
+ assert(!await page.locator('.agent-transcript').textContent().then(t=>t.includes('PRIVATE_SENTINEL')||t.includes('"k":')));
+ await page.locator('.agent-transcript-entry.reasoning > summary').click();
+ await page.screenshot({path:`/tmp/glass-readable-transcript-${width}-${colorScheme}.png`});
  await page.screenshot({path:`/tmp/glass-work-overview-${width}-${colorScheme}.png`});await page.getByRole("button",{name:"Resume delegation",exact:true}).click();
  await page.waitForTimeout(100);assert(sent.some(m=>m.name==="agents"&&m.values.action==="resume-workflow"&&m.values.confirmed===true));
  await page.locator("dialog.workflow header button").click();

@@ -3778,6 +3778,7 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
         option.value = choice;
         input.append(option);
       }
+    if (settingsSlot && command.name === "pacing" && field.key === "args") input.setAttribute("aria-label", "Response pacing");
     input.name = field.key;
     if (!choices && field.kind !== "textarea") input.type = field.kind;
     input.autocomplete = "off";

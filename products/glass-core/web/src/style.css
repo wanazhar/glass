@@ -3865,3 +3865,62 @@ dialog.floating-palette {
 .settings-error { color: var(--red); }
 @media(max-width:600px) { .settings-main { padding: 24px 18px; } .settings-grid { grid-template-columns: 1fr; } .settings-header { padding-left: 14px; padding-right: 18px; } }
 .settings-warning { margin: 16px auto; max-width: 912px; padding: 12px 18px; color: var(--text); background: var(--surface2); border-left: 2px solid var(--accent); }
+
+/* Universal Settings: current values and direct controls, independent of chat. */
+.universal-settings { max-width: 1040px; padding-top: 26px; }
+.universal-settings .settings-intro { margin-bottom: 20px; max-width: 650px; }
+.settings-search { width: min(420px,100%); border: 1px solid var(--line); border-radius: 9px; padding: 10px 14px; background: var(--surface); color: var(--text); font: inherit; font-size: 16px; }
+.settings-tabs { display: flex; gap: 24px; margin: 22px 0 0; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.settings-tabs a { flex: 0 0 auto; padding: 10px 0 12px; text-decoration: none; color: var(--muted); font-size: 13px; border-bottom: 2px solid transparent; }
+.settings-tabs a[aria-current] { border-color: var(--accent); color: var(--text); font-weight: 600; }
+.settings-feedback { min-height: 22px; font-size: 12px; margin: 12px 0 0; color: var(--muted); }
+.preference-group { margin: 12px 0 32px; }
+.preference-group h2 { font-size: 16px; letter-spacing: -.2px; margin: 0; }
+.preference-description { margin: 5px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.preference-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(160px,280px); gap: 24px; align-items: center; min-height: 70px; padding: 15px 0; border-bottom: 1px solid var(--line); }
+.preference-row[hidden],.preference-group[hidden],.connection-card[hidden],.skill-summary[hidden] { display: none; }
+.preference-info label { font-size: 13px; font-weight: 500; color: var(--text); }
+.preference-info p { margin: 4px 0 0; max-width: 480px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.preference-control { display: flex; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
+.preference-control input:not([type=checkbox]),.preference-control select,.preference-control textarea,.connection-form input,.connection-form select { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 16px; padding: 9px 10px; min-height: 40px; }
+.preference-control input[type=checkbox] { appearance: none; flex: 0 0 38px; width: 38px; height: 23px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface2); position: relative; cursor: pointer; margin: 0; }
+.preference-control input[type=checkbox]::after { content: ''; position: absolute; width: 15px; height: 15px; border-radius: 50%; background: var(--muted); left: 3px; top: 3px; transition: transform .12s; }
+.preference-control input[type=checkbox]:checked { background: var(--accent-bg); border-color: var(--accent); }
+.preference-control input[type=checkbox]:checked::after { background: var(--accent); transform: translateX(15px); }
+.preference-control input:disabled,.preference-control select:disabled { opacity: .6; cursor: default; }
+.preference-control button { flex: 0 0 auto; font-size: 12px; min-height: 38px; }
+.preference-control:has(textarea) { grid-column: 1 / -1; flex-wrap: wrap; }
+.preference-control textarea { min-height: 150px; resize: vertical; line-height: 1.65; }
+.preference-row:has(textarea) { gap: 10px; }
+.preference-endpoint { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin: 8px 0; }
+.connection-card { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.connection-heading { display: flex; gap: 12px; align-items: center; }
+.connection-card h3,.connection-form h3 { font-size: 14px; margin: 0; }
+.connection-badge { border-radius: 20px; background: var(--accent-bg); color: var(--accent); font-size: 11px; padding: 2px 8px; }
+.connection-actions { display: flex; gap: 8px; margin-top: 10px; }
+.connection-form { max-width: 560px; display: grid; gap: 14px; padding: 22px 0; }
+.connection-form label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.connection-form button { justify-self: start; }
+.connection-confirm { background: var(--surface2); padding: 12px; margin-top: 12px; font-size: 13px; }
+.connection-confirm button { margin-right: 12px; }
+.skill-summary { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.skill-summary p { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.preference-group > .command-run,.preference-group > .quiet { margin-top: 16px; margin-right: 10px; }
+@media(max-width:600px) {
+  .universal-settings { padding-top: 22px; }
+  .settings-tabs { gap: 22px; margin-right: -18px; padding-right: 18px; }
+  .preference-row { grid-template-columns: minmax(0,1fr) minmax(120px,150px); gap: 14px; }
+  .preference-row:has(input[type=url]),.preference-row:has(input[type=text]),.preference-row:has(textarea) { grid-template-columns: 1fr; gap: 10px; }
+  .preference-control:has(input[type=text]),.preference-control:has(input[type=url]) { justify-content: stretch; }
+}
+.profile-create { display: flex; gap: 10px; margin: 16px 0; }
+.profile-create input { min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); padding: 10px; font: inherit; font-size: 16px; }
+.profile-create button { flex: 0 0 auto; }
+.preference-group > .quiet { font-size: 12px; }
+.settings-header > button:nth-child(2) { margin-left: auto; margin-right: 20px; }
+.settings-section-select { display: none; }
+@media(max-width:600px) {
+  .settings-tabs { display: none; }
+  .settings-section-select { display: block; width: 100%; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 16px; }
+}
+.preference-info p { overflow-wrap: anywhere; }

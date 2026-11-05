@@ -637,9 +637,11 @@ the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
 
-Settings is a full-page browser destination, not a sidebar or dialog. Open it from the thread navigation or `/settings`. Its section index covers Connections, Models & execution, Tools & integrations, Profiles & instructions, Memory & skills, Appearance, Permissions & reviews, and Effective configuration. Search results for configuration controls open the matching Settings page. Quick model switching, status checks and immediate work actions remain in the palette. `/desktop` opens the same Computer view as the toolbar.
+Settings is a universal full-page browser destination. Open it from navigation or `/settings`; it reads host preferences directly and never opens a conversation to inspect or save a value. General, Connections, Tools & skills, Instructions, Appearance, and Advanced are stable sections. Current values appear immediately after one settings snapshot, and search filters across sections. Quick model switching, status checks, and conversation-specific `/budget`, `/pacing`, and project-memory actions remain in chat. `/desktop` opens the same Computer view as the toolbar.
 
-Settings URLs retain the selected conversation and support reload and browser back/forward. Back or Escape returns through the section index to chat; the chat draft and reading position are retained. Unsaved edits require an explicit discard, and in-flight operations remain visible until their receipt arrives. Native settings display the selected conversation/workspace; without a conversation, select one to inspect its effective configuration. Spending limits are conversation-specific, saved connections are shared on the host, and theme/motion/tool-card density are browser-local. Settings reuse the existing host validation and confirmation controls.
+Defaults apply to new conversations; existing chats retain their current configuration, and workspace profiles can override defaults. Connections are shared on the host. Profile presets can be created, edited, assigned to a workspace folder, or deleted without opening a chat. Global instructions and the additional skills folder are managed directly. Theme, motion and tool-card density are saved in this browser.
+
+Text and numeric fields save using their adjacent Save button. Selectors and switches save when changed, with visible pending, success and error states. Unsaved edits are retained after a failed save. Refresh values fetches current preferences without discarding edits; revision checks reject conflicting writes. Back/Escape and browser navigation preserve the chat draft and reading position. Credential fields are masked, never echoed by settings responses, and never enter a chat transcript.
 
 Only the command-selection menus, Git/Changes, and Work & teammates use rounded
 floating panels. Other command views, readers, editors and workflow surfaces
@@ -686,8 +688,12 @@ reproducing terminal-specific controls.
 
 The interface bundles its sans serif and monospace fonts locally. The theme
 follows the device setting by default. The theme button switches directly between
-light and dark based on the currently visible theme. Reloading restores device
-theme following. Code and mathematical notation retain their own fonts.
+light and dark based on the currently visible theme. Appearance preferences
+are retained in this browser; choose System to resume device-theme following. Code and mathematical notation retain their own fonts.
+
+### Universal settings API
+
+`GET /api/settings` returns global defaults, redacted connection metadata, tool preferences, profiles and skill metadata, with a revision fingerprint. It accepts no session ID and starts no model or extension process. `POST /api/settings` requires the authenticated owner and same origin, plus the current revision. Supported actions edit a preference, connection, profile or extension default; credential entry and OAuth use the existing credential store and sign-in implementation. Configuration edits preserve unrelated TOML and comments, write atomically, and do not mutate existing conversation actors. A failed validation or stale revision leaves the requested value unchanged. Browser appearance is stored locally rather than sent through this API.
 
 ### Command transport
 

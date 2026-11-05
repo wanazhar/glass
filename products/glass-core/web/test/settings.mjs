@@ -4,71 +4,86 @@ import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {resolve,extname} from 'node:path';
-const root=resolve('dist'),commands=JSON.parse(await readFile('test/fixtures/commands.json','utf8')).commands,streams=new Set(),sent=[];
-if(!commands.some(c=>c.name==="desktop"))commands.push({name:"desktop",description:"Open shared desktop",group:"work",portable:false,primary:false,aliases:[]});
-let fail=false,hold=false,release,deny=false;
-const result=name=>({format:'json',body:name==='todo'?{tasks:[]}:{setting:name,current:'fixture value'}});
+const root=resolve('dist'),initial=JSON.parse(await readFile('test/fixtures/settings.json','utf8')),commands=JSON.parse(await readFile('test/fixtures/commands.json','utf8')).commands;
+if(!commands.some(c=>c.name==='desktop'))commands.push({name:'desktop',description:'Shared desktop',portable:false,group:'work',primary:false,aliases:[]});
+let state,requests=[],posts=[],streams=new Set(),hold=false,fail=false,deliver;
+const copy=v=>JSON.parse(JSON.stringify(v));
+async function section(page,title){const picker=page.getByLabel('Settings section',{exact:true});if(await picker.isVisible())await picker.selectOption({label:title});else await page.getByRole('link',{name:title,exact:true}).click();}
+function apply(change){
+ assert.equal(change.revision,state.revision);assert(!('sessionId' in change)&&!('thread' in change));
+ if(change.action==='preference')state.defaults[change.key]=change.value;
+ if(change.action==='connection-model')state.connections.find(c=>c.id===change.id).model=change.model;
+ if(change.action==='connection-use')state.active_connection=change.id||null;
+ if(change.action==='connection-add'){assert(change.secret);state.connections.push({id:'new-account',name:change.label,provider:change.provider,endpoint:change.endpoint,model:change.model,has_credential:true});state.active_connection='new-account';}
+ if(change.action==='connection-remove'){state.connections=state.connections.filter(c=>c.id!==change.id);if(state.active_connection===change.id)state.active_connection=null;}
+ if(change.action==='extension'){const existing=state.extensions.find(b=>b.id===change.id);if(existing)existing.enabled=change.enabled;else state.extensions.push({id:change.id,name:'Custom extension',description:change.id,enabled:change.enabled});}
+ if(change.action==='profile'){const p=state.profiles.find(p=>p.name===change.name);if(change.model)p.model=change.model;if(change.instructions!==undefined)p.instructions=change.instructions;}
+ if(change.action==='profile-create')state.profiles.push({name:change.name,model:state.defaults.model,instructions:'',workspaces:[]});
+ if(change.action==='profile-delete')state.profiles=state.profiles.filter(p=>p.name!==change.name);
+ if(change.action==='profile-assign')state.profiles.find(p=>p.name===change.name).workspaces.push(change.workspace);
+ state.revision='settings-'+(Number(state.revision.split('-')[1])+1);
+ return state;
+}
 const server=createServer(async(req,res)=>{
- const u=new URL(req.url,'http://localhost'),path=u.pathname;
- if(path==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});streams.add(res);res.write(`data: ${JSON.stringify({reset:true,control:{can_write:!deny,web_workflows:1,commands},active:false,live:[]})}\n\n`);req.on('close',()=>streams.delete(res));return;}
- if(path==='/api/agent-events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write('data: {"revision":0}\n\n');req.on('close',()=>{});return;}
+ const u=new URL(req.url,'http://localhost'),path=u.pathname;if(path.startsWith('/api/'))requests.push(path);
+ if(path==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});streams.add(res);res.write(`data: ${JSON.stringify({reset:true,control:{can_write:true,web_workflows:1,commands},active:false,live:[]})}\n\n`);req.on('close',()=>streams.delete(res));return;}
+ if(path==='/api/agent-events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write('data: {"revision":0}\n\n');return;}
+ if(path==='/api/settings'){
+  if(req.method==='GET'){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(state));return;}
+  let raw='';for await(const chunk of req)raw+=chunk;const change=JSON.parse(raw);posts.push(change);
+  const send=()=>{if(fail){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'Fixture save rejected'}));return;}const next=apply(change);res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(next));};if(hold)deliver=send;else send();return;
+ }
  if(path.startsWith('/api/')){
-  let data={};
-  if(path==='/api/status')data={workspace:'/tmp/project',profile:'workspace-edit',web_workflows:1};
-  if(path==='/api/threads')data={threads:[{session:'fixture',title:'Settings fixture',workspace:'/tmp/project',workspace_assigned:true,workspace_available:true}],projects:[]};
-  if(path==='/api/history')data={records:Array.from({length:35},(_,i)=>({index:i,record:{k:'assistant',t:`Message ${i}\n\nRetained transcript content for scrolling.`}})),before:0};
-  if(path==='/api/commands')data={commands};
-  if(path==='/api/agents')data=[];
-  if(path==='/api/desktop/status')data={available:false};
-  if(path==='/api/command'||path==='/api/send'){
-   let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
-   if(path==='/api/command')data=result(body.name);
-   else if(body.message.t==='command'){
-    const m=body.message;sent.push(m);
-    const deliver=()=>{for(const stream of streams)stream.write(`data: ${JSON.stringify({events:[{t:'command_result',request_id:m.request_id,...(fail?{error:'Fixture save rejected'}:{result:result(m.name)})}]})}\n\n`);};
-    if(hold)release=deliver;else deliver();
-   }
-  }
-  res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data));return;
+  let value={};
+  if(path==='/api/status')value={workspace:'/tmp/project',profile:'workspace-edit',web_workflows:1};
+  if(path==='/api/threads')value={threads:[{session:'fixture',title:'Settings fixture',workspace:'/tmp/project',workspace_assigned:true,workspace_available:true}],projects:[]};
+  if(path==='/api/history')value={records:Array.from({length:30},(_,i)=>({index:i,record:{k:'assistant',t:`Retained message ${i}\n\nA conversation does not own universal settings.`}})),before:0};
+  if(path==='/api/commands')value={commands};if(path==='/api/agents')value=[];
+  if(path==='/api/command')value={format:'json',body:{tasks:[]}};
+  if(path==='/api/desktop/status')value={available:false};
+  res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(value));return;
  }
  try{const file=resolve(root,'.'+(path==='/'?'/index.html':path));if(!file.startsWith(root+'/'))throw Error();res.writeHead(200,{'Content-Type':({'.js':'text/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2'})[extname(file)]||'application/octet-stream'});res.end(await readFile(file));}catch{res.writeHead(404).end();}
 });
-await new Promise(r=>server.listen(0,'127.0.0.1',r));
-const origin=`http://127.0.0.1:${server.address().port}`,browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync('/snap/chromium/current/usr/lib/chromium-browser/chrome')?'/snap/chromium/current/usr/lib/chromium-browser/chrome':undefined),headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
-const routes={login:'connections',logout:'connections',model:'models',budget:'models',pacing:'models',mods:'integrations',extensions:'integrations',profiles:'profiles',neuralnets:'memory',skills:'memory','skill-doctor':'memory',security:'permissions',advisor:'permissions','settings-info':'effective'};
+await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin=`http://127.0.0.1:${server.address().port}`;
+const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync('/snap/chromium/current/usr/lib/chromium-browser/chrome')?'/snap/chromium/current/usr/lib/chromium-browser/chrome':undefined),headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
 try{for(const width of [390,768,1440].filter(w=>!process.env.GC_SETTINGS_WIDTH||w===Number(process.env.GC_SETTINGS_WIDTH)))for(const colorScheme of ['light','dark']){
- const context=await browser.newContext({viewport:{width,height:900},colorScheme,hasTouch:width<1000,serviceWorkers:'block'}),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto(origin+'/?thread=fixture');await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');
- await page.locator('#prompt').fill('Keep my draft');await page.locator('#conversation').evaluate(n=>{n.scrollTop=120;});const scroll=await page.locator('#conversation').evaluate(n=>n.scrollTop);
- await page.locator('#prompt').fill('/settings');await page.locator('#composer').evaluate(n=>n.requestSubmit());await page.locator('#settings-page h1').filter({hasText:/^Settings$/}).waitFor();
- assert.equal(await page.locator('dialog[open]').count(),0);assert.equal(await page.locator('.app').isVisible(),false);assert.equal(await page.locator('.settings-card').count(),8);
- assert(await page.evaluate(()=>{const root=document.documentElement,p=document.querySelector('#settings-page'),height=root.style.getPropertyValue('--app-height'),top=root.style.getPropertyValue('--viewport-top');root.style.setProperty('--app-height','520px');root.style.setProperty('--viewport-top','12px');const r=p.getBoundingClientRect();root.style.setProperty('--app-height',height);root.style.setProperty('--viewport-top',top);return r.height===520&&r.top===12;}),'Settings follows the shared keyboard viewport');
- await page.screenshot({path:`/tmp/glass-settings-${width}-${colorScheme}.png`});
- assert(await page.locator('#settings-page').evaluate(n=>{const r=n.getBoundingClientRect();return r.x===0&&r.y===0&&Math.abs(r.width-innerWidth)<1&&Math.abs(r.height-innerHeight)<1;}));
- await page.locator('a.settings-card').filter({hasText:'Appearance'}).click();await page.getByLabel('Theme',{exact:true}).selectOption('dark');await page.locator('#settings-page').getByLabel('Working animation').selectOption('none');await page.getByLabel('Tool cards').selectOption('compact');await page.getByText('Preference saved',{exact:true}).waitFor();
- await page.reload();await page.getByLabel('Theme',{exact:true}).waitFor();assert.equal(await page.locator('#settings-page').getByLabel('Working animation').inputValue(),'none');assert(await page.locator('html').evaluate(n=>n.classList.contains('compact-tools')));
- await page.goBack();await page.locator('#settings-page h1').filter({hasText:/^Settings$/}).waitFor();await page.goForward();await page.getByLabel('Theme',{exact:true}).waitFor();
- for(const [name,section] of Object.entries(routes)){
-  const count=sent.length;await page.goto(`${origin}/?thread=fixture&settings=${section}&setting=${name}`);
-  await page.locator('#settings-page #command-form').waitFor();
-  if(name!=='logout'){await page.locator('#settings-page #command-result[aria-busy=false]').waitFor();await page.waitForFunction(()=>document.querySelector('#command-result').textContent.length>0);}else assert.equal(sent.length,count);
-  assert.equal(await page.locator('dialog[open]').count(),0,name);assert.equal(await page.locator('#settings-page #command-form').count(),1,name);
-  for(const m of sent.slice(count))assert.deepEqual(m.values,{},`Opening ${name} must only inspect`);
- }
- await page.goto(origin+'/?thread=fixture&settings=models');await page.getByRole('button',{name:'Response pacing ›',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#command-result').textContent.length>0);
- await page.getByLabel('Response pacing',{exact:true}).selectOption('maximum');await page.locator('#settings-page header button').click();await page.getByText('You have unsaved changes.',{exact:true}).waitFor();await page.getByRole('button',{name:'Continue editing',exact:true}).click();
- await page.goBack();await page.getByText('You have unsaved changes.',{exact:true}).waitFor();await page.getByRole('button',{name:'Continue editing',exact:true}).click();assert.match(page.url(),/setting=pacing/);
- hold=true;await page.locator('#command-form .command-run').click();await page.waitForFunction(()=>document.querySelector('#command-status').dataset.working==='true');assert.equal(await page.locator('#command-form .command-run').isDisabled(),true);await page.locator('#settings-page header button').click();await page.getByText('Wait for this settings operation to finish.',{exact:true}).waitFor();
- assert.equal(sent.at(-1).name,'pacing');assert.equal(sent.at(-1).values.args,'maximum');release();hold=false;await page.getByText('Completed',{exact:true}).waitFor();
- await page.locator('#settings-page header button').click();assert.equal(await page.locator('.settings-unsaved').count(),0);
- await page.goBack();await page.waitForFunction(()=>document.querySelector('#command-result').textContent.length>0);await page.getByLabel('Response pacing',{exact:true}).selectOption('adaptive');await page.goForward();await page.getByText('You have unsaved changes.',{exact:true}).waitFor();await page.getByRole('button',{name:'Continue editing',exact:true}).click();assert.match(page.url(),/setting=pacing/);
- await page.goForward();await page.getByText('You have unsaved changes.',{exact:true}).waitFor();await page.getByRole('button',{name:'Discard changes',exact:true}).click();await page.locator('#settings-page h1').filter({hasText:/^Models & execution$/}).waitFor();
- await page.goto(origin+'/?thread=fixture&settings=models&setting=pacing');await page.waitForFunction(()=>document.querySelector('#command-result').textContent.length>0);fail=true;await page.getByLabel('Response pacing',{exact:true}).selectOption('adaptive');await page.locator('#command-form .command-run').click();await page.getByText('Fixture save rejected',{exact:true}).waitFor();assert.equal(await page.locator('#command-form .command-run').isDisabled(),false);fail=false;
- await page.locator('#settings-page header button').click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();
- await page.goto(origin+'/?thread=fixture&settings=connections&setting=login');await page.waitForFunction(()=>document.querySelector('#command-result').textContent.length>0);await page.locator('#command-form select[name=action]').selectOption('api');await page.locator('#command-form input[name=secret]').fill('temporary-secret');await page.locator('#settings-page header button').click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();assert.equal(await page.locator('input[type=password]').evaluateAll(ns=>ns.every(n=>n.value==='')),true);
- await page.goto(origin+'/?settings=index');await page.locator('.settings-card').first().waitFor();await page.getByRole('link',{name:/Connections/}).click();await page.getByRole('button',{name:'Manage connections ›'}).click();await page.getByLabel('Settings conversation').waitFor();await page.getByLabel('Settings conversation').selectOption('fixture');await page.locator('#settings-page #command-form').waitFor();
- await page.goto(origin+'/?thread=fixture');await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');await page.locator('#prompt').fill('Keep my draft');await page.locator('#conversation').evaluate(n=>n.scrollTop=120);
- await page.locator('#open-settings').evaluate(n=>n.click());await page.locator('.settings-card').first().waitFor();await page.locator('#settings-page header button').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');assert.equal(await page.locator('#conversation').evaluate(n=>n.scrollTop),scroll);
+ state=copy(initial);requests=[];posts=[];hold=false;fail=false;
+ const context=await browser.newContext({viewport:{width,height:950},colorScheme,hasTouch:width<1000,serviceWorkers:'block'}),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(origin+'/?settings=general&thread=must-not-open');await page.getByLabel('Default model',{exact:true}).waitFor();
+ assert.equal(await page.getByLabel('Default model',{exact:true}).inputValue(),'current-model');assert.equal(await page.getByLabel('Maximum output tokens',{exact:true}).inputValue(),'64000');
+ assert.equal(await page.locator('#settings-page #command-form').count(),0);assert.equal(await page.locator('dialog[open]').count(),0);
+ assert(!requests.some(p=>['/api/threads','/api/open','/api/history','/api/events','/api/command','/api/send'].includes(p)),requests.join(','));
+ assert.equal(requests.filter(p=>p==='/api/settings').length,1);
+ await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:`/tmp/glass-universal-settings-${width}-${colorScheme}.png`});
+ assert(await page.locator('#settings-page').evaluate(n=>{const r=n.getBoundingClientRect();return r.x===0&&r.y===0&&r.width===innerWidth&&r.height===innerHeight;}));
+ assert(await page.evaluate(()=>{const html=document.documentElement,oldH=html.style.getPropertyValue('--app-height'),oldT=html.style.getPropertyValue('--viewport-top');html.style.setProperty('--app-height','520px');html.style.setProperty('--viewport-top','12px');const r=document.querySelector('#settings-page').getBoundingClientRect();html.style.setProperty('--app-height',oldH);html.style.setProperty('--viewport-top',oldT);return r.height===520&&r.top===12;}));
+ // Values are already present; editing never runs a slash command or opens a chat.
+ await page.getByLabel('Default model',{exact:true}).fill('updated-model');await page.getByRole('button',{name:'Save Default model',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.connections[0].model,'updated-model');
+ await page.getByRole('switch',{name:'Adaptive pacing'}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.defaults.adaptive_pacing,false);
+ await page.getByLabel('Default spending limit',{exact:true}).fill('0.25');await page.getByRole('button',{name:'Save Default spending limit',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.defaults.cost_limit,.25);
+ await page.getByLabel('Maximum output tokens',{exact:true}).fill('77777');await section(page,'Instructions');await page.getByText('Discard unsaved changes?',{exact:true}).waitFor();await page.getByRole('button',{name:'Keep editing',exact:true}).click();
+ hold=true;await page.getByRole('button',{name:'Save Maximum output tokens',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#settings-page').getAttribute('aria-busy')==='true');assert(await page.getByLabel('Maximum output tokens',{exact:true}).isDisabled());deliver();hold=false;await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.defaults.max_tokens,77777);
+ await page.getByLabel('Maximum output tokens',{exact:true}).fill('88888');fail=true;await page.getByRole('button',{name:'Save Maximum output tokens',exact:true}).click();await page.getByText('Fixture save rejected',{exact:true}).waitFor();assert.equal(await page.getByLabel('Maximum output tokens',{exact:true}).inputValue(),'88888');fail=false;
+ await page.getByRole('button',{name:'Refresh values',exact:true}).click();await page.getByText('Values refreshed. Unsaved edits are retained.',{exact:true}).waitFor();assert.equal(await page.getByLabel('Maximum output tokens',{exact:true}).inputValue(),'88888');
+ await section(page,'Instructions');await page.getByRole('button',{name:'Discard changes',exact:true}).click();await page.getByLabel('Instructions',{exact:true}).fill('Global instructions\nMore guidance');await page.getByRole('button',{name:'Save Instructions',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.defaults.system_prompt,'Global instructions\nMore guidance');
+ await page.getByLabel('New profile name',{exact:true}).fill('Browser preset');await page.getByRole('button',{name:'Create profile',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();
+ let preset=page.locator('.connection-card').filter({has:page.getByRole('heading',{name:'Browser preset',exact:true})});await preset.getByLabel('Profile model',{exact:true}).fill('edited-profile');await preset.getByRole('button',{name:'Save Profile model',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.profiles.find(p=>p.name==='Browser preset').model,'edited-profile');
+ preset=page.locator('.connection-card').filter({has:page.getByRole('heading',{name:'Browser preset',exact:true})});await preset.getByRole('button',{name:'Delete profile',exact:true}).click();await preset.locator('.connection-confirm').getByRole('button',{name:'Delete profile',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert(!state.profiles.some(p=>p.name==='Browser preset'));
+
+ await page.goBack();await page.getByLabel('Default model',{exact:true}).waitFor();await page.goForward();await page.getByLabel('Instructions',{exact:true}).waitFor();
+ await section(page,'Tools & skills');await page.getByRole('switch',{name:'todo',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert(state.extensions[0].enabled);
+ await page.getByLabel('Custom extension command',{exact:true}).fill('node /tmp/fixture-extension.js');await page.getByRole('button',{name:'Add extension',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert(state.extensions.some(b=>b.id==='node /tmp/fixture-extension.js'&&b.enabled));
+
+ await section(page,'Connections');await page.getByRole('button',{name:'Add connection',exact:true}).click();await page.getByLabel('Connection name',{exact:true}).fill('New account');await page.getByLabel('Model',{exact:true}).last().fill('new-account-model');await page.getByLabel('API key',{exact:true}).fill('FAKE_BROWSER_SECRET');await page.getByRole('button',{name:'Refresh values',exact:true}).click();await page.getByText('Values refreshed. Unsaved edits are retained.',{exact:true}).waitFor();assert.equal(await page.getByLabel('API key',{exact:true}).inputValue(),'FAKE_BROWSER_SECRET');
+ await page.getByRole('button',{name:'Save connection',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.connections.length,2);assert(!page.url().includes('FAKE_BROWSER_SECRET'));assert(!await page.evaluate(()=>JSON.stringify(localStorage).includes('FAKE_BROWSER_SECRET')));
+ await section(page,'Appearance');await page.getByLabel('Theme',{exact:true}).selectOption('dark');await page.getByLabel('Activity animation',{exact:true}).selectOption('none');await page.getByLabel('Tool cards',{exact:true}).selectOption('compact');
+ await page.reload();await page.getByLabel('Theme',{exact:true}).waitFor();assert.equal(await page.getByLabel('Activity animation',{exact:true}).inputValue(),'none');assert.equal(await page.getByLabel('Tool cards',{exact:true}).inputValue(),'compact');
+ await page.getByLabel('Search settings',{exact:true}).fill('pacing');await page.getByRole('switch',{name:'Adaptive pacing'}).waitFor();assert(!await page.getByLabel('Default model',{exact:true}).isVisible());await page.getByLabel('Search settings',{exact:true}).fill('');
+ assert(!requests.some(p=>['/api/threads','/api/open','/api/history','/api/events','/api/send'].includes(p)),requests.join(','));
+ // A chat is opened only when explicitly returning to it. Existing drafts stay mounted.
+ await page.goto(origin+'/?thread=fixture');await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');await page.locator('#prompt').fill('Keep my draft');await page.locator('#conversation').evaluate(n=>n.scrollTop=120);const top=await page.locator('#conversation').evaluate(n=>n.scrollTop),historyReads=requests.filter(p=>p==='/api/history').length;
+ await page.locator('#open-settings').evaluate(n=>n.click());await page.getByLabel('Default model',{exact:true}).waitFor();assert.equal(requests.filter(p=>p==='/api/history').length,historyReads);await page.getByRole('button',{name:'← Back',exact:true}).click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');assert.equal(await page.locator('#conversation').evaluate(n=>n.scrollTop),top);
  await page.locator('#prompt').fill('/desktop');await page.locator('#composer').evaluate(n=>n.requestSubmit());await page.locator('#desktop-title').waitFor();await page.keyboard.press('Escape');
- assert.deepEqual(errors,[]);await page.screenshot({path:`/tmp/glass-settings-chat-${width}-${colorScheme}.png`});await context.close();console.log(`PASS Settings ${width}px ${colorScheme}: full-page routes, all native settings inspect, save/receipt/error/secret handling, appearance persistence, back/forward, draft/scroll, Computer shortcut`);
+ assert.deepEqual(errors,[]);await context.close();console.log(`PASS universal Settings ${width}px ${colorScheme}: direct values, one global snapshot, zero chat loading, saved defaults/connections/instructions/tools, validation and refresh, appearance, routes/search, draft/scroll, Computer`);
 }}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

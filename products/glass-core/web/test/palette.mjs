@@ -9,6 +9,7 @@ import { resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(fileURLToPath(new URL('../dist/', import.meta.url)));
 const { commands } = JSON.parse(await readFile(new URL('./fixtures/commands.json', import.meta.url)));
+const settings=JSON.parse(await readFile(new URL('./fixtures/settings.json',import.meta.url)));
 const streams = new Set(), sent = [], errors = [];
 let holdStatus = false;
 const heldStatus = [];
@@ -30,6 +31,7 @@ const server = createServer(async (req, res) => {
   }
   if (path.startsWith('/api/')) {
     let data = {};
+    if (path === '/api/settings') data = settings;
     if (path === '/api/status') data = { workspace: '/tmp', web_workflows: 1, profile: 'workspace-edit' };
     if (path === '/api/threads') data = { threads: [{ session: 'fixture', title: 'Palette audit', workspace: '/tmp', workspace_assigned: true, workspace_available: true }], projects: [] };
     if (path === '/api/history') data = { records: [], before: 0 };
@@ -74,8 +76,8 @@ try {
     const choice = page.locator('.command-choice').filter({ has: page.locator('strong', { hasText: new RegExp('^/' + command.name + '(?:\\s|$)') }) });
     await choice.click();
     if(configurationCommands.has(command.name)) {
-      await page.locator('#settings-page #command-form').waitFor();
-      await page.waitForFunction(()=>document.querySelector('#command-status').dataset.working!=='true');
+      await page.locator('#settings-page').waitFor();
+      await page.locator('#settings-body').waitFor();
       assert.equal(await page.locator('dialog[open]').count(),0);
       await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
       await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');

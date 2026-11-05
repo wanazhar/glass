@@ -84693,6 +84693,11 @@
         },
         {
           "level": "3",
+          "title": "Universal settings API",
+          "anchor": "universal-settings-api"
+        },
+        {
+          "level": "3",
           "title": "Command transport",
           "anchor": "command-transport"
         },

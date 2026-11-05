@@ -2580,7 +2580,7 @@ fn handle_with_transport(
     } else {
         !authorized(&app.settings, &r)
     } {
-        if path == "/api/secret" {
+        if matches!(path, "/api/secret" | "/api/settings") {
             zeroize::Zeroize::zeroize(&mut r.body);
         }
         return json_response(
@@ -2590,11 +2590,16 @@ fn handle_with_transport(
         )
         .map_err(|e| e.to_string());
     }
-    if path.starts_with("/api/desktop/") && !same_origin_desktop_mutation(&app.settings, &r) {
+    if (path.starts_with("/api/desktop/") || path == "/api/settings")
+        && !same_origin_desktop_mutation(&app.settings, &r)
+    {
+        if path == "/api/settings" {
+            zeroize::Zeroize::zeroize(&mut r.body);
+        }
         return json_response(
             &mut stream,
             403,
-            json!({"error":"Desktop actions require the same authenticated origin"}),
+            json!({"error":if path == "/api/settings" {"Settings changes require the same authenticated origin"}else{"Desktop actions require the same authenticated origin"}}),
         )
         .map_err(|e| e.to_string());
     }
@@ -2898,6 +2903,17 @@ fn handle_with_transport(
         ("GET", "/api/status") => Ok(
             json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
+        ("GET", "/api/settings") => crate::web_settings::snapshot(),
+        ("POST", "/api/settings") => {
+            let parsed = serde_json::from_slice::<Value>(&r.body);
+            zeroize::Zeroize::zeroize(&mut r.body);
+            let mut value = parsed.map_err(|_| "Invalid settings request")?;
+            let outcome = crate::web_settings::update(&value);
+            if let Some(Value::String(secret)) = value.get_mut("secret") {
+                zeroize::Zeroize::zeroize(secret);
+            }
+            outcome
+        }
         ("GET", "/api/commands") => Ok(json!({"commands":crate::web_commands::catalogue(None)})),
         ("POST", "/api/upgrade") => {
             let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;

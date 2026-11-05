@@ -113,6 +113,7 @@ mod trust;
 mod verify;
 mod warmer;
 mod web_commands;
+mod web_settings;
 mod web_tools;
 mod workbench;
 mod workflows;

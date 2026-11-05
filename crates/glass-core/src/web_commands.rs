@@ -533,7 +533,7 @@ pub fn execute(
             &label(v, "text")?,
             v["confirmed"] == true,
         )?,
-        "login" => login(cfg, s, &label(v, "action")?, v)?,
+        "login" => login(cfg, &s.id, &label(v, "action")?, v)?,
         "logout" => {
             if v["confirmed"] != true {
                 return Err("Confirm removing this saved connection and credentials".into());
@@ -1385,7 +1385,12 @@ fn login_attempts() -> &'static std::sync::Mutex<std::collections::HashMap<Strin
     > = std::sync::OnceLock::new();
     STORE.get_or_init(Default::default)
 }
-fn login(cfg: &mut config::Config, s: &Session, action: &str, v: &Value) -> Result<Value, String> {
+pub(crate) fn login(
+    cfg: &mut config::Config,
+    owner: &str,
+    action: &str,
+    v: &Value,
+) -> Result<Value, String> {
     let connections = || -> Result<Value, String> {
         Ok(json!(
             crate::auth::load()?
@@ -1428,7 +1433,7 @@ fn login(cfg: &mut config::Config, s: &Session, action: &str, v: &Value) -> Resu
             attempts.insert(
                 id.clone(),
                 LoginAttempt {
-                    session: s.id.clone(),
+                    session: owner.to_string(),
                     created: std::time::Instant::now(),
                     attempt,
                 },
@@ -1457,7 +1462,7 @@ fn login(cfg: &mut config::Config, s: &Session, action: &str, v: &Value) -> Resu
                     let a = attempts
                         .get(&attempt_id)
                         .ok_or("Sign-in attempt missing or expired")?;
-                    if a.session != s.id || a.created.elapsed().as_secs() >= 600 {
+                    if a.session != owner || a.created.elapsed().as_secs() >= 600 {
                         return Err(
                             "Sign-in attempt does not belong to this session or expired".into()
                         );

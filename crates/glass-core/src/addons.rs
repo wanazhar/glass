@@ -535,3 +535,61 @@ mod tests {
         assert!(!path.exists(), "oversized preferences are never written");
     }
 }
+
+/// Global preferences only: inspecting them never starts an extension or opens a session.
+fn global_bundle_spec(bundle: &Bundle) -> String {
+    serde_json::to_string(&vec![
+        bundle.interpreter.to_string(),
+        config::config_dir()
+            .join("extensions/bundled")
+            .join(bundle.file)
+            .to_string_lossy()
+            .into_owned(),
+    ])
+    .unwrap()
+}
+pub(crate) fn global_settings(cfg: &config::Config) -> Result<serde_json::Value, String> {
+    let prefs = load()?;
+    let known: BTreeSet<String> = BUNDLES.iter().map(global_bundle_spec).collect();
+    let mut rows:Vec<serde_json::Value>=BUNDLES.iter().map(|bundle|{
+        let spec=global_bundle_spec(bundle);
+        serde_json::json!({"id":bundle.name,"name":bundle.name,"description":bundle.description,"enabled":!prefs.disabled.contains(&spec) && (prefs.enabled.contains(bundle.name)||prefs.custom_enabled.contains(&spec)||cfg.extensions.contains(&spec))})
+    }).collect();
+    let custom: BTreeSet<String> = cfg
+        .extensions
+        .iter()
+        .chain(prefs.custom_enabled.iter())
+        .chain(prefs.disabled.iter())
+        .filter(|spec| !known.contains(*spec))
+        .cloned()
+        .collect();
+    rows.extend(custom.into_iter().map(|spec|serde_json::json!({"id":spec,"name":"Custom extension","description":spec,"enabled":!prefs.disabled.contains(&spec)&&(prefs.custom_enabled.contains(&spec)||cfg.extensions.contains(&spec))})));
+    Ok(serde_json::json!(rows))
+}
+pub(crate) fn global_toggle(name: &str, enabled: bool) -> Result<(), String> {
+    if name.trim().is_empty() || name.len() > 4096 || name.chars().any(char::is_control) {
+        return Err("Enter an extension bundle name or command up to 4096 characters".into());
+    }
+    let bundle = BUNDLES.iter().find(|b| b.name == name);
+    let spec = match bundle {
+        Some(bundle) if enabled => command(bundle)?,
+        Some(bundle) => global_bundle_spec(bundle),
+        None => name.to_string(),
+    };
+    let mut prefs = load()?;
+    if enabled {
+        prefs.disabled.remove(&spec);
+        if let Some(bundle) = bundle {
+            prefs.enabled.insert(bundle.name.into());
+        } else {
+            prefs.custom_enabled.insert(spec);
+        }
+    } else {
+        if let Some(bundle) = bundle {
+            prefs.enabled.remove(bundle.name);
+        }
+        prefs.custom_enabled.remove(&spec);
+        prefs.disabled.insert(spec);
+    }
+    save(&prefs)
+}

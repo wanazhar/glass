@@ -1455,6 +1455,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "toml_edit",
  "ureq",
  "url",
  "windows-sys 0.61.2",
@@ -1500,8 +1501,8 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "url",
- "zeroize",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -3721,6 +3722,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

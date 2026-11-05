@@ -3721,8 +3721,7 @@ function commandTransport(name, values, inspect = false) {
     });
   });
 }
-async function openNativeCommand(command, initialArgs = "", settingsSlot = null) {
-  if (!settingsSlot) releaseSettingsCommand();
+async function openNativeCommand(command, initialArgs = "") {
   if (!view.id) {
     notice("Open a conversation first.");
     return;
@@ -3741,7 +3740,7 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
   $("#command-status").removeAttribute("data-error");
   body.replaceChildren();
   body.className = 'command-data';
-  body.setAttribute('aria-label', settingsSlot ? 'Setting details' : 'Command results');
+  body.setAttribute('aria-label', 'Command results');
   body.setAttribute('aria-busy', 'false');
   $('#command-content').scrollTop = 0;
   const actions = form.querySelector('.command-actions') || el('div', 'command-actions');
@@ -3749,8 +3748,7 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
   form.replaceChildren(actions);
   $("#command-content").querySelector('.command-description')?.remove();
   if (command.description) form.before(el('p', 'command-description', command.description.replace(/ · local$/, '')));
-  if (settingsSlot) settingsSlot.append($("#command-content"));
-  else if (!modal.open) modal.showModal();
+  if (!modal.open) modal.showModal();
   if (!view.commandTransportReady && !command.readonly) {
     body.append(
       el(
@@ -3763,9 +3761,8 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
   }
   const fields = command.form?.fields || [];
   for (const field of fields) {
-    const label = el("label", "command-field", settingsSlot && command.name === "pacing" && field.key === "args" ? "Response pacing" : field.label);
+    const label = el("label", "command-field", field.label);
     const choices =
-      settingsSlot && command.name === "pacing" && field.key === "args" ? ["adaptive", "maximum"] :
       ["action", "kind"].includes(field.key) && field.kind === "text" && field.label.includes("|")
         ? field.label.split("|").map((s) => s.trim().split(/\s/)[0])
         : null;
@@ -3778,7 +3775,6 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
         option.value = choice;
         input.append(option);
       }
-    if (settingsSlot && command.name === "pacing" && field.key === "args") input.setAttribute("aria-label", "Response pacing");
     input.name = field.key;
     if (!choices && field.kind !== "textarea") input.type = field.kind;
     input.autocomplete = "off";
@@ -3972,7 +3968,7 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
   const execute = async (inspect = false) => {
     const id = commandSession;
     if (id !== view.id) { $("#command-status").textContent="The conversation changed. Reopen this setting before applying changes."; return; }
-    $("#command-status").dataset.mutating = String(Boolean(settingsSlot && !inspect));
+
     button.disabled = true;
     $('#command-status').removeAttribute('data-error');
     body.setAttribute('aria-busy', 'true');
@@ -4041,14 +4037,7 @@ async function openNativeCommand(command, initialArgs = "", settingsSlot = null)
       }
       const secret = form.elements.namedItem("secret");
       if (secret) secret.value = "";
-      $("#command-status").textContent = settingsSlot && !inspect ? "Completed" : "";
-      if (settingsSlot && !inspect) settings.saved();
-      if (settingsSlot && inspect) {
-        const field=form.elements.namedItem("args");
-        if(field && command.name === "pacing" && typeof result.body?.adaptive === "boolean") field.value=result.body.adaptive ? "adaptive" : "maximum";
-        if(field && command.name === "model" && result.body?.model) field.value=result.body.model;
-        if(field && command.name === "budget" && result.body && "limit" in result.body) field.value=result.body.limit == null ? "off" : String(result.body.limit);
-      }
+      $("#command-status").textContent = "";
       if (result.body?.open_thread) {
         modal.close();
         await loadThreads();
@@ -4367,19 +4356,10 @@ function chooseCommand(c, { focusSearch = false } = {}) {
   if (c.portable) openNativeCommand(c);
   else commandActions[c.name]();
 }
-function releaseSettingsCommand() {
-  commandViewVersion++;
-  const content=$("#command-content");
-  if(content.parentElement!==$("#command-view")) $("#command-view").append(content);
-  // Credentials are never retained when leaving a settings section.
-  for(const input of content.querySelectorAll('input[type="password"]')) input.value="";
-}
 const settings = settingsPage({
-  commands: async()=>{if(!commands.length)commands=(await api("commands")).commands;return commands;},
-  openCommand: (command,slot)=>openNativeCommand(command,"",slot),
-  releaseCommand: releaseSettingsCommand,
-  context: ()=>({id:view.id,title:threadInfo(view.id)?.title,workspace:threadInfo(view.id)?.workspace||view.workspace,threads:view.threads}),
-  selectContext: async id=>{const result=await openThread(id);if(!result?.ok)throw Error(result?.message||"Conversation could not open.");},
+  api,
+  context: ()=>({id:view.id,title:threadInfo(view.id)?.title}),
+  resumeChat: async()=>{if(view.id)return;await loadThreads();const id=new URLSearchParams(location.search).get("thread");if(id)await openThread(id);else connection("Connected");},
   appearance: (key,value)=>{
     if(key){
       localStorage.setItem("glass:"+key,value);
@@ -4615,7 +4595,8 @@ async function start() {
       secretCapability = typeof unlocked.secretCapability === "string" ? unlocked.secretCapability : null;
     }
     // These reads are independent once the local token has been exchanged.
-    const [status] = await Promise.all([api("status"), loadThreads()]);
+    const universalSettings = new URLSearchParams(location.search).has("settings");
+    const [status] = await Promise.all([api("status"), universalSettings ? Promise.resolve() : loadThreads()]);
     view.secretUnlocked = status.secret_submission_unlocked === true;
     view.connectCommand = connectCommand(status.connectCommand);
     view.hostWorkflows = status.web_workflows === 1;
@@ -4625,6 +4606,7 @@ async function start() {
     $("#profile").textContent = status.profile;
     view.workspace = status.workspace;
     $(".sidebar-footer small").textContent = "";
+    if (universalSettings) { await settings.restore(); connection("Connected"); return {ok:true}; }
     const params = new URLSearchParams(location.search);
     const id = params.get("thread");
     if (id) {

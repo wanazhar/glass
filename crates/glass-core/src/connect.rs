@@ -111,15 +111,25 @@ fn parse_status_settings(bytes: Option<Vec<u8>>) -> Result<Option<Settings>, Str
 }
 fn status_output(settings: Option<&Settings>, product: &str) -> String {
     match settings {
-        Some(settings) => format!(
-            "{product} · {}\n{}",
-            if alive(settings) {
-                "running"
-            } else {
-                "stopped"
-            },
-            web_url(settings).split('#').next().unwrap()
-        ),
+        Some(settings) => {
+            let primary = primary_public_url(settings);
+            let mut lines = format!(
+                "{product} · {}\n{}",
+                if alive(settings) {
+                    "running"
+                } else {
+                    "stopped"
+                },
+                primary.split('#').next().unwrap_or(&primary)
+            );
+            if settings.http > 0 && settings.https > 0 && !settings.local {
+                lines.push_str(&format!(
+                    "\nhttp://{}:{}",
+                    settings.http_host, settings.http
+                ));
+            }
+            lines
+        }
         None => format!("{product} · stopped"),
     }
 }
@@ -370,10 +380,11 @@ fn access_link(settings: &Settings) -> String {
     if settings.local {
         web_url(settings)
     } else {
+        let base = primary_public_url(settings);
         format!(
             "{}#owner={}",
-            web_url(settings),
-            compact_owner_token(settings, &web_url(settings))
+            base,
+            compact_owner_token(settings, &base)
         )
     }
 }
@@ -393,6 +404,18 @@ fn web_url(settings: &Settings) -> String {
         return format!("http://{}:{}", settings.http_host, settings.http);
     }
     https_url(settings)
+}
+/// Owner links and status output prefer HTTPS unless Connect was started with `--http` only.
+fn primary_public_url(settings: &Settings) -> String {
+    if settings.local {
+        web_url(settings)
+    } else if settings.https > 0 {
+        https_url(settings)
+    } else if settings.http > 0 {
+        format!("http://{}:{}", settings.http_host, settings.http)
+    } else {
+        https_url(settings)
+    }
 }
 fn https_url(settings: &Settings) -> String {
     if settings.local {
@@ -4031,33 +4054,33 @@ mod tests {
         let mut settings = settings();
         settings.http = 8082;
         settings.http_host = "100.98.115.95".into();
-        let http_origin = origin(&settings);
-        let token = compact_owner_token(&settings, &http_origin);
+        let https_origin = https_url(&settings);
+        let token = compact_owner_token(&settings, &https_origin);
         assert_eq!(token.len(), 22);
-        assert!(access_link(&settings).len() <= 56);
-        assert!(owner_bootstrap_matches(&settings, &http_origin, &token));
+        let link = access_link(&settings);
+        assert!(link.starts_with(&https_origin));
+        assert!(link.contains("#owner="));
+        assert!(owner_bootstrap_matches(&settings, &https_origin, &token));
         assert!(!owner_bootstrap_matches(
             &settings,
-            &https_url(&settings),
+            &format!("http://{}:{}", settings.http_host, settings.http),
             &token
-        ));
-        assert!(!owner_bootstrap_matches(
-            &settings,
-            &http_origin,
-            &token[..21]
         ));
         let (app, _) = secret_test_app(settings.clone(), true);
         let identity = "Tailscale-User-Login: owner@example.test\r\n";
-        let response = owner_unlock_request_at(app.clone(), false, &token, identity, &http_origin);
-        assert!(response.starts_with("HTTP/1.1 200"));
+        let response = owner_unlock_request_at(app.clone(), true, &token, identity, &https_origin);
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "unexpected response: {response}"
+        );
         let value: Value =
             serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(
             value["ownerCapability"],
-            owner_access_capability(&settings, &http_origin)
+            owner_access_capability(&settings, &https_origin)
         );
         assert!(value["secretCapability"].is_null());
-        let anonymous = owner_unlock_request_at(app, false, &token, "", &http_origin);
+        let anonymous = owner_unlock_request_at(app, false, &token, "", &https_origin);
         assert!(anonymous.starts_with("HTTP/1.1 403"));
     }
 

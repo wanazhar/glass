@@ -2923,6 +2923,11 @@ function applyTheme() {
     meta.content = light ? "#f7f8f3" : "#141916";
     meta.removeAttribute("media");
   }
+  const statusBar = document.querySelector(
+    'meta[name="apple-mobile-web-app-status-bar-style"]',
+  );
+  if (statusBar)
+    statusBar.content = light ? "default" : "black-translucent";
   const action = light ? "Switch to dark mode" : "Switch to light mode";
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);

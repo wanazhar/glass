@@ -189,7 +189,6 @@ try {
   await page.getByRole("button", { name: "Available conversation" }).click();
   await page.locator("#timeline").getByText("Saved TUI answer", { exact: true }).waitFor();
   assert.equal(await page.locator("#thread-name").textContent(), "Available conversation");
-  assert.equal(await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').count(), 0);
   await page.goto(url);
   await page.locator(".app").waitFor({ state: "visible" });
   for (const expected of ["dark", "light"]) {
@@ -203,6 +202,10 @@ try {
     assert.equal(colors.scheme, expected);
     assert.equal(colors.body, colors.root);
     assert(colors.chrome.every(color => color === (expected === "dark" ? "#141916" : "#f7f8f3")));
+    assert.equal(
+      await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
+      expected === "dark" ? "black-translucent" : "default",
+    );
   }
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();

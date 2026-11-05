@@ -91,6 +91,12 @@ Tailscale IP links where service workers cannot register; HTTPS still uses the
 service worker for offline shell recovery and keeps the current plus one prior
 shell cohort. API responses, transcripts, uploads, and previews remain
 `no-store` on both transports.
+
+`glass connect` and `gc connect` print the same private **HTTPS** owner link
+when HTTPS is configured, even if an HTTP listener is also active from an
+earlier `connect --http`. Use `gc connect status` to see the HTTPS URL first
+and the optional HTTP tailnet URL on a second line. Only a Connect session
+started with `--http` alone (no HTTPS port) uses HTTP for the printed owner link.
 `gc connect stop` removes both GC routes while preserving session workers.
 Tailscale's HTTP router normalizes IP hosts with the tailnet DNS suffix. GC adds
 and removes that exact alias through the local daemon API using version checks,
@@ -832,13 +838,10 @@ before capturing. The report includes a `settled` flag. Keyboard detection uses
 the layout viewport and last idle height because Safari can shrink both the
 window and visual viewport; its offset is applied while the keyboard is open.
 
-On iOS, the page leaves native status-bar styling to the system and gives both
-its root and body the active theme background. WebKit's current guidance is to
-remove the legacy Apple status-bar-style override so the system can match the
-webpage color: https://www2.webkit.org/show_bug.cgi?id=317153#c2.
-Browser checks verify page colors and metadata; native iPadOS appearance still
-requires device confirmation. Standalone headers leave 24 px of space after the
-reported top inset. With the keyboard open, the command palette includes the
+On iOS standalone, dark mode uses `black-translucent` status-bar styling and
+matching `theme-color` values so the area above the toolbar stays dark. Light
+mode uses the default opaque status bar. Theme toggles update both in the page.
+With the keyboard open, the command palette includes the
 visual viewport offset and keeps its header, search field, and footer from
 shrinking.
 

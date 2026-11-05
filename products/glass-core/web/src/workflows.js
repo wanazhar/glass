@@ -1,3 +1,4 @@
+import {createElement, X, Check, Circle, LoaderCircle} from 'lucide';
 import { attachmentPreview } from "./agent-ui.js";
 import { ownerFetch, ownerEventSource, ownerUpload } from "./owner-auth.js";
 // Loaded only when a work surface is opened. Native actor remains the writer.
@@ -50,9 +51,11 @@ export function workflows({
     delete modal.dataset.pending;
     modal.replaceChildren();
     modal.dataset.thread = view.id || "";
+    modal.dataset.surface=title.toLowerCase().replace(/[^a-z]+/g,"-");
     const header = el("header"),
       heading = el("h2", "", title),
       close = el("button", "icon-button", "×");
+    close.replaceChildren(createElement(X,{width:16,height:16,"aria-hidden":"true","stroke-width":1.7}));
     close.type = "button";
     close.setAttribute("aria-label", "Close " + title);
     close.onclick = () => modal.close();
@@ -307,11 +310,12 @@ export function workflows({
           ? data.status
           : JSON.stringify(data.status, null, 2),
       );
-      body.append(summary);
+      const raw=el("details","git-raw-status");raw.append(el("summary","","Raw Git status"),summary);body.append(raw);
       const fileList = el("div", "change-paths"),
         fileNav = el("div", "workflow-actions");
       let filePage = 0;
       const allFiles = data.files || [];
+      const overview=el("div","git-overview");overview.append(el("strong","",allFiles.length?`${allFiles.length} changed file${allFiles.length===1?"":"s"}`:"Working tree clean"));body.prepend(overview);
       const previousFiles = button("← Files", () => {
         filePage--;
         drawFiles();
@@ -469,7 +473,7 @@ export function workflows({
         }
         body.append(section);
       }
-      body.prepend(
+      overview.append(
         button("Refresh", () =>
           refresh().catch((e) => (status.textContent = e.message)),
         ),
@@ -651,6 +655,7 @@ export function workflows({
       agentRows = el("div");
     tasks.append(el("h3", "", "Tasks"), taskRows);
     agents.append(el("h3", "", "Teammates"), agentRows);
+    body.classList.add("work-overview");tasks.className="work-tasks";agents.className="work-agents";taskRows.className="work-task-list";agentRows.className="work-agent-list";
     body.append(tasks, agents);
     const form = el("form", "workflow-actions"),
       input = el("input");
@@ -677,8 +682,8 @@ export function workflows({
     };
     let timer, stream, refreshing=false, refreshAgain=false,
       taskSignature = "";
-    const delegation = el("div", "workflow-actions");
-    delegation.append(el("span", "quiet", "Saved teammates may be paused after a restart."), button("Resume delegation", () => run(status, "agents", { action: "resume-workflow", confirmed: true }, refresh)));
+    const delegation = el("div", "workflow-actions work-delegation");
+    delegation.append(el("span", "work-delegation-note", "Manage the agents working on this conversation."), button("Resume delegation", () => run(status, "agents", { action: "resume-workflow", confirmed: true }, refresh)));
     agentRows.before(delegation);
     const cards = new Map();
     async function refresh() {
@@ -697,18 +702,9 @@ export function workflows({
         taskSignature = signature;
         taskRows.replaceChildren();
         for (const task of (view.tasks || []).slice(0, 64)) {
-          const card = el("div", "detail-card");
-          card.append(
-            el(
-              "p",
-              "",
-              typeof task === "string"
-                ? task
-                : (task.status || "pending") +
-                    " · " +
-                    (task.text || task.title || task.id),
-            ),
-          );
+          const card=el('div','work-task-row'),state=typeof task==='object'?task.status||'pending':'pending';card.dataset.status=state;
+          const mark=createElement(state==='completed'?Check:state==='in_progress'?LoaderCircle:Circle,{width:15,height:15,'aria-hidden':'true','stroke-width':1.7});
+          card.append(mark,el('span','work-task-title',typeof task==='string'?task:task.text||task.title||task.id));
           if (
             typeof task === "object" &&
             task.id &&
@@ -747,11 +743,11 @@ export function workflows({
           present.add(key);
           let entry = cards.get(key);
           if (!entry) {
-            const card = el("div", "detail-card"),
+            const card = el("div", "detail-card work-agent-card"),
               heading = el("strong"),
-              state = el("p"),
-              assignment = el("p", "quiet");
-            card.append(heading, state, assignment);
+              state = el("span","work-agent-status"),
+              assignment = el("p", "work-agent-assignment");
+            const headingRow=el("div","work-agent-heading");headingRow.append(heading,state);card.append(headingRow,assignment);
             entry = { card, heading, state, assignment, watching:false };
             cards.set(key, entry);
             card.append(
@@ -785,7 +781,7 @@ export function workflows({
           entry.heading.textContent = "↳ ".repeat(Math.max(0,Math.min(3,(agent.depth||1)-1)))+(agent.name || agent.id);
           entry.card.dataset.parent = agent.parent_id || "";
           if(entry.watching) await entry.load();
-          entry.state.textContent = agent.status || "";
+          entry.state.textContent = (agent.status==="idle"&&agent.terminal_events>0?"Completed":{idle:"Idle",working:"Working",parked:"Parked",blocked:"Blocked"}[agent.status]||agent.status||"Unknown");entry.card.dataset.status=agent.status||"unknown";entry.assignment.hidden=!agent.task&&!agent.prompt;
           entry.assignment.textContent = String(
             agent.task || agent.prompt || "",
           ).slice(0, 1000);
@@ -803,7 +799,7 @@ export function workflows({
               "No teammates have been created for this thread.",
             ),
           );
-        status.textContent = "Live agent events · read-only transcripts";
+        status.textContent = "Agent status updates live";
       } catch (e) {
         if (!signal.aborted) status.textContent = e.message;
       }

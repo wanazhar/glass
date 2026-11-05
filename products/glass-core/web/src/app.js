@@ -1,3 +1,4 @@
+import {collectReasoning, readableReasoning} from './reasoning-reader.js';
 import {watchSelects, closeSelect} from './select.js';
 import {shellIcons} from './shell-icons.js';
 import { settingsPage, settingDestination, configurationCommands } from "./settings.js";
@@ -42,6 +43,7 @@ const view = {
   control: false,
   follow: true,
   reasoning: "",
+  reasoningBoundary: true,
   thought: null,
   reasoningBefore: 0,
   tools: new Map(),
@@ -1245,6 +1247,8 @@ async function historyNow(older = false) {
   }
   view.before = h.before;
   if (!older) {
+    view.reasoning=collectReasoning(h.records).slice(-limits.reasoning);
+    view.reasoningBoundary=h.records.at(-1)?.record.k!=="reasoning";
     view.reasoningBefore = h.before;
     view.reasoningSources = h.records
       .filter((item) => item.record.k === "reasoning")
@@ -1317,6 +1321,7 @@ function schedule() {
   );
 }
 function event(m, replaying = false) {
+  if(["tool","tool_end","text","assistant","done","turn_start"].includes(m.t))view.reasoningBoundary=true;
   switch (m.t) {
     case "command_start":
       updateActivity(`Working · /${m.name}`);
@@ -1441,11 +1446,12 @@ function event(m, replaying = false) {
           schedule();
           break;
         }
-        const next = (view.reasoning + (m.delta || "")).slice(
+        const next = (view.reasoning + (view.reasoningBoundary&&view.reasoning&&m.delta?"\n\n":"") + (m.delta || "")).slice(
           -limits.reasoning,
         );
         const changed = next !== view.reasoning;
         view.reasoning = next;
+        view.reasoningBoundary=false;
         updateActivity("Reasoning");
         if (changed) schedule();
       }
@@ -2473,10 +2479,7 @@ async function loadEarlierReasoning(automatic = false) {
       if (data.before >= before)
         throw new Error("Reasoning history cursor did not advance");
       view.reasoningBefore = data.before;
-      const prefix = data.records
-        .filter((item) => item.record.k === "reasoning")
-        .map((item) => item.record.t || "")
-        .join("");
+      const prefix = collectReasoning(data.records);
       if (!prefix) {
         view.reasoningSources = [
           ...(data.omitted || [])
@@ -2506,7 +2509,7 @@ async function loadEarlierReasoning(automatic = false) {
         });
         if (view.reasoningWindows.length > 3) view.reasoningWindows.shift();
         view.reasoning = prefix.slice(-limits.reasoning);
-      } else view.reasoning = prefix + view.reasoning;
+      } else view.reasoning = prefix + (data.records.at(-1)?.record.k!=="reasoning"&&view.reasoning?"\n\n":"") + view.reasoning;
       view.reasoningSources = [
         ...prefixSources,
         ...view.reasoningSources,
@@ -2595,6 +2598,7 @@ function details() {
   renderChecklist(checklistRoot, view.hasChecklist ? view.tasks : []);
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
+  $("#details").dataset.tab=view.tab;
   $("#reasoning-latest").hidden = view.tab !== "reasoning";
   if (view.tab === "files") {
     const thread = threadInfo(view.id);
@@ -2623,7 +2627,7 @@ function details() {
       (body.dataset.reasoningSource !== source ||
         body.dataset.reasoningStreaming !== String(view.active));
     if (changed) {
-      markdown(body, source, view.active);
+      markdown(body, readableReasoning(source), view.active);
       body.dataset.reasoningSource = source;
       body.dataset.reasoningStreaming = String(view.active);
     }
@@ -2866,14 +2870,14 @@ $("#detail-content").addEventListener(
 for (const tab of document.querySelectorAll("[data-tab]"))
   tab.onclick = () => {
     view.tab = tab.dataset.tab;
-    if (view.tab === "reasoning") view.reasoningFollow = true;
+    if (view.tab === "reasoning") view.reasoningFollow = view.active;
     document
       .querySelectorAll("[data-tab]")
       .forEach((n) => n.classList.toggle("selected", n === tab));
     details();
     if (view.tab === "reasoning") {
       const pane = $("#detail-content");
-      pane.scrollTop = pane.scrollHeight;
+      pane.scrollTop = view.reasoningFollow ? pane.scrollHeight : 0;
       if (pane.scrollHeight <= pane.clientHeight + 100)
         loadEarlierReasoning(true);
     }

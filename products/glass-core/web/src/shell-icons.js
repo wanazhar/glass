@@ -1,6 +1,6 @@
 import {createElement, Plus, X, Search, MessageSquare, Settings, PanelLeft, Terminal, Monitor, GitCompareArrows, Folder, PanelRight, SunMoon, Bell, ArrowUp, Paperclip, Square, ChevronDown, Command, ListTodo, Layers, Clock3, FolderOpen} from 'lucide';
 export function shellIcons(){
-  const icons={new:Plus,'sidebar-close':X,'open-chat':MessageSquare,'open-settings':Settings,menu:PanelLeft,'agent-activity':Terminal,'desktop-toggle':Monitor,'changes-toggle':GitCompareArrows,'files-toggle':Folder,'details-toggle':PanelRight,'details-close':X,theme:SunMoon,notifications:Bell,send:ArrowUp,attach:Paperclip,stop:Square,'open-commands':Command,'context-toggle':Layers,'work-toggle':ListTodo,'queue-toggle':Clock3,'workspace-location':FolderOpen};
+  const icons={new:Plus,'sidebar-close':X,'open-chat':MessageSquare,'open-settings':Settings,menu:PanelLeft,'agent-activity':Terminal,'desktop-toggle':Monitor,'changes-toggle':GitCompareArrows,'files-toggle':Folder,'details-toggle':PanelRight,'details-close':X,'desktop-close':X,theme:SunMoon,notifications:Bell,send:ArrowUp,attach:Paperclip,stop:Square,'open-commands':Command,'context-toggle':Layers,'work-toggle':ListTodo,'queue-toggle':Clock3,'workspace-location':FolderOpen};
   for(const [id,node]of Object.entries(icons)){
     const button=document.getElementById(id);if(!button)continue;
     if(!button.getAttribute('aria-label'))button.setAttribute('aria-label',button.textContent.trim());

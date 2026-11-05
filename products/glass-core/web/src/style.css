@@ -4186,3 +4186,82 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .sidebar-footer #notifications[aria-pressed=true] { color: var(--accent); background: var(--accent-bg); border-radius: var(--ui-control-radius); }
 .preference-control input[type=number] { appearance: textfield; }
 .preference-control input[type=number]::-webkit-inner-spin-button,.preference-control input[type=number]::-webkit-outer-spin-button { appearance: none; margin: 0; }
+
+/* Icon boxes are fixed independently of coarse-pointer button minimums. */
+.sidebar-footer #notifications { flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; max-height: 30px; padding: 0; align-items: center; align-self: center; border: 0; background: transparent; }
+.sidebar-footer #notifications svg { display: block; width: 15px; height: 15px; }
+.desktop-header #desktop-close,.workflow > header .icon-button,#details-close { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; min-width: 32px; max-width: 32px; height: 32px; min-height: 32px; max-height: 32px; padding: 0; border: 0; border-radius: 6px; }
+.desktop-header #desktop-close svg,.workflow > header .icon-button svg,#details-close svg { width: 16px; height: 16px; }
+:root:not(.keyboard-navigation) .icon-button:focus-visible { outline: none; box-shadow: none; }
+
+/* Reader typography follows the conversation; public phases remain separate. */
+#detail-content[data-tab=reasoning] { white-space: normal; padding-top: 14px; }
+#detail-content[data-tab=reasoning] > .prose { max-width: 65ch; font: 400 13px/1.75 var(--font-sans); margin: 18px auto 24px; }
+#detail-content[data-tab=reasoning] .prose p { margin: 0 0 16px; }
+#detail-content[data-tab=reasoning] > button { min-height: 30px; padding: 5px 9px; font-size: 10px; }
+
+.workflow > header { min-height: 54px; padding: 10px 16px; }
+.workflow > header h2 { font-size: 13px; font-weight: 550; }
+.workflow .workflow-body { padding: 18px; font: 400 12px/1.6 var(--font-sans); }
+.workflow .workflow-body h3 { font-size: 13px; font-weight: 550; margin: 0 0 12px; }
+.workflow .workflow-body button { min-height: 30px; padding: 5px 9px; font-size: 11px; }
+.workflow p.quiet,.workflow span.quiet { border: 0; padding: 0; background: transparent; color: var(--muted); font-size: 11px; }
+.workflow [hidden] { display: none !important; }
+.workflow .workflow-status { font-size: 10px; padding: 10px 16px; color: var(--muted); }
+.workflow-actions { gap: 8px; align-items: center; }
+.work-overview { display: grid; align-content: start; gap: 26px; }
+.work-task-list { border: 1px solid var(--ui-border); border-radius: 8px; background: var(--ui-panel); overflow: hidden; }
+.work-task-row { display: flex; align-items: flex-start; gap: 10px; min-height: 40px; padding: 10px 12px; border-bottom: 1px solid var(--ui-border); }
+.work-task-row:last-child { border-bottom: 0; }
+.work-task-row > svg { flex: 0 0 15px; margin-top: 2px; color: var(--muted); }
+.work-task-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.work-task-row[data-status=completed] .work-task-title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
+.work-task-row[data-status=completed] > svg { color: var(--accent); }
+.work-task-row > button { margin-top: -3px; flex: none; }
+.work-tasks > form { margin: 12px 0 0; flex-wrap: nowrap; }
+.work-tasks > form input { flex: 1; width: 100%; }
+.work-tasks > form button { flex: none; }
+.work-delegation { justify-content: space-between; margin: 0 0 12px; gap: 10px; }
+.work-delegation-note { font-size: 11px; color: var(--muted); }
+.work-agent-list { display: grid; gap: 9px; }
+.work-agent-card { margin: 0; padding: 12px; border-radius: 8px; border: 1px solid var(--ui-border); background: var(--ui-panel); }
+.work-agent-heading { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.work-agent-heading strong { font-size: 12px; font-weight: 550; overflow-wrap: anywhere; min-width: 0; }
+.work-agent-status { font-size: 10px; color: var(--muted); background: var(--surface2); padding: 2px 6px; border-radius: 5px; flex: none; }
+.work-agent-card[data-status=working] .work-agent-status { color: var(--accent); }
+.work-agent-assignment { margin: 9px 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.work-agent-card > button { margin-top: 10px; }
+.work-agent-card .agent-transcript { font: 11px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; max-height: 320px; overflow: auto; background: var(--bg); border-radius: 6px; }
+.git-overview { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.git-overview strong { font-size: 13px; font-weight: 550; }
+.git-raw-status { margin: 8px 0 14px; color: var(--muted); font-size: 11px; }
+.git-raw-status summary { min-height: 28px; cursor: pointer; }
+.git-raw-status pre { font: 11px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.change-paths { border: 1px solid var(--ui-border); border-radius: 8px; background: var(--ui-panel); }
+.change-paths:empty { display: none; }
+.change-path { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--ui-border); }
+.change-path:last-child { border-bottom: 0; }
+.change-path > span { flex: 1; font-size: 12px; overflow-wrap: anywhere; min-width: 0; }
+.change-path button { flex: none; }
+.change-section { margin-top: 24px; }
+.change-section > p.quiet { margin: 0; color: var(--muted); }
+
+/* A 16px editing surface with 13px visual type: compact without disabling pinch zoom. */
+@media(max-width:700px), (pointer:coarse) {
+  #settings-page input:not([type=checkbox]):not([type=radio]),#settings-page textarea,
+  .composer textarea,.file-path input,.workflow input:not([type=checkbox]):not([type=radio]),.workflow textarea:not(.file-editor):not(.queue-editor),.sidebar .search input {
+    font-family: var(--font-sans); font-size: 16px; zoom: .8125; line-height: 1.6; transform: none; transform-origin: initial; max-width: none;
+  }
+  #settings-page .preference-control input:not([type=checkbox]),#settings-page .connection-form input,#settings-page .profile-create input,.workflow input { min-height: 44px; padding: 8px 11px; }
+  #settings-page .preference-control textarea { min-height: 138px; }
+  .composer textarea { min-height: 30px; height: 30px; line-height: 1.5; }
+  .file-path .file-path-field input { width: 100%; padding: 8px 11px; min-height: 44px; }
+  .workflow .workflow-body { padding: 14px; }
+  .workflow .workflow-body button { min-height: 30px; }
+  .work-delegation { align-items: flex-start; }
+}
+
+#detail-content[data-tab=reasoning] .markdown-block + .markdown-block { margin-top: 0; }
+@media(min-width:701px) { .details.open[data-tab=reasoning] { width: min(560px,calc(100vw - 48px)); } }
+
+.workflow.floating-palette[data-surface=work-teammates],.workflow.floating-palette[data-surface=changes] { width: min(800px,calc(100vw - 24px)); height: auto; }

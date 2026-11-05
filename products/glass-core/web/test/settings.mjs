@@ -53,6 +53,7 @@ try{for(const width of [320,390,768,1440].filter(w=>!process.env.GC_SETTINGS_WID
  state=copy(initial);requests=[];posts=[];hold=false;fail=false;
  const context=await browser.newContext({viewport:{width,height:950},colorScheme,isMobile:width<1000,hasTouch:width<1000,serviceWorkers:'block'}),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));const pageRequests=requests;page.on('request',r=>{const path=new URL(r.url()).pathname;if(path.startsWith('/api/'))pageRequests.push(path);});
  await page.goto(origin+'/?settings=general&thread=must-not-open');await page.getByLabel('Default model',{exact:true}).waitFor();await page.evaluate(()=>document.fonts.ready);assert(await page.evaluate(()=>document.fonts.check('13px "Glass Sans"')));
+ if(width<=700)assert(await page.getByLabel('Default model',{exact:true}).evaluate(n=>{const s=getComputedStyle(n);return parseFloat(s.fontSize)*(parseFloat(s.zoom)||1)<=13.1;}),'Settings values use compact visual type');
  assert.equal(await page.getByLabel('Default model',{exact:true}).inputValue(),'current-model');assert.equal(await page.getByLabel('Maximum output tokens',{exact:true}).inputValue(),'64000');
  assert.equal(await page.locator('#settings-page #command-form').count(),0);assert.equal(await page.locator('dialog[open]').count(),0);
  assert(!requests.some(p=>['/api/open','/api/history','/api/events','/api/command','/api/send'].includes(p)),requests.join(','));

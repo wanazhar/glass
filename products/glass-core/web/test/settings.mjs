@@ -8,7 +8,7 @@ const root=resolve('dist'),initial=JSON.parse(await readFile('test/fixtures/sett
 if(!commands.some(c=>c.name==='desktop'))commands.push({name:'desktop',description:'Shared desktop',portable:false,group:'work',primary:false,aliases:[]});
 let state,requests=[],posts=[],streams=new Set(),hold=false,fail=false,deliver;
 const copy=v=>JSON.parse(JSON.stringify(v));
-async function section(page,title){const picker=page.getByLabel('Settings section',{exact:true});if(await picker.isVisible())await picker.selectOption({label:title});else await page.getByRole('link',{name:title,exact:true}).click();}
+async function section(page,title){const trigger=page.getByRole('button',{name:'Settings sections',exact:true});if(await trigger.isVisible())await trigger.click();await page.getByRole('link',{name:title,exact:true}).click();}
 function apply(change){
  assert.equal(change.revision,state.revision);assert(!('sessionId' in change)&&!('thread' in change));
  if(change.action==='preference')state.defaults[change.key]=change.value;
@@ -47,7 +47,7 @@ const server=createServer(async(req,res)=>{
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync('/snap/chromium/current/usr/lib/chromium-browser/chrome')?'/snap/chromium/current/usr/lib/chromium-browser/chrome':undefined),headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
-try{for(const width of [390,768,1440].filter(w=>!process.env.GC_SETTINGS_WIDTH||w===Number(process.env.GC_SETTINGS_WIDTH)))for(const colorScheme of ['light','dark']){
+try{for(const width of [320,390,768,1440].filter(w=>!process.env.GC_SETTINGS_WIDTH||w===Number(process.env.GC_SETTINGS_WIDTH)))for(const colorScheme of ['light','dark']){
  state=copy(initial);requests=[];posts=[];hold=false;fail=false;
  const context=await browser.newContext({viewport:{width,height:950},colorScheme,hasTouch:width<1000,serviceWorkers:'block'}),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(origin+'/?settings=general&thread=must-not-open');await page.getByLabel('Default model',{exact:true}).waitFor();
@@ -55,9 +55,26 @@ try{for(const width of [390,768,1440].filter(w=>!process.env.GC_SETTINGS_WIDTH||
  assert.equal(await page.locator('#settings-page #command-form').count(),0);assert.equal(await page.locator('dialog[open]').count(),0);
  assert(!requests.some(p=>['/api/threads','/api/open','/api/history','/api/events','/api/command','/api/send'].includes(p)),requests.join(','));
  assert.equal(requests.filter(p=>p==='/api/settings').length,1);
- await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:`/tmp/glass-universal-settings-${width}-${colorScheme}.png`});
+ const menu=page.getByRole('button',{name:'Settings sections',exact:true});
+ if(await menu.isVisible()){
+  await menu.click();assert.equal(await menu.getAttribute('aria-expanded'),'true');
+  assert.equal(await page.locator('.settings-content').evaluate(n=>n.inert),true);
+  await page.keyboard.press('Shift+Tab');assert(await menu.evaluate(n=>n===document.activeElement));
+  await page.keyboard.press('Escape');assert.equal(await menu.getAttribute('aria-expanded'),'false');
+  assert.equal(await page.locator('.settings-content').evaluate(n=>n.inert),false);
+ }
+ assert(await page.locator('#settings-page').evaluate(n=>n.scrollWidth===n.clientWidth),'Settings must fit the viewport');
+ assert(await page.locator('.settings-switch-target').first().evaluate(n=>{const r=n.getBoundingClientRect();return r.width>=44&&r.height>=44;}),'Switch touch targets must be at least 44 pixels');
+
+ await page.locator('#settings-section-title').focus();await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:`/tmp/glass-universal-settings-${width}-${colorScheme}.png`});
  assert(await page.locator('#settings-page').evaluate(n=>{const r=n.getBoundingClientRect();return r.x===0&&r.y===0&&r.width===innerWidth&&r.height===innerHeight;}));
  assert(await page.evaluate(()=>{const html=document.documentElement,oldH=html.style.getPropertyValue('--app-height'),oldT=html.style.getPropertyValue('--viewport-top');html.style.setProperty('--app-height','520px');html.style.setProperty('--viewport-top','12px');const r=document.querySelector('#settings-page').getBoundingClientRect();html.style.setProperty('--app-height',oldH);html.style.setProperty('--viewport-top',oldT);return r.height===520&&r.top===12;}));
+ // Review every section in both themes and keep controls within the content column.
+ for(const title of ['Connections','Tools & skills','Instructions','Appearance','Advanced','General']){
+  await section(page,title);
+  assert(await page.locator('#settings-body').evaluate(n=>n.scrollWidth<=n.clientWidth),'Section overflow: '+title);
+  await page.screenshot({path:`/tmp/glass-settings-${title.toLowerCase().replace(/[^a-z]+/g,'-')}-${width}-${colorScheme}.png`});
+ }
  // Values are already present; editing never runs a slash command or opens a chat.
  await page.getByLabel('Default model',{exact:true}).fill('updated-model');await page.getByRole('button',{name:'Save Default model',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.connections[0].model,'updated-model');
  await page.getByRole('switch',{name:'Adaptive pacing'}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.defaults.adaptive_pacing,false);
@@ -75,15 +92,15 @@ try{for(const width of [390,768,1440].filter(w=>!process.env.GC_SETTINGS_WIDTH||
  await section(page,'Tools & skills');await page.getByRole('switch',{name:'todo',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert(state.extensions[0].enabled);
  await page.getByLabel('Custom extension command',{exact:true}).fill('node /tmp/fixture-extension.js');await page.getByRole('button',{name:'Add extension',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert(state.extensions.some(b=>b.id==='node /tmp/fixture-extension.js'&&b.enabled));
 
- await section(page,'Connections');await page.getByRole('button',{name:'Add connection',exact:true}).click();await page.getByLabel('Connection name',{exact:true}).fill('New account');await page.getByLabel('Model',{exact:true}).last().fill('new-account-model');await page.getByLabel('API key',{exact:true}).fill('FAKE_BROWSER_SECRET');await page.getByRole('button',{name:'Refresh values',exact:true}).click();await page.getByText('Values refreshed. Unsaved edits are retained.',{exact:true}).waitFor();assert.equal(await page.getByLabel('API key',{exact:true}).inputValue(),'FAKE_BROWSER_SECRET');
+ await section(page,'Connections');await page.getByRole('button',{name:'Add connection',exact:true}).click();await page.locator('.connection-form').getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(await page.locator('.connection-form').count(),0);await page.getByRole('button',{name:'Add connection',exact:true}).click();await page.getByLabel('Connection name',{exact:true}).fill('New account');await page.getByLabel('Model',{exact:true}).last().fill('new-account-model');await page.getByLabel('API key',{exact:true}).fill('FAKE_BROWSER_SECRET');await page.getByRole('button',{name:'Refresh values',exact:true}).click();await page.getByText('Values refreshed. Unsaved edits are retained.',{exact:true}).waitFor();assert.equal(await page.getByLabel('API key',{exact:true}).inputValue(),'FAKE_BROWSER_SECRET');
  await page.getByRole('button',{name:'Save connection',exact:true}).click();await page.getByText('Saved',{exact:true}).waitFor();assert.equal(state.connections.length,2);assert(!page.url().includes('FAKE_BROWSER_SECRET'));assert(!await page.evaluate(()=>JSON.stringify(localStorage).includes('FAKE_BROWSER_SECRET')));
- await section(page,'Appearance');await page.getByLabel('Theme',{exact:true}).selectOption('dark');await page.getByLabel('Activity animation',{exact:true}).selectOption('none');await page.getByLabel('Tool cards',{exact:true}).selectOption('compact');
- await page.reload();await page.getByLabel('Theme',{exact:true}).waitFor();assert.equal(await page.getByLabel('Activity animation',{exact:true}).inputValue(),'none');assert.equal(await page.getByLabel('Tool cards',{exact:true}).inputValue(),'compact');
- await page.getByLabel('Search settings',{exact:true}).fill('pacing');await page.getByRole('switch',{name:'Adaptive pacing'}).waitFor();assert(!await page.getByLabel('Default model',{exact:true}).isVisible());await page.getByLabel('Search settings',{exact:true}).fill('');
+ await section(page,'Appearance');await page.getByRole('radio',{name:'Dark',exact:true}).check();assert(await page.getByRole('radio',{name:'Dark',exact:true}).isChecked());await page.screenshot({path:`/tmp/glass-settings-appearance-${width}-${colorScheme}.png`});await page.getByLabel('Activity animation',{exact:true}).selectOption('none');await page.getByLabel('Tool cards',{exact:true}).selectOption('compact');
+ await page.reload();await page.getByRole('radio',{name:'Dark',exact:true}).waitFor();assert.equal(await page.getByLabel('Activity animation',{exact:true}).inputValue(),'none');assert.equal(await page.getByLabel('Tool cards',{exact:true}).inputValue(),'compact');
+ const searchToggle=page.getByRole('button',{name:'Search settings',exact:true});if(await searchToggle.isVisible())await searchToggle.click();await page.getByRole('searchbox',{name:'Search settings',exact:true}).fill('pacing');await page.getByRole('switch',{name:'Adaptive pacing'}).waitFor();assert(!await page.getByLabel('Default model',{exact:true}).isVisible());await page.getByRole('searchbox',{name:'Search settings',exact:true}).fill('');
  assert(!requests.some(p=>['/api/threads','/api/open','/api/history','/api/events','/api/send'].includes(p)),requests.join(','));
  // A chat is opened only when explicitly returning to it. Existing drafts stay mounted.
  await page.goto(origin+'/?thread=fixture');await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');await page.locator('#prompt').fill('Keep my draft');await page.locator('#conversation').evaluate(n=>n.scrollTop=120);const top=await page.locator('#conversation').evaluate(n=>n.scrollTop),historyReads=requests.filter(p=>p==='/api/history').length;
- await page.locator('#open-settings').evaluate(n=>n.click());await page.getByLabel('Default model',{exact:true}).waitFor();assert.equal(requests.filter(p=>p==='/api/history').length,historyReads);await page.getByRole('button',{name:'← Back',exact:true}).click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');assert.equal(await page.locator('#conversation').evaluate(n=>n.scrollTop),top);
+ await page.locator('#open-settings').evaluate(n=>n.click());await page.getByLabel('Default model',{exact:true}).waitFor();assert.equal(requests.filter(p=>p==='/api/history').length,historyReads);await page.getByRole('button',{name:'Back to conversation',exact:true}).click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');assert.equal(await page.locator('#conversation').evaluate(n=>n.scrollTop),top);
  await page.locator('#prompt').fill('/desktop');await page.locator('#composer').evaluate(n=>n.requestSubmit());await page.locator('#desktop-title').waitFor();await page.keyboard.press('Escape');
  assert.deepEqual(errors,[]);await context.close();console.log(`PASS universal Settings ${width}px ${colorScheme}: direct values, one global snapshot, zero chat loading, saved defaults/connections/instructions/tools, validation and refresh, appearance, routes/search, draft/scroll, Computer`);
 }}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

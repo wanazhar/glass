@@ -56,7 +56,9 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
  await page.evaluate(()=>document.fonts.ready);assert(await page.evaluate(()=>document.fonts.check('13px "Glass Sans"')));
  assert.equal(await page.locator("#prompt").getAttribute("rows"),"1");
  if(width<=700){
-  const type=await page.locator('#prompt').evaluate(n=>{const s=getComputedStyle(n);return parseFloat(s.fontSize)*(parseFloat(s.zoom)||1);});assert(type<=13.1,'Composer uses compact visual type on phones');
+  const metrics=await page.locator('#prompt').evaluate(n=>{const s=getComputedStyle(n);return{fontSize:parseFloat(s.fontSize),zoom:parseFloat(s.zoom)||1};});
+  assert(metrics.fontSize>=16,'Composer uses at least 16px to avoid Safari focus zoom');
+  assert(metrics.zoom===1,'Composer must not use CSS zoom; iOS treats it as sub-16px type');
   await page.locator('#menu').click();
   assert.equal(await page.locator('#threads').evaluate(n=>n.closest('.conversation-navigation')?.previousElementSibling?.id),'open-chat');
   assert(await page.locator('#open-settings').isVisible());

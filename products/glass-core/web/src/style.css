@@ -1918,6 +1918,28 @@ dialog[open] {
 .keyboard-open {
   --safe-bottom: 0px;
 }
+@media (max-width: 700px), (pointer: coarse) {
+  :root.keyboard-open .welcome {
+    display: none;
+  }
+  :root.keyboard-open .conversation {
+    flex: 1 1 0;
+    padding-top: 8px;
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+  :root.keyboard-open #activity,
+  :root.keyboard-open .compose-foot {
+    display: none;
+  }
+  :root.keyboard-open .compose-zone {
+    padding-top: 0;
+    padding-bottom: 6px;
+  }
+  :root.keyboard-open .teammate-status {
+    display: none;
+  }
+}
 
 /* WebKit's async scrolling needs concrete row geometry inside this fixed shell. */
 @supports (-webkit-touch-callout: none) {
@@ -4088,7 +4110,10 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .compose-zone { max-width: 864px; padding: 4px 32px max(14px,var(--safe-bottom)); }
 .composer,.light .composer { background: var(--ui-panel); padding: 9px 12px 8px; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 3px #00000004; }
 .composer:focus-within { border-color: color-mix(in srgb,var(--muted) 65%,var(--line)); box-shadow: 0 0 0 2px color-mix(in srgb,var(--accent) 8%,transparent); }
-.composer textarea { display: block; font: 400 14px/1.5 var(--font-sans); min-height: 26px; height: 26px; padding: 0; }
+.composer textarea { display: block; font: 400 16px/1.5 var(--font-sans); min-height: 26px; height: 26px; padding: 0; }
+@media (min-width: 701px) and (pointer: fine) {
+  .composer textarea { font-size: 13px; line-height: 1.5; }
+}
 .composer-bottom { margin-top: 8px; gap: 8px; }
 .composer #attach,.composer .send,.composer .stop,.composer .voice-input { width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-height: 30px; border-radius: var(--ui-control-radius); }
 .composer #attach { background: transparent; }
@@ -4246,15 +4271,24 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .change-section { margin-top: 24px; }
 .change-section > p.quiet { margin: 0; color: var(--muted); }
 
-/* A 16px editing surface with 13px visual type: compact without disabling pinch zoom. */
+/* Touch fields need 16px computed type so iPhone Safari will not focus-zoom.
+   CSS zoom on the composer still renders sub-16px type and triggers the same zoom. */
 @media(max-width:700px), (pointer:coarse) {
   #settings-page input:not([type=checkbox]):not([type=radio]),#settings-page textarea,
-  .composer textarea,.file-path input,.workflow input:not([type=checkbox]):not([type=radio]),.workflow textarea:not(.file-editor):not(.queue-editor),.sidebar .search input {
+  .file-path input,.workflow input:not([type=checkbox]):not([type=radio]),.workflow textarea:not(.file-editor):not(.queue-editor),.sidebar .search input {
     font-family: var(--font-sans); font-size: 16px; zoom: .8125; line-height: 1.6; transform: none; transform-origin: initial; max-width: none;
+  }
+  .composer textarea, #prompt {
+    font-family: var(--font-sans);
+    font-size: 16px;
+    zoom: 1;
+    line-height: 1.5;
+    transform: none;
+    max-width: none;
   }
   #settings-page .preference-control input:not([type=checkbox]),#settings-page .connection-form input,#settings-page .profile-create input,.workflow input { min-height: 44px; padding: 8px 11px; }
   #settings-page .preference-control textarea { min-height: 138px; }
-  .composer textarea { min-height: 30px; height: 30px; line-height: 1.5; }
+  .composer textarea { min-height: 24px; height: 24px; }
   .file-path .file-path-field input { width: 100%; padding: 8px 11px; min-height: 44px; }
   .workflow .workflow-body { padding: 14px; }
   .workflow .workflow-body button { min-height: 30px; }

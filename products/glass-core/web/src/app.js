@@ -278,7 +278,6 @@ function syncViewport() {
     );
     const keyboard =
       viewport &&
-      viewport.scale === 1 &&
       (focused ||
         document.documentElement.classList.contains("keyboard-open")) &&
       Math.max(
@@ -288,7 +287,7 @@ function syncViewport() {
       ) -
         viewport.height >
         120;
-    if (!focused && viewport?.scale === 1)
+    if (!focused && viewport)
       idleViewportHeight = Math.max(idleViewportHeight, viewport.height);
     if (keyboard) {
       document.documentElement.style.setProperty(
@@ -2206,6 +2205,14 @@ $("#prompt").oninput = (e) => {
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 180) + "px";
 };
+$("#prompt").addEventListener(
+  "focus",
+  () => {
+    syncViewport();
+    requestAnimationFrame(syncViewport);
+  },
+  { passive: true },
+);
 $("#stop").onclick = () =>
   send({ t: "cancel" }).catch((e) => notice(e.message, true));
 $("#ownership").onclick = () =>

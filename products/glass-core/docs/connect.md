@@ -37,6 +37,18 @@ application needs neither Node nor a frontend build tool. Alternatively, run
 Binary distributions can provide the web assets separately; point that variable
 to their extracted directory.
 
+While `gc connect` is running, replace the served shell without restarting the
+gateway or dropping thread bridges:
+
+```sh
+./products/glass-core/scripts/sync-web-assets.sh
+```
+
+The script builds `web/dist`, reads the active `assets` path from
+`connect.json` when Connect is up (or uses `GC_WEB_ASSETS` / the installed
+`share/glass-core/web` directory), and rsyncs the bundle in place. Reload the
+workspace tab afterward; use a hard refresh in Safari if a cached shell persists.
+
 GC prints a private HTTPS (Hypertext Transfer Protocol Secure) URL with an
 owner credential in its fragment. Keep the full link private; ordinary status
 output omits the credential. Open it in

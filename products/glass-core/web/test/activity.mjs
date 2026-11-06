@@ -95,14 +95,15 @@ const server = createServer(async (request, response) => {
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const browser = await chromium.launch({ executablePath: process.env.GC_BROWSER_BINARY || (existsSync("/snap/chromium/current/usr/lib/chromium-browser/chrome") ? "/snap/chromium/current/usr/lib/chromium-browser/chrome" : undefined), headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 try {
-  for (const width of [390, 768, 1440]) for (const colorScheme of ["light", "dark"]) {
+  for (const width of process.env.ACTIVITY_PHONE_ONLY ? [390] : [390, 768, 1440]) for (const colorScheme of ["light", "dark"]) {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme, serviceWorkers: "block", reducedMotion: "reduce" });
     const page = await context.newPage(), errors = [];
     page.on("pageerror", error => errors.push(String(error)));
     await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
     await page.locator(".app").waitFor({ state: "visible" });
     await page.waitForFunction(() => document.querySelector("#ownership").textContent === "Release control");
-    await page.locator('.tool-row[data-call-id="resumed"][data-state="running"]').waitFor();
+    await page.locator('.tool-row[data-call-id="resumed"][data-state="running"]').waitFor({state:'attached'});
+    if (width === 390) await page.screenshot({path: `/tmp/gc-collapsed-activity-${colorScheme}.png`});
     const shared = page.locator(".shared-image-card").first();
     await shared.scrollIntoViewIfNeeded();
     await page.waitForFunction(() => document.querySelector(".shared-image-card img")?.naturalWidth === 1);
@@ -115,6 +116,9 @@ try {
     emit([{ t: "tool", call_id: "live-display", name: "display_image", command: sharedPath }, { t: "tool_end", call_id: "live-display", output: sharedResult, summary: "Shared image" }]);
     await page.waitForFunction(() => document.querySelectorAll(".shared-image-card").length === 2);
     const savedThought = page.locator(".thought-row").first();
+    const savedActivity = page.locator(".activity-disclosure").first();
+    assert.equal(await savedActivity.evaluate(node => node.open), false, "Saved execution is collapsed by default");
+    await savedActivity.locator(":scope > summary").click();
     assert.equal(await savedThought.locator(".thought-body").textContent(), "", "Collapsed reasoning must stay lazily rendered");
     await savedThought.locator("summary").click();
     await savedThought.locator(".thought-body").getByText("I will inspect the entry point and prepare a short guide.").waitFor();
@@ -139,6 +143,10 @@ try {
     await page.screenshot({ path: `/tmp/gc-rich-tools-${width}-${colorScheme}.png` });
     emit([{ t: "reasoning", delta: "I am checking the **command result** before continuing." }]);
     const thinking = page.locator(".thought-row").last();
+    await thinking.waitFor({state:"attached"});
+    const liveActivity = thinking.locator("xpath=ancestor::details[contains(@class,'activity-disclosure')]");
+    assert.equal(await liveActivity.evaluate(node => node.open), false, "New live activity starts collapsed");
+    await liveActivity.locator(":scope > summary").click();
     await thinking.locator(".thought-label").getByText("Thinking", { exact: true }).waitFor();
     assert.equal(await thinking.locator(".thought-body").textContent(), "");
     await thinking.locator("summary").click();
@@ -225,13 +233,19 @@ try {
     assert.match(await readFile(await artifact.path(), "utf8"), /A useful failure message/);
     await page.locator("#preview-close").click();
     // A completed turn refreshes history without reopening collapsed work.
+    const collapsedActivity = page.locator('.activity-disclosure').first();
+    await collapsedActivity.locator(':scope > summary').click();
+    assert.equal(await collapsedActivity.evaluate(node => node.open), false);
     const firstGroup = page.locator(".work-group").first();
     await firstGroup.evaluate(element => { element.open = false; window.previousGroup = element; });
     emit([{ t: "done" }]);
     await page.waitForFunction(() => !window.previousGroup.isConnected);
     assert.equal(await page.locator(".work-group").first().evaluate(element => element.open), false);
+    assert.equal(await page.locator('.activity-disclosure').first().evaluate(node => node.open), false, 'Completed replay must preserve the user collapse choice');
     await page.locator("#older").click();
     const earlier = page.locator(".thought-row").filter({ hasText: "Earlier reasoning fixture" });
+    await earlier.waitFor({state:"attached"});
+    await earlier.evaluate(node => {node.closest('.activity-disclosure').open=true;});
     await earlier.locator("summary").click();
     await earlier.locator(".thought-body").getByText("Earlier reasoning fixture", { exact: true }).waitFor();
     assert.equal(await page.getByText("PRIVATE_PROVIDER_SENTINEL").count(), 0);

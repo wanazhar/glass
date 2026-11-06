@@ -835,6 +835,12 @@ activity updates do not replace its contents. Standalone layout uses fixed viewp
 This avoids WebKit under-reporting the installed app viewport by its safe inset. The toolbar leaves extra space below the status area; composer bottom
 padding is capped at 34 px. Keyboard layout uses the visual viewport height.
 
+Adjacent tool calls and reasoning appear in one collapsed **Activity** row. Its
+summary shows a subtle live indicator, tool count, and failure count. Expand it
+to inspect individual tool inputs, results, and reasoning; streaming events do
+not force it open. The browser remembers expansion choices for reconnects in
+that tab. Shared image results remain visible in chat outside the disclosure.
+
 ### Diagnostics
 
 Updating the gateway does not replace an already-running conversation worker.

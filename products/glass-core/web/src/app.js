@@ -1,3 +1,4 @@
+import {activityBody, activityResult, refreshActivity, refreshActivities} from './activity-disclosure.js';
 import {browserDiagnostics, downloadDiagnostics} from './web-diagnostics.js';
 import {diagnosticEvent} from './diagnostic-events.js';
 import {markStartup, startupReport} from './startup-timing.js';
@@ -679,7 +680,7 @@ function thought(delta, target = $("#timeline"), saved = false) {
     summary.append(el("span", "thought-icon", "◌"), label, excerpt, el("span", "thought-chevron", "⌄"));
     row.append(summary, body);
     row.addEventListener("toggle", () => renderThought(card));
-    target.append(row);
+    activityBody(target, view.sourceRef || view.id).append(row);
     view.thought = card;
   }
   const card = view.thought;
@@ -687,6 +688,7 @@ function thought(delta, target = $("#timeline"), saved = false) {
   card.capped ||= card.source.length + delta.length > 65536;
   card.source = text(card.source + delta, 65536);
   card.excerpt.textContent = card.source.replace(/\s+/g, " ").slice(0, 120);
+  refreshActivity(card.row.closest(".activity-disclosure"), view.sourceRef || view.id);
 }
 function renderThought(card) {
   if (!card.row.open || !card.row.isConnected) return;
@@ -700,6 +702,7 @@ function finishThought() {
   if (!card) return;
   card.saved = true;
   card.label.textContent = "Thoughts";
+  refreshActivity(card.row.closest(".activity-disclosure"), view.sourceRef || view.id);
   renderThought(card);
   view.thought = null;
 }
@@ -859,7 +862,7 @@ function group(target = $("#timeline")) {
     view.group.open = true;
     const summary = el("summary", "", "Working");
     view.group.append(summary);
-    target.append(view.group);
+    activityBody(target, view.sourceRef || view.id).append(view.group);
   }
   return view.group;
 }
@@ -933,6 +936,7 @@ function tool(id, name, command = "", target = $("#timeline"), args, saved = fal
     const item = view.tools.get(id);
     setToolInput(item, command, args);
     if (!saved) startToolActivity(item);
+    refreshActivity(item.row.closest(".activity-disclosure"), view.sourceRef || view.id);
     refreshToolActivity();
     refreshAgentActivity();
     return item;
@@ -945,6 +949,7 @@ function tool(id, name, command = "", target = $("#timeline"), args, saved = fal
   const count = parent.querySelectorAll(":scope > .tool-row").length;
   parent.firstChild.textContent = `${count} ${count === 1 ? "step" : "steps"}`;
   view.tools.set(id || item.row, item);
+  refreshActivity(parent.closest(".activity-disclosure"), view.sourceRef || view.id);
   refreshToolActivity();
   refreshAgentActivity();
   return item;
@@ -982,7 +987,9 @@ function sharedImage(t) {
       : openFile(value.path, undefined, true);
   open.setAttribute("aria-label", "Open shared image " + filename);
   figure.append(open, el("figcaption", "", `${filename} · ${value.width} × ${value.height} · Shared without model vision`));
-  t.row.after(figure);
+  const disclosure = t.row.closest(".activity-disclosure");
+  if (disclosure) activityResult(disclosure, figure);
+  else t.row.after(figure);
   t.sharedImage = figure;
 }
 async function openSharedAttachment(title, attachmentId) {
@@ -1014,6 +1021,7 @@ async function openSharedAttachment(title, attachmentId) {
 function toolStatus(t, failed = false) {
   if (!failed) sharedImage(t);
   finishToolActivity(t, failed);
+  refreshActivity(t.row.closest(".activity-disclosure"), view.sourceRef || view.id);
   refreshToolActivity();
   refreshAgentActivity();
 }
@@ -1129,6 +1137,8 @@ async function historyNow(older = false) {
       .filter(([, t]) => t.row.open)
       .map(([id]) => id),
   );
+  for (const card of document.querySelectorAll("#timeline .activity-disclosure"))
+    if (card.open) { card.dataset.userChoice = "true"; refreshActivity(card, view.sourceRef || view.id); }
   const expandedGroups = new Map(
     (older
       ? []
@@ -1233,6 +1243,7 @@ async function historyNow(older = false) {
     view.tasks = savedTasks;
     view.hasChecklist = savedHasChecklist;
   }
+  refreshActivities($("#timeline"), view.sourceRef || view.id);
   const retainedTimeline = $("#timeline");
   if (older && retainedTimeline.children.length > 240) {
     while (retainedTimeline.children.length > 240)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Audit the executable serving each Core conversation; never open or stop a turn."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,14 @@ def audit(binary, data):
     expected = binary.resolve(strict=True)
     identity = expected.stat()
     workers = []
+    fingerprints = {}
+    def fingerprint(path):
+        identity = path.stat()
+        key = (identity.st_dev, identity.st_ino)
+        if key not in fingerprints:
+            with path.open("rb") as source:
+                fingerprints[key] = hashlib.file_digest(source, "sha256").digest()
+        return fingerprints[key]
     for path in sorted(data.glob('serve-*.sock'))[:256]:
         try:
             if not stat.S_ISSOCK(path.lstat().st_mode):
@@ -45,7 +54,7 @@ def audit(binary, data):
                 else:
                     running = Path(f'/proc/{pid}/exe')
                     actual = running.stat()
-                    entry = {'pid': pid, 'status': 'current' if (actual.st_dev, actual.st_ino) == (identity.st_dev, identity.st_ino) else 'outdated', 'revision': revision(running.resolve())}
+                    entry = {'pid': pid, 'status': 'current' if (actual.st_dev, actual.st_ino) == (identity.st_dev, identity.st_ino) or fingerprint(running) == fingerprint(expected) else 'outdated', 'revision': revision(running.resolve())}
         except (OSError, ValueError):
             pass
         workers.append(entry)

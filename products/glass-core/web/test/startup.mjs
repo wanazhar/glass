@@ -236,15 +236,14 @@ try {
   await page.locator("#theme").click();
   assert.equal(
     await page.evaluate(() => localStorage.getItem("glass:theme")),
-    "light",
+    "dark",
   );
+  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
   await page.locator("#theme").click();
   assert.equal(
     await page.evaluate(() => localStorage.getItem("glass:theme")),
-    "system",
-    "toolbar theme returns to System instead of trapping an override",
+    "light",
   );
-  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();
   console.log("PASS busy startup deep link stays recoverable through the picker; normal startup theme remains interactive");

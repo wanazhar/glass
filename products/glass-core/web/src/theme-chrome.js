@@ -8,25 +8,35 @@ export function storedThemeMode() {
   return "system";
 }
 
-export function themeIsLight(
+/**
+ * Workspace palette: System follows iOS; Light/Dark are explicit overrides.
+ */
+export function workspaceIsLight(
   mode,
   prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
 ) {
-  return mode === "light" || (mode === "system" && prefersLight);
+  if (mode === "light") return true;
+  if (mode === "dark") return false;
+  return prefersLight;
 }
 
-/** Status bar and theme-color follow Safari / iOS appearance, not Glass overrides. */
+/** Status bar and theme-color always follow iOS / Safari appearance. */
 export function iosChromeIsLight(
   prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
 ) {
   return prefersLight;
 }
 
-export function applyThemeChrome(
-  root,
-  appLight,
-  chromeLight = iosChromeIsLight(),
+export function resolveTheme(
+  mode = storedThemeMode(),
+  prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
 ) {
+  const chromeLight = iosChromeIsLight(prefersLight);
+  const appLight = workspaceIsLight(mode, prefersLight);
+  return { mode, appLight, chromeLight, prefersLight };
+}
+
+export function applyThemeChrome(root, appLight, chromeLight) {
   root.classList.toggle("light", appLight);
   root.classList.add("theme-ready");
   root.style.colorScheme = chromeLight ? "light" : "dark";
@@ -50,21 +60,23 @@ export function applyThemeChrome(
 }
 
 export function syncThemeFromStorage(root = document.documentElement) {
-  applyThemeChrome(
-    root,
-    themeIsLight(storedThemeMode()),
-    iosChromeIsLight(),
-  );
+  const resolved = resolveTheme();
+  applyThemeChrome(root, resolved.appLight, resolved.chromeLight);
+  return resolved;
 }
 
-/** iOS/Safari can drop status-bar metadata on bookmark restore until meta tags are touched again. */
-export function installThemeChromeRefresh(root = document.documentElement) {
+/** WebKit may ignore status-bar metadata until tags are rewritten after navigation restore. */
+export function installThemeChromeLifecycle(root = document.documentElement) {
   const refresh = () => syncThemeFromStorage(root);
   refresh();
   window.addEventListener("pageshow", refresh);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refresh();
   });
-  window.addEventListener("focus", refresh);
   matchMedia("(prefers-color-scheme: light)").addEventListener("change", refresh);
 }
+
+/** @deprecated alias */
+export const themeIsLight = workspaceIsLight;
+
+export const installThemeChromeRefresh = installThemeChromeLifecycle;

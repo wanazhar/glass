@@ -1,3 +1,3 @@
-import { installThemeChromeRefresh } from "./theme-chrome.js";
+import { installThemeChromeLifecycle } from "./theme-chrome.js";
 
-installThemeChromeRefresh();
+installThemeChromeLifecycle();

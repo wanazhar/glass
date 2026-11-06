@@ -12,7 +12,7 @@ export const settingsSections = [
 const aliases={index:'general',models:'general',integrations:'tools',memory:'tools',profiles:'instructions',permissions:'advanced',effective:'advanced'};
 export const settingDestination=name=>({settings:'general',login:'connections',logout:'connections',model:'general',mods:'tools',extensions:'tools',skills:'tools','skill-doctor':'tools',profiles:'instructions',theme:'appearance',animation:'appearance',tools:'appearance',security:'advanced','settings-info':'advanced'}[name]);
 export const configurationCommands=new Set(['login','logout','mods','extensions','profiles','skills','skill-doctor','security','settings-info','animation']);
-export function settingsPage({api,context,appearance,error,visibility,resumeChat,navigation,refreshTheme}) {
+export function settingsPage({api,context,appearance,error,visibility,resumeChat,navigation}) {
   const root=document.querySelector('#settings-page');
   const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   let data=null,load=null,active=false,version=0,section='general',query='',saving=false,returnFocus=null,scroll=0,historyIndex=Number(history.state?.glassSettingsIndex)||0,reverting=false;
@@ -138,8 +138,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     remove.onclick=()=>{const confirm=el('div','connection-confirm');confirm.setAttribute('role','alert');confirm.append(el('p','','Delete this profile? Assigned workspaces will use global defaults for new chats.'));for(const [label,yes]of [['Cancel',false],['Delete profile',true]]){const b=el('button',yes?'command-run':'quiet',label);b.onclick=async()=>{if(!yes)confirm.remove();else if(await request({action:'profile-delete',name:profile.name,confirmed:true}))renderBody();};confirm.append(b);}card.append(confirm);};actions.append(assign,remove);card.append(actions);profiles.append(card);}
   }
   function looks(parent){
-    refreshTheme?.();
-    const theme=group(parent,'Theme','System follows this device and Safari. Light and Dark override the workspace only; the status bar always matches iOS.');
+    const theme=group(parent,'Theme','System matches iOS light or dark. Light and Dark keep that workspace look; the status bar always follows the device.');
     const choices=el('div','settings-theme-options');choices.setAttribute('role','radiogroup');choices.setAttribute('aria-label','Theme');
     for(const [value,label,node]of [['system','System',Monitor],['light','Light',Sun],['dark','Dark',Moon]]){
       const option=el('label','settings-theme-option'),input=el('input');input.type='radio';input.name='settings-theme';input.value=value;input.checked=appearance().theme===value;input.setAttribute('aria-label',label);input.onchange=()=>{try{appearance('theme',value);feedback('Preference saved');}catch(e){feedback(e.message,true);}};

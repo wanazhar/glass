@@ -191,6 +191,19 @@ try {
   assert.equal(await page.locator("#thread-name").textContent(), "Available conversation");
   await page.goto(url);
   await page.locator(".app").waitFor({ state: "visible" });
+  await page.evaluate(() => localStorage.setItem("glass:theme", "dark"));
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.reload();
+  await page.locator(".app").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator('meta[name="theme-color"]').getAttribute("content"),
+    "#141916",
+    "Glass dark theme must win over iOS light appearance for status chrome",
+  );
+  assert.equal(
+    await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
+    "black",
+  );
   for (const expected of ["dark", "light"]) {
     await page.locator("#theme").click();
     const colors = await page.evaluate(() => ({

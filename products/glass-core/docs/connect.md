@@ -841,7 +841,7 @@ window and visual viewport; its offset is applied while the keyboard is open.
 On iOS standalone, dark mode sets an opaque `black` status-bar style and a
 single matching `theme-color` from the saved in-app theme before paint (so a
 light system appearance does not leave a white strip above a dark workspace).
-Light mode uses the default opaque status bar. Theme toggles update both in the page.
+Static HTML no longer ships separate light/dark `theme-color` media tags. Light mode uses the default opaque status bar. Theme toggles update both in the page.
 With the keyboard open, the command palette includes the
 visual viewport offset and keeps its header, search field, and footer from
 shrinking.

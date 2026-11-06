@@ -8,6 +8,28 @@ export function storedThemeMode() {
   return "system";
 }
 
+export const THEME_MODES = ["system", "light", "dark"];
+
+export function nextThemeMode(mode = storedThemeMode()) {
+  const index = THEME_MODES.indexOf(mode);
+  return THEME_MODES[(index < 0 ? 0 : index + 1) % THEME_MODES.length];
+}
+
+export function themeModeLabel(mode) {
+  if (mode === "light") return "Light workspace";
+  if (mode === "dark") return "Dark workspace";
+  return "System (matches iOS)";
+}
+
+export function persistThemeMode(mode) {
+  if (!THEME_MODES.includes(mode)) return;
+  try {
+    localStorage.setItem("glass:theme", mode);
+  } catch {
+    /* Browser storage may be disabled. */
+  }
+}
+
 /**
  * Workspace palette: System follows iOS; Light/Dark are explicit overrides.
  */

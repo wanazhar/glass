@@ -233,17 +233,23 @@ try {
       expected === "dark" ? "black" : "default",
     );
   }
-  await page.locator("#theme").click();
-  assert.equal(
-    await page.evaluate(() => localStorage.getItem("glass:theme")),
-    "dark",
-  );
-  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
-  await page.locator("#theme").click();
-  assert.equal(
-    await page.evaluate(() => localStorage.getItem("glass:theme")),
-    "light",
-  );
+  await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.reload();
+  await page.locator(".app").waitFor({ state: "visible" });
+  for (const [step, mode] of [
+    ["light", "light"],
+    ["dark", "dark"],
+    ["system", "system"],
+  ]) {
+    await page.locator("#theme").click();
+    assert.equal(await page.evaluate(() => localStorage.getItem("glass:theme")), mode);
+    assert.equal(
+      await page.locator('meta[name="theme-color"]').getAttribute("content"),
+      "#f7f8f3",
+      "status bar follows iOS light appearance on each sidebar cycle step",
+    );
+  }
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();
   console.log("PASS busy startup deep link stays recoverable through the picker; normal startup theme remains interactive");

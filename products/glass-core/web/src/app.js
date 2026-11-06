@@ -12,7 +12,13 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { draftStore } from "./drafts.js";
 import { attention } from "./notifications.js";
-import { syncThemeFromStorage, storedThemeMode, workspaceIsLight } from "./theme-chrome.js";
+import {
+  syncThemeFromStorage,
+  storedThemeMode,
+  nextThemeMode,
+  themeModeLabel,
+  persistThemeMode,
+} from "./theme-chrome.js";
 const $ = (s) => document.querySelector(s),
   el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -2915,24 +2921,20 @@ syncPanels();
 const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
 try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
+function setThemeMode(mode) {
+  persistThemeMode(mode);
+  themeMode = mode;
+  applyTheme();
+}
 function applyTheme() {
   themeMode = storedThemeMode();
   syncThemeFromStorage();
-  const action =
-    themeMode === "system"
-      ? "Always light or dark workspace (status bar follows iOS; System is in Settings)"
-      : `Workspace always ${themeMode}. Status bar follows iOS. Choose System in Settings to match the device.`;
+  const action = `${themeModeLabel(themeMode)}. Tap to cycle System, Light, and Dark. Status bar follows iOS.`;
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
 }
 systemTheme.addEventListener("change", applyTheme);
-$("#theme").onclick = () => {
-  themeMode = document.documentElement.classList.contains("light") ? "dark" : "light";
-  try {
-    localStorage.setItem("glass:theme", themeMode);
-  } catch {}
-  applyTheme();
-};
+$("#theme").onclick = () => setThemeMode(nextThemeMode(storedThemeMode()));
 applyTheme();
 document.addEventListener("keydown", (event) => {
   if (event.key === "Tab")
@@ -4408,10 +4410,12 @@ const settings = settingsPage({
   },
   appearance: (key,value)=>{
     if(key){
-      localStorage.setItem("glass:"+key,value);
-      if(key==="theme"){themeMode=value;applyTheme();}
-      if(key==="animation")document.documentElement.dataset.animation=value;
-      if(key==="tools")document.documentElement.classList.toggle("compact-tools",value==="compact");
+      if(key==="theme") setThemeMode(value);
+      else {
+        localStorage.setItem("glass:"+key,value);
+        if(key==="animation")document.documentElement.dataset.animation=value;
+        if(key==="tools")document.documentElement.classList.toggle("compact-tools",value==="compact");
+      }
     }
     return {theme:themeMode,animation:document.documentElement.dataset.animation||"dots",tools:document.documentElement.classList.contains("compact-tools")?"compact":"expanded"};
   },

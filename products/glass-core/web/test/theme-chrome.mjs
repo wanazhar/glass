@@ -3,6 +3,7 @@ import {
   resolveTheme,
   workspaceIsLight,
   iosChromeIsLight,
+  nextThemeMode,
 } from "../src/theme-chrome.js";
 
 const light = true;
@@ -31,5 +32,9 @@ assert.equal(r.chromeLight, true);
 r = resolveTheme("light", dark);
 assert.equal(r.appLight, true);
 assert.equal(r.chromeLight, false);
+
+assert.equal(nextThemeMode("system"), "light");
+assert.equal(nextThemeMode("light"), "dark");
+assert.equal(nextThemeMode("dark"), "system");
 
 console.log("PASS theme-chrome resolve rules");

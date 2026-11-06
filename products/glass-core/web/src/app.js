@@ -15,9 +15,8 @@ import { attention } from "./notifications.js";
 import {
   syncThemeFromStorage,
   storedThemeMode,
-  nextThemeMode,
-  themeModeLabel,
   persistThemeMode,
+  resolveTheme,
 } from "./theme-chrome.js";
 const $ = (s) => document.querySelector(s),
   el = (tag, cls, text) => {
@@ -2928,13 +2927,20 @@ function setThemeMode(mode) {
 }
 function applyTheme() {
   themeMode = storedThemeMode();
-  syncThemeFromStorage();
-  const action = `${themeModeLabel(themeMode)}. Tap to cycle System, Light, and Dark. Status bar follows iOS.`;
+  const { appLight } = syncThemeFromStorage();
+  const next = appLight ? "dark" : "light";
+  const action =
+    themeMode === "system"
+      ? `Switch to ${next} workspace (status bar follows iOS; choose System in Settings)`
+      : `Switch to ${next} workspace (status bar follows iOS)`;
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
 }
 systemTheme.addEventListener("change", applyTheme);
-$("#theme").onclick = () => setThemeMode(nextThemeMode(storedThemeMode()));
+$("#theme").onclick = () => {
+  const { appLight } = resolveTheme(storedThemeMode());
+  setThemeMode(appLight ? "dark" : "light");
+};
 applyTheme();
 document.addEventListener("keydown", (event) => {
   if (event.key === "Tab")

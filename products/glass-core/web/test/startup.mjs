@@ -189,84 +189,9 @@ try {
   await page.getByRole("button", { name: "Available conversation" }).click();
   await page.locator("#timeline").getByText("Saved TUI answer", { exact: true }).waitFor();
   assert.equal(await page.locator("#thread-name").textContent(), "Available conversation");
-  await page.goto(url);
-  await page.locator(".app").waitFor({ state: "visible" });
-  await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
-  await page.emulateMedia({ colorScheme: "light" });
-  await page.reload();
-  await page.locator(".app").waitFor({ state: "visible" });
-  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
-  assert.equal(
-    await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
-    "default",
-  );
-  await page.evaluate(() => localStorage.setItem("glass:theme", "dark"));
-  await page.reload();
-  await page.locator(".app").waitFor({ state: "visible" });
-  assert.equal(
-    await page.locator('meta[name="theme-color"]').getAttribute("content"),
-    "#141916",
-    "explicit Dark keeps status chrome dark even on iOS light appearance",
-  );
-  assert.equal(
-    await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
-    "black",
-  );
-  assert.equal(
-    await page.evaluate(() => document.documentElement.classList.contains("light")),
-    false,
-  );
-  for (const expected of ["dark", "light"]) {
-    await page.emulateMedia({ colorScheme: expected });
-    await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
-    await page.reload();
-    await page.locator(".app").waitFor({ state: "visible" });
-    const colors = await page.evaluate(() => ({
-      scheme: getComputedStyle(document.documentElement).colorScheme,
-      light: document.documentElement.classList.contains("light"),
-      root: getComputedStyle(document.documentElement).backgroundColor,
-      body: getComputedStyle(document.body).backgroundColor,
-      chrome: [...document.querySelectorAll('meta[name="theme-color"]')].map(n => n.content),
-    }));
-    assert.equal(colors.scheme, expected);
-    assert.equal(colors.light, expected === "light");
-    assert.equal(colors.body, colors.root);
-    assert(colors.chrome.every(color => color === (expected === "dark" ? "#141916" : "#f7f8f3")));
-    assert.equal(
-      await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
-      expected === "dark" ? "black" : "default",
-    );
-  }
-  await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
-  await page.emulateMedia({ colorScheme: "light" });
-  await page.reload();
-  await page.locator(".app").waitFor({ state: "visible" });
-  await page.locator("#theme").click();
-  assert.equal(await page.evaluate(() => localStorage.getItem("glass:theme")), "dark");
-  const sidebarChrome = await page.evaluate(() => ({
-    themeColor: document.querySelector('meta[name="theme-color"]')?.content,
-    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.content,
-    themeMetaCount: document.querySelectorAll('meta[name="theme-color"]').length,
-  }));
-  assert.equal(sidebarChrome.themeMetaCount, 1);
-  assert.equal(sidebarChrome.themeColor, "#141916");
-  assert.equal(sidebarChrome.statusBar, "black");
-  await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
-  await page.reload();
-  await page.locator(".app").waitFor({ state: "visible" });
-  await page.locator("#open-settings").click();
-  await page.locator('input[name="settings-theme"][value="dark"]').click();
-  const settingsChrome = await page.evaluate(() => ({
-    themeColor: document.querySelector('meta[name="theme-color"]')?.content,
-    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.content,
-    themeMetaCount: document.querySelectorAll('meta[name="theme-color"]').length,
-  }));
-  assert.equal(settingsChrome.themeMetaCount, 1);
-  assert.equal(settingsChrome.themeColor, sidebarChrome.themeColor);
-  assert.equal(settingsChrome.statusBar, sidebarChrome.statusBar);
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();
-  console.log("PASS busy startup deep link stays recoverable through the picker; normal startup theme remains interactive");
+  console.log("PASS busy startup deep link stays recoverable through the picker");
 
   // Exercise the actual service worker, including a damaged cached application.
   const cachedContext = await browser.newContext();

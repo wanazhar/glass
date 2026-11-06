@@ -89,9 +89,12 @@ export function applyThemeChrome(root, appLight, chromeLight) {
   color.setAttribute("name", "theme-color");
   color.setAttribute("content", bg);
   doc.head.appendChild(color);
-  let status = doc.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
-  if (status) status.remove();
-  status = doc.createElement("meta");
+  for (const meta of doc.querySelectorAll(
+    'meta[name="apple-mobile-web-app-status-bar-style"]',
+  )) {
+    meta.remove();
+  }
+  const status = doc.createElement("meta");
   status.setAttribute("name", "apple-mobile-web-app-status-bar-style");
   status.setAttribute("content", chromeLight ? "default" : "black");
   doc.head.appendChild(status);
@@ -110,10 +113,6 @@ export function chooseThemeMode(mode, root = document.documentElement) {
   persistThemeMode(mode);
   const resolved = resolveTheme(mode);
   applyThemeChrome(root, resolved.appLight, resolved.chromeLight);
-  // WebKit often keeps the old status bar until metas are rewritten on a later frame.
-  requestAnimationFrame(() =>
-    applyThemeChrome(root, resolved.appLight, resolved.chromeLight),
-  );
   document.dispatchEvent(
     new CustomEvent("glass-theme", { detail: { mode: resolved.mode } }),
   );

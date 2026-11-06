@@ -75,6 +75,7 @@ const view = {
 let openAttempt = 0,
   latestOpenTarget = null,
   openQueue = Promise.resolve();
+const threadReleases = new Map();
 const notifyAttention = attention($("#notifications"));
 let initialOpening = true;
 // This capability lives only in this tab; never store it in cookies or drafts.
@@ -1652,6 +1653,10 @@ async function openThreadTransaction(id, options, attempt) {
     thread?.workspace_assigned === false ||
     thread?.workspace_available === false;
   let openResult = null;
+  // Reopening the same actor must wait for its previous release, while a
+  // different conversation can display immediately during that cleanup.
+  if (threadReleases.has(id)) await threadReleases.get(id);
+  if (attempt !== openAttempt) return { ok: false, stale: true };
   if (!archive) {
     if (attempt !== openAttempt) return { ok: false, stale: true };
     try {
@@ -1680,28 +1685,6 @@ async function openThreadTransaction(id, options, attempt) {
   }
   const oldId = view.id;
   const oldSourceRef = view.sourceRef;
-  let oldReleaseError = null;
-  if (
-    oldId &&
-    (oldId !== id || (oldSourceRef || null) !== (sourceRef || null))
-  ) {
-    try {
-      await api("close", {
-        id: oldId,
-        ...(oldSourceRef ? { sourceRef: oldSourceRef } : {}),
-      });
-    } catch (error) {
-      oldReleaseError = error;
-    }
-    if (attempt !== openAttempt) {
-      const sameTarget =
-        latestOpenTarget?.id === id &&
-        (latestOpenTarget.sourceRef || null) === (sourceRef || null);
-      if (!sameTarget)
-        api("close", { id, ...(sourceRef ? { sourceRef } : {}) }).catch(() => {});
-      return { ok: false, stale: true };
-    }
-  }
   const previousFollow = view.follow;
   if (switched) saveDraft();
   view.commandTransportReady = false;
@@ -1795,13 +1778,16 @@ async function openThreadTransaction(id, options, attempt) {
   for (const key of ["settings","setting"]) { const value=new URLSearchParams(location.search).get(key); if(value) threadUrl.set(key,value); }
   window.history.replaceState(window.history.state, "", "/?" + threadUrl);
   renderThreads();
-  if (oldReleaseError)
-    notice(
-      oldReleaseError.code === "session_active_elsewhere"
-        ? "The previous conversation is still working in the background; the new conversation is open."
-        : `The new conversation is open, but the previous one could not be released: ${oldReleaseError.message}`,
-      true,
-    );
+  if (oldId && (oldId !== id || (oldSourceRef || null) !== (sourceRef || null))) {
+    const release = api("close", {id:oldId,...(oldSourceRef?{sourceRef:oldSourceRef}:{})})
+      .catch(error=>{
+        if(generation!==view.generation)return;
+        notice(error.code==="session_active_elsewhere"
+          ? "The previous conversation is still working in the background; the new conversation is open."
+          : `The new conversation is open, but the previous one could not be released: ${error.message}`,true);
+      }).finally(()=>{if(threadReleases.get(oldId)===release)threadReleases.delete(oldId);});
+    threadReleases.set(oldId,release);
+  }
   let historyLoaded = false;
   try {
     if (

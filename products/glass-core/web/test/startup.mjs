@@ -243,14 +243,27 @@ try {
   await page.locator(".app").waitFor({ state: "visible" });
   await page.locator("#theme").click();
   assert.equal(await page.evaluate(() => localStorage.getItem("glass:theme")), "dark");
-  assert.equal(
-    await page.evaluate(() => document.documentElement.classList.contains("light")),
-    false,
-  );
-  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#141916");
-  await page.locator("#theme").click();
-  assert.equal(await page.evaluate(() => localStorage.getItem("glass:theme")), "light");
-  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
+  const sidebarChrome = await page.evaluate(() => ({
+    themeColor: document.querySelector('meta[name="theme-color"]')?.content,
+    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.content,
+    themeMetaCount: document.querySelectorAll('meta[name="theme-color"]').length,
+  }));
+  assert.equal(sidebarChrome.themeMetaCount, 1);
+  assert.equal(sidebarChrome.themeColor, "#141916");
+  assert.equal(sidebarChrome.statusBar, "black");
+  await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
+  await page.reload();
+  await page.locator(".app").waitFor({ state: "visible" });
+  await page.locator("#open-settings").click();
+  await page.locator('input[name="settings-theme"][value="dark"]').click();
+  const settingsChrome = await page.evaluate(() => ({
+    themeColor: document.querySelector('meta[name="theme-color"]')?.content,
+    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.content,
+    themeMetaCount: document.querySelectorAll('meta[name="theme-color"]').length,
+  }));
+  assert.equal(settingsChrome.themeMetaCount, 1);
+  assert.equal(settingsChrome.themeColor, sidebarChrome.themeColor);
+  assert.equal(settingsChrome.statusBar, sidebarChrome.statusBar);
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();
   console.log("PASS busy startup deep link stays recoverable through the picker; normal startup theme remains interactive");

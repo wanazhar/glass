@@ -1,4 +1,5 @@
 import {enhanceSelects, closeSelect, selectOpen} from './select.js';
+import {chooseThemeMode} from './theme-chrome.js';
 import {createElement, SlidersHorizontal, Plug, Blocks, FileText, Palette, ShieldCheck, Search, ArrowLeft, RefreshCw, ChevronRight, Menu, X, Check, Monitor, Sun, Moon, Globe, KeyRound, Plus} from 'lucide';
 // Universal preferences use a host API, never a conversation command channel.
 export const settingsSections = [
@@ -141,7 +142,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     const theme=group(parent,'Theme','System matches iOS for the workspace and status bar. Light and Dark force both; the sidebar switcher sets Light or Dark only.');
     const choices=el('div','settings-theme-options');choices.setAttribute('role','radiogroup');choices.setAttribute('aria-label','Theme');
     for(const [value,label,node]of [['system','System',Monitor],['light','Light',Sun],['dark','Dark',Moon]]){
-      const option=el('label','settings-theme-option'),input=el('input');input.type='radio';input.name='settings-theme';input.value=value;input.checked=appearance().theme===value;input.setAttribute('aria-label',label);input.onchange=()=>{try{appearance('theme',value);feedback('Preference saved');}catch(e){feedback(e.message,true);}};
+      const option=el('label','settings-theme-option'),input=el('input');input.type='radio';input.name='settings-theme';input.value=value;input.checked=appearance().theme===value;input.setAttribute('aria-label',label);input.onchange=()=>{try{chooseThemeMode(value);feedback('Preference saved');}catch(e){feedback(e.message,true);}};
       const preview=el('span','settings-theme-preview');preview.dataset.theme=value;preview.append(el('span','theme-preview-sidebar'),el('span','theme-preview-chat'));
       const caption=el('span','settings-theme-caption');caption.append(icon(node),el('span','',label),icon(Check));option.append(input,preview,caption);choices.append(option);
     }

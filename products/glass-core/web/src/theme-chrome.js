@@ -42,7 +42,7 @@ export function workspaceIsLight(
   return prefersLight;
 }
 
-/** Status bar and theme-color always follow iOS / Safari appearance. */
+/** iOS appearance bit used only when theme mode is System. */
 export function iosChromeIsLight(
   prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
 ) {
@@ -68,27 +68,33 @@ export function resolveTheme(
   return { mode, appLight, chromeLight, prefersLight };
 }
 
+export function sidebarThemeTarget(mode = storedThemeMode(), prefersLight) {
+  if (mode === "dark") return "light";
+  if (mode === "light") return "dark";
+  if (prefersLight === undefined) {
+    prefersLight = matchMedia("(prefers-color-scheme: light)").matches;
+  }
+  return resolveTheme("system", prefersLight).appLight ? "dark" : "light";
+}
+
 export function applyThemeChrome(root, appLight, chromeLight) {
   root.classList.toggle("light", appLight);
   root.classList.add("theme-ready");
   root.style.colorScheme = chromeLight ? "light" : "dark";
+  root.style.backgroundColor = chromeLight ? "#f7f8f3" : "#141916";
   const bg = chromeLight ? "#f7f8f3" : "#141916";
   const doc = root.ownerDocument;
-  let color = doc.querySelector('meta[name="theme-color"]');
-  if (!color) {
-    color = doc.createElement("meta");
-    color.setAttribute("name", "theme-color");
-    doc.head.appendChild(color);
-  }
+  for (const meta of doc.querySelectorAll('meta[name="theme-color"]')) meta.remove();
+  const color = doc.createElement("meta");
+  color.setAttribute("name", "theme-color");
   color.setAttribute("content", bg);
-  color.removeAttribute("media");
-  for (const extra of doc.querySelectorAll('meta[name="theme-color"]')) {
-    if (extra !== color) extra.remove();
-  }
-  const status = doc.querySelector(
-    'meta[name="apple-mobile-web-app-status-bar-style"]',
-  );
-  if (status) status.setAttribute("content", chromeLight ? "default" : "black");
+  doc.head.appendChild(color);
+  let status = doc.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+  if (status) status.remove();
+  status = doc.createElement("meta");
+  status.setAttribute("name", "apple-mobile-web-app-status-bar-style");
+  status.setAttribute("content", chromeLight ? "default" : "black");
+  doc.head.appendChild(status);
 }
 
 export function syncThemeFromStorage(root = document.documentElement) {
@@ -98,11 +104,19 @@ export function syncThemeFromStorage(root = document.documentElement) {
   return resolved;
 }
 
-export function applyThemeMode(mode, root = document.documentElement) {
+/** Single entry used by sidebar, Appearance settings, and lifecycle refresh. */
+export function chooseThemeMode(mode, root = document.documentElement) {
   if (!THEME_MODES.includes(mode)) mode = "system";
   persistThemeMode(mode);
   const resolved = resolveTheme(mode);
   applyThemeChrome(root, resolved.appLight, resolved.chromeLight);
+  // WebKit often keeps the old status bar until metas are rewritten on a later frame.
+  requestAnimationFrame(() =>
+    applyThemeChrome(root, resolved.appLight, resolved.chromeLight),
+  );
+  document.dispatchEvent(
+    new CustomEvent("glass-theme", { detail: { mode: resolved.mode } }),
+  );
   return resolved;
 }
 
@@ -122,5 +136,6 @@ export function installThemeChromeLifecycle(root = document.documentElement) {
 
 /** @deprecated alias */
 export const themeIsLight = workspaceIsLight;
+export const applyThemeMode = chooseThemeMode;
 
 export const installThemeChromeRefresh = installThemeChromeLifecycle;

@@ -16,7 +16,8 @@ import {
   syncThemeFromStorage,
   storedThemeMode,
   resolveTheme,
-  applyThemeMode,
+  chooseThemeMode,
+  sidebarThemeTarget,
   installThemeChromeLifecycle,
 } from "./theme-chrome.js";
 const $ = (s) => document.querySelector(s),
@@ -2921,11 +2922,6 @@ syncPanels();
 const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
 try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
-function sidebarThemeTarget(mode = storedThemeMode()) {
-  if (mode === "dark") return "light";
-  if (mode === "light") return "dark";
-  return resolveTheme("system").appLight ? "dark" : "light";
-}
 function refreshThemeControlLabels() {
   themeMode = storedThemeMode();
   const { appLight } = resolveTheme(themeMode);
@@ -2938,7 +2934,7 @@ function refreshThemeControlLabels() {
   $("#theme").setAttribute("aria-label", action);
 }
 function setThemeMode(mode) {
-  applyThemeMode(mode);
+  chooseThemeMode(mode);
   themeMode = mode;
   refreshThemeControlLabels();
 }
@@ -2946,6 +2942,10 @@ function applyTheme() {
   syncThemeFromStorage();
   refreshThemeControlLabels();
 }
+document.addEventListener("glass-theme", (event) => {
+  themeMode = event.detail?.mode ?? storedThemeMode();
+  refreshThemeControlLabels();
+});
 systemTheme.addEventListener("change", applyTheme);
 $("#theme").onclick = () => setThemeMode(sidebarThemeTarget());
 applyTheme();
@@ -4424,7 +4424,7 @@ const settings = settingsPage({
   },
   appearance: (key,value)=>{
     if(key){
-      if(key==="theme") setThemeMode(value);
+      if(key==="theme") chooseThemeMode(value);
       else {
         localStorage.setItem("glass:"+key,value);
         if(key==="animation")document.documentElement.dataset.animation=value;

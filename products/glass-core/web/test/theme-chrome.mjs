@@ -4,6 +4,7 @@ import {
   workspaceIsLight,
   iosChromeIsLight,
   nextThemeMode,
+  sidebarThemeTarget,
 } from "../src/theme-chrome.js";
 
 const light = true;
@@ -36,5 +37,10 @@ assert.equal(r.chromeLight, true);
 assert.equal(nextThemeMode("system"), "light");
 assert.equal(nextThemeMode("light"), "dark");
 assert.equal(nextThemeMode("dark"), "system");
+
+assert.equal(sidebarThemeTarget("dark"), "light");
+assert.equal(sidebarThemeTarget("light"), "dark");
+assert.equal(sidebarThemeTarget("system", false), "light");
+assert.equal(sidebarThemeTarget("system", true), "dark");
 
 console.log("PASS theme-chrome resolve rules");

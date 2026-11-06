@@ -1,12 +1,3 @@
-import {
-  applyThemeChrome,
-  storedThemeMode,
-  themeIsLight,
-  iosChromeIsLight,
-} from "./theme-chrome.js";
+import { installThemeChromeRefresh } from "./theme-chrome.js";
 
-applyThemeChrome(
-  document.documentElement,
-  themeIsLight(storedThemeMode()),
-  iosChromeIsLight(),
-);
+installThemeChromeRefresh();

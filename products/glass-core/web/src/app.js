@@ -12,7 +12,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { draftStore } from "./drafts.js";
 import { attention } from "./notifications.js";
-import { applyThemeChrome, themeIsLight } from "./theme-chrome.js";
+import { applyThemeChrome, themeIsLight, storedThemeMode } from "./theme-chrome.js";
 const $ = (s) => document.querySelector(s),
   el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -2916,21 +2916,33 @@ const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
 try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
 function applyTheme() {
+  themeMode = storedThemeMode();
   const appLight = themeIsLight(
     themeMode,
     themeMode === "system" ? systemTheme.matches : undefined,
   );
   applyThemeChrome(document.documentElement, appLight, systemTheme.matches);
-  const action = appLight ? "Switch to dark mode" : "Switch to light mode";
+  const action =
+    themeMode === "system"
+      ? appLight
+        ? "Use a dark workspace"
+        : "Use a light workspace"
+      : "Back to System theme";
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
 }
 systemTheme.addEventListener("change", applyTheme);
 $("#theme").onclick = () => {
-  themeMode = document.documentElement.classList.contains("light")
-    ? "dark"
-    : "light";
-  try { localStorage.setItem("glass:theme",themeMode); } catch {}
+  if (themeMode === "system") {
+    themeMode = document.documentElement.classList.contains("light")
+      ? "dark"
+      : "light";
+  } else {
+    themeMode = "system";
+  }
+  try {
+    localStorage.setItem("glass:theme", themeMode);
+  } catch {}
   applyTheme();
 };
 applyTheme();
@@ -4417,6 +4429,7 @@ const settings = settingsPage({
   },
   visibility: active=>{$("#details").hidden=active;if(active)$("#details").classList.remove("open");$("#threads").classList.toggle("muted-selection",active);syncPanels();view.follow=false;if(!active)requestAnimationFrame(()=>{const n=$("#conversation");view.follow=n.scrollHeight-n.scrollTop-n.clientHeight<4;follow();});},
   error: message=>notice(message,true),
+  refreshTheme: applyTheme,
 });
 function expandSettings(expanded){
   $("#settings-sections").hidden=!expanded;
@@ -4754,17 +4767,22 @@ document.addEventListener("visibilitychange", () => {
       clearTimeout(view.frame);
       view.frame = 0;
     }
-  } else if (suspended) {
-    suspended = false;
-    resumeConnection();
+  } else {
+    applyTheme();
+    if (suspended) {
+      suspended = false;
+      resumeConnection();
+    }
   }
 });
 window.addEventListener("pageshow", (e) => {
+  applyTheme();
   syncViewport();
   syncPanels();
   if (e.persisted) resumeConnection();
 });
 window.addEventListener("focus", () => {
+  applyTheme();
   syncViewport();
   if (suspended && document.visibilityState !== "hidden") {
     suspended = false;

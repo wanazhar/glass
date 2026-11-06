@@ -841,7 +841,9 @@ window and visual viewport; its offset is applied while the keyboard is open.
 On iOS standalone, `theme-color` and the status bar follow **Safari / iOS
 appearance** (`prefers-color-scheme`). **System** theme keeps the workspace in
 sync with the device; **Light** and **Dark** override workspace colors only.
-The head script applies both before paint. Light iOS uses the default opaque
+The head script applies both before paint and again on `pageshow`, focus, and
+visibility changes because iOS can reset status-bar metadata when a bookmark
+or home-screen icon reopens a cached page. Light iOS uses the default opaque
 status bar; dark iOS uses `black`. With the keyboard open, the command palette includes the
 visual viewport offset and keeps its header, search field, and footer from
 shrinking.

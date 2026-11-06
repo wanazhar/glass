@@ -48,3 +48,23 @@ export function applyThemeChrome(
   );
   if (status) status.setAttribute("content", chromeLight ? "default" : "black");
 }
+
+export function syncThemeFromStorage(root = document.documentElement) {
+  applyThemeChrome(
+    root,
+    themeIsLight(storedThemeMode()),
+    iosChromeIsLight(),
+  );
+}
+
+/** iOS/Safari can drop status-bar metadata on bookmark restore until meta tags are touched again. */
+export function installThemeChromeRefresh(root = document.documentElement) {
+  const refresh = () => syncThemeFromStorage(root);
+  refresh();
+  window.addEventListener("pageshow", refresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refresh();
+  });
+  window.addEventListener("focus", refresh);
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", refresh);
+}

@@ -235,9 +235,14 @@ try {
   }
   await page.locator("#theme").click();
   assert.equal(
-    await page.evaluate(() => document.documentElement.classList.contains("light")),
-    false,
-    "toolbar theme toggles the workspace, not iOS chrome",
+    await page.evaluate(() => localStorage.getItem("glass:theme")),
+    "light",
+  );
+  await page.locator("#theme").click();
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem("glass:theme")),
+    "system",
+    "toolbar theme returns to System instead of trapping an override",
   );
   assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });

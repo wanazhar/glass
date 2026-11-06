@@ -1,3 +1,5 @@
+import {markStartup} from './startup-timing.js';
+markStartup('boot');
 // Independent of the application bundle so import failures remain recoverable.
 const launch = document.querySelector("#launch");
 const status = document.querySelector("#launch-status");
@@ -155,8 +157,10 @@ async function ensureStyles() {
 }
 ensureStyles().then(ready => {
   if (!ready) return failure("The interface styles could not load. Try again.");
+  markStartup("stylesReady");
   return import(appUrl)
     .then(async (app) => {
+      markStartup("moduleReady");
       const result = await app.initialReady;
       if (result?.ok !== true) {
         failure(result?.message, result?.unlockRequired === true, result?.connectCommand);
@@ -168,6 +172,8 @@ ensureStyles().then(ready => {
       app.revealShell?.();
       launch.hidden = true;
       complete = true;
+      markStartup("shellVisible");
+      requestAnimationFrame(()=>markStartup("firstFrame"));
     })
     .catch((error) => failure(error?.message));
 }).catch(error => failure(error?.message));

@@ -1,3 +1,5 @@
+import {markStartup} from './startup-timing.js';
+markStartup('head');
 import { syncThemeFromStorage } from "./theme-chrome.js";
 
 syncThemeFromStorage();

@@ -92,7 +92,15 @@ try {
   await savedPage.getByText('Saved response is readable immediately',{exact:true}).waitFor();
   assert.equal(await savedPage.locator('#send').isDisabled(),true,'Saved history does not grant writer control');
   liveGate.resolve();await savedPage.waitForFunction(()=>!document.querySelector('#send').disabled);
+  await savedPage.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.copiedStartup=value;}}}));
+  await savedPage.locator('#prompt').fill('/layout');await savedPage.locator('#composer').evaluate(n=>n.requestSubmit());
+  await savedPage.getByRole('button',{name:'Copy startup timings',exact:true}).click();
+  const copied=await savedPage.evaluate(()=>JSON.parse(window.copiedStartup));
+  assert.equal(typeof copied.startup.marks.head,'number');assert.equal(typeof copied.startup.marks.shellVisible,'number');assert(copied.startup.resources.some(r=>r.path==='/api/history'));
+  assert(!JSON.stringify(copied).includes('saved-fixture'),'Timing report strips conversation query parameters');
+  assert(!JSON.stringify(copied).includes('Saved response'),'Timing report does not contain conversation text');
   await savedContext.close();
+  console.log('PASS local startup timing export, stage marks and content-free resource paths');
   console.log('PASS shell does not wait for sidebar metadata; saved history displays before live handshake with sending gated');
 
   const slowContext = await browser.newContext({ serviceWorkers: "block", reducedMotion: "reduce" });

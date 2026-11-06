@@ -1,3 +1,4 @@
+import {markStartup, startupReport} from './startup-timing.js';
 import {collectReasoning, readableReasoning} from './reasoning-reader.js';
 import {watchSelects, closeSelect} from './select.js';
 import {shellIcons} from './shell-icons.js';
@@ -4518,7 +4519,8 @@ async function inspectLayout() {
   };
   const v = window.visualViewport;
   const data = {
-    version: "layout-3",
+    version: "layout-4",
+    startup: startupReport(),
     settled,
     shellVersion: new URL($('link[rel="modulepreload"]').href).searchParams.get("version"),
     // These describe the loaded page, not the native chrome actually applied by iPadOS.
@@ -4560,7 +4562,9 @@ async function inspectLayout() {
   );
   const copy = el("button", "quiet", "Copy measurements");
   copy.onclick = () => copyText(source);
-  $("#preview-body").prepend(copy);
+  const startupCopy=el("button","quiet","Copy startup timings");
+  startupCopy.onclick=()=>copyText(JSON.stringify({shellVersion:data.shellVersion,userAgent:data.userAgent,startup:data.startup},null,2));
+  $("#preview-body").prepend(copy,startupCopy);
 }
 async function dispatchSlash(value) {
   const name = value.slice(1).split(/\s/, 1)[0];
@@ -4654,6 +4658,7 @@ $("#commands").addEventListener("keydown", (e) => {
 });
 
 async function start() {
+  markStartup("connectionStart");
   view.secretUnlocked = false;
   clearSecretInteractionValue("Checking secure entry access…");
   try {
@@ -4686,8 +4691,9 @@ async function start() {
       retry.onclick=()=>loadNavigation();
       $('#threads').replaceChildren(el('p','empty','Conversations unavailable'),retry);
     });
-    const navigationReady = universalSettings ? null : loadNavigation();
+    const navigationReady = universalSettings ? null : loadNavigation().then(()=>markStartup("navigationReady"));
     const status = await api("status");
+    markStartup("statusReady");
     view.secretUnlocked = status.secret_submission_unlocked === true;
     view.connectCommand = connectCommand(status.connectCommand);
     view.hostWorkflows = status.web_workflows === 1;
@@ -4710,6 +4716,7 @@ async function start() {
       const opened = await openThread(id, {
         ...(params.has("sourceRef") ? { sourceRef: params.get("sourceRef") } : {}),
       });
+    markStartup("savedThreadReady");
       if (!opened?.ok && opened?.code === "session_active_elsewhere") {
         params.delete("thread");
         params.delete("sourceRef");

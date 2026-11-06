@@ -195,5 +195,5 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     guard(async()=>{const u=currentURL();u.searchParams.delete('settings');u.searchParams.delete('setting');history.pushState({glassSettingsIndex:++historyIndex},'',u);await render(false);await action();});
   }
 
-  return {open,close,navigate,restore:()=>render(),saved:()=>{},active:()=>active};
+  return {open,close,navigate,beforeReload:guard,restore:()=>render(),saved:()=>{},active:()=>active};
 }

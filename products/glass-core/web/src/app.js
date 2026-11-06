@@ -4996,3 +4996,10 @@ export function revealShell() {
   syncPanels();
   follow();
 }
+
+export function reloadShell() {
+  settings.beforeReload(async()=>{
+    if(workflowPromise&&!(await workflowPromise).prepareLeave())return;
+    saveDraft();drafts.flush();location.reload();
+  });
+}

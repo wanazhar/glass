@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { resolve, sep, extname } from "node:path";
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const counts = new Map();
+let servedCohort=null;
+const builtCohort=(await readFile(resolve(root,'index.html'),'utf8')).match(/app.js\?version=([a-f0-9]+)/)[1];
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, "http://localhost").pathname;
  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
@@ -20,7 +22,8 @@ const server = createServer(async (req, res) => {
   try {
     const file = resolve(root, "." + (path === "/" ? "/index.html" : path));
     if (!file.startsWith(root.endsWith(sep) ? root : root + sep)) throw Error("Invalid path");
-    const body = await readFile(file);
+    let body = await readFile(file);
+    if(servedCohort&&/\.(?:js|html)$/.test(file))body=Buffer.from(body.toString().replaceAll(builtCohort,servedCohort));
     res.setHeader("Content-Type", ({ ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" })[extname(file)] || "application/octet-stream");
     res.setHeader("Cache-Control", "no-store");
     res.end(body);
@@ -261,8 +264,19 @@ try {
   await cachedContext.setOffline(false);
   await Promise.all([cachedPage.waitForEvent("domcontentloaded"), cachedPage.locator("#launch-retry").click()]);
   await cachedPage.locator(".app").waitFor({ state: "visible" });
-  await cachedContext.close();
-  console.log("PASS service-worker retry escapes damaged cache and reuses cached fonts");
+  // An activated cohort must announce itself without destroying an active draft.
+  await cachedPage.locator('#prompt').fill('Keep my unsent draft through the update');
+  servedCohort='abcdef123456';
+  await cachedPage.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration();await reg.update();});
+  await cachedPage.getByRole('button',{name:'Reload',exact:true}).waitFor();
+  assert.equal(await cachedPage.locator('#prompt').inputValue(),'Keep my unsent draft through the update');
+  await cachedPage.getByRole('button',{name:'Reload',exact:true}).click();
+  await cachedPage.locator('.app').waitFor({state:'visible'});
+  await cachedPage.waitForFunction(()=>document.querySelector('link[rel=modulepreload]').href.includes('abcdef123456'));
+  assert.equal(await cachedPage.locator('#prompt').inputValue(),'Keep my unsent draft through the update');
+  assert.equal(await cachedPage.locator('.shell-update').count(),0,'Current cohort does not prompt repeatedly');
+  await cachedContext.close();servedCohort=null;
+  console.log("PASS service-worker retry, cached fonts, visible cohort update and draft-preserving reload");
 } finally {
   await browser.close();
   await new Promise(r => server.close(r));

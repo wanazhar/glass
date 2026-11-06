@@ -1,3 +1,4 @@
+import {shellUpdates} from './shell-update.js';
 import {markStartup} from './startup-timing.js';
 markStartup('boot');
 // Independent of the application bundle so import failures remain recoverable.
@@ -6,13 +7,15 @@ const status = document.querySelector("#launch-status");
 const detail = document.querySelector("#launch-detail");
 const retry = document.querySelector("#launch-retry");
 const shell = document.querySelector(".app");
-let complete = false;
+let complete = false,appModule;
 launch.dataset.booted = "true";
 // Discover repaired shells even when the cached application cannot initialize.
-if ("serviceWorker" in navigator && window.isSecureContext)
-  navigator.serviceWorker
-    .register("/sw.js", { updateViaCache: "none" })
-    .catch(() => {});
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  const registration=navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(()=>null);
+  shellUpdates(registration,"__SHELL_VERSION__",()=>{
+    if(appModule?.reloadShell)appModule.reloadShell();else location.reload();
+  });
+}
 retry.addEventListener("click", async () => {
   retry.disabled = true;
   try {
@@ -160,6 +163,7 @@ ensureStyles().then(ready => {
   markStartup("stylesReady");
   return import(appUrl)
     .then(async (app) => {
+      appModule=app;
       markStartup("moduleReady");
       const result = await app.initialReady;
       if (result?.ok !== true) {

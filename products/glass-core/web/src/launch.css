@@ -199,3 +199,7 @@ html, body { background: var(--browser-chrome-bg, #141916); }
   --launch-accent: #456d37;
   --launch-line: #d7ddcf;
 }
+
+.shell-update { position: fixed; top: max(12px,env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 110; display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 24px); padding: 9px 12px; border: 1px solid var(--line,#2b342d); border-radius: 8px; background: var(--surface,#1b211d); color: var(--text,#e4e9e2); box-shadow: 0 4px 20px #0003; font: 12px/1.4 "Glass Sans",sans-serif; }
+.shell-update span { white-space: nowrap; }
+.shell-update button { padding: 5px 8px; border: 0; border-radius: 4px; color: inherit; background: var(--surface2,#222a24); font: inherit; cursor: pointer; }

@@ -45,6 +45,9 @@ self.addEventListener("activate", (event) =>
       .then(() => self.clients.claim()),
   ),
 );
+self.addEventListener("message",event=>{
+  if(event.data?.t==='shell-version-request')event.source?.postMessage({t:'shell-version',version:'__VERSION__'});
+});
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (

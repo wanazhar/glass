@@ -72,6 +72,29 @@ try {
   }
   console.log("PASS stable centered startup, parallel reads, slow recovery, lazy assets and four viewport sizes");
 
+  // Home must not wait for a slow sidebar directory.
+  const navigationContext=await browser.newContext({serviceWorkers:'block'});
+  const navigationPage=await navigationContext.newPage(),navigationGate=deferred();
+  await navigationPage.route('**/api/threads?*',async route=>{await navigationGate.promise;await route.continue();});
+  await navigationPage.goto(url,{waitUntil:'domcontentloaded'});
+  await navigationPage.locator('.app').waitFor({state:'visible',timeout:3000});
+  assert(await navigationPage.locator('#welcome').isVisible());
+  navigationGate.resolve();await navigationContext.close();
+
+  // A saved conversation can be read before its live writer handshake finishes.
+  const savedContext=await browser.newContext({serviceWorkers:'block'}),savedPage=await savedContext.newPage(),liveGate=deferred();
+  await savedPage.route('**/api/threads?*',route=>route.fulfill({json:{threads:[{session:'saved-fixture',title:'Saved thread',workspace:'/tmp',workspace_assigned:true,workspace_available:true}],projects:[]}}));
+  await savedPage.route('**/api/open',route=>route.fulfill({json:{connected:true}}));
+  await savedPage.route('**/api/history?*',route=>route.fulfill({json:{records:[{index:0,record:{k:'assistant',t:'Saved response is readable immediately'}}],before:0}}));
+  await savedPage.route('**/api/events?*',async route=>{await liveGate.promise;await route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({reset:true,control:{can_write:true,web_workflows:1,commands:[]},live:[],active:false})+'\n\n'});});
+  await savedPage.goto(url+'/?thread=saved-fixture',{waitUntil:'domcontentloaded'});
+  await savedPage.locator('.app').waitFor({state:'visible',timeout:3000});
+  await savedPage.getByText('Saved response is readable immediately',{exact:true}).waitFor();
+  assert.equal(await savedPage.locator('#send').isDisabled(),true,'Saved history does not grant writer control');
+  liveGate.resolve();await savedPage.waitForFunction(()=>!document.querySelector('#send').disabled);
+  await savedContext.close();
+  console.log('PASS shell does not wait for sidebar metadata; saved history displays before live handshake with sending gated');
+
   const slowContext = await browser.newContext({ serviceWorkers: "block", reducedMotion: "reduce" });
   const slowPage = await slowContext.newPage();
   const appGate = deferred();

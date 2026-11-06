@@ -1859,15 +1859,25 @@ async function openThreadTransaction(id, options, attempt) {
           notice(error.message, true);
         });
     };
-    await ready;
-    if (generation === view.generation) {
+    const finishAttachment = () => {
+      if (generation !== view.generation) return;
       teammateFeed = teammateStatus({root:$("#teammate-status"),api,subscribe:ownerEventSource,query:sessionQuery(id),open:()=>loadAgents(),onRows:rows=>{
         if(generation!==view.generation)return;inlineAgentThread=id;inlineAgents=rows;
         const root=$(".inline-work");if(root)renderInlineWork(root);
         updateActivity(view.active ? $("#activity-text").textContent : null);
       }});
       return { ok: true };
+    };
+    // Saved history is already readable. Do not keep the launch screen up for
+    // the event-stream handshake; controls remain gated by its writer snapshot.
+    if (initialOpening) {
+      void ready.then(finishAttachment).catch(error=>{
+        if(generation===view.generation)notice(error.message,true);
+      });
+      return {ok:true};
     }
+    await ready;
+    return finishAttachment();
   } catch (e) {
     if (generation !== view.generation) return;
     $("#timeline .loading-surface")?.remove();
@@ -4671,7 +4681,13 @@ async function start() {
     }
     // These reads are independent once the local token has been exchanged.
     const universalSettings = new URLSearchParams(location.search).has("settings");
-    const [status] = await Promise.all([api("status"), universalSettings ? Promise.resolve() : loadThreads()]);
+    const loadNavigation = () => loadThreads().catch(()=>{
+      const retry=el('button','quiet','Retry conversations');
+      retry.onclick=()=>loadNavigation();
+      $('#threads').replaceChildren(el('p','empty','Conversations unavailable'),retry);
+    });
+    const navigationReady = universalSettings ? null : loadNavigation();
+    const status = await api("status");
     view.secretUnlocked = status.secret_submission_unlocked === true;
     view.connectCommand = connectCommand(status.connectCommand);
     view.hostWorkflows = status.web_workflows === 1;
@@ -4684,12 +4700,13 @@ async function start() {
     if (universalSettings) {
       await settings.restore();connection("Connected");
       // Navigation metadata is independent of universal values and never opens a chat.
-      void loadThreads().catch(()=>{const retry=el('button','quiet','Retry conversations');retry.onclick=()=>loadThreads().catch(()=>{retry.textContent='Retry conversations';});$('#threads').replaceChildren(el('p','empty','Conversations unavailable'),retry);});
+      void loadNavigation();
       return {ok:true};
     }
     const params = new URLSearchParams(location.search);
     const id = params.get("thread");
     if (id) {
+      await navigationReady;
       const opened = await openThread(id, {
         ...(params.has("sourceRef") ? { sourceRef: params.get("sourceRef") } : {}),
       });

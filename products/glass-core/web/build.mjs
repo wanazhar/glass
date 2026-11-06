@@ -36,11 +36,23 @@ const themeHead = await build({
   target: ["safari16.4", "chrome110"],
 });
 const themeHeadScript = themeHead.outputFiles[0].text;
+// Preload only static startup imports; optional editors/renderers remain lazy.
+const startupChunks = new Set();
+function collectStartup(path) {
+  for (const entry of result.metafile.outputs[path]?.imports || []) {
+    if (entry.kind !== "import-statement" || entry.external || startupChunks.has(entry.path)) continue;
+    startupChunks.add(entry.path); collectStartup(entry.path);
+  }
+}
+collectStartup("dist/app.js");
+const startupPreloads = [...startupChunks].filter(path=>path.endsWith('.js')).map(path=>`<link rel="modulepreload" href="/${path.replace(/^dist\//,'')}" />`).join('\n    ');
+
 await writeFile(
   "dist/index.html",
   (await readFile("src/index.html", "utf8"))
     .replace("__LAUNCH_CSS__", launchCss)
-    .replace("__THEME_HEAD_SCRIPT__", themeHeadScript),
+    .replace("__THEME_HEAD_SCRIPT__", themeHeadScript)
+    .replace("__STARTUP_PRELOADS__", startupPreloads),
 );
 await mkdir("dist/fonts", { recursive: true });
 await cp(

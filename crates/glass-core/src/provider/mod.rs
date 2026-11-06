@@ -456,7 +456,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
             "Durable notes and native checklist. {} reads notes; items replaces them ([] clears). \
              Save facts, paths and next steps before compaction. Multi-step work uses todo.ops: \
              init/add items(title,phase), update by ID(status,blocker,owner), remove/clear/configure. \
-             todo:{} reads tasks/revision. Batch real progress; completed is not verified. \
+             todo:{} reads tasks/revision without reopening a plan. For distinct new work, init a fresh phased plan; continue existing IDs only for unfinished work on the same task. Finished plans are history. Batch real progress; completed is not verified. \
              request_id makes note writes idempotent: same ID/payload returns its receipt; \
              changed payload fails. Discover recipes with guidance and configured tools with capabilities.".to_string(),
             serde_json::json!({

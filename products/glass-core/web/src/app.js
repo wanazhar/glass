@@ -1083,7 +1083,8 @@ function record(r, target) {
       }
       if (r.c === "state/todo") {
         try {
-          view.tasks = JSON.parse(r.d || "{}").tasks || [];
+          const board = JSON.parse(r.d || "{}");
+          view.tasks = board.hidden ? [] : board.tasks || [];
           view.hasChecklist = true;
           target.append(el("div", "checklist-position"));
         } catch {}
@@ -1509,7 +1510,7 @@ function event(m, replaying = false) {
           ? "\nPreview capped · full output remains on the host."
           : "");
       toolStatus(t, /failed|error:|exit [1-9]/i.test(m.summary || ""));
-      if (t.name === "state") { $("#timeline").append(el("div", "checklist-position")); refreshNativeChecklist(); }
+      if (t.name === "state") refreshNativeChecklist();
       details();
       follow();
       break;
@@ -2617,20 +2618,32 @@ function pollInlineWork() {
 }
 
 let checklistRefresh = null;
+let checklistRefreshQueued = false;
 async function refreshNativeChecklist() {
   const generation = view.generation;
-  if (!view.id || checklistRefresh === generation) return;
+  if (!view.id) return;
+  if (checklistRefresh === generation) { checklistRefreshQueued = true; return; }
   checklistRefresh = generation;
   try {
-    const data = await api("command", { id: view.id, sourceRef: view.sourceRef, name: "todo", values: {} });
-    if (generation !== view.generation) return;
-    if (Array.isArray(data.body?.tasks)) {
-      view.tasks = data.body.tasks; view.hasChecklist = true;
-      renderChecklist(checklistRoot, view.tasks); placeChecklist();
-    }
+    do {
+      checklistRefreshQueued = false;
+      const data = await api("command", { id: view.id, sourceRef: view.sourceRef, name: "todo", values: {} });
+      if (generation !== view.generation) return;
+      if (Array.isArray(data.body?.tasks)) {
+        const tasks = data.body.hidden ? [] : data.body.tasks;
+        const priorIDs = new Set(view.tasks.map(task => task.id || task.title));
+        const samePlan = tasks.some(task => priorIDs.has(task.id || task.title));
+        const active = tasks.some(task => !["completed", "abandoned"].includes(task.status));
+        if (active && !samePlan)
+          $("#timeline").append(el("div", "checklist-position"));
+        view.tasks = tasks; view.hasChecklist = true;
+        renderChecklist(checklistRoot, view.tasks); placeChecklist();
+      }
+    } while (checklistRefreshQueued && generation === view.generation);
   } catch { /* Saved history remains the authoritative fallback. */ }
   finally { if (checklistRefresh === generation) checklistRefresh = null; }
 }
+
 function details() {
   renderChecklist(checklistRoot, view.hasChecklist ? view.tasks : []);
   const n = $("#detail-content");

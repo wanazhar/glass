@@ -21,20 +21,43 @@ const checklists = new WeakMap();
 export function renderChecklist(root, tasks) {
   root.hidden = !Array.isArray(tasks) || !tasks.length;
   if (root.hidden) { root.replaceChildren(); checklists.delete(root); return; }
-  const rows = tasks.slice(0, 128).filter(t => t && typeof t === "object");
+  const rows = tasks.slice(0, 256).filter(t => t && typeof t === "object");
   if (!rows.length) { root.hidden = true; return; }
+  const finished = rows.every(t => ["completed", "abandoned"].includes(t.status));
+  if (finished) { root.hidden = true; root.replaceChildren(); checklists.delete(root); return; }
   const signature = JSON.stringify(rows);
   if (checklists.get(root)?.signature === signature) return;
   const previous = checklists.get(root);
-  const finished = rows.every(t => ["completed", "abandoned"].includes(t.status));
-  const open = finished && !previous?.finished ? false : (previous?.card.open ?? !finished);
+  const taskIDs = new Set(rows.map(task => task.id || task.title));
+  const samePlan = [...taskIDs].some(id => previous?.taskIDs?.has(id));
+  const open = samePlan ? previous.card.open : true;
   const card = node("details", "task-card"); card.open = open;
   const completed = rows.filter(t => t.status === "completed").length;
   const remaining = rows.filter(t => !["completed", "abandoned"].includes(t.status)).length;
   const summary = node("summary", "task-card-heading");
   summary.append(progressRing(100 * completed / rows.length, "Checklist completion"), node("strong", "", remaining ? `${remaining} ${remaining === 1 ? "step" : "steps"} left` : "All steps complete"), node("span", "task-disclosure", "−"));
   const list = node("ol", "task-card-list");
+  const phases = new Map();
   for (const task of rows) {
+    const phase = task.phase || "Tasks";
+    if (!phases.has(phase)) phases.set(phase, []);
+    phases.get(phase).push(task);
+  }
+  const phaseCards = new Map();
+  for (const [phase, tasks] of phases) {
+    let target = list;
+    if (phases.size > 1 || phase !== "Tasks") {
+      const section = node("li", "task-phase");
+      const group = node("details", "task-phase-group");
+      const complete = tasks.every(task => ["completed", "abandoned"].includes(task.status));
+      const old = samePlan ? previous.phases?.get(phase) : null;
+      group.open = complete && !old?.finished ? false : (old?.card.open ?? !complete);
+      const heading = node("summary", "task-phase-heading");
+      heading.append(node("span", "", phase), node("small", "", `${tasks.filter(task => ["completed", "abandoned"].includes(task.status)).length}/${tasks.length}`));
+      target = node("ol", "task-phase-list"); group.append(heading, target); section.append(group); list.append(section);
+      phaseCards.set(phase, {card: group, finished: complete});
+    }
+    for (const task of tasks) {
     const row = node("li", "task-card-row");
     row.dataset.status = task.status || "pending";
     const icon = node("span", "task-status-icon", task.status === "completed" ? "✓" : task.status === "blocked" ? "!" : "");
@@ -42,10 +65,11 @@ export function renderChecklist(root, tasks) {
     const label = node("div", "task-card-label");
     label.append(node("span", "", task.title || task.text || "Untitled task"));
     if (task.blocker) label.append(node("small", "", task.blocker));
-    row.append(icon, label); list.append(row);
+    row.append(icon, label); target.append(row);
+    }
   }
   card.append(summary, list); root.replaceChildren(card);
-  checklists.set(root, { signature, card, finished });
+  checklists.set(root, { signature, card, finished, taskIDs, phases: phaseCards });
 }
 const stages = new WeakMap();
 export function updateStage(root, label) {

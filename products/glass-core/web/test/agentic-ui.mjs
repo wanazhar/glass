@@ -7,9 +7,10 @@ import { resolve, extname } from "node:path";
 const root=resolve("dist"),streams=new Set(),agentStreams=new Set(),uploads=[],sent=[];
 const commands=JSON.parse(await readFile("test/fixtures/commands.json","utf8")).commands;
 const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC","base64");
-let failRoster=false,agentReads=0,agents=[],agentRevision=0,omitChecklist=false;
+let failRoster=false,agentReads=0,agents=[],agentRevision=0,omitChecklist=false,todoHidden=false,todoReadDelay=0,todoReads=0;
 const agentEvent=()=>{for(const stream of agentStreams)stream.write(`data: ${JSON.stringify({revision:++agentRevision})}\n\n`);};
 let attachments=[],todo=[{id:"1",title:"Read project files",status:"completed"},{id:"2",title:"Update light mode tokens",status:"completed"},{id:"3",title:"Implement dark mode tokens",status:"in_progress"},{id:"4",title:"Register the theme toggle",status:"pending"},{id:"5",title:"Run lint and production build",status:"pending"}];
+const initialTodo=structuredClone(todo);
 const longReasoning='I am checking the public reasoning reader for clear paragraphs and consistent line spacing. '.repeat(16);
 const records=()=>[
  {k:"user",t:"Update our dark-mode tokens, register a reusable theme toggle, and verify the build."},
@@ -17,7 +18,7 @@ const records=()=>[
  {k:"call",id:"search",name:"web_search",args:JSON.stringify({query:"accessible theme toggles"})},
  {k:"tool",id:"search",name:"web_search",t:JSON.stringify({results:[{title:"Accessible controls",url:"https://www.w3.org/WAI/"},{title:"Browser documentation",url:"https://developer.mozilla.org/en-US/"}]})},
  {k:'reasoning',t:longReasoning},
- {k:"custom",c:"state/todo",d:JSON.stringify({tasks:todo})},
+ {k:"custom",c:"state/todo",d:JSON.stringify({tasks:todo,hidden:todoHidden})},
  {k:"assistant",t:'The theme selection now persists through reloads.\n\n```tsx file=theme-toggle.tsx\nconst nextTheme = theme === "dark" ? "light" : "dark";\ndocument.documentElement.classList.toggle("dark", nextTheme === "dark");\nlocalStorage.setItem("theme", nextTheme);\n```\n\n```diff file=theme.css\n--- a/theme.css\n+++ b/theme.css\n-old: white;\n+new: var(--surface);\n```'}];
 const emit=events=>{for(const response of streams)response.write(`data: ${JSON.stringify({events})}\n\n`);};
 const server=createServer(async(request,response)=>{
@@ -34,7 +35,7 @@ const server=createServer(async(request,response)=>{
   if(path==="/api/agent")value={text:[{k:'reasoning',t:'Inspect the '},{k:'reasoning',t:'project carefully.'},{k:'call',id:'read',name:'read',args:'{"path":"README.md"}'},{k:'tool',id:'read',name:'read',t:'Project documentation'},{k:'assistant',t:'Finished the **review**.\n\n- Checked the project\n- Reported findings'},{k:'custom',c:'provider/chat-reasoning',d:'PRIVATE_SENTINEL'}].map(r=>JSON.stringify(r)).join('\n')};
   if(path==="/api/context")value={attachments};
   if(path==="/api/agents"){agentReads++;if(failRoster){response.writeHead(503,{"Content-Type":"application/json"});response.end(JSON.stringify({error:"Status connection unavailable"}));return;}value=agents;}
-  if(path==="/api/command")value={format:"json",body:{tasks:todo}};
+  if(path==="/api/command"){todoReads++;value={format:"json",body:{tasks:structuredClone(todo),hidden:todoHidden}};if(todoReadDelay)await new Promise(resolve=>setTimeout(resolve,todoReadDelay));}
   if(path==="/api/commands")value={commands};
   if(path==="/api/changes")value={status:"?? src/new.ts",files:[{path:"src/new.ts",index:"?",worktree:"?"}],expected:"fixture-revision",diff:"",staged:""};
   if(path==="/api/browse"){const directory=url.searchParams.get("path")||"/tmp/project-sea";value={path:directory,parent:"/tmp",entries:directory.endsWith("/src")?[{name:"button.tsx",kind:"file",bytes:40},{name:"button.module.css",kind:"file",bytes:25}]:[{name:"src",kind:"directory",bytes:0},{name:"README.md",kind:"file",bytes:100}],next:null};}
@@ -46,13 +47,50 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const browser=await chromium.launch({executablePath:process.env.GC_BROWSER_BINARY||(existsSync("/snap/chromium/current/usr/lib/chromium-browser/chrome")?"/snap/chromium/current/usr/lib/chromium-browser/chrome":undefined),headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
 try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)]:[390,768,1440]))for(const colorScheme of ["light","dark"]){
- failRoster=false;agents=[];attachments=[];omitChecklist=false;todo[2].status="in_progress";todo[3].status="pending";todo[4].status="pending";
+ failRoster=false;agents=[];attachments=[];omitChecklist=false;todo=structuredClone(initialTodo);todoHidden=false;todoReadDelay=0;
  const context=await browser.newContext({viewport:{width,height:1000},isMobile:width<=768,hasTouch:width<=768,colorScheme,serviceWorkers:"block",reducedMotion:"reduce"});
  await context.addInitScript(()=>{window.SpeechRecognition=class{start(){window.testRecognition=this;}stop(){this.onend?.();}};});
  const page=await context.newPage(),errors=[];page.on("pageerror",error=>errors.push(String(error)));
  await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
  await page.waitForFunction(()=>document.querySelector("#ownership").textContent==="Release control");
  await page.getByText("3 steps left",{exact:true}).waitFor();
+ if(process.env.CHECKLIST_ONLY){
+  const markers=await page.locator('.checklist-position').count();
+  const notesRead=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/command');
+  emit([{t:'tool',call_id:'notes-read',name:'state'},{t:'tool_end',call_id:'notes-read',output:'Saved notes',summary:'done'}]);
+  await notesRead;await page.waitForTimeout(30);
+  assert.equal(await page.locator('.checklist-position').count(),markers,'Notes-only state must not move the plan');
+  for(const task of todo)task.status='completed';
+  emit([{t:'tool',call_id:'finish-old',name:'state'},{t:'tool_end',call_id:'finish-old',summary:'updated'}]);
+  await page.locator('#task-checklist').waitFor({state:'hidden'});
+  assert.equal(await page.locator('.task-card').count(),0,'Finished plans leave the chat');
+  omitChecklist=true;await page.reload();await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');
+  await page.locator('#task-checklist').waitFor({state:'hidden'});
+  todo=[{id:'T101',title:'Investigate the new task',phase:'Plan',status:'in_progress'},{id:'T102',title:'Implement it',phase:'Build',status:'pending'},{id:'T103',title:'Verify it',phase:'Verify',status:'pending'}];
+  emit([{t:'tool',call_id:'new-plan',name:'state'},{t:'tool_end',call_id:'new-plan',summary:'initialized'}]);
+  await page.getByText('Investigate the new task',{exact:true}).waitFor();
+  assert.equal(await page.locator('.task-phase-group').count(),3,'Phases contain nested steps');
+  assert.equal(await page.locator('.task-card').evaluate(node=>node.open),true,'Fresh plan starts independently');
+  assert.equal(await page.getByText('Read project files',{exact:true}).count(),0,'New plan never inherits old completed steps');
+  await page.locator(".task-card").scrollIntoViewIfNeeded();
+  await page.screenshot({path:`/tmp/glass-phased-checklist-${width}-${colorScheme}.png`});
+  await page.locator('.task-card-heading').click();
+  todoReadDelay=100;todo[0].status='completed';const readsBefore=todoReads;
+  emit([{t:'tool',call_id:'progress-one',name:'state'},{t:'tool_end',call_id:'progress-one',summary:'updated'}]);
+  const deadline=Date.now()+5000;while(todoReads===readsBefore){assert(Date.now()<deadline);await new Promise(resolve=>setTimeout(resolve,10));}
+  todo[1].status='completed';
+  emit([{t:'tool',call_id:'progress-two',name:'state'},{t:'tool_end',call_id:'progress-two',summary:'updated'}]);
+  await page.getByText('1 step left',{exact:true}).waitFor();
+  assert(todoReads>=readsBefore+2,'Concurrent changes must trigger a follow-up canonical read');
+  assert.equal(await page.locator('.task-card').evaluate(node=>node.open),false,'Progress preserves user collapse');
+  todoReadDelay=0;todo[2].status='blocked';todo[2].blocker='Waiting for test environment';
+  emit([{t:'tool',call_id:'block-check',name:'state'},{t:'tool_end',call_id:'block-check',summary:'updated'}]);
+  await page.locator('.task-card-heading').click();await page.getByText('Waiting for test environment',{exact:true}).waitFor();
+  todoHidden=true;emit([{t:'tool',call_id:'hide-plan',name:'state'},{t:'tool_end',call_id:'hide-plan',summary:'updated'}]);
+  await page.locator('#task-checklist').waitFor({state:'hidden'});assert.deepEqual(errors,[]);
+  await context.close();console.log(`PASS checklist lifecycle ${width}px ${colorScheme}: completed/hidden plans, notes-only reads, fresh phased plans, blockers and concurrent progress`);continue;
+ }
+
  await page.evaluate(()=>document.fonts.ready);assert(await page.evaluate(()=>document.fonts.check('13px "Glass Sans"')));
  assert.equal(await page.locator("#prompt").getAttribute("rows"),"1");
  if(width<=700){
@@ -104,6 +142,7 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
  assert.equal(await page.locator(".code-filename").filter({hasText:"theme-toggle.tsx"}).count(),1);
  assert.equal(await page.locator(".diff-counts .added").textContent(),"+1");assert.equal(await page.locator(".diff-counts .removed").textContent(),"−1");
  assert.match(await page.locator(".code-line-numbers").first().textContent(),/^1\n2\n3/);
+ await page.locator('.tool-row[data-call-id="search"]').evaluate(node=>{node.closest(".activity-disclosure").open=true;});
  await page.locator('.tool-row[data-call-id="search"] > summary').click();assert.equal(await page.locator(".tool-source").count(),2);
  assert.equal(await page.locator('.tool-source[href="https://www.w3.org/WAI/"]').count(),1);
  await page.locator(".task-card-heading").click();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),false);
@@ -142,10 +181,8 @@ try{for(const width of (process.env.GC_UI_WIDTH?[Number(process.env.GC_UI_WIDTH)
 
  await page.locator("#conversation").evaluate(n=>n.scrollTop=n.scrollHeight);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"Horizontal overflow");await page.screenshot({path:`/tmp/glass-agentic-chat-${width}-${colorScheme}.png`});assert.deepEqual(errors,[]);todo[3].status="completed";todo[4].status="completed";
  emit([{t:"tool",call_id:"todo-done",name:"state"},{t:"tool_end",call_id:"todo-done",output:"Updated",summary:"updated"}]);
- await page.getByText("All steps complete",{exact:true}).waitFor();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),false);
- assert.equal(await page.locator("#timeline #task-checklist").count(),1);
- await page.locator(".task-card-heading").click();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),true);
- omitChecklist=true;await page.reload();await page.getByText("All steps complete",{exact:true}).waitFor();assert.equal(await page.locator(".task-card").evaluate(n=>n.open),false);
+ await page.locator('#task-checklist').waitFor({state:'hidden'});assert.equal(await page.locator('.task-card').count(),0);
+ omitChecklist=true;await page.reload();await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');await page.locator('#task-checklist').waitFor({state:'hidden'});
  await page.locator("#conversation").evaluate(n=>{n.scrollTop=Math.max(0,n.scrollHeight-n.clientHeight-45);});
  await page.waitForTimeout(80);const top=await page.locator("#conversation").evaluate(n=>n.scrollTop);
  emit([{t:"tool",call_id:"read-while-reading",name:"read",path:"README.md"}]);

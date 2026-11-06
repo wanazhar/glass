@@ -84606,7 +84606,8 @@
       ],
       "dependencies": [
         "products/glass-core/docs/INDEX.md",
-        "products/glass-core/docs/getting-started.md"
+        "products/glass-core/docs/getting-started.md",
+        "products/glass-core/docs/reference/checklist.md"
       ],
       "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
       "route": "products/glass-core/docs/connect.md#remote-workspace",
@@ -91425,6 +91426,7 @@
       "consumers": [
         "docs/plan/tasks/task-agent-coordination-001.md",
         "products/glass-core/docs/INDEX.md",
+        "products/glass-core/docs/connect.md",
         "products/glass-core/docs/tools.md",
         "products/glass-core/docs/workflows.md",
         "products/glass-core/extensions/todo/README.md"
@@ -91447,6 +91449,11 @@
           "level": "2",
           "title": "Status and ownership",
           "anchor": "status-and-ownership"
+        },
+        {
+          "level": "2",
+          "title": "Plan lifecycle and WebUI",
+          "anchor": "plan-lifecycle-and-webui"
         },
         {
           "level": "2",

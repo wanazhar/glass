@@ -9,7 +9,7 @@ const verbs = {
   bash: ["Running command", "Ran command", "›_"],
   web_search: ["Searching the web", "Searched the web", "⌕"],
   web_fetch: ["Reading a page", "Read a page", "↗"],
-  state: ["Updating the plan", "Updated the plan", "✓"],
+  state: ["Checking state", "Checked state", "✓"],
   read: ["Reading", "Read", "▤"],
   edit: ["Editing", "Edited", "✎"],
   write: ["Writing", "Wrote", "▧"],

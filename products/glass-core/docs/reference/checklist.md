@@ -29,6 +29,23 @@ Checklist changes do not claim workspace tasks, alter acceptance criteria, or
 assert that checks passed. The evidence action displays the recorded acceptance,
 status and checks. Completion remains reported progress, not independent proof.
 
+## Plan lifecycle and WebUI
+
+A checklist belongs to the current task in its conversation. Continue its IDs
+when resuming unfinished work on that same task. For a distinct new task or an
+already-finished plan, initialize a fresh set of tasks; `init` replaces the
+current board while earlier snapshots remain in the conversation history.
+Reading or changing durable notes with `state` does not initialize, resume, or
+move a checklist. Read-only checklist inspection does not reopen finished work.
+
+The WebUI hides plans whose tasks are all completed or abandoned. It does not
+mark unfinished or blocked work complete merely because an agent turn ends.
+Completed plans remain inspectable with `/todo`. A new plan has independent
+expansion state. Named phases contain nested steps, show their own progress, and
+can be expanded individually; finished phases fold within an ongoing plan.
+The host's `hidden` preference is respected, and overlapping progress events are
+reconciled with a follow-up canonical read rather than dropping the latest change.
+
 ## Model operations
 
 Read the complete current list and its revision:

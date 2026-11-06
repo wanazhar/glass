@@ -835,6 +835,12 @@ activity updates do not replace its contents. Standalone layout uses fixed viewp
 This avoids WebKit under-reporting the installed app viewport by its safe inset. The toolbar leaves extra space below the status area; composer bottom
 padding is capped at 34 px. Keyboard layout uses the visual viewport height.
 
+The inline checklist shows the current unfinished plan. Fully completed or
+abandoned plans leave the chat without changing their saved task statuses.
+Plain `state` notes/read calls do not move a plan into new activity. New plans
+start independently, with named phases containing expandable task lists;
+blocked tasks stay visible with their reasons. See the [checklist lifecycle](reference/checklist.md#plan-lifecycle-and-webui).
+
 Adjacent tool calls and reasoning appear in one collapsed **Activity** row. Its
 summary shows a subtle live indicator, tool count, and failure count. Expand it
 to inspect individual tool inputs, results, and reasoning; streaming events do

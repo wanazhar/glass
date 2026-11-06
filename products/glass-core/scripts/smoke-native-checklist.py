@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,11 +24,15 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         self.server.bodies.append(body)
         systems = '\n'.join(str(m.get('content', '')) for m in body.get('messages', []) if m.get('role') == 'system')
         if 'You are planning a coding task.' in systems:
-            assert '[GC workflow protocol 3]' not in systems, systems
+            assert '[GC workflow protocol ' not in systems, systems
         else:
-            assert systems.count('[GC workflow protocol 3]') == 1, systems
-            assert 'create state.todo before substantive work' in systems, systems
-            assert 'Use advertised schemas' in systems, systems
+            assert systems.count('[GC workflow protocol ') == 1, systems
+            assert 'create state.todo' in systems, systems
+            assert 'Discover tools' in systems, systems
+
+        if 'You are planning a coding task.' not in systems:
+            state = next(tool['function'] for tool in body['tools'] if tool['function']['name'] == 'state')
+            assert 'init a fresh phased plan' in state['description']
 
         results = [message for message in body.get('messages', []) if message.get('role') == 'tool']
         mode = self.server.mode
@@ -37,6 +42,17 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         if mode == 'busy':
             self.server.gate.wait(10)
             delta = {'content': 'BUSY_CHECKLIST_DONE'}
+        elif mode == 'fresh':
+            if not results:
+                delta = self.tool('old-plan', {'todo': {'ops': [{'op': 'init', 'items': [{'title': 'Old completed task', 'phase': 'Previous'}]}]}})
+            elif len(results) == 1:
+                delta = self.tool('complete-old-plan', {'todo': {'ops': [{'op': 'update', 'id': 'T1', 'status': 'completed'}]}})
+            elif len(results) == 2:
+                delta = self.tool('notes-read', {})
+            elif len(results) == 3:
+                delta = self.tool('fresh-plan', {'todo': {'ops': [{'op': 'init', 'items': [{'title': 'New task', 'phase': 'Build'}]}]}})
+            else:
+                delta = {'content': 'FRESH_PLAN_READY'}
         elif mode == 'guidance':
             if not results:
                 delta = self.tool('discover-guidance', {'guidance': {'action': 'catalogue'}})
@@ -109,9 +125,28 @@ with tempfile.TemporaryDirectory(prefix='gc-native-checklist-') as tmp:
     snapshots = [json.loads(r['d']) for r in records if r.get('c') == 'state/todo']
     assert len(snapshots) == 2 and [t['status'] for t in snapshots[-1]['tasks']] == ['completed','blocked'], snapshots
     assert len(server.bodies) == 3
-    assert len(server.bodies[0]['tools']) == 6, 'Checklist added a redundant top-level tool'
+    tool_names = [tool['function']['name'] for tool in server.bodies[0]['tools']]
+    assert tool_names.count('state') == 1 and 'todo' not in tool_names, 'Checklist added a redundant top-level tool'
     assert not any('receipts' in str(m.get('content', '')) for m in server.bodies[-1]['messages']), 'Receipt ledger leaked into model context'
-    print('PASS native batches, durable snapshots, six tools, compact model context', flush=True)
+    print('PASS native batches, durable snapshots, shared state tool, compact model context', flush=True)
+
+    if '--runtime-only' in sys.argv:
+        server.mode = 'fresh'
+        server.bodies = []
+        fresh = run('Start a fresh phased plan after completing previous work')
+        assert fresh['text'] == 'FRESH_PLAN_READY'
+        fresh_records = [json.loads(line) for line in (root/'data/glass-core'/f"{fresh['session']}.jsonl").read_text().splitlines()]
+        boards = [json.loads(record['d']) for record in fresh_records if record.get('c') == 'state/todo']
+        assert len(boards) == 3, 'Notes read must not persist another checklist snapshot'
+        assert boards[1]['tasks'][0]['status'] == 'completed'
+        assert [(task['id'], task['title'], task['phase'], task['status']) for task in boards[-1]['tasks']] == [('T2', 'New task', 'Build', 'pending')]
+        server.mode = 'guidance'
+        server.bodies = []
+        guided = run('Discover the checklist workflow and use its recipe')
+        assert guided['text'] == 'GUIDANCE_ROUTE_DONE'
+        print('PASS fresh phased plans, unique IDs, unchanged completed history, notes-only reads and guidance discovery', flush=True)
+        server.shutdown()
+        sys.exit(0)
 
     for index, size in enumerate(((80,30),(40,24),(20,8))):
         requests_before = len(server.bodies)

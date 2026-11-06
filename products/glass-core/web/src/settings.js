@@ -138,7 +138,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     remove.onclick=()=>{const confirm=el('div','connection-confirm');confirm.setAttribute('role','alert');confirm.append(el('p','','Delete this profile? Assigned workspaces will use global defaults for new chats.'));for(const [label,yes]of [['Cancel',false],['Delete profile',true]]){const b=el('button',yes?'command-run':'quiet',label);b.onclick=async()=>{if(!yes)confirm.remove();else if(await request({action:'profile-delete',name:profile.name,confirmed:true}))renderBody();};confirm.append(b);}card.append(confirm);};actions.append(assign,remove);card.append(actions);profiles.append(card);}
   }
   function looks(parent){
-    const theme=group(parent,'Theme','System matches iOS light or dark. The sidebar switcher sets Light or Dark only; choose System here to follow the device.');
+    const theme=group(parent,'Theme','System matches iOS for the workspace and status bar. Light and Dark force both; the sidebar switcher sets Light or Dark only.');
     const choices=el('div','settings-theme-options');choices.setAttribute('role','radiogroup');choices.setAttribute('aria-label','Theme');
     for(const [value,label,node]of [['system','System',Monitor],['light','Light',Sun],['dark','Dark',Moon]]){
       const option=el('label','settings-theme-option'),input=el('input');input.type='radio';input.name='settings-theme';input.value=value;input.checked=appearance().theme===value;input.setAttribute('aria-label',label);input.onchange=()=>{try{appearance('theme',value);feedback('Preference saved');}catch(e){feedback(e.message,true);}};

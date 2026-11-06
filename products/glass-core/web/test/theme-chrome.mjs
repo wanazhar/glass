@@ -27,11 +27,11 @@ assert.equal(r.chromeLight, false);
 
 r = resolveTheme("dark", light);
 assert.equal(r.appLight, false);
-assert.equal(r.chromeLight, true);
+assert.equal(r.chromeLight, false);
 
 r = resolveTheme("light", dark);
 assert.equal(r.appLight, true);
-assert.equal(r.chromeLight, false);
+assert.equal(r.chromeLight, true);
 
 assert.equal(nextThemeMode("system"), "light");
 assert.equal(nextThemeMode("light"), "dark");

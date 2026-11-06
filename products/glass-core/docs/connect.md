@@ -840,14 +840,13 @@ before capturing. The report includes a `settled` flag. Keyboard detection uses
 the layout viewport and last idle height because Safari can shrink both the
 window and visual viewport; its offset is applied while the keyboard is open.
 
-On iOS, the status bar and `theme-color` always follow **iOS appearance**
-(`prefers-color-scheme`). **System** keeps the whole workspace on that same
-palette (light iOS → light Glass, dark iOS → dark Glass). **Light** and **Dark**
-lock the workspace to that palette; the status bar still follows iOS. A head
-script applies workspace and status-bar metadata before paint and rewrites them
-on `pageshow`, visibility, and appearance changes when WebKit drops cached
-metadata after a bookmark or home-screen reopen. Light iOS uses the default
-opaque status bar; dark iOS uses `black`. With the keyboard open, the command palette includes the
+On iOS, **System** keeps the workspace and status bar on **iOS appearance**
+(`prefers-color-scheme`). **Light** and **Dark** force both the workspace and
+`theme-color` / status-bar styling. The sidebar switcher and Appearance radios
+use the same rules. A head script applies the theme before paint and rewrites
+metadata on `pageshow`, visibility, and appearance changes when WebKit drops
+cached metadata after a bookmark or home-screen reopen. Light chrome uses the
+default opaque status bar; dark chrome uses `black`. With the keyboard open, the command palette includes the
 visual viewport offset and keeps its header, search field, and footer from
 shrinking.
 

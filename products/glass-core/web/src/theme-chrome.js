@@ -49,12 +49,22 @@ export function iosChromeIsLight(
   return prefersLight;
 }
 
+/** Status bar and theme-color follow iOS only while theme mode is System. */
+export function chromeIsLight(
+  mode,
+  appLight,
+  prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
+) {
+  if (mode === "system") return iosChromeIsLight(prefersLight);
+  return appLight;
+}
+
 export function resolveTheme(
   mode = storedThemeMode(),
   prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
 ) {
-  const chromeLight = iosChromeIsLight(prefersLight);
   const appLight = workspaceIsLight(mode, prefersLight);
+  const chromeLight = chromeIsLight(mode, appLight, prefersLight);
   return { mode, appLight, chromeLight, prefersLight };
 }
 

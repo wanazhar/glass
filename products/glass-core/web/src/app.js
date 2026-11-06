@@ -2931,8 +2931,8 @@ function applyTheme() {
   const next = appLight ? "dark" : "light";
   const action =
     themeMode === "system"
-      ? `Switch to ${next} workspace (status bar follows iOS; choose System in Settings)`
-      : `Switch to ${next} workspace (status bar follows iOS)`;
+      ? `Switch to ${next} workspace (choose System in Settings to match iOS again)`
+      : `Switch to ${next} workspace`;
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
 }

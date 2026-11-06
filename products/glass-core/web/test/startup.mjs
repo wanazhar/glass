@@ -205,8 +205,12 @@ try {
   await page.locator(".app").waitFor({ state: "visible" });
   assert.equal(
     await page.locator('meta[name="theme-color"]').getAttribute("content"),
-    "#f7f8f3",
-    "status chrome follows iOS even when the workspace theme is Dark",
+    "#141916",
+    "explicit Dark keeps status chrome dark even on iOS light appearance",
+  );
+  assert.equal(
+    await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
+    "black",
   );
   assert.equal(
     await page.evaluate(() => document.documentElement.classList.contains("light")),
@@ -243,6 +247,7 @@ try {
     await page.evaluate(() => document.documentElement.classList.contains("light")),
     false,
   );
+  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#141916");
   await page.locator("#theme").click();
   assert.equal(await page.evaluate(() => localStorage.getItem("glass:theme")), "light");
   assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");

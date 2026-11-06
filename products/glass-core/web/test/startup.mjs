@@ -236,7 +236,8 @@ try {
   await page.locator("#theme").click();
   assert.equal(
     await page.evaluate(() => document.documentElement.classList.contains("light")),
-    true,
+    false,
+    "toolbar theme toggles the workspace, not iOS chrome",
   );
   assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });

@@ -15,8 +15,9 @@ import { attention } from "./notifications.js";
 import {
   syncThemeFromStorage,
   storedThemeMode,
-  persistThemeMode,
   resolveTheme,
+  applyThemeMode,
+  installThemeChromeLifecycle,
 } from "./theme-chrome.js";
 const $ = (s) => document.querySelector(s),
   el = (tag, cls, text) => {
@@ -2920,28 +2921,35 @@ syncPanels();
 const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
 try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
-function setThemeMode(mode) {
-  persistThemeMode(mode);
-  themeMode = mode;
-  applyTheme();
+function sidebarThemeTarget(mode = storedThemeMode()) {
+  if (mode === "dark") return "light";
+  if (mode === "light") return "dark";
+  return resolveTheme("system").appLight ? "dark" : "light";
 }
-function applyTheme() {
+function refreshThemeControlLabels() {
   themeMode = storedThemeMode();
-  const { appLight } = syncThemeFromStorage();
+  const { appLight } = resolveTheme(themeMode);
   const next = appLight ? "dark" : "light";
   const action =
     themeMode === "system"
-      ? `Switch to ${next} workspace (choose System in Settings to match iOS again)`
+      ? `Switch to ${next} workspace (System is in Settings)`
       : `Switch to ${next} workspace`;
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
 }
+function setThemeMode(mode) {
+  applyThemeMode(mode);
+  themeMode = mode;
+  refreshThemeControlLabels();
+}
+function applyTheme() {
+  syncThemeFromStorage();
+  refreshThemeControlLabels();
+}
 systemTheme.addEventListener("change", applyTheme);
-$("#theme").onclick = () => {
-  const { appLight } = resolveTheme(storedThemeMode());
-  setThemeMode(appLight ? "dark" : "light");
-};
+$("#theme").onclick = () => setThemeMode(sidebarThemeTarget());
 applyTheme();
+installThemeChromeLifecycle();
 document.addEventListener("keydown", (event) => {
   if (event.key === "Tab")
     document.documentElement.classList.add("keyboard-navigation");

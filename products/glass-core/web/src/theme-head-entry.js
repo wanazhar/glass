@@ -1,3 +1,3 @@
-import { installThemeChromeLifecycle } from "./theme-chrome.js";
+import { syncThemeFromStorage } from "./theme-chrome.js";
 
-installThemeChromeLifecycle();
+syncThemeFromStorage();

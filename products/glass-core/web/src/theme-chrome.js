@@ -92,15 +92,27 @@ export function applyThemeChrome(root, appLight, chromeLight) {
 }
 
 export function syncThemeFromStorage(root = document.documentElement) {
-  const resolved = resolveTheme();
+  const mode = storedThemeMode();
+  const resolved = resolveTheme(mode);
   applyThemeChrome(root, resolved.appLight, resolved.chromeLight);
   return resolved;
 }
 
+export function applyThemeMode(mode, root = document.documentElement) {
+  if (!THEME_MODES.includes(mode)) mode = "system";
+  persistThemeMode(mode);
+  const resolved = resolveTheme(mode);
+  applyThemeChrome(root, resolved.appLight, resolved.chromeLight);
+  return resolved;
+}
+
+let themeChromeLifecycleInstalled = false;
+
 /** WebKit may ignore status-bar metadata until tags are rewritten after navigation restore. */
 export function installThemeChromeLifecycle(root = document.documentElement) {
+  if (themeChromeLifecycleInstalled) return;
+  themeChromeLifecycleInstalled = true;
   const refresh = () => syncThemeFromStorage(root);
-  refresh();
   window.addEventListener("pageshow", refresh);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refresh();

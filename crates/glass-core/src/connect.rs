@@ -2915,8 +2915,10 @@ fn handle_with_transport(
     if path == "/api/desktop/lease" && r.method == "POST" {
         let result = (|| {
             let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
-            app.desktop
-                .set_lease(value["action"].as_str().ok_or("Missing action")?)
+            app.desktop.set_lease_for_session(
+                value["action"].as_str().ok_or("Missing action")?,
+                value["sessionId"].as_str(),
+            )
         })();
         return match result {
             Ok(value) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),

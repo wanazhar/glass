@@ -482,7 +482,60 @@ const cdp = await page.context().newCDPSession(page);
 const errors = [];
 page.on("pageerror", (error) => errors.push(String(error)));
 try {
-  if (process.env.DESKTOP_GESTURES_ONLY) {
+  if (process.env.DESKTOP_HANDOFF_ONLY) {
+    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.locator("#desktop-toggle").click();
+    await page.getByText("Ready to start").waitFor();
+    await page.locator("#desktop-details > summary").click();
+    const detailsBox = await page.locator("#desktop-details").boundingBox();
+    const controlsBox = await page.locator(".desktop-controls").boundingBox();
+    assert(detailsBox.y + detailsBox.height <= controlsBox.y, "details must expand inline above controls");
+    if (process.env.DESKTOP_LAYOUT_PREVIEW) await page.screenshot({path:process.env.DESKTOP_LAYOUT_PREVIEW+"-ready.png"});
+    await page.locator("#desktop-details > summary").click();
+    await page.locator("#desktop-start").click();
+    await page.getByText("View only · GC may control").waitFor();
+    await page.route("**/api/desktop/status", async route => {
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      await route.continue().catch(() => {});
+    });
+    await page.route("**/api/desktop/lease", async route => {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await route.continue().catch(() => {});
+    });
+    for (const [button, pending, confirmed] of [
+      ["#desktop-take", "Taking control…", "You control · GC paused"],
+      ["#desktop-return", "Returning control to GC…", "View only · GC may control"],
+    ]) {
+      await page.locator(button).evaluate(node => {node.click();node.click();});
+      await page.getByText(pending,{exact:true}).waitFor();
+      assert.equal(await page.locator(button).isDisabled(),true);
+      await page.getByText(confirmed,{exact:true}).waitFor({timeout:1500});
+      if (button === "#desktop-take") {
+        await page.waitForFunction(() => document.querySelector("#desktop-viewport").dataset.frameFresh === "true");
+        const stage = await page.locator("#desktop-viewport").boundingBox();
+        const beforeHold = input.length;
+        await page.mouse.move(stage.x + stage.width / 2, stage.y + stage.height / 2);
+        await page.mouse.down();
+        await waitForInputSince(beforeHold, event => event.action === "pointer-button" && event.pressed);
+        const unavailable = async route => {
+          const response = await route.fetch();
+          const value = await response.json();
+          await route.fulfill({response,json:{...value,available:false}});
+        };
+        await page.route("**/api/desktop/status",unavailable);
+        await page.waitForFunction(() => document.querySelector("#desktop-viewport").dataset.available === "false");
+        await page.mouse.up();
+        await waitForInputSince(beforeHold, event => event.action === "pointer-button" && !event.pressed);
+        await page.unroute("**/api/desktop/status",unavailable);
+        await page.locator("#desktop-retry").click();
+        await page.waitForFunction(() => document.querySelector("#desktop-viewport").dataset.available === "true");
+      }
+    }
+    assert.equal(actions.filter(action => action === "take-control").length,1);
+    assert.equal(actions.filter(action => action === "return-to-agent").length,1);
+    assert.deepEqual(errors,[]);
+    console.log("PASS inline desktop details, pending ownership, duplicate click suppression handoff independent of slow polls, and held-button release during stale capture");
+  } else if (process.env.DESKTOP_GESTURES_ONLY) {
     await page.goto(`http://127.0.0.1:${port}/`);
     await page.locator("#desktop-toggle").click();
     await page.getByText("Ready to start").waitFor();
@@ -793,7 +846,7 @@ try {
   const moreBox = await moreSummary.boundingBox();
   assert(moreBox);
   await page.touchscreen.tap(moreBox.x + moreBox.width / 2, moreBox.y + moreBox.height / 2);
-  assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true, "touch should open More");
+  await page.waitForFunction(() => document.querySelector("#desktop-more").open, null, { timeout: 2000 });
   const mobileMenu = await page.locator(".desktop-more-menu").boundingBox();
   const mobileStage = await page.locator("#desktop-viewport").boundingBox();
   assert(mobileMenu && mobileStage && mobileMenu.y >= moreBox.y + moreBox.height && mobileMenu.y < moreBox.y + moreBox.height + 16,
@@ -890,11 +943,11 @@ try {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
     { id: 20, x: midX - 20, y: midY + 20, radiusX: 4, radiusY: 4, force: 1 },
   ] });
+  // Long press commits one right click on release; it never holds a right drag.
   await page.waitForTimeout(560);
-  assert(input.some((event) => event.action === "pointer-button" && event.button === "right" && event.pressed));
+  const beforeRightClick = input.length;
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await page.waitForTimeout(100);
-  assert(input.some((event) => event.action === "pointer-button" && event.button === "right" && !event.pressed));
+  await waitForInputSince(beforeRightClick, event => event.action === "pointer-click" && event.button === "right");
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
     { id: 21, x: midX - 28, y: midY, radiusX: 4, radiusY: 4, force: 1 },
     { id: 22, x: midX + 28, y: midY, radiusX: 4, radiusY: 4, force: 1 },
@@ -955,8 +1008,17 @@ try {
   assert.equal(humanSessionAfterReconnect.sessionId, humanSessionBeforeReconnect.sessionId, "viewer reconnect must preserve the desktop session");
   assert.equal(humanSessionAfterReconnect.displayId, humanSessionBeforeReconnect.displayId, "viewer reconnect must preserve the display");
   assert.equal(humanSessionAfterReconnect.lease, "human", "viewer reconnect must preserve human input ownership");
-  await page.locator("#desktop-return").click();
-  await page.getByText("View only · GC may control").waitFor();
+  // Ownership renders from the lease response, even when status polling is slow.
+  await page.route("**/api/desktop/status", async route => {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    await route.continue().catch(() => {});
+  });
+  const returnedAt = Date.now();
+  await page.locator("#desktop-return").evaluate(button => { button.click(); button.click(); });
+  await page.getByText("View only · GC may control").waitFor({ timeout: 1500 });
+  assert(Date.now() - returnedAt < 1500, "handoff must not wait for a status poll");
+  assert.equal(actions.filter(action => action === "return-to-agent").length, 1, "duplicate clicks must not duplicate handoff");
+  await page.unroute("**/api/desktop/status");
   const viewOnlyInputCount = input.length;
   await page.locator("#desktop-touch-mode").click();
   const viewOnlyBox = await page.locator("#desktop-viewport").boundingBox();

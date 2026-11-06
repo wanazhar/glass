@@ -231,7 +231,9 @@ The agent can inspect screenshot pixels and non-password text returned by
 accessibility observation. Use the managed display for content you intend to
 share with the agent.
 Choose **Return to agent** to transfer input back to GC. The agent cannot take
-the lease implicitly.
+the lease implicitly. Handoffs show a pending state, ignore repeated clicks,
+and update from the confirmed ownership response without waiting for another
+status poll. Session details expand inline rather than covering the controls.
 
 Closing the viewer or losing its stream does not stop the desktop or change the
 lease. Reconnecting shows the same session and lease. This is deliberate: a
@@ -443,13 +445,18 @@ polled, or stopped, and their returned output follows the same redaction path.
 
 ### Accessibility and agent tools
 
-The desktop tools exist only while Connect manages a desktop. They use the same
+The desktop tools are listed while the matching Connect manager is attached,
+including before a desktop starts and while capture recovers. Screenshot,
+observation, and input calls require an active managed session. They use the same
 session, display, and lease as the human viewer. `desktop_status` reports the
 active session, workspace, frame age, frame timestamp, lease, and available
 environment choices. `desktop_screenshot` saves a fresh JPEG under
 `.gc-artifacts/desktop` in the active thread workspace; the tool fails if that
-workspace differs from the desktop's `workspaceRoot`. It keeps at most eight
-captured frames for the current session. Use `view_image` with the returned
+workspace is outside the desktop's `workspaceRoot`. Projects nested inside the
+manager workspace share its desktop tools. A temporary stale frame keeps the
+tools discoverable. Capture validates frame freshness; actions validate the
+session and input lease. It keeps at most eight captured frames for the current
+session. Use `view_image` with the returned
 relative path to inspect one.
 
 `desktop_observe` reads a bounded accessibility tree from the session-private

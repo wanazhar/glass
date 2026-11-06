@@ -73,6 +73,8 @@ export function desktopSurface({ api }) {
   let streamFailed = false;
   let streamPausedReason = null;
   let startPending = false;
+  let leasePending = false;
+  let sessionActionPending = false;
   let startAttempt = 0;
   let statusRequest = 0;
   let activePointer = null;
@@ -171,7 +173,7 @@ export function desktopSurface({ api }) {
   }
 
   const isOpen = () => dialog.open && requestController && !requestController.signal.aborted;
-  const controlled = () => isOpen() && snapshot?.available && snapshot.lease === "human" && hasFreshDecodedFrame();
+  const controlled = () => isOpen() && !leasePending && snapshot?.available && snapshot.lease === "human" && hasFreshDecodedFrame();
 
   function setStatus(message, error = false) {
     if (status.textContent !== message) status.textContent = message;
@@ -330,7 +332,7 @@ export function desktopSurface({ api }) {
   }
 
   function updateFrameInputControls() {
-    const canInput = Boolean(snapshot?.available && snapshot?.lease === "human" && hasFreshDecodedFrame());
+    const canInput = Boolean(!leasePending && snapshot?.available && snapshot?.lease === "human" && hasFreshDecodedFrame());
     textInput.disabled = !canInput;
     sendText.disabled = !canInput || !textInput.value;
     keyboardOpen.hidden = !snapshot?.available || snapshot?.lease !== "human";
@@ -824,6 +826,13 @@ export function desktopSurface({ api }) {
     snapshot = next;
     snapshotObservedAt = performance.now();
     const running = Boolean(next?.sessionId);
+    display.parentElement.hidden = !running;
+    owner.hidden = !running;
+    for (const field of [activeEnvironment, resolution, $("desktop-lifecycle-active")]) {
+      field.hidden = !running;
+      field.previousElementSibling.hidden = !running;
+    }
+    viewport.dataset.running = String(running);
     renderPresets(next);
     const available = Boolean(next?.available && running);
     const humanOwnsInput = next?.lease === "human";
@@ -865,10 +874,10 @@ export function desktopSurface({ api }) {
     start.textContent = selectedCapability?.lifecycle === "reusable" && selectedCapability.profileExists ? "Resume workspace" : selectedCapability?.lifecycle === "reusable" ? "Open workspace" : "Start quick desktop";
     start.disabled = startPending || Boolean(connectionError) || !selectedCapability?.available;
     deleteProfile.hidden = running || !capabilities.some((item) => item.environment === "gnome" && item.lifecycle === "reusable" && item.profileExists);
-    deleteProfile.disabled = Boolean(connectionError);
-    stop.disabled = Boolean(connectionError);
-    take.disabled = Boolean(connectionError);
-    returnToAgent.disabled = Boolean(connectionError);
+    deleteProfile.disabled = sessionActionPending || Boolean(connectionError);
+    stop.disabled = sessionActionPending || Boolean(connectionError);
+    take.disabled = leasePending || Boolean(connectionError);
+    returnToAgent.disabled = leasePending || Boolean(connectionError);
     keyboardOpen.textContent = keyboardRow.hidden ? "Keyboard" : "Done";
     keyboardOpen.setAttribute("aria-label", keyboardRow.hidden ? "Open keyboard" : "Hide keyboard");
     textInput.disabled = !available || !humanOwnsInput;
@@ -933,7 +942,7 @@ export function desktopSurface({ api }) {
     const requestId = ++statusRequest;
     try {
       const next = await api("desktop/status", undefined, requestController.signal);
-      if (isOpen() && requestId === statusRequest && requestAttempt === startAttempt && !startPending) {
+      if (isOpen() && requestId === statusRequest && requestAttempt === startAttempt && !startPending && !leasePending) {
         connectionError = null;
         render(next);
       }
@@ -942,7 +951,7 @@ export function desktopSurface({ api }) {
       // display and desktop are ready. Status requests made before or during
       // that work can time out even though Connect is healthy. Do not let one
       // of those responses overwrite the in-progress start state.
-      if (!isOpen() || requestId !== statusRequest || requestAttempt !== startAttempt || startPending) return;
+      if (!isOpen() || requestId !== statusRequest || requestAttempt !== startAttempt || startPending || leasePending) return;
       connectionError = error.message || "Connect is temporarily unavailable.";
       if (!snapshot) {
         render({
@@ -967,7 +976,7 @@ export function desktopSurface({ api }) {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(async () => {
       if (!isOpen() || generation !== pollGeneration) return;
-      if (startPending) {
+      if (startPending || leasePending || sessionActionPending) {
         schedulePoll(generation, 1800);
         return;
       }
@@ -994,6 +1003,13 @@ export function desktopSurface({ api }) {
     for (const resolve of entry.resolvers || []) resolve();
   }
 
+  function canReleaseInput(payload) {
+    return Boolean(isOpen() && !leasePending && snapshot?.lease === "human"
+      && payload.pressed === false
+      && ((payload.action === "pointer-button" && heldButtons.has(payload.button))
+        || (payload.action === "key" && heldKeys.has(payload.key))));
+  }
+
   function pumpInputQueue() {
     if (inputPumpRunning) return;
     inputPumpRunning = true;
@@ -1001,7 +1017,7 @@ export function desktopSurface({ api }) {
       while (inputQueue.length || pendingMove) {
         const entry = inputQueue.length ? inputQueue.shift() : pendingMove;
         if (entry === pendingMove) pendingMove = null;
-        if (!controlled()) {
+        if (entry.sessionId !== snapshot?.sessionId || (!controlled() && !canReleaseInput(entry.payload))) {
           settleInput(entry);
           continue;
         }
@@ -1057,14 +1073,14 @@ export function desktopSurface({ api }) {
   }
 
   function postInput(payload, eventAt = performance.now()) {
-    if (!controlled()) return Promise.resolve();
+    if (!controlled() && !canReleaseInput(payload)) return Promise.resolve();
     if (["pointer-button", "pointer-click", "key", "text", "scroll"].includes(payload.action)) {
       discardPendingMove();
     } else {
       flushPendingMove();
     }
     return new Promise((resolve) => {
-      const entry = { payload: { ...payload }, queuedAt: eventAt, resolvers: [resolve] };
+      const entry = { payload: { ...payload }, sessionId: snapshot?.sessionId, queuedAt: eventAt, resolvers: [resolve] };
       const last = inputQueue.at(-1);
       if (payload.action === "scroll" && last?.payload.action === "scroll") {
         last.payload.deltaX = Math.max(-800, Math.min(800, last.payload.deltaX + payload.deltaX));
@@ -1094,7 +1110,7 @@ export function desktopSurface({ api }) {
   function moveInput(payload, eventAt = performance.now()) {
     const now = performance.now();
     if (!controlled()) return;
-    pendingMove = { payload: { ...payload }, queuedAt: Number.isFinite(eventAt) ? eventAt : now, resolvers: [] };
+    pendingMove = { payload: { ...payload }, sessionId: snapshot?.sessionId, queuedAt: Number.isFinite(eventAt) ? eventAt : now, resolvers: [] };
     if (inputPumpRunning) return;
     const delay = Math.max(0, 16 - (now - lastMoveAt));
     clearTimeout(moveTimer);
@@ -1199,14 +1215,43 @@ export function desktopSurface({ api }) {
     void postInput({ action: "pointer-button", button, pressed, ...coordinates }, event.timeStamp);
   }
 
-  function setLease(action) {
-    return api("desktop/lease", { action }, requestController.signal)
-      .then(refresh)
-      .catch(async (error) => {
-        if (!isOpen()) return;
-        setStatus(error.message || "Desktop input ownership changed.", true);
-        await refresh();
-      });
+  async function setLease(action) {
+    if (leasePending || sessionActionPending || !isOpen() || !snapshot?.sessionId) return;
+    const controller = requestController;
+    const sessionId = snapshot.sessionId;
+    leasePending = true;
+    ++statusRequest; // Ignore polls started before this ownership change.
+    clearTimeout(pollTimer);
+    discardPendingMove();
+    inputQueue.splice(0).forEach(settleInput);
+    take.disabled = returnToAgent.disabled = true;
+    updateFrameInputControls();
+    owner.textContent = action === "take-control" ? "Taking control…" : "Returning control to GC…";
+    try {
+      const next = await api("desktop/lease", { action, sessionId }, controller.signal);
+      if (!isOpen() || requestController !== controller || snapshot?.sessionId !== sessionId) return;
+      if (!["human", "agent"].includes(next.lease)) throw new Error("Desktop returned no input owner.");
+      connectionError = null;
+      leasePending = false;
+      heldButtons.clear();
+      heldKeys.clear();
+      setTrackpadDrag(false);
+      render({ ...snapshot, lease: next.lease });
+    } catch (error) {
+      if (!isOpen() || requestController !== controller) return;
+      leasePending = false;
+      setStatus(error.message || "Could not change desktop input ownership.", true);
+      await refresh();
+    } finally {
+      if (requestController === controller) {
+        leasePending = false;
+        if (isOpen()) {
+          take.disabled = returnToAgent.disabled = Boolean(connectionError);
+          updateFrameInputControls();
+          schedulePoll(pollGeneration);
+        }
+      }
+    }
   }
 
   async function reconnectStream() {
@@ -1222,6 +1267,7 @@ export function desktopSurface({ api }) {
   }
 
   async function startDesktop() {
+    if (startPending || sessionActionPending || leasePending) return;
     const attempt = ++startAttempt;
     start.disabled = true;
     try {
@@ -1263,35 +1309,45 @@ export function desktopSurface({ api }) {
 
   async function deleteReusableProfile() {
     const profile = capabilities.find((item) => item.environment === "gnome" && item.lifecycle === "reusable" && item.profileExists);
-    if (!profile || snapshot?.sessionId) return;
+    if (!profile || snapshot?.sessionId || sessionActionPending || startPending) return;
     if (!window.confirm("Delete the saved desktop profile and its HOME files? Your connected project is kept. This cannot be undone.")) return;
+    const controller = requestController;
+    sessionActionPending = true;
     deleteProfile.disabled = true;
     setStatus("Deleting the saved workspace…");
     try {
-      await api("desktop/profile", { action: "delete", profileId: "default" }, requestController.signal);
-      await refresh();
+      await api("desktop/profile", { action: "delete", profileId: "default" }, controller.signal);
+      if (requestController === controller) await refresh();
     } catch (error) {
-      if (isOpen()) setStatus(error.message || "Could not delete the saved workspace.", true);
+      if (isOpen() && requestController === controller) setStatus(error.message || "Could not delete the saved workspace.", true);
     } finally {
-      if (isOpen()) deleteProfile.disabled = Boolean(connectionError);
+      if (requestController === controller) {
+        sessionActionPending = false;
+        if (isOpen()) deleteProfile.disabled = Boolean(connectionError);
+      }
     }
   }
 
   async function stopDesktop() {
-    if (!snapshot?.sessionId) return;
+    if (!snapshot?.sessionId || sessionActionPending || leasePending || startPending) return;
     const confirmMessage = snapshot.lifecycle === "reusable"
       ? "Stop this desktop? Your saved GNOME workspace and files will be kept."
       : "Stop this quick desktop? Its temporary workspace will be removed.";
     if (!window.confirm(confirmMessage)) return;
+    const controller = requestController;
+    sessionActionPending = true;
     stop.disabled = true;
     setStatus("Stopping the managed desktop…");
     try {
-      await api("desktop/session", { action: "stop" }, requestController.signal);
-      await refresh();
+      await api("desktop/session", { action: "stop" }, controller.signal);
+      if (requestController === controller) await refresh();
     } catch (error) {
-      if (isOpen()) setStatus(error.message || "Could not stop the managed desktop.", true);
+      if (isOpen() && requestController === controller) setStatus(error.message || "Could not stop the managed desktop.", true);
     } finally {
-      if (isOpen()) stop.disabled = false;
+      if (requestController === controller) {
+        sessionActionPending = false;
+        if (isOpen()) stop.disabled = Boolean(connectionError);
+      }
     }
   }
 
@@ -1302,6 +1358,8 @@ export function desktopSurface({ api }) {
     pollGeneration += 1;
     startAttempt += 1;
     startPending = false;
+    leasePending = false;
+    sessionActionPending = false;
     requestController?.abort();
     requestController = null;
     pendingMove = null;
@@ -1332,6 +1390,8 @@ export function desktopSurface({ api }) {
     $("desktop-details").open = false;
     requestController?.abort();
     requestController = new AbortController();
+    leasePending = false;
+    sessionActionPending = false;
     startAttempt += 1;
     startPending = false;
     const generation = ++pollGeneration;
@@ -1344,6 +1404,7 @@ export function desktopSurface({ api }) {
 
   closeButton.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => {
+    if (dialog.open) return;
     close();
     opener.focus({ preventScroll: true });
   });
@@ -1518,7 +1579,7 @@ export function desktopSurface({ api }) {
     if (event.pointerType === "touch") {
       if (gesture?.id === event.pointerId) {
         clearTimeout(gesture.timer);
-        if (controlled() && gesture.pressed) {
+        if (gesture.pressed) {
           buttonAt(gesture.pressed, false, directTouch ? point(event) || gesture.startCoordinates : undefined, event.timeStamp);
         } else if (controlled() && !gesture.moved && !gesture.drag && event.type === "pointerup") {
           const coordinates = directTouch ? point(event) : { x: pointerX, y: pointerY };
@@ -1531,7 +1592,7 @@ export function desktopSurface({ api }) {
       if (touchPoints.size < 2) pinch = null;
       return;
     }
-    if (!controlled() || activePointer !== event.pointerId) return;
+    if (activePointer !== event.pointerId) return;
     pointerButton(event, false);
     activePointer = null;
   };

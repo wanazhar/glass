@@ -602,7 +602,16 @@ impl Desktop {
         guard.take();
     }
 
+    #[cfg(test)]
     pub fn set_lease(&self, action: &str) -> Result<Value, String> {
+        self.set_lease_for_session(action, None)
+    }
+
+    pub fn set_lease_for_session(
+        &self,
+        action: &str,
+        expected_session_id: Option<&str>,
+    ) -> Result<Value, String> {
         self.restore_reusable_session()?;
         let _control = self
             .control
@@ -615,6 +624,11 @@ impl Desktop {
         let session = guard
             .as_mut()
             .ok_or("No managed desktop session is running")?;
+        if expected_session_id.is_some_and(|id| id != session.id) {
+            return Err(
+                "The managed desktop session changed; refresh before changing control".into(),
+            );
+        }
         match action {
             "take-control" => {
                 input::release_held(
@@ -653,7 +667,7 @@ impl Desktop {
         if session.lifecycle == process::Lifecycle::Reusable {
             supervisor::write_lease(&self.profile_dir(), session.lease.as_str())?;
         }
-        Ok(json!({"lease":session.lease.as_str()}))
+        Ok(json!({"lease":session.lease.as_str(),"sessionId":session.id}))
     }
 
     pub fn input(&self, role: Lease, value: &Value) -> Result<Value, InputError> {
@@ -1403,8 +1417,8 @@ fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
         .ok_or("Connect desktop did not report its workspace")?
         .canonicalize()
         .map_err(|e| format!("Connect desktop workspace is unavailable: {e}"))?;
-    if root != desktop_root {
-        return Err("This GC thread and the Connect desktop use different workspace roots; screenshot not saved".into());
+    if !root.starts_with(&desktop_root) {
+        return Err("This GC thread and the Connect desktop use unrelated workspace roots; screenshot not saved".into());
     }
     let artifacts = root.join(".gc-artifacts");
     create_private_directory(&artifacts)?;
@@ -1415,12 +1429,13 @@ fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
         .as_u64()
         .ok_or("Desktop service returned no frame sequence")?;
     let filename = format!(
-        "desktop-{}-{seq}.jpg",
+        "desktop-{}-{seq}-{}.jpg",
         session_id
             .chars()
             .filter(|c| c.is_ascii_hexdigit())
             .take(48)
-            .collect::<String>()
+            .collect::<String>(),
+        random_accessibility_revision()?
     );
     let path = directory.join(&filename);
     let mut file = std::fs::OpenOptions::new()
@@ -1975,6 +1990,28 @@ mod tests {
     }
 
     #[test]
+    fn screenshots_support_nested_projects_and_repeated_frames() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-desktop-frame-{}",
+            random_accessibility_revision().unwrap()
+        ));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let frame = json!({"workspaceRoot":root,"sessionId":"abcdef","seq":1,"jpeg":base64::engine::general_purpose::STANDARD.encode([0xff,0xd8,0xff,0xd9])});
+        let first = save_agent_frame(&project, &frame).unwrap();
+        let second = save_agent_frame(&project, &frame).unwrap();
+        assert_ne!(first, second);
+        assert!(save_agent_frame(&std::env::temp_dir(), &frame).is_err());
+        assert_eq!(
+            std::fs::read_dir(project.join(".gc-artifacts/desktop"))
+                .unwrap()
+                .count(),
+            2
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn coordinate_mapping_bounds_to_managed_framebuffer() {
         assert_eq!(
             input::coordinates(&json!({"x":0.0,"y":0.0})).unwrap(),
@@ -2023,6 +2060,26 @@ mod tests {
             scroll_y_remainder: 0.0,
         });
         desktop
+    }
+
+    #[test]
+    fn control_handoff_rejects_a_replaced_session_and_confirms_ownership() {
+        let root = std::env::temp_dir();
+        let desktop = desktop_with_test_session(&root, "current-session");
+        assert!(
+            desktop
+                .set_lease_for_session("take-control", Some("old-session"))
+                .is_err()
+        );
+        let human = desktop
+            .set_lease_for_session("take-control", Some("current-session"))
+            .unwrap();
+        assert_eq!(human["lease"], "human");
+        assert_eq!(human["sessionId"], "current-session");
+        let agent = desktop
+            .set_lease_for_session("return-to-agent", Some("current-session"))
+            .unwrap();
+        assert_eq!(agent["lease"], "agent");
     }
 
     fn agent_bridge_request(desktop: Arc<Desktop>, request: Value) -> Value {

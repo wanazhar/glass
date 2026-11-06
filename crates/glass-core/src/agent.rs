@@ -4005,7 +4005,7 @@ fn desktop_status_matches_workspace(status: &serde_json::Value, workspace: &Path
     workspace.canonicalize().ok().is_some_and(|expected| {
         Path::new(status_workspace)
             .canonicalize()
-            .is_ok_and(|actual| actual == expected)
+            .is_ok_and(|actual| expected.starts_with(actual))
     })
 }
 
@@ -4015,12 +4015,12 @@ fn desktop_schemas_for_state(
 ) -> Vec<(String, String, String)> {
     match state {
         DesktopToolState::Unavailable => Vec::new(),
-        DesktopToolState::Manager
-        | DesktopToolState::SessionUnavailable
-        | DesktopToolState::WorkspaceMismatch => {
+        DesktopToolState::WorkspaceMismatch => {
             crate::provider::desktop_tool_schemas(false)[..1].to_vec()
         }
-        DesktopToolState::Active => crate::provider::desktop_tool_schemas(!read_only),
+        DesktopToolState::Manager
+        | DesktopToolState::Active
+        | DesktopToolState::SessionUnavailable => crate::provider::desktop_tool_schemas(!read_only),
     }
 }
 
@@ -4040,9 +4040,7 @@ fn connect_desktop_context(
             let fresh = status["available"].as_bool().unwrap_or(false);
             match session_id {
                 Some(session_id) => {
-                    let tool_names = if !fresh {
-                        "`desktop_status`"
-                    } else if read_only {
+                    let tool_names = if read_only {
                         "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
                     } else {
                         "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"
@@ -4053,11 +4051,11 @@ fn connect_desktop_context(
                         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
                         .collect();
                     let frame = if fresh { "fresh" } else { "stale or unavailable" };
-                    let recovery = if fresh { "" } else { " Ask the human to inspect or restart it in Connect before using desktop tools." };
+                    let recovery = if fresh { "" } else { " Screenshot calls validate frame freshness; actions validate the session and input lease. Call desktop_screenshot for a current frame before acting. If capture remains unavailable, ask the human to inspect or reconnect the desktop in Connect. Do not bypass the manager with DISPLAY/XAUTHORITY shell commands." };
                     format!("Managed session `{session_id}` is present; its latest frame is {frame}; the current input control lease is `{lease}`. Available tools this request: {tool_names}.{recovery}")
                 }
                 None => {
-                    "The Connect manager is attached, but no managed desktop session is active. Available tools this request: `desktop_status`. The human can run `/desktop` in standalone GC to start or attach to the shared isolated session.".to_owned()
+                    "The Connect manager is attached, but no managed desktop session is active. Desktop tools remain listed so a session started during this turn can be used. Call `desktop_status` first; screenshot, observation, and input require an active managed session. The human can open Computer in Connect or run `/desktop` in standalone GC to start it. Do not launch a replacement display or bypass the manager with DISPLAY/XAUTHORITY shell commands.".to_owned()
                 }
             }
         }
@@ -4526,11 +4524,11 @@ mod warm_integration {
         });
         let context = connect_desktop_context(Some(&status), false, &workspace);
         assert!(context.contains("no managed desktop session is active"));
-        assert!(context.contains("Available tools this request: `desktop_status`"));
+        assert!(context.contains("Desktop tools remain listed"));
     }
 
     #[test]
-    fn desktop_tool_discovery_requires_a_fresh_session_in_the_same_workspace() {
+    fn desktop_tool_discovery_keeps_session_tools_during_capture_recovery() {
         let workspace = std::env::current_dir().unwrap();
         let active = serde_json::json!({
             "workspaceRoot": workspace,
@@ -4562,6 +4560,15 @@ mod warm_integration {
                 .collect::<Vec<_>>(),
             ["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
+
+        let nested = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let parent = nested.parent().unwrap();
+        let nested_status = serde_json::json!({"workspaceRoot": parent});
+        assert!(desktop_status_matches_workspace(&nested_status, &nested));
 
         let stale = serde_json::json!({
             "workspaceRoot": workspace,
@@ -4595,11 +4602,11 @@ mod warm_integration {
             DesktopToolState::Unavailable
         );
         assert_eq!(
-            desktop_schemas_for_state(DesktopToolState::SessionUnavailable, false)
+            desktop_schemas_for_state(DesktopToolState::SessionUnavailable, true)
                 .iter()
                 .map(|tool| tool.0.as_str())
                 .collect::<Vec<_>>(),
-            ["desktop_status"]
+            ["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
         assert!(desktop_schemas_for_state(DesktopToolState::Unavailable, false).is_empty());
     }
@@ -4642,7 +4649,7 @@ mod warm_integration {
             panic!("read-only mode must not dispatch desktop input")
         });
         assert!(outcome.exit_code.is_none());
-        assert!(outcome.body.contains("read-only"));
+        assert!(outcome.body.to_ascii_lowercase().contains("read-only"));
 
         let act = ToolCall {
             id: "act".into(),
@@ -4664,7 +4671,7 @@ mod warm_integration {
             panic!("read-only mode must not dispatch application launches")
         });
         assert!(outcome.exit_code.is_none());
-        assert!(outcome.body.contains("read-only"));
+        assert!(outcome.body.to_ascii_lowercase().contains("read-only"));
     }
 
     #[test]

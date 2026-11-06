@@ -85,11 +85,14 @@ export function applyThemeChrome(root, appLight, chromeLight) {
   root.style.backgroundColor = bg;
   root.style.setProperty("--browser-chrome-bg", bg);
   const doc = root.ownerDocument;
+  // Modern Home Screen apps derive the status bar from the page. A legacy
+  // default/black override selects native chrome independently of our palette.
+  // Also remove overrides left by a cached older shell during a warm resume.
+  for (const meta of doc.querySelectorAll('meta[name="apple-mobile-web-app-status-bar-style"]')) meta.remove();
   // Preserve the observed nodes: changing content updates browser chrome without
   // briefly removing its color source during a sidebar/theme transition.
   for (const [name, content] of [
     ["theme-color", bg],
-    ["apple-mobile-web-app-status-bar-style", chromeLight ? "default" : "black"],
   ]) {
     const [existing, ...duplicates] = doc.querySelectorAll(`meta[name="${name}"]`);
     for (const duplicate of duplicates) duplicate.remove();
@@ -121,7 +124,7 @@ export function chooseThemeMode(mode, root = document.documentElement) {
 
 let themeChromeLifecycleInstalled = false;
 
-/** WebKit may ignore status-bar metadata until tags are rewritten after navigation restore. */
+/** Reconcile page colors after standalone suspension or navigation restore. */
 export function installThemeChromeLifecycle(root = document.documentElement) {
   if (themeChromeLifecycleInstalled) return;
   themeChromeLifecycleInstalled = true;

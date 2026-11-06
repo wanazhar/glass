@@ -29,14 +29,15 @@ try{for(const engine of ['chromium','webkit']){
   release();await page.locator('.app').waitFor();
   assert(await page.locator('html').evaluate(n=>n.classList.contains('standalone')),'Exercise Home Screen code path');
   assert.equal(await page.locator('.toolbar').evaluate(n=>getComputedStyle(n).position),'sticky');
-  await page.locator('#menu').click();
   for(let i=0;i<2;i++){
+   await page.locator('#menu').click();
    await page.locator('#theme').click();
-   assert(await page.locator('#sidebar').evaluate(n=>n.classList.contains('open')),'Theme switch keeps drawer open');
+   await page.waitForFunction(()=>!document.querySelector('#sidebar').classList.contains('open'));
+   assert.equal(await page.evaluate(()=>document.activeElement.id),'menu');
+   assert.equal(await page.locator('#scrim').evaluate(n=>n.classList.contains('open')),false);
+   assert.equal(await page.locator('#sidebar').evaluate(n=>n.inert),true);
    const palette=await page.evaluate(()=>({light:document.documentElement.classList.contains('light'),body:getComputedStyle(document.body).backgroundColor,header:getComputedStyle(document.querySelector('.toolbar')).backgroundColor,meta:document.querySelector('meta[name=theme-color]').content,scheme:getComputedStyle(document.documentElement).colorScheme,count:document.querySelectorAll('meta[name=theme-color]').length}));
    const bg=palette.light?'rgb(247, 248, 246)':'rgb(20, 25, 22)';
-   const edge=await page.locator('.pwa-status-background').evaluate(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {top:r.top,width:r.width,height:r.height,viewport:innerWidth,background:s.backgroundColor,position:s.position,z:Number(s.zIndex),pointer:s.pointerEvents};});
-   assert.equal(edge.top,0);assert.equal(edge.width,edge.viewport);assert(edge.height>10&&edge.height<844*.9);assert.equal(edge.background,bg);assert.equal(edge.position,'fixed');assert(edge.z>12);assert.equal(edge.pointer,'none');
    assert.equal(palette.body,bg);assert.equal(palette.header,bg);assert.equal(palette.meta,palette.light?'#f7f8f6':'#141916');assert.equal(palette.scheme,palette.light?'light':'dark');assert.equal(palette.count,1);
   }
   await page.screenshot({path:`/tmp/glass-theme-drawer-${engine}-${os}-${saved}.png`});
@@ -52,6 +53,6 @@ try{for(const engine of ['chromium','webkit']){
 
   assert.deepEqual(errors,[]);
   await page.screenshot({path:`/tmp/glass-theme-${engine}-${os}-${saved}.png`});
-  await context.close();console.log(`PASS ${engine}: iOS ${os}, stored ${saved}, pre-CSS startup, sidebar and viewport tint surfaces`);
+  await context.close();console.log(`PASS ${engine}: iOS ${os}, stored ${saved}, pre-CSS startup, mobile theme action dismisses drawer and keeps page colors consistent`);
  }}finally{await browser.close();}
 }}finally{server.closeAllConnections();await new Promise(r=>server.close(r));}

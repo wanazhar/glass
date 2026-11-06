@@ -199,14 +199,3 @@ html, body { background: var(--browser-chrome-bg, #141916); }
   --launch-accent: #456d37;
   --launch-line: #d7ddcf;
 }
-
-/* Keep a full-width opaque status-area background outside the drawer/scrim.
-   WebKit can retain a previous tint when its top-edge source is a sidebar.
-   The 12px minimum is thicker than WebKit's thin-border exclusion (10px). */
-.pwa-status-background { display: none; }
-.standalone .pwa-status-background {
-  display: block; position: fixed; inset: 0 0 auto; width: 100%;
-  height: max(12px, env(safe-area-inset-top, 0px));
-  background: var(--browser-chrome-bg, #141916); z-index: 20;
-  pointer-events: none;
-}

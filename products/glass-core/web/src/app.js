@@ -2933,7 +2933,15 @@ document.addEventListener("glass-theme", (event) => {
   refreshThemeControlLabels();
 });
 systemTheme.addEventListener("change", applyTheme);
-$("#theme").onclick = () => setThemeMode(sidebarThemeTarget());
+$("#theme").onclick = () => {
+  setThemeMode(sidebarThemeTarget());
+  // Return to the selected workspace after this mobile drawer action. iOS
+  // retains a sidebar tint until the drawer and its dimming layer disappear.
+  if (matchMedia("(max-width:700px)").matches && $("#sidebar").classList.contains("open")) {
+    closePanels();
+    $("#menu").focus({preventScroll:true});
+  }
+};
 applyTheme();
 installThemeChromeLifecycle();
 document.addEventListener("keydown", (event) => {

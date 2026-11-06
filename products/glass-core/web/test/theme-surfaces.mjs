@@ -6,6 +6,7 @@ import {resolve,extname} from 'node:path';
 const root=resolve('dist');
 const server=createServer(async(req,res)=>{
  const path=new URL(req.url,'http://localhost').pathname;
+ res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
  if(path.startsWith('/api/')){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(path==='/api/status'?{profile:'workspace-edit',workspace:'/tmp'}:{threads:[],projects:[]}));return;}
  try{const file=resolve(root,'.'+(path==='/'?'/index.html':path));if(!file.startsWith(root+'/'))throw Error();const body=await readFile(file);res.setHeader('Content-Type',({'.js':'text/javascript','.css':'text/css','.html':'text/html','.svg':'image/svg+xml','.woff2':'font/woff2'})[extname(file)]||'application/octet-stream');res.end(body);}catch{res.writeHead(404).end();}
 });

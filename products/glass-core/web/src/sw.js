@@ -8,6 +8,7 @@ self.addEventListener("install", (event) =>
           "/",
           "/app.js?version=__VERSION__",
           "/boot.js?version=__VERSION__",
+          "/theme-head.js?version=__VERSION__",
           "/style.css?version=__VERSION__",
           "/fonts/inter-latin.woff2",
           "/fonts/jetbrains-mono-latin.woff2",
@@ -54,7 +55,7 @@ self.addEventListener("fetch", (event) => {
     return;
   const core =
     event.request.mode === "navigate" ||
-    ["/app.js", "/boot.js", "/style.css"].includes(url.pathname);
+    ["/app.js", "/boot.js", "/theme-head.js", "/style.css"].includes(url.pathname);
   if (core) {
     event.respondWith(
       caches.open(CACHE).then(async (cache) => {

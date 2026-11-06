@@ -10,6 +10,7 @@ const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const counts = new Map();
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, "http://localhost").pathname;
+ res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
   counts.set(path, (counts.get(path) || 0) + 1);
   if (path.startsWith("/api/")) {
     res.setHeader("Content-Type", "application/json");
@@ -54,7 +55,7 @@ try {
     await page.evaluate(() => document.fonts.ready);
     const before = await geometry(page);
     boot.resolve();
-    await page.waitForFunction(() => document.querySelector("#launch").dataset.booted);
+    await page.waitForFunction(() => document.querySelector("#launch")?.dataset.booted);
     stable(before, await geometry(page));
     // Threads must start without waiting for the independent status response.
     await Promise.race([threadRequest.promise, new Promise((_, reject) => setTimeout(() => reject(Error("Startup reads are serialized")), 3000))]);
@@ -109,11 +110,11 @@ try {
   await slowPage.route("**/app.js?*", async route => { await appGate.promise; await route.continue(); });
   await slowPage.clock.install();
   await slowPage.goto(url, { waitUntil: "commit" });
-  await slowPage.waitForFunction(() => document.querySelector("#launch").dataset.booted);
+  await slowPage.waitForFunction(() => document.querySelector("#launch")?.dataset.booted);
   await slowPage.evaluate(() => document.fonts.ready);
   const slowBefore = await geometry(slowPage);
   await slowPage.clock.fastForward(15100);
-  await slowPage.waitForFunction(() => document.querySelector("#launch").dataset.state === "slow");
+  await slowPage.waitForFunction(() => document.querySelector("#launch")?.dataset.state === "slow");
   stable(slowBefore, await geometry(slowPage));
   appGate.resolve();
   await slowPage.locator(".app").waitFor({ state: "visible" });
@@ -170,7 +171,7 @@ try {
     const matcher = url => url.pathname === "/" + asset;
     await page.route(matcher, route => route.abort());
     await page.goto(url);
-    await page.waitForFunction(() => document.querySelector("#launch").dataset.state === "error");
+    await page.waitForFunction(() => document.querySelector("#launch")?.dataset.state === "error");
     const g = await geometry(page);
     stable(g, g);
     assert.equal(await page.locator("#launch").evaluate(n => getComputedStyle(n).position), "fixed");
@@ -242,19 +243,19 @@ try {
   });
   assert.equal(counts.get("/fonts/inter-latin.woff2"), fontRequests, "Cached fonts downloaded again");
   await cachedPage.goto(url + "/?damaged=1");
-  await cachedPage.waitForFunction(() => document.querySelector("#launch").dataset.state === "error");
+  await cachedPage.waitForFunction(() => document.querySelector("#launch")?.dataset.state === "error");
   await Promise.all([cachedPage.waitForEvent("domcontentloaded"), cachedPage.locator("#launch-retry").click()]);
   await cachedPage.locator(".app").waitFor({ state: "visible" });
   await cachedContext.setOffline(true);
   await cachedPage.reload();
-  await cachedPage.waitForFunction(() => document.querySelector("#launch").dataset.state === "error");
+  await cachedPage.waitForFunction(() => document.querySelector("#launch")?.dataset.state === "error");
   assert(await cachedPage.locator("#launch-retry").isVisible());
   const healthyCache = await cachedPage.evaluate(async () => {
     const app = document.querySelector('link[rel="modulepreload"]').href;
     return (await caches.match(app)).text();
   });
   await Promise.all([cachedPage.waitForEvent("domcontentloaded"), cachedPage.locator("#launch-retry").click()]);
-  await cachedPage.waitForFunction(() => document.querySelector("#launch").dataset.state === "error");
+  await cachedPage.waitForFunction(() => document.querySelector("#launch")?.dataset.state === "error");
   assert.equal(await cachedPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--glass-ui-ready").trim()), "1");
   assert.equal(await cachedPage.evaluate(async () => (await caches.match(document.querySelector('link[rel="modulepreload"]').href)).text()), healthyCache, "Offline retry discarded the healthy cached application");
   await cachedContext.setOffline(false);

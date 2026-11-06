@@ -81,23 +81,23 @@ export function applyThemeChrome(root, appLight, chromeLight) {
   root.classList.toggle("light", appLight);
   root.classList.add("theme-ready");
   root.style.colorScheme = chromeLight ? "light" : "dark";
-  root.style.backgroundColor = chromeLight ? "#f7f8f3" : "#141916";
-  const bg = chromeLight ? "#f7f8f3" : "#141916";
+  const bg = chromeLight ? "#f7f8f6" : "#141916";
+  root.style.backgroundColor = bg;
+  root.style.setProperty("--browser-chrome-bg", bg);
   const doc = root.ownerDocument;
-  for (const meta of doc.querySelectorAll('meta[name="theme-color"]')) meta.remove();
-  const color = doc.createElement("meta");
-  color.setAttribute("name", "theme-color");
-  color.setAttribute("content", bg);
-  doc.head.appendChild(color);
-  for (const meta of doc.querySelectorAll(
-    'meta[name="apple-mobile-web-app-status-bar-style"]',
-  )) {
-    meta.remove();
+  // Preserve the observed nodes: changing content updates browser chrome without
+  // briefly removing its color source during a sidebar/theme transition.
+  for (const [name, content] of [
+    ["theme-color", bg],
+    ["apple-mobile-web-app-status-bar-style", chromeLight ? "default" : "black"],
+  ]) {
+    const [existing, ...duplicates] = doc.querySelectorAll(`meta[name="${name}"]`);
+    for (const duplicate of duplicates) duplicate.remove();
+    const meta = existing || doc.createElement("meta");
+    meta.setAttribute("name", name);
+    meta.setAttribute("content", content);
+    if (!existing) doc.head.appendChild(meta);
   }
-  const status = doc.createElement("meta");
-  status.setAttribute("name", "apple-mobile-web-app-status-bar-style");
-  status.setAttribute("content", chromeLight ? "default" : "black");
-  doc.head.appendChild(status);
 }
 
 export function syncThemeFromStorage(root = document.documentElement) {

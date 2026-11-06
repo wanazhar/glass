@@ -1268,7 +1268,7 @@ dialog > header > div:last-child {
 }
 :root.light {
   color-scheme: light;
-  --bg: #f7f8f3;
+  --bg: #f7f8f6;
   --sidebar: #eef0e8;
   --surface: #f0f2eb;
   --surface2: #e7ece1;
@@ -1969,7 +1969,7 @@ dialog {
 @media (prefers-color-scheme: light) {
   :root:not(.theme-ready) {
     color-scheme: light;
-    --bg: #f7f8f3;
+    --bg: #f7f8f6;
     --sidebar: #eef0e8;
     --surface: #f0f2eb;
     --surface2: #e7ece1;
@@ -4338,3 +4338,7 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 #open-chat::after,#open-settings::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); margin-left: auto; margin-right: 4px; }
 #open-chat[aria-expanded=false]::after,#open-settings[aria-expanded=false]::after { transform: rotate(-45deg); }
 .settings-tabs { overflow: auto; max-height: 40vh; }
+
+/* Attach the opaque chat header to the viewport edge, like Settings. Safari
+   uses this rendered surface for its top-bar background extension. */
+.toolbar { position: sticky; top: 0; z-index: 5; }

@@ -1,3 +1,5 @@
+/* Available before the main stylesheet: Safari samples the page background. */
+html, body { background: var(--browser-chrome-bg, #141916); }
 /* Inlined by the build: startup and recovery must survive a missing app stylesheet. */
 .app[hidden],
 .launch[hidden],
@@ -166,8 +168,8 @@
   outline-offset: 3px;
 }
 @media (prefers-color-scheme: light) {
-  .launch {
-    --launch-bg: #f7f8f3;
+  :root:not(.theme-ready) .launch {
+    --launch-bg: #f7f8f6;
     --launch-text: #28332a;
     --launch-muted: #637360;
     --launch-accent: #456d37;
@@ -189,3 +191,11 @@
 }
 .launch-unlock input:focus { outline: 2px solid var(--launch-accent); outline-offset: 2px; }
 .launch-unlock button { min-height: 44px; padding: 10px 14px; color: var(--launch-accent); }
+
+:root.light .launch {
+  --launch-bg: #f7f8f6;
+  --launch-text: #28332a;
+  --launch-muted: #637360;
+  --launch-accent: #456d37;
+  --launch-line: #d7ddcf;
+}

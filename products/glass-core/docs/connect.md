@@ -837,6 +837,17 @@ padding is capped at 34 px. Keyboard layout uses the visual viewport height.
 
 ### Diagnostics
 
+Updating the gateway does not replace an already-running conversation worker.
+For local deployment verification on Linux, run
+`python3 products/glass-core/scripts/check-installed-workers.py` from the source
+checkout. The check compares each conversation socket's actual peer executable
+with the installed `gc` binary. It reports outdated workers without reading
+conversation contents, sending prompts, changing ownership, or stopping work.
+`--require-pid PID` verifies a particular worker after a controlled migration.
+Finish active work and use the existing idle conversation release before
+reopening it with the updated binary; do not kill a worker or remove its writer
+lock to force an update.
+
 `/diagnostics` opens a local support report; `/layout` remains an alias. It works
 on the home page and in a conversation without sending a model request. Copy the
 whole report, download JSON, or copy only startup timings. The report includes:

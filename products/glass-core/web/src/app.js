@@ -2916,12 +2916,12 @@ const systemTheme = matchMedia("(prefers-color-scheme: light)");
 let themeMode = "system";
 try { themeMode = ["system","light","dark"].includes(localStorage.getItem("glass:theme")) ? localStorage.getItem("glass:theme") : "system"; document.documentElement.dataset.animation=localStorage.getItem("glass:animation")||"dots"; document.documentElement.classList.toggle("compact-tools",localStorage.getItem("glass:tools")==="compact"); } catch { /* Browser storage may be disabled. */ }
 function applyTheme() {
-  const light = themeIsLight(
+  const appLight = themeIsLight(
     themeMode,
     themeMode === "system" ? systemTheme.matches : undefined,
   );
-  applyThemeChrome(document.documentElement, light);
-  const action = light ? "Switch to dark mode" : "Switch to light mode";
+  applyThemeChrome(document.documentElement, appLight, systemTheme.matches);
+  const action = appLight ? "Switch to dark mode" : "Switch to light mode";
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
 }

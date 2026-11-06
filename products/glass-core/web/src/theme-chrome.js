@@ -15,12 +15,22 @@ export function themeIsLight(
   return mode === "light" || (mode === "system" && prefersLight);
 }
 
-/** Keep iOS standalone status bar and theme-color aligned with the in-app theme. */
-export function applyThemeChrome(root, light) {
-  root.classList.toggle("light", light);
+/** Status bar and theme-color follow Safari / iOS appearance, not Glass overrides. */
+export function iosChromeIsLight(
+  prefersLight = matchMedia("(prefers-color-scheme: light)").matches,
+) {
+  return prefersLight;
+}
+
+export function applyThemeChrome(
+  root,
+  appLight,
+  chromeLight = iosChromeIsLight(),
+) {
+  root.classList.toggle("light", appLight);
   root.classList.add("theme-ready");
-  root.style.colorScheme = light ? "light" : "dark";
-  const bg = light ? "#f7f8f3" : "#141916";
+  root.style.colorScheme = chromeLight ? "light" : "dark";
+  const bg = chromeLight ? "#f7f8f3" : "#141916";
   const doc = root.ownerDocument;
   let color = doc.querySelector('meta[name="theme-color"]');
   if (!color) {
@@ -36,5 +46,5 @@ export function applyThemeChrome(root, light) {
   const status = doc.querySelector(
     'meta[name="apple-mobile-web-app-status-bar-style"]',
   );
-  if (status) status.setAttribute("content", light ? "default" : "black");
+  if (status) status.setAttribute("content", chromeLight ? "default" : "black");
 }

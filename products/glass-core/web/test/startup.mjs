@@ -191,28 +191,41 @@ try {
   assert.equal(await page.locator("#thread-name").textContent(), "Available conversation");
   await page.goto(url);
   await page.locator(".app").waitFor({ state: "visible" });
-  await page.evaluate(() => localStorage.setItem("glass:theme", "dark"));
+  await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
   await page.emulateMedia({ colorScheme: "light" });
+  await page.reload();
+  await page.locator(".app").waitFor({ state: "visible" });
+  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
+  assert.equal(
+    await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
+    "default",
+  );
+  await page.evaluate(() => localStorage.setItem("glass:theme", "dark"));
   await page.reload();
   await page.locator(".app").waitFor({ state: "visible" });
   assert.equal(
     await page.locator('meta[name="theme-color"]').getAttribute("content"),
-    "#141916",
-    "Glass dark theme must win over iOS light appearance for status chrome",
+    "#f7f8f3",
+    "status chrome follows iOS even when the workspace theme is Dark",
   );
   assert.equal(
-    await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').getAttribute("content"),
-    "black",
+    await page.evaluate(() => document.documentElement.classList.contains("light")),
+    false,
   );
   for (const expected of ["dark", "light"]) {
-    await page.locator("#theme").click();
+    await page.emulateMedia({ colorScheme: expected });
+    await page.evaluate(() => localStorage.setItem("glass:theme", "system"));
+    await page.reload();
+    await page.locator(".app").waitFor({ state: "visible" });
     const colors = await page.evaluate(() => ({
       scheme: getComputedStyle(document.documentElement).colorScheme,
+      light: document.documentElement.classList.contains("light"),
       root: getComputedStyle(document.documentElement).backgroundColor,
       body: getComputedStyle(document.body).backgroundColor,
       chrome: [...document.querySelectorAll('meta[name="theme-color"]')].map(n => n.content),
     }));
     assert.equal(colors.scheme, expected);
+    assert.equal(colors.light, expected === "light");
     assert.equal(colors.body, colors.root);
     assert(colors.chrome.every(color => color === (expected === "dark" ? "#141916" : "#f7f8f3")));
     assert.equal(
@@ -220,6 +233,12 @@ try {
       expected === "dark" ? "black" : "default",
     );
   }
+  await page.locator("#theme").click();
+  assert.equal(
+    await page.evaluate(() => document.documentElement.classList.contains("light")),
+    true,
+  );
+  assert.equal(await page.locator('meta[name="theme-color"]').getAttribute("content"), "#f7f8f3");
   await page.screenshot({ path: "/tmp/gc-web-acquire-conflict.png" });
   await context.close();
   console.log("PASS busy startup deep link stays recoverable through the picker; normal startup theme remains interactive");

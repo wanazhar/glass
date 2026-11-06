@@ -62,6 +62,8 @@ function failure(message, unlockRequired = false, connectCommand = "gc connect")
     input.autocomplete = "off";
     input.autocapitalize = "off";
     input.spellcheck = false;
+    input.inputMode = "url";
+    input.style.fontSize = "16px";
     input.required = true;
     input.placeholder = "Private Connect link";
     input.setAttribute("aria-label", "Private Connect link");
@@ -96,7 +98,6 @@ function failure(message, unlockRequired = false, connectCommand = "gc connect")
       }
     };
     retry.before(form);
-    input.focus();
   }
 }
 const watchdog = setTimeout(() => {

@@ -4290,6 +4290,11 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
     transform: none;
     max-width: none;
   }
+  .launch-unlock input {
+    font-size: 16px;
+    zoom: 1;
+    line-height: 1.4;
+  }
   #settings-page .preference-control input:not([type=checkbox]),#settings-page .connection-form input,#settings-page .profile-create input,.workflow input { min-height: 44px; padding: 8px 11px; }
   #settings-page .preference-control textarea { min-height: 138px; }
   .composer textarea { min-height: 24px; height: 24px; }

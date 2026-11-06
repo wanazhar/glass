@@ -589,6 +589,8 @@ create a thread or stop work in an existing thread.
 
 The interface respects the notch, home indicator, landscape insets, and visible
 keyboard area. Touch text fields use at least 16px to avoid Safari focus zoom.
+The workspace-unlock field on the launch screen uses the same 16px minimum and
+does not take focus on open, so the first PWA frame is not forced into zoom.
 Pinch zoom remains available. Threads and details use separate dismissible drawers;
 only one overlay opens at a time. Reduced-motion settings disable interface animation.
 

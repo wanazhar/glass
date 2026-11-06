@@ -84712,6 +84712,11 @@
           "anchor": "projects-and-machine-wide-conversations"
         },
         {
+          "level": "3",
+          "title": "Diagnostics",
+          "anchor": "diagnostics"
+        },
+        {
           "level": "2",
           "title": "Direct work controls",
           "anchor": "direct-work-controls"

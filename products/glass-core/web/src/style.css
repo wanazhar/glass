@@ -4342,3 +4342,6 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 /* Attach the opaque chat header to the viewport edge, like Settings. Safari
    uses this rendered surface for its top-bar background extension. */
 .toolbar { position: sticky; top: 0; z-index: 5; }
+
+.diagnostic-actions { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 12px; }
+.diagnostic-summary { padding:10px 0; color:var(--muted); font:12px/1.6 var(--font-sans); border-bottom:1px solid var(--line); }

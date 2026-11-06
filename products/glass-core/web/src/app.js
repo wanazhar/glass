@@ -1,3 +1,5 @@
+import {browserDiagnostics, downloadDiagnostics} from './web-diagnostics.js';
+import {diagnosticEvent} from './diagnostic-events.js';
 import {markStartup, startupReport} from './startup-timing.js';
 import {collectReasoning, readableReasoning} from './reasoning-reader.js';
 import {watchSelects, closeSelect} from './select.js';
@@ -173,6 +175,7 @@ async function api(path, data, signal, options = {}) {
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) controller.abort();
   let timedOut = false;
+  const started=performance.now();let responseStatus;
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
@@ -188,6 +191,7 @@ async function api(path, data, signal, options = {}) {
       body: data === undefined ? undefined : JSON.stringify(data),
       signal: controller.signal,
     });
+    responseStatus=r.status;
     let value;
     try {
       value = await r.json();
@@ -208,6 +212,7 @@ async function api(path, data, signal, options = {}) {
     }
     return value;
   } catch (error) {
+    if(!signal?.aborted)diagnosticEvent("api",error,{...(timedOut?{category:"timeout"}:{}),endpoint:path.split(/[/?]/)[0],status:responseStatus,ms:Math.round(performance.now()-started)});
     if (timedOut)
       throw Error("Host timed out. Tap the connection indicator to reconnect.");
     throw error;
@@ -3555,6 +3560,7 @@ $("#preview").addEventListener("cancel", (event) => {
   closePreview();
 });
 $("#preview").addEventListener("close", () => {
+  if($("#preview").open)return; // A queued close must not abort a newly opened report.
   activityPreviewThread = null;
   ++fileVersion;
   fileAbort?.abort();
@@ -4227,7 +4233,8 @@ Filter the current command catalogue below. Choose an entry to open it.`, 'markd
 
 const commandActions = {
   help: () => openHelp(),
-  layout: () => inspectLayout(),
+  diagnostics: () => inspectDiagnostics(),
+  layout: () => inspectDiagnostics(),
   clear: () => newThread(),
   tools: () => {
     document.documentElement.classList.toggle("compact-tools");
@@ -4275,6 +4282,10 @@ function openCommandTab(tab) {
   document.querySelector(`[data-tab="${tab}"]`).click();
   showPanel("#details", true, true);
 }
+function addDiagnosticsCommand(){
+  commands=commands.filter(c=>c.name!=='diagnostics'&&c.name!=='layout');
+  commands.push({name:'diagnostics',aliases:['layout'],description:'Inspect startup, browser, Core and Glass health; copy or download a report',group:'settings',portable:false});
+}
 async function openCommands(
   group = "",
   { focusSearch = !matchMedia("(pointer:coarse)").matches } = {},
@@ -4284,17 +4295,13 @@ async function openCommands(
   if (!commands.length) {
     try {
       commands = (await api("commands")).commands;
-      commands.push({
-        name: "layout",
-        description: "Inspect local viewport geometry",
-        group: "settings",
-        portable: false,
-      });
+      addDiagnosticsCommand();
     } catch (e) {
       notice(`Commands unavailable: ${e.message}`, true);
       return;
     }
   }
+  addDiagnosticsCommand();
   const modal = $("#commands");
   $("#command-search").value = "";
   if (!focusSearch && document.activeElement instanceof HTMLElement)
@@ -4459,9 +4466,9 @@ $("#open-chat").onclick=()=>{
   else expandConversations($("#open-chat").getAttribute('aria-expanded')!=='true');
 };
 shellIcons();watchSelects();
-async function inspectLayout() {
+async function inspectDiagnostics() {
   preview(
-    "Layout measurements",
+    "Diagnostics",
     "Local diagnostics",
     "Waiting for the keyboard to close…",
   );
@@ -4519,7 +4526,8 @@ async function inspectLayout() {
   };
   const v = window.visualViewport;
   const data = {
-    version: "layout-4",
+    version: "diagnostics-1",
+    generatedAt: new Date().toISOString(),
     startup: startupReport(),
     settled,
     shellVersion: new URL($('link[rel="modulepreload"]').href).searchParams.get("version"),
@@ -4551,38 +4559,44 @@ async function inspectLayout() {
     configuredHeight:
       document.documentElement.style.getPropertyValue("--app-height"),
   };
+  $('#preview-body').textContent='Collecting browser and host diagnostics…';
+  const [browserResult,hostResult]=await Promise.allSettled([
+    browserDiagnostics(),api('diagnostics'+(view.id?'?'+sessionQuery(view.id):''),undefined,controller.signal,{timeoutMs:6000}),
+  ]);
+  if(controller.signal.aborted)return;
+  data.browser=browserResult.status==='fulfilled'?browserResult.value:{status:'unavailable'};
+  data.host=hostResult.status==='fulfilled'?(hostResult.value.schemaVersion===1?{status:'available',report:hostResult.value}:{status:'unsupported'}):{status:'unavailable',reason:hostResult.reason?.name==='AbortError'?'cancelled':'host_report_unavailable'};
+  data.connection={selected:Boolean(view.id),control:view.control,active:view.active,transport:view.source?.readyState??null,hostWorkflows:view.hostWorkflows,workerWorkflows:view.workerWorkflows,historyTruncated:Boolean(view.tailPruned),pendingCommands:commandRequests.size};
   const source = JSON.stringify(data, null, 2);
   preview(
-    "Layout measurements",
+    "Diagnostics",
     "Local diagnostics",
     source,
     "json",
     undefined,
     true,
   );
-  const copy = el("button", "quiet", "Copy measurements");
+  const copy = el("button", "quiet", "Copy report");
   copy.onclick = () => copyText(source);
   const startupCopy=el("button","quiet","Copy startup timings");
   startupCopy.onclick=()=>copyText(JSON.stringify({shellVersion:data.shellVersion,userAgent:data.userAgent,startup:data.startup},null,2));
-  $("#preview-body").prepend(copy,startupCopy);
+  const download=el('button','quiet','Download JSON');download.onclick=()=>downloadDiagnostics(data);
+  const actions=el('div','diagnostic-actions');actions.append(copy,download,startupCopy);
+  const summary=el('p','diagnostic-summary',`Browser report ready · Host ${data.host.status==='available'?'report ready':'unavailable'} · ${data.browser.events?.length||0} recent browser events`);
+  $('#preview-body').prepend(actions,summary);
 }
 async function dispatchSlash(value) {
   const name = value.slice(1).split(/\s/, 1)[0];
-  if (name === "layout") {
+  if (name === "layout" || name === "diagnostics") {
     closeCommands();
     $("#prompt").value = "";
-    inspectLayout();
+    inspectDiagnostics();
     return;
   }
   if (!commands.length) {
     try {
       commands = (await api("commands")).commands;
-      commands.push({
-        name: "layout",
-        description: "Inspect local viewport geometry",
-        group: "settings",
-        portable: false,
-      });
+      addDiagnosticsCommand();
     } catch (e) {
       notice(e.message, true);
       return;

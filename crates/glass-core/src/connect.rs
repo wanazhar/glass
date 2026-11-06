@@ -381,11 +381,7 @@ fn access_link(settings: &Settings) -> String {
         web_url(settings)
     } else {
         let base = primary_public_url(settings);
-        format!(
-            "{}#owner={}",
-            base,
-            compact_owner_token(settings, &base)
-        )
+        format!("{}#owner={}", base, compact_owner_token(settings, &base))
     }
 }
 
@@ -2760,7 +2756,8 @@ fn handle_with_transport(
         })();
         match result {
             Ok((kind, body)) => {
-                return response(&mut stream, 200, &kind, &body, "", "no-store").map_err(|e| e.to_string());
+                return response(&mut stream, 200, &kind, &body, "", "no-store")
+                    .map_err(|e| e.to_string());
             }
             Err(e) => {
                 return json_response(&mut stream, 400, json!({"error":e}))
@@ -2814,9 +2811,8 @@ fn handle_with_transport(
     if path == "/api/desktop/updates" && r.method == "POST" {
         return match app.desktop.frame_updates(&r.body) {
             Ok(Some(value)) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
-            Ok(None) => {
-                response(&mut stream, 204, "application/json", b"", "", "no-store").map_err(|e| e.to_string())
-            }
+            Ok(None) => response(&mut stream, 204, "application/json", b"", "", "no-store")
+                .map_err(|e| e.to_string()),
             Err(_) => json_response(
                 &mut stream,
                 409,
@@ -2947,6 +2943,40 @@ fn handle_with_transport(
         ("GET", "/api/status") => Ok(
             json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
+        ("GET", "/api/diagnostics") => {
+            let selected = query
+                .get("id")
+                .map(|id| {
+                    shared_thread_path(
+                        &app,
+                        id,
+                        query.get("sourceRef").map(String::as_str).unwrap_or(""),
+                    )
+                })
+                .transpose()?;
+            let workspace = selected
+                .as_ref()
+                .map(|path| shared_metadata(&app, path).map(|m| m.workspace))
+                .transpose()?
+                .unwrap_or_else(|| app.settings.workspace.clone());
+            let mut report = crate::suite_diagnostics::snapshot(&app.cfg, &workspace);
+            report["gateway"] = json!({"httpsActive":app.settings.https_active,"local":app.settings.local,"clients":app.clients.load(Ordering::Relaxed),"bridgeStatus":"busy","bridgeSamples":[]});
+            if let Ok(bridges) = app.bridges.try_lock() {
+                let states=bridges.values().filter_map(|b|b.feed.try_lock().ok()).map(|feed|json!({"connected":feed.connected,"active":feed.active,"eventCount":feed.events.len(),"eventBytes":feed.bytes,"liveCount":feed.live.len(),"liveClipped":feed.live_clipped,"interactionPending":feed.interaction.is_some()})).take(32).collect::<Vec<_>>();
+                report["gateway"]["bridgeStatus"] = json!(if states.len() == bridges.len() {
+                    "available"
+                } else {
+                    "partial"
+                });
+                report["gateway"]["bridgeCount"] = json!(bridges.len());
+                report["gateway"]["bridgeSamples"] = json!(states);
+            }
+            report["session"] = selected
+                .as_ref()
+                .map(|p| crate::suite_diagnostics::session(p))
+                .unwrap_or_else(|| json!({"status":"not_selected"}));
+            Ok(report)
+        }
         ("GET", "/api/settings") => crate::web_settings::snapshot(),
         ("POST", "/api/settings") => {
             let parsed = serde_json::from_slice::<Value>(&r.body);

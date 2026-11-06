@@ -101,6 +101,7 @@ mod sse;
 mod status;
 mod structured;
 mod subagent;
+mod suite_diagnostics;
 mod surface;
 mod team;
 mod teammate_ui;

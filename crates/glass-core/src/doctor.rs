@@ -33,6 +33,22 @@ impl Report {
 /// Inspect already-loaded config and local files. Does not repair, create, or
 /// modify anything and does not contact providers or extension processes.
 pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Path) -> Report {
+    inspect_impl(cfg, config_path, session_dir, true)
+}
+/// Fast metadata checks for support snapshots; never scan conversation bodies.
+pub fn inspect_metadata(
+    cfg: &crate::config::Config,
+    config_path: &Path,
+    session_dir: &Path,
+) -> Report {
+    inspect_impl(cfg, config_path, session_dir, false)
+}
+fn inspect_impl(
+    cfg: &crate::config::Config,
+    config_path: &Path,
+    session_dir: &Path,
+    full_sessions: bool,
+) -> Report {
     let mut checks = Vec::new();
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let term = std::env::var("TERM")
@@ -147,7 +163,15 @@ pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Pa
         },
     });
 
-    let (status, detail) = session_integrity(session_dir);
+    let (status, detail) = if full_sessions {
+        session_integrity(session_dir)
+    } else {
+        (
+            "notice",
+            "Full session integrity scan not run; use the offline doctor for a complete scan"
+                .into(),
+        )
+    };
     checks.push(Check {
         area: "sessions",
         status,

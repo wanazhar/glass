@@ -1,3 +1,5 @@
+import {captureDiagnosticEvents} from './diagnostic-events.js';
+captureDiagnosticEvents();
 import {shellUpdates} from './shell-update.js';
 import {markStartup} from './startup-timing.js';
 markStartup('boot');

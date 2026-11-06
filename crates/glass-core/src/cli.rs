@@ -868,9 +868,9 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc contract result-schema.json result.json",
         ),
         "diagnostics" => (
-            "gc diagnostics SESSION [--json] [--save FILE]",
+            "gc diagnostics --suite [--json] | gc diagnostics SESSION [--json] [--save FILE]",
             "Preview allowlisted local diagnostic metadata. Prompts, commands, outputs and credentials are omitted. Saving creates a new private file; nothing is uploaded.",
-            "gc diagnostics SESSION_ID\ngc diagnostics SESSION_ID --save diagnostic.json",
+            "gc diagnostics --suite --json\ngc diagnostics SESSION_ID --save diagnostic.json",
         ),
         "memory" => (
             "gc memory [list|enable|disable|set KEY TEXT SOURCE|forget KEY] [--json]",

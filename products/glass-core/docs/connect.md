@@ -828,27 +828,34 @@ activity updates do not replace its contents. Standalone layout uses fixed viewp
 This avoids WebKit under-reporting the installed app viewport by its safe inset. The toolbar leaves extra space below the status area; composer bottom
 padding is capped at 34 px. Keyboard layout uses the visual viewport height.
 
-For device-specific sizing problems, `/layout` opens local viewport, safe-area,
-and element measurements. The report also includes the loaded shell version,
-requested Apple status-bar style, page theme colors and browser user agent. These
-page values do not establish which native status-bar style iPadOS applied.
-Copy measurements collects local diagnostics; the command does not contact a
-model or change layout settings.
+### Diagnostics
 
-Layout diagnostics dismiss the keyboard and wait for stable viewport geometry
-before capturing. The report includes a `settled` flag. Keyboard detection uses
-the layout viewport and last idle height because Safari can shrink both the
-window and visual viewport; its offset is applied while the keyboard is open.
+`/diagnostics` opens a local support report; `/layout` remains an alias. It works
+on the home page and in a conversation without sending a model request. Copy the
+whole report, download JSON, or copy only startup timings. The report includes:
 
-On iOS, **System** keeps the workspace and status bar on **iOS appearance**
-(`prefers-color-scheme`). **Light** and **Dark** force both the workspace and
-`theme-color` / status-bar styling. The sidebar switcher and Appearance radios
-use the same rules. A head script applies the theme before paint and rewrites
-metadata on `pageshow`, visibility, and appearance changes when WebKit drops
-cached metadata after a bookmark or home-screen reopen. Light chrome uses the
-default opaque status bar; dark chrome uses `black`. With the keyboard open, the command palette includes the
-visual viewport offset and keeps its header, search field, and footer from
-shrinking.
+- Startup phases, navigation/network timings, viewport and safe-area geometry,
+  current theme, browser capabilities, service-worker/cache state, and storage usage.
+- Up to 64 recent classified browser errors and failed API calls. Raw messages,
+  request bodies, chat content and query strings are excluded from this event log.
+- Installed Core/Glass/Web revisions when available, offline Core doctor checks,
+  host platform and disk capacity, gateway connection counts, and bounded shared
+  Glass/Core tool-failure records from the selected workspace.
+- Up to 16 recent request timing/usage summaries when a conversation is selected.
+  Provider identifiers, commands, outputs, endpoint URLs and credentials are omitted.
+
+Host collection uses an authenticated, read-only endpoint. It does not open a
+conversation, repair files, launch a browser, or probe a provider. Missing host
+information is marked unavailable; the browser report can still be copied.
+Core CLI users can collect the same host/workspace snapshot with
+`gc diagnostics --suite --json`; existing session-specific diagnostics still work.
+Reports are not uploaded automatically. Review a report before sharing it.
+
+Geometry capture dismisses the keyboard and waits for the viewport to settle.
+The `settled` flag distinguishes a stable measurement from an ongoing animation.
+Page colors and requested metadata do not prove what iOS painted in its native
+status bar. System follows device appearance; Light and Dark select the workspace
+palette. The mobile sidebar theme action closes the drawer after selection.
 
 Standalone shell geometry is also selected through the CSS display-mode media
 query. Its first frame therefore uses the same header spacing, fixed edges, and

@@ -15,6 +15,6 @@ export function startupReport() {
     marks:{...trace.marks},events:[...trace.events],
     standalone:Boolean(navigator.standalone||matchMedia('(display-mode: standalone)').matches),
     navigation:n?{type:n.type,workerStart:round(n.workerStart),dnsMs:round(n.domainLookupEnd-n.domainLookupStart),connectMs:round(n.connectEnd-n.connectStart),tlsMs:n.secureConnectionStart?round(n.connectEnd-n.secureConnectionStart):0,ttfbMs:round(n.responseStart),downloadMs:round(n.responseEnd-n.responseStart)}:null,
-    resources:performance.getEntriesByType('resource').filter(r=>/\/(?:app\.js|boot\.js|theme-head\.js|style\.css|chunks\/|api\/(?:status|threads|open|history))/.test(new URL(r.name).pathname)).slice(0,30).map(r=>({path:new URL(r.name).pathname,start:round(r.startTime),duration:round(r.duration),bytes:r.transferSize,protocol:r.nextHopProtocol})),
+    resources:performance.getEntriesByType('resource').filter(r=>{const u=new URL(r.name);return u.origin===location.origin&&/^\/(?:app\.js|boot\.js|theme-head\.js|style\.css|chunks\/[A-Za-z0-9_-]+\.js|api\/(?:status|threads|open|history))$/.test(u.pathname);}).slice(0,30).map(r=>({path:new URL(r.name).pathname,start:round(r.startTime),duration:round(r.duration),bytes:r.transferSize,protocol:r.nextHopProtocol})),
   };
 }

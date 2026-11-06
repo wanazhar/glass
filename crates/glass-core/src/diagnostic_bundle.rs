@@ -123,6 +123,17 @@ fn parse(args: &[String]) -> Result<Request, String> {
 }
 
 pub fn command(args: &[String]) -> Result<(), String> {
+    if args.first().is_some_and(|s| s == "--suite") {
+        if args.iter().skip(1).any(|s| s != "--json") {
+            return Err("Usage: gc diagnostics --suite [--json]".into());
+        }
+        let cfg = config::load(&config::default_path())
+            .map_err(|_| "Configuration could not be loaded")?;
+        let value = crate::suite_diagnostics::snapshot(&cfg, &cfg.workspace);
+        crate::emit_json(value);
+        return Ok(());
+    }
+
     let id = args.first().ok_or(USAGE)?;
     let session = Session::open_readonly(&config::data_dir(), id).map_err(|e| e.to_string())?;
     match parse(args)? {

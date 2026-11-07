@@ -60,8 +60,16 @@ async fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_shared_worker_message_port_bridge_close_both_directions() {
+#[test]
+fn native_content_process_shared_worker_message_port_bridge_close_both_directions() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_shared_worker_message_port_bridge_close_both_directions_inner(),
+        );
+    });
+}
+
+async fn native_content_process_shared_worker_message_port_bridge_close_both_directions_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

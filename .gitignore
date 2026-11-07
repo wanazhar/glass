@@ -19,6 +19,7 @@ clients/typescript/dist/
 clients/typescript/node_modules/
 **/node_modules/
 /.glass/
+.cursor/
 clients/python/build/
 clients/python/*.egg-info/
 *.tgz

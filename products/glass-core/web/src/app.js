@@ -37,7 +37,10 @@ function placeChecklist() {
   const timeline = $("#timeline");
   const marker = [...timeline.querySelectorAll(".checklist-position")].at(-1);
   if (marker) marker.append(checklistRoot);
-  else if (!timeline.contains(checklistRoot)) timeline.prepend(checklistRoot);
+  // An empty checklist renders nothing; keep it out of the timeline so passive
+  // pruning bookkeeping and the container bounds stay about real timeline
+  // entries. It is attached on the first render, by marker or at the top.
+  else if (!checklistRoot.hidden) timeline.prepend(checklistRoot);
 }
 const view = {
   id: null,
@@ -369,6 +372,7 @@ function atBottom() {
 function syncLatest() {
   const conversation=$("#conversation");
   const awayFromTail=conversation.scrollHeight-conversation.scrollTop-conversation.clientHeight>4;
+  $("#timeline").classList.toggle("tail-lines",Boolean(view.tailPruned));
   $("#latest").classList.toggle("hidden",!view.id||document.body.classList.contains('settings-open')||(!view.tailPruned&&(view.follow||!awayFromTail)));
 }
 function follow() {
@@ -1025,6 +1029,17 @@ function toolStatus(t, failed = false) {
   refreshToolActivity();
   refreshAgentActivity();
 }
+function savedOutputPreview(item, record) {
+  if (!record._historyPreview) return;
+  item.output.append(document.createTextNode("\n\n[Preview only · read the full saved result below]"));
+  let button = item.row.querySelector(".saved-result-reader");
+  if (!button) {
+    button = el("button", "saved-result-reader"); button.type = "button";
+    item.row.querySelector(".tool-actions").prepend(button);
+  }
+  button.textContent = "Read full result · " + bytes(record._historyPreview.bytes);
+  button.onclick = () => openWorkflow("largeRecord", record._historyPreview.offset);
+}
 function privateProviderEntry(value) {
   return value?.k === "custom" && value.c === "provider/chat-reasoning";
 }
@@ -1059,12 +1074,14 @@ function record(r, target) {
       const t = tool(r.id, "bash", r.cmd, target, undefined, true);
       t.output.textContent = text("$ " + r.cmd + "\n" + r.out, limits.preview);
       toolStatus(t, r.code !== 0 && r.code != null);
+      savedOutputPreview(t, r);
       break;
     }
     case "tool": {
       const t = tool(r.id, r.name, "", target, undefined, true);
       t.output.textContent = text(r.t, limits.preview);
       toolStatus(t, /^(?:error:|\[exit [1-9]\d*\]|\[(?:killed|timed out|cancelled))/i.test(r.t || ""));
+      savedOutputPreview(t, r);
       break;
     }
     case "meta":
@@ -1121,12 +1138,11 @@ async function historyNow(older = false) {
     generation = view.generation;
   if (!id) return;
   const h = await api(
-    "history?" + sessionQuery(id, older ? { before: view.before } : {}),
+    "history?" + sessionQuery(id, { ...(older ? { before: view.before } : {}), compact: 1 }),
   );
   if (generation !== view.generation) return;
   if (older) view.follow = false;
   const scroller = $("#conversation");
-  const previousTop = scroller.scrollTop;
   const viewportTop = scroller.getBoundingClientRect().top;
   const anchor = [...$("#timeline").children].find(
     (n) => n.getBoundingClientRect().bottom > viewportTop,
@@ -1196,7 +1212,9 @@ async function historyNow(older = false) {
     )
       continue;
     const previousNode = fragment.lastElementChild;
-    const saved = item.record;
+    const saved = item.previewTruncated
+      ? {...item.record, _historyPreview: {offset: item.index, bytes: item.outputBytes}}
+      : item.record;
     record(!saved.id && ["call", "tool_call", "tool", "bash"].includes(saved.k)
       ? { ...saved, id: `history:${item.index}` } : saved, fragment);
     if (fragment.lastElementChild !== previousNode) visibleRecords++;
@@ -1246,13 +1264,20 @@ async function historyNow(older = false) {
   }
   refreshActivities($("#timeline"), view.sourceRef || view.id);
   const retainedTimeline = $("#timeline");
-  if (older && retainedTimeline.children.length > 240) {
-    while (retainedTimeline.children.length > 240)
-      retainedTimeline.lastElementChild.remove();
-    view.tailPruned = true;
-    syncLatest();
-    for (const [id, t] of view.tools)
-      if (!t.row.isConnected) view.tools.delete(id);
+  if (older) {
+    const selector = ".message,.tool-row,.thought-row";
+    let count = retainedTimeline.querySelectorAll(selector).length;
+    let pruned = false;
+    while (retainedTimeline.children.length > 240 || count > 1200) {
+      const last = retainedTimeline.lastElementChild;
+      if (!last || last === anchor) break;
+      count -= last.querySelectorAll(selector).length + Number(last.matches(selector));
+      last.remove(); pruned = true;
+    }
+    if (pruned) {
+      view.tailPruned = true; syncLatest();
+      for (const [id, t] of view.tools) if (!t.row.isConnected) view.tools.delete(id);
+    }
   }
   if (h.omittedLargeRecord)
     notice(
@@ -1275,10 +1300,14 @@ async function historyNow(older = false) {
             (n) => n.dataset.recordIndex === anchorKey,
           )
         : null;
+    // Anchor correction must use the viewport offset measured now: the
+    // browser's own scroll anchoring may already have adjusted scrollTop, and
+    // reading it again keeps the compensation from ever being applied twice.
     scroller.scrollTop =
       restored && anchorTop !== undefined
-        ? previousTop + restored.getBoundingClientRect().top - anchorTop
-        : previousTop;
+        ? scroller.scrollTop +
+          (restored.getBoundingClientRect().top - anchorTop)
+        : scroller.scrollTop;
   }
   view.before = h.before;
   if (!older) {

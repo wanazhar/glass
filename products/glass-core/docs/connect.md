@@ -622,8 +622,22 @@ content visibility, and completed messages are not reparsed on every token.
 The gateway accepts at most 32 HTTP connections and 16 connected thread bridges.
 Idle, unobserved bridges can be released when that limit is reached. Each bridge
 retains at most 1 MiB of recent transport events and a 512 KiB current-response
-preview. History pages contain at most 60 records from a 512 KiB file window.
-Oversized records are reported; use `gc export` for their full source.
+preview. The conversation requests compact history pages (`compact=1`): up to
+240 visible activity records from the same 512 KiB file window, with a normal
+256 KiB response target. Structural notes and unused custom metadata do not use
+that record allowance. A single large message or image can exceed the response
+target within the existing file-window bound. The unprojected history reader
+retains its 60-record contract for reasoning and compatible clients.
+
+Saved tool outputs use UTF-8-safe 4 KiB previews. **Read full result** opens the
+existing bounded text reader on demand; shared-image descriptors remain intact.
+No speculative history prefetch, persistent index, or extra transcript copy is
+created. Older-page rendering trims newer DOM at 240 timeline containers or
+roughly 1,200 message/tool/reasoning rows, retaining the current reading anchor;
+while the tail is trimmed, one trailing viewport of content-free room keeps the
+page from clamping that anchor. **Back to latest** restores the current tail
+after trimming. Oversized records are reported; use the paged reader or
+`gc export` for their full source.
 
 Requests are capped at 64 KiB. Text file previews are capped at 512 KiB; supported
 images and PDFs at 8 MiB. Image dimensions are limited to 16 million pixels. PDF previews accept at most 500 pages and render a single

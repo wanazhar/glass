@@ -4385,3 +4385,9 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .task-phase-list { list-style: none; margin: 2px 0 0 4px; padding-left: 14px; border-left: 1px solid var(--line); }
 .task-phase-list .task-card-row { padding-top: 6px; padding-bottom: 6px; }
 @media (prefers-reduced-motion: reduce) { .task-phase-heading::before { transition: none; } }
+
+/* When anchored pagination trims the newer tail, keep a viewport of trailing
+   room behind the retained anchor so the restored scroll range can still reach
+   the position that holds the reading anchor stable. Trimming bounds itself to
+   the 240-container contract; this spacer is content-free layout room. */
+.timeline.tail-lines::after { content: ""; display: block; height: 100vh; }

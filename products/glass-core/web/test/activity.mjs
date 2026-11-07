@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
-const streams = new Set(), answers = [], requests = [], attachmentRequests = [];
+const streams = new Set(), answers = [], requests = [], attachmentRequests = [], historyModes = [];
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC", "base64");
 const sharedPath = "shots/ui #1 (é).png";
 const attachmentId = "a".repeat(64);
@@ -37,7 +37,7 @@ const server = createServer(async (request, response) => {
   if (path === "/api/events") {
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     streams.add(response);
-    const archived = url.searchParams.get("id") === "archive";
+    const archived = ["archive", "bulk"].includes(url.searchParams.get("id"));
     response.write(`data: ${JSON.stringify({ reset: true, control: { can_write: true, web_workflows: 1, commands: [] }, live: archived ? [] : [{ t: "tool", call_id: "resumed", name: "bash", command: "sleep 1" }], active: !archived })}\n\n`);
     request.on("close", () => streams.delete(response));
     return;
@@ -56,7 +56,9 @@ const server = createServer(async (request, response) => {
   if (path.startsWith("/api/")) {
     let data = {};
     if (path === "/api/status") data = { profile: "workspace-edit", workspace: "/tmp", web_workflows: 1 };
-    if (path === "/api/threads") data = { threads: ["fixture", "other", "archive"].map(session => ({ session, title: session === "fixture" ? "Activity reference" : "Other thread", workspace: "/tmp", workspace_assigned: true, workspace_available: true })), projects: [] };
+    if (path === "/api/threads") data = { threads: ["fixture", "other", "archive", "bulk"].map(session => ({ session, title: session === "fixture" ? "Activity reference" : "Other thread", workspace: "/tmp", workspace_assigned: true, workspace_available: true })), projects: [] };
+    if (path === "/api/history") historyModes.push(url.searchParams.get("compact"));
+    if (path === "/api/activity-text") data = {text:"FULL_SAVED_TOOL_RESULT",offset:0,nextOffset:22,eof:true,totalBytes:22,kind:"tool",revision:"fixture-output"};
     if (path === "/api/history") data = url.searchParams.has("before")
       ? { records: [
           { index: 0, record: { k: "user", t: "Earlier task" } },
@@ -64,13 +66,17 @@ const server = createServer(async (request, response) => {
           { index: 2, record: { k: "custom", c: "provider/chat-reasoning", d: "PRIVATE_PROVIDER_SENTINEL" } },
           { index: 3, record: { k: "assistant", t: "Earlier answer" } },
         ], before: 0 }
-      : { records: records.map((record, index) => ({ index: 100 + index, record })), before: 100 };
+      : { records: records.map((record, index) => ({ index: 100 + index, record, ...(record.k === "tool" && record.id === "saved-read" ? {previewTruncated:true,outputBytes:9000} : {}) })), before: 100 };
     if (path === "/api/history" && url.searchParams.get("id") === "archive") data = url.searchParams.has("before")
       ? { records: [
           { index: 1, record: { k: "bash", cmd: "legacy-check", out: "LEGACY_ACTIVITY_RESULT", code: 0 } },
           { index: 2, record: { k: "tool", name: "read", t: "SAVED_WITHOUT_CALL_ID" } },
         ], before: 0 }
       : { records: [{ index: 100, record: { k: "assistant", t: "Latest answer without tool calls." } }], before: 100 };
+    if (path === "/api/history" && url.searchParams.get("id") === "bulk") {
+      const end = Number(url.searchParams.get("before") || 10000), start = Math.max(0, end - 240);
+      data = {records: Array.from({length:end-start},(_,i)=>({index:start+i,record:{k:"user",t:"Bulk message "+(start+i)}})),before:start};
+    }
     if (path === "/api/send") {
       let source = "";
       for await (const chunk of request) source += chunk;
@@ -99,6 +105,7 @@ try {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme, serviceWorkers: "block", reducedMotion: "reduce" });
     const page = await context.newPage(), errors = [];
     page.on("pageerror", error => errors.push(String(error)));
+    const fullReadsBefore = requests.filter(path=>path === "/api/activity-text").length;
     await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
     await page.locator(".app").waitFor({ state: "visible" });
     await page.waitForFunction(() => document.querySelector("#ownership").textContent === "Release control");
@@ -129,6 +136,12 @@ try {
     await saved.locator("summary").click();
     assert.match(await saved.locator(".tool-input").textContent(), /"offset": 1/);
     assert.match(await saved.locator(".tool-output").textContent(), /fn main/);
+    assert(historyModes.includes("1"), "Conversation history must use compact pages");
+    assert.equal(requests.filter(path=>path === "/api/activity-text").length, fullReadsBefore, "Full output must not be prefetched");
+    await saved.getByRole("button",{name:/Read full result/}).click();
+    await page.locator('.saved-activity-source').getByText('FULL_SAVED_TOOL_RESULT',{exact:true}).waitFor();
+    await page.locator('dialog.workflow[open] header button').click();
+
     const card = page.locator(".document-card");
     assert.equal(await card.count(), 1, "Only a standalone local document link becomes a card");
     assert.match(await card.textContent(), /Project guide.*MD.*Open file/);
@@ -270,6 +283,22 @@ try {
   await archivePage.screenshot({ path: "/tmp/gc-saved-activity-history.png" });
   await archiveContext.close();
   console.log("PASS saved activity without live events: earlier pages and legacy tool identities");
+  const bulkContext = await browser.newContext({viewport:{width:390,height:900},serviceWorkers:"block"});
+  const bulk = await bulkContext.newPage();
+  await bulk.goto(`http://127.0.0.1:${server.address().port}/?thread=bulk`);
+  await bulk.getByText('Bulk message 9999',{exact:true}).waitFor();
+  for(let pageIndex=0;pageIndex<3;pageIndex++) {
+    await bulk.locator('#conversation').evaluate(node=>{node.scrollTop=0;});
+    const anchor=await bulk.locator('#timeline > .message').first().evaluate(node=>{window.bulkAnchor=node;return{index:Number(node.dataset.recordIndex),top:node.getBoundingClientRect().top};});
+    await bulk.locator('#older').click();
+    await bulk.waitForFunction(before=>Number(document.querySelector('#timeline > .message').dataset.recordIndex)<before,anchor.index);
+    const after=await bulk.evaluate(()=>({connected:window.bulkAnchor.isConnected,top:window.bulkAnchor.getBoundingClientRect().top,containers:document.querySelector('#timeline').children.length}));
+    assert(after.connected&&Math.abs(after.top-anchor.top)<2,'Loading older pages must preserve the reading anchor');
+    assert(after.containers<=241,'Older pages must not grow the retained DOM without bound');
+  }
+  await bulk.locator('#latest').click();await bulk.getByText('Bulk message 9999',{exact:true}).waitFor();
+  await bulkContext.close();
+  console.log('PASS larger history pages preserve scroll anchors, bound retained DOM and restore latest history');
 } finally {
   answerRelease?.();
   await browser.close();

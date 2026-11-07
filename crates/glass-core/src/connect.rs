@@ -1694,7 +1694,7 @@ fn secret_submission_allowed(
         && owner_capability_enabled
         && same_origin_https_mutation(settings, r)
 }
-fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> {
+fn history_path(path: &std::path::Path, before: usize, compact: bool) -> Result<Value, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let length = file
         .metadata()
@@ -1721,6 +1721,9 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
         .map_err(|e| e.to_string())?;
     let mut pos = offset;
     let mut records = VecDeque::new();
+    let mut sizes = VecDeque::new();
+    let mut page_bytes = 0usize;
+    let record_limit = if compact { 240 } else { 60 };
     let mut first = true;
     for line in bytes.split_inclusive(|b| *b == b'\n') {
         let index = pos;
@@ -1733,14 +1736,72 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
         if !line.ends_with(b"\n") || line.len() == 1 {
             continue;
         }
-        let record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
+        let mut record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
         if crate::reasoning::private_value(&record) {
             continue;
         }
-        if records.len() >= 60 {
-            records.pop_front();
+        if compact
+            && !matches!(
+                record["k"].as_str(),
+                Some(
+                    "user"
+                        | "assistant"
+                        | "reasoning"
+                        | "call"
+                        | "tool_call"
+                        | "bash"
+                        | "tool"
+                        | "image"
+                        | "meta"
+                        | "custom"
+                )
+            )
+        {
+            continue;
         }
-        records.push_back(json!({"index":index,"record":record}));
+        if compact
+            && record["k"] == "custom"
+            && !matches!(record["c"].as_str(), Some("state/todo" | "team/delivery"))
+        {
+            continue;
+        }
+        let output_key = match record["k"].as_str() {
+            Some("tool") if record["name"] != "display_image" => Some("t"),
+            Some("bash") => Some("out"),
+            _ => None,
+        };
+        let mut preview_bytes = None;
+        if compact
+            && let Some(key) = output_key
+            && let Some(output) = record[key].as_str()
+            && output.len() > 4096
+        {
+            let mut end = 4096;
+            while !output.is_char_boundary(end) {
+                end -= 1;
+            }
+            preview_bytes = Some(output.len());
+            record[key] = json!(&output[..end]);
+        }
+        let mut item = json!({"index":index,"record":record});
+        if let Some(bytes) = preview_bytes {
+            item["previewTruncated"] = json!(true);
+            item["outputBytes"] = json!(bytes);
+        }
+        let size = if compact {
+            serde_json::to_vec(&item).map_err(|e| e.to_string())?.len()
+        } else {
+            0
+        };
+        while records.len() >= record_limit
+            || (compact && !records.is_empty() && page_bytes.saturating_add(size) > 256 * 1024)
+        {
+            records.pop_front();
+            page_bytes = page_bytes.saturating_sub(sizes.pop_front().unwrap_or(0));
+        }
+        records.push_back(item);
+        sizes.push_back(size);
+        page_bytes = page_bytes.saturating_add(size);
     }
     let mut omitted = Vec::new();
     let mut private_before = None;
@@ -1792,7 +1853,7 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
                 .unwrap_or(private_before.unwrap_or(offset as u64))
         });
     Ok(
-        json!({"omitted":omitted,"records":records,"before":start,"totalBytes":length,"windowBytes":512*1024,"omittedLargeRecord":records.is_empty()&&end>0}),
+        json!({"omitted":omitted,"records":records,"before":start,"totalBytes":length,"windowBytes":512*1024,"compact":compact,"recordLimit":record_limit,"omittedLargeRecord":records.is_empty()&&end>0}),
     )
 }
 // Deliberate message actions resolve the byte cursor once, never on every
@@ -3205,6 +3266,7 @@ fn handle_with_transport(
                 .get("before")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(usize::MAX),
+            query.get("compact").is_some_and(|value| value == "1"),
         ),
         ("GET", "/api/events") => {
             let id = query.get("id").ok_or("Missing thread")?;
@@ -4566,7 +4628,7 @@ mod regression {
         let mut before = usize::MAX;
         let mut seen = std::collections::HashSet::new();
         loop {
-            let page = history_path(&path, before).unwrap();
+            let page = history_path(&path, before, false).unwrap();
             let next = page["before"].as_u64().unwrap() as usize;
             for r in page["records"].as_array().unwrap() {
                 assert!(seen.insert(r["index"].as_u64().unwrap()));
@@ -4580,6 +4642,65 @@ mod regression {
         assert_eq!(seen.len(), 1000);
         std::fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn compact_history_loads_more_events_and_reads_full_results_on_demand() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-compact-history-{}-{}.jsonl",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        for i in 0..400 {
+            writeln!(file, "{}", json!({"k":"user","t":format!("message-{i}")})).unwrap();
+            writeln!(file, "{}", json!({"k":"state","items":["internal notes"]})).unwrap();
+        }
+        writeln!(
+            file,
+            "{}",
+            json!({"k":"custom","c":"provider/chat-reasoning","d":"PRIVATE_HISTORY_SENTINEL"})
+        )
+        .unwrap();
+        let full = history_path(&path, usize::MAX, false).unwrap();
+        let compact = history_path(&path, usize::MAX, true).unwrap();
+        assert_eq!(full["records"].as_array().unwrap().len(), 60);
+        assert_eq!(compact["records"].as_array().unwrap().len(), 240);
+        assert!(!compact.to_string().contains("PRIVATE_HISTORY_SENTINEL"));
+        assert!(!compact.to_string().contains("internal notes"));
+        let offset = file.stream_position().unwrap();
+        let output = "é一".repeat(4000);
+        writeln!(
+            file,
+            "{}",
+            json!({"k":"tool","id":"large","name":"bash","t":output})
+        )
+        .unwrap();
+        drop(file);
+        let compact = history_path(&path, usize::MAX, true).unwrap();
+        let item = compact["records"].as_array().unwrap().last().unwrap();
+        assert_eq!(item["previewTruncated"], true);
+        assert!(item["record"]["t"].as_str().unwrap().len() <= 4096);
+        assert_eq!(item["index"], offset);
+        let full = activity_text(&path, offset as usize, 0, "").unwrap();
+        assert_eq!(full["text"], output);
+        assert_eq!(full["eof"], true);
+        let mut before = usize::MAX;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page = history_path(&path, before, true).unwrap();
+            for item in page["records"].as_array().unwrap() {
+                assert!(seen.insert(item["index"].as_u64().unwrap()));
+            }
+            let next = page["before"].as_u64().unwrap() as usize;
+            if next == 0 {
+                break;
+            }
+            assert!(next < before);
+            before = next;
+        }
+        assert_eq!(seen.len(), 401);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn live_feed_is_bounded_and_keeps_decision_until_answered() {
         let (writer, _reader) = UnixStream::pair().unwrap();

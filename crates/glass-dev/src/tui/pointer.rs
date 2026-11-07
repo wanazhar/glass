@@ -1059,11 +1059,11 @@ mod tests {
         state.open_menu();
 
         let geometry = super::super::render::command_menu_geometry_for_screen(&state);
-        assert!(geometry.list_area.x > 0);
-        let list_row = geometry.list_inner.y;
+        let inner = geometry.list_inner;
+        let list_row = inner.y;
         let outside_pane_points = [
-            (0, list_row),
-            (geometry.list_area.x + geometry.list_area.width, list_row),
+            (inner.x.saturating_sub(1), list_row),
+            (inner.x + inner.width, list_row),
         ];
         assert!(outside_pane_points[1].0 < state.terminal_width);
         for (column, row) in outside_pane_points {
@@ -1198,9 +1198,14 @@ mod tests {
                         &state,
                         after_scroll.inner.x,
                         *row,
-                    ) == Some(15)
+                    )
+                    .is_some_and(|index| index != expected_selection)
                 })
                 .expect("another visible command row for mouse selection");
+            let click_hit = hit_test(&state, after_scroll.inner.x, click_row);
+            let HitRegion::GcCommand(click_index) = click_hit else {
+                panic!("click row must hit a GC command, got {click_hit:?}");
+            };
             let clicked_at = Instant::now();
             let down = MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -1218,7 +1223,7 @@ mod tests {
                 },
                 clicked_at + Duration::from_millis(2),
             );
-            assert_eq!(state.gc_command_selected, 15);
+            assert_eq!(state.gc_command_selected, click_index);
         }
 
         drop(state);
@@ -1325,28 +1330,31 @@ mod tests {
     #[test]
     fn ready_agent_composer_keeps_surface_tabs_clickable() {
         let (mut state, root) = overlay_state();
-        set_viewport(&mut state, TuiLayout::Desktop, 140, 40);
-        state.surface = DevSurface::Agent;
+        set_viewport(&mut state, TuiLayout::Desktop, 120, 32);
+        state.surface = DevSurface::Git;
         state.composer_mode = true;
         let target = (0..state.terminal_height).find_map(|row| {
             (0..state.terminal_width).find_map(|column| {
                 (super::super::render::navigation_surface_at(&state, screen(&state), column, row)
-                    == Some(DevSurface::Code))
+                    == Some(DevSurface::Agent))
                 .then_some((column, row))
             })
         });
-        let (column, row) = target.expect("visible Code navigation tab");
+        let (column, row) = target.expect("visible Agent navigation tab");
         assert_eq!(
             hit_test(&state, column, row),
-            HitRegion::Surface(DevSurface::Code)
+            HitRegion::Surface(DevSurface::Agent)
         );
-        apply_select(&mut state, &HitRegion::Surface(DevSurface::Code));
-        assert_eq!(state.surface, DevSurface::Code);
-        assert!(!state.composer_mode, "Code must own input after navigation");
-        state.show_surface(DevSurface::Agent);
+        apply_select(&mut state, &HitRegion::Surface(DevSurface::Agent));
+        assert_eq!(state.surface, DevSurface::Agent);
         assert!(
             state.composer_mode,
-            "returning to Agent restores composer focus"
+            "Agent surface keeps composer focus when selected from the rail"
+        );
+        state.show_surface(DevSurface::Git);
+        assert!(
+            !state.composer_mode,
+            "non-Agent surfaces close the composer when selected"
         );
 
         drop(state);

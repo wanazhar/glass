@@ -428,8 +428,15 @@ impl GlassCoreRuntime {
             runtime.session_path = options
                 .resume_session_path
                 .as_ref()
-                .map(|path| path.canonicalize())
-                .transpose()?
+                .map(|path| {
+                    path.canonicalize().or_else(|error| {
+                        (error.kind() == std::io::ErrorKind::NotFound)
+                            .then(|| path.clone())
+                            .ok_or(error)
+                    })
+                })
+                .transpose()
+                .map_err(DevelopmentError::Io)?
                 .unwrap_or_else(|| {
                     runtime
                         .storage_dir

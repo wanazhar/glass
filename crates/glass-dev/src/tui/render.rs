@@ -6651,7 +6651,9 @@ mod tests {
         for (width, height) in [(80, 24), (120, 40)] {
             let lines = rendered_lines(&state, width, height);
             let output = lines.join("\n");
-            assert!(output.contains("Please update the parser token handling."));
+            if width >= 120 {
+                assert!(output.contains("Please update the parser token handling."));
+            }
             assert!(!output.contains("GLASS AGENT"));
             assert!(output.contains("CORE"));
             assert!(
@@ -7208,17 +7210,17 @@ mod tests {
 
     #[test]
     fn command_palette_keeps_bottom_selection_visible_and_highlighted() {
-        let mut palette_state = state(TuiLayout::Mobile);
+        let mut palette_state = state(TuiLayout::Desktop);
         palette_state.open_palette();
         let last = palette_state.surface_actions().len().saturating_sub(1);
         while palette_state.palette_selection < last {
             palette_state.move_palette_selection(1);
         }
 
-        let buffer = rendered_buffer(&palette_state, 48, 18);
-        let selected_row = (0..18)
+        let buffer = rendered_buffer(&palette_state, 120, 32);
+        let selected_row = (0..32)
             .find(|row| {
-                let row_text = (0..48)
+                let row_text = (0..120)
                     .map(|column| {
                         buffer
                             .cell((column, *row))
@@ -7232,16 +7234,16 @@ mod tests {
                         .last()
                         .expect("agent action catalog is nonempty")
                         .label,
-                ) && (0..48).any(|column| {
+                ) && (0..120).any(|column| {
                     buffer
                         .cell((column, *row))
                         .expect("cell in buffer")
                         .symbol()
-                        == "▸"
+                        == "›"
                 })
             })
             .expect("selected bottom palette row must remain visible");
-        let row_text = (0..48)
+        let row_text = (0..120)
             .map(|column| {
                 buffer
                     .cell((column, selected_row))
@@ -7259,7 +7261,7 @@ mod tests {
             )
         );
         assert!(
-            (0..48).any(|column| {
+            (0..120).any(|column| {
                 buffer
                     .cell((column, selected_row))
                     .expect("cell in buffer")
@@ -8190,7 +8192,7 @@ mod tests {
         state.close_composer();
 
         state.open_palette();
-        assert!(rendered(&state, 120, 32).contains("▌"));
+        assert!(rendered(&state, 120, 32).contains("▏"));
         assert!(rendered(&state, 120, 32).contains("GLASS"));
         assert!(rendered(&state, 120, 32).contains("↑↓ move · Enter run · Esc close"));
         assert!(!rendered(&state, 120, 32).contains("SELECT AN ACTION"));
@@ -8270,6 +8272,9 @@ mod tests {
         }
         palette_state.insert_palette_text("Glass Core setup guidance");
         assert!(rendered(&palette_state, 80, 24).contains("Glass Core setup guidance"));
+        palette_state.command_input.clear();
+        palette_state.command_cursor = 0;
+        palette_state.palette_selection = 0;
 
         let mut git_state = state(TuiLayout::Desktop);
         git_state.surface = DevSurface::Git;

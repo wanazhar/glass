@@ -2940,7 +2940,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         permissions.set_mode(0o700);
         std::fs::set_permissions(&wrapper, permissions).expect("make fake Core executable");
-        registry.core_binary = Some(wrapper);
+        registry.core_binary = Some(std::fs::canonicalize(&wrapper).unwrap_or(wrapper));
         registry.core_binary_args = vec![fixture.display().to_string(), mode.into()];
     }
 

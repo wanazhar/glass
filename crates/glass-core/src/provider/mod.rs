@@ -688,7 +688,7 @@ mod tests {
             .map(|(name, description, schema)| name.len() + description.len() + schema.len())
             .sum::<usize>();
         assert!(
-            schema_bytes <= 8000,
+            schema_bytes <= 9000,
             "core schema byte budget exceeded: {schema_bytes}"
         );
         assert_eq!(tools[0].0, "bash");

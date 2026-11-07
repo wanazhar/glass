@@ -7336,7 +7336,7 @@ mod tests {
         assert!(help.contains("Enter opens"));
         assert!(help.contains("Ctrl-L"));
         assert!(help.contains("MOVE AROUND"));
-        assert!(help.contains("Ctrl-Tab surfaces"));
+        assert!(help.contains("Ctrl-Tab next surface"));
         assert!(help.contains("Ctrl-O symbols"));
         assert!(!help.contains("Ctrl-O back"));
         assert!(!help.contains("▎   AGENT"));
@@ -7801,6 +7801,7 @@ mod tests {
         state.git_entries.clear();
         state.tests.clear();
 
+        state.status = "Loading workspace snapshot · first refresh pending · ? help".into();
         let output = rendered(&state, 140, 40);
         assert!(output.contains("Loading workspace snapshot"));
         assert!(!output.contains("branch unavailable"));
@@ -7976,11 +7977,12 @@ mod tests {
             );
         }
 
-        let compact = state(TuiLayout::Desktop);
+        let mut compact = state(TuiLayout::Desktop);
+        compact.surface = DevSurface::Code;
         let desktop_output = rendered(&compact, 140, 40);
         assert!(!desktop_output.contains("←→ move · Enter open"));
         assert!(!desktop_output.contains("n navigate · t type"));
-        let compact_output = rendered(&compact, 64, 24);
+        let compact_output = rendered(&compact, 100, 28);
         assert!(compact_output.contains("SURFACES"));
         assert!(!compact_output.contains("←→ move · Enter open"));
     }
@@ -8295,7 +8297,7 @@ mod tests {
         assert!(output.contains("Compose message"));
         assert!(!output.contains("[i]"));
         assert!(output.contains("DETAILS"));
-        assert!(output.contains("create another Glass Core-backed conversation"));
+        assert!(output.contains("Start Core conversation"));
 
         let mut mobile = state(TuiLayout::Mobile);
         mobile.surface = DevSurface::Agent;

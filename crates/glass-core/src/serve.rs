@@ -1384,19 +1384,21 @@ pub fn serve(
                         let sequence = client_sequence.clone();
                         let replay = snapshot.clone();
                         let human_live = live.clone();
-                        agent = agent.with_human(move |request| {
-                            let result = human_decision(
-                                &human_clients,
-                                &human_owner,
-                                request,
-                                listener,
-                                &sequence,
-                                &replay,
-                                &human_live,
-                            );
-                            broadcast(&human_clients, json!({"t":"interaction_done"}));
-                            result
-                        });
+                        agent = agent
+                            .with_human(move |request| {
+                                let result = human_decision(
+                                    &human_clients,
+                                    &human_owner,
+                                    request,
+                                    listener,
+                                    &sequence,
+                                    &replay,
+                                    &human_live,
+                                );
+                                broadcast(&human_clients, json!({"t":"interaction_done"}));
+                                result
+                            })
+                            .with_masked_secret_input(true);
                     }
                     let outer = std::rc::Rc::clone(&clients);
                     agent.run_turn(|steer| {

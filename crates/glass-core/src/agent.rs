@@ -335,6 +335,8 @@ pub struct Agent<'a> {
     /// Headless/ACP agents leave this unset and never advertise elicitation support.
     input_keys: Option<&'a crate::input::KeyReader>,
     human: Option<HumanDecision<'a>>,
+    /// Host negotiated masked secret entry over a verified Connect ingress.
+    masked_secret_input: bool,
     approved_calls: std::collections::HashMap<String, String>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
@@ -544,6 +546,7 @@ impl<'a> Agent<'a> {
             on_progress: None,
             input_keys: None,
             human: None,
+            masked_secret_input: false,
             approved_calls: std::collections::HashMap::new(),
             ext_prompt: String::new(),
             prefix_bytes: 0,
@@ -632,7 +635,7 @@ impl<'a> Agent<'a> {
     /// The terminal key reader remains a trusted local prompt.
     fn secret_tools_enabled(&self) -> bool {
         if self.human.is_some() {
-            crate::connect::secret_transport_available()
+            self.masked_secret_input && crate::connect::secret_transport_available()
         } else {
             self.input_keys.is_some()
         }
@@ -797,6 +800,12 @@ impl<'a> Agent<'a> {
         human: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'a,
     ) -> Self {
         self.human = Some(Box::new(human));
+        self
+    }
+
+    /// Enable remote secret tools after the host negotiated masked secret entry.
+    pub fn with_masked_secret_input(mut self, on: bool) -> Self {
+        self.masked_secret_input = on;
         self
     }
 

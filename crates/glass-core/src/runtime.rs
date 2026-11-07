@@ -2450,10 +2450,12 @@ fn run(
         let io = wire.clone();
         let session = sid.clone();
         let turn = turn.clone();
-        agent = agent.with_human(move |request| {
-            io.borrow_mut()
-                .request_secret_input(request, &session, &turn)
-        });
+        agent = agent
+            .with_human(move |request| {
+                io.borrow_mut()
+                    .request_secret_input(request, &session, &turn)
+            })
+            .with_masked_secret_input(true);
     }
     if let Some(tools) = &c.tools {
         let io = wire.clone();

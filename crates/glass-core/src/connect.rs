@@ -3782,8 +3782,14 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let session = root.join("thread-image.jsonl");
+        // Attachment previews resolve against the thread's own session file;
+        // shared sessions travel with a sourceRef and live in a project store.
+        let store = root.join(".glass").join("agent-sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        let session = store.join("thread-image.jsonl");
         std::fs::write(&session, b"{}\n").unwrap();
+        let other_session = store.join("other-thread.jsonl");
+        std::fs::write(&other_session, b"{}\n").unwrap();
         let bytes = {
             let mut output = std::io::Cursor::new(Vec::new());
             image::DynamicImage::new_rgba8(3, 2)
@@ -3791,9 +3797,10 @@ mod tests {
                 .unwrap();
             output.into_inner()
         };
-        let attachment = crate::shared_attachments::store(&root, &session, &bytes).unwrap();
+        let attachment = crate::shared_attachments::store(&store, &session, &bytes).unwrap();
         let mut settings = settings();
         settings.local = true;
+        settings.workspace = root.clone();
         let app = Arc::new(App {
             settings,
             cfg: crate::config::Config::default(),
@@ -3802,7 +3809,10 @@ mod tests {
             clients: AtomicUsize::new(0),
         });
 
-        let target = format!("/api/attachment?id=thread-image&attachment={attachment}");
+        let target = format!(
+            "/api/attachment?id=thread-image&sourceRef={}&attachment={attachment}",
+            store.join("thread-image.jsonl").display(),
+        );
         let response = attachment_get_request(app.clone(), &target, true);
         let split = response
             .windows(4)
@@ -3815,7 +3825,10 @@ mod tests {
 
         let cross_thread = attachment_get_request(
             app.clone(),
-            &format!("/api/attachment?id=other-thread&attachment={attachment}"),
+            &format!(
+                "/api/attachment?id=other-thread&sourceRef={}&attachment={attachment}",
+                store.join("other-thread.jsonl").display(),
+            ),
             true,
         );
         assert!(cross_thread.starts_with(b"HTTP/1.1 404"));
@@ -3957,7 +3970,26 @@ mod tests {
         }
     }
 
-    fn secret_test_app(settings: Settings, can_write: bool) -> (Arc<App>, UnixStream) {
+    static SECRET_FLOW_COUNTER: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    /// Fixture app for the secret flow. The bridge is registered under the
+    /// canonical session-path key that shared-session lookups use, inside a
+    /// unique per-app project store, so the verified handler flow resolves it
+    /// exactly as production does for a shared session.
+    fn secret_test_app(settings: Settings, can_write: bool) -> (Arc<App>, UnixStream, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "gc-secret-flow-{}-{}",
+            std::process::id(),
+            SECRET_FLOW_COUNTER.fetch_add(1, Ordering::SeqCst),
+        ));
+        let store = root.join(".glass").join("agent-sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        let session_path = store.join("test-thread.jsonl");
+        std::fs::write(&session_path, b"{}\n").unwrap();
+        let session_path = session_path.canonicalize().unwrap();
+        let mut settings = settings;
+        settings.workspace = root;
         let (writer, reader) = UnixStream::pair().unwrap();
         let interaction_id = "human-secret-test";
         let bridge = Arc::new(Bridge {
@@ -3987,10 +4019,13 @@ mod tests {
             settings,
             cfg: crate::config::Config::default(),
             desktop: Arc::new(crate::desktop::Desktop::new(PathBuf::from("/tmp"))),
-            bridges: Mutex::new(HashMap::from([("test-thread".into(), bridge)])),
+            bridges: Mutex::new(HashMap::from([(
+                session_path.to_string_lossy().into_owned(),
+                bridge,
+            )])),
             clients: AtomicUsize::new(0),
         });
-        (app, reader)
+        (app, reader, session_path)
     }
 
     fn post_secret(
@@ -4000,13 +4035,23 @@ mod tests {
         owner_capability_enabled: bool,
         extra_headers: &[(&str, &str)],
     ) -> String {
+        let source_ref = app
+            .bridges
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_default();
         post_secret_body(
             app,
             https_ingress,
             transport_active,
             owner_capability_enabled,
             extra_headers,
-            r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value"}"#,
+            &format!(
+                r#"{{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value","sourceRef":"{source_ref}"}}"#
+            ),
         )
     }
 
@@ -4090,7 +4135,7 @@ mod tests {
     #[test]
     fn secret_owner_unlock_requires_token_https_and_tailnet_owner() {
         let settings = settings();
-        let (app, _) = secret_test_app(settings.clone(), true);
+        let (app, _, _) = secret_test_app(settings.clone(), true);
         let owner = "Tailscale-User-Login: owner@example.test\r\n";
         let secret_token = bootstrap_token(&settings, "secret", &https_url(&settings));
         let accepted = owner_unlock_request(app.clone(), true, &secret_token, owner);
@@ -4160,7 +4205,7 @@ mod tests {
             &format!("http://{}:{}", settings.http_host, settings.http),
             &token
         ));
-        let (app, _) = secret_test_app(settings.clone(), true);
+        let (app, _, _) = secret_test_app(settings.clone(), true);
         let identity = "Tailscale-User-Login: owner@example.test\r\n";
         let response = owner_unlock_request_at(app.clone(), true, &token, identity, &https_origin);
         assert!(
@@ -4185,7 +4230,7 @@ mod tests {
         settings.http_host = "100.64.0.1".into();
         let http_origin = origin(&settings);
         let http_token = bootstrap_token(&settings, "owner", &http_origin);
-        let (app, _) = secret_test_app(settings.clone(), true);
+        let (app, _, _) = secret_test_app(settings.clone(), true);
         let identity = "Tailscale-User-Login: owner@example.test\r\n";
         let response =
             owner_unlock_request_at(app.clone(), false, &http_token, identity, &http_origin);
@@ -4252,7 +4297,7 @@ mod tests {
             r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"","extra":"rejected-secret-sentinel"}"#,
         ];
         for body in cases {
-            let (app, mut bridge_reader) = secret_test_app(settings(), true);
+            let (app, mut bridge_reader, _) = secret_test_app(settings(), true);
             let _ = bridge_reader.set_read_timeout(Some(Duration::from_millis(50)));
             let response = post_secret_body(app, true, true, true, &[], body);
             assert!(response.starts_with("HTTP/1.1 400"));
@@ -4264,12 +4309,12 @@ mod tests {
 
     #[test]
     fn secret_submission_requires_the_current_control_lease_and_keeps_pending_request() {
-        let (app, mut bridge_reader) = secret_test_app(settings(), false);
+        let (app, mut bridge_reader, session_path) = secret_test_app(settings(), false);
         let _ = bridge_reader.set_read_timeout(Some(Duration::from_millis(50)));
         let response = post_secret(app.clone(), true, true, true, &[]);
         assert!(response.starts_with("HTTP/1.1 400"));
         assert!(!response.contains("sentinel-secret-value"));
-        let bridge = app.bridges.lock().unwrap()["test-thread"].clone();
+        let bridge = app.bridges.lock().unwrap()[session_path.to_string_lossy().as_ref()].clone();
         let feed = bridge.feed.lock().unwrap();
         assert_eq!(
             feed.interaction.as_ref().unwrap()["id"],
@@ -4287,7 +4332,7 @@ mod tests {
     #[test]
     fn secret_http_handler_rejects_unverified_loopback_but_preserves_verified_handler_flow() {
         let settings = settings();
-        let (http_app, mut http_bridge) = secret_test_app(settings.clone(), true);
+        let (http_app, mut http_bridge, _) = secret_test_app(settings.clone(), true);
         let _ = http_bridge.set_read_timeout(Some(Duration::from_millis(50)));
         let http_response = post_secret(
             http_app,
@@ -4301,7 +4346,7 @@ mod tests {
         let mut rejected = [0; 1];
         assert_eq!(http_bridge.read(&mut rejected).unwrap(), 0);
 
-        let (unverified_app, mut unverified_bridge) = secret_test_app(settings.clone(), true);
+        let (unverified_app, mut unverified_bridge, _) = secret_test_app(settings.clone(), true);
         let _ = unverified_bridge.set_read_timeout(Some(Duration::from_millis(50)));
         let unverified_response = post_secret(unverified_app, true, true, false, &[]);
         assert!(unverified_response.starts_with("HTTP/1.1 403"));
@@ -4312,11 +4357,11 @@ mod tests {
         let mut rejected = [0; 1];
         assert_eq!(unverified_bridge.read(&mut rejected).unwrap(), 0);
 
-        let (https_app, bridge_reader) = secret_test_app(settings, true);
+        let (https_app, bridge_reader, https_session) = secret_test_app(settings, true);
         let https_response = post_secret(https_app.clone(), true, true, true, &[]);
         assert!(https_response.starts_with("HTTP/1.1 200"));
         assert!(!https_response.contains("sentinel-secret-value"));
-        let bridge = https_app.bridges.lock().unwrap()["test-thread"].clone();
+        let bridge = https_app.bridges.lock().unwrap()[https_session.to_string_lossy().as_ref()].clone();
         {
             let feed = bridge.feed.lock().unwrap();
             assert_eq!(

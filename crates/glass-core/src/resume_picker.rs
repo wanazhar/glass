@@ -300,7 +300,8 @@ mod tests {
         .unwrap();
         assert_eq!(super::all(&root).len(), 1);
         let rows = super::all_for_web(&root, &root);
-        assert_eq!(rows.len(), 2);
+        let local: Vec<_> = rows.iter().filter(|r| r.path.starts_with(&root)).collect();
+        assert_eq!(local.len(), 2);
         let legacy = rows.iter().find(|r| r.id == "legacy").unwrap();
         assert!(legacy.workspace.as_os_str().is_empty());
         assert_eq!(legacy.title, "Legacy");

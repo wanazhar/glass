@@ -527,6 +527,9 @@ export class GlassClient {
   private closeRequested = false;
   private manifest?: GlassCapabilityManifest;
   private leaseToken?: string;
+  private leaseScopeCount = 0;
+  private leaseScopeOwned = false;
+  private leaseScopeGate: Promise<void> = Promise.resolve();
 
   constructor(options: GlassClientOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? 4 * 1024 * 1024;
@@ -773,13 +776,37 @@ export class GlassClient {
     if (options.signal?.aborted) throw new Error("process health wait aborted");
     throw new Error(`timed out after ${timeoutMs}ms waiting for process ${name} to become healthy`);
   }
+  /** Share a scoped lease until the last overlapping scope exits. */
   async withMutationLease<T>(operation: () => Promise<T>, ttlMs = 60_000): Promise<T> {
-    const alreadyHeld = this.leaseToken !== undefined;
-    if (!alreadyHeld) await this.acquireMutationLease(ttlMs);
+    await this.withLeaseScopeGate(async () => {
+      if (this.leaseScopeCount === 0) {
+        this.leaseScopeOwned = this.leaseToken === undefined;
+        if (this.leaseScopeOwned) await this.acquireMutationLease(ttlMs);
+      }
+      this.leaseScopeCount++;
+    });
     try {
       return await operation();
     } finally {
-      if (!alreadyHeld) await this.releaseMutationLease();
+      await this.withLeaseScopeGate(async () => {
+        this.leaseScopeCount--;
+        if (this.leaseScopeCount === 0 && this.leaseScopeOwned) {
+          this.leaseScopeOwned = false;
+          await this.releaseMutationLease();
+        }
+      });
+    }
+  }
+
+  private async withLeaseScopeGate<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.leaseScopeGate;
+    let release!: () => void;
+    this.leaseScopeGate = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
     }
   }
   async editAndVerify(path: string, content: string, root = ".", title = `Edit ${path}`): Promise<VerificationCard> {

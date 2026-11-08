@@ -816,6 +816,15 @@ impl Store {
             {
                 return Err("an earlier generation is unfinished in this conversation".into());
             }
+            if let Op::TaskUpdate { id, status, .. } = op
+                && status == "pending"
+                && let Some(task) = next.tasks.get(id).filter(|task| task.status == "waiting")
+                && task.on.iter().any(|dependency| {
+                    !next.tasks.get(dependency).is_some_and(Task::terminal)
+                })
+            {
+                return Err("waiting task dependencies have not settled".into());
+            }
             apply(&mut next, op, sequence)?;
         }
         reconcile(&mut next)?;
@@ -1510,6 +1519,9 @@ mod tests {
             *policy = "fail_fast".into();
         }
         transact(&mut store, vec![wait]);
+        let premature = transition(&store, "parent", "pending");
+        assert!(store.commit(store.state.sequence, vec![premature]).is_err());
+        assert_eq!(store.state.tasks["parent"].status, "waiting");
         let op = transition(&store, "b", "running");
         transact(&mut store, vec![op]);
         let op = transition(&store, "a", "failed");

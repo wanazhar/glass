@@ -170,6 +170,8 @@ pub enum Op {
         #[serde(default)]
         include_background: bool,
     },
+    #[serde(rename = "task.abort.recursive")]
+    AbortRecursive { id: String },
 }
 fn fork_current() -> String {
     "current".into()
@@ -266,6 +268,20 @@ fn abort_tree(state: &mut State, id: &str, background: bool) -> Result<(), Strin
     for child in children {
         abort_tree(state, &child, background)?;
     }
+    abort_one(state, id)
+}
+
+fn abort_tree_including_finished(state: &mut State, id: &str) -> Result<(), String> {
+    let children: Vec<_> = state.tasks.values()
+        .filter(|task| task.owner.as_deref() == Some(id))
+        .map(|task| task.id.clone()).collect();
+    for child in children {
+        abort_tree_including_finished(state, &child)?;
+    }
+    abort_one(state, id)
+}
+
+fn abort_one(state: &mut State, id: &str) -> Result<(), String> {
     let children_active = active_children(state, id);
     let t = state.tasks.get_mut(id).ok_or("unknown task")?;
     if !t.terminal() && !t.abort_requested {
@@ -662,6 +678,7 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
             id,
             include_background,
         } => abort_tree(state, id, *include_background)?,
+        Op::AbortRecursive { id } => abort_tree_including_finished(state, id)?,
     }
     if state.conversations.len()
         + state.documents.len()
@@ -804,6 +821,11 @@ impl Store {
         if ops.is_empty() || ops.len() > 512 {
             return Err("commit requires 1..512 operations".into());
         }
+        // The distinct journal operation preserves historical replay semantics.
+        let ops: Vec<_> = ops.into_iter().map(|op| match op {
+            Op::Abort { id, include_background: true } => Op::AbortRecursive { id },
+            other => other,
+        }).collect();
         let sequence = expected
             .checked_add(1)
             .ok_or("durable sequence exhausted")?;
@@ -1479,6 +1501,27 @@ mod tests {
         transact(&mut store, vec![op]);
         assert_eq!(store.state.tasks["parent"].status, "completed");
         assert_eq!(store.state.tasks["background"].status, "pending");
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn recursive_abort_reaches_descendants_of_completed_tasks_after_reopen() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![
+            create("root"), task("parent", None, true, false),
+            task("child", Some("parent"), true, true),
+            task("grandchild", Some("child"), true, true),
+        ]);
+        let op = transition(&store, "child", "completed");
+        transact(&mut store, vec![op]);
+        transact(&mut store, vec![Op::Abort { id: "parent".into(), include_background: true }]);
+        assert_eq!(store.state.tasks["child"].status, "completed");
+        assert_eq!(store.state.tasks["grandchild"].status, "aborted");
+        drop(store);
+        let store = Store::open(&path, false).unwrap();
+        assert_eq!(store.state.tasks["child"].status, "completed");
+        assert_eq!(store.state.tasks["grandchild"].status, "aborted");
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TrySendError};
@@ -22,7 +22,7 @@ const MAX_DAP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_MESSAGES: usize = 512;
 type DapWriter = Box<dyn Write + Send>;
 type DapReader = Box<dyn Read + Send>;
-type AdapterStreams = (DapWriter, DapReader, Vec<JoinHandle<()>>);
+type AdapterStreams = (DapWriter, DapReader, Vec<JoinHandle<()>>, Option<TcpStream>);
 
 pub type DebugResult<T> = Result<T, DebugError>;
 
@@ -174,6 +174,7 @@ pub(crate) struct DapClient {
     messages: Receiver<DebugResult<Value>>,
     reader: Option<JoinHandle<()>>,
     output_drains: Vec<JoinHandle<()>>,
+    tcp_shutdown: Option<TcpStream>,
     pending: VecDeque<Value>,
     next_sequence: u64,
     root: PathBuf,
@@ -212,11 +213,12 @@ impl DapClient {
             .stderr
             .take()
             .ok_or_else(|| DebugError::Protocol("adapter stderr was unavailable".into()))?;
-        let (stdin, stdout, output_drains): AdapterStreams = match config.transport {
+        let (stdin, stdout, output_drains, tcp_shutdown): AdapterStreams = match config.transport {
             DebugAdapterTransport::Stdio => (
                 Box::new(child_stdin),
                 Box::new(child_stdout),
                 vec![spawn_output_drain(child_stderr)],
+                None,
             ),
             DebugAdapterTransport::Tcp {
                 address,
@@ -255,7 +257,8 @@ impl DapClient {
                     }
                 };
                 let reader = stream.try_clone()?;
-                (Box::new(stream), Box::new(reader), output_drains)
+                let shutdown = stream.try_clone()?;
+                (Box::new(stream), Box::new(reader), output_drains, Some(shutdown))
             }
         };
         let (sender, messages) = mpsc::sync_channel(MAX_PENDING_MESSAGES);
@@ -281,6 +284,7 @@ impl DapClient {
             messages,
             reader: Some(reader),
             output_drains,
+            tcp_shutdown,
             pending: VecDeque::new(),
             next_sequence: 1,
             root: root.to_path_buf(),
@@ -524,11 +528,31 @@ impl DapClient {
             }
             let _ = self.child.wait();
         }
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+        self.finish_transport()
+    }
+
+    /// Bound shutdown even if another process inherited the adapter's pipes.
+    fn finish_transport(&mut self) -> DebugResult<()> {
+        if let Some(socket) = self.tcp_shutdown.take() {
+            let _ = socket.shutdown(Shutdown::Both);
         }
-        for drain in self.output_drains.drain(..) {
-            let _ = drain.join();
+        let mut threads = self.output_drains.drain(..).collect::<Vec<_>>();
+        threads.extend(self.reader.take());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while threads.iter().any(|thread| !thread.is_finished()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for thread in threads {
+            if thread.is_finished() {
+                let _ = thread.join();
+            } else {
+                self.output_drains.push(thread);
+            }
+        }
+        if !self.output_drains.is_empty() {
+            return Err(DebugError::Protocol(
+                "adapter transport readers did not stop; cleanup is unconfirmed".into(),
+            ));
         }
         Ok(())
     }
@@ -540,12 +564,7 @@ impl Drop for DapClient {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
-        for drain in self.output_drains.drain(..) {
-            let _ = drain.join();
-        }
+        let _ = self.finish_transport();
     }
 }
 
@@ -852,8 +871,13 @@ impl DebuggerSession {
     }
 
     pub fn shutdown(&mut self) -> DebugResult<()> {
-        self.state = DebugSessionState::Terminated;
-        self.client.shutdown()
+        let result = self.client.shutdown();
+        self.state = if result.is_ok() {
+            DebugSessionState::Terminated
+        } else {
+            DebugSessionState::Failed
+        };
+        result
     }
 }
 
@@ -1183,6 +1207,62 @@ time.sleep(30)
         session.timeout = Duration::from_secs(2);
         assert!(session.configuration_done().is_ok());
         drop(session);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_adapter_pipes_do_not_block_shutdown() {
+        let adapter = r#"
+import json, subprocess, sys
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)'])
+while True:
+    header = sys.stdin.buffer.readline()
+    if not header: break
+    size = int(header.split(b':', 1)[1])
+    sys.stdin.buffer.readline()
+    request = json.loads(sys.stdin.buffer.read(size))
+    body = json.dumps({'seq':1, 'type':'response', 'request_seq':request['seq'],
+                       'command':request['command'], 'success':True}).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+    if request['command'] == 'disconnect': break
+"#;
+        let Some((root, config)) = python_adapter(adapter) else { return };
+        let mut client = DapClient::spawn(&root, &config).unwrap();
+        client.request("initialize", json!({}), Duration::from_secs(5)).unwrap();
+        let start = Instant::now();
+        let error = client.shutdown().unwrap_err();
+        assert!(error.to_string().contains("cleanup is unconfirmed"));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        drop(client);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tcp_shutdown_closes_a_peer_that_keeps_the_socket_open() {
+        let Some((root, config)) = python_adapter("import time; time.sleep(30)") else { return };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            for _ in 0..2 {
+                let request = read_dap_message(&mut reader).unwrap().unwrap();
+                write_dap_message(&mut writer, &json!({
+                    "seq": 1, "type": "response", "request_seq": request["seq"],
+                    "command": request["command"], "success": true
+                })).unwrap();
+            }
+            read_dap_message(&mut reader).unwrap().is_none()
+        });
+        let mut client = DapClient::spawn(&root, &config.with_tcp(address, Duration::from_secs(5))).unwrap();
+        client.request("initialize", json!({}), Duration::from_secs(5)).unwrap();
+        client.shutdown().unwrap();
+        assert!(server.join().unwrap());
+        drop(client);
         std::fs::remove_dir_all(root).unwrap();
     }
 

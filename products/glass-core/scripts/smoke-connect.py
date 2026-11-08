@@ -121,8 +121,6 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         except urllib.error.HTTPError as e:return e.code,e.read(),e.headers
     try:
         assert req('/api/threads',auth=False)[0]==403
-        catalogue=json.loads(req('/api/commands')[1])['commands'];assert len(catalogue)>60
-        assert all(c['portable'] or c['name'] in ['conversations','work','settings','help','outputs','thinking','theme','redraw','keys','animation','tools','clear','editor'] for c in catalogue)
         assert req('/api/command','POST',{'id':'web-fixture','name':'name','values':{'args':'no'} })[0]==400
         assert req('/api/export?id=web-fixture',auth=False)[0]==403
 

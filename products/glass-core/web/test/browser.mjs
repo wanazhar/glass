@@ -395,6 +395,7 @@ try {
   await page
     .locator("#detail-content")
     .getByText("Considering the workspace and preserving context.")
+    .first()
     .waitFor();
   await page.locator("#details-close").click();
   await page.reload();

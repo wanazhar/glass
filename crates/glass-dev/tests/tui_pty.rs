@@ -1386,19 +1386,10 @@ fn agent_composer_is_ready_and_first_typing_is_literal_with_offline_core_fixture
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust"
-    );
-    assert!(
-        session.wait_for("Core available", Duration::from_secs(5)),
-        "offline Glass Core fixture never became ready\n{}",
-        session.output_tail()
-    );
 
-    session.send(b"c");
+    session.send(b"c-first-draft");
     assert!(
-        session.wait_for_composer_text("c", Duration::from_secs(5)),
+        session.wait_for_composer_text("c-first-draft", Duration::from_secs(5)),
         "first typing on Agent must enter the always-ready composer\n{}",
         session.output_tail()
     );

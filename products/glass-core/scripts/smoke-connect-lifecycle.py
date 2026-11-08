@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Isolated fake-Tailscale lifecycle and real native gateway authorization checks."""
-import hashlib,http.server,json,os,socket,socketserver,subprocess,tempfile,threading,urllib.request,urllib.error,time
+import hashlib,hmac,http.server,json,os,socket,socketserver,subprocess,tempfile,threading,urllib.request,urllib.error,time
 from pathlib import Path
 from core_binary import core_binary_path
 ROOT=Path(__file__).resolve().parents[1];BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('debug'))).resolve()
@@ -40,7 +40,9 @@ else:raise SystemExit('Unexpected tailscale command')
   p=subprocess.run([str(BIN),*args],cwd=root,env=env,capture_output=True,text=True,timeout=15);assert p.returncode==0,(args,p.stdout,p.stderr);return p.stdout
  def state():return json.loads((data/'connect.json').read_text())
  def request(settings,login='owner@example.test',origin=None,host=None):
-  headers={'Host':host or f"fixture.tail.test:{settings['https']}",'Origin':origin or f"https://fixture.tail.test:{settings['https']}",'Tailscale-User-Login':login}
+  target_origin=origin or f"https://fixture.tail.test:{settings['https']}"
+  capability=hmac.new(settings['token'].encode(),b'glass-connect-owner-access-v1\0'+target_origin.encode(),hashlib.sha256).hexdigest()
+  headers={'Host':host or f"fixture.tail.test:{settings['https']}",'Origin':target_origin,'Tailscale-User-Login':login,'X-Glass-Owner-Capability':capability}
   req=urllib.request.Request(f"http://127.0.0.1:{settings['port']}/api/status",headers=headers)
   try:
    with urllib.request.urlopen(req,timeout=5)as r:return r.status,json.load(r)

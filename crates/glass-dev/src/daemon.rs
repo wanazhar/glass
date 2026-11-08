@@ -1156,8 +1156,15 @@ async fn execute_request(
                     .take(limit)
                     .cloned()
                     .collect::<Vec<_>>();
+                let cursor = events.last().map_or(since, |event| event.sequence);
+                let has_more = registry.events.iter().any(|event| {
+                    event.sequence > cursor
+                        && operation_id.is_none_or(|id| event.operation_id == id)
+                });
                 Ok(serde_json::json!({
                     "events":events,
+                    "cursor":cursor,
+                    "hasMore":has_more,
                     "newestSequence":registry.events.back().map_or(0, |event| event.sequence),
                     "capacity":OPERATION_EVENT_CAPACITY,
                 }))
@@ -1575,8 +1582,11 @@ fn workspace_event_batch(
         .take(limit)
         .cloned()
         .collect::<Vec<_>>();
+    let cursor = selected.last().map_or(since, |event| event.sequence);
     serde_json::json!({
         "events": selected,
+        "cursor": cursor,
+        "hasMore": cursor < newest,
         "oldestSequence": oldest,
         "newestSequence": newest,
         "lostBefore": (since.saturating_add(1) < oldest).then_some(oldest),
@@ -2447,6 +2457,23 @@ mod tests {
         let duplicate = registry.submit("first", "actor".into(), "tool".into(), 0, true).unwrap();
         assert!(!duplicate.1);
         assert_eq!(duplicate.0.id, first.id);
+    }
+
+    #[test]
+    fn workspace_event_cursor_advances_only_past_delivered_events() {
+        let mut events = VecDeque::new();
+        let mut next = 1;
+        let mut dropped = 0;
+        for _ in 0..4 {
+            push_workspace_event("workspace", &mut events, &mut next, &mut dropped, "changed", None, true);
+        }
+        let first = workspace_event_batch(&events, next, dropped, 0, 1);
+        assert_eq!(first["cursor"], 1);
+        assert_eq!(first["newestSequence"], 4);
+        assert_eq!(first["hasMore"], true);
+        let second = workspace_event_batch(&events, next, dropped, first["cursor"].as_u64().unwrap(), 3);
+        assert_eq!(second["events"].as_array().unwrap().iter().map(|event| event["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(second["hasMore"], false);
     }
 
     #[cfg(unix)]
@@ -3724,7 +3751,7 @@ while True:
                 .unwrap();
                 assert_eq!(first["events"][0]["kind"], "workspace.opened");
                 assert_eq!(first["events"][1]["kind"], "task.changed");
-                let cursor = first["newestSequence"].as_u64().unwrap();
+                let cursor = first["cursor"].as_u64().unwrap();
 
                 // A fresh handle models a client reconnecting to the same actor.
                 let reconnected = WorkspaceActorHandle {

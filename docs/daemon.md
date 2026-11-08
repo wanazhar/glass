@@ -160,9 +160,9 @@ Each retained record moves through `queued`, `running`, then exactly one of
 timestamps, actor and operation type, revisions before/after, result reference,
 failure reason, cancellation intent, and whether a failed observation is safe
 to retry. The registry retains at most 128 operations and 512 operation events.
-External clients may disconnect, reconnect, inspect the same actor, resume from
-an event cursor, and reconcile the terminal result without guessing whether an
-effect occurred.
+External clients may disconnect, reconnect, inspect the same actor, resume
+`operation.events` from the returned `cursor`, and reconcile the terminal result
+without guessing whether an effect occurred. `hasMore` indicates another page.
 
 Running cancellation is cooperative at the Glass tool boundary. A cancel
 request is recorded immediately; the owned synchronous tool is still joined
@@ -194,10 +194,10 @@ operation, preventing a fixed socket timeout from obscuring an ongoing effect.
 `workspace.events` accepts `workspaceId`, an optional exclusive `since`
 sequence (default `0`), and a `limit` from 1 through 256 (default 128). Each
 workspace retains the newest 512 event envelopes across client disconnects.
-Responses include `oldestSequence`, `newestSequence`, `capacity`, cumulative
-`droppedEvents`, and `lostBefore` when the requested cursor predates retained
-history. A reconnecting client resumes from its last `newestSequence` instead
-of polling every subsystem from zero.
+Responses include `cursor`, `hasMore`, `oldestSequence`, `newestSequence`,
+`capacity`, cumulative `droppedEvents`, and `lostBefore` when the requested
+cursor predates retained history. Resume from `cursor`, the last delivered
+sequence; `newestSequence` is the buffer high-water mark, not a page cursor.
 
 Event kinds include `workspace.changed`, `agent.event`, `task.changed`,
 `process.output`, `browser.revision`, `lsp.diagnostics`,

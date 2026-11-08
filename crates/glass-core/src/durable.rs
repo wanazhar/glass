@@ -832,20 +832,49 @@ impl Store {
             .state
             .tasks
             .values()
-            .filter(|t| t.status == "running")
+            .filter(|task| task.status == "running")
+            .map(|task| {
+                let mut depth = 0;
+                let mut parent = task.owner.as_ref();
+                while let Some(id) = parent {
+                    depth += 1;
+                    parent = self.state.tasks.get(id).and_then(|task| task.owner.as_ref());
+                }
+                (std::cmp::Reverse(depth), task.id.clone())
+            })
             .collect();
-        running.sort_by_key(|task| {
-            let mut depth = 0;
-            let mut parent = task.owner.as_ref();
-            while let Some(id) = parent {
-                depth += 1;
-                parent = self.state.tasks.get(id).and_then(|p| p.owner.as_ref());
-            }
-            std::cmp::Reverse(depth)
-        });
-        let ops:Vec<_>=running.into_iter().map(|t|Op::TaskUpdate{id:t.id.clone(),expected_revision:t.revision,status:if t.abort_requested{"aborted"}else if t.replay=="safe"{"pending"}else{"failed"}.into(),checkpoint:t.checkpoint.clone(),on:Vec::new(),policy:all_settled(),due_at_ms:t.due_at_ms,outcome:if t.abort_requested{Some(json!({"status":"aborted"}))}else if t.replay=="unsafe"{Some(json!({"status":"failed","kind":"interrupted","message":"External effect may have completed; reconcile before retrying."}))}else{None}}).collect();
-        if !ops.is_empty() {
-            self.commit(self.state.sequence, ops)?;
+        running.sort();
+        // Recover children first and commit each transition separately. Re-read
+        // its revision because reconciliation may have changed it between commits.
+        for (_, id) in running {
+            let Some(task) = self.state.tasks.get(&id).filter(|task| task.status == "running") else {
+                continue;
+            };
+            let status = if task.abort_requested {
+                "aborted"
+            } else if task.replay == "safe" {
+                "pending"
+            } else {
+                "failed"
+            };
+            let outcome = if task.abort_requested {
+                Some(json!({"status":"aborted"}))
+            } else if task.replay == "unsafe" {
+                Some(json!({"status":"failed","kind":"interrupted","message":"External effect may have completed; reconcile before retrying."}))
+            } else {
+                None
+            };
+            let op = Op::TaskUpdate {
+                id,
+                expected_revision: task.revision,
+                status: status.into(),
+                checkpoint: task.checkpoint.clone(),
+                on: Vec::new(),
+                policy: all_settled(),
+                due_at_ms: task.due_at_ms,
+                outcome,
+            };
+            self.commit(self.state.sequence, vec![op])?;
         }
         Ok(())
     }
@@ -1038,6 +1067,34 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn recovery_handles_more_than_one_commit_of_running_tasks() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root")]);
+        for start in (0..513).step_by(256) {
+            let ops = (start..(start + 256).min(513))
+                .map(|i| task(&format!("task-{i}"), None, true, false))
+                .collect();
+            transact(&mut store, ops);
+        }
+        for start in (0..513).step_by(256) {
+            let ops = (start..(start + 256).min(513))
+                .map(|i| transition(&store, &format!("task-{i}"), "running"))
+                .collect();
+            transact(&mut store, ops);
+        }
+        drop(store);
+        let mut store = Store::open(&path, false).unwrap();
+        store.recover().unwrap();
+        assert_eq!(store.state.tasks.len(), 513);
+        assert!(store.state.tasks.values().all(|task| task.status == "pending"));
+        drop(store);
+        let store = Store::open(&path, false).unwrap();
+        assert!(store.state.tasks.values().all(|task| task.status == "pending"));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn consumed_submissions_keep_deduplication_receipts_after_reopen() {

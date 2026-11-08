@@ -783,6 +783,13 @@ impl Store {
             .ok_or("durable sequence exhausted")?;
         let mut next = self.state.clone();
         for op in &ops {
+            // Historical journals may contain these formerly accepted transitions.
+            // Reject them on new commits without making old journals unreadable.
+            if let Op::TaskCreate { owner: Some(owner), .. } = op
+                && next.tasks.get(owner).is_some_and(|task| task.status == "completing")
+            {
+                return Err("owner task has already decided its outcome".into());
+            }
             apply(&mut next, op, sequence)?;
         }
         reconcile(&mut next)?;
@@ -1344,6 +1351,9 @@ mod tests {
         let op = transition(&store, "parent", "completed");
         transact(&mut store, vec![op]);
         assert_eq!(store.state.tasks["parent"].status, "completing");
+        assert!(store
+            .commit(store.state.sequence, vec![task("late", Some("parent"), true, false)])
+            .is_err());
         let op = transition(&store, "child", "completed");
         transact(&mut store, vec![op]);
         assert_eq!(store.state.tasks["parent"].status, "completed");

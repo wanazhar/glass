@@ -770,7 +770,7 @@ try {
       await phone.locator("#sidebar-close").click();
       await phone.locator("#details-toggle").click();
       await phone.getByRole("button", { name: "Files", exact: true }).click();
-      await phone.locator(".file-list").waitFor();
+      await phone.getByRole("button", { name: "Change file view", exact: true }).waitFor();
       await phone.locator("#details-close").click();
     }
   }

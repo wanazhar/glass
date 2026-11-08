@@ -1245,6 +1245,8 @@ class GlassClient:
             if len(body) != length:
                 raise GlassError("Glass exited before completing an MCP body")
         else:
+            if not first.endswith(b"\n"):
+                raise GlassError("Glass exited before completing an MCP newline frame")
             body = first.strip()
         try:
             return json.loads(body)

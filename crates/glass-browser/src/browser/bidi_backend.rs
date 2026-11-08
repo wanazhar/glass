@@ -364,12 +364,12 @@ impl BidiBrowserBackend {
                 if !state.initialized {
                     return Err(lifecycle_error("close", "closed"));
                 }
-                let _ = self.command(&mut state, "session.end", json!({})).await;
+                let result = self.command(&mut state, "session.end", json!({})).await;
                 if let Some(mut socket) = state.socket.take() {
                     let _ = socket.close(None).await;
                 }
                 state.initialized = false;
-                Ok(BackendResponse::Unit)
+                result.map(|_| BackendResponse::Unit)
             }
             (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
                 ensure_initialized(&state, "navigate")?;
@@ -898,5 +898,31 @@ mod tests {
         assert!(action.accepted);
         assert!(effects.changed);
         dispatcher.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_reports_session_end_failure() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(text.as_ref()).unwrap();
+                let id = request["id"].clone();
+                let response = match request["method"].as_str().unwrap() {
+                    "session.new" => json!({"id": id, "result": {"session": "s"}}),
+                    "browsingContext.getTree" => json!({"id": id, "result": {"contexts": [{"context": "c", "url": "about:blank"}]}}),
+                    "session.end" => json!({"id": id, "error": {"message": "end failed"}}),
+                    _ => unreachable!(),
+                };
+                socket.send(Message::Text(response.to_string().into())).await.unwrap();
+            }
+        });
+        let backend = BidiBrowserBackend::connect(format!("ws://{address}")).await.unwrap();
+        let dispatcher = crate::browser_backend::BrowserBackendDispatcher::new(&backend);
+        dispatcher.initialize().await.unwrap();
+        assert!(dispatcher.close().await.unwrap_err().to_string().contains("end failed"));
+        server.abort();
     }
 }

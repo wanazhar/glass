@@ -198,10 +198,9 @@ impl Host {
             "durable/create" => {
                 let (settings, _, mode, _) = metadata(p, cfg)?;
                 super::validate_tool_mode(wire.borrow().protocol_version, mode)?;
-                let session =
-                    Session::create(&dir.join("durable-projections")).map_err(|e| e.to_string())?;
-                let id = session.id.clone();
-                drop(session);
+                // Projections are derived only when execution starts; a failed
+                // authoritative commit must not leave a provisional session.
+                let id = format!("durable-{}", crate::durable::identity()?);
                 let mut agent = p.clone();
                 agent["cwd"] = json!(settings.workspace);
                 agent["model"] = json!(settings.model);
@@ -232,10 +231,7 @@ impl Host {
                     .conversations
                     .get(parent)
                     .ok_or("conversation does not exist at fork boundary")?;
-                let session =
-                    Session::create(&dir.join("durable-projections")).map_err(|e| e.to_string())?;
-                let id = session.id.clone();
-                drop(session);
+                let id = format!("durable-{}", crate::durable::identity()?);
                 let mut ops = vec![Op::ConversationCreate {
                     id: id.clone(),
                     agent: original.agent.clone(),

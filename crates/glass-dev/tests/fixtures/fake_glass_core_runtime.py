@@ -862,6 +862,7 @@ def main() -> None:
             assert params == {}
             reply(identifier, {
                 "sequence": 17,
+                "hasMore": True,
                 "tasks": [{
                     "id": "generation-fixture-1",
                     "conversation": "durable-fixture-session",

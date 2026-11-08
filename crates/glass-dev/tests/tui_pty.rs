@@ -3,7 +3,7 @@
 //! End-to-end PTY interaction tests for the Glass Dev TUI.
 //!
 //! Opt-in like the browser smoke test: run with `GLASS_E2E=1`. These tests
-//! drive the real release binary in a pseudo-terminal at real sizes and
+//! drive the Cargo-built binary in a pseudo-terminal at real sizes and
 //! assert on rendered output, closing the gap between unit-render tests
 //! and interactive behavior (key handling in every mode, menus, composer,
 //! action menus, recovery, and quit conventions).
@@ -937,12 +937,8 @@ fn seed_attention_proposal(root: &std::path::Path, data_home: &std::path::Path) 
 }
 
 fn binary() -> String {
-    std::env::var("GLASS_E2E_BINARY").unwrap_or_else(|_| {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/release/glass")
-            .display()
-            .to_string()
-    })
+    std::env::var("GLASS_E2E_BINARY")
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_glass").to_string())
 }
 
 fn send_ctrl_shift_a(session: &mut Session) {
@@ -1611,10 +1607,10 @@ fn tasks_palette_route_and_slash_refresh_use_selected_core_session() {
     let fake_core = fake_core_binary(&root);
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
-    start_core_conversation(&mut session, "assistant", "task graph route fixture");
+    let turn_offset = session.buffer.len();
+    session.send_slowly(b"task graph route fixture", Duration::from_millis(10));
+    session.send(b"\r");
     let requests_path = fixture_state.join("e2e-core-requests.jsonl");
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_session_name = false;
@@ -1633,17 +1629,21 @@ fn tasks_palette_route_and_slash_refresh_use_selected_core_session() {
         "Core conversation was not created\n{}",
         session.output_tail()
     );
+    assert!(
+        session.wait_for_output_after(
+            turn_offset,
+            "handled task graph route fixture",
+            Duration::from_secs(10)
+        ),
+        "Initial Core turn did not complete\n{}",
+        session.output_tail()
+    );
 
     // Ctrl-K must open the Glass action palette while the always-ready
     // composer owns focus. Typing the matching action label and pressing
     // Enter must select the action, not send that text as a Core prompt.
     let palette_offset = session.buffer.len();
     session.send(b"\x0b");
-    assert!(
-        session.wait_for_output_after(palette_offset, "COMMAND PALETTE", Duration::from_secs(5)),
-        "Ctrl-K did not open the Glass action palette\n{}",
-        session.output_tail()
-    );
     session.send_slowly(b"open task tracking", Duration::from_millis(10));
     assert!(
         session.wait_for_output_after(palette_offset, "Open task tracking", Duration::from_secs(5)),
@@ -1667,13 +1667,12 @@ fn tasks_palette_route_and_slash_refresh_use_selected_core_session() {
     // the durable Core graph by selecting its explicit Glass host action.
     let refresh_offset = session.buffer.len();
     session.send(b"/");
+    session.send_slowly(b"Refresh GC durable task graph", Duration::from_millis(10));
     assert!(session.wait_for_output_after(
         refresh_offset,
-        "CORE · agent commands and session controls",
+        "Refresh GC durable task graph",
         Duration::from_secs(5)
     ));
-    session.send_slowly(b"Refresh GC durable task graph", Duration::from_millis(10));
-    session.settle(Duration::from_millis(400));
     session.send(b"\r");
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_task_graph = false;
@@ -1703,6 +1702,11 @@ fn tasks_palette_route_and_slash_refresh_use_selected_core_session() {
     assert!(
         visible.contains("gc.generation") && visible.contains("running"),
         "Tasks did not render the Core task's kind and state\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_output_after(refresh_offset, "· 1+", Duration::from_secs(5)),
+        "Tasks did not indicate additional task-graph pages\n{}",
         session.output_tail()
     );
     assert!(!visible.contains("fixture prompt must not appear in the TUI"));

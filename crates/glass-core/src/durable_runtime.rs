@@ -95,6 +95,12 @@ impl Host {
                 }
             }
         }
+        // Each committed batch is independently discoverable on restart, so
+        // an interrupted recovery does not duplicate repaired tool results.
+        for batch in ops.chunks(512) {
+            commit(&store, batch.to_vec())?;
+        }
+        ops.clear();
         for live in store
             .borrow()
             .state
@@ -1078,6 +1084,32 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn recovery_batches_unfinished_tool_calls() {
+        let (dir, host) = setup();
+        for start in (0..513).step_by(256) {
+            let ops = (start..(start + 256).min(513))
+                .map(|i| Op::Entry {
+                    conversation: "root".into(),
+                    record: Record::ToolCall {
+                        id: format!("call-{i}"),
+                        name: "host-tool".into(),
+                        arguments: "{}".into(),
+                    }.to_json(),
+                }).collect();
+            commit(&host.store, ops).unwrap();
+        }
+        drop(host);
+        let host = Host::open(&dir, false).unwrap();
+        let records = host.store.borrow().records("root").unwrap();
+        assert_eq!(records.iter().filter(|record| matches!(record, Record::ToolResult { .. })).count(), 513);
+        drop(host);
+        let host = Host::open(&dir, false).unwrap();
+        let records = host.store.borrow().records("root").unwrap();
+        assert_eq!(records.iter().filter(|record| matches!(record, Record::ToolResult { .. })).count(), 513);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn submissions_are_fifo_and_not_prematurely_visible() {

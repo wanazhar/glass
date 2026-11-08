@@ -295,6 +295,32 @@ fn reaches(state: &State, from: &str, target: &str, seen: &mut BTreeSet<String>)
         .get(from)
         .is_some_and(|task| task.on.iter().any(|id| reaches(state, id, target, seen)))
 }
+/// A completing task also waits for every live foreground child.
+fn reaches_with_ownership(state: &State, from: &[String], target: &str) -> bool {
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for task in state.tasks.values().filter(|task| !task.background && !task.terminal()) {
+        if let Some(owner) = task.owner.as_deref() {
+            children.entry(owner).or_default().push(&task.id);
+        }
+    }
+    let mut pending: Vec<&str> = from.iter().map(String::as_str).collect();
+    let mut seen = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if id == target {
+            return true;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(task) = state.tasks.get(id) {
+            pending.extend(task.on.iter().map(String::as_str));
+        }
+        if let Some(owned) = children.get(id) {
+            pending.extend(owned.iter().copied());
+        }
+    }
+    false
+}
 fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
     match op {
         Op::ConversationCreate {
@@ -825,6 +851,12 @@ impl Store {
             {
                 return Err("waiting task dependencies have not settled".into());
             }
+            if let Op::TaskUpdate { id, status, on, .. } = op
+                && status == "waiting"
+                && reaches_with_ownership(&next, on, id)
+            {
+                return Err("task wait cycle through foreground ownership".into());
+            }
             apply(&mut next, op, sequence)?;
         }
         reconcile(&mut next)?;
@@ -1109,6 +1141,18 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn foreground_child_cannot_wait_for_its_owner() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root"), task("parent", None, true, false), task("child", Some("parent"), true, false)]);
+        let mut wait = transition(&store, "child", "waiting");
+        if let Op::TaskUpdate { on, .. } = &mut wait { on.push("parent".into()); }
+        assert!(store.commit(store.state.sequence, vec![wait]).is_err());
+        assert_eq!(store.state.tasks["child"].status, "pending");
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn combined_commit_cannot_start_overlapping_generations() {

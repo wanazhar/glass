@@ -106,7 +106,7 @@ earlier response containing the same text cannot suppress its transcript entry.
 | `durable/submission` | Reacquire by `conversationId` and `requestId` |
 | `durable/inspect` | Page conversations, documents, and tasks; optional `conversationId` |
 | `durable/changes` | Read atomic commits after a numeric sequence `cursor` |
-| `durable/taskGraph` | Inspect foreground/background ownership of live tasks |
+| `durable/taskGraph` | Page the bounded foreground/background graph of live tasks |
 | `durable/document` | Read by `conversationId`, `kind`, optional `asOf` sequence |
 | `durable/entries` | Page the active transcript by numeric record cursor |
 | `durable/configure` | Merge an `agent` settings patch into a conversation |
@@ -116,6 +116,11 @@ earlier response containing the same text cannot suppress its transcript entry.
 
 Inspection returns `items`, a string `cursor`, and `hasMore`; continue with the
 returned cursor. Changes return `commits`, numeric `cursor`, and `hasMore`.
+Task graph pages return `tasks`, a task-ID `cursor`, `hasMore`, and `sequence`.
+Pass the cursor and `expectedSequence` from the first page to subsequent pages;
+restart if the graph changes. Graph rows omit input, checkpoints, and outcomes;
+use `durable/task` to inspect those fields. The Glass task panel displays the
+first page and appends `+` to its task count when additional pages exist.
 A commit too large for one observation response produces `reset: true`; reacquire
 state through inspection and direct task/document reads. Observation does not
 allocate an unbounded subscriber queue. Polling can resume from the last cursor.

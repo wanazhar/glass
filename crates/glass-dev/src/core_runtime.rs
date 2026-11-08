@@ -1457,6 +1457,7 @@ fn sanitize_core_task_graph(result: &Value) -> Value {
     json!({
         "sequence":result.get("sequence").and_then(Value::as_u64).unwrap_or(0),
         "tasks":tasks,
+        "hasMore":result.get("hasMore").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 

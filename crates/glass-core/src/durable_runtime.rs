@@ -458,7 +458,7 @@ impl Host {
                 )?;
                 Ok(json!({"sequence":self.store.borrow().state.sequence}))
             }
-            "durable/taskGraph" => Ok(self.store.borrow().task_graph()),
+            "durable/taskGraph" => self.store.borrow().task_graph(p),
             "durable/document" => {
                 let cv = string(p, "conversationId")?;
                 let kind = string(p, "kind")?;

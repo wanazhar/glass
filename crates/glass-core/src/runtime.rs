@@ -794,7 +794,7 @@ impl Wire {
                     p["cursor"].as_u64().unwrap_or(0),
                     p["limit"].as_u64().unwrap_or(25).clamp(1, 256) as usize,
                 )),
-                Some("durable/taskGraph") => Some(Ok(store.borrow().task_graph())),
+                Some("durable/taskGraph") => Some(store.borrow().task_graph(p)),
                 Some("durable/abort") => Some((|| {
                     let task = string(p, "taskId")?;
                     let mut store = store.borrow_mut();

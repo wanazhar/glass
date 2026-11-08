@@ -1153,8 +1153,35 @@ impl Store {
             .map_err(|error| error.to_string())?;
         Ok(())
     }
-    pub fn task_graph(&self) -> Value {
-        json!({"sequence":self.state.sequence,"tasks":self.state.tasks.values().filter(|t|!t.terminal()).collect::<Vec<_>>()})
+    pub fn task_graph(&self, params: &Value) -> Result<Value, String> {
+        if params["expectedSequence"].as_u64().is_some_and(|sequence| sequence != self.state.sequence) {
+            return Err("task graph changed; restart pagination".into());
+        }
+        let cursor = params["cursor"].as_str().unwrap_or("");
+        if !cursor.is_empty() && !valid(cursor) {
+            return Err("invalid task graph cursor".into());
+        }
+        let limit = params["limit"].as_u64().unwrap_or(128).clamp(1, 128) as usize;
+        let mut rows = Vec::new();
+        let mut size = 0;
+        let mut next = cursor.to_owned();
+        let mut has_more = false;
+        for task in self.state.tasks.values().filter(|task| !task.terminal() && task.id.as_str() > cursor) {
+            let row = json!({
+                "id":task.id, "conversation":task.conversation, "kind":task.kind,
+                "status":task.status, "owner":task.owner, "background":task.background,
+                "on":task.on, "abortRequested":task.abort_requested,
+            });
+            let row_size = row.to_string().len() + 1;
+            if rows.len() == limit || size + row_size > 700 * 1024 {
+                has_more = true;
+                break;
+            }
+            size += row_size;
+            next.clone_from(&task.id);
+            rows.push(row);
+        }
+        Ok(json!({"sequence":self.state.sequence,"tasks":rows,"cursor":next,"hasMore":has_more}))
     }
 }
 impl Drop for Store {
@@ -1209,6 +1236,31 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn task_graph_pages_large_checkpoint_sets() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root")]);
+        for start in [0, 75] {
+            let ops = (start..start + 75).map(|n| {
+                let mut op = task(&format!("task-{n:03}"), None, true, false);
+                if let Op::TaskCreate { checkpoint, .. } = &mut op { *checkpoint = json!({"data":"x".repeat(7500)}); }
+                op
+            }).collect();
+            transact(&mut store, ops);
+        }
+        let first = store.task_graph(&json!({"limit":1})).unwrap();
+        assert_eq!(first["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(first["hasMore"], true);
+        let second = store.task_graph(&json!({"limit":128,"cursor":first["cursor"],"expectedSequence":first["sequence"]})).unwrap();
+        assert_eq!(second["tasks"].as_array().unwrap().len(), 128);
+        let last = store.task_graph(&json!({"cursor":second["cursor"],"expectedSequence":first["sequence"]})).unwrap();
+        assert_eq!(last["tasks"].as_array().unwrap().len(), 21);
+        assert_eq!(last["hasMore"], false);
+        assert!(first["tasks"][0].get("checkpoint").is_none());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn completion_outcome_does_not_depend_on_child_timing() {

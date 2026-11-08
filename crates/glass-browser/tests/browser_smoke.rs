@@ -272,6 +272,7 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
         }
     }
     let mut child = Command::new(binary)
+        .args(["--browser-runtime", "chromium"])
         .arg("--mcp")
         .arg("--chrome-path")
         .arg(chrome_path)
@@ -416,6 +417,7 @@ async fn mcp_reuses_browser_session_and_target_across_calls() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let mut child = Command::new(binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--mcp",
             "--chrome-path",
@@ -559,6 +561,7 @@ fn named_profile_mcp(
 ) -> Child {
     let port_arg = port.to_string();
     Command::new(binary)
+        .args(["--browser-runtime", "chromium"])
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("GLASS_CONFIG_HOME", home.join("config"))
@@ -670,6 +673,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     let port_arg = port.to_string();
 
     let cli = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -693,6 +697,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     assert_eq!(cli_outcome["action"], "click");
     assert!(cli_outcome["revision"].is_u64());
     let cli_input = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -722,6 +727,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         "outputs": {}
     });
     let mut cli_workflow = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -757,6 +763,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     assert!(cli_workflow_result["trace"]["events"].is_array());
 
     let mcp = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--mcp",
             "--attach",
@@ -2522,6 +2529,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     session.select_target(&original.id).await.unwrap();
     let binary = glass_binary_path();
     let cli_targets = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args(["--attach", "--port", &port.to_string(), "targets"])
         .output()
         .await
@@ -2530,6 +2538,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     let cli_targets: Value = serde_json::from_slice(&cli_targets.stdout).unwrap();
     let cli_target_id = cli_targets[0]["id"].as_str().unwrap().to_string();
     let cli_frames = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -2552,6 +2561,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         .unwrap()
         .to_string();
     let cli_output = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -2572,6 +2582,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         "nested frame"
     );
     let mut mcp = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args(["--attach", "--port", &port.to_string(), "--mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -76,22 +76,16 @@ impl Host {
         let mut ops = Vec::new();
         for cv in store.borrow().state.conversations.values() {
             let records = store.borrow().records(&cv.id)?;
-            let mut calls = BTreeMap::new();
-            let mut finished = std::collections::BTreeSet::new();
-            for record in records {
-                match record {
-                    Record::ToolCall { id, name, .. } => {
-                        calls.insert(id, name);
-                    }
-                    Record::ToolResult { call_id, .. } => {
-                        finished.insert(call_id);
-                    }
-                    _ => {}
-                }
-            }
-            for (id, name) in calls {
-                if !finished.contains(&id) {
-                    ops.push(Op::Entry{conversation:cv.id.clone(),record:Record::ToolResult{name,call_id:id,body:"error: interrupted; the external effect may have completed. Reconcile before retrying.".into()}.to_json()});
+            for record in crate::session::unanswered_tool_calls(&records) {
+                if let Record::ToolCall { id, name, .. } = record {
+                    ops.push(Op::Entry {
+                        conversation: cv.id.clone(),
+                        record: Record::ToolResult {
+                            name: name.clone(),
+                            call_id: id.clone(),
+                            body: "error: interrupted; the external effect may have completed. Reconcile before retrying.".into(),
+                        }.to_json(),
+                    });
                 }
             }
         }
@@ -1081,6 +1075,23 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn recovery_pairs_reused_tool_ids_by_occurrence() {
+        let (dir, host) = setup();
+        let call = Record::ToolCall { id: "same".into(), name: "host-tool".into(), arguments: "{}".into() };
+        let result = Record::ToolResult { call_id: "same".into(), name: "host-tool".into(), body: "first done".into() };
+        let records = [call.clone(), result, call];
+        assert_eq!(crate::session::interrupted_calls(&records).len(), 1);
+        commit(&host.store, records.iter().map(|record| Op::Entry {
+            conversation: "root".into(), record: record.to_json(),
+        }).collect()).unwrap();
+        drop(host);
+        let host = Host::open(&dir, false).unwrap();
+        let records = host.store.borrow().records("root").unwrap();
+        assert!(matches!(records.last(), Some(Record::ToolResult { call_id, body, .. }) if call_id == "same" && body.contains("interrupted")));
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn recovery_batches_large_partial_responses() {

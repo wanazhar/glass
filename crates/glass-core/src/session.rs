@@ -751,18 +751,29 @@ fn interrupted_result(call: &Record) -> Option<Record> {
 /// Answering it here keeps the provider transcript well-formed (`tool_use`
 /// always paired with `tool_result`) and stops the `/retry` recovery path
 /// from re-executing a command that may already have run.
+pub(crate) fn unanswered_tool_calls(raw: &[Record]) -> Vec<&Record> {
+    let mut pending: std::collections::HashMap<&str, std::collections::VecDeque<usize>> =
+        std::collections::HashMap::new();
+    let mut unanswered = vec![false; raw.len()];
+    for (index, record) in raw.iter().enumerate() {
+        match record {
+            Record::ToolCall { id, .. } => {
+                unanswered[index] = true;
+                pending.entry(id).or_default().push_back(index);
+            }
+            Record::ToolResult { call_id, .. } => {
+                if let Some(index) = pending.get_mut(call_id.as_str()).and_then(|calls| calls.pop_front()) {
+                    unanswered[index] = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    raw.iter().zip(unanswered).filter_map(|(record, missing)| missing.then_some(record)).collect()
+}
+
 pub(crate) fn interrupted_calls(raw: &[Record]) -> Vec<Record> {
-    let answered: std::collections::HashSet<&str> = raw
-        .iter()
-        .filter_map(|r| match r {
-            Record::ToolResult { call_id, .. } => Some(call_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    raw.iter()
-        .filter(|r| matches!(r, Record::ToolCall { id, .. } if !answered.contains(id.as_str())))
-        .filter_map(interrupted_result)
-        .collect()
+    unanswered_tool_calls(raw).into_iter().filter_map(interrupted_result).collect()
 }
 
 /// Whether every appended record is flushed to stable storage.

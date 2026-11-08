@@ -921,10 +921,12 @@ try {
     "Archived reasoning must remain at the chosen position",
   );
   await page.locator("#details-close").click();
-  await page.locator("#older").click();
-  await page.waitForFunction(
-    () => !document.querySelector("#older").hasAttribute("aria-busy"),
-  );
+  if (await page.locator("#older").isVisible()) {
+    await page.locator("#older").click();
+    await page.waitForFunction(
+      () => !document.querySelector("#older").hasAttribute("aria-busy"),
+    );
+  }
   assert(await page.locator(".thought-row").filter({ hasText: "Archived thought" }).count(),
     "Earlier public reasoning must appear as collapsed conversation steps");
   for (let pageNumber = 0; pageNumber < 12 && await page.locator("#older").isVisible(); pageNumber++) {

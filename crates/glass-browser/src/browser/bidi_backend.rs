@@ -123,6 +123,7 @@ type BidiSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 struct BidiState {
     socket: Option<BidiSocket>,
     initialized: bool,
+    session_started: bool,
     session_id: Option<String>,
     context_id: Option<String>,
     url: String,
@@ -158,6 +159,7 @@ impl BidiBrowserBackend {
             state: Mutex::new(BidiState {
                 socket: Some(socket),
                 initialized: false,
+                session_started: false,
                 session_id: None,
                 context_id: None,
                 url: String::new(),
@@ -330,8 +332,8 @@ impl BidiBrowserBackend {
         let mut state = self.state.lock().await;
         match (operation, request) {
             (BackendOperation::Initialize, BackendRequest::Initialize) => {
-                if state.initialized {
-                    return Err(lifecycle_error("initialize", "initialized"));
+                if state.session_started {
+                    return Err(lifecycle_error("initialize", "session already exists; close it first"));
                 }
                 let result = self
                     .command(
@@ -340,6 +342,9 @@ impl BidiBrowserBackend {
                         json!({"capabilities": {"alwaysMatch": {}}}),
                     )
                     .await?;
+                // A successful session.new must remain closable even if
+                // subsequent context discovery fails.
+                state.session_started = true;
                 state.session_id = result
                     .get("session")
                     .and_then(Value::as_str)
@@ -361,7 +366,7 @@ impl BidiBrowserBackend {
                 Ok(BackendResponse::Unit)
             }
             (BackendOperation::Close, BackendRequest::Close) => {
-                if !state.initialized {
+                if !state.session_started {
                     return Err(lifecycle_error("close", "closed"));
                 }
                 let result = self.command(&mut state, "session.end", json!({})).await;
@@ -369,6 +374,11 @@ impl BidiBrowserBackend {
                     let _ = socket.close(None).await;
                 }
                 state.initialized = false;
+                if result.is_ok() {
+                    state.session_started = false;
+                    state.session_id = None;
+                    state.context_id = None;
+                }
                 result.map(|_| BackendResponse::Unit)
             }
             (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
@@ -924,5 +934,36 @@ mod tests {
         dispatcher.initialize().await.unwrap();
         assert!(dispatcher.close().await.unwrap_err().to_string().contains("end failed"));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_context_discovery_leaves_a_closable_session() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut methods = Vec::new();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(text.as_ref()).unwrap();
+                let method = request["method"].as_str().unwrap();
+                methods.push(method.to_owned());
+                let result = match method {
+                    "session.new" => json!({"session": "s"}),
+                    "browsingContext.getTree" => json!({"contexts": []}),
+                    "session.end" => json!({}),
+                    _ => unreachable!(),
+                };
+                socket.send(Message::Text(json!({"id":request["id"], "result":result}).to_string().into())).await.unwrap();
+                if method == "session.end" { break; }
+            }
+            methods
+        });
+        let backend = BidiBrowserBackend::connect(format!("ws://{address}")).await.unwrap();
+        let dispatcher = crate::browser_backend::BrowserBackendDispatcher::new(&backend);
+        assert!(dispatcher.initialize().await.is_err());
+        assert!(dispatcher.initialize().await.is_err());
+        dispatcher.close().await.unwrap();
+        assert_eq!(server.await.unwrap(), ["session.new", "browsingContext.getTree", "session.end"]);
     }
 }

@@ -2777,7 +2777,7 @@ fn handle_with_transport(
     }
     if path == "/api/export" && r.method == "GET" {
         let result = (|| -> Result<Vec<u8>, String> {
-            let path = shared_thread_path(
+            let path = readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),

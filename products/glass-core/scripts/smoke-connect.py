@@ -129,6 +129,8 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert {'web-fixture','other-project','legacy-archive'} <= by_id.keys(),by_id
         assert by_id['other-project']['workspace']==str(root/'project-two')
         assert by_id['legacy-archive']['workspace_assigned']==False
+        legacy_export='/api/export?'+urllib.parse.urlencode({'id':'legacy-archive','sourceRef':by_id['legacy-archive']['sourceRef']})
+        status,exported,_=req(legacy_export);assert status==200 and b'Legacy archive fixture' in exported
         assert threads['history_loaded']==False
 
         assert req('/api/send','POST',{'id':'../bad','message':{'t':'prompt','text':'no'}})[0]==400

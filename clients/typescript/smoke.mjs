@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GlassClient } from "./dist/index.js";
@@ -38,3 +39,5 @@ try {
 } finally {
   client.close();
 }
+
+await assert.rejects(client.listTools(), /closed/);

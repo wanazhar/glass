@@ -522,6 +522,8 @@ export class GlassClient {
   private buffer = Buffer.alloc(0);
   private nextId = 1;
   private initialized = false;
+  private terminalError?: Error;
+  private closeRequested = false;
   private manifest?: GlassCapabilityManifest;
   private leaseToken?: string;
 
@@ -532,8 +534,8 @@ export class GlassClient {
       this.input = socket;
       this.output = socket;
       this.closeTransport = () => socket.destroy();
-      socket.on("error", (error) => this.rejectAll(error));
-      socket.on("close", () => this.rejectAll(new Error("Glass daemon socket closed")));
+      socket.on("error", (error) => this.failTransport(error));
+      socket.on("close", () => this.failTransport(new Error("Glass daemon socket closed")));
     } else {
       const child = spawn(options.command ?? "glass", options.args ?? ["--mcp"], {
         cwd: options.cwd,
@@ -543,8 +545,9 @@ export class GlassClient {
       this.input = child.stdin;
       this.output = child.stdout;
       this.closeTransport = () => child.kill();
-      child.on("error", (error) => this.rejectAll(error));
-      child.on("exit", (code, signal) => this.rejectAll(new Error(`Glass exited (${code ?? signal})`)));
+      child.on("error", (error) => this.failTransport(error));
+      child.on("exit", (code, signal) => this.failTransport(new Error(`Glass exited (${code ?? signal})`)));
+      child.stdin.on("error", (error) => this.failTransport(error));
     }
     this.output.on("data", (chunk: Buffer) => this.consume(chunk));
   }
@@ -1089,6 +1092,9 @@ export class GlassClient {
     return this.call<T>("setTimezone", { timezoneId });
   }
   close(): void {
+    if (this.closeRequested) return;
+    this.closeRequested = true;
+    this.terminalError ??= new Error("Glass client closed");
     for (const pending of this.pending.values()) pending.reject(new Error("Glass client closed"));
     this.pending.clear();
     this.input.end();
@@ -1096,6 +1102,7 @@ export class GlassClient {
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (this.terminalError) return Promise.reject(this.terminalError);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -1104,6 +1111,7 @@ export class GlassClient {
   }
 
   private send(message: Record<string, unknown>): void {
+    if (this.terminalError) throw this.terminalError;
     this.input.write(`${JSON.stringify(message)}\n`);
   }
 
@@ -1144,6 +1152,11 @@ export class GlassClient {
         } else pending.resolve(message.result);
       } catch (error) { this.rejectAll(error instanceof Error ? error : new Error(String(error))); }
     }
+  }
+
+  private failTransport(error: Error): void {
+    this.terminalError ??= error;
+    this.rejectAll(this.terminalError);
   }
 
   private rejectAll(error: Error): void {

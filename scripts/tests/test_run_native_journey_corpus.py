@@ -594,9 +594,17 @@ class JourneyFailureClassificationTests(unittest.TestCase):
             self.assertTrue(timed_out)
             self.assertEqual(return_code, 0)
             child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-            stat_path = Path(f"/proc/{child_pid}/stat")
-            if stat_path.exists():
-                self.assertIn(stat_path.read_text(encoding="utf-8").split()[2], {"Z", "X"})
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    state = Path(f"/proc/{child_pid}/stat").read_text(encoding="utf-8").split()[2]
+                except FileNotFoundError:
+                    break
+                if state in {"Z", "X"}:
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail(f"timed-out descendant remains live in state {state}")
+                time.sleep(0.01)
 
 
 if __name__ == "__main__":

@@ -767,6 +767,10 @@ impl Context {
         let cv = self.conversation.clone();
         let buffer = self.buffer.clone();
         let partial = self.partial.clone();
+        let ordinal = std::cell::Cell::new(store.borrow().state.tasks.values()
+            .filter(|child| child.kind == "gc.tool" && child.owner.as_deref() == Some(task.as_str()))
+            .count() as u64);
+        let pending: RefCell<BTreeMap<String, VecDeque<String>>> = RefCell::new(BTreeMap::new());
         Rc::new(move |records| {
             if records
                 .iter()
@@ -815,7 +819,10 @@ impl Context {
                         name,
                         arguments,
                     } => {
-                        let tool_id = format!("tool-{}", token(&[&task, id]));
+                        let occurrence = ordinal.get();
+                        ordinal.set(occurrence.saturating_add(1));
+                        let tool_id = format!("tool-{}", token(&[&task, "occurrence", &occurrence.to_string()]));
+                        pending.borrow_mut().entry(id.clone()).or_default().push_back(tool_id.clone());
                         ops.push(Op::TaskCreate {
                             id: tool_id.clone(),
                             conversation: cv.clone(),
@@ -839,7 +846,9 @@ impl Context {
                         });
                     }
                     Record::ToolResult { call_id, body, .. } => {
-                        let id = format!("tool-{}", token(&[&task, call_id]));
+                        let id = pending.borrow_mut().get_mut(call_id)
+                            .and_then(VecDeque::pop_front)
+                            .unwrap_or_else(|| format!("tool-{}", token(&[&task, call_id])));
                         if let Some(t) = store
                             .borrow()
                             .state
@@ -1075,6 +1084,30 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn repeated_provider_call_ids_create_distinct_tool_tasks() {
+        let (dir, host) = setup();
+        commit(&host.store, vec![Op::TaskCreate {
+            id: "generation".into(), conversation: "root".into(), kind: "gc.generation".into(),
+            version: 1, owner: None, background: false, replay: "safe".into(),
+            input: Value::Null, checkpoint: Value::Null,
+        }]).unwrap();
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        let observer = context.observer();
+        for _ in 0..2 {
+            observer(&[Record::ToolCall { id: "same".into(), name: "host-tool".into(), arguments: "{}".into() }]).unwrap();
+            observer(&[Record::ToolResult { call_id: "same".into(), name: "host-tool".into(), body: "ok".into() }]).unwrap();
+        }
+        let store = host.store.borrow();
+        let tools: Vec<_> = store.state.tasks.values().filter(|task| task.kind == "gc.tool").collect();
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().all(|task| task.status == "completed"));
+        drop(store);
+        drop(observer);
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn recovery_uses_recorded_shell_outcome() {

@@ -139,14 +139,9 @@ try {
     .waitFor();
   assert(await page.locator("#send").isDisabled());
   await page.unroute("**/api/threads?*");
-  await page.locator("#search").fill("");
-  await chooseOption(page,page.locator("#project-scope"),{ label: "All projects" });
-  const fixtureGroup = page
-    .locator(".project-group")
-    .filter({ hasText: "Shared runtime workspace" });
-  if (!(await fixtureGroup.evaluate((n) => n.open)))
-    await fixtureGroup.locator("summary").click();
+  await page.locator("#search").fill("Shared runtime workspace");
   await page.getByRole("button", { name: "Shared runtime workspace" }).click();
+  await page.locator("#search").fill("");
   await page
     .locator("#timeline")
     .getByText("A quieter place to work")

@@ -527,6 +527,7 @@ export class GlassClient {
   private closeRequested = false;
   private manifest?: GlassCapabilityManifest;
   private leaseToken?: string;
+  private leaseDeadline?: number;
   private leaseScopeCount = 0;
   private leaseScopeOwned = false;
   private leaseScopeGate: Promise<void> = Promise.resolve();
@@ -627,16 +628,21 @@ export class GlassClient {
 
   async acquireMutationLease(ttlMs = 60_000): Promise<Record<string, unknown>> {
     await this.initialize();
+    const started = performance.now();
     const lease = await this.request("glass/lease/acquire", { ttlMs }) as Record<string, unknown>;
     if (typeof lease.token !== "string") throw new Error("daemon lease response did not include a token");
     this.leaseToken = lease.token;
+    this.leaseDeadline = started + ttlMs;
     return lease;
   }
 
   async renewMutationLease(ttlMs = 60_000): Promise<Record<string, unknown>> {
     await this.initialize();
     if (this.leaseToken === undefined) throw new Error("no daemon mutation lease is held");
-    return await this.request("glass/lease/renew", { token: this.leaseToken, ttlMs }) as Record<string, unknown>;
+    const started = performance.now();
+    const lease = await this.request("glass/lease/renew", { token: this.leaseToken, ttlMs }) as Record<string, unknown>;
+    this.leaseDeadline = started + ttlMs;
+    return lease;
   }
 
   async releaseMutationLease(): Promise<void> {
@@ -644,6 +650,7 @@ export class GlassClient {
     if (this.leaseToken === undefined) return;
     await this.request("glass/lease/release", { token: this.leaseToken });
     this.leaseToken = undefined;
+    this.leaseDeadline = undefined;
   }
 
   /**
@@ -779,6 +786,11 @@ export class GlassClient {
   /** Share a scoped lease until the last overlapping scope exits. */
   async withMutationLease<T>(operation: () => Promise<T>, ttlMs = 60_000): Promise<T> {
     await this.withLeaseScopeGate(async () => {
+      if (this.leaseToken !== undefined && this.leaseDeadline !== undefined && performance.now() >= this.leaseDeadline) {
+        if (this.leaseScopeCount > 0) throw new Error("mutation lease expired during an active scope");
+        this.leaseToken = undefined;
+        this.leaseDeadline = undefined;
+      }
       if (this.leaseScopeCount === 0) {
         this.leaseScopeOwned = this.leaseToken === undefined;
         if (this.leaseScopeOwned) await this.acquireMutationLease(ttlMs);

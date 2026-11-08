@@ -464,6 +464,7 @@ class GlassClient:
         self._initialized = False
         self.capabilities: Optional[GlassCapabilityManifest] = None
         self._lease_token: Optional[str] = None
+        self._lease_deadline: Optional[float] = None
 
     def initialize(self) -> Any:
         """Initialize once; concurrent callers share the serialized transport."""
@@ -563,10 +564,12 @@ class GlassClient:
     def acquire_mutation_lease(self, ttl_ms: int = 60_000) -> dict[str, Any]:
         """Acquire the daemon mutation lease for this connection."""
         self.initialize()
+        started = time.monotonic()
         result = self._request("glass/lease/acquire", {"ttlMs": ttl_ms})
         if not isinstance(result, dict) or not isinstance(result.get("token"), str):
             raise GlassError("daemon lease response did not include a token")
         self._lease_token = result["token"]
+        self._lease_deadline = started + ttl_ms / 1000
         return result
 
     def renew_mutation_lease(self, ttl_ms: int = 60_000) -> dict[str, Any]:
@@ -574,11 +577,13 @@ class GlassClient:
         self.initialize()
         if self._lease_token is None:
             raise GlassError("no daemon mutation lease is held")
+        started = time.monotonic()
         result = self._request(
             "glass/lease/renew", {"token": self._lease_token, "ttlMs": ttl_ms}
         )
         if not isinstance(result, dict):
             raise GlassError("daemon lease renewal returned an invalid response")
+        self._lease_deadline = started + ttl_ms / 1000
         return result
 
     def release_mutation_lease(self) -> None:
@@ -588,6 +593,7 @@ class GlassClient:
             return
         self._request("glass/lease/release", {"token": self._lease_token})
         self._lease_token = None
+        self._lease_deadline = None
 
     # Legacy 0.3.4 cockpit helpers below remain only for source migration.
     # Glass 0.3.14 does not advertise these project.*/agent.* tools; new code
@@ -750,6 +756,9 @@ class GlassClient:
         raise GlassError(f"timed out after {timeout:.3f}s waiting for process {name} to become healthy")
 
     def with_mutation_lease(self, operation: Callable[[], T], ttl_ms: int = 60_000) -> T:
+        if self._lease_deadline is not None and time.monotonic() >= self._lease_deadline:
+            self._lease_token = None
+            self._lease_deadline = None
         already_held = self._lease_token is not None
         if not already_held:
             self.acquire_mutation_lease(ttl_ms)

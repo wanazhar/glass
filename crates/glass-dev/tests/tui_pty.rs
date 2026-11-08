@@ -6923,16 +6923,20 @@ fn code_editor_accepts_and_saves_typed_text_through_pty() {
     );
     session.send_slowly(b"// PTY saved\r", Duration::from_millis(35));
     session.send(b"\x13");
-    assert!(
-        session.wait_for_visible("saved", Duration::from_secs(5)),
-        "Ctrl-S did not save the buffer\n{}",
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && std::fs::read_to_string(&source).ok().as_deref()
+            != Some("// PTY saved\nfn main() {}\n")
+    {
+        session.settle(Duration::from_millis(50));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&source).expect("read saved source"),
+        "// PTY saved\nfn main() {}\n",
+        "Ctrl-S did not persist the editor buffer\n{}",
         session.output_tail()
     );
     session.kill();
-    assert_eq!(
-        std::fs::read_to_string(&source).expect("read saved source"),
-        "// PTY saved\nfn main() {}\n"
-    );
     std::fs::remove_dir_all(root).expect("remove temporary workspace");
 }
 

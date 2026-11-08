@@ -1130,27 +1130,35 @@ export class GlassClient {
 
   private consume(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    if (this.buffer.length > this.maxFrameBytes) {
-      this.buffer = Buffer.alloc(0);
-      this.rejectAll(new Error("MCP frame exceeds client limit"));
-      this.close();
-      return;
-    }
     while (this.buffer.length) {
       let body: Buffer | undefined;
       if (this.buffer.subarray(0, 15).toString("ascii").toLowerCase().startsWith("content-length:")) {
         const separator = this.buffer.indexOf("\r\n\r\n");
-        if (separator < 0) return;
+        if (separator < 0) {
+          if (this.buffer.length > this.maxFrameBytes) this.rejectOversizedFrame();
+          return;
+        }
         const header = this.buffer.subarray(0, separator).toString("ascii");
         const match = header.match(/content-length:\s*(\d+)/i);
         if (!match) { this.rejectAll(new Error("invalid MCP Content-Length header")); return; }
         const length = Number(match[1]);
+        if (!Number.isSafeInteger(length) || separator + 4 + length > this.maxFrameBytes) {
+          this.rejectOversizedFrame();
+          return;
+        }
         if (this.buffer.length < separator + 4 + length) return;
         body = this.buffer.subarray(separator + 4, separator + 4 + length);
         this.buffer = this.buffer.subarray(separator + 4 + length);
       } else {
         const newline = this.buffer.indexOf(10);
-        if (newline < 0) return;
+        if (newline < 0) {
+          if (this.buffer.length > this.maxFrameBytes) this.rejectOversizedFrame();
+          return;
+        }
+        if (newline + 1 > this.maxFrameBytes) {
+          this.rejectOversizedFrame();
+          return;
+        }
         body = this.buffer.subarray(0, newline);
         this.buffer = this.buffer.subarray(newline + 1);
       }
@@ -1165,6 +1173,12 @@ export class GlassClient {
         } else pending.resolve(message.result);
       } catch (error) { this.rejectAll(error instanceof Error ? error : new Error(String(error))); }
     }
+  }
+
+  private rejectOversizedFrame(): void {
+    this.buffer = Buffer.alloc(0);
+    this.failTransport(new Error("MCP frame exceeds client limit"));
+    this.close();
   }
 
   private failTransport(error: Error): void {

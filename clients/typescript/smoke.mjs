@@ -11,7 +11,8 @@ const client = new GlassClient({
   cwd: repositoryRoot,
 });
 try {
-  const manifest = await client.initialize();
+  const [manifest, concurrentTools] = await Promise.all([client.initialize(), client.listTools()]);
+  assert.ok(Array.isArray(concurrentTools));
   if (manifest?.protocolVersion !== 1) throw new Error("unexpected Glass protocol version");
   if (!client.supportsCapability("action")) throw new Error("action capability missing");
   const browserFixture = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "crates/glass-browser/tests/fixtures/client-conformance-v1.json"), "utf8"));

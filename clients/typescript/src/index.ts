@@ -522,6 +522,7 @@ export class GlassClient {
   private buffer = Buffer.alloc(0);
   private nextId = 1;
   private initialized = false;
+  private initializing?: Promise<GlassCapabilityManifest>;
   private terminalError?: Error;
   private closeRequested = false;
   private manifest?: GlassCapabilityManifest;
@@ -554,6 +555,13 @@ export class GlassClient {
 
   async initialize(): Promise<GlassCapabilityManifest | undefined> {
     if (this.initialized) return undefined;
+    if (!this.initializing) {
+      this.initializing = this.initializeOnce().finally(() => { this.initializing = undefined; });
+    }
+    return this.initializing;
+  }
+
+  private async initializeOnce(): Promise<GlassCapabilityManifest> {
     const result = await this.request("initialize", {
       protocolVersion: "2024-11-05",
       glass: {

@@ -125,25 +125,41 @@ async fn mcp_responses(mut child: Child, requests: &[Value]) -> Vec<Value> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    stdin.write_all(input.as_bytes()).await.unwrap();
+    let ids: Vec<_> = requests
+        .iter()
+        .filter_map(|request| request.get("id"))
+        .collect();
+    let mut responses = Vec::with_capacity(ids.len());
+    for _ in &ids {
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            stdout.read_line(&mut line),
+        )
         .await
-        .unwrap();
+        .expect("MCP response timed out")
+        .expect("read MCP response");
+        responses.push(serde_json::from_str::<Value>(&line).expect("parse MCP response"));
+    }
+    drop(stdin);
     let output = child.wait_with_output().await.unwrap();
     assert!(
         output.status.success(),
         "MCP process failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(serde_json::from_str::<Value>)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
+    ids.into_iter()
+        .map(|id| {
+            responses
+                .iter()
+                .find(|response| response.get("id") == Some(id))
+                .cloned()
+                .expect("MCP response missing request ID")
+        })
+        .collect()
 }
 
 #[tokio::test]

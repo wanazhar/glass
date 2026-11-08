@@ -198,6 +198,7 @@ pub struct DevelopmentOperationEvent {
 
 struct OperationRegistry {
     workspace_id: String,
+    closing: bool,
     records: BTreeMap<String, DevelopmentOperation>,
     order: VecDeque<String>,
     idempotency: BTreeMap<String, String>,
@@ -211,6 +212,7 @@ impl OperationRegistry {
     fn new(workspace_id: String) -> Self {
         Self {
             workspace_id,
+            closing: false,
             records: BTreeMap::new(),
             order: VecDeque::new(),
             idempotency: BTreeMap::new(),
@@ -236,6 +238,9 @@ impl OperationRegistry {
                 .cloned()
                 .map(|record| (record, false))
                 .ok_or_else(|| "operation idempotency record is inconsistent".into());
+        }
+        if self.closing {
+            return Err("workspace is closing; new operations are not accepted".into());
         }
         self.prune_terminal();
         if self.records.len() >= OPERATION_CAPACITY {
@@ -1179,6 +1184,8 @@ async fn execute_request(
                 if !still_registered {
                     return Ok(serde_json::json!({"closed":false}));
                 }
+                // Close admission before yielding to the actor's shutdown queue.
+                lock_operations(&handle.operations).closing = true;
                 let (response, received) = tokio::sync::oneshot::channel();
                 handle
                     .sender
@@ -2429,6 +2436,17 @@ mod tests {
         assert!(!created);
         assert_eq!(first.id, duplicate.id);
         assert!(submit(&mut registry, [2; 32]).is_err());
+    }
+
+    #[test]
+    fn closing_workspace_rejects_new_operations_but_reacquires_existing_ones() {
+        let mut registry = OperationRegistry::new("workspace".into());
+        let first = registry.submit("first", "actor".into(), "tool".into(), 0, true).unwrap().0;
+        registry.closing = true;
+        assert!(registry.submit("new", "actor".into(), "tool".into(), 0, true).is_err());
+        let duplicate = registry.submit("first", "actor".into(), "tool".into(), 0, true).unwrap();
+        assert!(!duplicate.1);
+        assert_eq!(duplicate.0.id, first.id);
     }
 
     #[cfg(unix)]

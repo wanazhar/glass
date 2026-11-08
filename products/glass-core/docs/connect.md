@@ -839,6 +839,8 @@ workspace or grant tool access to these archives.
 Earlier activity loads one page per request. The button shows progress and ignores
 repeated taps until the request finishes. Prepending history preserves the reading
 position and does not replace the current reasoning, checklist, or live response.
+Switching conversations discards unfinished event batches from the previous
+conversation, including batches waiting for history to load.
 
 The reasoning reader has its own history cursor. Opening a short reasoning pane
 loads older reasoning automatically; Earlier reasoning loads another bounded batch.

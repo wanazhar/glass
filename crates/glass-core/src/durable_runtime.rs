@@ -281,11 +281,14 @@ impl Host {
                     .ok_or("unknown conversation")?
                     .agent
                     .clone();
+                let agent_object = agent.as_object_mut().ok_or(
+                    "stored conversation agent metadata is invalid; repair it with durable/commit",
+                )?;
                 let patch = p["agent"]
                     .as_object()
                     .ok_or("agent patch must be an object")?;
                 for (key, value) in patch {
-                    agent[key] = value.clone();
+                    agent_object.insert(key.clone(), value.clone());
                 }
                 metadata(&agent, cfg)?;
                 commit(

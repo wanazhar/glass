@@ -790,6 +790,11 @@ impl Store {
             {
                 return Err("owner task has already decided its outcome".into());
             }
+            if let Op::Configure { agent, .. } | Op::ConversationCreate { agent, .. } = op
+                && !agent.is_object()
+            {
+                return Err("conversation agent metadata must be an object".into());
+            }
             apply(&mut next, op, sequence)?;
         }
         reconcile(&mut next)?;
@@ -1074,6 +1079,19 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn conversation_metadata_must_be_an_object() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root")]);
+        assert!(store.commit(store.state.sequence, vec![Op::Configure {
+            conversation: "root".into(),
+            agent: json!("not-an-object"),
+        }]).is_err());
+        assert!(store.state.conversations["root"].agent.is_object());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn recovery_handles_more_than_one_commit_of_running_tasks() {

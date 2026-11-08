@@ -76,14 +76,14 @@ impl Host {
         let mut ops = Vec::new();
         for cv in store.borrow().state.conversations.values() {
             let records = store.borrow().records(&cv.id)?;
-            for record in crate::session::unanswered_tool_calls(&records) {
+            for (record, completed_shell) in crate::session::unanswered_tool_calls(&records) {
                 if let Record::ToolCall { id, name, .. } = record {
                     ops.push(Op::Entry {
                         conversation: cv.id.clone(),
                         record: Record::ToolResult {
                             name: name.clone(),
                             call_id: id.clone(),
-                            body: "error: interrupted; the external effect may have completed. Reconcile before retrying.".into(),
+                            body: completed_shell.map(str::to_owned).unwrap_or_else(|| "error: interrupted; the external effect may have completed. Reconcile before retrying.".into()),
                         }.to_json(),
                     });
                 }
@@ -1075,6 +1075,24 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn recovery_uses_recorded_shell_outcome() {
+        let (dir, host) = setup();
+        let records = [
+            Record::ToolCall { id: "shell".into(), name: "bash".into(), arguments: "{}".into() },
+            Record::Bash { call_id: Some("shell".into()), command: "echo ok".into(), output: "ok".into(), exit_code: Some(0), truncated: false, spill: None },
+        ];
+        assert!(matches!(&crate::session::interrupted_calls(&records)[0], Record::ToolResult { body, .. } if body == "ok"));
+        commit(&host.store, records.iter().map(|record| Op::Entry {
+            conversation: "root".into(), record: record.to_json(),
+        }).collect()).unwrap();
+        drop(host);
+        let host = Host::open(&dir, false).unwrap();
+        let records = host.store.borrow().records("root").unwrap();
+        assert!(matches!(records.last(), Some(Record::ToolResult { body, .. }) if body == "ok"));
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn recovery_pairs_reused_tool_ids_by_occurrence() {

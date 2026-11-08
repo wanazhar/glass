@@ -751,15 +751,23 @@ fn interrupted_result(call: &Record) -> Option<Record> {
 /// Answering it here keeps the provider transcript well-formed (`tool_use`
 /// always paired with `tool_result`) and stops the `/retry` recovery path
 /// from re-executing a command that may already have run.
-pub(crate) fn unanswered_tool_calls(raw: &[Record]) -> Vec<&Record> {
+pub(crate) fn unanswered_tool_calls(raw: &[Record]) -> Vec<(&Record, Option<&str>)> {
     let mut pending: std::collections::HashMap<&str, std::collections::VecDeque<usize>> =
         std::collections::HashMap::new();
     let mut unanswered = vec![false; raw.len()];
+    let mut completed_shell = vec![None; raw.len()];
     for (index, record) in raw.iter().enumerate() {
         match record {
             Record::ToolCall { id, .. } => {
                 unanswered[index] = true;
                 pending.entry(id).or_default().push_back(index);
+            }
+            Record::Bash { call_id: Some(id), output, exit_code: Some(_), .. } => {
+                if let Some(index) = pending.get(id.as_str()).and_then(|calls| calls.back()).copied()
+                    && matches!(&raw[index], Record::ToolCall { name, .. } if name == "bash")
+                {
+                    completed_shell[index] = Some(output.as_str());
+                }
             }
             Record::ToolResult { call_id, .. } => {
                 if let Some(index) = pending.get_mut(call_id.as_str()).and_then(|calls| calls.pop_front()) {
@@ -769,11 +777,18 @@ pub(crate) fn unanswered_tool_calls(raw: &[Record]) -> Vec<&Record> {
             _ => {}
         }
     }
-    raw.iter().zip(unanswered).filter_map(|(record, missing)| missing.then_some(record)).collect()
+    raw.iter().zip(unanswered).zip(completed_shell)
+        .filter_map(|((record, missing), output)| missing.then_some((record, output))).collect()
 }
 
 pub(crate) fn interrupted_calls(raw: &[Record]) -> Vec<Record> {
-    unanswered_tool_calls(raw).into_iter().filter_map(interrupted_result).collect()
+    unanswered_tool_calls(raw).into_iter().filter_map(|(record, output)| {
+        if let (Record::ToolCall { id, name, .. }, Some(output)) = (record, output) {
+            Some(Record::ToolResult { name: name.clone(), call_id: id.clone(), body: output.into() })
+        } else {
+            interrupted_result(record)
+        }
+    }).collect()
 }
 
 /// Whether every appended record is flushed to stable storage.

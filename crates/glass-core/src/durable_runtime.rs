@@ -770,7 +770,7 @@ impl Context {
             .filter(|child| child.kind == "gc.tool" && child.owner.as_deref() == Some(task.as_str()))
             .count() as u64);
         let pending: RefCell<BTreeMap<String, VecDeque<String>>> = RefCell::new(BTreeMap::new());
-        Rc::new(move |records| {
+        Rc::new(move |records, is_error| {
             if records
                 .iter()
                 .all(|record| matches!(record, Record::Reasoning(_)))
@@ -856,7 +856,8 @@ impl Context {
                             .filter(|t| t.status == "running")
                             .cloned()
                         {
-                            ops.push(update(&t,if t.abort_requested{"aborted"}else if body.starts_with("error:"){"failed"}else{"completed"},Some(json!({"callId":call_id,"outputBytes":body.len(),"isError":body.starts_with("error:")}))));
+                            let status = if t.abort_requested { "aborted" } else if is_error == Some(false) { "completed" } else { "failed" };
+                            ops.push(update(&t, status, Some(json!({"callId":call_id,"outputBytes":body.len(),"isError":is_error,"outcomeKnown":is_error.is_some()}))));
                         }
                     }
                     _ => {}
@@ -1095,13 +1096,14 @@ mod tests {
         let context = Context::new(host.store.clone(), "generation".into(), "root".into());
         let observer = context.observer();
         for _ in 0..2 {
-            observer(&[Record::ToolCall { id: "same".into(), name: "host-tool".into(), arguments: "{}".into() }]).unwrap();
-            observer(&[Record::ToolResult { call_id: "same".into(), name: "host-tool".into(), body: "ok".into() }]).unwrap();
+            observer(&[Record::ToolCall { id: "same".into(), name: "host-tool".into(), arguments: "{}".into() }], None).unwrap();
+            observer(&[Record::ToolResult { call_id: "same".into(), name: "host-tool".into(), body: "error: successful content".into() }], Some(false)).unwrap();
         }
         let store = host.store.borrow();
         let tools: Vec<_> = store.state.tasks.values().filter(|task| task.kind == "gc.tool").collect();
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().all(|task| task.status == "completed"));
+        assert!(tools.iter().all(|task| task.outcome.as_ref().unwrap()["isError"] == false));
         drop(store);
         drop(observer);
         drop(context);

@@ -803,7 +803,7 @@ pub fn configure_fsync(on: bool) {
     LOG_FSYNC.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub(crate) type CommitObserver = dyn Fn(&[Record]) -> std::io::Result<()>;
+pub(crate) type CommitObserver = dyn Fn(&[Record], Option<bool>) -> std::io::Result<()>;
 
 pub struct Session {
     /// In-memory only: preserve handles/redactors across Agent turns, never logs.
@@ -1274,6 +1274,14 @@ impl Session {
     pub(crate) fn validate_writes(&mut self) {
         self.sync_external_index();
     }
+    /// Record the typed outcome alongside an authoritative tool-result commit.
+    pub(crate) fn append_tool_result(&mut self, record: Record, is_error: bool) {
+        if self.commit_observer.is_some() {
+            let _ = self.append_checked_with_outcome(&[record], Some(is_error));
+        } else {
+            self.append(record);
+        }
+    }
 
     pub fn append(&mut self, record: Record) {
         if self.commit_observer.is_some() {
@@ -1368,6 +1376,14 @@ impl Session {
     /// Append a recovery group and report write failures so its sidecar can
     /// remain available for another resume attempt.
     pub(crate) fn append_checked(&mut self, records: &[Record]) -> std::io::Result<()> {
+        self.append_checked_with_outcome(records, None)
+    }
+
+    fn append_checked_with_outcome(
+        &mut self,
+        records: &[Record],
+        is_error: Option<bool>,
+    ) -> std::io::Result<()> {
         if let Some(error) = &self.write_error {
             return Err(std::io::Error::other(error.clone()));
         }
@@ -1399,7 +1415,7 @@ impl Session {
             return Err(error);
         }
         if let Some(observer) = &self.commit_observer
-            && let Err(error) = observer(&records)
+            && let Err(error) = observer(&records, is_error)
         {
             self.write_error = Some(format!("authoritative commit failed: {error}"));
             return Err(error);

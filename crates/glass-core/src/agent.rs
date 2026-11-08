@@ -1987,11 +1987,14 @@ impl<'a> Agent<'a> {
                         .iter()
                         .any(|r| matches!(r,Record::ToolResult{call_id,..} if call_id==&call.id))
                     {
-                        self.session.append(Record::ToolResult {
-                            name: call.name.clone(),
-                            call_id: call.id.clone(),
-                            body: "Cancelled before execution; no tool result.".into(),
-                        });
+                        self.session.append_tool_result(
+                            Record::ToolResult {
+                                name: call.name.clone(),
+                                call_id: call.id.clone(),
+                                body: "Cancelled before execution; no tool result.".into(),
+                            },
+                            true,
+                        );
                     }
                 }
                 for record in std::mem::take(&mut self.host_attachments) {
@@ -3141,11 +3144,14 @@ impl<'a> Agent<'a> {
                 crate::tools::blob_reference_for(p).unwrap_or_else(|| p.display().to_string())
             }),
         });
-        self.session.append(Record::ToolResult {
-            name: call.name.clone(),
-            call_id: call.id.clone(),
-            body: output.body.clone(),
-        });
+        self.session.append_tool_result(
+            Record::ToolResult {
+                name: call.name.clone(),
+                call_id: call.id.clone(),
+                body: output.body.clone(),
+            },
+            outcome.exit_code != Some(0),
+        );
         // The chip closes here because this is the funnel every bash
         // result passes through — inline, pumped, or fanned out.
         self.emit(Progress::ToolEnd {
@@ -3604,11 +3610,14 @@ impl<'a> Agent<'a> {
                 }),
             });
         }
-        self.session.append(Record::ToolResult {
-            name: call.name.clone(),
-            call_id: call.id.clone(),
-            body: output.body,
-        });
+        self.session.append_tool_result(
+            Record::ToolResult {
+                name: call.name.clone(),
+                call_id: call.id.clone(),
+                body: output.body,
+            },
+            outcome.exit_code != Some(0),
+        );
         if !self.read_only
             && let Some(reminder) =
                 crate::guidance::progress_reminder(&self.session.records, &self.state.todo)

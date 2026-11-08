@@ -87,6 +87,9 @@ until they settle. Background children survive a parent's ordinary abort;
 `includeBackground: true` includes them.
 An owned conversation accepts new submissions only while its owner is active;
 settling, finished, or aborting owners cannot acquire new work.
+Built-in tool task outcomes record the typed `isError` supplied by execution,
+not the tool output text. If no typed outcome is available, the task is marked
+failed with `outcomeKnown: false` rather than reporting unconfirmed success.
 
 Safe interrupted tasks return to pending. Unsafe tasks become failed with an
 interrupted outcome. Mark work safe only when repeating its phase is safe.

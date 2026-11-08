@@ -66,6 +66,11 @@ Document definitions optionally set `history` and `fork` (`initial`, `current`,
 or `as_of`). Definitions remain stable until an explicit migration changes the
 version/value. Historical reads require `history: true`.
 
+An `as_of` fork keeps the historical document's version and definition.
+An `initial` fork keeps the original definition and initial value, including
+its original version after later migrations; migrate the fork explicitly if
+the host requires the current schema.
+
 A task can set `owner` to its parent task ID, `background`, `input`, `checkpoint`,
 and `replay` (`unsafe` by default). Register current custom task definitions with
 `durable/register`, supplying `tasks: [{kind, version, replay}]`. Definitions

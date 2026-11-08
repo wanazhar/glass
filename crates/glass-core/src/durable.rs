@@ -1093,6 +1093,27 @@ impl Store {
         let mut state = self.snapshot_at(sequence)?;
         Ok(state.documents.remove(&key))
     }
+    /// Return the original definition that owns an initial fork value.
+    pub fn initial_document(&self, conversation: &str, kind: &str) -> Result<Option<Document>, String> {
+        for line in BufReader::new(File::open(&self.path).map_err(|e| e.to_string())?).lines() {
+            let commit: Commit = serde_json::from_str(&line.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            for op in commit.ops {
+                if let Op::Document {
+                    conversation: cv, kind: document_kind, version, expected_revision: 0,
+                    history, fork, initial, ..
+                } = op
+                    && cv == conversation && document_kind == kind
+                {
+                    return Ok(Some(Document {
+                        conversation: cv, kind: document_kind, version, revision: 1,
+                        value: initial.clone(), history, fork, initial,
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
@@ -1584,6 +1605,13 @@ mod tests {
             1
         );
         assert!(store.commit(store.state.sequence, vec![put(0, 3)]).is_err());
+        transact(&mut store, vec![Op::DocumentMigrate {
+            conversation: "root".into(), kind: "app.todo".into(),
+            expected_revision: 2, version: 2, value: json!({"items":[]}),
+        }]);
+        let initial = store.initial_document("root", "app.todo").unwrap().unwrap();
+        assert_eq!(initial.version, 1);
+        assert_eq!(initial.value, json!({"count":0}));
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }

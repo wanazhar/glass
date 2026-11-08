@@ -243,25 +243,24 @@ impl Host {
                     .values()
                     .filter(|d| d.conversation == parent)
                 {
-                    let value = match document.fork.as_str() {
-                        "initial" => document.initial.clone(),
-                        "current" => document.value.clone(),
-                        "as_of" => snapshot
-                            .documents
+                    let selected = match document.fork.as_str() {
+                        "initial" => self.store.borrow().initial_document(parent, &document.kind)?
+                            .ok_or("initial document definition is missing")?,
+                        "current" => document.clone(),
+                        "as_of" => snapshot.documents
                             .get(&format!("{parent}:{}", document.kind))
-                            .map(|d| d.value.clone())
-                            .ok_or("document absent at fork boundary")?,
+                            .cloned().ok_or("document absent at fork boundary")?,
                         _ => return Err("invalid document fork policy".into()),
                     };
                     ops.push(Op::Document {
                         conversation: id.clone(),
-                        kind: document.kind.clone(),
-                        version: document.version,
+                        kind: selected.kind,
+                        version: selected.version,
                         expected_revision: 0,
-                        value,
-                        history: document.history,
-                        fork: document.fork.clone(),
-                        initial: document.initial.clone(),
+                        value: selected.value,
+                        history: selected.history,
+                        fork: selected.fork,
+                        initial: selected.initial,
                     });
                 }
                 commit(&self.store, ops)?;

@@ -62,6 +62,10 @@ conflict changes neither storage nor published state.
 | `task.migrate` | `id`, `expectedRevision`, newer `version`, `checkpoint` |
 | `task.abort` | `id`; optional `includeBackground` |
 
+Submission creation and consumption, and creation or updates of reserved
+`gc.*` tasks, are runtime-managed and cannot be submitted through
+`durable/commit`. Use `durable/submit` and `durable/run` for generations.
+
 Document definitions optionally set `history` and `fork` (`initial`, `current`,
 or `as_of`). Definitions remain stable until an explicit migration changes the
 version/value. Historical reads require `history: true`.

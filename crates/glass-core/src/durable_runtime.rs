@@ -39,6 +39,25 @@ fn commit(store: &Shared, ops: Vec<Op>) -> Result<u64, String> {
     let seq = store.state.sequence;
     store.commit(seq, ops)
 }
+fn validate_external_ops(store: &Store, ops: &[Op]) -> Result<(), String> {
+    for op in ops {
+        let reserved = match op {
+            Op::Submit { .. } | Op::Consume { .. } => true,
+            Op::TaskCreate { kind, .. } => kind.starts_with("gc."),
+            Op::TaskUpdate { id, .. } | Op::TaskMigrate { id, .. } => store
+                .state
+                .tasks
+                .get(id)
+                .is_some_and(|task| task.kind.starts_with("gc.")),
+            _ => false,
+        };
+        if reserved {
+            return Err("built-in submission and task transitions are managed by the runtime".into());
+        }
+    }
+    Ok(())
+}
+
 fn entry_chunk(record: &Record, offset: u64, limit: u64) -> Result<Value, String> {
     let encoded = record.to_json().to_string();
     let offset = usize::try_from(offset).map_err(|_| "entry offset exceeds platform capacity")?;
@@ -364,6 +383,7 @@ impl Host {
                     .ok_or("expectedSequence required")?;
                 let ops: Vec<Op> =
                     serde_json::from_value(p["operations"].clone()).map_err(|e| e.to_string())?;
+                validate_external_ops(&self.store.borrow(), &ops)?;
                 let seq = self.store.borrow_mut().commit(seq, ops)?;
                 Ok(json!({"sequence":seq}))
             }
@@ -1116,6 +1136,26 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn external_commits_cannot_consume_generation_input() {
+        let (dir, host) = setup();
+        commit(&host.store, vec![Op::Submit {
+            conversation: "root".into(), request_id: "request".into(),
+            task_id: "generation".into(), input: json!({"text":"keep this"}),
+        }]).unwrap();
+        let store = host.store.borrow();
+        let generation = &store.state.tasks["generation"];
+        let mut start = update(generation, "running", None);
+        if let Op::TaskUpdate { checkpoint, .. } = &mut start {
+            *checkpoint = json!({"phase":"executing"});
+        }
+        assert!(validate_external_ops(&store, &[start, Op::Consume { id: "generation".into() }]).is_err());
+        assert!(store.records("root").unwrap().is_empty());
+        assert_eq!(store.state.tasks["generation"].input["text"], "keep this");
+        drop(store);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn entry_ranges_reconstruct_utf8_records() {

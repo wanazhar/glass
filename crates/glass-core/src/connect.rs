@@ -1239,6 +1239,18 @@ fn shared_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, 
     }
     Ok(path)
 }
+// Global legacy archives may lack project metadata, but their exact canonical
+// path is still safe to read. Keep mutation and live-session routing stricter.
+fn readable_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, String> {
+    if !source_ref.is_empty()
+        && let Ok(path) = thread_path(id)
+        && Path::new(source_ref) == path
+    {
+        return Ok(path);
+    }
+    shared_thread_path(app, id, source_ref)
+}
+
 fn shared_metadata(app: &App, path: &Path) -> Result<crate::polish::Metadata, String> {
     let sidecar = path.with_extension("meta.json");
     if sidecar.exists() {
@@ -3215,7 +3227,7 @@ fn handle_with_transport(
             )
         }
         ("GET", "/api/activity-location") => activity_location(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3226,7 +3238,7 @@ fn handle_with_transport(
                 .ok_or("Missing recordOffset")?,
         ),
         ("GET", "/api/activity-text") => activity_text(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3242,7 +3254,7 @@ fn handle_with_transport(
             query.get("expected").map(String::as_str).unwrap_or(""),
         ),
         ("GET", "/api/history-record") => history_record_path(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3257,7 +3269,7 @@ fn handle_with_transport(
                 .unwrap_or(0),
         ),
         ("GET", "/api/history") => history_path(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),

@@ -563,6 +563,7 @@ pub(crate) struct DebuggerSession {
     capabilities: Value,
     timeout: Duration,
     pending_start: Option<(u64, &'static str)>,
+    configuration_result: Option<Value>,
     breakpoints: BTreeMap<PathBuf, Vec<SourceBreakpoint>>,
     watches: Vec<String>,
     events: VecDeque<DebugEvent>,
@@ -597,6 +598,7 @@ impl DebuggerSession {
             capabilities,
             timeout,
             pending_start: None,
+            configuration_result: None,
             breakpoints: BTreeMap::new(),
             watches: Vec::new(),
             events: VecDeque::new(),
@@ -612,17 +614,29 @@ impl DebuggerSession {
     }
 
     pub fn configuration_done(&mut self) -> DebugResult<Value> {
-        let configuration = self
-            .client
-            .request("configurationDone", json!({}), self.timeout)?;
-        let startup = if let Some((sequence, command)) = self.pending_start.take() {
-            self.client
-                .wait_for_response(sequence, command, self.timeout)?
+        if self.configuration_result.is_none() {
+            self.configuration_result = Some(
+                self.client.request("configurationDone", json!({}), self.timeout)?,
+            );
+        }
+        let startup = if let Some((sequence, command)) = self.pending_start {
+            match self.client.wait_for_response(sequence, command, self.timeout) {
+                Ok(response) => {
+                    self.pending_start = None;
+                    response
+                }
+                Err(error @ DebugError::Adapter(_)) => {
+                    self.pending_start = None;
+                    self.configuration_result = None;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             Value::Null
         };
         self.state = DebugSessionState::Running;
-        Ok(json!({"configurationDone": configuration, "startup": startup}))
+        Ok(json!({"configurationDone": self.configuration_result.take(), "startup": startup}))
     }
 
     fn begin_start(&mut self, command: &'static str, arguments: Value) -> DebugResult<Value> {
@@ -1135,6 +1149,41 @@ writer.flush()
         drop(client);
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(timeout_root);
+    }
+
+    #[test]
+    fn timed_out_launch_can_be_reconciled_without_a_second_launch() {
+        let adapter = r#"
+import json, sys, time
+def read():
+    header = sys.stdin.buffer.readline()
+    if not header: return None
+    size = int(header.split(b':', 1)[1])
+    sys.stdin.buffer.readline()
+    return json.loads(sys.stdin.buffer.read(size))
+def reply(request):
+    body = json.dumps({'seq':1, 'type':'response', 'request_seq':request['seq'],
+                       'command':request['command'], 'success':True, 'body':{}}).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+reply(read())
+launch = read()
+configuration = read()
+reply(configuration)
+time.sleep(0.25)
+reply(launch)
+time.sleep(30)
+"#;
+        let Some((root, config)) = python_adapter(adapter) else { return };
+        let mut session = DebuggerSession::start(&root, &config, "test", Duration::from_secs(5)).unwrap();
+        session.launch(json!({})).unwrap();
+        session.timeout = Duration::from_millis(50);
+        assert!(matches!(session.configuration_done(), Err(DebugError::Timeout(_))));
+        assert!(session.launch(json!({})).is_err());
+        session.timeout = Duration::from_secs(2);
+        assert!(session.configuration_done().is_ok());
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

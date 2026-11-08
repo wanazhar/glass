@@ -795,6 +795,13 @@ impl Store {
             {
                 return Err("conversation agent metadata must be an object".into());
             }
+            if let Op::Reset { conversation, .. } = op
+                && next.tasks.values().any(|task| {
+                    task.conversation == *conversation && !task.terminal()
+                })
+            {
+                return Err("abort or settle conversation tasks before reset".into());
+            }
             apply(&mut next, op, sequence)?;
         }
         reconcile(&mut next)?;
@@ -1079,6 +1086,17 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn reset_rejects_unsettled_tasks_even_in_a_combined_commit() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root")]);
+        let reset = Op::Reset { conversation: "root".into(), record: json!({"k":"meta","t":"reset"}) };
+        assert!(store.commit(store.state.sequence, vec![task("pending", None, true, false), reset]).is_err());
+        assert!(store.state.tasks.is_empty());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn conversation_metadata_must_be_an_object() {

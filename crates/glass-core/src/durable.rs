@@ -1012,6 +1012,22 @@ impl Store {
         }
         Ok(json!({"cursor":cursor,"commits":commits,"hasMore":cursor<self.state.sequence}))
     }
+    /// Last commit that changed a document, including documents without history.
+    pub fn document_sequence(&self, conversation: &str, kind: &str) -> Result<Option<u64>, String> {
+        let mut sequence = None;
+        for line in BufReader::new(File::open(&self.path).map_err(|e| e.to_string())?).lines() {
+            let commit: Commit = serde_json::from_str(&line.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            if commit.ops.iter().any(|op| match op {
+                Op::Document { conversation: cv, kind: k, .. }
+                | Op::DocumentMigrate { conversation: cv, kind: k, .. } => cv == conversation && k == kind,
+                _ => false,
+            }) {
+                sequence = Some(commit.sequence);
+            }
+        }
+        Ok(sequence)
+    }
     pub fn records(&self, conversation: &str) -> Result<Vec<crate::session::Record>, String> {
         self.records_at(conversation, self.state.sequence)
     }

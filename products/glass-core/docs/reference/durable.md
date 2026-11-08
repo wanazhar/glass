@@ -94,6 +94,8 @@ failed with `outcomeKnown: false` rather than reporting unconfirmed success.
 Safe interrupted tasks return to pending. Unsafe tasks become failed with an
 interrupted outcome. Mark work safe only when repeating its phase is safe.
 Migrations require a pending task, matching revision, and newer version.
+Recovery associates a live partial response with its journal position, so an
+earlier response containing the same text cannot suppress its transcript entry.
 
 ## Inspection and observation
 

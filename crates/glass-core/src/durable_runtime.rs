@@ -109,10 +109,12 @@ impl Host {
                 && let Some(text) = live.value["text"].as_str().filter(|text| !text.is_empty())
             {
                 let records = store.borrow().records(&live.conversation)?;
-                let start = records
-                    .iter()
-                    .rposition(|record| matches!(record, Record::User(_)))
-                    .unwrap_or(0);
+                // Only an assistant record written after this live snapshot can
+                // complete this response occurrence. Earlier rounds may share text.
+                let boundary = store.borrow().document_sequence(&live.conversation, "gc.live")?
+                    .ok_or("live document has no journal sequence")?;
+                let before = store.borrow().records_at(&live.conversation, boundary)?.len();
+                let start = if before <= records.len() { before } else { 0 };
                 if !records[start..].iter().any(
                     |record| matches!(record,Record::Assistant(answer) if answer.contains(text)),
                 ) {
@@ -1143,6 +1145,23 @@ mod tests {
         let records = host.store.borrow().records("root").unwrap();
         assert!(matches!(records.last(), Some(Record::ToolResult { call_id, body, .. }) if call_id == "same" && body.contains("interrupted")));
         drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn recovery_matches_partial_response_occurrence() {
+        let (dir, host) = setup();
+        commit(&host.store, vec![
+            Op::TaskCreate { id: "generation".into(), conversation: "root".into(), kind: "gc.generation".into(), version: 1, owner: None, background: false, replay: "safe".into(), input: Value::Null, checkpoint: Value::Null },
+            Op::Entry { conversation: "root".into(), record: Record::User("hello".into()).to_json() },
+            Op::Entry { conversation: "root".into(), record: Record::Assistant("earlier shared text".into()).to_json() },
+            Op::Document { conversation: "root".into(), kind: "gc.live".into(), version: 1, expected_revision: 0, value: json!({"taskId":"generation","text":"shared text"}), history: false, fork: "initial".into(), initial: Value::Null },
+        ]).unwrap();
+        drop(host);
+        for _ in 0..2 {
+            let reopened = Host::open(&dir, false).unwrap();
+            let records = reopened.store.borrow().records("root").unwrap();
+            assert_eq!(records.iter().filter(|record| matches!(record, Record::Assistant(text) if text == "shared text")).count(), 1);
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

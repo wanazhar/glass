@@ -85,6 +85,8 @@ without becoming terminal. Set `waiting` with `on` task IDs and a `policy` of
 Wait cycles are rejected. A task with foreground children remains `completing`
 until they settle. Background children survive a parent's ordinary abort;
 `includeBackground: true` includes them.
+An owned conversation accepts new submissions only while its owner is active;
+settling, finished, or aborting owners cannot acquire new work.
 
 Safe interrupted tasks return to pending. Unsafe tasks become failed with an
 interrupted outcome. Mark work safe only when repeating its phase is safe.

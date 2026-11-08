@@ -838,6 +838,12 @@ impl Store {
             {
                 return Err("owner task has already decided its outcome".into());
             }
+            if let Op::Submit { conversation, .. } = op
+                && let Some(owner) = next.conversations.get(conversation).and_then(|cv| cv.owner.as_ref())
+                && next.tasks.get(owner).is_none_or(|task| task.terminal() || task.abort_requested || task.status == "completing")
+            {
+                return Err("conversation owner has finished or is settling".into());
+            }
             if let Op::Configure { agent, .. } | Op::ConversationCreate { agent, .. } = op
                 && !agent.is_object()
             {
@@ -1184,6 +1190,23 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn owned_conversation_rejects_submission_after_owner_finishes() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        let mut owned = create("owned");
+        if let Op::ConversationCreate { owner, .. } = &mut owned {
+            *owner = Some("parent".into());
+        }
+        transact(&mut store, vec![create("root"), task("parent", None, true, false), owned]);
+        let complete = transition(&store, "parent", "completed");
+        transact(&mut store, vec![complete]);
+        let submission = Op::Submit { conversation: "owned".into(), request_id: "request:1".into(), task_id: "generation".into(), input: json!({}) };
+        assert!(store.commit(store.state.sequence, vec![submission]).is_err());
+        assert!(!store.state.tasks.contains_key("generation"));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn foreground_child_cannot_wait_for_its_owner() {

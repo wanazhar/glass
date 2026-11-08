@@ -109,6 +109,7 @@ earlier response containing the same text cannot suppress its transcript entry.
 | `durable/taskGraph` | Page the bounded foreground/background graph of live tasks |
 | `durable/document` | Read by `conversationId`, `kind`, optional `asOf` sequence |
 | `durable/entries` | Page the active transcript by numeric record cursor |
+| `durable/entry` | Read a serialized transcript entry in bounded UTF-8 chunks |
 | `durable/configure` | Merge an `agent` settings patch into a conversation |
 | `durable/fork` | Fork at optional `asOf`; document fork policies apply |
 | `durable/reset` | Reset active context once all conversation tasks have settled |
@@ -116,11 +117,21 @@ earlier response containing the same text cannot suppress its transcript entry.
 
 Inspection returns `items`, a string `cursor`, and `hasMore`; continue with the
 returned cursor. Changes return `commits`, numeric `cursor`, and `hasMore`.
+
 Task graph pages return `tasks`, a task-ID `cursor`, `hasMore`, and `sequence`.
 Pass the cursor and `expectedSequence` from the first page to subsequent pages;
 restart if the graph changes. Graph rows omit input, checkpoints, and outcomes;
 use `durable/task` to inspect those fields. The Glass task panel displays the
 first page and appends `+` to its task count when additional pages exist.
+
+Transcript pages include an `epoch`. An oversized entry is represented by
+`{"k":"durable/entry_ref","cursor":N,"epoch":E,"serializedBytes":B}` and the
+page cursor advances past it. To read it, call `durable/entry` with
+`conversationId`, the reference's `cursor` and `epoch`, and an `offset` (zero
+initially). Concatenate `chunk` strings, following `nextOffset` until null,
+then parse the resulting JSON record. `limitBytes` bounds each chunk to at most
+64 KiB; offsets are UTF-8 byte boundaries. A reset invalidates the epoch.
+
 A commit too large for one observation response produces `reset: true`; reacquire
 state through inspection and direct task/document reads. Observation does not
 allocate an unbounded subscriber queue. Polling can resume from the last cursor.

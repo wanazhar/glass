@@ -39,6 +39,23 @@ fn commit(store: &Shared, ops: Vec<Op>) -> Result<u64, String> {
     let seq = store.state.sequence;
     store.commit(seq, ops)
 }
+fn entry_chunk(record: &Record, offset: u64, limit: u64) -> Result<Value, String> {
+    let encoded = record.to_json().to_string();
+    let offset = usize::try_from(offset).map_err(|_| "entry offset exceeds platform capacity")?;
+    if offset > encoded.len() || !encoded.is_char_boundary(offset) {
+        return Err("entry offset is not a valid UTF-8 boundary".into());
+    }
+    let mut end = offset.saturating_add(limit.clamp(4, 64 * 1024) as usize).min(encoded.len());
+    while !encoded.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok(json!({
+        "chunk": &encoded[offset..end],
+        "nextOffset": if end < encoded.len() { Some(end) } else { None },
+        "totalBytes": encoded.len(),
+    }))
+}
+
 fn finish_unsettled_after_runtime(
     store: &Shared,
     task_id: &str,
@@ -305,6 +322,7 @@ impl Host {
                     .map_err(|_| "entry cursor exceeds platform capacity")?;
                 let limit = p["limit"].as_u64().unwrap_or(25).clamp(1, 256) as usize;
                 let records = self.store.borrow().records(cv)?;
+                let epoch = self.store.borrow().state.conversations.get(cv).ok_or("unknown conversation")?.epoch;
                 if cursor > records.len() {
                     return Err("entry cursor exceeds record count".into());
                 }
@@ -316,9 +334,8 @@ impl Host {
                     let size = value.to_string().len();
                     if bytes + size > 768 * 1024 {
                         if entries.is_empty() {
-                            return Err(
-                                "entry exceeds response limit; use artifact range reads".into()
-                            );
+                            entries.push(json!({"k":"durable/entry_ref","cursor":end,"epoch":epoch,"serializedBytes":size}));
+                            end += 1;
                         }
                         break;
                     }
@@ -326,7 +343,20 @@ impl Host {
                     entries.push(value);
                     end += 1;
                 }
-                Ok(json!({"entries":entries,"cursor":end,"hasMore":end<records.len()}))
+                Ok(json!({"entries":entries,"cursor":end,"hasMore":end<records.len(),"epoch":epoch}))
+            }
+            "durable/entry" => {
+                let cv = string(p, "conversationId")?;
+                let epoch = p["epoch"].as_u64().ok_or("entry epoch required")?;
+                let cursor = usize::try_from(p["cursor"].as_u64().ok_or("entry cursor required")?)
+                    .map_err(|_| "entry cursor exceeds platform capacity")?;
+                let store = self.store.borrow();
+                if store.state.conversations.get(cv).ok_or("unknown conversation")?.epoch != epoch {
+                    return Err("transcript changed; reacquire entry cursor".into());
+                }
+                let records = store.records(cv)?;
+                let record = records.get(cursor).ok_or("entry cursor exceeds record count")?;
+                entry_chunk(record, p["offset"].as_u64().unwrap_or(0), p["limitBytes"].as_u64().unwrap_or(64 * 1024))
             }
             "durable/commit" => {
                 let seq = p["expectedSequence"]
@@ -1086,6 +1116,24 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn entry_ranges_reconstruct_utf8_records() {
+        let record = Record::User("\u{1f980}\n".repeat(100));
+        let expected = record.to_json();
+        let mut offset = 0;
+        let mut encoded = String::new();
+        loop {
+            let page = entry_chunk(&record, offset, 7).unwrap();
+            encoded.push_str(page["chunk"].as_str().unwrap());
+            match page["nextOffset"].as_u64() {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), expected);
+        let inside_character = encoded.find('\u{1f980}').unwrap() as u64 + 1;
+        assert!(entry_chunk(&record, inside_character, 7).is_err());
     }
     #[test]
     fn repeated_provider_call_ids_create_distinct_tool_tasks() {

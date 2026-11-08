@@ -76,6 +76,11 @@ try {
     await page.locator('#command-search').fill(command.name);
     const choice = page.locator('.command-choice').filter({ has: page.locator('strong', { hasText: new RegExp('^/' + command.name + '(?:\\s|$)') }) });
     await choice.click();
+    if (command.name === 'diagnostics') {
+      await page.locator('#preview').waitFor({ state: 'visible' });
+      await page.locator('#preview-close').click();
+      continue;
+    }
     if(configurationCommands.has(command.name)) {
       await page.locator('#settings-page').waitFor();
       await page.locator('#settings-body').waitFor();
@@ -84,7 +89,7 @@ try {
       await page.waitForFunction(()=>document.querySelector('#ownership').textContent==='Release control');
       continue;
     }
-    await page.locator('#command-view').waitFor({ state: 'visible' });
+    await page.locator('#command-view').waitFor({ state: 'visible' }).catch(error => { throw new Error(`/${command.name} did not open its command view: ${error.message}`); });
     assert.equal(await page.locator('#command-title').textContent(), '/' + command.name);
     if (holdStatus) {
       const waitPending = async () => {

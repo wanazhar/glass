@@ -137,8 +137,9 @@ impl Host {
                 }
             }
         }
-        if !ops.is_empty() {
-            commit(&store, ops)?;
+        // Each partial and its recovery marker stay in one bounded commit.
+        for batch in ops.chunks(2) {
+            commit(&store, batch.to_vec())?;
         }
         Ok(Self {
             store,
@@ -1080,6 +1081,28 @@ mod tests {
         )
         .unwrap();
         (dir, host)
+    }
+    #[test]
+    fn recovery_batches_large_partial_responses() {
+        let (dir, host) = setup();
+        for i in 0..18 {
+            let cv = format!("conversation-{i}");
+            let task = format!("task-{i}");
+            commit(&host.store, vec![
+                Op::ConversationCreate { id: cv.clone(), agent: json!({}), provider_identity: crate::durable::identity().unwrap(), owner: None, parent: None, fork_at: None },
+                Op::TaskCreate { id: task.clone(), conversation: cv.clone(), kind: "app.step".into(), version: 1, owner: None, background: false, replay: "safe".into(), input: Value::Null, checkpoint: Value::Null },
+                Op::Document { conversation: cv, kind: "gc.live".into(), version: 1, expected_revision: 0, value: json!({"taskId":task,"text":"x".repeat(60_000)}), history: false, fork: "initial".into(), initial: Value::Null },
+            ]).unwrap();
+        }
+        drop(host);
+        let host = Host::open(&dir, false).unwrap();
+        for i in 0..18 {
+            let records = host.store.borrow().records(&format!("conversation-{i}")).unwrap();
+            assert!(matches!(&records[0], Record::Assistant(text) if text.len() == 60_000));
+            assert!(matches!(&records[1], Record::Meta(_)));
+        }
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn recovery_batches_unfinished_tool_calls() {

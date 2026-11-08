@@ -659,6 +659,7 @@ try {
   await page.locator("#scrim").click({ position: { x: 370, y: 400 } });
   await page.locator("#details-toggle").click();
   await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Change file view", exact: true }).click();
   await page.locator(".file-name").filter({ hasText: "notes.md" }).waitFor();
   await page.locator(".file-open").filter({ hasText: "notes.md" }).click();
   await page

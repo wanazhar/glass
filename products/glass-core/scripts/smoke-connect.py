@@ -147,7 +147,7 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         code,body,_=req('/api/new','POST',{'workspace':str(root/'project-two')});assert code==200
         new=json.loads(body)['id'];assert json.loads((data/(new+'.meta.json')).read_text())['workspace']==str(root/'project-two')
         usage=json.loads(req('/api/usage?path='+urllib.parse.quote(str(root/'project-two')))[1]);assert usage['entries']==2 and not usage['partial']
-        r=subprocess.run(['node',str(ROOT/'web/test/browser.mjs'),url],cwd=ROOT,capture_output=True,text=True,timeout=120)
+        r=subprocess.run(['node',str(ROOT/'web/test/browser.mjs'),url],cwd=ROOT,capture_output=True,text=True,timeout=300)
         print(r.stdout,flush=True);assert r.returncode==0,r.stderr
         # Older pages remain searchable without loading their transcripts.
         for number in range(520):

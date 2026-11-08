@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, BinaryIO, Literal, Optional, TypeVar, TypedDict
@@ -459,11 +460,17 @@ class GlassClient:
             self._stdin = self._process.stdin
             self._stdout = self._process.stdout
         self._next_id = 1
+        self._request_lock = threading.RLock()
         self._initialized = False
         self.capabilities: Optional[GlassCapabilityManifest] = None
         self._lease_token: Optional[str] = None
 
     def initialize(self) -> Any:
+        """Initialize once; concurrent callers share the serialized transport."""
+        with self._request_lock:
+            return self._initialize_locked()
+
+    def _initialize_locked(self) -> Any:
         if self._initialized:
             return None
         result = self._request(
@@ -1197,6 +1204,10 @@ class GlassClient:
                         self._socket.close()
 
     def _request(self, method: str, params: dict[str, Any]) -> Any:
+        with self._request_lock:
+            return self._request_locked(method, params)
+
+    def _request_locked(self, method: str, params: dict[str, Any]) -> Any:
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})

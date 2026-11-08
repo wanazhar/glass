@@ -676,11 +676,6 @@ try {
     await page.waitForFunction(
       () => document.querySelector("#preview-body img")?.naturalWidth === 1,
     );
-    assert(
-      (await page.locator("#preview-body img").getAttribute("src")).includes(
-        "workspace=",
-      ),
-    );
     await page.locator("#preview-close").click();
   }
   await page

@@ -783,7 +783,7 @@ export class GlassClient {
     if (options.signal?.aborted) throw new Error("process health wait aborted");
     throw new Error(`timed out after ${timeoutMs}ms waiting for process ${name} to become healthy`);
   }
-  /** Share a scoped lease until the last overlapping scope exits. */
+  /** Share a scoped lease; attach cleanup failures to a primary Error as leaseReleaseError. */
   async withMutationLease<T>(operation: () => Promise<T>, ttlMs = 60_000): Promise<T> {
     await this.withLeaseScopeGate(async () => {
       if (this.leaseToken !== undefined && this.leaseDeadline !== undefined && performance.now() >= this.leaseDeadline) {
@@ -797,16 +797,29 @@ export class GlassClient {
       }
       this.leaseScopeCount++;
     });
+    let primary: unknown;
+    let operationFailed = false;
     try {
       return await operation();
+    } catch (error) {
+      operationFailed = true;
+      primary = error;
+      throw error;
     } finally {
-      await this.withLeaseScopeGate(async () => {
-        this.leaseScopeCount--;
-        if (this.leaseScopeCount === 0 && this.leaseScopeOwned) {
-          this.leaseScopeOwned = false;
-          await this.releaseMutationLease();
+      try {
+        await this.withLeaseScopeGate(async () => {
+          this.leaseScopeCount--;
+          if (this.leaseScopeCount === 0 && this.leaseScopeOwned) {
+            this.leaseScopeOwned = false;
+            await this.releaseMutationLease();
+          }
+        });
+      } catch (cleanup) {
+        if (!operationFailed) throw cleanup;
+        if (primary instanceof Error) {
+          try { Object.defineProperty(primary, "leaseReleaseError", { value: cleanup, configurable: true }); } catch { /* Preserve the original failure. */ }
         }
-      });
+      }
     }
   }
 

@@ -762,11 +762,20 @@ class GlassClient:
         already_held = self._lease_token is not None
         if not already_held:
             self.acquire_mutation_lease(ttl_ms)
+        primary: Optional[BaseException] = None
         try:
             return operation()
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             if not already_held:
-                self.release_mutation_lease()
+                try:
+                    self.release_mutation_lease()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    raise primary from cleanup
 
     def edit_and_verify(
         self, path: str, content: str, root: str = ".", title: Optional[str] = None

@@ -802,6 +802,20 @@ impl Store {
             {
                 return Err("abort or settle conversation tasks before reset".into());
             }
+            if let Op::TaskUpdate { id, status, .. } = op
+                && status == "running"
+                && let Some(task) = next.tasks.get(id).filter(|task| task.kind == "gc.generation")
+                && next.tasks.values().any(|other| {
+                    other.id != task.id
+                        && other.kind == "gc.generation"
+                        && other.conversation == task.conversation
+                        && (matches!(other.status.as_str(), "running" | "waiting" | "completing")
+                            || (other.status == "pending"
+                                && (other.created_sequence, &other.id) < (task.created_sequence, &task.id)))
+                })
+            {
+                return Err("an earlier generation is unfinished in this conversation".into());
+            }
             apply(&mut next, op, sequence)?;
         }
         reconcile(&mut next)?;
@@ -1086,6 +1100,24 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn combined_commit_cannot_start_overlapping_generations() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root")]);
+        let create_generation = |id: &str| Op::TaskCreate {
+            id: id.into(), conversation: "root".into(), kind: "gc.generation".into(),
+            version: 1, owner: None, background: false, replay: "safe".into(),
+            input: json!({}), checkpoint: json!({"phase":"admitted"}),
+        };
+        transact(&mut store, vec![create_generation("a"), create_generation("b")]);
+        let ops = vec![transition(&store, "a", "running"), transition(&store, "b", "running")];
+        assert!(store.commit(store.state.sequence, ops).is_err());
+        assert_eq!(store.state.tasks["a"].status, "pending");
+        assert_eq!(store.state.tasks["b"].status, "pending");
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn reset_rejects_unsettled_tasks_even_in_a_combined_commit() {

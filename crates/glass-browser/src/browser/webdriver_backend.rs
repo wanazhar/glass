@@ -258,16 +258,12 @@ impl WebDriverBrowserBackend {
                 let Some(session_id) = state.session_id.clone() else {
                     return Err(lifecycle_error("close", "closed"));
                 };
-                let result = self
-                    .request(Method::DELETE, &format!("/session/{session_id}"), None)
-                    .await;
+                self.request(Method::DELETE, &format!("/session/{session_id}"), None)
+                    .await?;
                 state.initialized = false;
                 state.session_id = None;
                 state.context_id = None;
-                match result {
-                    Ok(_) => Ok(BackendResponse::Unit),
-                    Err(error) => Err(error),
-                }
+                Ok(BackendResponse::Unit)
             }
             (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
                 ensure_initialized(&state, "navigate")?;
@@ -723,9 +719,12 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let current_url = Arc::new(Mutex::new("about:blank".to_owned()));
         let server_url = Arc::clone(&current_url);
+        let deletes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_deletes = Arc::clone(&deletes);
         let server = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let current_url = Arc::clone(&server_url);
+                let deletes = Arc::clone(&server_deletes);
                 tokio::spawn(async move {
                     let Some((method, path, body)) = read_http_request(&mut stream).await else {
                         return;
@@ -754,6 +753,11 @@ mod tests {
                             } else {
                                 json!(2)
                             }
+                        }
+                        ("DELETE", "/session/safari-session")
+                            if deletes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+                        {
+                            json!({"error": "unknown error", "message": "close failed"})
                         }
                         ("DELETE", "/session/safari-session") => Value::Null,
                         _ => json!({"error": "unknown command", "message": "mock route missing"}),
@@ -823,7 +827,9 @@ mod tests {
             .unwrap();
         assert!(action.accepted);
         assert!(effects.changed);
+        assert!(dispatcher.close().await.is_err());
         dispatcher.close().await.unwrap();
+        assert_eq!(deletes.load(std::sync::atomic::Ordering::SeqCst), 2);
         server.abort();
     }
 

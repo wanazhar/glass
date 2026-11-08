@@ -133,6 +133,12 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Value> {
             "runtime frame exceeds 1 MiB",
         ));
     }
+    if !line.ends_with(b"\n") {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "runtime stdout ended inside a frame",
+        ));
+    }
     let value: Value = serde_json::from_slice(&line)?;
     if !value.is_object() || value["jsonrpc"] != "2.0" {
         return Err(io::Error::new(
@@ -150,7 +156,25 @@ mod tests {
         assert!(read_frame(&mut &b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"[..]).is_ok());
         assert!(read_frame(&mut &b"[]\n"[..]).is_err());
         assert!(read_frame(&mut &b""[..]).is_err());
+        assert_eq!(
+            read_frame(&mut &b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"[..])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
         assert!(read_frame(&mut &vec![b' '; MAX_FRAME_BYTES + 1][..]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_rejects_unterminated_child_response() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf '%s' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'"]);
+        let client = RuntimeClient::spawn_command(command).unwrap();
+        assert_eq!(
+            client.recv_timeout(Duration::from_secs(5)).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
     }
 }
 

@@ -172,6 +172,8 @@ pub enum Op {
     },
     #[serde(rename = "task.abort.recursive")]
     AbortRecursive { id: String },
+    #[serde(rename = "task.preserve-decisions.v1")]
+    PreserveDecisions,
 }
 fn fork_current() -> String {
     "current".into()
@@ -256,6 +258,39 @@ fn active_children(state: &State, id: &str) -> bool {
         .values()
         .any(|t| t.owner.as_deref() == Some(id) && !t.background && !t.terminal())
 }
+/// New commits must not reverse an outcome that is waiting for owned work.
+/// Old journal operations keep their original replay semantics.
+fn abort_would_reverse_decision(state: &State, id: &str, recursive_background: bool) -> bool {
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        if state.tasks.get(id).is_some_and(|task| task.status == "completing" && !task.abort_requested) {
+            return true;
+        }
+        pending.extend(state.tasks.values().filter(|task| {
+            task.owner.as_deref() == Some(id)
+                && (recursive_background || (!task.background && !task.terminal()))
+        }).map(|task| task.id.as_str()));
+    }
+    false
+}
+
+fn abort_tree_preserving(state: &mut State, id: &str) -> Result<bool, String> {
+    let children: Vec<_> = state.tasks.values()
+        .filter(|task| task.owner.as_deref() == Some(id) && !task.background && !task.terminal())
+        .map(|task| task.id.clone()).collect();
+    let mut changed = false;
+    for child in children {
+        changed |= abort_tree_preserving(state, &child)?;
+    }
+    let task = state.tasks.get(id).ok_or("unknown task")?;
+    if task.status == "completing" && !task.abort_requested {
+        return Ok(changed);
+    }
+    let revision = task.revision;
+    abort_one(state, id)?;
+    Ok(changed || state.tasks[id].revision != revision)
+}
+
 fn abort_tree(state: &mut State, id: &str, background: bool) -> Result<(), String> {
     let children: Vec<_> = state
         .tasks
@@ -337,7 +372,7 @@ fn reaches_with_ownership(state: &State, from: &[String], target: &str) -> bool 
     }
     false
 }
-fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
+fn apply(state: &mut State, op: &Op, sequence: u64, preserve_decisions: bool) -> Result<(), String> {
     match op {
         Op::ConversationCreate {
             id,
@@ -567,7 +602,11 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
                 }
             }
             if status == "failed" || status == "aborted" {
-                abort_tree(state, id, false)?;
+                if preserve_decisions {
+                    abort_tree_preserving(state, id)?;
+                } else {
+                    abort_tree(state, id, false)?;
+                }
             }
             let completing = matches!(status.as_str(), "completed" | "failed" | "aborted")
                 && active_children(state, id);
@@ -671,6 +710,7 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
                     checkpoint: json!({"phase":"admitted"}),
                 },
                 sequence,
+                preserve_decisions,
             )?;
             state.submissions.insert(key, task_id.clone());
         }
@@ -679,6 +719,7 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
             include_background,
         } => abort_tree(state, id, *include_background)?,
         Op::AbortRecursive { id } => abort_tree_including_finished(state, id)?,
+        Op::PreserveDecisions => {}
     }
     if state.conversations.len()
         + state.documents.len()
@@ -690,7 +731,7 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
     }
     Ok(())
 }
-fn reconcile(state: &mut State) -> Result<(), String> {
+fn reconcile(state: &mut State, preserve_decisions: bool) -> Result<(), String> {
     for _ in 0..=state.tasks.len() {
         let mut changed = false;
         let tasks: Vec<_> = state
@@ -722,7 +763,11 @@ fn reconcile(state: &mut State) -> Result<(), String> {
                 });
                 if task.policy == "fail_fast" && failed {
                     for child in &task.on {
-                        abort_tree(state, child, false)?;
+                        if preserve_decisions {
+                            changed |= abort_tree_preserving(state, child)?;
+                        } else {
+                            abort_tree(state, child, false)?;
+                        }
                     }
                 }
                 if task
@@ -804,10 +849,11 @@ impl Store {
             {
                 return Err(format!("durable commit integrity failure at {offset}"));
             }
+            let preserve = commit.ops.iter().any(|op| matches!(op, Op::PreserveDecisions));
             for op in &commit.ops {
-                apply(&mut store.state, op, commit.sequence)?;
+                apply(&mut store.state, op, commit.sequence, preserve)?;
             }
-            reconcile(&mut store.state)?;
+            reconcile(&mut store.state, preserve)?;
             store.state.sequence = commit.sequence;
             store.last_hash = commit.hash;
             offset += n as u64;
@@ -825,7 +871,7 @@ impl Store {
             return Err("commit requires 1..512 operations".into());
         }
         // The distinct journal operation preserves historical replay semantics.
-        let ops: Vec<_> = ops.into_iter().map(|op| match op {
+        let mut ops: Vec<_> = ops.into_iter().map(|op| match op {
             Op::Abort { id, include_background: true } => Op::AbortRecursive { id },
             other => other,
         }).collect();
@@ -833,9 +879,18 @@ impl Store {
             .checked_add(1)
             .ok_or("durable sequence exhausted")?;
         let mut next = self.state.clone();
+        let mut preserve = next.tasks.values().any(|task| task.status == "completing");
         for op in &ops {
             // Historical journals may contain these formerly accepted transitions.
             // Reject them on new commits without making old journals unreadable.
+            let cancellation = match op {
+                Op::Abort { id, include_background } => Some((id.as_str(), *include_background)),
+                Op::AbortRecursive { id } => Some((id.as_str(), true)),
+                _ => None,
+            };
+            if cancellation.is_some_and(|(id, background)| abort_would_reverse_decision(&next, id, background)) {
+                return Err("task outcome is already decided; wait for owned work".into());
+            }
             if let Op::TaskCreate { owner: Some(owner), .. } = op
                 && next.tasks.get(owner).is_some_and(|task| task.status == "completing")
             {
@@ -888,9 +943,15 @@ impl Store {
             {
                 return Err("task wait cycle through foreground ownership".into());
             }
-            apply(&mut next, op, sequence)?;
+            apply(&mut next, op, sequence, true)?;
+            if !preserve && matches!(op, Op::TaskUpdate { .. } | Op::Abort { .. } | Op::AbortRecursive { .. }) {
+                preserve = next.tasks.values().any(|task| task.status == "completing");
+            }
         }
-        reconcile(&mut next)?;
+        if preserve || next.tasks.values().any(|task| task.status == "waiting" && task.policy == "fail_fast") {
+            ops.push(Op::PreserveDecisions);
+        }
+        reconcile(&mut next, true)?;
         next.sequence = sequence;
         if serde_json::to_vec(&next).map_err(|e| e.to_string())?.len() > 32 * 1024 * 1024 {
             return Err("durable resident state exceeds 32 MiB; archive terminal work".into());
@@ -1094,10 +1155,11 @@ impl Store {
             if commit.sequence > sequence {
                 break;
             }
+            let preserve = commit.ops.iter().any(|op| matches!(op, Op::PreserveDecisions));
             for op in &commit.ops {
-                apply(&mut state, op, commit.sequence)?;
+                apply(&mut state, op, commit.sequence, preserve)?;
             }
-            reconcile(&mut state)?;
+            reconcile(&mut state, preserve)?;
             state.sequence = commit.sequence;
         }
         Ok(state)
@@ -1279,6 +1341,58 @@ mod tests {
         drop(store);
         let store = Store::open(&path, false).unwrap();
         assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn cancellation_cannot_replace_a_decided_outcome() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root"), task("parent", None, true, false), task("child", Some("parent"), true, false)]);
+        let mut completed = transition(&store, "parent", "completed");
+        if let Op::TaskUpdate { outcome, .. } = &mut completed { *outcome = Some(json!({"value":42})); }
+        transact(&mut store, vec![completed]);
+        assert_eq!(store.state.tasks["parent"].status, "completing");
+        assert!(store.commit(store.state.sequence, vec![Op::Abort { id: "parent".into(), include_background: false }]).is_err());
+        assert!(!store.state.tasks["child"].abort_requested);
+        let child = transition(&store, "child", "completed");
+        transact(&mut store, vec![child]);
+        assert_eq!(store.state.tasks["parent"].status, "completed");
+        assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn fail_fast_cannot_reverse_a_child_decision() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![
+            create("root"), task("parent", None, true, false),
+            task("a", Some("parent"), true, false), task("b", Some("parent"), false, false),
+            task("grandchild", Some("a"), true, false),
+        ]);
+        let running = transition(&store, "b", "running");
+        transact(&mut store, vec![running]);
+        let mut waiting = transition(&store, "parent", "waiting");
+        if let Op::TaskUpdate { on, policy, .. } = &mut waiting {
+            *on = vec!["a".into(), "b".into()];
+            *policy = "fail_fast".into();
+        }
+        transact(&mut store, vec![waiting]);
+        let mut completed = transition(&store, "a", "completed");
+        if let Op::TaskUpdate { outcome, .. } = &mut completed { *outcome = Some(json!({"value":42})); }
+        transact(&mut store, vec![completed]);
+        drop(store);
+        let mut store = Store::open(&path, false).unwrap();
+        store.recover().unwrap();
+        assert_eq!(store.state.tasks["a"].status, "completed");
+        assert_eq!(store.state.tasks["a"].outcome, Some(json!({"value":42})));
+        assert_eq!(store.state.tasks["b"].status, "failed");
+        assert!(store.state.tasks["grandchild"].abort_requested);
+        drop(store);
+        let store = Store::open(&path, false).unwrap();
+        assert_eq!(store.state.tasks["a"].status, "completed");
+        assert_eq!(store.state.tasks["a"].outcome, Some(json!({"value":42})));
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1475,6 +1589,11 @@ mod tests {
                     expected_revision: 1,
                     version: 2,
                     checkpoint: json!({"phase":"v2"}),
+                },
+                Op::TaskUpdate {
+                    id: "step".into(), expected_revision: 2, status: "completed".into(),
+                    checkpoint: json!({"phase":"v2"}), on: Vec::new(), policy: all_settled(),
+                    due_at_ms: 0, outcome: None,
                 },
                 Op::Reset {
                     conversation: "root".into(),

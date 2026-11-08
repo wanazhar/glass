@@ -90,8 +90,16 @@ Wait cycles are rejected. A task with foreground children remains `completing`
 until they settle. Its terminal outcome is the supplied outcome whether or not
 foreground children needed time to settle. Background children survive a
 parent's ordinary abort; `includeBackground: true` includes them.
+
+Explicit cancellation that would reverse a `completing` task's decided outcome
+is rejected, including cancellation through an ancestor. Fail-fast
+reconciliation may cancel its owned work but preserves the decided outcome.
+Journal change pages may include an internal `task.preserve-decisions.v1`
+marker that preserves this behavior during replay.
+
 An owned conversation accepts new submissions only while its owner is active;
 settling, finished, or aborting owners cannot acquire new work.
+
 Built-in tool task outcomes record the typed `isError` supplied by execution,
 not the tool output text. If no typed outcome is available, the task is marked
 failed with `outcomeKnown: false` rather than reporting unconfirmed success.
@@ -99,6 +107,7 @@ failed with `outcomeKnown: false` rather than reporting unconfirmed success.
 Safe interrupted tasks return to pending. Unsafe tasks become failed with an
 interrupted outcome. Mark work safe only when repeating its phase is safe.
 Migrations require a pending task, matching revision, and newer version.
+
 Recovery associates a live partial response with its journal position, so an
 earlier response containing the same text cannot suppress its transcript entry.
 

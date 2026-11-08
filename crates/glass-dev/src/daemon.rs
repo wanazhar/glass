@@ -5,6 +5,7 @@ use crate::{DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker};
 use glass_browser::cli::args::DaemonCommand;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -200,6 +201,7 @@ struct OperationRegistry {
     records: BTreeMap<String, DevelopmentOperation>,
     order: VecDeque<String>,
     idempotency: BTreeMap<String, String>,
+    request_fingerprints: BTreeMap<String, [u8; 32]>,
     events: VecDeque<DevelopmentOperationEvent>,
     next_operation: u64,
     next_event: u64,
@@ -212,6 +214,7 @@ impl OperationRegistry {
             records: BTreeMap::new(),
             order: VecDeque::new(),
             idempotency: BTreeMap::new(),
+            request_fingerprints: BTreeMap::new(),
             events: VecDeque::new(),
             next_operation: 1,
             next_event: 1,
@@ -265,6 +268,28 @@ impl OperationRegistry {
         Ok((record, true))
     }
 
+    /// Bind a retained idempotency key to the exact operation and authority.
+    fn submit_bound(
+        &mut self,
+        request_id: &str,
+        fingerprint: [u8; 32],
+        actor: String,
+        operation_type: String,
+        revision_before: u64,
+        retry_safe: bool,
+    ) -> Result<(DevelopmentOperation, bool), String> {
+        if let Some(existing) = self.request_fingerprints.get(request_id)
+            && existing != &fingerprint
+        {
+            return Err("request ID already belongs to a different operation".into());
+        }
+        let result = self.submit(request_id, actor, operation_type, revision_before, retry_safe)?;
+        if result.1 {
+            self.request_fingerprints.insert(request_id.into(), fingerprint);
+        }
+        Ok(result)
+    }
+
     fn prune_terminal(&mut self) {
         while self.records.len() >= OPERATION_CAPACITY {
             let Some(id) = self.order.iter().find_map(|id| {
@@ -279,6 +304,8 @@ impl OperationRegistry {
             self.records.remove(&id);
             self.idempotency
                 .retain(|_, operation_id| operation_id != &id);
+            self.request_fingerprints
+                .retain(|request_id, _| self.idempotency.contains_key(request_id));
         }
     }
 
@@ -1023,13 +1050,26 @@ async fn execute_request(
                 let context = request_tool_context(&request, "operation.submit")?;
                 let handle = workspace_handle(workspaces, workspace_id)?;
                 let actor = request.actor.clone().unwrap_or_else(|| "local".into());
-                let (operation, created) = lock_operations(&handle.operations).submit(
-                        &request.id,
-                        actor,
-                        call.name.clone(),
-                        context.expected_project_revision,
-                        !request.allow_mutation,
-                    )?;
+                let identity = serde_json::json!({
+                    "actor": actor,
+                    "call": call,
+                    "generation": context.expected_generation,
+                    "revision": context.expected_project_revision,
+                    "allowMutation": request.allow_mutation,
+                    "confirmed": request.confirmed,
+                    "coreRuntimeAuthorized": request.core_runtime_authorized,
+                });
+                let fingerprint = Sha256::digest(
+                    serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
+                ).into();
+                let (operation, created) = lock_operations(&handle.operations).submit_bound(
+                    &request.id,
+                    fingerprint,
+                    actor,
+                    call.name.clone(),
+                    context.expected_project_revision,
+                    !request.allow_mutation,
+                )?;
                 if created
                     && handle
                         .sender
@@ -2374,6 +2414,22 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn idempotency_key_rejects_different_operation_identity() {
+        let mut registry = OperationRegistry::new("workspace".into());
+        let submit = |registry: &mut OperationRegistry, fingerprint| {
+            registry.submit_bound(
+                "request", fingerprint, "actor".into(), "tool".into(), 1, false,
+            )
+        };
+        let (first, created) = submit(&mut registry, [1; 32]).unwrap();
+        assert!(created);
+        let (duplicate, created) = submit(&mut registry, [1; 32]).unwrap();
+        assert!(!created);
+        assert_eq!(first.id, duplicate.id);
+        assert!(submit(&mut registry, [2; 32]).is_err());
+    }
 
     #[cfg(unix)]
     #[test]

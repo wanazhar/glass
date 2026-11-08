@@ -163,7 +163,13 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert Provider.calls>=6,Provider.calls
         before=(data/'web-fixture.jsonl').read_bytes()
         assert req('/api/upgrade','POST',{'id':'web-fixture','confirmed':False})[0]==400
-        code,body,_=req('/api/upgrade','POST',{'id':'web-fixture','confirmed':True});assert code==200,body
+        assert req('/api/send','POST',{'id':'web-fixture','message':{'t':'control','action':'claim'}})[0]==200
+        deadline=time.monotonic()+10
+        while True:
+            code,body,_=req('/api/upgrade','POST',{'id':'web-fixture','confirmed':True})
+            if code==200 or b'Take control before restarting' not in body or time.monotonic()>=deadline:break
+            time.sleep(.05)
+        assert code==200,body
         assert (data/'web-fixture.jsonl').read_bytes()==before
         print('PASS: explicit idle runtime restart preserves the transcript',flush=True)
 

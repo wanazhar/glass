@@ -1177,19 +1177,24 @@ class GlassClient:
         return self.call("setTimezone", {"timezoneId": timezone_id})
 
     def close(self) -> None:
-        if self._process is not None:
-            if self._process.poll() is None:
+        """Terminate the owned process and close all transport streams."""
+        try:
+            if self._process is not None and self._process.poll() is None:
                 self._process.terminate()
                 try:
                     self._process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     self._process.kill()
                     self._process.wait(timeout=5)
-        else:
-            self._stdin.close()
-            self._stdout.close()
-            if self._socket is not None:
-                self._socket.close()
+        finally:
+            try:
+                self._stdin.close()
+            finally:
+                try:
+                    self._stdout.close()
+                finally:
+                    if self._socket is not None:
+                        self._socket.close()
 
     def _request(self, method: str, params: dict[str, Any]) -> Any:
         request_id = self._next_id

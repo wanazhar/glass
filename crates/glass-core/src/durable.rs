@@ -708,6 +708,9 @@ fn reconcile(state: &mut State) -> Result<(), String> {
                     .and_then(|v| v["status"].as_str())
                     .unwrap_or("completed")
                     .into();
+                if let Some(result) = task.outcome.as_ref().and_then(|outcome| outcome.get("result")) {
+                    target.outcome = (!result.is_null()).then(|| result.clone());
+                }
                 target.revision += 1;
                 changed = true;
             } else if task.status == "waiting" {
@@ -1206,6 +1209,26 @@ mod tests {
     }
     fn transact(store: &mut Store, ops: Vec<Op>) {
         store.commit(store.state.sequence, ops).unwrap();
+    }
+    #[test]
+    fn completion_outcome_does_not_depend_on_child_timing() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        transact(&mut store, vec![create("root"), task("direct", None, true, false), task("parent", None, true, false), task("child", Some("parent"), true, false)]);
+        for id in ["direct", "parent"] {
+            let mut completed = transition(&store, id, "completed");
+            if let Op::TaskUpdate { outcome, .. } = &mut completed { *outcome = Some(json!({"value":42})); }
+            transact(&mut store, vec![completed]);
+        }
+        let child = transition(&store, "child", "completed");
+        transact(&mut store, vec![child]);
+        assert_eq!(store.state.tasks["direct"].outcome, store.state.tasks["parent"].outcome);
+        assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        drop(store);
+        let store = Store::open(&path, false).unwrap();
+        assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn owned_conversation_rejects_submission_after_owner_finishes() {

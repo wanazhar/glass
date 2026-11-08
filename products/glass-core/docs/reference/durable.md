@@ -83,8 +83,9 @@ tasks; custom application code stays with the host. A running task may checkpoin
 without becoming terminal. Set `waiting` with `on` task IDs and a `policy` of
 `all_settled` or `fail_fast`. Fail-fast dependencies must be owned children.
 Wait cycles are rejected. A task with foreground children remains `completing`
-until they settle. Background children survive a parent's ordinary abort;
-`includeBackground: true` includes them.
+until they settle. Its terminal outcome is the supplied outcome whether or not
+foreground children needed time to settle. Background children survive a
+parent's ordinary abort; `includeBackground: true` includes them.
 An owned conversation accepts new submissions only while its owner is active;
 settling, finished, or aborting owners cannot acquire new work.
 Built-in tool task outcomes record the typed `isError` supplied by execution,

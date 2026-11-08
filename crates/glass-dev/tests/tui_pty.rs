@@ -775,7 +775,7 @@ impl Session {
 
     fn wait_for_agent_surface(&mut self) {
         assert!(
-            self.wait_for("CODING AGENT", Duration::from_secs(5)),
+            self.wait_for("▌", Duration::from_secs(5)),
             "Agent surface did not open\n{}",
             self.output_tail()
         );
@@ -1448,11 +1448,7 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         Some(&fake_core),
         Some(&data_home),
     );
-    assert!(
-        session.wait_for("CODING AGENT", Duration::from_secs(8)),
-        "Agent workspace did not render\n{}",
-        session.output_tail()
-    );
+    session.wait_for_agent_surface();
 
     // `/` is the first action at launch: GC's catalogue must be discoverable
     // without switching surfaces, opening a colon palette, or sending a turn.
@@ -1929,8 +1925,7 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
         std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
         let mut session =
             Session::start_with_core_binary(&binary(), &root, cols, rows, Some(&fake_core));
-        assert!(session.wait_for("CODING AGENT", Duration::from_secs(8)));
-        assert!(session.wait_for("Core available", Duration::from_secs(8)));
+        session.wait_for_agent_surface();
 
         for index in 0..10 {
             let prompt = format!("scroll fixture {index}");
@@ -2061,7 +2056,7 @@ fn unavailable_core_send_shows_full_error_and_keeps_retry_draft() {
     let mut session =
         Session::start_with_core_binary(&binary(), &root, 100, 28, Some(&missing_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    assert!(session.wait_for("CODING AGENT", Duration::from_secs(5)));
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("▌", Duration::from_secs(5)),
         "composer was not ready when Core needs setup\n{}",

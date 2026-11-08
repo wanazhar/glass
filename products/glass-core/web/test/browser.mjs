@@ -220,29 +220,19 @@ try {
     "Shared runtime workspace",
   );
   await page.locator("#command-close").click();
-  await nativeCommand("login");
-  await chooseOption(page,page.locator('#command-form [name="action"]'),"api");
-  assert.equal(
-    await page.locator('#command-form [name="secret"]').getAttribute("type"),
-    "password",
-  );
-  assert(await page.locator('#command-form [name="secret"]').isVisible());
-  await page
-    .locator('#command-form [name="secret"]')
-    .fill("fixture-only-secret");
-  await chooseOption(page,page.locator('#command-form [name="action"]'),"list");
-  assert(await page.locator('#command-form [name="secret"]').isDisabled());
-  assert.equal(
-    await page.locator('#command-form [name="secret"]').inputValue(),
-    "",
-  );
-  assert.equal(
-    await page
-      .locator("#command-form")
-      .evaluate((form) => new FormData(form).has("secret")),
-    false,
-  );
-  await page.locator("#command-close").click();
+  await page.locator("#open-commands").click();
+  await page.locator("#command-search").fill("login");
+  await page.getByRole("option").filter({ hasText: /^\/login\b/ }).click();
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  const connectionKey = page.getByLabel("API key", { exact: true });
+  assert.equal(await connectionKey.getAttribute("type"), "password");
+  await connectionKey.fill("fixture-only-secret");
+  await page.locator(".connection-form").getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Discard changes", exact: true }).click();
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  assert.equal(await connectionKey.inputValue(), "");
+  await page.locator(".connection-form").getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.locator("#open-chat").click();
   const exportResponse = await page.request.get(
     new URL("/api/export?id=web-fixture", url).href,
   );

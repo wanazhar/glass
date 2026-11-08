@@ -1114,7 +1114,12 @@ export class GlassClient {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: "2.0", id, method, params });
+      try {
+        this.send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 

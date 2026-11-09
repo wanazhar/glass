@@ -370,6 +370,11 @@ impl BidiBrowserBackend {
                     return Err(lifecycle_error("close", "closed"));
                 }
                 let result = self.command(&mut state, "session.end", json!({})).await;
+                if result.is_err() {
+                    // Keep the session lifecycle state intact so a retried close
+                    // can re-issue session.end against the still-open session.
+                    return result.map(|_| BackendResponse::Unit);
+                }
                 if let Some(mut socket) = state.socket.take() {
                     let _ = socket.close(None).await;
                 }

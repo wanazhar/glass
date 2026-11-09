@@ -1278,6 +1278,14 @@ class GlassClient:
                 raise GlassError("Glass exited before completing an MCP newline frame")
             body = first.strip()
         try:
-            return json.loads(body)
+            message = json.loads(body)
         except json.JSONDecodeError as error:
             raise GlassError("invalid MCP JSON response") from error
+        if (
+            not isinstance(message, dict)
+            or message.get("jsonrpc") != "2.0"
+            or "id" not in message
+            or not any(key in message for key in ("result", "error", "method"))
+        ):
+            raise GlassError("invalid JSON-RPC envelope")
+        return message

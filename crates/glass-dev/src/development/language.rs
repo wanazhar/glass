@@ -13,7 +13,7 @@ use std::{
 };
 
 const MAX_LSP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const RENAME_INDEX_WAIT: Duration = Duration::from_secs(8);
+const RENAME_INDEX_WAIT: Duration = Duration::from_secs(30);
 const RENAME_CONTENT_MODIFIED_RETRIES: usize = 3;
 // Some rust-analyzer versions publish an empty snapshot before their first
 // real check completes. Keep waiting within the existing bounded request

@@ -4312,7 +4312,9 @@ mod warm_integration {
         assert_eq!(record["toolName"], "glass.browser.start");
         assert_eq!(record["errorClass"], "tool_validation");
         assert_eq!(record["status"], "error");
-        assert_eq!(record["toolCatalog"]["count"].as_u64().unwrap(), 10);
+        // Nine builtins plus the managed desktop status tool plus the
+        // mixed-host browser route the schema was rejected against.
+        assert_eq!(record["toolCatalog"]["count"].as_u64().unwrap(), 11);
         assert_eq!(record["toolCatalog"]["sha256"].as_str().unwrap().len(), 64);
         let offered = record["toolCatalog"]["entries"]
             .as_array()

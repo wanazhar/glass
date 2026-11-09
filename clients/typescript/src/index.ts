@@ -613,10 +613,14 @@ export class GlassClient {
     const response = await this.request("tools/call", { name, arguments: callArgs }) as ToolCallResult;
     if (response.isError) {
       const text = response.content?.find((part) => typeof part.text === "string")?.text ?? "Glass tool failed";
+      const payload = response as {
+        error?: { code?: number; message?: string };
+        retry?: { classification?: string; recommendedOperation?: string };
+      };
       throw GlassStructuredError.fromMcp({
-        code: -32000,
-        message: text,
-        data: { message: text, details: response },
+        code: payload.error?.code ?? -32000,
+        message: payload.error?.message ?? text,
+        data: { code: payload.error?.code, message: text, retry: payload.retry, details: response },
       });
     }
     const text = response.content?.find((part) => typeof part.text === "string")?.text;

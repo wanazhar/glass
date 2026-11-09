@@ -6319,10 +6319,7 @@ fn desktop_surface_tabs_render_every_workbench() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust"
-    );
+
     for (key, marker) in [
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
@@ -6338,9 +6335,11 @@ fn desktop_surface_tabs_render_every_workbench() {
         );
     }
     send_alt_digit(&mut session, b'1');
+    session.send(b"agent-return-probe");
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Alt-1 did not return to Agent"
+        session.wait_for_composer_text("agent-return-probe", Duration::from_secs(5)),
+        "Alt-1 did not return to the Agent composer\n{}",
+        session.output_tail()
     );
     session.kill();
 }
@@ -6357,10 +6356,7 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
         "first phone frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after phone trust"
-    );
+
     for (key, marker) in [
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
@@ -6376,9 +6372,11 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
         );
     }
     send_alt_digit(&mut session, b'1');
+    session.send(b"agent-return-probe");
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Alt-1 did not return from phone Git to Agent"
+        session.wait_for_composer_text("agent-return-probe", Duration::from_secs(5)),
+        "Alt-1 did not return to the Agent composer on a phone-sized terminal\n{}",
+        session.output_tail()
     );
     session.kill();
 }
@@ -6447,9 +6445,11 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
         );
     }
     send_alt_digit(&mut session, b'1');
+    session.send(b"agent-return-probe");
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Alt-1 did not return from compact Git to Agent"
+        session.wait_for_composer_text("agent-return-probe", Duration::from_secs(5)),
+        "Alt-1 did not return to the compact Agent composer\n{}",
+        session.output_tail()
     );
     session.kill();
 }

@@ -848,13 +848,24 @@ impl DebuggerSession {
         })
     }
 
+    /// Map a terminal operation outcome onto the session state so every close
+    /// path shares one fail-closed contract.
+    fn settle_terminal<T>(
+        &mut self,
+        result: &DebugResult<T>,
+        ok_state: DebugSessionState,
+        err_state: DebugSessionState,
+    ) {
+        self.state = if result.is_ok() { ok_state } else { err_state };
+    }
+
     pub fn disconnect(&mut self, terminate_debuggee: bool) -> DebugResult<Value> {
         let result = self.client.request(
             "disconnect",
             json!({"terminateDebuggee": terminate_debuggee}),
             self.timeout,
         );
-        self.state = DebugSessionState::Terminated;
+        self.settle_terminal(&result, DebugSessionState::Terminated, DebugSessionState::Failed);
         result
     }
 
@@ -862,21 +873,17 @@ impl DebuggerSession {
         let result = self
             .client
             .request("terminate", json!({"restart": restart}), self.timeout);
-        self.state = if restart {
-            DebugSessionState::Starting
-        } else {
-            DebugSessionState::Terminated
-        };
+        self.settle_terminal(
+            &result,
+            if restart { DebugSessionState::Starting } else { DebugSessionState::Terminated },
+            DebugSessionState::Failed,
+        );
         result
     }
 
     pub fn shutdown(&mut self) -> DebugResult<()> {
         let result = self.client.shutdown();
-        self.state = if result.is_ok() {
-            DebugSessionState::Terminated
-        } else {
-            DebugSessionState::Failed
-        };
+        self.settle_terminal(&result, DebugSessionState::Terminated, DebugSessionState::Failed);
         result
     }
 }

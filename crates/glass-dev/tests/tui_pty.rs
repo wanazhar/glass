@@ -6778,11 +6778,6 @@ fn git_file_selection_opens_the_focused_diff_in_place() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for_visible("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust\n{}",
-        session.output_tail()
-    );
     send_alt_digit(&mut session, b'5');
     assert!(
         session.wait_for_visible("a-first.txt", Duration::from_secs(8)),

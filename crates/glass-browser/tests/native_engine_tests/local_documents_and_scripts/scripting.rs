@@ -603,10 +603,33 @@ async fn native_local_scripts_drain_microtasks_and_next_turn_timers_inner() {
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
 
-    assert_eq!(
-        engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
-        serde_json::json!("script-micro-timer")
-    );
+    let timer_dump = engine
+        .evaluate_async(
+            r#"(() => {
+                const timers = globalThis.__glassTimers instanceof Map ? globalThis.__glassTimers : new Map();
+                const idle = globalThis.__glassIdleCallbacks instanceof Map ? globalThis.__glassIdleCallbacks : new Map();
+                const anim = globalThis.__glassAnimationFrames instanceof Map ? globalThis.__glassAnimationFrames : new Map();
+                const timersOut = [];
+                for (const entry of Array.from(timers.entries())) {
+                    timersOut.push({id: Number(entry[0]), dueAt: entry[1].dueAt, timeoutAt: entry[1].timeoutAt, cancelled: !!entry[1].cancelled, intervalMs: entry[1].intervalMs});
+                }
+                const idleOut = [];
+                for (const entry of Array.from(idle.entries())) {
+                    idleOut.push({id: Number(entry[0]), timeoutAt: entry[1].timeoutAt, scheduledAt: entry[1].scheduledAt});
+                }
+                return {taskOrder: globalThis.taskOrder, now: globalThis.__glassNativeTimerNowMs, timers: timersOut, idle: idleOut, animFrames: Array.from(anim.keys()), nextTimerId: globalThis.__glassNextTimerId, nextIdleId: globalThis.__glassNextIdleCallbackId, timerCount: timers.size, idleCount: idle.size};
+            })()"#,
+        )
+        .await
+        .unwrap();
+    println!("DIAG timer dump: {timer_dump}");
+    let task_after_dump = engine.evaluate_async("globalThis.taskOrder").await.unwrap();
+    println!("DIAG taskOrder after dump evaluate: {task_after_dump}");
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let task_after_settle = engine.evaluate_async("globalThis.taskOrder").await.unwrap();
+
+    assert_eq!(task_after_settle, serde_json::json!("script-micro-timer"));
     engine.close_async().await.unwrap();
 }
 #[test]

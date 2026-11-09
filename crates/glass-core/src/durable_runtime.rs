@@ -915,7 +915,9 @@ impl Context {
                     _ => {}
                 }
             }
-            commit(&store, ops).map_err(std::io::Error::other)?;
+            for batch in ops.chunks(512) {
+                commit(&store, batch.to_vec()).map_err(std::io::Error::other)?;
+            }
             if owned
                 .iter()
                 .any(|record| matches!(record, Record::Assistant(_)))

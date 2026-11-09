@@ -5506,7 +5506,7 @@ for line in sys.stdin:
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
         let mut extensions = Registry::load(
             &[format!(
-                "env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=16000 {}",
+                "env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=40000 {}",
                 warmer_extension()
             )],
             Path::new("."),
@@ -5525,7 +5525,9 @@ for line in sys.stdin:
                 &mut extensions,
                 Path::new("."),
             )
-            // Short prompt: well under the 16000-byte test minimum.
+            // Short prompt; the cacheable prefix is the system prompt
+            // plus tool schemas, which is already far above the default
+            // minimum, so this stays a small-prefix turn.
             .with_prompt("you are glass".into(), None, None)
             .with_warmer(&warmer);
 

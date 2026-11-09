@@ -1356,10 +1356,6 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust"
-    );
     send_alt_digit(&mut session, b'3');
     assert!(
         session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
@@ -1367,14 +1363,17 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
     );
     session.send(b"T");
     assert!(
-        session.wait_for("RECOVERY", Duration::from_secs(8)),
-        "target picker failure did not expose browser recovery\n{}",
+        session.wait_for("browser is not connected", Duration::from_secs(8)),
+        "target picker failure did not report the disconnected browser\n{}",
         session.output_tail()
     );
-    session.send(b"\x1b");
+    session.clear_output();
+    send_alt_digit(&mut session, b'1');
+    session.send(b"after-picker-failure");
     assert!(
-        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
-        "recovery dismissal did not return to the App surface"
+        session.wait_for_composer_text("after-picker-failure", Duration::from_secs(5)),
+        "target picker failure left the TUI unusable\n{}",
+        session.output_tail()
     );
     session.kill();
 }

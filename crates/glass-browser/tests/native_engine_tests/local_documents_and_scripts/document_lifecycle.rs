@@ -1447,8 +1447,11 @@ async fn native_local_idle_callbacks_honor_cancellation_and_deadline_inner() {
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
 
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let idle_log = engine.evaluate_async("globalThis.idleLog").await.unwrap();
+
     assert_eq!(
-        engine.evaluate_async("globalThis.idleLog").await.unwrap(),
+        idle_log,
         serde_json::json!([
             ["timeout", true, true, true, true],
             ["idle", false, true, true, true],

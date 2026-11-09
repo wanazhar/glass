@@ -1198,8 +1198,16 @@ async fn recovered_malformed_document_commits_with_a_new_revision_inner() {
     assert!(after.complete);
     dispatcher.close().await.unwrap();
 }
-#[tokio::test]
-async fn fixture_relative_links_normalize_paths_queries_and_reject_opaque_bases() {
+#[test]
+fn fixture_relative_links_normalize_paths_queries_and_reject_opaque_bases() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            fixture_relative_links_normalize_paths_queries_and_reject_opaque_bases_inner(),
+        );
+    });
+}
+
+async fn fixture_relative_links_normalize_paths_queries_and_reject_opaque_bases_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://relative.test/docs/index",
@@ -1269,8 +1277,14 @@ async fn fixture_relative_links_normalize_paths_queries_and_reject_opaque_bases(
     assert_eq!(data_engine.snapshot().unwrap(), before_data);
     assert_eq!(data_engine.history(), &before_data_history);
 }
-#[tokio::test]
-async fn percent_decoded_fragments_match_utf8_ids_and_fail_closed() {
+#[test]
+fn percent_decoded_fragments_match_utf8_ids_and_fail_closed() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(percent_decoded_fragments_match_utf8_ids_and_fail_closed_inner());
+    });
+}
+
+async fn percent_decoded_fragments_match_utf8_ids_and_fail_closed_inner() {
     let html = native_html_without_body_margin(
         "<a id='jump' href='#pricing%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><button id='pricing plan'>Spaced target</button><button id='café'>UTF-8 target</button><button id='a+b'>Plus target</button><p id='duplicate name'>First duplicate</p><p id='duplicate name'>Second duplicate</p>",
     );
@@ -1347,8 +1361,14 @@ async fn percent_decoded_fragments_match_utf8_ids_and_fail_closed() {
         assert_eq!(engine.scroll_offset(), before, "fragment={fragment}");
     }
 }
-#[tokio::test]
-async fn native_namespaced_attributes_preserve_attr_identity_and_commands() {
+#[test]
+fn native_namespaced_attributes_preserve_attr_identity_and_commands() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_namespaced_attributes_preserve_attr_identity_and_commands_inner());
+    });
+}
+
+async fn native_namespaced_attributes_preserve_attr_identity_and_commands_inner() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
         "data:text/html,%3Cbody%3E%3Csvg%20id%3D%27icon%27%20xmlns%3Axlink%3D%27http%3A%2F%2Fwww.w3.org%2F1999%2Fxlink%27%20xlink%3Ahref%3D%27%23old%27%20xml%3Alang%3D%27en%27%3E%3C%2Fsvg%3E%3C%2Fbody%3E",
     ))
@@ -1460,8 +1480,14 @@ async fn native_namespaced_attributes_preserve_attr_identity_and_commands() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn text_fragments_match_bounded_visible_runs_and_fail_closed() {
+#[test]
+fn text_fragments_match_bounded_visible_runs_and_fail_closed() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(text_fragments_match_bounded_visible_runs_and_fail_closed_inner());
+    });
+}
+
+async fn text_fragments_match_bounded_visible_runs_and_fail_closed_inner() {
     let html = native_html_without_body_margin(
         "<a id='jump' href='#:~:text=target%20phrase,anchor'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><p style='white-space:pre'>target phrase anchor and more</p><p style='white-space:pre'>comma, target phrase</p><p style='white-space:pre'>repeat target</p><p style='white-space:pre'>repeat target</p><p>cross <span>run target</span></p><p style='display:none'>hidden target</p><p style='white-space:pre'>plus a+b</p>",
     );
@@ -1586,8 +1612,14 @@ async fn text_fragments_match_bounded_visible_runs_and_fail_closed() {
         assert_eq!(engine.scroll_offset(), before, "fragment={fragment}");
     }
 }
-#[tokio::test]
-async fn text_fragment_affixes_match_adjacent_terms_and_fail_closed() {
+#[test]
+fn text_fragment_affixes_match_adjacent_terms_and_fail_closed() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(text_fragment_affixes_match_adjacent_terms_and_fail_closed_inner());
+    });
+}
+
+async fn text_fragment_affixes_match_adjacent_terms_and_fail_closed_inner() {
     let html = native_html_without_body_margin(
         "<a id='jump' href='#:~:text=prefix%20-,target%20phrase,anchor,-%20suffix'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><p style='white-space:pre'>prefix target phrase anchor suffix</p><p style='white-space:pre'>prefix target phrase mismatch</p><p style='white-space:pre'>target phrase anchor suffix</p><p>cross <span>target phrase</span></p><p style='display:none'>prefix target phrase anchor suffix</p><p style='white-space:pre'>target phrase anchor</p>",
     );

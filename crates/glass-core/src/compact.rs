@@ -234,6 +234,8 @@ pub fn shrink_tool_results(records: &mut [Record], pressure: f32) -> usize {
             body,
             name,
             call_id,
+            is_error,
+            ..
         } = &records[i]
         {
             let bytes = body.len();
@@ -241,6 +243,7 @@ pub fn shrink_tool_results(records: &mut [Record], pressure: f32) -> usize {
                 name: name.clone(),
                 call_id: call_id.clone(),
                 body: format!("[{bytes} bytes of {name} output dropped to save context]"),
+                is_error: is_error.clone(),
             };
             shrunk += 1;
         }
@@ -324,12 +327,13 @@ fn clip_record(text: &str, cap: usize) -> String {
 pub fn evict_oversized(records: &mut [Record], cap: usize) -> usize {
     let mut evicted = 0;
     for r in records.iter_mut() {
-        let (name, call_id, bytes) = match r {
+        let (name, call_id, bytes, is_error) = match r {
             Record::ToolResult {
                 body,
                 name,
                 call_id,
-            } if body.len() > cap => (name.clone(), call_id.clone(), body.len()),
+                is_error,
+            } if body.len() > cap => (name.clone(), call_id.clone(), body.len(), is_error.clone()),
             _ => continue,
         };
         *r = Record::ToolResult {
@@ -339,6 +343,7 @@ pub fn evict_oversized(records: &mut [Record], cap: usize) -> usize {
                 "[{bytes} bytes of output dropped to recover from a context overflow; \
                  re-run the command if it is still needed]"
             ),
+            is_error,
         };
         evicted += 1;
     }
@@ -797,6 +802,7 @@ mod tests {
             name: "bash".into(),
             call_id: "large".into(),
             body: "x".repeat(100_000),
+            is_error: None,
         });
         session.append(Record::User("latest task instruction".into()));
         let (before, after) =
@@ -922,6 +928,7 @@ mod tests {
                 name: "bash".into(),
                 call_id: "c".into(),
                 body: "out".into(),
+                is_error: None,
             },
         );
         // Tail lands on the tool result, which would be an orphan.
@@ -939,6 +946,7 @@ mod tests {
                 name: "bash".into(),
                 call_id: "c".into(),
                 body: "out".into(),
+                is_error: None,
             },
         );
         let out = rebuild(&recs, &State::new());
@@ -977,6 +985,7 @@ mod tests {
                 name: "bash".into(),
                 call_id: format!("c{i}"),
                 body: "x".repeat(5_000),
+                is_error: None,
             });
         }
         let shrunk = shrink_tool_results(&mut recs, 0.9);
@@ -998,6 +1007,7 @@ mod tests {
             name: "bash".into(),
             call_id: "c".into(),
             body: "x".repeat(9_000),
+            is_error: None,
         }];
         assert_eq!(shrink_tool_results(&mut recs, 0.1), 0);
     }
@@ -1008,6 +1018,7 @@ mod tests {
             name: "bash".into(),
             call_id: "c".into(),
             body: "x".repeat(9_000),
+            is_error: None,
         }];
         assert_eq!(
             shrink_tool_results(&mut recs, 0.99),
@@ -1061,11 +1072,13 @@ mod tests {
                 name: "bash".into(),
                 call_id: "c1".into(),
                 body: "y".repeat(9_000),
+                is_error: None,
             },
             Record::ToolResult {
                 name: "bash".into(),
                 call_id: "c2".into(),
                 body: "small".into(),
+                is_error: None,
             },
         ];
         assert_eq!(evict_oversized(&mut recs, 2_000), 1);
@@ -1139,6 +1152,7 @@ mod tests {
             name: "bash".into(),
             call_id: "c".into(),
             body: "o".into(),
+            is_error: None,
         });
         let out = apply_summary(&recs, "s");
         assert!(!matches!(out.first(), Some(Record::ToolResult { .. })));

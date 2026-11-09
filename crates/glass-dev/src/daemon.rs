@@ -5,6 +5,7 @@ use crate::{DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker};
 use glass_browser::cli::args::DaemonCommand;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -197,9 +198,11 @@ pub struct DevelopmentOperationEvent {
 
 struct OperationRegistry {
     workspace_id: String,
+    closing: bool,
     records: BTreeMap<String, DevelopmentOperation>,
     order: VecDeque<String>,
     idempotency: BTreeMap<String, String>,
+    request_fingerprints: BTreeMap<String, [u8; 32]>,
     events: VecDeque<DevelopmentOperationEvent>,
     next_operation: u64,
     next_event: u64,
@@ -209,9 +212,11 @@ impl OperationRegistry {
     fn new(workspace_id: String) -> Self {
         Self {
             workspace_id,
+            closing: false,
             records: BTreeMap::new(),
             order: VecDeque::new(),
             idempotency: BTreeMap::new(),
+            request_fingerprints: BTreeMap::new(),
             events: VecDeque::new(),
             next_operation: 1,
             next_event: 1,
@@ -233,6 +238,9 @@ impl OperationRegistry {
                 .cloned()
                 .map(|record| (record, false))
                 .ok_or_else(|| "operation idempotency record is inconsistent".into());
+        }
+        if self.closing {
+            return Err("workspace is closing; new operations are not accepted".into());
         }
         self.prune_terminal();
         if self.records.len() >= OPERATION_CAPACITY {
@@ -265,6 +273,35 @@ impl OperationRegistry {
         Ok((record, true))
     }
 
+    /// Bind a retained idempotency key to the exact operation and authority.
+    fn submit_bound(
+        &mut self,
+        request_id: &str,
+        fingerprint: [u8; 32],
+        actor: String,
+        operation_type: String,
+        revision_before: u64,
+        retry_safe: bool,
+    ) -> Result<(DevelopmentOperation, bool), String> {
+        if let Some(existing) = self.request_fingerprints.get(request_id)
+            && existing != &fingerprint
+        {
+            return Err("request ID already belongs to a different operation".into());
+        }
+        let result = self.submit(
+            request_id,
+            actor,
+            operation_type,
+            revision_before,
+            retry_safe,
+        )?;
+        if result.1 {
+            self.request_fingerprints
+                .insert(request_id.into(), fingerprint);
+        }
+        Ok(result)
+    }
+
     fn prune_terminal(&mut self) {
         while self.records.len() >= OPERATION_CAPACITY {
             let Some(id) = self.order.iter().find_map(|id| {
@@ -279,6 +316,8 @@ impl OperationRegistry {
             self.records.remove(&id);
             self.idempotency
                 .retain(|_, operation_id| operation_id != &id);
+            self.request_fingerprints
+                .retain(|request_id, _| self.idempotency.contains_key(request_id));
         }
     }
 
@@ -1023,13 +1062,26 @@ async fn execute_request(
                 let context = request_tool_context(&request, "operation.submit")?;
                 let handle = workspace_handle(workspaces, workspace_id)?;
                 let actor = request.actor.clone().unwrap_or_else(|| "local".into());
-                let (operation, created) = lock_operations(&handle.operations).submit(
-                        &request.id,
-                        actor,
-                        call.name.clone(),
-                        context.expected_project_revision,
-                        !request.allow_mutation,
-                    )?;
+                let identity = serde_json::json!({
+                    "actor": actor,
+                    "call": call,
+                    "generation": context.expected_generation,
+                    "revision": context.expected_project_revision,
+                    "allowMutation": request.allow_mutation,
+                    "confirmed": request.confirmed,
+                    "coreRuntimeAuthorized": request.core_runtime_authorized,
+                });
+                let fingerprint = Sha256::digest(
+                    serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
+                ).into();
+                let (operation, created) = lock_operations(&handle.operations).submit_bound(
+                    &request.id,
+                    fingerprint,
+                    actor,
+                    call.name.clone(),
+                    context.expected_project_revision,
+                    !request.allow_mutation,
+                )?;
                 if created
                     && handle
                         .sender
@@ -1103,19 +1155,12 @@ async fn execute_request(
                 let handle = workspace_handle(workspaces, workspace_id)?;
                 let registry = lock_operations(&handle.operations);
                 let since = request.since.unwrap_or(0);
-                let events = registry
-                    .events
-                    .iter()
-                    .filter(|event| event.sequence > since)
-                    .filter(|event| operation_id.is_none_or(|id| event.operation_id == id))
-                    .take(limit)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                Ok(serde_json::json!({
-                    "events":events,
-                    "newestSequence":registry.events.back().map_or(0, |event| event.sequence),
-                    "capacity":OPERATION_EVENT_CAPACITY,
-                }))
+                Ok(operation_event_batch(
+                    &registry.events,
+                    since,
+                    limit,
+                    operation_id,
+                ))
             }
             "workspace.events" => {
                 let workspace_id = required_workspace_id(&request)?;
@@ -1139,6 +1184,8 @@ async fn execute_request(
                 if !still_registered {
                     return Ok(serde_json::json!({"closed":false}));
                 }
+                // Close admission before yielding to the actor's shutdown queue.
+                lock_operations(&handle.operations).closing = true;
                 let (response, received) = tokio::sync::oneshot::channel();
                 handle
                     .sender
@@ -1528,13 +1575,42 @@ fn workspace_event_batch(
         .take(limit)
         .cloned()
         .collect::<Vec<_>>();
+    let cursor = selected.last().map_or(since, |event| event.sequence);
     serde_json::json!({
         "events": selected,
+        "cursor": cursor,
+        "hasMore": cursor < newest,
         "oldestSequence": oldest,
         "newestSequence": newest,
         "lostBefore": (since.saturating_add(1) < oldest).then_some(oldest),
         "droppedEvents": dropped_events,
         "capacity": WORKSPACE_EVENT_CAPACITY,
+    })
+}
+
+fn operation_event_batch(
+    events: &VecDeque<DevelopmentOperationEvent>,
+    since: u64,
+    limit: usize,
+    operation_id: Option<&str>,
+) -> Value {
+    let selected: Vec<DevelopmentOperationEvent> = events
+        .iter()
+        .filter(|event| event.sequence > since)
+        .filter(|event| operation_id.is_none_or(|id| event.operation_id == id))
+        .take(limit)
+        .cloned()
+        .collect();
+    let cursor = selected.last().map_or(since, |event| event.sequence);
+    let has_more = events.iter().any(|event| {
+        event.sequence > cursor && operation_id.is_none_or(|id| event.operation_id == id)
+    });
+    serde_json::json!({
+        "events": selected,
+        "cursor": cursor,
+        "hasMore": has_more,
+        "newestSequence": events.back().map_or(0, |event| event.sequence),
+        "capacity": OPERATION_EVENT_CAPACITY,
     })
 }
 
@@ -2374,6 +2450,111 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn idempotency_key_rejects_different_operation_identity() {
+        let mut registry = OperationRegistry::new("workspace".into());
+        let submit = |registry: &mut OperationRegistry, fingerprint| {
+            registry.submit_bound(
+                "request",
+                fingerprint,
+                "actor".into(),
+                "tool".into(),
+                1,
+                false,
+            )
+        };
+        let (first, created) = submit(&mut registry, [1; 32]).unwrap();
+        assert!(created);
+        let (duplicate, created) = submit(&mut registry, [1; 32]).unwrap();
+        assert!(!created);
+        assert_eq!(first.id, duplicate.id);
+        assert!(submit(&mut registry, [2; 32]).is_err());
+    }
+
+    #[test]
+    fn closing_workspace_rejects_new_operations_but_reacquires_existing_ones() {
+        let mut registry = OperationRegistry::new("workspace".into());
+        let first = registry
+            .submit("first", "actor".into(), "tool".into(), 0, true)
+            .unwrap()
+            .0;
+        registry.closing = true;
+        assert!(
+            registry
+                .submit("new", "actor".into(), "tool".into(), 0, true)
+                .is_err()
+        );
+        let duplicate = registry
+            .submit("first", "actor".into(), "tool".into(), 0, true)
+            .unwrap();
+        assert!(!duplicate.1);
+        assert_eq!(duplicate.0.id, first.id);
+    }
+
+    #[test]
+    fn workspace_event_cursor_advances_only_past_delivered_events() {
+        let mut events = VecDeque::new();
+        let mut next = 1;
+        let mut dropped = 0;
+        for _ in 0..4 {
+            push_workspace_event(
+                "workspace",
+                &mut events,
+                &mut next,
+                &mut dropped,
+                "changed",
+                None,
+                true,
+            );
+        }
+        let first = workspace_event_batch(&events, next, dropped, 0, 1);
+        assert_eq!(first["cursor"], 1);
+        assert_eq!(first["newestSequence"], 4);
+        assert_eq!(first["hasMore"], true);
+        let second =
+            workspace_event_batch(&events, next, dropped, first["cursor"].as_u64().unwrap(), 3);
+        assert_eq!(
+            second["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(second["hasMore"], false);
+    }
+
+    #[test]
+    fn operation_event_cursor_advances_only_past_delivered_events() {
+        let mut events = VecDeque::new();
+        for sequence in 1..=4 {
+            events.push_back(DevelopmentOperationEvent {
+                sequence,
+                operation_id: "op".into(),
+                timestamp_ms: now_ms(),
+                state: DevelopmentOperationState::Running,
+                message: "changed".into(),
+            });
+        }
+        let first = operation_event_batch(&events, 0, 1, Some("op"));
+        assert_eq!(first["cursor"], 1);
+        assert_eq!(first["newestSequence"], 4);
+        assert_eq!(first["hasMore"], true);
+        let second =
+            operation_event_batch(&events, first["cursor"].as_u64().unwrap(), 3, Some("op"));
+        assert_eq!(
+            second["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(second["hasMore"], false);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3650,7 +3831,7 @@ while True:
                 .unwrap();
                 assert_eq!(first["events"][0]["kind"], "workspace.opened");
                 assert_eq!(first["events"][1]["kind"], "task.changed");
-                let cursor = first["newestSequence"].as_u64().unwrap();
+                let cursor = first["cursor"].as_u64().unwrap();
 
                 // A fresh handle models a client reconnecting to the same actor.
                 let reconnected = WorkspaceActorHandle {

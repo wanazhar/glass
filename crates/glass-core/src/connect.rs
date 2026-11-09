@@ -1239,6 +1239,18 @@ fn shared_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, 
     }
     Ok(path)
 }
+// Global legacy archives may lack project metadata, but their exact canonical
+// path is still safe to read. Keep mutation and live-session routing stricter.
+fn readable_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, String> {
+    if !source_ref.is_empty()
+        && let Ok(path) = thread_path(id)
+        && Path::new(source_ref) == path
+    {
+        return Ok(path);
+    }
+    shared_thread_path(app, id, source_ref)
+}
+
 fn shared_metadata(app: &App, path: &Path) -> Result<crate::polish::Metadata, String> {
     let sidecar = path.with_extension("meta.json");
     if sidecar.exists() {
@@ -2765,7 +2777,7 @@ fn handle_with_transport(
     }
     if path == "/api/export" && r.method == "GET" {
         let result = (|| -> Result<Vec<u8>, String> {
-            let path = shared_thread_path(
+            let path = readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3215,7 +3227,7 @@ fn handle_with_transport(
             )
         }
         ("GET", "/api/activity-location") => activity_location(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3226,7 +3238,7 @@ fn handle_with_transport(
                 .ok_or("Missing recordOffset")?,
         ),
         ("GET", "/api/activity-text") => activity_text(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3242,7 +3254,7 @@ fn handle_with_transport(
             query.get("expected").map(String::as_str).unwrap_or(""),
         ),
         ("GET", "/api/history-record") => history_record_path(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3257,7 +3269,7 @@ fn handle_with_transport(
                 .unwrap_or(0),
         ),
         ("GET", "/api/history") => history_path(
-            &shared_thread_path(
+            &readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
@@ -3970,8 +3982,7 @@ mod tests {
         }
     }
 
-    static SECRET_FLOW_COUNTER: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
+    static SECRET_FLOW_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     /// Fixture app for the secret flow. The bridge is registered under the
     /// canonical session-path key that shared-session lookups use, inside a
@@ -4361,7 +4372,8 @@ mod tests {
         let https_response = post_secret(https_app.clone(), true, true, true, &[]);
         assert!(https_response.starts_with("HTTP/1.1 200"));
         assert!(!https_response.contains("sentinel-secret-value"));
-        let bridge = https_app.bridges.lock().unwrap()[https_session.to_string_lossy().as_ref()].clone();
+        let bridge =
+            https_app.bridges.lock().unwrap()[https_session.to_string_lossy().as_ref()].clone();
         {
             let feed = bridge.feed.lock().unwrap();
             assert_eq!(

@@ -151,8 +151,20 @@ impl Incoming {
                 serde_json::from_value(value["params"].clone()).map(Self::Event)
             }
             Some("tool/execute") => {
+                let id = value
+                    .get("id")
+                    .filter(|id| match id {
+                        Value::String(id) => !id.is_empty(),
+                        Value::Number(_) => true,
+                        _ => false,
+                    })
+                    .ok_or_else(|| {
+                        <serde_json::Error as serde::de::Error>::custom(
+                            "tool request requires a valid ID",
+                        )
+                    })?;
                 serde_json::from_value(value["params"].clone()).map(|call| Self::Tool {
-                    request_id: value["id"].clone(),
+                    request_id: id.clone(),
                     call,
                 })
             }
@@ -176,5 +188,29 @@ impl Incoming {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_execution_requires_correlatable_request_id() {
+        let mut request = json!({
+            "method": "tool/execute",
+            "params": {"sessionId":"s","turnId":"t","callId":"c","name":"read","arguments":{}}
+        });
+        assert!(Incoming::parse(request.clone()).is_err());
+        for id in [Value::Null, json!(true), json!("")] {
+            request["id"] = id;
+            assert!(Incoming::parse(request.clone()).is_err());
+        }
+        request["id"] = json!("host:1");
+        assert!(matches!(
+            Incoming::parse(request).unwrap(),
+            Incoming::Tool { .. }
+        ));
     }
 }

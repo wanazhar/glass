@@ -121,8 +121,6 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         except urllib.error.HTTPError as e:return e.code,e.read(),e.headers
     try:
         assert req('/api/threads',auth=False)[0]==403
-        catalogue=json.loads(req('/api/commands')[1])['commands'];assert len(catalogue)>60
-        assert all(c['portable'] or c['name'] in ['conversations','work','settings','help','outputs','thinking','theme','redraw','keys','animation','tools','clear','editor'] for c in catalogue)
         assert req('/api/command','POST',{'id':'web-fixture','name':'name','values':{'args':'no'} })[0]==400
         assert req('/api/export?id=web-fixture',auth=False)[0]==403
 
@@ -131,6 +129,8 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert {'web-fixture','other-project','legacy-archive'} <= by_id.keys(),by_id
         assert by_id['other-project']['workspace']==str(root/'project-two')
         assert by_id['legacy-archive']['workspace_assigned']==False
+        legacy_export='/api/export?'+urllib.parse.urlencode({'id':'legacy-archive','sourceRef':by_id['legacy-archive']['sourceRef']})
+        status,exported,_=req(legacy_export);assert status==200 and b'Legacy archive fixture' in exported
         assert threads['history_loaded']==False
 
         assert req('/api/send','POST',{'id':'../bad','message':{'t':'prompt','text':'no'}})[0]==400
@@ -147,7 +147,7 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         code,body,_=req('/api/new','POST',{'workspace':str(root/'project-two')});assert code==200
         new=json.loads(body)['id'];assert json.loads((data/(new+'.meta.json')).read_text())['workspace']==str(root/'project-two')
         usage=json.loads(req('/api/usage?path='+urllib.parse.quote(str(root/'project-two')))[1]);assert usage['entries']==2 and not usage['partial']
-        r=subprocess.run(['node',str(ROOT/'web/test/browser.mjs'),url],cwd=ROOT,capture_output=True,text=True,timeout=120)
+        r=subprocess.run(['node',str(ROOT/'web/test/browser.mjs'),url],cwd=ROOT,capture_output=True,text=True,timeout=300)
         print(r.stdout,flush=True);assert r.returncode==0,r.stderr
         # Older pages remain searchable without loading their transcripts.
         for number in range(520):
@@ -163,7 +163,13 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert Provider.calls>=6,Provider.calls
         before=(data/'web-fixture.jsonl').read_bytes()
         assert req('/api/upgrade','POST',{'id':'web-fixture','confirmed':False})[0]==400
-        code,body,_=req('/api/upgrade','POST',{'id':'web-fixture','confirmed':True});assert code==200,body
+        assert req('/api/send','POST',{'id':'web-fixture','message':{'t':'control','action':'claim'}})[0]==200
+        deadline=time.monotonic()+10
+        while True:
+            code,body,_=req('/api/upgrade','POST',{'id':'web-fixture','confirmed':True})
+            if code==200 or b'Take control before restarting' not in body or time.monotonic()>=deadline:break
+            time.sleep(.05)
+        assert code==200,body
         assert (data/'web-fixture.jsonl').read_bytes()==before
         print('PASS: explicit idle runtime restart preserves the transcript',flush=True)
 

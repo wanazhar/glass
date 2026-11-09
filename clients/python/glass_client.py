@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, BinaryIO, Literal, Optional, TypeVar, TypedDict
@@ -459,11 +460,18 @@ class GlassClient:
             self._stdin = self._process.stdin
             self._stdout = self._process.stdout
         self._next_id = 1
+        self._request_lock = threading.RLock()
         self._initialized = False
         self.capabilities: Optional[GlassCapabilityManifest] = None
         self._lease_token: Optional[str] = None
+        self._lease_deadline: Optional[float] = None
 
     def initialize(self) -> Any:
+        """Initialize once; concurrent callers share the serialized transport."""
+        with self._request_lock:
+            return self._initialize_locked()
+
+    def _initialize_locked(self) -> Any:
         if self._initialized:
             return None
         result = self._request(
@@ -556,10 +564,12 @@ class GlassClient:
     def acquire_mutation_lease(self, ttl_ms: int = 60_000) -> dict[str, Any]:
         """Acquire the daemon mutation lease for this connection."""
         self.initialize()
+        started = time.monotonic()
         result = self._request("glass/lease/acquire", {"ttlMs": ttl_ms})
         if not isinstance(result, dict) or not isinstance(result.get("token"), str):
             raise GlassError("daemon lease response did not include a token")
         self._lease_token = result["token"]
+        self._lease_deadline = started + ttl_ms / 1000
         return result
 
     def renew_mutation_lease(self, ttl_ms: int = 60_000) -> dict[str, Any]:
@@ -567,11 +577,13 @@ class GlassClient:
         self.initialize()
         if self._lease_token is None:
             raise GlassError("no daemon mutation lease is held")
+        started = time.monotonic()
         result = self._request(
             "glass/lease/renew", {"token": self._lease_token, "ttlMs": ttl_ms}
         )
         if not isinstance(result, dict):
             raise GlassError("daemon lease renewal returned an invalid response")
+        self._lease_deadline = started + ttl_ms / 1000
         return result
 
     def release_mutation_lease(self) -> None:
@@ -581,6 +593,7 @@ class GlassClient:
             return
         self._request("glass/lease/release", {"token": self._lease_token})
         self._lease_token = None
+        self._lease_deadline = None
 
     # Legacy 0.3.4 cockpit helpers below remain only for source migration.
     # Glass 0.3.14 does not advertise these project.*/agent.* tools; new code
@@ -743,14 +756,26 @@ class GlassClient:
         raise GlassError(f"timed out after {timeout:.3f}s waiting for process {name} to become healthy")
 
     def with_mutation_lease(self, operation: Callable[[], T], ttl_ms: int = 60_000) -> T:
+        if self._lease_deadline is not None and time.monotonic() >= self._lease_deadline:
+            self._lease_token = None
+            self._lease_deadline = None
         already_held = self._lease_token is not None
         if not already_held:
             self.acquire_mutation_lease(ttl_ms)
+        primary: Optional[BaseException] = None
         try:
             return operation()
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             if not already_held:
-                self.release_mutation_lease()
+                try:
+                    self.release_mutation_lease()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    raise primary from cleanup
 
     def edit_and_verify(
         self, path: str, content: str, root: str = ".", title: Optional[str] = None
@@ -1177,21 +1202,30 @@ class GlassClient:
         return self.call("setTimezone", {"timezoneId": timezone_id})
 
     def close(self) -> None:
-        if self._process is not None:
-            if self._process.poll() is None:
+        """Terminate the owned process and close all transport streams."""
+        try:
+            if self._process is not None and self._process.poll() is None:
                 self._process.terminate()
                 try:
                     self._process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     self._process.kill()
                     self._process.wait(timeout=5)
-        else:
-            self._stdin.close()
-            self._stdout.close()
-            if self._socket is not None:
-                self._socket.close()
+        finally:
+            try:
+                self._stdin.close()
+            finally:
+                try:
+                    self._stdout.close()
+                finally:
+                    if self._socket is not None:
+                        self._socket.close()
 
     def _request(self, method: str, params: dict[str, Any]) -> Any:
+        with self._request_lock:
+            return self._request_locked(method, params)
+
+    def _request_locked(self, method: str, params: dict[str, Any]) -> Any:
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
@@ -1240,8 +1274,18 @@ class GlassClient:
             if len(body) != length:
                 raise GlassError("Glass exited before completing an MCP body")
         else:
+            if not first.endswith(b"\n"):
+                raise GlassError("Glass exited before completing an MCP newline frame")
             body = first.strip()
         try:
-            return json.loads(body)
+            message = json.loads(body)
         except json.JSONDecodeError as error:
             raise GlassError("invalid MCP JSON response") from error
+        if (
+            not isinstance(message, dict)
+            or message.get("jsonrpc") != "2.0"
+            or "id" not in message
+            or not any(key in message for key in ("result", "error", "method"))
+        ):
+            raise GlassError("invalid JSON-RPC envelope")
+        return message

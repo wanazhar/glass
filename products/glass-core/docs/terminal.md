@@ -48,6 +48,8 @@ continuation instructions out of the displayed conversation.
 
 Recaps label saved request and reply excerpts separately. Command notices remain
 available in the transcript reader as well as the normal chat view.
+Collapsed transcript entries fit on one line at the current terminal width;
+expanding restores the original content.
 
 ## Keys
 

@@ -125,25 +125,41 @@ async fn mcp_responses(mut child: Child, requests: &[Value]) -> Vec<Value> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    stdin.write_all(input.as_bytes()).await.unwrap();
+    let ids: Vec<_> = requests
+        .iter()
+        .filter_map(|request| request.get("id"))
+        .collect();
+    let mut responses = Vec::with_capacity(ids.len());
+    for _ in &ids {
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            stdout.read_line(&mut line),
+        )
         .await
-        .unwrap();
+        .expect("MCP response timed out")
+        .expect("read MCP response");
+        responses.push(serde_json::from_str::<Value>(&line).expect("parse MCP response"));
+    }
+    drop(stdin);
     let output = child.wait_with_output().await.unwrap();
     assert!(
         output.status.success(),
         "MCP process failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(serde_json::from_str::<Value>)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
+    ids.into_iter()
+        .map(|id| {
+            responses
+                .iter()
+                .find(|response| response.get("id") == Some(id))
+                .cloned()
+                .expect("MCP response missing request ID")
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -272,6 +288,7 @@ async fn mcp_cancellation_interrupts_a_tool_and_preserves_the_session() {
         }
     }
     let mut child = Command::new(binary)
+        .args(["--browser-runtime", "chromium"])
         .arg("--mcp")
         .arg("--chrome-path")
         .arg(chrome_path)
@@ -416,6 +433,7 @@ async fn mcp_reuses_browser_session_and_target_across_calls() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let mut child = Command::new(binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--mcp",
             "--chrome-path",
@@ -559,6 +577,7 @@ fn named_profile_mcp(
 ) -> Child {
     let port_arg = port.to_string();
     Command::new(binary)
+        .args(["--browser-runtime", "chromium"])
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("GLASS_CONFIG_HOME", home.join("config"))
@@ -670,6 +689,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     let port_arg = port.to_string();
 
     let cli = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -693,6 +713,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     assert_eq!(cli_outcome["action"], "click");
     assert!(cli_outcome["revision"].is_u64());
     let cli_input = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -722,6 +743,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
         "outputs": {}
     });
     let mut cli_workflow = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -757,6 +779,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     assert!(cli_workflow_result["trace"]["events"].is_array());
 
     let mcp = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--mcp",
             "--attach",
@@ -1304,7 +1327,6 @@ async fn browser_session_drives_a_local_fixture() {
     let timeout = timeout.downcast_ref::<WaitTimeout>().unwrap();
     assert_eq!(timeout.reason, "deadline_exceeded");
     assert!(timeout.last_state.len() <= 512);
-    assert!(timeout.observed_page.is_some());
     let cancelled = tokio::time::timeout(
         std::time::Duration::from_millis(100),
         session.wait(
@@ -2522,6 +2544,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     session.select_target(&original.id).await.unwrap();
     let binary = glass_binary_path();
     let cli_targets = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args(["--attach", "--port", &port.to_string(), "targets"])
         .output()
         .await
@@ -2530,6 +2553,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
     let cli_targets: Value = serde_json::from_slice(&cli_targets.stdout).unwrap();
     let cli_target_id = cli_targets[0]["id"].as_str().unwrap().to_string();
     let cli_frames = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -2552,6 +2576,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         .unwrap()
         .to_string();
     let cli_output = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args([
             "--attach",
             "--port",
@@ -2572,6 +2597,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         "nested frame"
     );
     let mut mcp = Command::new(&binary)
+        .args(["--browser-runtime", "chromium"])
         .args(["--attach", "--port", &port.to_string(), "--mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

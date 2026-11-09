@@ -1629,9 +1629,12 @@ function event(m, replaying = false) {
       interaction();
       updateActivity(null);
       loadThreads();
-      return history()
-        .then(() => follow())
-        .catch((e) => notice(e.message, true));
+      {
+        const generation = view.generation;
+        return history()
+          .then(() => { if (generation === view.generation) follow(); })
+          .catch((e) => { if (generation === view.generation) notice(e.message, true); });
+      }
   }
 }
 function openThread(id, options = {}) {
@@ -1688,8 +1691,15 @@ async function openThreadTransaction(id, options, attempt) {
       if (sourceRef) query.set("sourceRef", sourceRef);
       const found = await api("threads?" + query);
       if (attempt !== openAttempt) return { ok: false, stale: true };
-      rememberThreads(found.threads || []);
-      thread = threadInfo(id, sourceRef);
+      const matches = (found.threads || []).filter((item) => item.session === id);
+      if (!sourceRef && matches.length > 1) {
+        const message = "This conversation ID has more than one trusted source. Choose its origin in the sidebar.";
+        notice(message, true);
+        return { ok: false, message, code: "ambiguous_session_reference" };
+      }
+      rememberThreads(matches);
+      thread = sourceRef ? threadInfo(id, sourceRef) : matches[0];
+      if (!sourceRef) sourceRef = thread?.sourceRef;
     } catch (error) {
       if (attempt !== openAttempt) return { ok: false, stale: true };
       notice(error.message, true);
@@ -1892,15 +1902,20 @@ async function openThreadTransaction(id, options, attempt) {
             if (generation !== view.generation) return;
             for (const m of data.live || []) {
               await event(m, true);
+              if (generation !== view.generation) return;
             }
             interaction();
             updateActivity(data.active ? "Working" : null);
-          } else for (const m of data.events || []) await event(m);
+          } else for (const m of data.events || []) {
+            await event(m);
+            if (generation !== view.generation) return;
+          }
           follow();
           clearTimeout(readyTimeout);
           attached();
         })
         .catch((error) => {
+          if (generation !== view.generation) return;
           clearTimeout(readyTimeout);
           attached();
           notice(error.message, true);

@@ -15,6 +15,11 @@ corpus = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(corpus)
 
 
+def proc_state(pid: int) -> str:
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    return stat[stat.rindex(")") + 2 :].split()[0]
+
+
 class JourneyFailureClassificationTests(unittest.TestCase):
     def test_public_report_url_drops_credentials_query_and_fragment(self):
         safe = corpus.safe_report_url(
@@ -564,9 +569,8 @@ class JourneyFailureClassificationTests(unittest.TestCase):
             child_pid = int(child_pid_path.read_text(encoding="utf-8"))
             dead = False
             for _ in range(100):
-                stat_path = Path(f"/proc/{child_pid}/stat")
                 try:
-                    state = stat_path.read_text(encoding="utf-8").split()[2]
+                    state = proc_state(child_pid)
                 except FileNotFoundError:
                     dead = True
                     break
@@ -594,9 +598,17 @@ class JourneyFailureClassificationTests(unittest.TestCase):
             self.assertTrue(timed_out)
             self.assertEqual(return_code, 0)
             child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-            stat_path = Path(f"/proc/{child_pid}/stat")
-            if stat_path.exists():
-                self.assertIn(stat_path.read_text(encoding="utf-8").split()[2], {"Z", "X"})
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    state = proc_state(child_pid)
+                except FileNotFoundError:
+                    break
+                if state in {"Z", "X"}:
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail(f"timed-out descendant remains live in state {state}")
+                time.sleep(0.01)
 
 
 if __name__ == "__main__":

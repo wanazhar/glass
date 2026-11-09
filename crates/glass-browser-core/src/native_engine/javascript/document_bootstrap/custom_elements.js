@@ -931,6 +931,7 @@
     return element;
   }};
   const nativeCustomElementUpgradeTree = (root, connectedOnly = false) => {{
+    if (nativeCustomElementState.definitionsByName.size === 0) return;
     for (const element of nativeCustomElementElementsInTree(root)) {{
       if (!connectedOnly || (typeof nodeIsConnected === "function" && nodeIsConnected(element))) {{
         nativeCustomElementTryUpgrade(element);

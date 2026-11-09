@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_delivers_report_only_connect_events_for_websocket() {
+#[test]
+fn native_content_process_delivers_report_only_connect_events_for_websocket() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_delivers_report_only_connect_events_for_websocket_inner(),
+        );
+    });
+}
+
+async fn native_content_process_delivers_report_only_connect_events_for_websocket_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -193,8 +201,14 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
     server.await.unwrap();
     assert!(websocket_cookie_seen.load(Ordering::SeqCst));
 }
-#[tokio::test]
-async fn native_content_process_dispatches_large_websocket_event_as_data() {
+#[test]
+fn native_content_process_dispatches_large_websocket_event_as_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_dispatches_large_websocket_event_as_data_inner());
+    });
+}
+
+async fn native_content_process_dispatches_large_websocket_event_as_data_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -237,8 +251,16 @@ async fn native_content_process_dispatches_large_websocket_event_as_data() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_delivers_queued_websocket_events_on_ordinary_turns() {
+#[test]
+fn native_content_process_delivers_queued_websocket_events_on_ordinary_turns() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_delivers_queued_websocket_events_on_ordinary_turns_inner(),
+        );
+    });
+}
+
+async fn native_content_process_delivers_queued_websocket_events_on_ordinary_turns_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

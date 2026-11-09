@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_service_worker_cache_matching_options_filter_entries() {
+#[test]
+fn native_service_worker_cache_matching_options_filter_entries() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_service_worker_cache_matching_options_filter_entries_inner());
+    });
+}
+
+async fn native_service_worker_cache_matching_options_filter_entries_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -100,8 +106,16 @@ self.addEventListener('fetch', event => {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_service_worker_cache_rejects_partial_and_commits_add_all_atomically() {
+#[test]
+fn native_service_worker_cache_rejects_partial_and_commits_add_all_atomically() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_service_worker_cache_rejects_partial_and_commits_add_all_atomically_inner(),
+        );
+    });
+}
+
+async fn native_service_worker_cache_rejects_partial_and_commits_add_all_atomically_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -188,8 +202,17 @@ self.addEventListener('fetch', event => event.respondWith(caches.match(event.req
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority() {
+#[test]
+fn native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority_inner(
+            ),
+        );
+    });
+}
+
+async fn native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -319,8 +342,16 @@ self.addEventListener('fetch', event => event.respondWith(fetch(event.request)))
     }
 }
 
-#[tokio::test]
-async fn native_service_worker_navigation_preload_sends_header_and_reuses_response() {
+#[test]
+fn native_service_worker_navigation_preload_sends_header_and_reuses_response() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_service_worker_navigation_preload_sends_header_and_reuses_response_inner(),
+        );
+    });
+}
+
+async fn native_service_worker_navigation_preload_sends_header_and_reuses_response_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1250,8 +1281,14 @@ fn native_http_window_identity_crosses_content_worker() {
     });
 }
 
-#[tokio::test]
-async fn native_network_quiet_wait_reports_completed_request_activity() {
+#[test]
+fn native_network_quiet_wait_reports_completed_request_activity() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_network_quiet_wait_reports_completed_request_activity_inner());
+    });
+}
+
+async fn native_network_quiet_wait_reports_completed_request_activity_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1287,8 +1324,14 @@ async fn native_network_quiet_wait_reports_completed_request_activity() {
     session.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_webp_data_images_expose_intrinsic_dimensions_and_paint() {
+#[test]
+fn native_webp_data_images_expose_intrinsic_dimensions_and_paint() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_webp_data_images_expose_intrinsic_dimensions_and_paint_inner());
+    });
+}
+
+async fn native_webp_data_images_expose_intrinsic_dimensions_and_paint_inner() {
     let source = native_test_small_webp_data_url();
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://webp-image/page")
@@ -1339,8 +1382,14 @@ async fn native_webp_data_images_expose_intrinsic_dimensions_and_paint() {
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_cookie_profile_survives_native_process_restart() {
+#[test]
+fn native_cookie_profile_survives_native_process_restart() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_cookie_profile_survives_native_process_restart_inner());
+    });
+}
+
+async fn native_cookie_profile_survives_native_process_restart_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-cookie-restart.json",
@@ -1464,8 +1513,14 @@ fn native_web_storage_profile_rejects_an_active_writer() {
     let _ = fs::remove_file(lock_path);
 }
 
-#[tokio::test]
-async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
+#[test]
+fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_xhr_abort_is_observable_and_ignores_late_callbacks_inner());
+    });
+}
+
+async fn native_xhr_abort_is_observable_and_ignores_late_callbacks_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1511,8 +1566,14 @@ async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_xhr_timeout_is_bounded_and_observable() {
+#[test]
+fn native_xhr_timeout_is_bounded_and_observable() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_xhr_timeout_is_bounded_and_observable_inner());
+    });
+}
+
+async fn native_xhr_timeout_is_bounded_and_observable_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

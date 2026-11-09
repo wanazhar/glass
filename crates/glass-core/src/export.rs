@@ -221,6 +221,7 @@ mod tests {
                 name: "hl_edit".into(),
                 call_id: String::new(),
                 body: "```\ninner\n```".into(),
+                is_error: None,
             }],
         );
         assert!(md.contains("````\n```\ninner\n```\n````"), "{md}");

@@ -1588,7 +1588,8 @@ impl<'a> Agent<'a> {
         }
         // Freeze completed results before recovery starts. Reuse is a one-time
         // replay of the interrupted batch, never a cache for newly run tools.
-        let mut recovery_results = Vec::new();
+        let mut recovery_results: Vec<(String, serde_json::Value, String, Option<bool>)> =
+            Vec::new();
         if self.recovering {
             let start = self
                 .session
@@ -1596,13 +1597,30 @@ impl<'a> Agent<'a> {
                 .iter()
                 .rposition(|r| matches!(r, Record::User(_)))
                 .unwrap_or(0);
-            let completed: std::collections::HashMap<_, _> = self.session.records[start..]
-                .iter()
-                .filter_map(|record| match record {
-                    Record::ToolResult { call_id, body, .. } => Some((call_id.as_str(), body)),
-                    _ => None,
-                })
-                .collect();
+            let mut completed: std::collections::HashMap<String, (String, Option<bool>)> =
+                std::collections::HashMap::new();
+            let mut bash_outcomes: std::collections::HashMap<String, Option<bool>> =
+                std::collections::HashMap::new();
+            for record in self.session.records[start..].iter() {
+                match record {
+                    Record::Bash {
+                        call_id: Some(id),
+                        exit_code,
+                        ..
+                    } => {
+                        bash_outcomes.insert(id.clone(), Some(*exit_code != Some(0)));
+                    }
+                    Record::ToolResult {
+                        call_id,
+                        body,
+                        is_error,
+                        ..
+                    } => {
+                        completed.insert(call_id.clone(), (body.clone(), *is_error));
+                    }
+                    _ => {}
+                }
+            }
             for record in self.session.records[start..].iter().rev() {
                 if let Record::ToolCall {
                     id,
@@ -1610,9 +1628,21 @@ impl<'a> Agent<'a> {
                     arguments,
                 } = record
                     && let Ok(arguments) = serde_json::from_str::<serde_json::Value>(arguments)
-                    && let Some(body) = completed.get(id.as_str())
+                    && let Some((body, is_error)) = completed.get(id.as_str())
                 {
-                    recovery_results.push((name.clone(), arguments, (*body).clone()));
+                    // Bash trusts the recorded exit code; every other tool trusts
+                    // the typed status persisted with its result. Absent means
+                    // unknown, and unknown is never guessed from payload text.
+                    let is_error = if name == "bash" {
+                        bash_outcomes
+                            .get(id.as_str())
+                            .copied()
+                            .flatten()
+                            .or(*is_error)
+                    } else {
+                        *is_error
+                    };
+                    recovery_results.push((name.clone(), arguments, body.clone(), is_error));
                 }
             }
         }
@@ -1904,11 +1934,11 @@ impl<'a> Agent<'a> {
                     serde_json::from_str::<serde_json::Value>(&call.arguments)
                         .ok()
                         .and_then(|arguments| {
-                            recovery_results.iter().position(|(name, value, _)| {
+                            recovery_results.iter().position(|(name, value, _, _)| {
                                 name == &call.name && value == &arguments
                             })
                         })
-                        .map(|index| recovery_results.remove(index).2)
+                        .map(|index| recovery_results.remove(index))
                 };
                 if let Err(error) = self.session.append_checked(&[Record::ToolCall {
                     id: call.id.clone(),
@@ -1919,12 +1949,16 @@ impl<'a> Agent<'a> {
                         "cannot record tool intent; action was not run: {error}"
                     )));
                 }
-                if let Some(body) = cached {
-                    self.session.append(Record::ToolResult {
-                        name: call.name.clone(),
-                        call_id: call.id.clone(),
-                        body,
-                    });
+                if let Some((body, is_error)) = cached.map(|entry| (entry.2, entry.3)) {
+                    self.session.append_tool_result(
+                        Record::ToolResult {
+                            name: call.name.clone(),
+                            call_id: call.id.clone(),
+                            body,
+                            is_error,
+                        },
+                        is_error,
+                    );
                     self.session.append(Record::Meta(format!(
                         "Reused completed {} result during recovery; action was not run again.",
                         call.name
@@ -1987,11 +2021,15 @@ impl<'a> Agent<'a> {
                         .iter()
                         .any(|r| matches!(r,Record::ToolResult{call_id,..} if call_id==&call.id))
                     {
-                        self.session.append(Record::ToolResult {
-                            name: call.name.clone(),
-                            call_id: call.id.clone(),
-                            body: "Cancelled before execution; no tool result.".into(),
-                        });
+                        self.session.append_tool_result(
+                            Record::ToolResult {
+                                name: call.name.clone(),
+                                call_id: call.id.clone(),
+                                body: "Cancelled before execution; no tool result.".into(),
+                                is_error: None,
+                            },
+                            None,
+                        );
                     }
                 }
                 for record in std::mem::take(&mut self.host_attachments) {
@@ -3141,11 +3179,16 @@ impl<'a> Agent<'a> {
                 crate::tools::blob_reference_for(p).unwrap_or_else(|| p.display().to_string())
             }),
         });
-        self.session.append(Record::ToolResult {
-            name: call.name.clone(),
-            call_id: call.id.clone(),
-            body: output.body.clone(),
-        });
+        let is_error = Some(outcome.exit_code != Some(0));
+        self.session.append_tool_result(
+            Record::ToolResult {
+                name: call.name.clone(),
+                call_id: call.id.clone(),
+                body: output.body.clone(),
+                is_error,
+            },
+            is_error,
+        );
         // The chip closes here because this is the funnel every bash
         // result passes through — inline, pumped, or fanned out.
         self.emit(Progress::ToolEnd {
@@ -3604,11 +3647,16 @@ impl<'a> Agent<'a> {
                 }),
             });
         }
-        self.session.append(Record::ToolResult {
-            name: call.name.clone(),
-            call_id: call.id.clone(),
-            body: output.body,
-        });
+        let is_error = Some(outcome.exit_code != Some(0));
+        self.session.append_tool_result(
+            Record::ToolResult {
+                name: call.name.clone(),
+                call_id: call.id.clone(),
+                body: output.body,
+                is_error,
+            },
+            is_error,
+        );
         if !self.read_only
             && let Some(reminder) =
                 crate::guidance::progress_reminder(&self.session.records, &self.state.todo)
@@ -4303,6 +4351,9 @@ mod warm_integration {
         assert_eq!(record["toolName"], "glass.browser.start");
         assert_eq!(record["errorClass"], "tool_validation");
         assert_eq!(record["status"], "error");
+        // Nine builtins plus the mixed-host browser route the schema was
+        // rejected against; no managed desktop service is attached here, so the
+        // desktop capability contributes no catalog entry.
         assert_eq!(record["toolCatalog"]["count"].as_u64().unwrap(), 10);
         assert_eq!(record["toolCatalog"]["sha256"].as_str().unwrap().len(), 64);
         let offered = record["toolCatalog"]["entries"]
@@ -4597,8 +4648,11 @@ mod warm_integration {
             desktop_tool_state_from_status(Some(Ok(no_session)), &workspace),
             DesktopToolState::Manager
         );
+        let mismatch_root =
+            std::env::temp_dir().join(format!("gc-desktop-mismatch-{}", std::process::id()));
+        std::fs::create_dir_all(&mismatch_root).unwrap();
         let mismatch = serde_json::json!({
-            "workspaceRoot": std::env::temp_dir(),
+            "workspaceRoot": mismatch_root,
             "sessionId": "desktop-1",
             "available": true
         });
@@ -4606,6 +4660,7 @@ mod warm_integration {
             desktop_tool_state_from_status(Some(Ok(mismatch)), &workspace),
             DesktopToolState::WorkspaceMismatch
         );
+        std::fs::remove_dir_all(&mismatch_root).unwrap();
         assert_eq!(
             desktop_tool_state_from_status(Some(Err("unavailable".into())), &workspace),
             DesktopToolState::Unavailable
@@ -5495,7 +5550,7 @@ for line in sys.stdin:
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
         let mut extensions = Registry::load(
             &[format!(
-                "env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=16000 {}",
+                "env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=40000 {}",
                 warmer_extension()
             )],
             Path::new("."),
@@ -5514,7 +5569,9 @@ for line in sys.stdin:
                 &mut extensions,
                 Path::new("."),
             )
-            // Short prompt: well under the 16000-byte test minimum.
+            // Short prompt; the cacheable prefix is the system prompt
+            // plus tool schemas, which is already far above the default
+            // minimum, so this stays a small-prefix turn.
             .with_prompt("you are glass".into(), None, None)
             .with_warmer(&warmer);
 
@@ -6396,6 +6453,7 @@ mod recovery_tests {
             name: "bash".into(),
             call_id: "c1".into(),
             body: "x".repeat(40_000),
+            is_error: None,
         });
         let mut state = State::new();
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
@@ -6438,6 +6496,7 @@ mod recovery_tests {
             name: "bash".into(),
             call_id: "c1".into(),
             body: "x".repeat(40_000),
+            is_error: None,
         });
         let mut state = State::new();
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
@@ -6536,6 +6595,269 @@ mod recovery_tests {
                 .all(|r| !matches!(r, Record::Meta(_))),
             "a bare refusal leaves no partial-response meta behind"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cached_recovery_replays_the_recorded_outcome_for_the_reused_call() {
+        struct CachedToolProvider {
+            calls: Arc<AtomicUsize>,
+        }
+        impl Provider for CachedToolProvider {
+            fn id(&self) -> &str {
+                "cached-tool"
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+            fn stream(
+                &self,
+                _req: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, provider::Error> {
+                let index = self.calls.fetch_add(1, Ordering::SeqCst);
+                let events = if index == 0 {
+                    vec![
+                        Event::ToolCall {
+                            id: "c1".into(),
+                            name: "bash".into(),
+                            arguments: r#"{"command":"exit 3"}"#.into(),
+                        },
+                        Event::Done,
+                    ]
+                } else {
+                    vec![Event::Text("done".into()), Event::Done]
+                };
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        let dir = scratch("cached-typed");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("do work".into()));
+        session.append(Record::ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"exit 3"}"#.into(),
+        });
+        session.append(Record::Bash {
+            call_id: Some("c1".into()),
+            command: "exit 3".into(),
+            output: "[exit 3]\nfailed".into(),
+            exit_code: Some(3),
+            truncated: false,
+            spill: None,
+        });
+        session.append(Record::ToolResult {
+            name: "bash".into(),
+            call_id: "c1".into(),
+            body: "[exit 3]\nfailed".into(),
+            is_error: Some(true),
+        });
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = ext::Registry::empty();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = CachedToolProvider {
+            calls: Arc::clone(&calls),
+        };
+        let results_before = session
+            .records
+            .iter()
+            .filter(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id.as_str() == "c1"))
+            .count();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &no_mods,
+            &mut extensions,
+            Path::new("."),
+        );
+        agent = agent.with_recovery(true);
+        let forwarded = std::rc::Rc::new(std::cell::RefCell::new(None::<bool>));
+        let forwarded_outcome = forwarded.clone();
+        agent
+            .session
+            .observe_commits(std::rc::Rc::new(move |records, is_error| {
+                for record in records {
+                    if let Record::ToolResult { .. } = record {
+                        *forwarded_outcome.borrow_mut() = is_error;
+                    }
+                }
+                Ok(())
+            }));
+        let (out, stop) = agent
+            .run_turn(no_pump)
+            .expect("cached recovery must succeed");
+        assert!(matches!(stop, Stop::Finished));
+        assert_eq!(out.text, "done");
+        assert_eq!(*forwarded.borrow(), Some(true));
+        drop(agent);
+        let (latest_name, latest_body, latest_is_error) = session
+            .records
+            .iter()
+            .rev()
+            .find_map(|r| {
+                if let Record::ToolResult {
+                    name,
+                    call_id,
+                    body,
+                    is_error,
+                } = r
+                    && call_id.as_str() == "c1"
+                {
+                    Some((name.clone(), body.clone(), *is_error))
+                } else {
+                    None
+                }
+            })
+            .expect("cached recovery must leave the replayed result");
+        assert_eq!(latest_name, "bash");
+        assert_eq!(latest_body, "[exit 3]\nfailed");
+        assert_eq!(latest_is_error, Some(true));
+        assert_ne!(latest_body, "EXECUTED");
+        assert_eq!(
+            session
+                .records
+                .iter()
+                .filter(
+                    |r| matches!(r, Record::ToolResult { call_id, .. } if call_id.as_str() == "c1")
+                )
+                .count(),
+            results_before + 1,
+            "the reused call must append its replayed result"
+        );
+        drop(extensions);
+        drop(session);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cached_recovery_reuses_the_typed_outcome_for_a_misleading_success_body() {
+        struct CachedHostToolProvider {
+            calls: Arc<AtomicUsize>,
+        }
+        impl Provider for CachedHostToolProvider {
+            fn id(&self) -> &str {
+                "cached-bash"
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+            fn stream(
+                &self,
+                _req: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, provider::Error> {
+                let index = self.calls.fetch_add(1, Ordering::SeqCst);
+                let events = if index == 0 {
+                    vec![
+                        Event::ToolCall {
+                            id: "c1".into(),
+                            name: "bash".into(),
+                            arguments: r#"{"command":"printf EXECUTED; exit 99"}"#.into(),
+                        },
+                        Event::Done,
+                    ]
+                } else {
+                    vec![Event::Text("done".into()), Event::Done]
+                };
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        let dir = scratch("cached-typed-success");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("do work".into()));
+        session.append(Record::ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"printf EXECUTED; exit 99"}"#.into(),
+        });
+        // The typed answer is success, but the body opens with the error text an
+        // error result would use; recovery must trust the typed status.
+        session.append_tool_result(
+            Record::ToolResult {
+                name: "bash".into(),
+                call_id: "c1".into(),
+                body: "error: successful content".into(),
+                is_error: Some(false),
+            },
+            Some(false),
+        );
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = ext::Registry::empty();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = CachedHostToolProvider {
+            calls: Arc::clone(&calls),
+        };
+        let results_before = session
+            .records
+            .iter()
+            .filter(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id.as_str() == "c1"))
+            .count();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &no_mods,
+            &mut extensions,
+            Path::new("."),
+        );
+        agent = agent.with_recovery(true);
+        let forwarded = std::rc::Rc::new(std::cell::RefCell::new(None::<bool>));
+        let forwarded_outcome = forwarded.clone();
+        agent
+            .session
+            .observe_commits(std::rc::Rc::new(move |records, is_error| {
+                for record in records {
+                    if let Record::ToolResult { .. } = record {
+                        *forwarded_outcome.borrow_mut() = is_error;
+                    }
+                }
+                Ok(())
+            }));
+        let (out, stop) = agent
+            .run_turn(no_pump)
+            .expect("cached recovery must succeed");
+        assert!(matches!(stop, Stop::Finished));
+        assert_eq!(out.text, "done");
+        assert_eq!(*forwarded.borrow(), Some(false));
+        drop(agent);
+        let (latest_name, latest_body, latest_is_error) = session
+            .records
+            .iter()
+            .rev()
+            .find_map(|r| {
+                if let Record::ToolResult {
+                    name,
+                    call_id,
+                    body,
+                    is_error,
+                } = r
+                    && call_id.as_str() == "c1"
+                {
+                    Some((name.clone(), body.clone(), *is_error))
+                } else {
+                    None
+                }
+            })
+            .expect("cached recovery must leave the replayed result");
+        assert_eq!(latest_name, "bash");
+        assert_eq!(latest_body, "error: successful content");
+        assert_eq!(latest_is_error, Some(false));
+        assert_ne!(latest_body, "EXECUTED");
+        assert_eq!(
+            session
+                .records
+                .iter()
+                .filter(
+                    |r| matches!(r, Record::ToolResult { call_id, .. } if call_id.as_str() == "c1")
+                )
+                .count(),
+            results_before + 1,
+            "the reused call must append its replayed result"
+        );
+        drop(extensions);
+        drop(session);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

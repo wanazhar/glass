@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn synchronous_process_history_beforeunload_requires_async_api() {
+#[test]
+fn synchronous_process_history_beforeunload_requires_async_api() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(synchronous_process_history_beforeunload_requires_async_api_inner());
+    });
+}
+
+async fn synchronous_process_history_beforeunload_requires_async_api_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -113,8 +119,14 @@ async fn synchronous_process_history_beforeunload_requires_async_api() {
     let _ = server_stop_tx.send(());
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_async_history_traversal_uses_the_runtime_owner() {
+#[test]
+fn native_async_history_traversal_uses_the_runtime_owner() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_async_history_traversal_uses_the_runtime_owner_inner());
+    });
+}
+
+async fn native_async_history_traversal_uses_the_runtime_owner_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://history-async", "<p>First</p>")
         .unwrap()
@@ -301,8 +313,14 @@ fn local_fragment_navigation_and_history_traversal_preserve_bounded_state() {
         .join()
         .expect("fragment history test thread should complete");
 }
-#[tokio::test]
-async fn native_session_storage_routes_events_by_browsing_context() {
+#[test]
+fn native_session_storage_routes_events_by_browsing_context() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_session_storage_routes_events_by_browsing_context_inner());
+    });
+}
+
+async fn native_session_storage_routes_events_by_browsing_context_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-session-context-events.json",
         std::process::id()

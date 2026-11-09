@@ -1331,6 +1331,7 @@ mod tests {
             name: "state".into(),
             call_id: "tool-a".into(),
             body: "state updated".into(),
+            is_error: None,
         });
         s.append(Record::ToolCall {
             id: "agent-a".into(),
@@ -1341,6 +1342,7 @@ mod tests {
             name: "run_subagents".into(),
             call_id: "agent-a".into(),
             body: "inspection done".into(),
+            is_error: None,
         });
         crate::loops::command(&s, "1h check status").unwrap();
         let mut jobs = crate::jobs::Jobs::default();

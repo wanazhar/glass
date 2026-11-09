@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_css_locators_share_the_stylesheet_selector_grammar() {
+#[test]
+fn native_css_locators_share_the_stylesheet_selector_grammar() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_css_locators_share_the_stylesheet_selector_grammar_inner());
+    });
+}
+
+async fn native_css_locators_share_the_stylesheet_selector_grammar_inner() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://css-locator")
         .with_fixture(

@@ -375,6 +375,7 @@ mod tests {
             name: "rewind".into(),
             call_id: "rewind-call".into(),
             body: outcome.body,
+            is_error: None,
         });
         let text = format!("{:?}", session.messages());
         assert!(!text.contains("EXPLORATION_SECRET"), "{text}");

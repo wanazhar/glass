@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_updates_service_worker_registration() {
+#[test]
+fn native_content_process_updates_service_worker_registration() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_updates_service_worker_registration_inner());
+    });
+}
+
+async fn native_content_process_updates_service_worker_registration_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -85,8 +91,14 @@ self.addEventListener('fetch', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_observes_service_worker_lifecycle_update() {
+#[test]
+fn native_content_process_observes_service_worker_lifecycle_update() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_observes_service_worker_lifecycle_update_inner());
+    });
+}
+
+async fn native_content_process_observes_service_worker_lifecycle_update_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -149,8 +161,16 @@ async fn native_content_process_observes_service_worker_lifecycle_update() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_keeps_service_worker_update_waiting_until_navigation() {
+#[test]
+fn native_content_process_keeps_service_worker_update_waiting_until_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_keeps_service_worker_update_waiting_until_navigation_inner(),
+        );
+    });
+}
+
+async fn native_content_process_keeps_service_worker_update_waiting_until_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -240,8 +260,15 @@ self.addEventListener('fetch', event => { const path = new URL(event.request.url
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_persists_service_worker_cache_across_restart() {
+#[test]
+fn native_content_process_persists_service_worker_cache_across_restart() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_persists_service_worker_cache_across_restart_inner());
+    });
+}
+
+async fn native_content_process_persists_service_worker_cache_across_restart_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -442,8 +469,16 @@ self.addEventListener('fetch', event => {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_content_process_persists_waiting_service_worker_across_restart() {
+#[test]
+fn native_content_process_persists_waiting_service_worker_across_restart() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_persists_waiting_service_worker_across_restart_inner(),
+        );
+    });
+}
+
+async fn native_content_process_persists_waiting_service_worker_across_restart_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

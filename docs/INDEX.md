@@ -52,6 +52,8 @@ explains Core setup and the host boundary. Its
 standalone source product lives at [`products/glass-core`](../products/glass-core/README.md);
 see the [standalone product guide](glass-core-product.md) for its own build,
 install, package metadata, and license boundary.
+For Core edit-loop and release-build commands, see the
+[development guide](../products/glass-core/docs/development.md#performance-notes).
 
 This index is the repository's topic and section home. The generated
 [Markdown catalog](documentation-catalog.json) records every Markdown file's
@@ -93,7 +95,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 | Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |
 | Reviewing native browser journeys and scale profiles | [Native browser journey corpus](architecture/native-journey-corpus.md#native-browser-journey-corpus) | [Native browser engine](architecture/native-engine.md), [backend capability matrix](backend-capability-matrix.json) |
 | Operating authenticated sessions | [Profiles](profile-ergonomics.md) | [Security](../SECURITY.md), [policy](policy.md) |
-| Maintaining or releasing Glass | [Contributing](../CONTRIBUTING.md) | [Release checklist](release-checklist.md), [release evidence](release-evidence.md) |
+| Maintaining or releasing Glass | [Build and test](../CONTRIBUTING.md#build-and-test) | [Release checklist](release-checklist.md), [release evidence](release-evidence.md) |
 
 ## Product and package boundaries
 
@@ -146,8 +148,8 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
   editor, PTYs, Git, LSP diagnostics, graph, replay, collaboration, and agents.
 - [Development TUI](architecture/development-tui.md) and
   [terminal UI architecture](architecture/tui.md) — workspace surfaces,
-  conversation and source focus, live GC commands, keyboard and mouse
-  interaction, responsive layout, and workers.
+  conversation and source focus, live GC and Glass actions, keyboard and
+  mouse interaction, responsive layout, and workers.
 - [Mobile and remote development](mobile-remote.md) — SSH/Mosh, phone access,
   terminal rendering, and browser controls.
 - [Processes and daemon](daemon.md) — persistent clients, project sessions,
@@ -306,8 +308,8 @@ current user instructions.
   registration, capability evidence, BiDi boundary, and survivability.
 - [Browser core crate](architecture/browser-core.md) — engine ownership, the one-way crate boundary, feature gating, and integration surface.
 - [Native browser engine](architecture/native-engine.md) — the Glass-owned
-  engine kernel, browser-complete expansion, runtime limits, and promotion
-  gates for issue #40. Its versioned contract is the [Glass Core Web
+  engine kernel, host-view performance, runtime limits, and promotion gates
+  for issue #40. Its versioned contract is the [Glass Core Web
   Profile](plan/native-engine-browser-profile.md).
 - [Native browser journey corpus](architecture/native-journey-corpus.md) —
   versioned local and public journeys, performance evidence, evidence
@@ -415,6 +417,8 @@ current user instructions.
 
 ## Historical, generated, and evidence records
 
+- [Lifecycle invariant audit pull request record](plan/analysis/state-machine-invariants-issue-draft.md) —
+  historical record of reproduced failure paths, fixes, and verification limits.
 - [Delivery plan archive](plan/README.md) — distinguishes active plans from
   completed and historical implementation evidence; follow current guides for
   present behavior.

@@ -60,8 +60,16 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-#[tokio::test]
-async fn versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey() {
+#[test]
+fn versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey_inner(),
+        );
+    });
+}
+
+async fn versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey_inner() {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
             .expect("native journey corpus must be valid JSON");
@@ -137,8 +145,14 @@ async fn versioned_native_journey_corpus_runs_local_navigation_and_scroll_journe
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn versioned_native_image_journey_opens_and_paints_full_image() {
+#[test]
+fn versioned_native_image_journey_opens_and_paints_full_image() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(versioned_native_image_journey_opens_and_paints_full_image_inner());
+    });
+}
+
+async fn versioned_native_image_journey_opens_and_paints_full_image_inner() {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
             .expect("native journey corpus must be valid JSON");
@@ -198,8 +212,14 @@ async fn versioned_native_image_journey_opens_and_paints_full_image() {
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn versioned_native_disclosure_search_form_and_history_journey() {
+#[test]
+fn versioned_native_disclosure_search_form_and_history_journey() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(versioned_native_disclosure_search_form_and_history_journey_inner());
+    });
+}
+
+async fn versioned_native_disclosure_search_form_and_history_journey_inner() {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
             .expect("native journey corpus must be valid JSON");
@@ -710,8 +730,16 @@ fn observed_scroll_target_uses_fresh_revision_bound_evidence() {
     });
 }
 
-#[tokio::test]
-async fn native_host_view_handles_large_local_anchor_collections_within_budget() {
+#[test]
+fn native_host_view_handles_large_local_anchor_collections_within_budget() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_host_view_handles_large_local_anchor_collections_within_budget_inner(),
+        );
+    });
+}
+
+async fn native_host_view_handles_large_local_anchor_collections_within_budget_inner() {
     let anchors = (0..2_000)
         .map(|index| format!("<a href='/item/{index}' title='item {index}'>item</a>"))
         .collect::<String>();
@@ -756,8 +784,16 @@ async fn native_host_view_handles_large_local_anchor_collections_within_budget()
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_host_view_mixed_dom_with_retained_realm_fits_the_fixed_heap_budget() {
+#[test]
+fn native_host_view_mixed_dom_with_retained_realm_fits_the_fixed_heap_budget() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_host_view_mixed_dom_with_retained_realm_fits_the_fixed_heap_budget_inner(),
+        );
+    });
+}
+
+async fn native_host_view_mixed_dom_with_retained_realm_fits_the_fixed_heap_budget_inner() {
     let mut markup = String::from(
         "<title>Retained realm fixture</title><script>window.__retained = Array.from({length: 16_000}, (_, i) => String(i).padStart(5, '0') + 'x'.repeat(2040)); void 0;</script><main>",
     );
@@ -786,8 +822,16 @@ async fn native_host_view_mixed_dom_with_retained_realm_fits_the_fixed_heap_budg
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_host_view_dense_multirelational_links_keep_attributes_and_semantics() {
+#[test]
+fn native_host_view_dense_multirelational_links_keep_attributes_and_semantics() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_host_view_dense_multirelational_links_keep_attributes_and_semantics_inner(),
+        );
+    });
+}
+
+async fn native_host_view_dense_multirelational_links_keep_attributes_and_semantics_inner() {
     let mut markup = String::from(
         "<title>Dense link fixture</title><style>a,span{display:inline;position:relative;color:#123456;font-size:13px;line-height:1.25;font-weight:400;text-align:start;text-decoration:none;white-space:normal;direction:ltr;visibility:visible;opacity:1;pointer-events:auto;margin-left:1px;padding-left:2px;border-width:1px;border-style:solid;border-color:#abc;overflow:visible;box-sizing:border-box}</style><main>",
     );

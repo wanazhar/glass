@@ -859,29 +859,33 @@ def main() -> None:
             else:
                 send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown Glass Core command"}})
         elif method == "durable/taskGraph":
-            assert params == {}
+            tasks = [{
+                "id": "generation-fixture-1",
+                "conversation": "durable-fixture-session",
+                "kind": "gc.generation",
+                "version": 1,
+                "owner": None,
+                "background": False,
+                "createdSequence": 12,
+                "replay": "unsafe",
+                "input": {"text": "fixture prompt must not appear in the TUI"},
+                "inputDigest": "digest",
+                "checkpoint": {"private": "fixture checkpoint"},
+                "status": "running",
+                "revision": 2,
+                "on": [],
+                "policy": "all_settled",
+                "dueAtMs": 0,
+                "outcome": None,
+                "abortRequested": False,
+            }]
+            cursor = int(params.get("cursor") or 0) if isinstance(params, dict) else 0
+            limit = int(params.get("limit") or len(tasks))
+            page = tasks[cursor : cursor + limit] if cursor < len(tasks) else []
             reply(identifier, {
                 "sequence": 17,
-                "tasks": [{
-                    "id": "generation-fixture-1",
-                    "conversation": "durable-fixture-session",
-                    "kind": "gc.generation",
-                    "version": 1,
-                    "owner": None,
-                    "background": False,
-                    "createdSequence": 12,
-                    "replay": "unsafe",
-                    "input": {"text": "fixture prompt must not appear in the TUI"},
-                    "inputDigest": "digest",
-                    "checkpoint": {"private": "fixture checkpoint"},
-                    "status": "running",
-                    "revision": 2,
-                    "on": [],
-                    "policy": "all_settled",
-                    "dueAtMs": 0,
-                    "outcome": None,
-                    "abortRequested": False,
-                }],
+                "hasMore": cursor + len(page) < len(tasks),
+                "tasks": page,
             })
         elif method == "durable/abort":
             assert params.get("taskId") == "generation-fixture-1"

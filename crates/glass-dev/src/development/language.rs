@@ -13,8 +13,11 @@ use std::{
 };
 
 const MAX_LSP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const RENAME_INDEX_WAIT: Duration = Duration::from_secs(8);
+const RENAME_INDEX_WAIT: Duration = Duration::from_secs(30);
 const RENAME_CONTENT_MODIFIED_RETRIES: usize = 3;
+/// Bounded attempts for a rename whose first answer came back empty while the
+/// language server index was still warming.
+const RENAME_INDEX_ATTEMPTS: usize = 3;
 // Some rust-analyzer versions publish an empty snapshot before their first
 // real check completes. Keep waiting within the existing bounded request
 // deadline so that the empty snapshot cannot mask a later diagnostic.
@@ -546,10 +549,32 @@ impl LspClient {
             return initial;
         }
         let position = DiagnosticPosition { line, character };
-        if !self.wait_for_rename_references(&uri, &position) {
-            return initial;
+        let mut response = self.rename_request(params.clone());
+        let mut usable = match &response {
+            Err(error) => !error
+                .to_string()
+                .contains("No references found at position"),
+            Ok(response) => {
+                !(response.result.is_null() || workspace_edit_is_empty(&response.result))
+            }
+        };
+        let mut attempts = 0;
+        while !usable && attempts < RENAME_INDEX_ATTEMPTS {
+            if !self.wait_for_rename_references(&uri, &position) {
+                break;
+            }
+            response = self.rename_request(params.clone());
+            attempts += 1;
+            usable = match &response {
+                Err(error) => !error
+                    .to_string()
+                    .contains("No references found at position"),
+                Ok(response) => {
+                    !(response.result.is_null() || workspace_edit_is_empty(&response.result))
+                }
+            };
         }
-        let response = self.rename_request(params)?;
+        let response = response?;
         if response.result.is_null() {
             return Err(DevelopmentError::Process(
                 "textDocument/rename returned no WorkspaceEdit after the selected symbol was indexed".into(),

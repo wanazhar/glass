@@ -16,6 +16,20 @@ fn fixture_root() -> std::path::PathBuf {
     fs::create_dir_all(&root).expect("create fixture root");
     root
 }
+fn spawn_copied_executable(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
 
 #[test]
 fn direct_core_command_keeps_arguments_stdio_and_child_exit_status() {
@@ -39,14 +53,15 @@ fn direct_core_command_keeps_arguments_stdio_and_child_exit_status() {
     permissions.set_mode(0o755);
     fs::set_permissions(&binary, permissions).expect("make fake Core executable");
 
-    let mut child = Command::new(&glass)
-        .args(["connect", "--json", "--profile", "fixture profile"])
-        .env("GLASS_CORE_CLI_PRESENTATION", "ambient-stale-value")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start Glass CLI");
+    let mut child = spawn_copied_executable(
+        Command::new(&glass)
+            .args(["connect", "--json", "--profile", "fixture profile"])
+            .env("GLASS_CORE_CLI_PRESENTATION", "ambient-stale-value")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("start Glass CLI");
     child
         .stdin
         .take()
@@ -114,11 +129,16 @@ fn core_namespace_forwards_colliding_and_unlisted_commands_verbatim() {
     permissions.set_mode(0o755);
     fs::set_permissions(&binary, permissions).expect("make fake Core executable");
 
-    let output = Command::new(&glass)
-        .args(["core", "browser", "status", "--future-core-option"])
-        .env("GLASS_CORE_CLI_PRESENTATION", "ambient-stale-value")
-        .output()
-        .expect("run exact Core namespace");
+    let output = spawn_copied_executable(
+        Command::new(&glass)
+            .args(["core", "browser", "status", "--future-core-option"])
+            .env("GLASS_CORE_CLI_PRESENTATION", "ambient-stale-value")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("run exact Core namespace")
+    .wait_with_output()
+    .expect("wait for Core namespace");
 
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout), "core help\n");

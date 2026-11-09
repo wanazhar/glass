@@ -1,7 +1,14 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
+#[test]
+fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_shared_worker_reuses_named_runtime_and_ports_inner());
+    });
+}
+
+async fn native_content_process_shared_worker_reuses_named_runtime_and_ports_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -426,8 +433,16 @@ onconnect = event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_reports_shared_worker_connect_callback_errors_at_global() {
+#[test]
+fn native_content_process_reports_shared_worker_connect_callback_errors_at_global() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_reports_shared_worker_connect_callback_errors_at_global_inner(),
+        );
+    });
+}
+
+async fn native_content_process_reports_shared_worker_connect_callback_errors_at_global_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -560,8 +575,16 @@ addEventListener('connect', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_shared_worker_message_port_callback_errors_recover() {
+#[test]
+fn native_content_process_shared_worker_message_port_callback_errors_recover() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_shared_worker_message_port_callback_errors_recover_inner(),
+        );
+    });
+}
+
+async fn native_content_process_shared_worker_message_port_callback_errors_recover_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -735,8 +758,15 @@ addEventListener('connect', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_resolves_runtime_shared_worker_module_imports() {
+#[test]
+fn native_content_process_resolves_runtime_shared_worker_module_imports() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_resolves_runtime_shared_worker_module_imports_inner());
+    });
+}
+
+async fn native_content_process_resolves_runtime_shared_worker_module_imports_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -854,8 +884,16 @@ async fn native_content_process_resolves_runtime_shared_worker_module_imports() 
         ]
     );
 }
-#[tokio::test]
-async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_shared_worker_fetch_uses_parent_cookie_authority_inner(),
+        );
+    });
+}
+
+async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1056,8 +1094,16 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
     }
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
+#[test]
+fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_shared_worker_fetch_credentials_modes_follow_redirects_inner(),
+        );
+    });
+}
+
+async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let primary_address = primary_listener.local_addr().unwrap();

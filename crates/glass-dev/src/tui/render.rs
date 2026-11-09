@@ -4568,7 +4568,11 @@ fn render_core_task_graph(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
             let sequence = graph
                 .sequence
                 .map_or_else(|| "?".into(), |sequence| sequence.to_string());
-            let title = format!(" CORE · GC TASKS · {} ", graph.tasks.len());
+            let title = format!(
+                " CORE · GC TASKS · {}{} ",
+                graph.tasks.len(),
+                if graph.has_more { "+" } else { "" }
+            );
             let mut lines = vec![format!("sequence {sequence}")];
             if graph.tasks.is_empty() {
                 lines.push("No live durable tasks · / Refresh GC task graph".into());
@@ -7939,6 +7943,7 @@ mod tests {
                         background: false,
                         dependency_count: 0,
                     }],
+                    has_more: true,
                     error: None,
                 }),
                 ..Default::default()
@@ -7949,7 +7954,7 @@ mod tests {
         assert!(output.contains("CORE · Working"));
         assert!(output.contains("GLASS WORKSPACE FLOWS"));
         assert!(output.contains("task-1  running"));
-        assert!(output.contains("CORE · GC TASKS · 1"));
+        assert!(output.contains("CORE · GC TASKS · 1+"));
         assert!(
             output.contains("generation-11 · gc.generation · running"),
             "{output}"

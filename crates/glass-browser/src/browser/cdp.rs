@@ -386,7 +386,8 @@ impl CdpClient {
         let screencast_dropped = Arc::new(AtomicU64::new(0));
         let actor_screencast_dropped = Arc::clone(&screencast_dropped);
         let cdp_wait_nanos = Arc::new(AtomicU64::new(0));
-        let actor_tx = tx.clone();
+        // The actor must not keep its own command channel alive.
+        let actor_tx = tx.downgrade();
         let actor_next_id = Arc::new(AtomicU64::new(1));
         let next_id = Arc::clone(&actor_next_id);
 
@@ -1428,7 +1429,7 @@ struct ScreencastDispatch<'a> {
     sink: &'a std::sync::Mutex<Option<ScreencastSink>>,
     received: &'a AtomicU64,
     dropped: &'a AtomicU64,
-    command_tx: &'a mpsc::UnboundedSender<Command>,
+    command_tx: &'a mpsc::WeakUnboundedSender<Command>,
     next_id: &'a AtomicU64,
 }
 fn send_screencast_ack(
@@ -1445,9 +1446,11 @@ fn send_screencast_ack(
     if let Some(session_id) = session_id {
         ack["sessionId"] = Value::from(session_id);
     }
-    let _ = screencast.command_tx.send(Command::FireAndForget {
-        json: ack.to_string(),
-    });
+    if let Some(tx) = screencast.command_tx.upgrade() {
+        let _ = tx.send(Command::FireAndForget {
+            json: ack.to_string(),
+        });
+    }
 }
 
 fn handle_incoming_message(
@@ -1577,6 +1580,29 @@ mod tests {
         .join();
 
         assert!(lock_screencast_sink(&sink).is_none());
+    }
+
+    #[tokio::test]
+    async fn dropping_last_client_closes_the_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), websocket.next())
+                .await
+                .unwrap()
+        });
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let clone = client.clone();
+        drop(client);
+        drop(clone);
+        assert!(matches!(
+            server.await.unwrap(),
+            Some(Ok(Message::Close(_))) | None
+        ));
     }
 
     #[tokio::test]

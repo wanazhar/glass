@@ -4150,7 +4150,7 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
 .tool-time { font-size: 10px; }
 .notice { border-radius: var(--ui-control-radius); font-size: 12px; }
 .teammate-state { border-radius: var(--ui-control-radius); background: var(--ui-panel); border-color: var(--ui-border); }
-.details { background: var(--bg); border-color: var(--ui-border); padding-left: 18px; padding-right: 18px; }
+.details { background: var(--bg); border-color: var(--ui-border); padding-left: max(18px, var(--safe-left)); padding-right: max(18px, var(--safe-right)); }
 .details > header { min-height: calc(57px + var(--safe-top)); height: calc(57px + var(--safe-top)); border-color: var(--ui-border); }
 .details h2 { font-size: 12px; font-weight: 550; }
 .detail-tabs { gap: 18px; margin-top: 14px; border-color: var(--ui-border); }

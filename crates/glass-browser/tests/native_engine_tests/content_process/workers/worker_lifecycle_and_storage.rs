@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_blob_object_urls_navigate_across_the_worker_boundary() {
+#[test]
+fn native_content_process_blob_object_urls_navigate_across_the_worker_boundary() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_blob_object_urls_navigate_across_the_worker_boundary_inner(),
+        );
+    });
+}
+
+async fn native_content_process_blob_object_urls_navigate_across_the_worker_boundary_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -40,8 +48,14 @@ async fn native_content_process_blob_object_urls_navigate_across_the_worker_boun
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_runs_worker_created_during_page_load() {
+#[test]
+fn native_content_process_runs_worker_created_during_page_load() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_runs_worker_created_during_page_load_inner());
+    });
+}
+
+async fn native_content_process_runs_worker_created_during_page_load_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -99,8 +113,16 @@ async fn native_content_process_runs_worker_created_during_page_load() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_message_delivery_preserves_large_payloads() {
+#[test]
+fn native_content_process_worker_message_delivery_preserves_large_payloads() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_message_delivery_preserves_large_payloads_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_message_delivery_preserves_large_payloads_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -148,8 +170,15 @@ async fn native_content_process_worker_message_delivery_preserves_large_payloads
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_dispatches_messageerror_and_recovers() {
+#[test]
+fn native_content_process_worker_dispatches_messageerror_and_recovers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_worker_dispatches_messageerror_and_recovers_inner());
+    });
+}
+
+async fn native_content_process_worker_dispatches_messageerror_and_recovers_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -316,8 +345,16 @@ addEventListener('messageerror', event => observeMessageError('listener', event)
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_proxy_dispatches_messageerror_and_recovers() {
+#[test]
+fn native_content_process_worker_proxy_dispatches_messageerror_and_recovers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_proxy_dispatches_messageerror_and_recovers_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_proxy_dispatches_messageerror_and_recovers_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -481,8 +518,15 @@ __glassDispatchWorkerMessage(worker.__glassWorkerId, malformed);
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
+#[test]
+fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_worker_blob_object_urls_cross_realm_messages_inner());
+    });
+}
+
+async fn native_content_process_worker_blob_object_urls_cross_realm_messages_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -538,8 +582,16 @@ async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_transfers_message_ports_between_page_and_worker_realms() {
+#[test]
+fn native_content_process_transfers_message_ports_between_page_and_worker_realms() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_transfers_message_ports_between_page_and_worker_realms_inner(),
+        );
+    });
+}
+
+async fn native_content_process_transfers_message_ports_between_page_and_worker_realms_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -611,8 +663,16 @@ async fn native_content_process_transfers_message_ports_between_page_and_worker_
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_message_ports_transfer_blob_urls_between_page_and_worker() {
+#[test]
+fn native_content_process_message_ports_transfer_blob_urls_between_page_and_worker() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_message_ports_transfer_blob_urls_between_page_and_worker_inner(),
+        );
+    });
+}
+
+async fn native_content_process_message_ports_transfer_blob_urls_between_page_and_worker_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -675,8 +735,16 @@ async fn native_content_process_message_ports_transfer_blob_urls_between_page_an
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_transfers_array_buffers_between_page_and_worker_realms() {
+#[test]
+fn native_content_process_transfers_array_buffers_between_page_and_worker_realms() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_transfers_array_buffers_between_page_and_worker_realms_inner(),
+        );
+    });
+}
+
+async fn native_content_process_transfers_array_buffers_between_page_and_worker_realms_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -727,8 +795,17 @@ async fn native_content_process_transfers_array_buffers_between_page_and_worker_
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -843,8 +920,15 @@ async fn native_content_process_initial_worker_startup_fetch_uses_parent_cookie_
         "parent did not select the startup response cookie for the follow-up request: {requests:?}"
     );
 }
-#[tokio::test]
-async fn native_content_process_worker_fetch_preserves_large_response_payload() {
+#[test]
+fn native_content_process_worker_fetch_preserves_large_response_payload() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_worker_fetch_preserves_large_response_payload_inner());
+    });
+}
+
+async fn native_content_process_worker_fetch_preserves_large_response_payload_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -890,8 +974,17 @@ async fn native_content_process_worker_fetch_preserves_large_response_payload() 
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_fetch_preserves_binary_request_and_response_bodies() {
+#[test]
+fn native_content_process_worker_fetch_preserves_binary_request_and_response_bodies() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_fetch_preserves_binary_request_and_response_bodies_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_worker_fetch_preserves_binary_request_and_response_bodies_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1099,8 +1192,15 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_location_navigation_crosses_worker_boundary() {
+#[test]
+fn native_content_process_location_navigation_crosses_worker_boundary() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_location_navigation_crosses_worker_boundary_inner());
+    });
+}
+
+async fn native_content_process_location_navigation_crosses_worker_boundary_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1163,8 +1263,16 @@ async fn native_content_process_location_navigation_crosses_worker_boundary() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_delivers_report_only_connect_events_for_websocket() {
+#[test]
+fn native_content_process_worker_delivers_report_only_connect_events_for_websocket() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_delivers_report_only_connect_events_for_websocket_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_delivers_report_only_connect_events_for_websocket_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1235,8 +1343,15 @@ async fn native_content_process_worker_delivers_report_only_connect_events_for_w
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_delivers_report_only_connect_events_for_event_source() {
+#[test]
+fn native_content_process_worker_delivers_report_only_connect_events_for_event_source() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_worker_delivers_report_only_connect_events_for_event_source_inner());
+    });
+}
+
+async fn native_content_process_worker_delivers_report_only_connect_events_for_event_source_inner()
+{
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1308,8 +1423,16 @@ async fn native_content_process_worker_delivers_report_only_connect_events_for_e
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_message_fetch_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_worker_message_fetch_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_message_fetch_uses_parent_cookie_authority_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_message_fetch_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1442,8 +1565,16 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
     assert!(port_fetch_cookie.contains("message_turn=present"));
     assert!(port_fetch_cookie.contains("port_turn=present"));
 }
-#[tokio::test]
-async fn native_content_process_worker_stream_upload_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_worker_stream_upload_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_stream_upload_uses_parent_cookie_authority_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_stream_upload_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1865,8 +1996,16 @@ globalThis.worker = new Worker('/worker.js');
         });
     });
 }
-#[tokio::test]
-async fn native_content_process_classic_import_scripts_use_worker_policy_and_root_url() {
+#[test]
+fn native_content_process_classic_import_scripts_use_worker_policy_and_root_url() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_classic_import_scripts_use_worker_policy_and_root_url_inner(),
+        );
+    });
+}
+
+async fn native_content_process_classic_import_scripts_use_worker_policy_and_root_url_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2048,8 +2187,14 @@ async fn native_content_process_classic_import_scripts_use_worker_policy_and_roo
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_recovers_after_worker_exit_during_startup() {
+#[test]
+fn native_content_process_recovers_after_worker_exit_during_startup() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_recovers_after_worker_exit_during_startup_inner());
+    });
+}
+
+async fn native_content_process_recovers_after_worker_exit_during_startup_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2098,8 +2243,14 @@ async fn native_content_process_recovers_after_worker_exit_during_startup() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
+#[test]
+fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_indexed_db_round_trips_through_worker_ipc_inner());
+    });
+}
+
+async fn native_content_process_indexed_db_round_trips_through_worker_ipc_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-content.json",
@@ -2157,8 +2308,14 @@ async fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_content_process_indexed_db_journal_merges_live_workers() {
+#[test]
+fn native_content_process_indexed_db_journal_merges_live_workers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_indexed_db_journal_merges_live_workers_inner());
+    });
+}
+
+async fn native_content_process_indexed_db_journal_merges_live_workers_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-content-journal.json",
@@ -2358,8 +2515,16 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
     server.await.unwrap();
     assert!(websocket_cookie_seen.load(Ordering::SeqCst));
 }
-#[tokio::test]
-async fn native_content_process_worker_dispatches_large_websocket_event_as_data() {
+#[test]
+fn native_content_process_worker_dispatches_large_websocket_event_as_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_dispatches_large_websocket_event_as_data_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_dispatches_large_websocket_event_as_data_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2419,8 +2584,14 @@ async fn native_content_process_worker_dispatches_large_websocket_event_as_data(
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_drives_event_source_named_events() {
+#[test]
+fn native_content_process_worker_drives_event_source_named_events() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_worker_drives_event_source_named_events_inner());
+    });
+}
+
+async fn native_content_process_worker_drives_event_source_named_events_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2524,8 +2695,16 @@ async fn native_content_process_worker_drives_event_source_named_events() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_dispatches_large_event_source_event_as_data() {
+#[test]
+fn native_content_process_worker_dispatches_large_event_source_event_as_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_dispatches_large_event_source_event_as_data_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_dispatches_large_event_source_event_as_data_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

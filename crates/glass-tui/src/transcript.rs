@@ -356,10 +356,13 @@ impl Transcript {
             .map(|(i, (text, role, turn))| {
                 if self.collapsed.get(i).copied().unwrap_or(false) {
                     (
-                        format!(
-                            "▸ {} · {} lines",
-                            crate::text::clip(text.lines().next().unwrap_or(""), 70),
-                            text.lines().count()
+                        crate::text::clip(
+                            &format!(
+                                "▸ {} · {} lines",
+                                text.lines().next().unwrap_or(""),
+                                text.lines().count()
+                            ),
+                            usize::from(width),
                         ),
                         Role::Meta,
                         turn,

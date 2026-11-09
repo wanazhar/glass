@@ -1,7 +1,14 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
+#[test]
+fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_worker_xhr_upload_reports_buffered_progress_inner());
+    });
+}
+
+async fn native_content_process_worker_xhr_upload_reports_buffered_progress_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -98,8 +105,14 @@ async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_xhr_reports_response_progress() {
+#[test]
+fn native_content_process_worker_xhr_reports_response_progress() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_worker_xhr_reports_response_progress_inner());
+    });
+}
+
+async fn native_content_process_worker_xhr_reports_response_progress_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

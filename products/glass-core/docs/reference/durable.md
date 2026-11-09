@@ -62,9 +62,18 @@ conflict changes neither storage nor published state.
 | `task.migrate` | `id`, `expectedRevision`, newer `version`, `checkpoint` |
 | `task.abort` | `id`; optional `includeBackground` |
 
+Submission creation and consumption, and creation or updates of reserved
+`gc.*` tasks, are runtime-managed and cannot be submitted through
+`durable/commit`. Use `durable/submit` and `durable/run` for generations.
+
 Document definitions optionally set `history` and `fork` (`initial`, `current`,
 or `as_of`). Definitions remain stable until an explicit migration changes the
 version/value. Historical reads require `history: true`.
+
+An `as_of` fork keeps the historical document's version and definition.
+An `initial` fork keeps the original definition and initial value, including
+its original version after later migrations; migrate the fork explicitly if
+the host requires the current schema.
 
 A task can set `owner` to its parent task ID, `background`, `input`, `checkpoint`,
 and `replay` (`unsafe` by default). Register current custom task definitions with
@@ -78,12 +87,29 @@ tasks; custom application code stays with the host. A running task may checkpoin
 without becoming terminal. Set `waiting` with `on` task IDs and a `policy` of
 `all_settled` or `fail_fast`. Fail-fast dependencies must be owned children.
 Wait cycles are rejected. A task with foreground children remains `completing`
-until they settle. Background children survive a parent's ordinary abort;
-`includeBackground: true` includes them.
+until they settle. Its terminal outcome is the supplied outcome whether or not
+foreground children needed time to settle. Background children survive a
+parent's ordinary abort; `includeBackground: true` includes them.
+
+Explicit cancellation that would reverse a `completing` task's decided outcome
+is rejected, including cancellation through an ancestor. Fail-fast
+reconciliation may cancel its owned work but preserves the decided outcome.
+Journal change pages may include an internal `task.preserve-decisions.v1`
+marker that preserves this behavior during replay.
+
+An owned conversation accepts new submissions only while its owner is active;
+settling, finished, or aborting owners cannot acquire new work.
+
+Built-in tool task outcomes record the typed `isError` supplied by execution,
+not the tool output text. If no typed outcome is available, the task is marked
+failed with `outcomeKnown: false` rather than reporting unconfirmed success.
 
 Safe interrupted tasks return to pending. Unsafe tasks become failed with an
 interrupted outcome. Mark work safe only when repeating its phase is safe.
 Migrations require a pending task, matching revision, and newer version.
+
+Recovery associates a live partial response with its journal position, so an
+earlier response containing the same text cannot suppress its transcript entry.
 
 ## Inspection and observation
 
@@ -93,9 +119,10 @@ Migrations require a pending task, matching revision, and newer version.
 | `durable/submission` | Reacquire by `conversationId` and `requestId` |
 | `durable/inspect` | Page conversations, documents, and tasks; optional `conversationId` |
 | `durable/changes` | Read atomic commits after a numeric sequence `cursor` |
-| `durable/taskGraph` | Inspect foreground/background ownership of live tasks |
+| `durable/taskGraph` | Page the bounded foreground/background graph of live tasks |
 | `durable/document` | Read by `conversationId`, `kind`, optional `asOf` sequence |
 | `durable/entries` | Page the active transcript by numeric record cursor |
+| `durable/entry` | Read a serialized transcript entry in bounded UTF-8 chunks |
 | `durable/configure` | Merge an `agent` settings patch into a conversation |
 | `durable/fork` | Fork at optional `asOf`; document fork policies apply |
 | `durable/reset` | Reset active context once all conversation tasks have settled |
@@ -103,6 +130,21 @@ Migrations require a pending task, matching revision, and newer version.
 
 Inspection returns `items`, a string `cursor`, and `hasMore`; continue with the
 returned cursor. Changes return `commits`, numeric `cursor`, and `hasMore`.
+
+Task graph pages return `tasks`, a task-ID `cursor`, `hasMore`, and `sequence`.
+Pass the cursor and `expectedSequence` from the first page to subsequent pages;
+restart if the graph changes. Graph rows omit input, checkpoints, and outcomes;
+use `durable/task` to inspect those fields. The Glass task panel displays the
+first page and appends `+` to its task count when additional pages exist.
+
+Transcript pages include an `epoch`. An oversized entry is represented by
+`{"k":"durable/entry_ref","cursor":N,"epoch":E,"serializedBytes":B}` and the
+page cursor advances past it. To read it, call `durable/entry` with
+`conversationId`, the reference's `cursor` and `epoch`, and an `offset` (zero
+initially). Concatenate `chunk` strings, following `nextOffset` until null,
+then parse the resulting JSON record. `limitBytes` bounds each chunk to at most
+64 KiB; offsets are UTF-8 byte boundaries. A reset invalidates the epoch.
+
 A commit too large for one observation response produces `reset: true`; reacquire
 state through inspection and direct task/document reads. Observation does not
 allocate an unbounded subscriber queue. Polling can resume from the last cursor.

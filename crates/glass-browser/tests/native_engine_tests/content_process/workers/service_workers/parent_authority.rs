@@ -1,7 +1,14 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_service_worker_module_registration_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_service_worker_module_registration_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_service_worker_module_registration_uses_parent_cookie_authority_inner());
+    });
+}
+
+async fn native_content_process_service_worker_module_registration_uses_parent_cookie_authority_inner()
+ {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -93,8 +100,15 @@ async fn native_content_process_service_worker_module_registration_uses_parent_c
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority() {
+#[test]
+fn native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority_inner());
+    });
+}
+
+async fn native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority_inner()
+{
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -216,8 +230,15 @@ self.addEventListener('activate', event => {
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority_inner());
+    });
+}
+
+async fn native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority_inner()
+ {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -451,8 +472,16 @@ self.addEventListener('fetch', event => {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_content_process_service_worker_restoration_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_service_worker_restoration_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_restoration_uses_parent_cookie_authority_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_restoration_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -585,8 +614,16 @@ async fn native_content_process_service_worker_restoration_uses_parent_cookie_au
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_content_process_rejects_service_worker_csp_failures_without_exiting() {
+#[test]
+fn native_content_process_rejects_service_worker_csp_failures_without_exiting() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_rejects_service_worker_csp_failures_without_exiting_inner(),
+        );
+    });
+}
+
+async fn native_content_process_rejects_service_worker_csp_failures_without_exiting_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -713,8 +750,17 @@ async fn native_content_process_rejects_service_worker_csp_failures_without_exit
     );
     assert!(!paths.contains(&"/update/denied.js".to_owned()));
 }
-#[tokio::test]
-async fn native_content_process_service_worker_stream_upload_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_service_worker_stream_upload_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_stream_upload_uses_parent_cookie_authority_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_stream_upload_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

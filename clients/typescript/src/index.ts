@@ -522,8 +522,16 @@ export class GlassClient {
   private buffer = Buffer.alloc(0);
   private nextId = 1;
   private initialized = false;
+  private initializing?: Promise<GlassCapabilityManifest>;
+  private terminalError?: Error;
+  private closeRequested = false;
   private manifest?: GlassCapabilityManifest;
   private leaseToken?: string;
+  private leaseDeadline?: number;
+  private leaseScopeCount = 0;
+  private leaseScopeOwned = false;
+  private leaseScopeGate: Promise<void> = Promise.resolve();
+  private toolRequestHandler?: (requestId: number, params: Record<string, unknown>) => Promise<unknown>;
 
   constructor(options: GlassClientOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? 4 * 1024 * 1024;
@@ -532,8 +540,8 @@ export class GlassClient {
       this.input = socket;
       this.output = socket;
       this.closeTransport = () => socket.destroy();
-      socket.on("error", (error) => this.rejectAll(error));
-      socket.on("close", () => this.rejectAll(new Error("Glass daemon socket closed")));
+      socket.on("error", (error) => this.failTransport(error));
+      socket.on("close", () => this.failTransport(new Error("Glass daemon socket closed")));
     } else {
       const child = spawn(options.command ?? "glass", options.args ?? ["--mcp"], {
         cwd: options.cwd,
@@ -543,14 +551,22 @@ export class GlassClient {
       this.input = child.stdin;
       this.output = child.stdout;
       this.closeTransport = () => child.kill();
-      child.on("error", (error) => this.rejectAll(error));
-      child.on("exit", (code, signal) => this.rejectAll(new Error(`Glass exited (${code ?? signal})`)));
+      child.on("error", (error) => this.failTransport(error));
+      child.on("exit", (code, signal) => this.failTransport(new Error(`Glass exited (${code ?? signal})`)));
+      child.stdin.on("error", (error) => this.failTransport(error));
     }
     this.output.on("data", (chunk: Buffer) => this.consume(chunk));
   }
 
   async initialize(): Promise<GlassCapabilityManifest | undefined> {
     if (this.initialized) return undefined;
+    if (!this.initializing) {
+      this.initializing = this.initializeOnce().finally(() => { this.initializing = undefined; });
+    }
+    return this.initializing;
+  }
+
+  private async initializeOnce(): Promise<GlassCapabilityManifest> {
     const result = await this.request("initialize", {
       protocolVersion: "2024-11-05",
       glass: {
@@ -583,6 +599,10 @@ export class GlassClient {
     if (!this.supportsCapability(capability)) throw new Error(`Glass capability is unavailable: ${capability}`);
   }
 
+  onToolRequest(handler: (requestId: number, params: Record<string, unknown>) => Promise<unknown>): void {
+    this.toolRequestHandler = handler;
+  }
+
   async listTools(): Promise<Array<Record<string, unknown>>> {
     await this.initialize();
     const result = await this.request("tools/list", {}) as { tools?: unknown };
@@ -598,10 +618,14 @@ export class GlassClient {
     const response = await this.request("tools/call", { name, arguments: callArgs }) as ToolCallResult;
     if (response.isError) {
       const text = response.content?.find((part) => typeof part.text === "string")?.text ?? "Glass tool failed";
+      const payload = response as {
+        error?: { code?: number; message?: string };
+        retry?: { classification?: string; recommendedOperation?: string };
+      };
       throw GlassStructuredError.fromMcp({
-        code: -32000,
-        message: text,
-        data: { message: text, details: response },
+        code: payload.error?.code ?? -32000,
+        message: payload.error?.message ?? text,
+        data: { code: payload.error?.code, message: text, retry: payload.retry, details: response },
       });
     }
     const text = response.content?.find((part) => typeof part.text === "string")?.text;
@@ -613,16 +637,21 @@ export class GlassClient {
 
   async acquireMutationLease(ttlMs = 60_000): Promise<Record<string, unknown>> {
     await this.initialize();
+    const started = performance.now();
     const lease = await this.request("glass/lease/acquire", { ttlMs }) as Record<string, unknown>;
     if (typeof lease.token !== "string") throw new Error("daemon lease response did not include a token");
     this.leaseToken = lease.token;
+    this.leaseDeadline = started + ttlMs;
     return lease;
   }
 
   async renewMutationLease(ttlMs = 60_000): Promise<Record<string, unknown>> {
     await this.initialize();
     if (this.leaseToken === undefined) throw new Error("no daemon mutation lease is held");
-    return await this.request("glass/lease/renew", { token: this.leaseToken, ttlMs }) as Record<string, unknown>;
+    const started = performance.now();
+    const lease = await this.request("glass/lease/renew", { token: this.leaseToken, ttlMs }) as Record<string, unknown>;
+    this.leaseDeadline = started + ttlMs;
+    return lease;
   }
 
   async releaseMutationLease(): Promise<void> {
@@ -630,6 +659,7 @@ export class GlassClient {
     if (this.leaseToken === undefined) return;
     await this.request("glass/lease/release", { token: this.leaseToken });
     this.leaseToken = undefined;
+    this.leaseDeadline = undefined;
   }
 
   /**
@@ -762,13 +792,55 @@ export class GlassClient {
     if (options.signal?.aborted) throw new Error("process health wait aborted");
     throw new Error(`timed out after ${timeoutMs}ms waiting for process ${name} to become healthy`);
   }
+  /** Share a scoped lease; attach cleanup failures to a primary Error as leaseReleaseError. */
   async withMutationLease<T>(operation: () => Promise<T>, ttlMs = 60_000): Promise<T> {
-    const alreadyHeld = this.leaseToken !== undefined;
-    if (!alreadyHeld) await this.acquireMutationLease(ttlMs);
+    await this.withLeaseScopeGate(async () => {
+      if (this.leaseToken !== undefined && this.leaseDeadline !== undefined && performance.now() >= this.leaseDeadline) {
+        if (this.leaseScopeCount > 0) throw new Error("mutation lease expired during an active scope");
+        this.leaseToken = undefined;
+        this.leaseDeadline = undefined;
+      }
+      if (this.leaseScopeCount === 0) {
+        this.leaseScopeOwned = this.leaseToken === undefined;
+        if (this.leaseScopeOwned) await this.acquireMutationLease(ttlMs);
+      }
+      this.leaseScopeCount++;
+    });
+    let primary: unknown;
+    let operationFailed = false;
+    try {
+      return await operation();
+    } catch (error) {
+      operationFailed = true;
+      primary = error;
+      throw error;
+    } finally {
+      try {
+        await this.withLeaseScopeGate(async () => {
+          this.leaseScopeCount--;
+          if (this.leaseScopeCount === 0 && this.leaseScopeOwned) {
+            this.leaseScopeOwned = false;
+            await this.releaseMutationLease();
+          }
+        });
+      } catch (cleanup) {
+        if (!operationFailed) throw cleanup;
+        if (primary instanceof Error) {
+          try { Object.defineProperty(primary, "leaseReleaseError", { value: cleanup, configurable: true }); } catch { /* Preserve the original failure. */ }
+        }
+      }
+    }
+  }
+
+  private async withLeaseScopeGate<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.leaseScopeGate;
+    let release!: () => void;
+    this.leaseScopeGate = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
     try {
       return await operation();
     } finally {
-      if (!alreadyHeld) await this.releaseMutationLease();
+      release();
     }
   }
   async editAndVerify(path: string, content: string, root = ".", title = `Edit ${path}`): Promise<VerificationCard> {
@@ -1089,6 +1161,9 @@ export class GlassClient {
     return this.call<T>("setTimezone", { timezoneId });
   }
   close(): void {
+    if (this.closeRequested) return;
+    this.closeRequested = true;
+    this.terminalError ??= new Error("Glass client closed");
     for (const pending of this.pending.values()) pending.reject(new Error("Glass client closed"));
     this.pending.clear();
     this.input.end();
@@ -1096,45 +1171,75 @@ export class GlassClient {
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (this.terminalError) return Promise.reject(this.terminalError);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: "2.0", id, method, params });
+      try {
+        this.send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
+  private dispatchToolRequest(requestId: number, params: Record<string, unknown>): void {
+    const handler = this.toolRequestHandler;
+    if (!handler) {
+      this.send({ jsonrpc: "2.0", id: requestId, result: { text: "Host has no tool executor", isError: true } });
+      return;
+    }
+    Promise.resolve(handler(requestId, params))
+      .then((result) => this.send({ jsonrpc: "2.0", id: requestId, result }))
+      .catch((error: Error) => this.send({ jsonrpc: "2.0", id: requestId, error: { code: -32000, message: error.message } }));
+  }
+
   private send(message: Record<string, unknown>): void {
+    if (this.terminalError) throw this.terminalError;
     this.input.write(`${JSON.stringify(message)}\n`);
   }
 
   private consume(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    if (this.buffer.length > this.maxFrameBytes) {
-      this.buffer = Buffer.alloc(0);
-      this.rejectAll(new Error("MCP frame exceeds client limit"));
-      this.close();
-      return;
-    }
     while (this.buffer.length) {
       let body: Buffer | undefined;
       if (this.buffer.subarray(0, 15).toString("ascii").toLowerCase().startsWith("content-length:")) {
         const separator = this.buffer.indexOf("\r\n\r\n");
-        if (separator < 0) return;
+        if (separator < 0) {
+          if (this.buffer.length > this.maxFrameBytes) this.rejectOversizedFrame();
+          return;
+        }
         const header = this.buffer.subarray(0, separator).toString("ascii");
         const match = header.match(/content-length:\s*(\d+)/i);
         if (!match) { this.rejectAll(new Error("invalid MCP Content-Length header")); return; }
         const length = Number(match[1]);
+        if (!Number.isSafeInteger(length) || separator + 4 + length > this.maxFrameBytes) {
+          this.rejectOversizedFrame();
+          return;
+        }
         if (this.buffer.length < separator + 4 + length) return;
         body = this.buffer.subarray(separator + 4, separator + 4 + length);
         this.buffer = this.buffer.subarray(separator + 4 + length);
       } else {
         const newline = this.buffer.indexOf(10);
-        if (newline < 0) return;
+        if (newline < 0) {
+          if (this.buffer.length > this.maxFrameBytes) this.rejectOversizedFrame();
+          return;
+        }
+        if (newline + 1 > this.maxFrameBytes) {
+          this.rejectOversizedFrame();
+          return;
+        }
         body = this.buffer.subarray(0, newline);
         this.buffer = this.buffer.subarray(newline + 1);
       }
       try {
         const message = JSON.parse(body.toString("utf8"));
+        if (message.method === "tool/execute") {
+          this.dispatchToolRequest(message.id, message.params);
+          continue;
+        }
         if (typeof message.id !== "number") continue;
         const pending = this.pending.get(message.id);
         if (!pending) continue;
@@ -1144,6 +1249,17 @@ export class GlassClient {
         } else pending.resolve(message.result);
       } catch (error) { this.rejectAll(error instanceof Error ? error : new Error(String(error))); }
     }
+  }
+
+  private rejectOversizedFrame(): void {
+    this.buffer = Buffer.alloc(0);
+    this.failTransport(new Error("MCP frame exceeds client limit"));
+    this.close();
+  }
+
+  private failTransport(error: Error): void {
+    this.terminalError ??= error;
+    this.rejectAll(this.terminalError);
   }
 
   private rejectAll(error: Error): void {

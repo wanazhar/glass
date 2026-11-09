@@ -1,7 +1,14 @@
 use super::*;
 
-#[tokio::test]
-async fn native_local_template_inner_html_observes_replaced_fragment_children() {
+#[test]
+fn native_local_template_inner_html_observes_replaced_fragment_children() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_local_template_inner_html_observes_replaced_fragment_children_inner());
+    });
+}
+
+async fn native_local_template_inner_html_observes_replaced_fragment_children_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://template-inner-html-observer",

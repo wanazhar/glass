@@ -309,6 +309,12 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "start a separate resident session",
     },
     SurfaceAction {
+        label: "Resume conversation",
+        command: "agent resume",
+        key: "/",
+        description: "resume the selected recovery-pending conversation",
+    },
+    SurfaceAction {
         label: "Retry failed or uncertain message",
         command: "agent retry",
         key: "/",

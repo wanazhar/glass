@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_array_buffer_transfer_detaches_sender_and_preserves_views() {
+#[test]
+fn native_array_buffer_transfer_detaches_sender_and_preserves_views() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_array_buffer_transfer_detaches_sender_and_preserves_views_inner());
+    });
+}
+
+async fn native_array_buffer_transfer_detaches_sender_and_preserves_views_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://array-buffer-transfer-page",

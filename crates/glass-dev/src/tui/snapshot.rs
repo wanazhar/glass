@@ -370,6 +370,7 @@ pub struct AgentConversation {
 pub struct CoreTaskGraph {
     pub sequence: Option<u64>,
     pub tasks: Vec<CoreTaskRow>,
+    pub has_more: bool,
     pub error: Option<String>,
 }
 
@@ -447,6 +448,10 @@ fn core_task_graph(events: &[crate::AgentEvent]) -> Option<CoreTaskGraph> {
     Some(CoreTaskGraph {
         sequence: result.get("sequence").and_then(serde_json::Value::as_u64),
         tasks: rows,
+        has_more: result
+            .get("hasMore")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         error: None,
     })
 }

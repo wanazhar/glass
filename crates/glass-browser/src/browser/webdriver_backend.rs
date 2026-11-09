@@ -213,8 +213,11 @@ impl WebDriverBrowserBackend {
         let mut state = self.state.lock().await;
         match (operation, request) {
             (BackendOperation::Initialize, BackendRequest::Initialize) => {
-                if state.initialized {
-                    return Err(lifecycle_error("initialize", "initialized"));
+                if state.session_id.is_some() {
+                    return Err(lifecycle_error(
+                        "initialize",
+                        "session already exists; close it first",
+                    ));
                 }
                 let value = self
                     .request(
@@ -230,6 +233,9 @@ impl WebDriverBrowserBackend {
                     .and_then(Value::as_str)
                     .ok_or_else(|| connection_error("initialize", "response omitted sessionId"))?;
                 validate_session_id(session_id)?;
+                // Retain the remote session as soon as it exists so a failed
+                // discovery can still be explicitly closed.
+                state.session_id = Some(session_id.to_owned());
                 let handles = self
                     .request(
                         Method::GET,
@@ -248,7 +254,6 @@ impl WebDriverBrowserBackend {
                     .as_str()
                     .unwrap_or("about:blank")
                     .to_owned();
-                state.session_id = Some(session_id.to_owned());
                 state.context_id = Some(context_id.to_owned());
                 state.url = nonempty_url(url);
                 state.initialized = true;
@@ -258,16 +263,12 @@ impl WebDriverBrowserBackend {
                 let Some(session_id) = state.session_id.clone() else {
                     return Err(lifecycle_error("close", "closed"));
                 };
-                let result = self
-                    .request(Method::DELETE, &format!("/session/{session_id}"), None)
-                    .await;
+                self.request(Method::DELETE, &format!("/session/{session_id}"), None)
+                    .await?;
                 state.initialized = false;
                 state.session_id = None;
                 state.context_id = None;
-                match result {
-                    Ok(_) => Ok(BackendResponse::Unit),
-                    Err(error) => Err(error),
-                }
+                Ok(BackendResponse::Unit)
             }
             (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
                 ensure_initialized(&state, "navigate")?;
@@ -723,9 +724,12 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let current_url = Arc::new(Mutex::new("about:blank".to_owned()));
         let server_url = Arc::clone(&current_url);
+        let deletes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_deletes = Arc::clone(&deletes);
         let server = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let current_url = Arc::clone(&server_url);
+                let deletes = Arc::clone(&server_deletes);
                 tokio::spawn(async move {
                     let Some((method, path, body)) = read_http_request(&mut stream).await else {
                         return;
@@ -754,6 +758,11 @@ mod tests {
                             } else {
                                 json!(2)
                             }
+                        }
+                        ("DELETE", "/session/safari-session")
+                            if deletes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+                        {
+                            json!({"error": "unknown error", "message": "close failed"})
                         }
                         ("DELETE", "/session/safari-session") => Value::Null,
                         _ => json!({"error": "unknown command", "message": "mock route missing"}),
@@ -823,7 +832,61 @@ mod tests {
             .unwrap();
         assert!(action.accepted);
         assert!(effects.changed);
+        assert!(dispatcher.close().await.is_err());
         dispatcher.close().await.unwrap();
+        assert_eq!(deletes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_discovery_retains_session_until_closed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let requests = Arc::clone(&server_requests);
+                tokio::spawn(async move {
+                    let Some((method, path, _)) = read_http_request(&mut stream).await else {
+                        return;
+                    };
+                    requests
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), path.clone()));
+                    let value = match (method.as_str(), path.as_str()) {
+                        ("POST", "/session") => json!({"sessionId": "partial", "capabilities": {}}),
+                        ("GET", "/session/partial/window/handles") => json!([]),
+                        ("DELETE", "/session/partial") => Value::Null,
+                        _ => unreachable!(),
+                    };
+                    let body = json!({"value": value}).to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        let backend = WebDriverBrowserBackend::new(WebDriverBackendConfig::for_safari(format!(
+            "http://{address}"
+        )))
+        .unwrap();
+        let dispatcher = BrowserBackendDispatcher::new(&backend);
+        assert!(dispatcher.initialize().await.is_err());
+        assert!(dispatcher.initialize().await.is_err());
+        dispatcher.close().await.unwrap();
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                ("POST".into(), "/session".into()),
+                ("GET".into(), "/session/partial/window/handles".into()),
+                ("DELETE".into(), "/session/partial".into()),
+            ]
+        );
         server.abort();
     }
 

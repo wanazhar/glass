@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_worker_exposes_xhr_fetch_bridge() {
+#[test]
+fn native_content_process_worker_exposes_xhr_fetch_bridge() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_worker_exposes_xhr_fetch_bridge_inner());
+    });
+}
+
+async fn native_content_process_worker_exposes_xhr_fetch_bridge_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -136,8 +142,14 @@ async fn native_content_process_worker_exposes_xhr_fetch_bridge() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_page_and_worker_support_sync_xhr() {
+#[test]
+fn native_content_process_page_and_worker_support_sync_xhr() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_page_and_worker_support_sync_xhr_inner());
+    });
+}
+
+async fn native_content_process_page_and_worker_support_sync_xhr_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -281,8 +293,16 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_exposes_status_text_and_safe_response_headers() {
+#[test]
+fn native_content_process_xhr_exposes_status_text_and_safe_response_headers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_exposes_status_text_and_safe_response_headers_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_exposes_status_text_and_safe_response_headers_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -492,8 +512,14 @@ xhr.send();"#,
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_revalidates_fetch_and_xhr_responses() {
+#[test]
+fn native_content_process_revalidates_fetch_and_xhr_responses() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_revalidates_fetch_and_xhr_responses_inner());
+    });
+}
+
+async fn native_content_process_revalidates_fetch_and_xhr_responses_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -618,8 +644,16 @@ async fn native_content_process_revalidates_fetch_and_xhr_responses() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_worker_fetch_and_xhr_use_worker_policy_container() {
+#[test]
+fn native_content_process_worker_fetch_and_xhr_use_worker_policy_container() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_worker_fetch_and_xhr_use_worker_policy_container_inner(),
+        );
+    });
+}
+
+async fn native_content_process_worker_fetch_and_xhr_use_worker_policy_container_inner() {
     fn request_header(request: &str, name: &str) -> Option<String> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -832,8 +866,15 @@ async fn native_content_process_worker_fetch_and_xhr_use_worker_policy_container
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_synchronous_xhr_uses_parent_cookie_authority_inner());
+    });
+}
+
+async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1107,8 +1148,16 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
     engine.close_async().await.unwrap();
     let _ = server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_cross_origin_credentials_remain_parent_owned() {
+#[test]
+fn native_content_process_xhr_cross_origin_credentials_remain_parent_owned() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_cross_origin_credentials_remain_parent_owned_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_cross_origin_credentials_remain_parent_owned_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let page_address = page_listener.local_addr().unwrap();
@@ -1473,8 +1522,16 @@ self.onmessage = async event => {{
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_xhr_redirect_credentials_are_parent_owned_per_hop() {
+#[test]
+fn native_content_process_xhr_redirect_credentials_are_parent_owned_per_hop() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_redirect_credentials_are_parent_owned_per_hop_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_redirect_credentials_are_parent_owned_per_hop_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let page_address = page_listener.local_addr().unwrap();
@@ -1898,8 +1955,14 @@ self.postMessage({{ kind: "ready" }});
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_xhr_cors_preflight_never_carries_cookies() {
+#[test]
+fn native_content_process_xhr_cors_preflight_never_carries_cookies() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_xhr_cors_preflight_never_carries_cookies_inner());
+    });
+}
+
+async fn native_content_process_xhr_cors_preflight_never_carries_cookies_inner() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -2304,8 +2367,16 @@ self.postMessage({{ kind: "ready" }});
         "default cross-origin XHR must reject its response cookie"
     );
 }
-#[tokio::test]
-async fn native_content_process_xhr_denied_credentialed_preflight_sends_no_post() {
+#[test]
+fn native_content_process_xhr_denied_credentialed_preflight_sends_no_post() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_denied_credentialed_preflight_sends_no_post_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_denied_credentialed_preflight_sends_no_post_inner() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -2509,8 +2580,16 @@ self.postMessage({{ kind: "ready" }});
             .any(|cookie| cookie.name == "denied_preflight")
     );
 }
-#[tokio::test]
-async fn native_content_process_xhr_method_and_header_denied_preflights_send_no_post() {
+#[test]
+fn native_content_process_xhr_method_and_header_denied_preflights_send_no_post() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_method_and_header_denied_preflights_send_no_post_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_method_and_header_denied_preflights_send_no_post_inner() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -2730,8 +2809,16 @@ self.postMessage({{ kind: "ready" }});
             .any(|cookie| { cookie.name == "denied_method" || cookie.name == "denied_header" })
     );
 }
-#[tokio::test]
-async fn native_content_process_xhr_preflight_cache_separates_omit_and_include() {
+#[test]
+fn native_content_process_xhr_preflight_cache_separates_omit_and_include() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_preflight_cache_separates_omit_and_include_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_preflight_cache_separates_omit_and_include_inner() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -2950,8 +3037,14 @@ async fn native_content_process_xhr_preflight_cache_separates_omit_and_include()
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_xhr_keeps_parent_cookie_on_cors_error() {
+#[test]
+fn native_content_process_xhr_keeps_parent_cookie_on_cors_error() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_xhr_keeps_parent_cookie_on_cors_error_inner());
+    });
+}
+
+async fn native_content_process_xhr_keeps_parent_cookie_on_cors_error_inner() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -3119,8 +3212,16 @@ async fn native_content_process_xhr_keeps_parent_cookie_on_cors_error() {
         "Set-Cookie from the credential-free preflight must be ignored"
     );
 }
-#[tokio::test]
-async fn native_content_process_xhr_credentialed_preflight_wildcards_send_no_post() {
+#[test]
+fn native_content_process_xhr_credentialed_preflight_wildcards_send_no_post() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_credentialed_preflight_wildcards_send_no_post_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_credentialed_preflight_wildcards_send_no_post_inner() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -3340,8 +3441,14 @@ self.postMessage({{ kind: "ready" }});
             .any(|cookie| { cookie.name == "wildcard_method" || cookie.name == "wildcard_header" })
     );
 }
-#[tokio::test]
-async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
+#[test]
+fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_exposes_bounded_xhr_fetch_bridge_inner());
+    });
+}
+
+async fn native_content_process_exposes_bounded_xhr_fetch_bridge_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3489,8 +3596,14 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_publishes_response_state_lifecycle() {
+#[test]
+fn native_content_process_xhr_publishes_response_state_lifecycle() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_xhr_publishes_response_state_lifecycle_inner());
+    });
+}
+
+async fn native_content_process_xhr_publishes_response_state_lifecycle_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3586,8 +3699,16 @@ async fn native_content_process_xhr_publishes_response_state_lifecycle() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_override_mime_type_controls_response_projection() {
+#[test]
+fn native_content_process_xhr_override_mime_type_controls_response_projection() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_override_mime_type_controls_response_projection_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_override_mime_type_controls_response_projection_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3715,8 +3836,16 @@ fallback.send();"#,
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_guards_response_text_by_type_and_resets_it() {
+#[test]
+fn native_content_process_xhr_guards_response_text_by_type_and_resets_it() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_guards_response_text_by_type_and_resets_it_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_guards_response_text_by_type_and_resets_it_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3837,8 +3966,14 @@ xhr.send();"#,
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_reports_buffered_download_progress() {
+#[test]
+fn native_content_process_xhr_reports_buffered_download_progress() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_xhr_reports_buffered_download_progress_inner());
+    });
+}
+
+async fn native_content_process_xhr_reports_buffered_download_progress_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3948,8 +4083,15 @@ xhr.send();"#,
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_reports_brokered_response_progress_once() {
+#[test]
+fn native_content_process_xhr_reports_brokered_response_progress_once() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_xhr_reports_brokered_response_progress_once_inner());
+    });
+}
+
+async fn native_content_process_xhr_reports_brokered_response_progress_once_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

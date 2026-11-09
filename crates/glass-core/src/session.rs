@@ -145,6 +145,11 @@ pub enum Record {
         name: String,
         call_id: String,
         body: String,
+        /// The typed outcome of the call, when the writer knew it: `Some(true)`
+        /// for an error, `Some(false)` for success. Absent for logs written
+        /// before typed outcomes were persisted and for synthesized results;
+        /// recovery treats those as unknown instead of guessing from the body.
+        is_error: Option<bool>,
     },
     State(Vec<String>),
     System(String),
@@ -264,9 +269,10 @@ impl Record {
                 name,
                 call_id,
                 body,
-            } => {
-                json!({ "k": "tool", "name": name, "id": call_id, "t": body })
-            }
+                is_error,
+            } => json!({
+                "k": "tool", "name": name, "id": call_id, "t": body, "err": is_error
+            }),
             Record::State(items) => json!({ "k": "state", "items": items }),
             Record::System(t) => json!({ "k": "system", "t": t }),
             Record::Meta(t) => json!({ "k": "meta", "t": t }),
@@ -332,6 +338,7 @@ impl Record {
                 name: s("name").unwrap_or_default(),
                 call_id: s("id").unwrap_or_default(),
                 body: s("t").unwrap_or_default(),
+                is_error: v.get("err").and_then(|x| x.as_bool()),
             },
             "state" => Record::State(
                 v.get("items")
@@ -741,6 +748,7 @@ fn interrupted_result(call: &Record) -> Option<Record> {
         name: name.clone(),
         call_id: id.clone(),
         body,
+        is_error: None,
     })
 }
 
@@ -751,17 +759,65 @@ fn interrupted_result(call: &Record) -> Option<Record> {
 /// Answering it here keeps the provider transcript well-formed (`tool_use`
 /// always paired with `tool_result`) and stops the `/retry` recovery path
 /// from re-executing a command that may already have run.
-pub(crate) fn interrupted_calls(raw: &[Record]) -> Vec<Record> {
-    let answered: std::collections::HashSet<&str> = raw
-        .iter()
-        .filter_map(|r| match r {
-            Record::ToolResult { call_id, .. } => Some(call_id.as_str()),
-            _ => None,
-        })
-        .collect();
+pub(crate) fn unanswered_tool_calls(raw: &[Record]) -> Vec<(&Record, Option<&str>)> {
+    let mut pending: std::collections::HashMap<&str, std::collections::VecDeque<usize>> =
+        std::collections::HashMap::new();
+    let mut unanswered = vec![false; raw.len()];
+    let mut completed_shell = vec![None; raw.len()];
+    for (index, record) in raw.iter().enumerate() {
+        match record {
+            Record::ToolCall { id, .. } => {
+                unanswered[index] = true;
+                pending.entry(id).or_default().push_back(index);
+            }
+            Record::Bash {
+                call_id: Some(id),
+                output,
+                exit_code: Some(_),
+                ..
+            } => {
+                if let Some(index) = pending
+                    .get(id.as_str())
+                    .and_then(|calls| calls.front())
+                    .copied()
+                    && matches!(&raw[index], Record::ToolCall { name, .. } if name == "bash")
+                {
+                    completed_shell[index] = Some(output.as_str());
+                }
+            }
+            Record::ToolResult { call_id, .. } => {
+                if let Some(index) = pending
+                    .get_mut(call_id.as_str())
+                    .and_then(|calls| calls.pop_front())
+                {
+                    unanswered[index] = false;
+                }
+            }
+            _ => {}
+        }
+    }
     raw.iter()
-        .filter(|r| matches!(r, Record::ToolCall { id, .. } if !answered.contains(id.as_str())))
-        .filter_map(interrupted_result)
+        .zip(unanswered)
+        .zip(completed_shell)
+        .filter_map(|((record, missing), output)| missing.then_some((record, output)))
+        .collect()
+}
+
+pub(crate) fn interrupted_calls(raw: &[Record]) -> Vec<Record> {
+    unanswered_tool_calls(raw)
+        .into_iter()
+        .filter_map(|(record, output)| {
+            if let (Record::ToolCall { id, name, .. }, Some(output)) = (record, output) {
+                Some(Record::ToolResult {
+                    name: name.clone(),
+                    call_id: id.clone(),
+                    body: output.into(),
+                    is_error: None,
+                })
+            } else {
+                interrupted_result(record)
+            }
+        })
         .collect()
 }
 
@@ -777,7 +833,7 @@ pub fn configure_fsync(on: bool) {
     LOG_FSYNC.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub(crate) type CommitObserver = dyn Fn(&[Record]) -> std::io::Result<()>;
+pub(crate) type CommitObserver = dyn Fn(&[Record], Option<bool>) -> std::io::Result<()>;
 
 pub struct Session {
     /// In-memory only: preserve handles/redactors across Agent turns, never logs.
@@ -1248,6 +1304,18 @@ impl Session {
     pub(crate) fn validate_writes(&mut self) {
         self.sync_external_index();
     }
+    /// Record the typed outcome alongside an authoritative tool-result commit.
+    ///
+    /// `is_error` is the typed answer (`Some(true)`/`Some(false)`) when the
+    /// writer knew it and `None` when the outcome is unknown, which is how
+    /// pre-typed logs and synthesized results stay honest instead of guessing.
+    pub(crate) fn append_tool_result(&mut self, record: Record, is_error: Option<bool>) {
+        if self.commit_observer.is_some() {
+            let _ = self.append_checked_with_outcome(&[record], is_error);
+        } else {
+            self.append(record);
+        }
+    }
 
     pub fn append(&mut self, record: Record) {
         if self.commit_observer.is_some() {
@@ -1342,6 +1410,14 @@ impl Session {
     /// Append a recovery group and report write failures so its sidecar can
     /// remain available for another resume attempt.
     pub(crate) fn append_checked(&mut self, records: &[Record]) -> std::io::Result<()> {
+        self.append_checked_with_outcome(records, None)
+    }
+
+    fn append_checked_with_outcome(
+        &mut self,
+        records: &[Record],
+        is_error: Option<bool>,
+    ) -> std::io::Result<()> {
         if let Some(error) = &self.write_error {
             return Err(std::io::Error::other(error.clone()));
         }
@@ -1373,7 +1449,7 @@ impl Session {
             return Err(error);
         }
         if let Some(observer) = &self.commit_observer
-            && let Err(error) = observer(&records)
+            && let Err(error) = observer(&records, is_error)
         {
             self.write_error = Some(format!("authoritative commit failed: {error}"));
             return Err(error);
@@ -1957,6 +2033,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
             call_id,
             name,
             body,
+            ..
         } = record
         {
             let key = (turn, epoch, call_id.clone());
@@ -2050,6 +2127,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 call_id,
                 name,
                 body,
+                ..
             } => {
                 let call_key = key(call_id);
                 if call_counts.get(&call_key) == Some(&1)
@@ -2657,6 +2735,7 @@ mod tests {
                 call_id: "old".into(),
                 name: "bash".into(),
                 body: "exploration".into(),
+                is_error: None,
             },
             Record::ToolCall {
                 id: "rew".into(),
@@ -2677,11 +2756,13 @@ mod tests {
                 call_id: "rew".into(),
                 name: "rewind".into(),
                 body: "done".into(),
+                is_error: None,
             },
             Record::ToolResult {
                 call_id: "next".into(),
                 name: "read".into(),
                 body: "contents".into(),
+                is_error: None,
             },
         ];
         let projected = apply_checkpoint_projection(records);
@@ -2984,6 +3065,19 @@ mod tests {
                 name: "bash".into(),
                 call_id: "c1".into(),
                 body: "b".into(),
+                is_error: Some(false),
+            },
+            Record::ToolResult {
+                name: "bash".into(),
+                call_id: "c2".into(),
+                body: "error: boom".into(),
+                is_error: Some(true),
+            },
+            Record::ToolResult {
+                name: "bash".into(),
+                call_id: "c3".into(),
+                body: "b".into(),
+                is_error: None,
             },
             Record::State(vec!["s1".into()]),
             Record::System("sy".into()),
@@ -3001,6 +3095,17 @@ mod tests {
             let back = Record::from_json(&j).expect("must roundtrip");
             assert_eq!(j, back.to_json(), "roundtrip changed the record");
         }
+    }
+
+    #[test]
+    fn legacy_tool_results_without_a_typed_status_deserialize_as_unknown() {
+        let legacy = serde_json::json!({"k":"tool","name":"bash","id":"c1","t":"error: boom"});
+        let record = Record::from_json(&legacy).expect("legacy tool result must parse");
+        let is_error = match record {
+            Record::ToolResult { is_error, .. } => is_error,
+            _ => panic!("tool result expected"),
+        };
+        assert_eq!(is_error, None, "absent status must stay unknown");
     }
 
     #[test]
@@ -3106,6 +3211,7 @@ mod tests {
                 name: "bash".into(),
                 call_id: "c".into(),
                 body: "res".into(),
+                is_error: None,
             },
         ];
         let msgs = s.messages();
@@ -3130,6 +3236,7 @@ mod tests {
                 name: "search".into(),
                 call_id: "call_0".into(),
                 body: "first result".into(),
+                is_error: None,
             },
             Record::User("second".into()),
             Record::ToolCall {
@@ -3141,6 +3248,7 @@ mod tests {
                 name: "search".into(),
                 call_id: "call_0".into(),
                 body: "second result".into(),
+                is_error: None,
             },
             Record::Reasoning("hidden summary".into()),
             Record::Assistant("done".into()),
@@ -3174,6 +3282,7 @@ mod tests {
             name: "bash".into(),
             call_id: id.into(),
             body: "duplicate output".into(),
+            is_error: None,
         };
         let output = |id: &str, text: &str| Record::Bash {
             call_id: Some(id.into()),
@@ -3645,6 +3754,7 @@ mod tests {
             name: "bash".into(),
             call_id: "c1".into(),
             body: "TOOL-OUTPUT-MARKER".into(),
+            is_error: None,
         });
         s.append(Record::Assistant("done".into()));
         s.append(Record::User("next".into()));

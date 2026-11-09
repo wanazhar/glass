@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_xhr_supports_json_response_type_in_page_and_worker() {
+#[test]
+fn native_content_process_xhr_supports_json_response_type_in_page_and_worker() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_supports_json_response_type_in_page_and_worker_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_supports_json_response_type_in_page_and_worker_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -84,8 +92,14 @@ xhr.send();"#,
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
+#[test]
+fn native_content_process_xhr_exposes_bounded_xml_response_document() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_xhr_exposes_bounded_xml_response_document_inner());
+    });
+}
+
+async fn native_content_process_xhr_exposes_bounded_xml_response_document_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -270,8 +284,16 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_response_type_is_canonical_and_state_aware() {
+#[test]
+fn native_content_process_xhr_response_type_is_canonical_and_state_aware() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_xhr_response_type_is_canonical_and_state_aware_inner(),
+        );
+    });
+}
+
+async fn native_content_process_xhr_response_type_is_canonical_and_state_aware_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -479,8 +501,14 @@ xhr.send();"#,
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_xhr_exposes_bounded_html_response_document() {
+#[test]
+fn native_content_process_xhr_exposes_bounded_html_response_document() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_xhr_exposes_bounded_html_response_document_inner());
+    });
+}
+
+async fn native_content_process_xhr_exposes_bounded_html_response_document_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_script = r###"(() => {
                 globalThis.htmlResultPromise = new Promise(resolve => {

@@ -1688,8 +1688,16 @@ fn native_css_absolute_position_uses_nearest_positioned_padding_box() {
     assert_eq!(layout.box_for(flow).unwrap().x, 5);
     assert_eq!(layout.box_for(flow).unwrap().y, 5);
 }
-#[tokio::test]
-async fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_src() {
+#[test]
+fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_src() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_image_element_exposes_complete_intrinsic_dimensions_and_current_src_inner(),
+        );
+    });
+}
+
+async fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_src_inner() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://image-properties/page")
@@ -1722,8 +1730,14 @@ async fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_
 
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_svg_data_images_expose_intrinsic_dimensions_and_paint() {
+#[test]
+fn native_svg_data_images_expose_intrinsic_dimensions_and_paint() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_svg_data_images_expose_intrinsic_dimensions_and_paint_inner());
+    });
+}
+
+async fn native_svg_data_images_expose_intrinsic_dimensions_and_paint_inner() {
     let source = native_test_svg_data_url();
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://svg-image/page")

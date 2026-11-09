@@ -1821,7 +1821,7 @@ impl AgentRegistry {
             .filter(|(_, record)| {
                 matches!(
                     record.snapshot.status,
-                    AgentStatus::Failed | AgentStatus::Cancelled
+                    AgentStatus::Failed | AgentStatus::Cancelled | AgentStatus::Unavailable
                 )
             })
             .map(|(id, _)| id.clone())
@@ -3820,6 +3820,14 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("will not replay"));
+        let mut dependent = AgentSpec::new("dependent", "wait for prior work");
+        dependent.dependencies.push(never_started);
+        let dependent = reopened.create(dependent).unwrap();
+        reopened.refresh().unwrap();
+        assert_eq!(
+            reopened.snapshot(&dependent).unwrap().status,
+            AgentStatus::Failed
+        );
         assert!(
             reopened
                 .history(0)

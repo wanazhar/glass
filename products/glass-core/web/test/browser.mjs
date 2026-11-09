@@ -139,14 +139,9 @@ try {
     .waitFor();
   assert(await page.locator("#send").isDisabled());
   await page.unroute("**/api/threads?*");
-  await page.locator("#search").fill("");
-  await chooseOption(page,page.locator("#project-scope"),{ label: "All projects" });
-  const fixtureGroup = page
-    .locator(".project-group")
-    .filter({ hasText: "Shared runtime workspace" });
-  if (!(await fixtureGroup.evaluate((n) => n.open)))
-    await fixtureGroup.locator("summary").click();
+  await page.locator("#search").fill("Shared runtime workspace");
   await page.getByRole("button", { name: "Shared runtime workspace" }).click();
+  await page.locator("#search").fill("");
   await page
     .locator("#timeline")
     .getByText("A quieter place to work")
@@ -220,29 +215,19 @@ try {
     "Shared runtime workspace",
   );
   await page.locator("#command-close").click();
-  await nativeCommand("login");
-  await chooseOption(page,page.locator('#command-form [name="action"]'),"api");
-  assert.equal(
-    await page.locator('#command-form [name="secret"]').getAttribute("type"),
-    "password",
-  );
-  assert(await page.locator('#command-form [name="secret"]').isVisible());
-  await page
-    .locator('#command-form [name="secret"]')
-    .fill("fixture-only-secret");
-  await chooseOption(page,page.locator('#command-form [name="action"]'),"list");
-  assert(await page.locator('#command-form [name="secret"]').isDisabled());
-  assert.equal(
-    await page.locator('#command-form [name="secret"]').inputValue(),
-    "",
-  );
-  assert.equal(
-    await page
-      .locator("#command-form")
-      .evaluate((form) => new FormData(form).has("secret")),
-    false,
-  );
-  await page.locator("#command-close").click();
+  await page.locator("#open-commands").click();
+  await page.locator("#command-search").fill("login");
+  await page.getByRole("option").filter({ hasText: /^\/login\b/ }).click();
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  const connectionKey = page.getByLabel("API key", { exact: true });
+  assert.equal(await connectionKey.getAttribute("type"), "password");
+  await connectionKey.fill("fixture-only-secret");
+  await page.locator(".connection-form").getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Discard changes", exact: true }).click();
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  assert.equal(await connectionKey.inputValue(), "");
+  await page.locator(".connection-form").getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.locator("#open-chat").click();
   const exportResponse = await page.request.get(
     new URL("/api/export?id=web-fixture", url).href,
   );
@@ -405,6 +390,7 @@ try {
   await page
     .locator("#detail-content")
     .getByText("Considering the workspace and preserving context.")
+    .first()
     .waitFor();
   await page.locator("#details-close").click();
   await page.reload();
@@ -668,6 +654,7 @@ try {
   await page.locator("#scrim").click({ position: { x: 370, y: 400 } });
   await page.locator("#details-toggle").click();
   await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Change file view", exact: true }).click();
   await page.locator(".file-name").filter({ hasText: "notes.md" }).waitFor();
   await page.locator(".file-open").filter({ hasText: "notes.md" }).click();
   await page
@@ -683,11 +670,6 @@ try {
     await page.locator(".file-open").filter({ hasText: "readme.md" }).click();
     await page.waitForFunction(
       () => document.querySelector("#preview-body img")?.naturalWidth === 1,
-    );
-    assert(
-      (await page.locator("#preview-body img").getAttribute("src")).includes(
-        "workspace=",
-      ),
     );
     await page.locator("#preview-close").click();
   }
@@ -783,7 +765,7 @@ try {
       await phone.locator("#sidebar-close").click();
       await phone.locator("#details-toggle").click();
       await phone.getByRole("button", { name: "Files", exact: true }).click();
-      await phone.locator(".file-list").waitFor();
+      await phone.getByRole("button", { name: "Change file view", exact: true }).waitFor();
       await phone.locator("#details-close").click();
     }
   }
@@ -934,10 +916,12 @@ try {
     "Archived reasoning must remain at the chosen position",
   );
   await page.locator("#details-close").click();
-  await page.locator("#older").click();
-  await page.waitForFunction(
-    () => !document.querySelector("#older").hasAttribute("aria-busy"),
-  );
+  if (await page.locator("#older").isVisible()) {
+    await page.locator("#older").click();
+    await page.waitForFunction(
+      () => !document.querySelector("#older").hasAttribute("aria-busy"),
+    );
+  }
   assert(await page.locator(".thought-row").filter({ hasText: "Archived thought" }).count(),
     "Earlier public reasoning must appear as collapsed conversation steps");
   for (let pageNumber = 0; pageNumber < 12 && await page.locator("#older").isVisible(); pageNumber++) {

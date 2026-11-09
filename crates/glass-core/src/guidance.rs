@@ -309,6 +309,7 @@ mod tests {
                 name: "read".into(),
                 call_id: i.to_string(),
                 body: "ok".into(),
+                is_error: None,
             });
         }
         assert!(progress_reminder(&records, &board).is_none());
@@ -316,6 +317,7 @@ mod tests {
             name: "read".into(),
             call_id: "12".into(),
             body: "ok".into(),
+            is_error: None,
         });
         let reminder = progress_reminder(&records, &board).unwrap();
         records.push(Record::System(reminder.into()));
@@ -329,6 +331,7 @@ mod tests {
                 name: "read".into(),
                 call_id: i.to_string(),
                 body: "ok".into(),
+                is_error: None,
             });
         }
         assert!(progress_reminder(&records, &board).is_none());

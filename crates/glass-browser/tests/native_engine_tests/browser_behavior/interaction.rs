@@ -206,8 +206,14 @@ fn native_selected_grandchild_beforeunload_gates_parked_ancestor_navigation() {
         }));
     });
 }
-#[tokio::test]
-async fn native_child_script_click_owns_external_navigation() {
+#[test]
+fn native_child_script_click_owns_external_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_child_script_click_owns_external_navigation_inner());
+    });
+}
+
+async fn native_child_script_click_owns_external_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -251,8 +257,14 @@ async fn native_child_script_click_owns_external_navigation() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_direct_click_owns_external_link_navigation() {
+#[test]
+fn native_direct_click_owns_external_link_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_direct_click_owns_external_link_navigation_inner());
+    });
+}
+
+async fn native_direct_click_owns_external_link_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -296,8 +308,14 @@ async fn native_direct_click_owns_external_link_navigation() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_external_keyboard_link_default_actions_preserve_download() {
+#[test]
+fn native_external_keyboard_link_default_actions_preserve_download() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_external_keyboard_link_default_actions_preserve_download_inner());
+    });
+}
+
+async fn native_external_keyboard_link_default_actions_preserve_download_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let start_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let start_address = start_listener.local_addr().unwrap();
@@ -612,8 +630,14 @@ fn local_link_activation_uses_bounded_navigation_default_action() {
         .join()
         .expect("link activation test thread should complete");
 }
-#[tokio::test]
-async fn fragment_targets_scroll_and_restore_bounded_history_offsets() {
+#[test]
+fn fragment_targets_scroll_and_restore_bounded_history_offsets() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(fragment_targets_scroll_and_restore_bounded_history_offsets_inner());
+    });
+}
+
+async fn fragment_targets_scroll_and_restore_bounded_history_offsets_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 160,
@@ -733,8 +757,16 @@ async fn fragment_targets_scroll_and_restore_bounded_history_offsets() {
     assert_eq!(duplicate.url, "fixture://anchors#duplicate");
     assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 1 });
 }
-#[tokio::test]
-async fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety() {
+#[test]
+fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety_inner(),
+        );
+    });
+}
+
+async fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety_inner() {
     let html = native_html_without_body_margin(
         "<a id='jump' href='#legacy%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><a name='legacy plan'>Legacy target</a><a name='café'>UTF-8 legacy target</a><a name='same'>Name should lose</a><a name='hidden' style='display:none'>Hidden legacy target</a><a name='zero' style='display:contents'></a><a name='duplicate'>First duplicate</a><a name='duplicate'>Second duplicate</a><div name='not-anchor'>Not a target</div><p id='same'>ID target</p>",
     );

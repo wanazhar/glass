@@ -220,6 +220,10 @@ The fixture runs offline and needs no provider account:
 python3 crates/glass-dev/tests/fixtures/fake_glass_core_runtime.py runtime
 ```
 
+The opt-in `GLASS_E2E=1 cargo test -p glass-dev --test tui_pty` journeys use
+the binary built by Cargo for that test invocation. Set `GLASS_E2E_BINARY` to
+exercise a specific installed or release binary instead.
+
 End-to-end verification against the real engine additionally needs a built
 `glass-core` executable:
 

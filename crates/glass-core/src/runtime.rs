@@ -794,7 +794,7 @@ impl Wire {
                     p["cursor"].as_u64().unwrap_or(0),
                     p["limit"].as_u64().unwrap_or(25).clamp(1, 256) as usize,
                 )),
-                Some("durable/taskGraph") => Some(Ok(store.borrow().task_graph())),
+                Some("durable/taskGraph") => Some(store.borrow().task_graph(p)),
                 Some("durable/abort") => Some((|| {
                     let task = string(p, "taskId")?;
                     let mut store = store.borrow_mut();
@@ -3334,6 +3334,7 @@ mod tests {
             name: "bash".into(),
             call_id: "child-tool-call".into(),
             body: tool_output.clone(),
+            is_error: None,
         });
         let mut parent_secrets = crate::secrets::SecretVault::default();
         let page_secret = "parent-page-secret-sentinel";
@@ -3360,6 +3361,7 @@ mod tests {
             name: page_secret.into(),
             call_id: page_secret.into(),
             body: secret_page_output,
+            is_error: None,
         });
         let running_child = Session::create(&scratch).unwrap();
         let running_child_id = running_child.id.clone();

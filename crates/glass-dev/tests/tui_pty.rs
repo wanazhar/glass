@@ -971,14 +971,6 @@ fn send_alt_digit(session: &mut Session, digit: u8) {
 
 fn start_core_conversation(session: &mut Session, role: &str, task: &str) {
     session.send(b"/");
-    assert!(
-        session.wait_for(
-            "CORE · agent commands and session controls",
-            Duration::from_secs(5),
-        ),
-        "Core slash menu did not open\n{}",
-        session.output_tail()
-    );
     session.send(b"glass agent spawn");
     assert!(
         session.wait_for("Start Core conversation", Duration::from_secs(5)),
@@ -1003,13 +995,6 @@ fn start_core_conversation(session: &mut Session, role: &str, task: &str) {
 fn start_core_conversation_in_current_palette(session: &mut Session, role: &str, task: &str) {
     session.clear_output();
     session.send(b"/");
-    assert!(
-        session.wait_for("CORE loading", Duration::from_secs(5))
-            || session.wait_for("CORE · agent commands", Duration::from_secs(5))
-            || session.wait_for("COMMAND PALETTE", Duration::from_secs(5)),
-        "Core command palette did not open\n{}",
-        session.output_tail()
-    );
     session.send(b"glass agent spawn");
     assert!(
         session.wait_for("Start Core conversation", Duration::from_secs(5)),

@@ -763,7 +763,7 @@ pub(crate) fn unanswered_tool_calls(raw: &[Record]) -> Vec<(&Record, Option<&str
                 pending.entry(id).or_default().push_back(index);
             }
             Record::Bash { call_id: Some(id), output, exit_code: Some(_), .. } => {
-                if let Some(index) = pending.get(id.as_str()).and_then(|calls| calls.back()).copied()
+                if let Some(index) = pending.get(id.as_str()).and_then(|calls| calls.front()).copied()
                     && matches!(&raw[index], Record::ToolCall { name, .. } if name == "bash")
                 {
                     completed_shell[index] = Some(output.as_str());

@@ -1417,8 +1417,14 @@ async fn native_file_download_link_transfers_rooted_bytes() {
     fs::remove_dir_all(&download_directory).unwrap();
 }
 
-#[tokio::test]
-async fn native_rooted_file_frame_csp_sees_runtime_meta_before_child_load() {
+#[test]
+fn native_rooted_file_frame_csp_sees_runtime_meta_before_child_load() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_rooted_file_frame_csp_sees_runtime_meta_before_child_load_inner());
+    });
+}
+
+async fn native_rooted_file_frame_csp_sees_runtime_meta_before_child_load_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let root = std::env::temp_dir().join(format!(
         "glass-native-rooted-file-frame-policy-{}-{}",

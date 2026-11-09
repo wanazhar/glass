@@ -389,6 +389,7 @@ struct Session {
     child: Child,
     master: std::fs::File,
     buffer: Vec<u8>,
+    terminal: vt100::Parser,
 }
 
 struct FixtureChildGuard {
@@ -570,6 +571,7 @@ impl Session {
             child,
             master,
             buffer: Vec::new(),
+            terminal: vt100::Parser::new(rows, cols, 0),
         };
         // CI and cold release binaries can spend a few seconds discovering
         // the workspace before the first frame; do not send Ctrl+C into a
@@ -583,7 +585,9 @@ impl Session {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
-            if self.visible_output().contains(probe) {
+            if self.visible_output().contains(probe)
+                || self.terminal.screen().contents().contains(probe)
+            {
                 return true;
             }
         }
@@ -597,11 +601,14 @@ impl Session {
             // The TUI redraws the cursor after each typed cell. Removing that
             // marker from the captured stream reconstructs the visible line
             // without requiring the test to mistake the cursor for user text.
-            if self
-                .visible_output()
-                .replace('▌', "")
-                .lines()
-                .any(|line| line.contains(probe))
+            if [self.visible_output(), self.terminal.screen().contents()]
+                .iter()
+                .any(|output| {
+                    output
+                        .replace('▌', "")
+                        .lines()
+                        .any(|line| line.contains(probe))
+                })
             {
                 return true;
             }
@@ -613,7 +620,20 @@ impl Session {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
-            if self.visible_output().contains(probe) {
+            if self.visible_output().contains(probe)
+                || self.terminal.screen().contents().contains(probe)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn wait_for_screen(&mut self, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if self.terminal.screen().contents().contains(probe) {
                 return true;
             }
         }
@@ -708,6 +728,7 @@ impl Session {
     }
 
     fn set_window(&mut self, cols: u16, rows: u16) {
+        self.terminal.set_size(rows, cols);
         unsafe {
             libc::ioctl(
                 self.master.as_raw_fd(),
@@ -757,7 +778,10 @@ impl Session {
             if ready > 0 {
                 match self.master.read(&mut chunk) {
                     Ok(0) => break,
-                    Ok(n) => self.buffer.extend_from_slice(&chunk[..n]),
+                    Ok(n) => {
+                        self.terminal.process(&chunk[..n]);
+                        self.buffer.extend_from_slice(&chunk[..n]);
+                    }
                     Err(_) => break,
                 }
             }
@@ -786,25 +810,7 @@ impl Session {
     }
 
     fn output_tail(&self) -> String {
-        let output = self.output();
-        let visible = output
-            .chars()
-            .map(|character| {
-                if character == '\n' || character == '\r' || !character.is_control() {
-                    character
-                } else {
-                    ' '
-                }
-            })
-            .collect::<String>();
-        visible
-            .chars()
-            .rev()
-            .take(3000)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect()
+        self.terminal.screen().contents()
     }
 
     fn kill(&mut self) {

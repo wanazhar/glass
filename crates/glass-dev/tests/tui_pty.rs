@@ -6394,10 +6394,6 @@ fn arrows_remain_composer_input_and_alt_switch_preserves_draft() {
     );
     session.settle(Duration::from_millis(600));
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust"
-    );
 
     session.send(b"arrow draft");
     assert!(session.wait_for_composer_text("arrow draft", Duration::from_secs(3)));
@@ -6409,8 +6405,13 @@ fn arrows_remain_composer_input_and_alt_switch_preserves_draft() {
         "Alt-2 did not open Code\n{}",
         session.output_tail()
     );
+    session.clear_output();
     send_alt_digit(&mut session, b'1');
-    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    assert!(
+        session.wait_for_screen("Agent ·", Duration::from_secs(5)),
+        "Alt-1 did not return to Agent\n{}",
+        session.output_tail()
+    );
     assert!(
         session.wait_for_composer_text("arrow draft", Duration::from_secs(3)),
         "returning to Agent lost the draft"

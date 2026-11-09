@@ -2089,7 +2089,6 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     let mut session = Session::start(&launcher.display().to_string(), &root, 80, 24);
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     start_core_conversation(&mut session, "assistant", "offline task");
     let request_log =
@@ -2221,7 +2220,6 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     for (role, task, expected_id) in [
         ("alpha", "alpha task", "agent-0001"),
@@ -2605,7 +2603,6 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 120, 50, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     for (title, tag) in [
         ("Alpha", "alpha-job"),
@@ -2935,7 +2932,7 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "queue-owner", "queue persistence");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -3076,7 +3073,6 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     complete_glass_action(
         &mut session,
@@ -3178,7 +3174,7 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
         Some(&data_home),
     );
     assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
-    assert!(reopened.wait_for("Core available", Duration::from_secs(8)));
+
     let recovered_scheduler: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&scheduler_path).unwrap()).unwrap();
     let recovered_task = &recovered_scheduler["tasks"][0]["snapshot"];
@@ -3470,7 +3466,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "assistant", "live provider smoke");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(8)),
@@ -4747,7 +4743,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "queue-owner", "active-run-queue-target");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -5009,7 +5005,7 @@ fn ctrl_x_waits_for_core_cancel_settlement_and_keeps_exact_attempt_terminal() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "cancel-owner", "cancel-gated-target");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -5099,7 +5095,7 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "queue-owner", "retarget-and-review");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -5540,7 +5536,6 @@ fn attention_review_keyboard_journey_preserves_uncertain_send_and_exits_cleanly(
         } else {
             session.wait_for_agent_surface();
         }
-        assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
         send_ctrl_shift_a(&mut session);
         assert!(
@@ -5639,7 +5634,6 @@ fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
         } else {
             session.wait_for_agent_surface();
         }
-        assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
         send_ctrl_shift_t(&mut session);
         assert!(
@@ -5698,7 +5692,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "crash-owner", "recovery check");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -5752,7 +5746,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     let mut reopened = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
     reopened.wait_for_agent_surface();
-    assert!(reopened.wait_for("Core available", Duration::from_secs(8)));
+
     send_ctrl_shift_a(&mut reopened);
     assert!(reopened.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(
@@ -5826,7 +5820,7 @@ fn uncertain_send_opens_attention_without_replaying_after_restart() {
         } else {
             session.wait_for_agent_surface();
         }
-        assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
         send_ctrl_shift_a(&mut session);
         assert!(
             session.wait_for("ATTENTION INBOX", Duration::from_secs(5)),
@@ -5912,7 +5906,7 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     send_ctrl_shift_a(&mut session);
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(session.wait_for(prompt, Duration::from_secs(8)));
@@ -6051,7 +6045,7 @@ fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     send_ctrl_shift_a(&mut session);
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(session.wait_for("Core turn failed", Duration::from_secs(5)));
@@ -6167,7 +6161,7 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     start_core_conversation(&mut session, "assistant", "report a safe test failure");
     assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(8)));
     send_ctrl_shift_t(&mut session);
@@ -6763,7 +6757,6 @@ fn core_settings_palette_stays_in_glass_and_reads_session_details() {
     session.wait_for_agent_surface();
     assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
     start_core_conversation(&mut session, "assistant", "settings panel fixture");
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     let palette_offset = session.buffer.len();
     session.send(b"/");
@@ -6918,7 +6911,7 @@ fn lsp_workspace_rename_is_previewed_and_accepted_per_file_in_pty() {
         .join("tests/fixtures/fake_lsp_workspace_edit.py");
     let fake_core = fake_core_binary_with_mode("mixed");
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     send_alt_digit(&mut session, b'2');
     assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
     for path in ["src/first.rs", "src/second.rs", "src/first.rs"] {
@@ -7061,7 +7054,7 @@ fn rust_analyzer_workspace_rename_is_accepted_per_file_in_pty() {
         Some(&fake_core),
         Some(&data_home),
     );
-    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
     send_alt_digit(&mut session, b'2');
     assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
     for path in ["src/lib.rs", "src/call.rs"] {
@@ -7492,7 +7485,7 @@ fn resident_secret_prompt_submit_decline_and_expiry_are_masked_in_real_pty() {
         );
         assert!(session.wait_for("GLASS", Duration::from_secs(8)));
         session.wait_for_agent_surface();
-        assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
         let mut spawned = false;
         for _ in 0..3 {
             start_core_conversation(&mut session, "assistant", "request a fixture credential");

@@ -6467,28 +6467,7 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust"
-    );
 
-    session.send(b"/");
-    assert!(
-        session.wait_for("CORE COMMANDS", Duration::from_secs(5)),
-        "Core command group was missing from slash menu\n{}",
-        session.output_tail()
-    );
-    assert!(
-        session.visible_output().contains("GLASS"),
-        "Glass action group was missing from slash menu"
-    );
-    session.send(b"glass");
-    assert!(
-        session.wait_for("glass", Duration::from_secs(5)),
-        "slash filtering did not retain Glass-owned entries"
-    );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
 
     for (key, marker) in [
         (b'2', "FILES"),

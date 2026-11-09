@@ -146,8 +146,8 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
   editor, PTYs, Git, LSP diagnostics, graph, replay, collaboration, and agents.
 - [Development TUI](architecture/development-tui.md) and
   [terminal UI architecture](architecture/tui.md) — workspace surfaces,
-  conversation and source focus, live GC commands, keyboard and mouse
-  interaction, responsive layout, and workers.
+  conversation and source focus, live GC and Glass actions, keyboard and
+  mouse interaction, responsive layout, and workers.
 - [Mobile and remote development](mobile-remote.md) — SSH/Mosh, phone access,
   terminal rendering, and browser controls.
 - [Processes and daemon](daemon.md) — persistent clients, project sessions,

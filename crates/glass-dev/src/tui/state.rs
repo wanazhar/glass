@@ -8432,7 +8432,9 @@ impl DevTuiState {
     }
 
     pub fn submit_gc_command_selection(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.gc_command_loading {
+        if self.gc_command_loading
+            && (self.gc_model_menu_open || !self.gc_command_selection_is_glass())
+        {
             self.status = "Glass Core command catalogue is still loading".into();
             return;
         }
@@ -19923,6 +19925,24 @@ mod tests {
             state.selected_palette_action().map(|action| action.label),
             Some("Open task tracking")
         );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove palette workspace");
+    }
+
+    #[test]
+    fn glass_palette_action_runs_while_core_catalogue_is_loading() {
+        let (mut state, root) = routed_state("glass-action-while-core-loading");
+        state.surface = DevSurface::Agent;
+        state.gc_command_menu_open = true;
+        state.gc_command_loading = true;
+        state.gc_command_query = "open task tracking".into();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.submit_gc_command_selection(&mut worker);
+
+        assert_eq!(state.surface, DevSurface::Tasks);
+        assert!(!state.gc_command_menu_open);
+        drop(worker);
         drop(state);
         std::fs::remove_dir_all(root).expect("remove palette workspace");
     }

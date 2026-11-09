@@ -252,8 +252,9 @@ control are marked unavailable, and Esc returns to the unchanged composer.
 Typing a slash after other draft text remains literal text; paths and messages
 are not parsed as commands. The catalogue is available before the first prompt
 by initializing a Core session without sending provider input. Glass workspace
-actions remain available through `Ctrl-K`; Core's command catalogue stays
-owned by the selected GC session.
+actions remain available through `Ctrl-K` and in the slash catalogue while
+Core's command discovery is loading; Core's catalogue stays owned by the
+selected GC session.
 
 Esc closes one visible popup and returns focus to its invoking surface. Agent
 stays ready and preserves its draft when Escape is pressed; `Ctrl-L` opens a

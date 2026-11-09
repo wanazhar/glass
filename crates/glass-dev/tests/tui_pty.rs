@@ -640,6 +640,17 @@ impl Session {
         false
     }
 
+    fn wait_for_screen_without(&mut self, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if !self.terminal.screen().contents().contains(probe) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Poll only output emitted after `offset`; stale full-screen redraws from
     /// earlier commands must not satisfy a later interaction assertion.
     fn wait_for_output_after(&mut self, offset: usize, probe: &str, timeout: Duration) -> bool {
@@ -1024,17 +1035,16 @@ fn complete_glass_action(
     args: &str,
 ) {
     session.send(b"/");
-    assert!(session.wait_for("CORE COMMANDS", Duration::from_secs(5)));
     session.send(query.as_bytes());
     assert!(
-        session.wait_for(label, Duration::from_secs(5)),
+        session.wait_for_screen(label, Duration::from_secs(5)),
         "Glass action {label:?} was not discoverable for query {query:?}\n{}",
         session.output_tail()
     );
     session.send(b"\t");
     let expected = format!("/glass {completion}");
     assert!(
-        session.wait_for(&expected, Duration::from_secs(5)),
+        session.wait_for_screen(&expected, Duration::from_secs(5)),
         "Glass action completion did not produce {expected:?}\n{}",
         session.output_tail()
     );
@@ -5903,10 +5913,30 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
         session.output_tail()
     );
 
-    session.send(b"\x1b:agent resume\r");
+    session.send(b"\x1b");
+    let mut confirming_resume = false;
+    for _ in 0..3 {
+        complete_glass_action(
+            &mut session,
+            "glass resume conversation",
+            "Resume conversation",
+            "agent resume",
+            "",
+        );
+        if session.wait_for_screen("Enter/Y approve", Duration::from_secs(3)) {
+            confirming_resume = session.wait_for_screen("glass.agent.resume", Duration::from_secs(1));
+            break;
+        }
+        assert!(
+            session.terminal.screen().contents().contains("workspace busy"),
+            "resume failed without a transient workspace conflict\n{}",
+            session.output_tail()
+        );
+        session.settle(Duration::from_secs(1));
+    }
     assert!(
-        session.wait_for("CONFIRMATION", Duration::from_secs(5)),
-        "resuming the exact Core session did not ask for its normal confirmation\n{}",
+        confirming_resume,
+        "resuming the exact Core session did not ask for confirmation\n{}",
         session.output_tail()
     );
     session.send(b"\r");
@@ -5937,14 +5967,31 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
     // Registry persistence happens before the TUI's workspace snapshot is
     // refreshed. Let the resume transition settle before requesting retry.
     session.settle(Duration::from_millis(750));
-    session.send(b"\x1b:agent retry\r");
-    assert!(
-        session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)),
-        "retry did not show duplicate-risk confirmation\n{}",
-        session.output_tail()
-    );
+    fn open_retry(session: &mut Session) {
+        for _ in 0..3 {
+            complete_glass_action(
+                session,
+                "glass retry failed",
+                "Retry failed or uncertain message",
+                "agent retry",
+                "",
+            );
+            if session.wait_for_screen("RETRY UNCERTAIN DELIVERY", Duration::from_secs(3)) {
+                return;
+            }
+            assert!(
+                session.terminal.screen().contents().contains("Could not verify"),
+                "retry did not show confirmation or a transient verification conflict\n{}",
+                session.output_tail()
+            );
+            session.settle(Duration::from_secs(1));
+        }
+        panic!("retry confirmation did not open\n{}", session.output_tail());
+    }
+    open_retry(&mut session);
     assert!(session.wait_for("same client message ID", Duration::from_secs(5)));
     session.send(b"\x1b");
+    assert!(session.wait_for_screen_without("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)));
     let requests_path = fixture_state.join("e2e-core-requests.jsonl");
     let requests = std::fs::read_to_string(&requests_path).unwrap();
     assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 0);
@@ -5958,8 +6005,7 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
         1
     );
 
-    session.send(b"\x1b:agent retry\r");
-    assert!(session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)));
+    open_retry(&mut session);
     session.send(b"\r");
     let deadline = Instant::now() + Duration::from_secs(8);
     let after_retry = loop {

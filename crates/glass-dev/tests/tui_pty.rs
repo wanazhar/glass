@@ -6294,16 +6294,18 @@ fn phone_size_keeps_primary_surfaces_reachable() {
         "phone layout must keep Agent reachable"
     );
     session.send(b"/");
+    session.send(b"open code");
     assert!(
-        session.wait_for_visible("CORE COMMANDS", Duration::from_secs(5)),
-        "phone slash menu did not open\n{}",
+        session.wait_for_screen("Open Code", Duration::from_secs(5)),
+        "phone slash menu did not expose Code navigation\n{}",
         session.output_tail()
     );
+    session.send(b"\r");
     assert!(
-        session.visible_output().contains("GLASS"),
-        "phone slash menu omitted the Glass action group"
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "phone slash action did not open Code\n{}",
+        session.output_tail()
     );
-    session.send(b"\x1b");
     session.kill();
 }
 

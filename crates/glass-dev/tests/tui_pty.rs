@@ -5384,9 +5384,7 @@ fn external_harness_catalog_is_discoverable_without_dispatching_a_delegate() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
     session.send(b"/");
-    assert!(session.wait_for("CORE COMMANDS", Duration::from_secs(5)));
     session.send(b"glass harness");
     assert!(session.wait_for("Harness catalog", Duration::from_secs(5)));
     session.send(b"\t");
@@ -5398,14 +5396,13 @@ fn external_harness_catalog_is_discoverable_without_dispatching_a_delegate() {
         session.output_tail()
     );
     session.send(b"/");
-    assert!(session.wait_for("CORE COMMANDS", Duration::from_secs(5)));
     session.send(b"glass harness delegate");
+    session.settle(Duration::from_millis(300));
+    session.send(b"\t");
+    session.send(b"\x1b");
     assert!(
-        session.wait_for(
-            "No matching commands or Glass actions",
-            Duration::from_secs(5)
-        ),
-        "external harness delegation must not appear as a Glass-owned slash action\n{}",
+        session.wait_for_composer_text("/glass harness delegate", Duration::from_secs(5)),
+        "an unavailable delegation action unexpectedly completed\n{}",
         session.output_tail()
     );
     session.kill();

@@ -6850,13 +6850,12 @@ fn lsp_workspace_rename_is_previewed_and_accepted_per_file_in_pty() {
     send_alt_digit(&mut session, b'2');
     assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
     for path in ["src/first.rs", "src/second.rs", "src/first.rs"] {
-        let offset = session.buffer.len();
         session.send_slowly(
             format!(":open {path}\r").as_bytes(),
             Duration::from_millis(20),
         );
         assert!(
-            session.wait_for_output_after(offset, "Esc back", Duration::from_secs(5)),
+            session.wait_for_screen("Esc back", Duration::from_secs(5)),
             "Code did not open {path}\n{}",
             session.output_tail()
         );
@@ -6930,9 +6929,8 @@ fn lsp_workspace_rename_is_previewed_and_accepted_per_file_in_pty() {
     session.clear_output();
     session.send(b"\x1b");
     assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
-    let second_open_offset = session.buffer.len();
     session.send_slowly(b":open src/second.rs\r", Duration::from_millis(20));
-    assert!(session.wait_for_output_after(second_open_offset, "Esc back", Duration::from_secs(5)));
+    assert!(session.wait_for_screen("Esc back", Duration::from_secs(5)));
     assert!(session.wait_for_visible("Enter accept · n reject", Duration::from_secs(5)));
     session.send(b"\r");
     session.settle(Duration::from_secs(1));

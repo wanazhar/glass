@@ -801,8 +801,14 @@ async fn native_local_blob_object_urls_feed_fetch_and_xhr_and_revoke() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_blob_object_urls_navigate_to_a_fresh_document() {
+#[test]
+fn native_local_blob_object_urls_navigate_to_a_fresh_document() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_blob_object_urls_navigate_to_a_fresh_document_inner());
+    });
+}
+
+async fn native_local_blob_object_urls_navigate_to_a_fresh_document_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://blob-document-start",

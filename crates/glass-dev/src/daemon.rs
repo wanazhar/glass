@@ -1148,26 +1148,12 @@ async fn execute_request(
                 let handle = workspace_handle(workspaces, workspace_id)?;
                 let registry = lock_operations(&handle.operations);
                 let since = request.since.unwrap_or(0);
-                let events = registry
-                    .events
-                    .iter()
-                    .filter(|event| event.sequence > since)
-                    .filter(|event| operation_id.is_none_or(|id| event.operation_id == id))
-                    .take(limit)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let cursor = events.last().map_or(since, |event| event.sequence);
-                let has_more = registry.events.iter().any(|event| {
-                    event.sequence > cursor
-                        && operation_id.is_none_or(|id| event.operation_id == id)
-                });
-                Ok(serde_json::json!({
-                    "events":events,
-                    "cursor":cursor,
-                    "hasMore":has_more,
-                    "newestSequence":registry.events.back().map_or(0, |event| event.sequence),
-                    "capacity":OPERATION_EVENT_CAPACITY,
-                }))
+                Ok(operation_event_batch(
+                    &registry.events,
+                    since,
+                    limit,
+                    operation_id,
+                ))
             }
             "workspace.events" => {
                 let workspace_id = required_workspace_id(&request)?;
@@ -1592,6 +1578,32 @@ fn workspace_event_batch(
         "lostBefore": (since.saturating_add(1) < oldest).then_some(oldest),
         "droppedEvents": dropped_events,
         "capacity": WORKSPACE_EVENT_CAPACITY,
+    })
+}
+
+fn operation_event_batch(
+    events: &VecDeque<DevelopmentOperationEvent>,
+    since: u64,
+    limit: usize,
+    operation_id: Option<&str>,
+) -> Value {
+    let selected: Vec<DevelopmentOperationEvent> = events
+        .iter()
+        .filter(|event| event.sequence > since)
+        .filter(|event| operation_id.is_none_or(|id| event.operation_id == id))
+        .take(limit)
+        .cloned()
+        .collect();
+    let cursor = selected.last().map_or(since, |event| event.sequence);
+    let has_more = events
+        .iter()
+        .any(|event| event.sequence > cursor && operation_id.is_none_or(|id| event.operation_id == id));
+    serde_json::json!({
+        "events": selected,
+        "cursor": cursor,
+        "hasMore": has_more,
+        "newestSequence": events.back().map_or(0, |event| event.sequence),
+        "capacity": OPERATION_EVENT_CAPACITY,
     })
 }
 
@@ -2472,6 +2484,27 @@ mod tests {
         assert_eq!(first["newestSequence"], 4);
         assert_eq!(first["hasMore"], true);
         let second = workspace_event_batch(&events, next, dropped, first["cursor"].as_u64().unwrap(), 3);
+        assert_eq!(second["events"].as_array().unwrap().iter().map(|event| event["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(second["hasMore"], false);
+    }
+
+    #[test]
+    fn operation_event_cursor_advances_only_past_delivered_events() {
+        let mut events = VecDeque::new();
+        for sequence in 1..=4 {
+            events.push_back(DevelopmentOperationEvent {
+                sequence,
+                operation_id: "op".into(),
+                timestamp_ms: now_ms(),
+                state: DevelopmentOperationState::Running,
+                message: "changed".into(),
+            });
+        }
+        let first = operation_event_batch(&events, 0, 1, Some("op"));
+        assert_eq!(first["cursor"], 1);
+        assert_eq!(first["newestSequence"], 4);
+        assert_eq!(first["hasMore"], true);
+        let second = operation_event_batch(&events, first["cursor"].as_u64().unwrap(), 3, Some("op"));
         assert_eq!(second["events"].as_array().unwrap().iter().map(|event| event["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 3, 4]);
         assert_eq!(second["hasMore"], false);
     }

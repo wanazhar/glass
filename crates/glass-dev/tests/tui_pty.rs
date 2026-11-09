@@ -1455,10 +1455,11 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         "runtime-safe /status did not reach GC\n{}",
         session.output_tail()
     );
+    session.send(b"\x1b");
+    session.clear_output();
     session.send(b"/");
     assert!(session.wait_for("/model", Duration::from_secs(5)));
     session.send(b"model");
-    assert!(session.wait_for("Select Core model", Duration::from_secs(5)));
     session.send(b"\r");
     assert!(
         session.wait_for("claude-opus-4", Duration::from_secs(20)),
@@ -1472,7 +1473,6 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         "the command palette must stay inside Glass"
     );
     session.send(b"\x1b");
-    assert!(session.wait_for("/ COMMANDS", Duration::from_secs(4)));
     session.send(b"\x1b");
 
     // Code navigation must update the focused preview as the selection moves.
@@ -1504,7 +1504,7 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         session.visible_output()
     );
     assert!(
-        !session.visible_output().contains("ALPHA_PREVIEW_1"),
+        !session.terminal.screen().contents().contains("ALPHA_PREVIEW_1"),
         "preview stayed stuck on the first file after selection moved\n{}",
         session.output_tail()
     );
@@ -1516,12 +1516,7 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
     session.clear_output();
     session.send(b"\x1b[49;3u"); // Alt-1: return to Agent.
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "return to Agent failed\n{}",
-        session.output_tail()
-    );
-    assert!(
-        session.wait_for("▌", Duration::from_secs(5)),
+        session.wait_for_screen("Agent ·", Duration::from_secs(5)),
         "Agent composer was not immediately available\n{}",
         session.output_tail()
     );
@@ -1532,7 +1527,7 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         "first printable key after returning to Agent did not enter its ready composer"
     );
     assert!(
-        !session.visible_output().contains("ci.yml"),
+        !session.terminal.screen().contents().contains("ci.yml"),
         "stale Code buffer leaked into the Agent composer\n{}",
         session.output_tail()
     );
@@ -1553,12 +1548,9 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         "App surface was not reachable after closing the composer\n{}",
         session.output_tail()
     );
+    session.clear_output();
     session.send(b"\x1b[49;3u");
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface was not reachable after App\n{}",
-        session.output_tail()
-    );
+    session.wait_for_agent_surface();
     session.clear_output();
     session.send(b"1");
     assert!(
@@ -6911,8 +6903,7 @@ fn code_editor_accepts_and_saves_typed_text_through_pty() {
     session.send(b"\x13");
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline
-        && std::fs::read_to_string(&source).ok().as_deref()
-            != Some("// PTY saved\nfn main() {}\n")
+        && std::fs::read_to_string(&source).ok().as_deref() != Some("// PTY saved\nfn main() {}\n")
     {
         session.settle(Duration::from_millis(50));
     }

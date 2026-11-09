@@ -36,10 +36,13 @@
     if (validity.patternMismatch) return "Please match the requested format.";
     return "";
   }};
-  const escapeHtmlText = (value) => String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  const escapeHtmlText = (value) => {{
+    let text = String(value);
+    if (text.includes("&")) text = text.replace(/&/g, "&amp;");
+    if (text.includes("<")) text = text.replace(/</g, "&lt;");
+    if (text.includes(">")) text = text.replace(/>/g, "&gt;");
+    return text;
+  }};
   const htmlRawTextElements = new Set([
     "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
   ]);

@@ -306,8 +306,8 @@ current user instructions.
   registration, capability evidence, BiDi boundary, and survivability.
 - [Browser core crate](architecture/browser-core.md) — engine ownership, the one-way crate boundary, feature gating, and integration surface.
 - [Native browser engine](architecture/native-engine.md) — the Glass-owned
-  engine kernel, browser-complete expansion, runtime limits, and promotion
-  gates for issue #40. Its versioned contract is the [Glass Core Web
+  engine kernel, host-view performance, runtime limits, and promotion gates
+  for issue #40. Its versioned contract is the [Glass Core Web
   Profile](plan/native-engine-browser-profile.md).
 - [Native browser journey corpus](architecture/native-journey-corpus.md) —
   versioned local and public journeys, performance evidence, evidence

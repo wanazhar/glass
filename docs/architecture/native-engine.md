@@ -9,6 +9,10 @@ remain separate checks. This guide describes the current source checkout; see
 [release evidence](../release-evidence.md) for the exact published source and
 artifacts.
 
+The QuickJS host view skips custom-element upgrade traversal when its registry
+is empty and avoids replacement passes for HTML text without escapable
+characters. Existing script, host-view, and memory limits remain unchanged.
+
 The slice notes below record results from the source snapshot where each test
 ran. Their words “local” and “unpushed” describe those earlier checkpoints,
 not the state of the current checkout. Keep each result scoped to its named

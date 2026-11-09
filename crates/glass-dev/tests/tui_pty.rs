@@ -1885,7 +1885,7 @@ fn code_composer_sends_only_explicit_multifile_context() {
 }
 
 #[test]
-fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
+fn agent_scrollback_navigates_transcript_in_compact_and_desktop_pty() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
@@ -1911,14 +1911,10 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
             );
         }
 
-        let transcript = session.visible_output();
         assert!(
-            transcript.contains("PgUp/Dn") || transcript.contains("PgUp/PgDn"),
-            "conversation omitted its responsive scroll controls at {cols}x{rows}"
+            session.wait_for_screen("scroll fixture 9", Duration::from_secs(5)),
+            "latest conversation turn was not visible at {cols}x{rows}"
         );
-        assert!(transcript.contains("live"));
-        assert!(!transcript.contains("Ctrl-X abort"));
-        assert!(!transcript.contains("Ctrl-D follow-up"));
 
         if let Some(capture_dir) = std::env::var_os("GLASS_PTY_CAPTURE_DIR") {
             let capture_dir = std::path::PathBuf::from(capture_dir);
@@ -1930,12 +1926,19 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
             .expect("save synthetic conversation PTY evidence");
         }
 
-        session.clear_output();
         session.send(b"\x1b[5~"); // PageUp
-        assert!(session.wait_for_visible("new", Duration::from_secs(5)));
-        session.clear_output();
+        assert!(
+            session.wait_for_screen_without("scroll fixture 9", Duration::from_secs(5))
+                && session.wait_for_screen("scroll fixture", Duration::from_secs(5)),
+            "PageUp did not show earlier conversation turns at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
         session.send(b"\x1b[F"); // End: resume following the tail
-        assert!(session.wait_for_visible("live", Duration::from_secs(5)));
+        assert!(
+            session.wait_for_screen("scroll fixture 9", Duration::from_secs(5)),
+            "End did not return to the latest conversation turn at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
 
         session.kill();
         let _ = std::fs::remove_dir_all(root);

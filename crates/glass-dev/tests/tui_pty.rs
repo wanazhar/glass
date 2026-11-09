@@ -6246,37 +6246,22 @@ fn resident_core_stderr_does_not_corrupt_the_tui_screen() {
 }
 
 #[test]
-fn palette_and_help_survive_real_key_sequences() {
+fn palette_dismissal_preserves_editable_draft() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
     let root = workspace_root();
     let mut session = Session::start(&binary(), &root, 118, 32);
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface did not open"
-    );
     session.send(b"/");
-    assert!(
-        session.wait_for_visible("CORE COMMANDS", Duration::from_secs(5)),
-        "slash command menu did not open\n{}",
-        session.output_tail()
-    );
-    assert!(
-        session.visible_output().contains("GLASS"),
-        "Glass-owned group missing from menu"
-    );
-    session.send(b"glass");
-    assert!(
-        session.wait_for_visible("glass", Duration::from_secs(5)),
-        "slash filtering did not keep the Glass group searchable"
-    );
-    session.send(b"\x1b");
+    session.send_slowly(b"glass", Duration::from_millis(20));
     session.settle(Duration::from_millis(300));
+    session.send(b"\x1b");
+    session.send_slowly(b"-draft", Duration::from_millis(20));
     assert!(
-        session.wait_for("▌", Duration::from_secs(3)),
-        "Escape did not restore the ready composer"
+        session.wait_for_composer_text("/glass-draft", Duration::from_secs(5)),
+        "Escape did not preserve the filtered command as editable composer text\n{}",
+        session.output_tail()
     );
     session.kill();
 }

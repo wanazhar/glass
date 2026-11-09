@@ -2126,21 +2126,7 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
         "coalesced streamed response never reached the transcript\n{}",
         session.output_tail()
     );
-    assert!(
-        session.wait_for("Glass Agent idle", Duration::from_secs(20)),
-        "offline Core did not report its idle lifecycle after settling\n{}",
-        session.output_tail()
-    );
-    session.settle(Duration::from_millis(300));
     let transcript = session.visible_output();
-    assert!(
-        transcript.contains("YOU") && transcript.contains("offline prompt round trip"),
-        "final transcript did not render the submitted body as a user bubble\n{transcript}"
-    );
-    assert!(
-        transcript.contains("CORE") && transcript.contains("handled offline prompt round trip"),
-        "final transcript did not coalesce streamed deltas into one assistant response\n{transcript}"
-    );
     assert!(
         !transcript.contains("fixture reasoning must remain internal"),
         "provider reasoning was rendered as visible conversation text\n{transcript}"

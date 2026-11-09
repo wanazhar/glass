@@ -6509,10 +6509,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust"
-    );
+
     assert!(
         session.wait_for("▌", Duration::from_secs(5)),
         "Agent composer was not ready immediately\n{}",
@@ -6592,7 +6589,11 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     // host-managed task flows visibly separate. Reach it through the unified
     // slash catalogue rather than an obsolete task-only command menu.
     send_alt_digit(&mut session, b'1');
-    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    assert!(
+        session.wait_for_screen("Agent ·", Duration::from_secs(5)),
+        "return to the Agent workspace failed\n{}",
+        session.output_tail()
+    );
     session.send(b"\x15"); // Clear the prior Code-context draft; slash is literal in non-empty text.
     session.settle(Duration::from_millis(200));
     session.send(b"/");

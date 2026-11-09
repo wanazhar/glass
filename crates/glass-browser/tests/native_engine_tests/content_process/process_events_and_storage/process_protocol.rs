@@ -428,8 +428,14 @@ fn native_http_window_proxy_close_removes_content_process_target() {
         });
     });
 }
-#[tokio::test]
-async fn native_content_process_evaluates_persistent_script_realm() {
+#[test]
+fn native_content_process_evaluates_persistent_script_realm() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_evaluates_persistent_script_realm_inner());
+    });
+}
+
+async fn native_content_process_evaluates_persistent_script_realm_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

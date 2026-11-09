@@ -531,6 +531,7 @@ export class GlassClient {
   private leaseScopeCount = 0;
   private leaseScopeOwned = false;
   private leaseScopeGate: Promise<void> = Promise.resolve();
+  private toolRequestHandler?: (requestId: number, params: Record<string, unknown>) => Promise<unknown>;
 
   constructor(options: GlassClientOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? 4 * 1024 * 1024;
@@ -596,6 +597,10 @@ export class GlassClient {
   }
   requireCapability(capability: string): void {
     if (!this.supportsCapability(capability)) throw new Error(`Glass capability is unavailable: ${capability}`);
+  }
+
+  onToolRequest(handler: (requestId: number, params: Record<string, unknown>) => Promise<unknown>): void {
+    this.toolRequestHandler = handler;
   }
 
   async listTools(): Promise<Array<Record<string, unknown>>> {
@@ -1179,6 +1184,17 @@ export class GlassClient {
     });
   }
 
+  private dispatchToolRequest(requestId: number, params: Record<string, unknown>): void {
+    const handler = this.toolRequestHandler;
+    if (!handler) {
+      this.send({ jsonrpc: "2.0", id: requestId, result: { text: "Host has no tool executor", isError: true } });
+      return;
+    }
+    Promise.resolve(handler(requestId, params))
+      .then((result) => this.send({ jsonrpc: "2.0", id: requestId, result }))
+      .catch((error: Error) => this.send({ jsonrpc: "2.0", id: requestId, error: { code: -32000, message: error.message } }));
+  }
+
   private send(message: Record<string, unknown>): void {
     if (this.terminalError) throw this.terminalError;
     this.input.write(`${JSON.stringify(message)}\n`);
@@ -1220,6 +1236,10 @@ export class GlassClient {
       }
       try {
         const message = JSON.parse(body.toString("utf8"));
+        if (message.method === "tool/execute") {
+          this.dispatchToolRequest(message.id, message.params);
+          continue;
+        }
         if (typeof message.id !== "number") continue;
         const pending = this.pending.get(message.id);
         if (!pending) continue;

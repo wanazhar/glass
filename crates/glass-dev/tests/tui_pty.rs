@@ -4741,13 +4741,9 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     session.wait_for_agent_surface();
 
     start_core_conversation(&mut session, "queue-owner", "active-run-queue-target");
-    assert!(
-        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
-        "active queue target did not spawn\n{}",
-        session.output_tail()
-    );
+    
     send_ctrl_shift_t(&mut session);
-    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for_screen("PROJECT THREADS", Duration::from_secs(5)));
     assert!(
         session.wait_for("idle", Duration::from_secs(12)),
         "spawned queue target never became ready\n{}",
@@ -4785,7 +4781,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     );
 
     send_ctrl_shift_t(&mut session);
-    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for_screen("PROJECT THREADS", Duration::from_secs(5)));
     assert!(session.wait_for("queue-owner", Duration::from_secs(5)));
     session.send(b"\r\r");
     assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));

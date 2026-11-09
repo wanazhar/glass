@@ -127,16 +127,16 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Value> {
             "runtime stdout closed",
         ));
     }
-    if n > MAX_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "runtime frame exceeds 1 MiB",
-        ));
-    }
     if !line.ends_with(b"\n") {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "runtime stdout ended inside a frame",
+        ));
+    }
+    if line.len() - 1 > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "runtime frame exceeds 1 MiB",
         ));
     }
     let value: Value = serde_json::from_slice(&line)?;

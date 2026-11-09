@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_page_fetch_credentials_survive_service_worker_handoff() {
+#[test]
+fn native_content_process_page_fetch_credentials_survive_service_worker_handoff() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_page_fetch_credentials_survive_service_worker_handoff_inner(),
+        );
+    });
+}
+
+async fn native_content_process_page_fetch_credentials_survive_service_worker_handoff_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let primary_address = primary_listener.local_addr().unwrap();
@@ -257,8 +265,16 @@ self.addEventListener('fetch', event => {{
     assert!(!include_after_cookie.contains("denied-worker-same="));
     assert!(!include_after_cookie.contains("denied-worker-omit="));
 }
-#[tokio::test]
-async fn native_content_process_fetch_referrer_policy_survives_service_worker_handoff() {
+#[test]
+fn native_content_process_fetch_referrer_policy_survives_service_worker_handoff() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_fetch_referrer_policy_survives_service_worker_handoff_inner(),
+        );
+    });
+}
+
+async fn native_content_process_fetch_referrer_policy_survives_service_worker_handoff_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let primary_address = primary_listener.local_addr().unwrap();
@@ -924,8 +940,16 @@ self.addEventListener('fetch', event => {{
         });
     });
 }
-#[tokio::test]
-async fn native_content_process_service_worker_fetches_use_script_policy_container() {
+#[test]
+fn native_content_process_service_worker_fetches_use_script_policy_container() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_fetches_use_script_policy_container_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_fetches_use_script_policy_container_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1081,8 +1105,15 @@ async fn native_content_process_service_worker_fetches_use_script_policy_contain
         "a module dependency response policy governs its descendants"
     );
 }
-#[tokio::test]
-async fn native_content_process_service_worker_registration_uses_live_document_referrer_policy() {
+#[test]
+fn native_content_process_service_worker_registration_uses_live_document_referrer_policy() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_service_worker_registration_uses_live_document_referrer_policy_inner());
+    });
+}
+
+async fn native_content_process_service_worker_registration_uses_live_document_referrer_policy_inner()
+ {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

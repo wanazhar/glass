@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_local_web_storage_persists_through_profile_restart() {
+#[test]
+fn native_local_web_storage_persists_through_profile_restart() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_web_storage_persists_through_profile_restart_inner());
+    });
+}
+
+async fn native_local_web_storage_persists_through_profile_restart_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-local-restart.json",
         std::process::id()
@@ -60,8 +66,14 @@ async fn native_local_web_storage_persists_through_profile_restart() {
     }
     let _ = fs::remove_file(profile_path);
 }
-#[tokio::test]
-async fn native_local_indexed_db_supports_upgrade_crud_and_profile_restart() {
+#[test]
+fn native_local_indexed_db_supports_upgrade_crud_and_profile_restart() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_supports_upgrade_crud_and_profile_restart_inner());
+    });
+}
+
+async fn native_local_indexed_db_supports_upgrade_crud_and_profile_restart_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-restart.json",
         std::process::id()
@@ -121,8 +133,14 @@ async fn native_local_indexed_db_supports_upgrade_crud_and_profile_restart() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_supports_indexes_key_ranges_and_cursors() {
+#[test]
+fn native_local_indexed_db_supports_indexes_key_ranges_and_cursors() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_supports_indexes_key_ranges_and_cursors_inner());
+    });
+}
+
+async fn native_local_indexed_db_supports_indexes_key_ranges_and_cursors_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-indexes.json",
         std::process::id()
@@ -183,8 +201,14 @@ async fn native_local_indexed_db_supports_indexes_key_ranges_and_cursors() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_versionchange_unblocks_closed_connection() {
+#[test]
+fn native_local_indexed_db_versionchange_unblocks_closed_connection() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_versionchange_unblocks_closed_connection_inner());
+    });
+}
+
+async fn native_local_indexed_db_versionchange_unblocks_closed_connection_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-versionchange.json",
         std::process::id()
@@ -232,8 +256,14 @@ async fn native_local_indexed_db_versionchange_unblocks_closed_connection() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_delete_blocks_open_connection() {
+#[test]
+fn native_local_indexed_db_delete_blocks_open_connection() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_delete_blocks_open_connection_inner());
+    });
+}
+
+async fn native_local_indexed_db_delete_blocks_open_connection_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-delete.json",
         std::process::id()
@@ -286,8 +316,14 @@ async fn native_local_indexed_db_delete_blocks_open_connection() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_transaction_rolls_back_failed_write() {
+#[test]
+fn native_local_indexed_db_transaction_rolls_back_failed_write() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_transaction_rolls_back_failed_write_inner());
+    });
+}
+
+async fn native_local_indexed_db_transaction_rolls_back_failed_write_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-rollback.json",
         std::process::id()
@@ -332,8 +368,14 @@ async fn native_local_indexed_db_transaction_rolls_back_failed_write() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_explicit_abort_rolls_back_write() {
+#[test]
+fn native_local_indexed_db_explicit_abort_rolls_back_write() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_explicit_abort_rolls_back_write_inner());
+    });
+}
+
+async fn native_local_indexed_db_explicit_abort_rolls_back_write_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-explicit-abort.json",
         std::process::id()
@@ -381,8 +423,14 @@ async fn native_local_indexed_db_explicit_abort_rolls_back_write() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_storage_manager_reports_bounded_estimate() {
+#[test]
+fn native_local_storage_manager_reports_bounded_estimate() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_storage_manager_reports_bounded_estimate_inner());
+    });
+}
+
+async fn native_local_storage_manager_reports_bounded_estimate_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-storage-{}-estimate.json",
         std::process::id()
@@ -420,8 +468,14 @@ async fn native_local_storage_manager_reports_bounded_estimate() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_serializes_transactions_before_abort() {
+#[test]
+fn native_local_indexed_db_serializes_transactions_before_abort() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_serializes_transactions_before_abort_inner());
+    });
+}
+
+async fn native_local_indexed_db_serializes_transactions_before_abort_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-serialize.json",
         std::process::id()
@@ -468,8 +522,16 @@ async fn native_local_indexed_db_serializes_transactions_before_abort() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions() {
+#[test]
+fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_local_indexed_db_round_trips_bounded_structured_clone_extensions_inner(),
+        );
+    });
+}
+
+async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-structured-clone.json",
         std::process::id()
@@ -550,8 +612,14 @@ async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_indexed_db_journal_merges_live_origin_writers() {
+#[test]
+fn native_local_indexed_db_journal_merges_live_origin_writers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_indexed_db_journal_merges_live_origin_writers_inner());
+    });
+}
+
+async fn native_local_indexed_db_journal_merges_live_origin_writers_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-journal.json",
         std::process::id()
@@ -599,8 +667,14 @@ async fn native_local_indexed_db_journal_merges_live_origin_writers() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_local_web_storage_merges_stale_profile_deltas() {
+#[test]
+fn native_local_web_storage_merges_stale_profile_deltas() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_web_storage_merges_stale_profile_deltas_inner());
+    });
+}
+
+async fn native_local_web_storage_merges_stale_profile_deltas_inner() {
     let file_name = format!(
         "glass-native-web-storage-{}-stale-merge.json",
         std::process::id()
@@ -656,8 +730,16 @@ async fn native_local_web_storage_merges_stale_profile_deltas() {
     let _ = fs::remove_file(first_path);
     let _ = fs::remove_file(lock_path);
 }
-#[tokio::test]
-async fn native_local_web_storage_delivers_origin_filtered_events_to_other_documents() {
+#[test]
+fn native_local_web_storage_delivers_origin_filtered_events_to_other_documents() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_local_web_storage_delivers_origin_filtered_events_to_other_documents_inner(),
+        );
+    });
+}
+
+async fn native_local_web_storage_delivers_origin_filtered_events_to_other_documents_inner() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-cross-document-events.json",
         std::process::id()

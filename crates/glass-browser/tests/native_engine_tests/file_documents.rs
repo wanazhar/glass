@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_file_document_loads_rooted_media_during_navigation() {
+#[test]
+fn native_file_document_loads_rooted_media_during_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_document_loads_rooted_media_during_navigation_inner());
+    });
+}
+
+async fn native_file_document_loads_rooted_media_during_navigation_inner() {
     let root =
         std::env::temp_dir().join(format!("glass-native-file-static-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -35,8 +41,14 @@ async fn native_file_document_loads_rooted_media_during_navigation() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_loads_rooted_media_after_dynamic_attachment() {
+#[test]
+fn native_file_document_loads_rooted_media_after_dynamic_attachment() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_document_loads_rooted_media_after_dynamic_attachment_inner());
+    });
+}
+
+async fn native_file_document_loads_rooted_media_after_dynamic_attachment_inner() {
     let root =
         std::env::temp_dir().join(format!("glass-native-file-dynamic-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -80,8 +92,14 @@ async fn native_file_document_loads_rooted_media_after_dynamic_attachment() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_media_rejects_paths_outside_configured_root() {
+#[test]
+fn native_file_media_rejects_paths_outside_configured_root() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_media_rejects_paths_outside_configured_root_inner());
+    });
+}
+
+async fn native_file_media_rejects_paths_outside_configured_root_inner() {
     let root =
         std::env::temp_dir().join(format!("glass-native-file-allowed-{}", std::process::id()));
     let outside =
@@ -130,8 +148,14 @@ async fn native_file_media_rejects_paths_outside_configured_root() {
     fs::remove_dir_all(outside).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_module_graph_keeps_fragment_distinct_identities() {
+#[test]
+fn native_file_module_graph_keeps_fragment_distinct_identities() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_module_graph_keeps_fragment_distinct_identities_inner());
+    });
+}
+
+async fn native_file_module_graph_keeps_fragment_distinct_identities_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-module-fragments-{}",
         std::process::id()
@@ -174,8 +198,14 @@ async fn native_file_module_graph_keeps_fragment_distinct_identities() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
+#[test]
+fn native_file_document_loads_rooted_script_stylesheet_and_image() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_document_loads_rooted_script_stylesheet_and_image_inner());
+    });
+}
+
+async fn native_file_document_loads_rooted_script_stylesheet_and_image_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-subresources-{}",
         std::process::id()
@@ -275,8 +305,16 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_resolves_runtime_valued_imports_from_initial_scripts() {
+#[test]
+fn native_file_document_resolves_runtime_valued_imports_from_initial_scripts() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_file_document_resolves_runtime_valued_imports_from_initial_scripts_inner(),
+        );
+    });
+}
+
+async fn native_file_document_resolves_runtime_valued_imports_from_initial_scripts_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-runtime-imports-{}",
         std::process::id()
@@ -371,8 +409,16 @@ async fn native_file_document_resolves_runtime_valued_imports_from_initial_scrip
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_rooted_file_csp_enforces_script_sources_and_replaces_on_reload() {
+#[test]
+fn native_rooted_file_csp_enforces_script_sources_and_replaces_on_reload() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_rooted_file_csp_enforces_script_sources_and_replaces_on_reload_inner(),
+        );
+    });
+}
+
+async fn native_rooted_file_csp_enforces_script_sources_and_replaces_on_reload_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-script-csp-{}",
         std::process::id()
@@ -482,8 +528,15 @@ async fn native_rooted_file_csp_enforces_script_sources_and_replaces_on_reload()
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_applies_parser_import_maps_to_initial_scripts() {
+#[test]
+fn native_file_document_applies_parser_import_maps_to_initial_scripts() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_file_document_applies_parser_import_maps_to_initial_scripts_inner());
+    });
+}
+
+async fn native_file_document_applies_parser_import_maps_to_initial_scripts_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-parser-import-map-{}",
         std::process::id()
@@ -572,8 +625,16 @@ async fn native_file_document_applies_parser_import_maps_to_initial_scripts() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_resolves_runtime_imports_from_late_classic_scripts() {
+#[test]
+fn native_file_document_resolves_runtime_imports_from_late_classic_scripts() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_file_document_resolves_runtime_imports_from_late_classic_scripts_inner(),
+        );
+    });
+}
+
+async fn native_file_document_resolves_runtime_imports_from_late_classic_scripts_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-late-runtime-imports-{}",
         std::process::id()
@@ -650,8 +711,14 @@ async fn native_file_document_resolves_runtime_imports_from_late_classic_scripts
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_loads_rooted_dynamic_subresources() {
+#[test]
+fn native_file_document_loads_rooted_dynamic_subresources() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_document_loads_rooted_dynamic_subresources_inner());
+    });
+}
+
+async fn native_file_document_loads_rooted_dynamic_subresources_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-dynamic-resources-{}",
         std::process::id()
@@ -777,8 +844,14 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_stylesheet_import_rejects_unrooted_dependency() {
+#[test]
+fn native_file_stylesheet_import_rejects_unrooted_dependency() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_stylesheet_import_rejects_unrooted_dependency_inner());
+    });
+}
+
+async fn native_file_stylesheet_import_rejects_unrooted_dependency_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-stylesheet-import-root-{}",
         std::process::id()
@@ -823,8 +896,16 @@ async fn native_file_stylesheet_import_rejects_unrooted_dependency() {
     fs::remove_file(outside_path).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations() {
+#[test]
+fn native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations_inner(),
+        );
+    });
+}
+
+async fn native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-inline-style-csp-{}",
         std::process::id()
@@ -910,8 +991,14 @@ async fn native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations(
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_dynamic_csp_meta_is_head_scoped_and_append_only() {
+#[test]
+fn native_file_dynamic_csp_meta_is_head_scoped_and_append_only() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_dynamic_csp_meta_is_head_scoped_and_append_only_inner());
+    });
+}
+
+async fn native_file_dynamic_csp_meta_is_head_scoped_and_append_only_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-dynamic-csp-meta-{}",
         std::process::id()
@@ -1031,8 +1118,14 @@ async fn native_file_dynamic_csp_meta_is_head_scoped_and_append_only() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_dynamic_csp_meta_blocks_same_turn_image_resource() {
+#[test]
+fn native_file_dynamic_csp_meta_blocks_same_turn_image_resource() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_dynamic_csp_meta_blocks_same_turn_image_resource_inner());
+    });
+}
+
+async fn native_file_dynamic_csp_meta_blocks_same_turn_image_resource_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-dynamic-image-csp-{}",
         std::process::id()
@@ -1096,8 +1189,14 @@ async fn native_file_dynamic_csp_meta_blocks_same_turn_image_resource() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
+#[test]
+fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error_inner());
+    });
+}
+
+async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-style-csp-root-{}",
         std::process::id()
@@ -1204,8 +1303,15 @@ async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_stylesheet_csp_blocks_import_from_another_allowed_root() {
+#[test]
+fn native_file_stylesheet_csp_blocks_import_from_another_allowed_root() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_file_stylesheet_csp_blocks_import_from_another_allowed_root_inner());
+    });
+}
+
+async fn native_file_stylesheet_csp_blocks_import_from_another_allowed_root_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-style-import-csp-{}",
         std::process::id()
@@ -1249,8 +1355,14 @@ async fn native_file_stylesheet_csp_blocks_import_from_another_allowed_root() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_document_runs_dedicated_and_module_workers() {
+#[test]
+fn native_file_document_runs_dedicated_and_module_workers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_document_runs_dedicated_and_module_workers_inner());
+    });
+}
+
+async fn native_file_document_runs_dedicated_and_module_workers_inner() {
     let root =
         std::env::temp_dir().join(format!("glass-native-file-workers-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -1312,8 +1424,14 @@ async fn native_file_document_runs_dedicated_and_module_workers() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_module_graph_rejects_unrooted_dependencies() {
+#[test]
+fn native_file_module_graph_rejects_unrooted_dependencies() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_module_graph_rejects_unrooted_dependencies_inner());
+    });
+}
+
+async fn native_file_module_graph_rejects_unrooted_dependencies_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-module-root-{}",
         std::process::id()
@@ -1358,8 +1476,14 @@ async fn native_file_module_graph_rejects_unrooted_dependencies() {
     fs::remove_file(outside_path).unwrap();
 }
 
-#[tokio::test]
-async fn native_file_download_link_transfers_rooted_bytes() {
+#[test]
+fn native_file_download_link_transfers_rooted_bytes() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_download_link_transfers_rooted_bytes_inner());
+    });
+}
+
+async fn native_file_download_link_transfers_rooted_bytes_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-download-{}-{}",
         std::process::id(),

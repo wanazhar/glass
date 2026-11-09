@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_video_rejects_unsupported_mp4_without_claiming_playback() {
+#[test]
+fn native_video_rejects_unsupported_mp4_without_claiming_playback() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_video_rejects_unsupported_mp4_without_claiming_playback_inner());
+    });
+}
+
+async fn native_video_rejects_unsupported_mp4_without_claiming_playback_inner() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://video-capability.test/")
         .with_fixture(
@@ -40,8 +46,14 @@ async fn native_video_rejects_unsupported_mp4_without_claiming_playback() {
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame() {
+#[test]
+fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_webm_vp8_play_pause_seek_paints_decoded_video_frame_inner());
+    });
+}
+
+async fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame_inner() {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("../../fixtures/native-journeys-v1.json"))
             .expect("native journey corpus must be valid JSON");
@@ -193,8 +205,16 @@ async fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
-async fn native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_source() {
+#[test]
+fn native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_source() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_source_inner(),
+        );
+    });
+}
+
+async fn native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_source_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 8,
@@ -682,8 +702,14 @@ fn native_stylesheet_background_geometry_cascades_into_paint() {
     assert_eq!(painted.pixel(4, 0), Some([255, 0, 0, 255]));
     assert_eq!(painted.pixel(0, 2), Some([255, 255, 255, 255]));
 }
-#[tokio::test]
-async fn native_jpeg_data_images_expose_intrinsic_dimensions_and_paint() {
+#[test]
+fn native_jpeg_data_images_expose_intrinsic_dimensions_and_paint() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_jpeg_data_images_expose_intrinsic_dimensions_and_paint_inner());
+    });
+}
+
+async fn native_jpeg_data_images_expose_intrinsic_dimensions_and_paint_inner() {
     let source = native_test_small_jpeg_data_url();
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://jpeg-image/page")
@@ -730,8 +756,14 @@ async fn native_jpeg_data_images_expose_intrinsic_dimensions_and_paint() {
     }));
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_gif_data_images_expose_intrinsic_dimensions_and_paint() {
+#[test]
+fn native_gif_data_images_expose_intrinsic_dimensions_and_paint() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_gif_data_images_expose_intrinsic_dimensions_and_paint_inner());
+    });
+}
+
+async fn native_gif_data_images_expose_intrinsic_dimensions_and_paint_inner() {
     let source = native_test_small_gif_data_url();
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://gif-image/page")

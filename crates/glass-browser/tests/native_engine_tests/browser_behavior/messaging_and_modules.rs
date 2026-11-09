@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_json_module_file_graph_loads_rooted_imports() {
+#[test]
+fn native_json_module_file_graph_loads_rooted_imports() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_json_module_file_graph_loads_rooted_imports_inner());
+    });
+}
+
+async fn native_json_module_file_graph_loads_rooted_imports_inner() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-json-modules-{}",
         std::process::id()
@@ -41,8 +47,14 @@ async fn native_json_module_file_graph_loads_rooted_imports() {
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
-#[tokio::test]
-async fn native_message_transport_preserves_structured_clone_values() {
+#[test]
+fn native_message_transport_preserves_structured_clone_values() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_message_transport_preserves_structured_clone_values_inner());
+    });
+}
+
+async fn native_message_transport_preserves_structured_clone_values_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://structured-clone-page",
@@ -176,8 +188,14 @@ async fn native_message_transport_preserves_structured_clone_values() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_message_ports_transfer_between_page_and_worker_realms() {
+#[test]
+fn native_message_ports_transfer_between_page_and_worker_realms() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_message_ports_transfer_between_page_and_worker_realms_inner());
+    });
+}
+
+async fn native_message_ports_transfer_between_page_and_worker_realms_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://transferred-message-port-page",
@@ -284,8 +302,16 @@ async fn native_message_ports_transfer_between_page_and_worker_realms() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_message_ports_transfer_blob_urls_between_page_and_worker_realms() {
+#[test]
+fn native_message_ports_transfer_blob_urls_between_page_and_worker_realms() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_message_ports_transfer_blob_urls_between_page_and_worker_realms_inner(),
+        );
+    });
+}
+
+async fn native_message_ports_transfer_blob_urls_between_page_and_worker_realms_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://message-port-blob-page",
@@ -516,8 +542,14 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers_i
         .await
         .expect_err("the bounded local fixture server should stop after the test");
 }
-#[tokio::test]
-async fn native_json_module_service_worker_static_imports() {
+#[test]
+fn native_json_module_service_worker_static_imports() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_json_module_service_worker_static_imports_inner());
+    });
+}
+
+async fn native_json_module_service_worker_static_imports_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -838,8 +870,14 @@ fn canonical_browser_session_stop_loading_cancels_and_restarts_worker() {
         .join()
         .expect("canonical stop-loading test thread should complete");
 }
-#[tokio::test]
-async fn native_json_module_page_graph_uses_module_type_identity() {
+#[test]
+fn native_json_module_page_graph_uses_module_type_identity() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_json_module_page_graph_uses_module_type_identity_inner());
+    });
+}
+
+async fn native_json_module_page_graph_uses_module_type_identity_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -926,8 +964,15 @@ async fn native_json_module_page_graph_uses_module_type_identity() {
         "module-type identity failure details: paths={requests:?}, JSON accepts={data_module_accepts_json:?}"
     );
 }
-#[tokio::test]
-async fn native_dynamic_json_import_options_are_demand_loaded_and_type_keyed() {
+#[test]
+fn native_dynamic_json_import_options_are_demand_loaded_and_type_keyed() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_dynamic_json_import_options_are_demand_loaded_and_type_keyed_inner());
+    });
+}
+
+async fn native_dynamic_json_import_options_are_demand_loaded_and_type_keyed_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1008,8 +1053,14 @@ async fn native_dynamic_json_import_options_are_demand_loaded_and_type_keyed() {
         "dynamic import type identity or options evaluation order was incorrect: paths={requests:?}, JSON accepts={accepts_json:?}"
     );
 }
-#[tokio::test]
-async fn native_json_module_rejects_wrong_mime_and_invalid_json() {
+#[test]
+fn native_json_module_rejects_wrong_mime_and_invalid_json() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_json_module_rejects_wrong_mime_and_invalid_json_inner());
+    });
+}
+
+async fn native_json_module_rejects_wrong_mime_and_invalid_json_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1103,8 +1154,14 @@ async fn native_json_module_rejects_wrong_mime_and_invalid_json() {
         ]
     );
 }
-#[tokio::test]
-async fn native_json_module_worker_graph_uses_redirected_response_base() {
+#[test]
+fn native_json_module_worker_graph_uses_redirected_response_base() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_json_module_worker_graph_uses_redirected_response_base_inner());
+    });
+}
+
+async fn native_json_module_worker_graph_uses_redirected_response_base_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1205,8 +1262,16 @@ async fn native_json_module_worker_graph_uses_redirected_response_base() {
         ]
     );
 }
-#[tokio::test]
-async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transport_port() {
+#[test]
+fn native_readable_stream_transfer_preserves_pull_order_and_hides_transport_port() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_readable_stream_transfer_preserves_pull_order_and_hides_transport_port_inner(),
+        );
+    });
+}
+
+async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transport_port_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 8,

@@ -155,8 +155,14 @@ async fn native_content_process_history_beforeunload_waits_before_loading_target
         })
         .await;
 }
-#[tokio::test]
-async fn native_content_process_forwards_page_dialogs_without_chromium() {
+#[test]
+fn native_content_process_forwards_page_dialogs_without_chromium() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_forwards_page_dialogs_without_chromium_inner());
+    });
+}
+
+async fn native_content_process_forwards_page_dialogs_without_chromium_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -364,8 +370,15 @@ async fn native_http_window_proxy_location_navigates_content_process_target_inne
     session.close().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_async_http_history_traversal_reloads_through_content_process() {
+#[test]
+fn native_async_http_history_traversal_reloads_through_content_process() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_async_http_history_traversal_reloads_through_content_process_inner());
+    });
+}
+
+async fn native_async_http_history_traversal_reloads_through_content_process_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -619,8 +632,14 @@ async fn native_content_process_history_restores_nested_scroll_offsets_across_re
     let _ = server_stop_tx.send(());
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_action_event_preserves_history_api() {
+#[test]
+fn native_content_process_action_event_preserves_history_api() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_action_event_preserves_history_api_inner());
+    });
+}
+
+async fn native_content_process_action_event_preserves_history_api_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -675,8 +694,14 @@ async fn native_content_process_action_event_preserves_history_api() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_document_fragments_cross_the_http_boundary() {
+#[test]
+fn native_content_process_document_fragments_cross_the_http_boundary() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_document_fragments_cross_the_http_boundary_inner());
+    });
+}
+
+async fn native_content_process_document_fragments_cross_the_http_boundary_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -847,8 +872,15 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_page_load_location_handoffs_preserve_history() {
+#[test]
+fn native_content_process_page_load_location_handoffs_preserve_history() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_page_load_location_handoffs_preserve_history_inner());
+    });
+}
+
+async fn native_content_process_page_load_location_handoffs_preserve_history_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -896,8 +928,15 @@ async fn native_content_process_page_load_location_handoffs_preserve_history() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
+#[test]
+fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_runs_inline_page_scripts_in_persistent_realm_inner());
+    });
+}
+
+async fn native_content_process_runs_inline_page_scripts_in_persistent_realm_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -944,8 +983,16 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_routes_body_and_frameset_handlers_through_window_slot() {
+#[test]
+fn native_content_process_routes_body_and_frameset_handlers_through_window_slot() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_routes_body_and_frameset_handlers_through_window_slot_inner(),
+        );
+    });
+}
+
+async fn native_content_process_routes_body_and_frameset_handlers_through_window_slot_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1072,8 +1119,14 @@ async fn native_content_process_routes_body_and_frameset_handlers_through_window
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_orders_navigation_lifecycle_events() {
+#[test]
+fn native_content_process_orders_navigation_lifecycle_events() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_orders_navigation_lifecycle_events_inner());
+    });
+}
+
+async fn native_content_process_orders_navigation_lifecycle_events_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1135,8 +1188,17 @@ async fn native_content_process_orders_navigation_lifecycle_events() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_beforeunload_without_activation_does_not_block_navigation() {
+#[test]
+fn native_content_process_beforeunload_without_activation_does_not_block_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_beforeunload_without_activation_does_not_block_navigation_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_beforeunload_without_activation_does_not_block_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1180,8 +1242,14 @@ async fn native_content_process_beforeunload_without_activation_does_not_block_n
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_outgoing_lifecycle_can_replace_navigation() {
+#[test]
+fn native_content_process_outgoing_lifecycle_can_replace_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_outgoing_lifecycle_can_replace_navigation_inner());
+    });
+}
+
+async fn native_content_process_outgoing_lifecycle_can_replace_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1223,8 +1291,16 @@ async fn native_content_process_outgoing_lifecycle_can_replace_navigation() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_fragment_navigation_dispatches_hashchange_in_place() {
+#[test]
+fn native_content_process_fragment_navigation_dispatches_hashchange_in_place() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_fragment_navigation_dispatches_hashchange_in_place_inner(),
+        );
+    });
+}
+
+async fn native_content_process_fragment_navigation_dispatches_hashchange_in_place_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1269,8 +1345,14 @@ async fn native_content_process_fragment_navigation_dispatches_hashchange_in_pla
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_hashchange_can_reenter_navigation() {
+#[test]
+fn native_content_process_hashchange_can_reenter_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_hashchange_can_reenter_navigation_inner());
+    });
+}
+
+async fn native_content_process_hashchange_can_reenter_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1312,8 +1394,16 @@ async fn native_content_process_hashchange_can_reenter_navigation() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_loads_classic_external_scripts_in_document_order() {
+#[test]
+fn native_content_process_loads_classic_external_scripts_in_document_order() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_loads_classic_external_scripts_in_document_order_inner(),
+        );
+    });
+}
+
+async fn native_content_process_loads_classic_external_scripts_in_document_order_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1352,8 +1442,16 @@ async fn native_content_process_loads_classic_external_scripts_in_document_order
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_keeps_document_alive_when_optional_resources_fail() {
+#[test]
+fn native_content_process_keeps_document_alive_when_optional_resources_fail() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_keeps_document_alive_when_optional_resources_fail_inner(),
+        );
+    });
+}
+
+async fn native_content_process_keeps_document_alive_when_optional_resources_fail_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1405,8 +1503,14 @@ async fn native_content_process_keeps_document_alive_when_optional_resources_fai
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_loads_external_modules_in_document_order() {
+#[test]
+fn native_content_process_loads_external_modules_in_document_order() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_loads_external_modules_in_document_order_inner());
+    });
+}
+
+async fn native_content_process_loads_external_modules_in_document_order_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1797,8 +1901,16 @@ async fn native_content_process_allows_csp_same_origin_frame_inner() {
     session.close().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_reuses_bounded_http_cache_for_fragment_navigation() {
+#[test]
+fn native_content_process_reuses_bounded_http_cache_for_fragment_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_reuses_bounded_http_cache_for_fragment_navigation_inner(),
+        );
+    });
+}
+
+async fn native_content_process_reuses_bounded_http_cache_for_fragment_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1832,8 +1944,14 @@ async fn native_content_process_reuses_bounded_http_cache_for_fragment_navigatio
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_enforces_child_owned_document_limit() {
+#[test]
+fn native_content_process_enforces_child_owned_document_limit() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_enforces_child_owned_document_limit_inner());
+    });
+}
+
+async fn native_content_process_enforces_child_owned_document_limit_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1866,8 +1984,14 @@ async fn native_content_process_enforces_child_owned_document_limit() {
     assert!(error.contains("HTTP document exceeds limit 32"), "{error}");
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_loads_external_png_through_document_wire() {
+#[test]
+fn native_content_process_loads_external_png_through_document_wire() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_loads_external_png_through_document_wire_inner());
+    });
+}
+
+async fn native_content_process_loads_external_png_through_document_wire_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1956,8 +2080,14 @@ async fn native_content_process_loads_external_png_through_document_wire() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_file_content_process_settles_page_dynamic_module_graphs() {
+#[test]
+fn native_file_content_process_settles_page_dynamic_module_graphs() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_file_content_process_settles_page_dynamic_module_graphs_inner());
+    });
+}
+
+async fn native_file_content_process_settles_page_dynamic_module_graphs_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let root = std::env::temp_dir().join(format!(
         "glass-native-page-dynamic-module-{}",
@@ -2012,8 +2142,16 @@ async fn native_file_content_process_settles_page_dynamic_module_graphs() {
         serde_json::json!([true, true, true, true, true, true, true, null, 0])
     );
 }
-#[tokio::test]
-async fn native_content_process_loads_external_background_png_through_document_wire() {
+#[test]
+fn native_content_process_loads_external_background_png_through_document_wire() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_loads_external_background_png_through_document_wire_inner(),
+        );
+    });
+}
+
+async fn native_content_process_loads_external_background_png_through_document_wire_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2069,8 +2207,14 @@ async fn native_content_process_loads_external_background_png_through_document_w
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_exposes_page_web_storage_realm() {
+#[test]
+fn native_content_process_exposes_page_web_storage_realm() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_exposes_page_web_storage_realm_inner());
+    });
+}
+
+async fn native_content_process_exposes_page_web_storage_realm_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2110,8 +2254,16 @@ async fn native_content_process_exposes_page_web_storage_realm() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_delivers_local_storage_events_between_documents() {
+#[test]
+fn native_content_process_delivers_local_storage_events_between_documents() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_delivers_local_storage_events_between_documents_inner(),
+        );
+    });
+}
+
+async fn native_content_process_delivers_local_storage_events_between_documents_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-content-events.json",
@@ -2194,8 +2346,16 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
     let _ = fs::remove_file(lock_path);
     let _ = fs::remove_file(events_path);
 }
-#[tokio::test]
-async fn native_content_process_preserves_origin_keyed_web_storage_across_navigation() {
+#[test]
+fn native_content_process_preserves_origin_keyed_web_storage_across_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_preserves_origin_keyed_web_storage_across_navigation_inner(),
+        );
+    });
+}
+
+async fn native_content_process_preserves_origin_keyed_web_storage_across_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2252,8 +2412,14 @@ async fn native_content_process_preserves_origin_keyed_web_storage_across_naviga
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_commits_page_work_from_stream_upload_pull() {
+#[test]
+fn native_content_process_commits_page_work_from_stream_upload_pull() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_commits_page_work_from_stream_upload_pull_inner());
+    });
+}
+
+async fn native_content_process_commits_page_work_from_stream_upload_pull_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

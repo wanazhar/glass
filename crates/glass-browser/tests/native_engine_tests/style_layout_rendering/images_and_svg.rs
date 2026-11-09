@@ -403,8 +403,14 @@ async fn native_image_map_keyboard_focus_and_enter_activation_inner() {
     );
     session.close().await.unwrap();
 }
-#[tokio::test]
-async fn native_image_bitmap_transfer_preserves_pixels_across_worker_realm() {
+#[test]
+fn native_image_bitmap_transfer_preserves_pixels_across_worker_realm() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_image_bitmap_transfer_preserves_pixels_across_worker_realm_inner());
+    });
+}
+
+async fn native_image_bitmap_transfer_preserves_pixels_across_worker_realm_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 8,
@@ -506,8 +512,14 @@ async fn native_image_bitmap_transfer_preserves_pixels_across_worker_realm() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_canvas_image_source_preserves_animated_frames() {
+#[test]
+fn native_canvas_image_source_preserves_animated_frames() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_canvas_image_source_preserves_animated_frames_inner());
+    });
+}
+
+async fn native_canvas_image_source_preserves_animated_frames_inner() {
     let source = format!(
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(native_test_animated_gif_bytes())
@@ -564,8 +576,14 @@ async fn native_canvas_image_source_preserves_animated_frames() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_canvas_cross_origin_image_taints_readback() {
+#[test]
+fn native_canvas_cross_origin_image_taints_readback() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_canvas_cross_origin_image_taints_readback_inner());
+    });
+}
+
+async fn native_canvas_cross_origin_image_taints_readback_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let page_address = page_listener.local_addr().unwrap();
@@ -1194,8 +1212,14 @@ fn native_css_background_images_repeat_and_crop_tiles() {
     assert_eq!(painted.pixel(2, 0), Some([255, 0, 0, 255]));
     assert_eq!(painted.pixel(4, 3), Some([0, 0, 255, 255]));
 }
-#[tokio::test]
-async fn native_animated_gif_data_images_paint_multiple_frames() {
+#[test]
+fn native_animated_gif_data_images_paint_multiple_frames() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_animated_gif_data_images_paint_multiple_frames_inner());
+    });
+}
+
+async fn native_animated_gif_data_images_paint_multiple_frames_inner() {
     let source = format!(
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(native_test_animated_gif_bytes())
@@ -1234,8 +1258,14 @@ async fn native_animated_gif_data_images_paint_multiple_frames() {
     assert!(changed, "animated GIF did not advance to another frame");
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_animated_webp_data_images_paint_multiple_frames() {
+#[test]
+fn native_animated_webp_data_images_paint_multiple_frames() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_animated_webp_data_images_paint_multiple_frames_inner());
+    });
+}
+
+async fn native_animated_webp_data_images_paint_multiple_frames_inner() {
     let source = format!(
         "data:image/webp;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(native_test_animated_webp_bytes())
@@ -1274,8 +1304,14 @@ async fn native_animated_webp_data_images_paint_multiple_frames() {
     assert!(changed, "animated WebP did not advance to another frame");
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_animated_apng_data_images_paint_multiple_frames() {
+#[test]
+fn native_animated_apng_data_images_paint_multiple_frames() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_animated_apng_data_images_paint_multiple_frames_inner());
+    });
+}
+
+async fn native_animated_apng_data_images_paint_multiple_frames_inner() {
     let source = format!(
         "data:image/apng;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(native_test_animated_apng_bytes())
@@ -1314,8 +1350,14 @@ async fn native_animated_apng_data_images_paint_multiple_frames() {
     assert!(changed, "animated APNG did not advance to another frame");
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_images_expose_accessible_role_and_alt_name() {
+#[test]
+fn native_images_expose_accessible_role_and_alt_name() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_images_expose_accessible_role_and_alt_name_inner());
+    });
+}
+
+async fn native_images_expose_accessible_role_and_alt_name_inner() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://image-semantics/page")
@@ -1423,8 +1465,14 @@ fn native_image_map_hit_testing_normalizes_shapes_and_uses_displayed_content_pix
             .any(|node| node.node_id == node_id("dead"))
     );
 }
-#[tokio::test]
-async fn native_image_map_hit_testing_tracks_live_dom_mutations() {
+#[test]
+fn native_image_map_hit_testing_tracks_live_dom_mutations() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_image_map_hit_testing_tracks_live_dom_mutations_inner());
+    });
+}
+
+async fn native_image_map_hit_testing_tracks_live_dom_mutations_inner() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://live-image-map")
         .with_fixture(
@@ -1500,8 +1548,14 @@ async fn native_image_map_hit_testing_tracks_live_dom_mutations() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_images_select_srcset_candidates_from_viewport_and_density() {
+#[test]
+fn native_images_select_srcset_candidates_from_viewport_and_density() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_images_select_srcset_candidates_from_viewport_and_density_inner());
+    });
+}
+
+async fn native_images_select_srcset_candidates_from_viewport_and_density_inner() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://image-srcset/page")
         .with_viewport(Viewport {

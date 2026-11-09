@@ -142,8 +142,14 @@ fn native_backend_dispatches_horizontal_scroll_into_capture() {
         .expect("horizontal scroll capture test thread should complete");
 }
 
-#[tokio::test]
-async fn native_backend_uses_configured_context_identity() {
+#[test]
+fn native_backend_uses_configured_context_identity() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_backend_uses_configured_context_identity_inner());
+    });
+}
+
+async fn native_backend_uses_configured_context_identity_inner() {
     let backend = NativeEngineBackend::new(
         NativeEngineConfig::default()
             .with_context_id("tab-one")
@@ -203,8 +209,14 @@ fn native_backend_is_selected_without_explicit_factory_preference() {
     );
 }
 
-#[tokio::test]
-async fn native_engine_parent_fetches_cors_authorized_cross_origin_get() {
+#[test]
+fn native_engine_parent_fetches_cors_authorized_cross_origin_get() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_engine_parent_fetches_cors_authorized_cross_origin_get_inner());
+    });
+}
+
+async fn native_engine_parent_fetches_cors_authorized_cross_origin_get_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let document_address = document_listener.local_addr().unwrap();

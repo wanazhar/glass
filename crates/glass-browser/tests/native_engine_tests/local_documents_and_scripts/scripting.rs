@@ -171,8 +171,14 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections_inner(
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_exposes_comments_and_doctype_nodes() {
+#[test]
+fn native_local_script_exposes_comments_and_doctype_nodes() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_exposes_comments_and_doctype_nodes_inner());
+    });
+}
+
+async fn native_local_script_exposes_comments_and_doctype_nodes_inner() {
     let mut engine = NativeEngine::new(
         NativeEngineConfig::default()
             .with_fixture(
@@ -212,8 +218,14 @@ async fn native_local_script_exposes_comments_and_doctype_nodes() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_creates_and_persists_comment_nodes() {
+#[test]
+fn native_local_script_creates_and_persists_comment_nodes() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_creates_and_persists_comment_nodes_inner());
+    });
+}
+
+async fn native_local_script_creates_and_persists_comment_nodes_inner() {
     let mut engine = NativeEngine::new(
         NativeEngineConfig::default()
             .with_fixture(
@@ -251,8 +263,14 @@ async fn native_local_script_creates_and_persists_comment_nodes() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_creates_and_persists_document_types() {
+#[test]
+fn native_local_script_creates_and_persists_document_types() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_creates_and_persists_document_types_inner());
+    });
+}
+
+async fn native_local_script_creates_and_persists_document_types_inner() {
     let mut engine = NativeEngine::new(
         NativeEngineConfig::default()
             .with_fixture(
@@ -289,8 +307,15 @@ async fn native_local_script_creates_and_persists_document_types() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
+#[test]
+fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_local_dynamic_inline_script_runs_once_after_late_attachment_inner());
+    });
+}
+
+async fn native_local_dynamic_inline_script_runs_once_after_late_attachment_inner() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
         "data:text/html,%3Chtml%3E%3Cbody%3E%3Cp%3ENative%3C%2Fp%3E%3C%2Fbody%3E%3C%2Fhtml%3E",
     ))
@@ -340,8 +365,15 @@ async fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_dynamic_blob_classic_script_runs_after_late_attachment() {
+#[test]
+fn native_local_dynamic_blob_classic_script_runs_after_late_attachment() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_local_dynamic_blob_classic_script_runs_after_late_attachment_inner());
+    });
+}
+
+async fn native_local_dynamic_blob_classic_script_runs_after_late_attachment_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://blob-dynamic-script",
@@ -370,8 +402,14 @@ async fn native_local_dynamic_blob_classic_script_runs_after_late_attachment() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_exposes_computed_style_and_media_queries() {
+#[test]
+fn native_local_script_exposes_computed_style_and_media_queries() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_exposes_computed_style_and_media_queries_inner());
+    });
+}
+
+async fn native_local_script_exposes_computed_style_and_media_queries_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://computed-style",
@@ -407,8 +445,15 @@ async fn native_local_script_exposes_computed_style_and_media_queries() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_inline_page_scripts_run_before_commit_and_persist_realm() {
+#[test]
+fn native_local_inline_page_scripts_run_before_commit_and_persist_realm() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_local_inline_page_scripts_run_before_commit_and_persist_realm_inner());
+    });
+}
+
+async fn native_local_inline_page_scripts_run_before_commit_and_persist_realm_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://inline-script-load",
@@ -436,8 +481,14 @@ async fn native_local_inline_page_scripts_run_before_commit_and_persist_realm() 
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_page_lifecycle_events_fire_after_script_schedule() {
+#[test]
+fn native_local_page_lifecycle_events_fire_after_script_schedule() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_page_lifecycle_events_fire_after_script_schedule_inner());
+    });
+}
+
+async fn native_local_page_lifecycle_events_fire_after_script_schedule_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://page-lifecycle",
@@ -458,8 +509,14 @@ async fn native_local_page_lifecycle_events_fire_after_script_schedule() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_pages_without_scripts_retain_complete_ready_state() {
+#[test]
+fn native_local_pages_without_scripts_retain_complete_ready_state() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_pages_without_scripts_retain_complete_ready_state_inner());
+    });
+}
+
+async fn native_local_pages_without_scripts_retain_complete_ready_state_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://no-scripts",
@@ -475,8 +532,14 @@ async fn native_local_pages_without_scripts_retain_complete_ready_state() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_inline_modules_run_in_document_order() {
+#[test]
+fn native_local_inline_modules_run_in_document_order() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_inline_modules_run_in_document_order_inner());
+    });
+}
+
+async fn native_local_inline_modules_run_in_document_order_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://inline-module-load",
@@ -496,8 +559,14 @@ async fn native_local_inline_modules_run_in_document_order() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_scripts_honor_bounded_parser_timing_order() {
+#[test]
+fn native_local_scripts_honor_bounded_parser_timing_order() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_scripts_honor_bounded_parser_timing_order_inner());
+    });
+}
+
+async fn native_local_scripts_honor_bounded_parser_timing_order_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://parser-timing",
@@ -516,8 +585,14 @@ async fn native_local_scripts_honor_bounded_parser_timing_order() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
+#[test]
+fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_scripts_drain_microtasks_and_next_turn_timers_inner());
+    });
+}
+
+async fn native_local_scripts_drain_microtasks_and_next_turn_timers_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://script-tasks",
@@ -534,8 +609,14 @@ async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_mutation_observer_delivers_script_dom_changes() {
+#[test]
+fn native_local_mutation_observer_delivers_script_dom_changes() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_mutation_observer_delivers_script_dom_changes_inner());
+    });
+}
+
+async fn native_local_mutation_observer_delivers_script_dom_changes_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://mutation-observer",
@@ -636,8 +717,14 @@ async fn native_local_mutation_observer_delivers_script_dom_changes() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_exposes_layout_geometry_and_resize_observer() {
+#[test]
+fn native_local_script_exposes_layout_geometry_and_resize_observer() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_exposes_layout_geometry_and_resize_observer_inner());
+    });
+}
+
+async fn native_local_script_exposes_layout_geometry_and_resize_observer_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 240,
@@ -719,8 +806,14 @@ async fn native_local_script_exposes_layout_geometry_and_resize_observer() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_scrolls_root_and_nested_overflow_containers() {
+#[test]
+fn native_local_script_scrolls_root_and_nested_overflow_containers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_scrolls_root_and_nested_overflow_containers_inner());
+    });
+}
+
+async fn native_local_script_scrolls_root_and_nested_overflow_containers_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 120,
@@ -847,8 +940,16 @@ async fn native_local_script_scrolls_root_and_nested_overflow_containers() {
 
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_exposes_animation_frames_and_intersection_observer() {
+#[test]
+fn native_local_script_exposes_animation_frames_and_intersection_observer() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_local_script_exposes_animation_frames_and_intersection_observer_inner(),
+        );
+    });
+}
+
+async fn native_local_script_exposes_animation_frames_and_intersection_observer_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 240,
@@ -917,8 +1018,14 @@ async fn native_local_script_exposes_animation_frames_and_intersection_observer(
     assert_eq!(second["intersections"][1][0]["top"], serde_json::json!(88));
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_exposes_same_document_history_api() {
+#[test]
+fn native_local_script_exposes_same_document_history_api() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_exposes_same_document_history_api_inner());
+    });
+}
+
+async fn native_local_script_exposes_same_document_history_api_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://history-api",
@@ -999,8 +1106,14 @@ async fn native_local_script_exposes_same_document_history_api() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_script_applies_bounded_dom_commands_once() {
+#[test]
+fn native_local_script_applies_bounded_dom_commands_once() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_applies_bounded_dom_commands_once_inner());
+    });
+}
+
+async fn native_local_script_applies_bounded_dom_commands_once_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://script-commands",
@@ -1383,8 +1496,15 @@ fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults() {
         });
     });
 }
-#[tokio::test]
-async fn native_local_semantic_submit_button_navigates_without_script_realm() {
+#[test]
+fn native_local_semantic_submit_button_navigates_without_script_realm() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_local_semantic_submit_button_navigates_without_script_realm_inner());
+    });
+}
+
+async fn native_local_semantic_submit_button_navigates_without_script_realm_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://semantic-form",
@@ -1411,8 +1531,16 @@ async fn native_local_semantic_submit_button_navigates_without_script_realm() {
     );
     assert_eq!(engine.snapshot().unwrap().title, "Result");
 }
-#[tokio::test]
-async fn native_local_inline_script_failure_dispatches_error_without_aborting_document() {
+#[test]
+fn native_local_inline_script_failure_dispatches_error_without_aborting_document() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_local_inline_script_failure_dispatches_error_without_aborting_document_inner(),
+        );
+    });
+}
+
+async fn native_local_inline_script_failure_dispatches_error_without_aborting_document_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://inline-script-error",
@@ -1562,8 +1690,14 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_dispatches_large_script_error_batch_as_data() {
+#[test]
+fn native_local_dispatches_large_script_error_batch_as_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_dispatches_large_script_error_batch_as_data_inner());
+    });
+}
+
+async fn native_local_dispatches_large_script_error_batch_as_data_inner() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://large-script-error-batch",
@@ -1593,8 +1727,14 @@ async fn native_local_dispatches_large_script_error_batch_as_data() {
     );
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_local_canvas_2d_script_and_raster_pipeline() {
+#[test]
+fn native_local_canvas_2d_script_and_raster_pipeline() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_canvas_2d_script_and_raster_pipeline_inner());
+    });
+}
+
+async fn native_local_canvas_2d_script_and_raster_pipeline_inner() {
     let image_url = native_test_png_data_url();
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {

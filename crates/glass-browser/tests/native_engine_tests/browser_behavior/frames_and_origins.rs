@@ -1138,8 +1138,14 @@ async fn native_post_message_transfers_blob_urls_between_window_realms_inner() {
     );
     session.close().await.unwrap();
 }
-#[tokio::test]
-async fn native_initial_page_script_scrolls_and_delivers_window_event() {
+#[test]
+fn native_initial_page_script_scrolls_and_delivers_window_event() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_initial_page_script_scrolls_and_delivers_window_event_inner());
+    });
+}
+
+async fn native_initial_page_script_scrolls_and_delivers_window_event_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 80,
@@ -1167,8 +1173,15 @@ async fn native_initial_page_script_scrolls_and_delivers_window_event() {
 
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_host_fetch_service_worker_nested_cookie_uses_parent_authority() {
+#[test]
+fn native_host_fetch_service_worker_nested_cookie_uses_parent_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_host_fetch_service_worker_nested_cookie_uses_parent_authority_inner());
+    });
+}
+
+async fn native_host_fetch_service_worker_nested_cookie_uses_parent_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

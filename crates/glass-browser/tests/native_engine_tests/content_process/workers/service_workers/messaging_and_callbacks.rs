@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_service_worker_transfers_message_port_round_trip() {
+#[test]
+fn native_content_process_service_worker_transfers_message_port_round_trip() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_transfers_message_port_round_trip_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_transfers_message_port_round_trip_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -76,8 +84,16 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_message_port_bridge_close_both_directions() {
+#[test]
+fn native_content_process_service_worker_message_port_bridge_close_both_directions() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_message_port_bridge_close_both_directions_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_message_port_bridge_close_both_directions_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -396,8 +412,15 @@ self.addEventListener('message', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_client_messageerror_recovers() {
+#[test]
+fn native_content_process_service_worker_client_messageerror_recovers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_service_worker_client_messageerror_recovers_inner());
+    });
+}
+
+async fn native_content_process_service_worker_client_messageerror_recovers_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -566,8 +589,16 @@ await Promise.resolve();
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_message_port_callback_errors_stay_global() {
+#[test]
+fn native_content_process_service_worker_message_port_callback_errors_stay_global() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_message_port_callback_errors_stay_global_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_message_port_callback_errors_stay_global_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -743,8 +774,16 @@ addEventListener('message', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_message_callback_errors_stay_global() {
+#[test]
+fn native_content_process_service_worker_message_callback_errors_stay_global() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_message_callback_errors_stay_global_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_message_callback_errors_stay_global_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1091,8 +1130,17 @@ addEventListener('message', async event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_fetch_callback_errors_continue_and_fallback() {
+#[test]
+fn native_content_process_service_worker_fetch_callback_errors_continue_and_fallback() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_fetch_callback_errors_continue_and_fallback_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_fetch_callback_errors_continue_and_fallback_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1259,8 +1307,16 @@ addEventListener('fetch', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_lifecycle_callback_errors_continue() {
+#[test]
+fn native_content_process_service_worker_lifecycle_callback_errors_continue() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_lifecycle_callback_errors_continue_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_lifecycle_callback_errors_continue_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1652,8 +1708,15 @@ addEventListener('activate', event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
+#[test]
+fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_runs_service_worker_timer_on_next_page_turn_inner());
+    });
+}
+
+async fn native_content_process_runs_service_worker_timer_on_next_page_turn_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1702,8 +1765,15 @@ async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_message_events_extend_lifetime() {
+#[test]
+fn native_content_process_service_worker_message_events_extend_lifetime() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_service_worker_message_events_extend_lifetime_inner());
+    });
+}
+
+async fn native_content_process_service_worker_message_events_extend_lifetime_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

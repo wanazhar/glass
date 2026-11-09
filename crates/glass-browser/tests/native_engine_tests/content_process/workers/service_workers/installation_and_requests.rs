@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_service_worker_dynamic_imports_reject_without_fetch() {
+#[test]
+fn native_content_process_service_worker_dynamic_imports_reject_without_fetch() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_dynamic_imports_reject_without_fetch_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_dynamic_imports_reject_without_fetch_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -205,8 +213,17 @@ export const staticValue = 'module static dependency';"#,
         ]
     );
 }
-#[tokio::test]
-async fn native_content_process_propagates_service_worker_document_csp_to_controlled_fetch() {
+#[test]
+fn native_content_process_propagates_service_worker_document_csp_to_controlled_fetch() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_propagates_service_worker_document_csp_to_controlled_fetch_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_propagates_service_worker_document_csp_to_controlled_fetch_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -327,8 +344,16 @@ self.addEventListener('fetch', event => {
     server.abort();
     let _ = server.await;
 }
-#[tokio::test]
-async fn native_content_process_service_worker_dispatches_large_fetch_request_as_data() {
+#[test]
+fn native_content_process_service_worker_dispatches_large_fetch_request_as_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_service_worker_dispatches_large_fetch_request_as_data_inner(),
+        );
+    });
+}
+
+async fn native_content_process_service_worker_dispatches_large_fetch_request_as_data_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -377,8 +402,14 @@ async fn native_content_process_service_worker_dispatches_large_fetch_request_as
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_service_worker_replays_cloned_request_body() {
+#[test]
+fn native_content_process_service_worker_replays_cloned_request_body() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_service_worker_replays_cloned_request_body_inner());
+    });
+}
+
+async fn native_content_process_service_worker_replays_cloned_request_body_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

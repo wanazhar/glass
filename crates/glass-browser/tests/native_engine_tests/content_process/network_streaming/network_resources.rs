@@ -10,8 +10,14 @@ const NATIVE_LOAD_TRACE_STORAGE: &str = "GLASS_NATIVE_LOAD_TRACE_STORAGE";
 /// Isolated subprocess entrypoint for the trace regression. Only this child
 /// receives `GLASS_RUNTIME_DIAGNOSTIC_TRACE`, so unrelated tests cannot add
 /// entries to or mutate the assertions for its trace file.
-#[tokio::test]
-async fn native_load_trace_child_helper() {
+#[test]
+fn native_load_trace_child_helper() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_load_trace_child_helper_inner());
+    });
+}
+
+async fn native_load_trace_child_helper_inner() {
     if std::env::var_os(NATIVE_LOAD_TRACE_CHILD).is_none() {
         return;
     }
@@ -29,8 +35,14 @@ async fn native_load_trace_child_helper() {
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_load_trace_times_bounded_resource_stages_without_page_data() {
+#[test]
+fn native_load_trace_times_bounded_resource_stages_without_page_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_load_trace_times_bounded_resource_stages_without_page_data_inner());
+    });
+}
+
+async fn native_load_trace_times_bounded_resource_stages_without_page_data_inner() {
     const RESOURCE_DELAY: Duration = Duration::from_millis(80);
     // The 16-entry top-level stylesheet cap with the per-request 30s timeout
     // permits 480s of serial wait by itself, while one content-process load
@@ -252,8 +264,16 @@ async fn native_load_trace_times_bounded_resource_stages_without_page_data() {
     std::fs::remove_dir_all(trace_root).unwrap();
 }
 
-#[tokio::test]
-async fn native_content_process_delivers_report_only_report_to_network_reports() {
+#[test]
+fn native_content_process_delivers_report_only_report_to_network_reports() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_delivers_report_only_report_to_network_reports_inner(),
+        );
+    });
+}
+
+async fn native_content_process_delivers_report_only_report_to_network_reports_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let page_address = page_listener.local_addr().unwrap();
@@ -324,8 +344,15 @@ async fn native_content_process_delivers_report_only_report_to_network_reports()
     report_server.await.unwrap();
     engine.close_async().await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_resolves_network_css_urls_against_stylesheet() {
+#[test]
+fn native_content_process_resolves_network_css_urls_against_stylesheet() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_resolves_network_css_urls_against_stylesheet_inner());
+    });
+}
+
+async fn native_content_process_resolves_network_css_urls_against_stylesheet_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -388,8 +415,14 @@ async fn native_content_process_resolves_network_css_urls_against_stylesheet() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_loads_network_css_import_graph() {
+#[test]
+fn native_content_process_loads_network_css_import_graph() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_loads_network_css_import_graph_inner());
+    });
+}
+
+async fn native_content_process_loads_network_css_import_graph_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -487,8 +520,14 @@ async fn native_content_process_loads_network_css_import_graph() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_preserves_fifo_network_task_order() {
+#[test]
+fn native_content_process_preserves_fifo_network_task_order() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_preserves_fifo_network_task_order_inner());
+    });
+}
+
+async fn native_content_process_preserves_fifo_network_task_order_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -527,8 +566,15 @@ async fn native_content_process_preserves_fifo_network_task_order() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_round_robins_due_timer_between_network_tasks() {
+#[test]
+fn native_content_process_round_robins_due_timer_between_network_tasks() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_round_robins_due_timer_between_network_tasks_inner());
+    });
+}
+
+async fn native_content_process_round_robins_due_timer_between_network_tasks_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -1,7 +1,14 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_dedicated_worker_message_port_callback_errors_report_and_forward() {
+#[test]
+fn native_content_process_dedicated_worker_message_port_callback_errors_report_and_forward() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_dedicated_worker_message_port_callback_errors_report_and_forward_inner());
+    });
+}
+
+async fn native_content_process_dedicated_worker_message_port_callback_errors_report_and_forward_inner()
+ {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -203,8 +210,16 @@ onmessage = event => {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_module_worker_graph_uses_parent_cookie_authority() {
+#[test]
+fn native_content_process_module_worker_graph_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_module_worker_graph_uses_parent_cookie_authority_inner(),
+        );
+    });
+}
+
+async fn native_content_process_module_worker_graph_uses_parent_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -420,8 +435,14 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
         );
     }
 }
-#[tokio::test]
-async fn native_content_process_uses_script_csp_for_worker_import_scripts() {
+#[test]
+fn native_content_process_uses_script_csp_for_worker_import_scripts() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_uses_script_csp_for_worker_import_scripts_inner());
+    });
+}
+
+async fn native_content_process_uses_script_csp_for_worker_import_scripts_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -512,8 +533,14 @@ async fn native_content_process_uses_script_csp_for_worker_import_scripts() {
     assert!(paths.contains(&"/worker-csp-report-dependency.js".to_owned()));
     assert!(!paths.contains(&"/worker-csp-denied-dependency.js".to_owned()));
 }
-#[tokio::test]
-async fn native_content_process_resolves_runtime_worker_module_imports() {
+#[test]
+fn native_content_process_resolves_runtime_worker_module_imports() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_resolves_runtime_worker_module_imports_inner());
+    });
+}
+
+async fn native_content_process_resolves_runtime_worker_module_imports_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -591,8 +618,16 @@ async fn native_content_process_resolves_runtime_worker_module_imports() {
         ]
     );
 }
-#[tokio::test]
-async fn native_content_process_inherits_referrer_policy_through_module_workers() {
+#[test]
+fn native_content_process_inherits_referrer_policy_through_module_workers() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_inherits_referrer_policy_through_module_workers_inner(),
+        );
+    });
+}
+
+async fn native_content_process_inherits_referrer_policy_through_module_workers_inner() {
     fn request_header(request: &str, name: &str) -> Option<String> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {

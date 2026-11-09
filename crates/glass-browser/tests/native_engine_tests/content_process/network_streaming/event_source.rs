@@ -1,7 +1,15 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_delivers_report_only_connect_events_for_event_source() {
+#[test]
+fn native_content_process_delivers_report_only_connect_events_for_event_source() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_delivers_report_only_connect_events_for_event_source_inner(),
+        );
+    });
+}
+
+async fn native_content_process_delivers_report_only_connect_events_for_event_source_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -898,8 +906,14 @@ eventSource.addEventListener('error', () => {{
         });
     });
 }
-#[tokio::test]
-async fn native_content_process_drives_event_source_named_multiline_events() {
+#[test]
+fn native_content_process_drives_event_source_named_multiline_events() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_drives_event_source_named_multiline_events_inner());
+    });
+}
+
+async fn native_content_process_drives_event_source_named_multiline_events_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-eventsource-cookie-{}.json",
@@ -1055,8 +1069,15 @@ async fn native_content_process_drives_event_source_named_multiline_events() {
         let _ = fs::remove_file(path);
     }
 }
-#[tokio::test]
-async fn native_content_process_dispatches_large_event_source_event_as_data() {
+#[test]
+fn native_content_process_dispatches_large_event_source_event_as_data() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_content_process_dispatches_large_event_source_event_as_data_inner());
+    });
+}
+
+async fn native_content_process_dispatches_large_event_source_event_as_data_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

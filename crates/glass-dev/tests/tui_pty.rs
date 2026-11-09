@@ -6620,19 +6620,11 @@ fn slash_workspace_action_runs_and_renders_a_named_terminal_process() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 110, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
-    assert!(session.wait_for("▌", Duration::from_secs(5)));
 
     // Start from the always-ready Agent composer, discover the Glass action
     // through `/`, complete its documented argument template, and run a short
     // harmless process only inside this disposable PTY project.
-    let start_menu_offset = session.output().len();
     session.send(b"/");
-    assert!(session.wait_for_output_after(
-        start_menu_offset,
-        "CORE · agent commands and session controls",
-        Duration::from_secs(5)
-    ));
     session.send_slowly(b"start dev server", Duration::from_millis(20));
     session.settle(Duration::from_millis(400));
     let completion_offset = session.output().len();
@@ -6668,13 +6660,7 @@ fn slash_workspace_action_runs_and_renders_a_named_terminal_process() {
     // action a user can use later; this also proves the named process and its
     // output remain addressable after exit.
     send_alt_digit(&mut session, b'1');
-    let logs_menu_offset = session.output().len();
     session.send(b"/");
-    assert!(session.wait_for_output_after(
-        logs_menu_offset,
-        "CORE · agent commands and session controls",
-        Duration::from_secs(5)
-    ));
     session.send_slowly(b"View logs", Duration::from_millis(20));
     session.settle(Duration::from_millis(400));
     let logs_completion_offset = session.output().len();

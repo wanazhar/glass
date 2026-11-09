@@ -258,7 +258,12 @@ impl DapClient {
                 };
                 let reader = stream.try_clone()?;
                 let shutdown = stream.try_clone()?;
-                (Box::new(stream), Box::new(reader), output_drains, Some(shutdown))
+                (
+                    Box::new(stream),
+                    Box::new(reader),
+                    output_drains,
+                    Some(shutdown),
+                )
             }
         };
         let (sender, messages) = mpsc::sync_channel(MAX_PENDING_MESSAGES);
@@ -634,28 +639,49 @@ impl DebuggerSession {
 
     pub fn configuration_done(&mut self) -> DebugResult<Value> {
         if self.configuration_result.is_none() {
-            self.configuration_result = Some(
-                self.client.request("configurationDone", json!({}), self.timeout)?,
-            );
+            match self
+                .client
+                .request("configurationDone", json!({}), self.timeout)
+            {
+                Ok(result) => self.configuration_result = Some(result),
+                Err(error) => {
+                    self.retire_pending_start(&error);
+                    return Err(error);
+                }
+            }
         }
         let startup = if let Some((sequence, command)) = self.pending_start {
-            match self.client.wait_for_response(sequence, command, self.timeout) {
+            match self
+                .client
+                .wait_for_response(sequence, command, self.timeout)
+            {
                 Ok(response) => {
                     self.pending_start = None;
                     response
                 }
-                Err(error @ DebugError::Adapter(_)) => {
-                    self.pending_start = None;
-                    self.configuration_result = None;
+                Err(error) => {
+                    self.retire_pending_start(&error);
                     return Err(error);
                 }
-                Err(error) => return Err(error),
             }
         } else {
             Value::Null
         };
         self.state = DebugSessionState::Running;
         Ok(json!({"configurationDone": self.configuration_result.take(), "startup": startup}))
+    }
+
+    /// Retire an armed launch or attach start.
+    ///
+    /// A retryable timeout keeps the pending start armed so a later
+    /// `configuration_done` can reconcile the same start. Every terminal failure
+    /// retires it, so a relaunch or a fresh configuration attempt cannot wedge
+    /// on stale armed state while still returning the error unchanged.
+    fn retire_pending_start(&mut self, error: &DebugError) {
+        if !matches!(error, DebugError::Timeout(_)) {
+            self.pending_start = None;
+            self.configuration_result = None;
+        }
     }
 
     fn begin_start(&mut self, command: &'static str, arguments: Value) -> DebugResult<Value> {
@@ -865,7 +891,11 @@ impl DebuggerSession {
             json!({"terminateDebuggee": terminate_debuggee}),
             self.timeout,
         );
-        self.settle_terminal(&result, DebugSessionState::Terminated, DebugSessionState::Failed);
+        self.settle_terminal(
+            &result,
+            DebugSessionState::Terminated,
+            DebugSessionState::Failed,
+        );
         result
     }
 
@@ -875,7 +905,11 @@ impl DebuggerSession {
             .request("terminate", json!({"restart": restart}), self.timeout);
         self.settle_terminal(
             &result,
-            if restart { DebugSessionState::Starting } else { DebugSessionState::Terminated },
+            if restart {
+                DebugSessionState::Starting
+            } else {
+                DebugSessionState::Terminated
+            },
             DebugSessionState::Failed,
         );
         result
@@ -883,7 +917,11 @@ impl DebuggerSession {
 
     pub fn shutdown(&mut self) -> DebugResult<()> {
         let result = self.client.shutdown();
-        self.settle_terminal(&result, DebugSessionState::Terminated, DebugSessionState::Failed);
+        self.settle_terminal(
+            &result,
+            DebugSessionState::Terminated,
+            DebugSessionState::Failed,
+        );
         result
     }
 }
@@ -1205,14 +1243,76 @@ time.sleep(0.25)
 reply(launch)
 time.sleep(30)
 "#;
-        let Some((root, config)) = python_adapter(adapter) else { return };
-        let mut session = DebuggerSession::start(&root, &config, "test", Duration::from_secs(5)).unwrap();
+        let Some((root, config)) = python_adapter(adapter) else {
+            return;
+        };
+        let mut session =
+            DebuggerSession::start(&root, &config, "test", Duration::from_secs(5)).unwrap();
         session.launch(json!({})).unwrap();
         session.timeout = Duration::from_millis(50);
-        assert!(matches!(session.configuration_done(), Err(DebugError::Timeout(_))));
+        assert!(matches!(
+            session.configuration_done(),
+            Err(DebugError::Timeout(_))
+        ));
         assert!(session.launch(json!({})).is_err());
         session.timeout = Duration::from_secs(2);
         assert!(session.configuration_done().is_ok());
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_error_after_launch_retires_the_armed_start() {
+        let adapter = r#"
+import json, sys, time
+
+def read():
+    header = sys.stdin.buffer.readline()
+    if not header: return None
+    size = int(header.split(b':', 1)[1])
+    sys.stdin.buffer.readline()
+    return json.loads(sys.stdin.buffer.read(size))
+
+def reply(request):
+    body = json.dumps({'seq': 1, 'type': 'response', 'request_seq': request['seq'],
+                       'command': request['command'], 'success': True, 'body': {}}).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+
+def send(message):
+    body = json.dumps(message, separators=(',', ':')).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+
+reply(read())
+launch = read()
+send({'type': 'request', 'command': 'glass/unknown'})
+reply(launch)
+configuration = read()
+reply(configuration)
+for request in iter(read, None):
+    if request.get('command') == 'disconnect':
+        raise SystemExit(0)
+    reply(request)
+"#;
+        let Some((root, config)) = python_adapter(adapter) else {
+            return;
+        };
+        let mut session =
+            DebuggerSession::start(&root, &config, "test", Duration::from_secs(5)).unwrap();
+        session.launch(json!({})).unwrap();
+        session.timeout = Duration::from_secs(5);
+        // A malformed inbound request fails the pending launch wait with a
+        // terminal protocol error, not a retryable adapter timeout.
+        let error = session.configuration_done().unwrap_err();
+        assert!(matches!(error, DebugError::Protocol(_)), "{error}");
+        assert!(
+            session.pending_start.is_none(),
+            "a terminal failure must retire the armed launch"
+        );
+        assert!(session.configuration_result.is_none());
+        // The retired start must not wedge the next launch.
+        assert!(session.launch(json!({})).is_ok());
         drop(session);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1235,9 +1335,13 @@ while True:
     sys.stdout.buffer.flush()
     if request['command'] == 'disconnect': break
 "#;
-        let Some((root, config)) = python_adapter(adapter) else { return };
+        let Some((root, config)) = python_adapter(adapter) else {
+            return;
+        };
         let mut client = DapClient::spawn(&root, &config).unwrap();
-        client.request("initialize", json!({}), Duration::from_secs(5)).unwrap();
+        client
+            .request("initialize", json!({}), Duration::from_secs(5))
+            .unwrap();
         let start = Instant::now();
         let error = client.shutdown().unwrap_err();
         assert!(error.to_string().contains("cleanup is unconfirmed"));
@@ -1248,25 +1352,36 @@ while True:
 
     #[test]
     fn tcp_shutdown_closes_a_peer_that_keeps_the_socket_open() {
-        let Some((root, config)) = python_adapter("import time; time.sleep(30)") else { return };
+        let Some((root, config)) = python_adapter("import time; time.sleep(30)") else {
+            return;
+        };
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut writer = stream.try_clone().unwrap();
             let mut reader = BufReader::new(stream);
             for _ in 0..2 {
                 let request = read_dap_message(&mut reader).unwrap().unwrap();
-                write_dap_message(&mut writer, &json!({
-                    "seq": 1, "type": "response", "request_seq": request["seq"],
-                    "command": request["command"], "success": true
-                })).unwrap();
+                write_dap_message(
+                    &mut writer,
+                    &json!({
+                        "seq": 1, "type": "response", "request_seq": request["seq"],
+                        "command": request["command"], "success": true
+                    }),
+                )
+                .unwrap();
             }
             read_dap_message(&mut reader).unwrap().is_none()
         });
-        let mut client = DapClient::spawn(&root, &config.with_tcp(address, Duration::from_secs(5))).unwrap();
-        client.request("initialize", json!({}), Duration::from_secs(5)).unwrap();
+        let mut client =
+            DapClient::spawn(&root, &config.with_tcp(address, Duration::from_secs(5))).unwrap();
+        client
+            .request("initialize", json!({}), Duration::from_secs(5))
+            .unwrap();
         client.shutdown().unwrap();
         assert!(server.join().unwrap());
         drop(client);

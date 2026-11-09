@@ -448,7 +448,10 @@ fn core_task_graph(events: &[crate::AgentEvent]) -> Option<CoreTaskGraph> {
     Some(CoreTaskGraph {
         sequence: result.get("sequence").and_then(serde_json::Value::as_u64),
         tasks: rows,
-        has_more: result.get("hasMore").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        has_more: result
+            .get("hasMore")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         error: None,
     })
 }

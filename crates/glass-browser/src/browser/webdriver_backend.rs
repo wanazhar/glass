@@ -214,7 +214,10 @@ impl WebDriverBrowserBackend {
         match (operation, request) {
             (BackendOperation::Initialize, BackendRequest::Initialize) => {
                 if state.session_id.is_some() {
-                    return Err(lifecycle_error("initialize", "session already exists; close it first"));
+                    return Err(lifecycle_error(
+                        "initialize",
+                        "session already exists; close it first",
+                    ));
                 }
                 let value = self
                     .request(
@@ -845,8 +848,13 @@ mod tests {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let requests = Arc::clone(&server_requests);
                 tokio::spawn(async move {
-                    let Some((method, path, _)) = read_http_request(&mut stream).await else { return };
-                    requests.lock().unwrap().push((method.clone(), path.clone()));
+                    let Some((method, path, _)) = read_http_request(&mut stream).await else {
+                        return;
+                    };
+                    requests
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), path.clone()));
                     let value = match (method.as_str(), path.as_str()) {
                         ("POST", "/session") => json!({"sessionId": "partial", "capabilities": {}}),
                         ("GET", "/session/partial/window/handles") => json!([]),
@@ -854,21 +862,31 @@ mod tests {
                         _ => unreachable!(),
                     };
                     let body = json!({"value": value}).to_string();
-                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
                     stream.write_all(response.as_bytes()).await.unwrap();
                 });
             }
         });
-        let backend = WebDriverBrowserBackend::new(WebDriverBackendConfig::for_safari(format!("http://{address}"))).unwrap();
+        let backend = WebDriverBrowserBackend::new(WebDriverBackendConfig::for_safari(format!(
+            "http://{address}"
+        )))
+        .unwrap();
         let dispatcher = BrowserBackendDispatcher::new(&backend);
         assert!(dispatcher.initialize().await.is_err());
         assert!(dispatcher.initialize().await.is_err());
         dispatcher.close().await.unwrap();
-        assert_eq!(requests.lock().unwrap().as_slice(), [
-            ("POST".into(), "/session".into()),
-            ("GET".into(), "/session/partial/window/handles".into()),
-            ("DELETE".into(), "/session/partial".into()),
-        ]);
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                ("POST".into(), "/session".into()),
+                ("GET".into(), "/session/partial/window/handles".into()),
+                ("DELETE".into(), "/session/partial".into()),
+            ]
+        );
         server.abort();
     }
 

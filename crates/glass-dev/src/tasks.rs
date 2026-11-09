@@ -2488,7 +2488,11 @@ mod tests {
     ) -> TaskBindingIntent {
         TaskBindingIntent {
             intent_id: intent_id.into(),
-            workspace_id: root.to_string_lossy().into_owned(),
+            workspace_id: root
+                .canonicalize()
+                .unwrap_or_else(|_| root.to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
             core_session_id: "core-parent-session".into(),
             todo_id: todo_id.into(),
             todo_revision: revision,
@@ -2507,7 +2511,11 @@ mod tests {
     ) -> TaskInboxEvent {
         let mut event = TaskInboxEvent {
             event_id: format!("event-{}-{sequence}", task_id.as_str()),
-            workspace_id: root.to_string_lossy().into_owned(),
+            workspace_id: root
+                .canonicalize()
+                .unwrap_or_else(|_| root.to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
             root_task_id: root_task_id.clone(),
             task_id: task_id.clone(),
             attempt: 1,

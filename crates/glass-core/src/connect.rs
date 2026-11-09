@@ -3982,8 +3982,7 @@ mod tests {
         }
     }
 
-    static SECRET_FLOW_COUNTER: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
+    static SECRET_FLOW_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     /// Fixture app for the secret flow. The bridge is registered under the
     /// canonical session-path key that shared-session lookups use, inside a
@@ -4373,7 +4372,8 @@ mod tests {
         let https_response = post_secret(https_app.clone(), true, true, true, &[]);
         assert!(https_response.starts_with("HTTP/1.1 200"));
         assert!(!https_response.contains("sentinel-secret-value"));
-        let bridge = https_app.bridges.lock().unwrap()[https_session.to_string_lossy().as_ref()].clone();
+        let bridge =
+            https_app.bridges.lock().unwrap()[https_session.to_string_lossy().as_ref()].clone();
         {
             let feed = bridge.feed.lock().unwrap();
             assert_eq!(

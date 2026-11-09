@@ -1006,11 +1006,13 @@ mod tests {
                 call_id: "rew".into(),
                 name: "rewind".into(),
                 body: "done".into(),
+                is_error: None,
             },
             Record::ToolResult {
                 call_id: "next".into(),
                 name: "read".into(),
                 body: "contents".into(),
+                is_error: None,
             },
         ];
         let wire = build_messages("system", &crate::compact::project(&records));

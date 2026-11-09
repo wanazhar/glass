@@ -263,21 +263,34 @@ fn active_children(state: &State, id: &str) -> bool {
 fn abort_would_reverse_decision(state: &State, id: &str, recursive_background: bool) -> bool {
     let mut pending = vec![id];
     while let Some(id) = pending.pop() {
-        if state.tasks.get(id).is_some_and(|task| task.status == "completing" && !task.abort_requested) {
+        if state
+            .tasks
+            .get(id)
+            .is_some_and(|task| task.status == "completing" && !task.abort_requested)
+        {
             return true;
         }
-        pending.extend(state.tasks.values().filter(|task| {
-            task.owner.as_deref() == Some(id)
-                && (recursive_background || (!task.background && !task.terminal()))
-        }).map(|task| task.id.as_str()));
+        pending.extend(
+            state
+                .tasks
+                .values()
+                .filter(|task| {
+                    task.owner.as_deref() == Some(id)
+                        && (recursive_background || (!task.background && !task.terminal()))
+                })
+                .map(|task| task.id.as_str()),
+        );
     }
     false
 }
 
 fn abort_tree_preserving(state: &mut State, id: &str) -> Result<bool, String> {
-    let children: Vec<_> = state.tasks.values()
+    let children: Vec<_> = state
+        .tasks
+        .values()
         .filter(|task| task.owner.as_deref() == Some(id) && !task.background && !task.terminal())
-        .map(|task| task.id.clone()).collect();
+        .map(|task| task.id.clone())
+        .collect();
     let mut changed = false;
     for child in children {
         changed |= abort_tree_preserving(state, &child)?;
@@ -307,9 +320,12 @@ fn abort_tree(state: &mut State, id: &str, background: bool) -> Result<(), Strin
 }
 
 fn abort_tree_including_finished(state: &mut State, id: &str) -> Result<(), String> {
-    let children: Vec<_> = state.tasks.values()
+    let children: Vec<_> = state
+        .tasks
+        .values()
         .filter(|task| task.owner.as_deref() == Some(id))
-        .map(|task| task.id.clone()).collect();
+        .map(|task| task.id.clone())
+        .collect();
     for child in children {
         abort_tree_including_finished(state, &child)?;
     }
@@ -349,7 +365,11 @@ fn reaches(state: &State, from: &str, target: &str, seen: &mut BTreeSet<String>)
 /// A completing task also waits for every live foreground child.
 fn reaches_with_ownership(state: &State, from: &[String], target: &str) -> bool {
     let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for task in state.tasks.values().filter(|task| !task.background && !task.terminal()) {
+    for task in state
+        .tasks
+        .values()
+        .filter(|task| !task.background && !task.terminal())
+    {
         if let Some(owner) = task.owner.as_deref() {
             children.entry(owner).or_default().push(&task.id);
         }
@@ -372,7 +392,12 @@ fn reaches_with_ownership(state: &State, from: &[String], target: &str) -> bool 
     }
     false
 }
-fn apply(state: &mut State, op: &Op, sequence: u64, preserve_decisions: bool) -> Result<(), String> {
+fn apply(
+    state: &mut State,
+    op: &Op,
+    sequence: u64,
+    preserve_decisions: bool,
+) -> Result<(), String> {
     match op {
         Op::ConversationCreate {
             id,
@@ -749,7 +774,11 @@ fn reconcile(state: &mut State, preserve_decisions: bool) -> Result<(), String> 
                     .and_then(|v| v["status"].as_str())
                     .unwrap_or("completed")
                     .into();
-                if let Some(result) = task.outcome.as_ref().and_then(|outcome| outcome.get("result")) {
+                if let Some(result) = task
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.get("result"))
+                {
                     target.outcome = (!result.is_null()).then(|| result.clone());
                 }
                 target.revision += 1;
@@ -849,7 +878,10 @@ impl Store {
             {
                 return Err(format!("durable commit integrity failure at {offset}"));
             }
-            let preserve = commit.ops.iter().any(|op| matches!(op, Op::PreserveDecisions));
+            let preserve = commit
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::PreserveDecisions));
             for op in &commit.ops {
                 apply(&mut store.state, op, commit.sequence, preserve)?;
             }
@@ -871,10 +903,16 @@ impl Store {
             return Err("commit requires 1..512 operations".into());
         }
         // The distinct journal operation preserves historical replay semantics.
-        let mut ops: Vec<_> = ops.into_iter().map(|op| match op {
-            Op::Abort { id, include_background: true } => Op::AbortRecursive { id },
-            other => other,
-        }).collect();
+        let mut ops: Vec<_> = ops
+            .into_iter()
+            .map(|op| match op {
+                Op::Abort {
+                    id,
+                    include_background: true,
+                } => Op::AbortRecursive { id },
+                other => other,
+            })
+            .collect();
         let sequence = expected
             .checked_add(1)
             .ok_or("durable sequence exhausted")?;
@@ -884,21 +922,36 @@ impl Store {
             // Historical journals may contain these formerly accepted transitions.
             // Reject them on new commits without making old journals unreadable.
             let cancellation = match op {
-                Op::Abort { id, include_background } => Some((id.as_str(), *include_background)),
+                Op::Abort {
+                    id,
+                    include_background,
+                } => Some((id.as_str(), *include_background)),
                 Op::AbortRecursive { id } => Some((id.as_str(), true)),
                 _ => None,
             };
-            if cancellation.is_some_and(|(id, background)| abort_would_reverse_decision(&next, id, background)) {
+            if cancellation
+                .is_some_and(|(id, background)| abort_would_reverse_decision(&next, id, background))
+            {
                 return Err("task outcome is already decided; wait for owned work".into());
             }
-            if let Op::TaskCreate { owner: Some(owner), .. } = op
-                && next.tasks.get(owner).is_some_and(|task| task.status == "completing")
+            if let Op::TaskCreate {
+                owner: Some(owner), ..
+            } = op
+                && next
+                    .tasks
+                    .get(owner)
+                    .is_some_and(|task| task.status == "completing")
             {
                 return Err("owner task has already decided its outcome".into());
             }
             if let Op::Submit { conversation, .. } = op
-                && let Some(owner) = next.conversations.get(conversation).and_then(|cv| cv.owner.as_ref())
-                && next.tasks.get(owner).is_none_or(|task| task.terminal() || task.abort_requested || task.status == "completing")
+                && let Some(owner) = next
+                    .conversations
+                    .get(conversation)
+                    .and_then(|cv| cv.owner.as_ref())
+                && next.tasks.get(owner).is_none_or(|task| {
+                    task.terminal() || task.abort_requested || task.status == "completing"
+                })
             {
                 return Err("conversation owner has finished or is settling".into());
             }
@@ -908,22 +961,27 @@ impl Store {
                 return Err("conversation agent metadata must be an object".into());
             }
             if let Op::Reset { conversation, .. } = op
-                && next.tasks.values().any(|task| {
-                    task.conversation == *conversation && !task.terminal()
-                })
+                && next
+                    .tasks
+                    .values()
+                    .any(|task| task.conversation == *conversation && !task.terminal())
             {
                 return Err("abort or settle conversation tasks before reset".into());
             }
             if let Op::TaskUpdate { id, status, .. } = op
                 && status == "running"
-                && let Some(task) = next.tasks.get(id).filter(|task| task.kind == "gc.generation")
+                && let Some(task) = next
+                    .tasks
+                    .get(id)
+                    .filter(|task| task.kind == "gc.generation")
                 && next.tasks.values().any(|other| {
                     other.id != task.id
                         && other.kind == "gc.generation"
                         && other.conversation == task.conversation
                         && (matches!(other.status.as_str(), "running" | "waiting" | "completing")
                             || (other.status == "pending"
-                                && (other.created_sequence, &other.id) < (task.created_sequence, &task.id)))
+                                && (other.created_sequence, &other.id)
+                                    < (task.created_sequence, &task.id)))
                 })
             {
                 return Err("an earlier generation is unfinished in this conversation".into());
@@ -931,9 +989,10 @@ impl Store {
             if let Op::TaskUpdate { id, status, .. } = op
                 && status == "pending"
                 && let Some(task) = next.tasks.get(id).filter(|task| task.status == "waiting")
-                && task.on.iter().any(|dependency| {
-                    !next.tasks.get(dependency).is_some_and(Task::terminal)
-                })
+                && task
+                    .on
+                    .iter()
+                    .any(|dependency| !next.tasks.get(dependency).is_some_and(Task::terminal))
             {
                 return Err("waiting task dependencies have not settled".into());
             }
@@ -944,11 +1003,21 @@ impl Store {
                 return Err("task wait cycle through foreground ownership".into());
             }
             apply(&mut next, op, sequence, true)?;
-            if !preserve && matches!(op, Op::TaskUpdate { .. } | Op::Abort { .. } | Op::AbortRecursive { .. }) {
+            if !preserve
+                && matches!(
+                    op,
+                    Op::TaskUpdate { .. } | Op::Abort { .. } | Op::AbortRecursive { .. }
+                )
+            {
                 preserve = next.tasks.values().any(|task| task.status == "completing");
             }
         }
-        if preserve || next.tasks.values().any(|task| task.status == "waiting" && task.policy == "fail_fast") {
+        if preserve
+            || next
+                .tasks
+                .values()
+                .any(|task| task.status == "waiting" && task.policy == "fail_fast")
+        {
             ops.push(Op::PreserveDecisions);
         }
         reconcile(&mut next, true)?;
@@ -1004,7 +1073,11 @@ impl Store {
                 let mut parent = task.owner.as_ref();
                 while let Some(id) = parent {
                     depth += 1;
-                    parent = self.state.tasks.get(id).and_then(|task| task.owner.as_ref());
+                    parent = self
+                        .state
+                        .tasks
+                        .get(id)
+                        .and_then(|task| task.owner.as_ref());
                 }
                 (std::cmp::Reverse(depth), task.id.clone())
             })
@@ -1013,7 +1086,12 @@ impl Store {
         // Recover children first and commit each transition separately. Re-read
         // its revision because reconciliation may have changed it between commits.
         for (_, id) in running {
-            let Some(task) = self.state.tasks.get(&id).filter(|task| task.status == "running") else {
+            let Some(task) = self
+                .state
+                .tasks
+                .get(&id)
+                .filter(|task| task.status == "running")
+            else {
                 continue;
             };
             let status = if task.abort_requested {
@@ -1026,7 +1104,9 @@ impl Store {
             let outcome = if task.abort_requested {
                 Some(json!({"status":"aborted"}))
             } else if task.replay == "unsafe" {
-                Some(json!({"status":"failed","kind":"interrupted","message":"External effect may have completed; reconcile before retrying."}))
+                Some(
+                    json!({"status":"failed","kind":"interrupted","message":"External effect may have completed; reconcile before retrying."}),
+                )
             } else {
                 None
             };
@@ -1083,8 +1163,16 @@ impl Store {
             let commit: Commit = serde_json::from_str(&line.map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
             if commit.ops.iter().any(|op| match op {
-                Op::Document { conversation: cv, kind: k, .. }
-                | Op::DocumentMigrate { conversation: cv, kind: k, .. } => cv == conversation && k == kind,
+                Op::Document {
+                    conversation: cv,
+                    kind: k,
+                    ..
+                }
+                | Op::DocumentMigrate {
+                    conversation: cv,
+                    kind: k,
+                    ..
+                } => cv == conversation && k == kind,
                 _ => false,
             }) {
                 sequence = Some(commit.sequence);
@@ -1155,7 +1243,10 @@ impl Store {
             if commit.sequence > sequence {
                 break;
             }
-            let preserve = commit.ops.iter().any(|op| matches!(op, Op::PreserveDecisions));
+            let preserve = commit
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::PreserveDecisions));
             for op in &commit.ops {
                 apply(&mut state, op, commit.sequence, preserve)?;
             }
@@ -1181,20 +1272,37 @@ impl Store {
         Ok(state.documents.remove(&key))
     }
     /// Return the original definition that owns an initial fork value.
-    pub fn initial_document(&self, conversation: &str, kind: &str) -> Result<Option<Document>, String> {
+    pub fn initial_document(
+        &self,
+        conversation: &str,
+        kind: &str,
+    ) -> Result<Option<Document>, String> {
         for line in BufReader::new(File::open(&self.path).map_err(|e| e.to_string())?).lines() {
             let commit: Commit = serde_json::from_str(&line.map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
             for op in commit.ops {
                 if let Op::Document {
-                    conversation: cv, kind: document_kind, version, expected_revision: 0,
-                    history, fork, initial, ..
+                    conversation: cv,
+                    kind: document_kind,
+                    version,
+                    expected_revision: 0,
+                    history,
+                    fork,
+                    initial,
+                    ..
                 } = op
-                    && cv == conversation && document_kind == kind
+                    && cv == conversation
+                    && document_kind == kind
                 {
                     return Ok(Some(Document {
-                        conversation: cv, kind: document_kind, version, revision: 1,
-                        value: initial.clone(), history, fork, initial,
+                        conversation: cv,
+                        kind: document_kind,
+                        version,
+                        revision: 1,
+                        value: initial.clone(),
+                        history,
+                        fork,
+                        initial,
                     }));
                 }
             }
@@ -1216,7 +1324,10 @@ impl Store {
         Ok(())
     }
     pub fn task_graph(&self, params: &Value) -> Result<Value, String> {
-        if params["expectedSequence"].as_u64().is_some_and(|sequence| sequence != self.state.sequence) {
+        if params["expectedSequence"]
+            .as_u64()
+            .is_some_and(|sequence| sequence != self.state.sequence)
+        {
             return Err("task graph changed; restart pagination".into());
         }
         let cursor = params["cursor"].as_str().unwrap_or("");
@@ -1228,7 +1339,12 @@ impl Store {
         let mut size = 0;
         let mut next = cursor.to_owned();
         let mut has_more = false;
-        for task in self.state.tasks.values().filter(|task| !task.terminal() && task.id.as_str() > cursor) {
+        for task in self
+            .state
+            .tasks
+            .values()
+            .filter(|task| !task.terminal() && task.id.as_str() > cursor)
+        {
             let row = json!({
                 "id":task.id, "conversation":task.conversation, "kind":task.kind,
                 "status":task.status, "owner":task.owner, "background":task.background,
@@ -1305,19 +1421,29 @@ mod tests {
         let mut store = Store::open(&path, false).unwrap();
         transact(&mut store, vec![create("root")]);
         for start in [0, 75] {
-            let ops = (start..start + 75).map(|n| {
-                let mut op = task(&format!("task-{n:03}"), None, true, false);
-                if let Op::TaskCreate { checkpoint, .. } = &mut op { *checkpoint = json!({"data":"x".repeat(7500)}); }
-                op
-            }).collect();
+            let ops = (start..start + 75)
+                .map(|n| {
+                    let mut op = task(&format!("task-{n:03}"), None, true, false);
+                    if let Op::TaskCreate { checkpoint, .. } = &mut op {
+                        *checkpoint = json!({"data":"x".repeat(7500)});
+                    }
+                    op
+                })
+                .collect();
             transact(&mut store, ops);
         }
         let first = store.task_graph(&json!({"limit":1})).unwrap();
         assert_eq!(first["tasks"].as_array().unwrap().len(), 1);
         assert_eq!(first["hasMore"], true);
-        let second = store.task_graph(&json!({"limit":128,"cursor":first["cursor"],"expectedSequence":first["sequence"]})).unwrap();
+        let second = store
+            .task_graph(
+                &json!({"limit":128,"cursor":first["cursor"],"expectedSequence":first["sequence"]}),
+            )
+            .unwrap();
         assert_eq!(second["tasks"].as_array().unwrap().len(), 128);
-        let last = store.task_graph(&json!({"cursor":second["cursor"],"expectedSequence":first["sequence"]})).unwrap();
+        let last = store
+            .task_graph(&json!({"cursor":second["cursor"],"expectedSequence":first["sequence"]}))
+            .unwrap();
         assert_eq!(last["tasks"].as_array().unwrap().len(), 21);
         assert_eq!(last["hasMore"], false);
         assert!(first["tasks"][0].get("checkpoint").is_none());
@@ -1328,19 +1454,38 @@ mod tests {
     fn completion_outcome_does_not_depend_on_child_timing() {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
-        transact(&mut store, vec![create("root"), task("direct", None, true, false), task("parent", None, true, false), task("child", Some("parent"), true, false)]);
+        transact(
+            &mut store,
+            vec![
+                create("root"),
+                task("direct", None, true, false),
+                task("parent", None, true, false),
+                task("child", Some("parent"), true, false),
+            ],
+        );
         for id in ["direct", "parent"] {
             let mut completed = transition(&store, id, "completed");
-            if let Op::TaskUpdate { outcome, .. } = &mut completed { *outcome = Some(json!({"value":42})); }
+            if let Op::TaskUpdate { outcome, .. } = &mut completed {
+                *outcome = Some(json!({"value":42}));
+            }
             transact(&mut store, vec![completed]);
         }
         let child = transition(&store, "child", "completed");
         transact(&mut store, vec![child]);
-        assert_eq!(store.state.tasks["direct"].outcome, store.state.tasks["parent"].outcome);
-        assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        assert_eq!(
+            store.state.tasks["direct"].outcome,
+            store.state.tasks["parent"].outcome
+        );
+        assert_eq!(
+            store.state.tasks["parent"].outcome,
+            Some(json!({"value":42}))
+        );
         drop(store);
         let store = Store::open(&path, false).unwrap();
-        assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        assert_eq!(
+            store.state.tasks["parent"].outcome,
+            Some(json!({"value":42}))
+        );
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1348,17 +1493,39 @@ mod tests {
     fn cancellation_cannot_replace_a_decided_outcome() {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
-        transact(&mut store, vec![create("root"), task("parent", None, true, false), task("child", Some("parent"), true, false)]);
+        transact(
+            &mut store,
+            vec![
+                create("root"),
+                task("parent", None, true, false),
+                task("child", Some("parent"), true, false),
+            ],
+        );
         let mut completed = transition(&store, "parent", "completed");
-        if let Op::TaskUpdate { outcome, .. } = &mut completed { *outcome = Some(json!({"value":42})); }
+        if let Op::TaskUpdate { outcome, .. } = &mut completed {
+            *outcome = Some(json!({"value":42}));
+        }
         transact(&mut store, vec![completed]);
         assert_eq!(store.state.tasks["parent"].status, "completing");
-        assert!(store.commit(store.state.sequence, vec![Op::Abort { id: "parent".into(), include_background: false }]).is_err());
+        assert!(
+            store
+                .commit(
+                    store.state.sequence,
+                    vec![Op::Abort {
+                        id: "parent".into(),
+                        include_background: false
+                    }]
+                )
+                .is_err()
+        );
         assert!(!store.state.tasks["child"].abort_requested);
         let child = transition(&store, "child", "completed");
         transact(&mut store, vec![child]);
         assert_eq!(store.state.tasks["parent"].status, "completed");
-        assert_eq!(store.state.tasks["parent"].outcome, Some(json!({"value":42})));
+        assert_eq!(
+            store.state.tasks["parent"].outcome,
+            Some(json!({"value":42}))
+        );
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1366,11 +1533,16 @@ mod tests {
     fn fail_fast_cannot_reverse_a_child_decision() {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
-        transact(&mut store, vec![
-            create("root"), task("parent", None, true, false),
-            task("a", Some("parent"), true, false), task("b", Some("parent"), false, false),
-            task("grandchild", Some("a"), true, false),
-        ]);
+        transact(
+            &mut store,
+            vec![
+                create("root"),
+                task("parent", None, true, false),
+                task("a", Some("parent"), true, false),
+                task("b", Some("parent"), false, false),
+                task("grandchild", Some("a"), true, false),
+            ],
+        );
         let running = transition(&store, "b", "running");
         transact(&mut store, vec![running]);
         let mut waiting = transition(&store, "parent", "waiting");
@@ -1380,7 +1552,9 @@ mod tests {
         }
         transact(&mut store, vec![waiting]);
         let mut completed = transition(&store, "a", "completed");
-        if let Op::TaskUpdate { outcome, .. } = &mut completed { *outcome = Some(json!({"value":42})); }
+        if let Op::TaskUpdate { outcome, .. } = &mut completed {
+            *outcome = Some(json!({"value":42}));
+        }
         transact(&mut store, vec![completed]);
         drop(store);
         let mut store = Store::open(&path, false).unwrap();
@@ -1404,11 +1578,23 @@ mod tests {
         if let Op::ConversationCreate { owner, .. } = &mut owned {
             *owner = Some("parent".into());
         }
-        transact(&mut store, vec![create("root"), task("parent", None, true, false), owned]);
+        transact(
+            &mut store,
+            vec![create("root"), task("parent", None, true, false), owned],
+        );
         let complete = transition(&store, "parent", "completed");
         transact(&mut store, vec![complete]);
-        let submission = Op::Submit { conversation: "owned".into(), request_id: "request:1".into(), task_id: "generation".into(), input: json!({}) };
-        assert!(store.commit(store.state.sequence, vec![submission]).is_err());
+        let submission = Op::Submit {
+            conversation: "owned".into(),
+            request_id: "request:1".into(),
+            task_id: "generation".into(),
+            input: json!({}),
+        };
+        assert!(
+            store
+                .commit(store.state.sequence, vec![submission])
+                .is_err()
+        );
         assert!(!store.state.tasks.contains_key("generation"));
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
@@ -1417,9 +1603,18 @@ mod tests {
     fn foreground_child_cannot_wait_for_its_owner() {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
-        transact(&mut store, vec![create("root"), task("parent", None, true, false), task("child", Some("parent"), true, false)]);
+        transact(
+            &mut store,
+            vec![
+                create("root"),
+                task("parent", None, true, false),
+                task("child", Some("parent"), true, false),
+            ],
+        );
         let mut wait = transition(&store, "child", "waiting");
-        if let Op::TaskUpdate { on, .. } = &mut wait { on.push("parent".into()); }
+        if let Op::TaskUpdate { on, .. } = &mut wait {
+            on.push("parent".into());
+        }
         assert!(store.commit(store.state.sequence, vec![wait]).is_err());
         assert_eq!(store.state.tasks["child"].status, "pending");
         drop(store);
@@ -1431,12 +1626,24 @@ mod tests {
         let mut store = Store::open(&path, false).unwrap();
         transact(&mut store, vec![create("root")]);
         let create_generation = |id: &str| Op::TaskCreate {
-            id: id.into(), conversation: "root".into(), kind: "gc.generation".into(),
-            version: 1, owner: None, background: false, replay: "safe".into(),
-            input: json!({}), checkpoint: json!({"phase":"admitted"}),
+            id: id.into(),
+            conversation: "root".into(),
+            kind: "gc.generation".into(),
+            version: 1,
+            owner: None,
+            background: false,
+            replay: "safe".into(),
+            input: json!({}),
+            checkpoint: json!({"phase":"admitted"}),
         };
-        transact(&mut store, vec![create_generation("a"), create_generation("b")]);
-        let ops = vec![transition(&store, "a", "running"), transition(&store, "b", "running")];
+        transact(
+            &mut store,
+            vec![create_generation("a"), create_generation("b")],
+        );
+        let ops = vec![
+            transition(&store, "a", "running"),
+            transition(&store, "b", "running"),
+        ];
         assert!(store.commit(store.state.sequence, ops).is_err());
         assert_eq!(store.state.tasks["a"].status, "pending");
         assert_eq!(store.state.tasks["b"].status, "pending");
@@ -1448,8 +1655,18 @@ mod tests {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
         transact(&mut store, vec![create("root")]);
-        let reset = Op::Reset { conversation: "root".into(), record: json!({"k":"meta","t":"reset"}) };
-        assert!(store.commit(store.state.sequence, vec![task("pending", None, true, false), reset]).is_err());
+        let reset = Op::Reset {
+            conversation: "root".into(),
+            record: json!({"k":"meta","t":"reset"}),
+        };
+        assert!(
+            store
+                .commit(
+                    store.state.sequence,
+                    vec![task("pending", None, true, false), reset]
+                )
+                .is_err()
+        );
         assert!(store.state.tasks.is_empty());
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
@@ -1459,10 +1676,17 @@ mod tests {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
         transact(&mut store, vec![create("root")]);
-        assert!(store.commit(store.state.sequence, vec![Op::Configure {
-            conversation: "root".into(),
-            agent: json!("not-an-object"),
-        }]).is_err());
+        assert!(
+            store
+                .commit(
+                    store.state.sequence,
+                    vec![Op::Configure {
+                        conversation: "root".into(),
+                        agent: json!("not-an-object"),
+                    }]
+                )
+                .is_err()
+        );
         assert!(store.state.conversations["root"].agent.is_object());
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
@@ -1488,10 +1712,22 @@ mod tests {
         let mut store = Store::open(&path, false).unwrap();
         store.recover().unwrap();
         assert_eq!(store.state.tasks.len(), 513);
-        assert!(store.state.tasks.values().all(|task| task.status == "pending"));
+        assert!(
+            store
+                .state
+                .tasks
+                .values()
+                .all(|task| task.status == "pending")
+        );
         drop(store);
         let store = Store::open(&path, false).unwrap();
-        assert!(store.state.tasks.values().all(|task| task.status == "pending"));
+        assert!(
+            store
+                .state
+                .tasks
+                .values()
+                .all(|task| task.status == "pending")
+        );
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1591,9 +1827,14 @@ mod tests {
                     checkpoint: json!({"phase":"v2"}),
                 },
                 Op::TaskUpdate {
-                    id: "step".into(), expected_revision: 2, status: "completed".into(),
-                    checkpoint: json!({"phase":"v2"}), on: Vec::new(), policy: all_settled(),
-                    due_at_ms: 0, outcome: None,
+                    id: "step".into(),
+                    expected_revision: 2,
+                    status: "completed".into(),
+                    checkpoint: json!({"phase":"v2"}),
+                    on: Vec::new(),
+                    policy: all_settled(),
+                    due_at_ms: 0,
+                    outcome: None,
                 },
                 Op::Reset {
                     conversation: "root".into(),
@@ -1748,9 +1989,14 @@ mod tests {
         let op = transition(&store, "parent", "completed");
         transact(&mut store, vec![op]);
         assert_eq!(store.state.tasks["parent"].status, "completing");
-        assert!(store
-            .commit(store.state.sequence, vec![task("late", Some("parent"), true, false)])
-            .is_err());
+        assert!(
+            store
+                .commit(
+                    store.state.sequence,
+                    vec![task("late", Some("parent"), true, false)]
+                )
+                .is_err()
+        );
         let op = transition(&store, "child", "completed");
         transact(&mut store, vec![op]);
         assert_eq!(store.state.tasks["parent"].status, "completed");
@@ -1762,14 +2008,24 @@ mod tests {
     fn recursive_abort_reaches_descendants_of_completed_tasks_after_reopen() {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
-        transact(&mut store, vec![
-            create("root"), task("parent", None, true, false),
-            task("child", Some("parent"), true, true),
-            task("grandchild", Some("child"), true, true),
-        ]);
+        transact(
+            &mut store,
+            vec![
+                create("root"),
+                task("parent", None, true, false),
+                task("child", Some("parent"), true, true),
+                task("grandchild", Some("child"), true, true),
+            ],
+        );
         let op = transition(&store, "child", "completed");
         transact(&mut store, vec![op]);
-        transact(&mut store, vec![Op::Abort { id: "parent".into(), include_background: true }]);
+        transact(
+            &mut store,
+            vec![Op::Abort {
+                id: "parent".into(),
+                include_background: true,
+            }],
+        );
         assert_eq!(store.state.tasks["child"].status, "completed");
         assert_eq!(store.state.tasks["grandchild"].status, "aborted");
         drop(store);
@@ -1838,10 +2094,16 @@ mod tests {
             1
         );
         assert!(store.commit(store.state.sequence, vec![put(0, 3)]).is_err());
-        transact(&mut store, vec![Op::DocumentMigrate {
-            conversation: "root".into(), kind: "app.todo".into(),
-            expected_revision: 2, version: 2, value: json!({"items":[]}),
-        }]);
+        transact(
+            &mut store,
+            vec![Op::DocumentMigrate {
+                conversation: "root".into(),
+                kind: "app.todo".into(),
+                expected_revision: 2,
+                version: 2,
+                value: json!({"items":[]}),
+            }],
+        );
         let initial = store.initial_document("root", "app.todo").unwrap().unwrap();
         assert_eq!(initial.version, 1);
         assert_eq!(initial.value, json!({"count":0}));

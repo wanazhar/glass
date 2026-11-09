@@ -112,6 +112,13 @@ def pty_measurements(env, size):
         os.close(probe)
 
 
+def reader_frame_ready(output):
+    visible = visible_text(output)
+    header = re.search(b'Log \xe2\x80\x94 line [0-9]+(?:/[0-9]+)?', visible)
+    content = b'RFMK' in visible or b'0 extra tokens' in visible
+    return header is not None and content
+
+
 def reader_frame_latency(env, size):
     master, slave = pty.openpty()
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', size[1], size[0], 0, 0))
@@ -127,15 +134,14 @@ def reader_frame_latency(env, size):
         os.write(master, b'\x02')  # Ctrl+B opens the real conversation reader.
         output = bytearray()
         deadline = time.monotonic() + 10
-        marker = b'RFMK'
         while time.monotonic() < deadline:
             if not select.select([master], [], [], 0.05)[0]:
                 continue
             try: output.extend(os.read(master, 65536))
             except OSError as exc: raise RuntimeError('PTY closed before reader frame') from exc
-            if marker in visible_text(output):
+            if reader_frame_ready(output):
                 return (time.perf_counter() - start) * 1000
-        raise RuntimeError('long-history reader frame did not show its visible fixture marker')
+        raise RuntimeError('long-history reader frame did not become ready')
     finally:
         if proc.poll() is None:
             proc.terminate()

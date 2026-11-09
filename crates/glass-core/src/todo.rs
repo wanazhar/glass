@@ -1219,11 +1219,13 @@ mod persistence_tests {
                 call_id: "one".into(),
                 name: "todo".into(),
                 body: "1. [ ] Earlier".into(),
+                is_error: None,
             },
             Record::ToolResult {
                 call_id: "two".into(),
                 name: "todo".into(),
                 body: "1. [x] Finished\n2. [ ] Next\n1 pending, 1 done".into(),
+                is_error: None,
             },
         ];
         let board = legacy_board(&records).unwrap();

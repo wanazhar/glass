@@ -50,7 +50,7 @@ impl PtySession {
 
         let mut master = -1;
         let mut slave = -1;
-        let size = libc::winsize {
+        let mut size = libc::winsize {
             ws_row: 24,
             ws_col: 80,
             ws_xpixel: 0,
@@ -63,8 +63,8 @@ impl PtySession {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                &size,
+                std::ptr::null_mut(),
+                &mut size,
             )
         };
         assert_eq!(result, 0, "openpty failed");

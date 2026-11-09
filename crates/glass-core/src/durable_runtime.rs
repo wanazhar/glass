@@ -52,7 +52,9 @@ fn validate_external_ops(store: &Store, ops: &[Op]) -> Result<(), String> {
             _ => false,
         };
         if reserved {
-            return Err("built-in submission and task transitions are managed by the runtime".into());
+            return Err(
+                "built-in submission and task transitions are managed by the runtime".into(),
+            );
         }
     }
     Ok(())
@@ -64,7 +66,9 @@ fn entry_chunk(record: &Record, offset: u64, limit: u64) -> Result<Value, String
     if offset > encoded.len() || !encoded.is_char_boundary(offset) {
         return Err("entry offset is not a valid UTF-8 boundary".into());
     }
-    let mut end = offset.saturating_add(limit.clamp(4, 64 * 1024) as usize).min(encoded.len());
+    let mut end = offset
+        .saturating_add(limit.clamp(4, 64 * 1024) as usize)
+        .min(encoded.len());
     while !encoded.is_char_boundary(end) {
         end -= 1;
     }
@@ -120,6 +124,7 @@ impl Host {
                             name: name.clone(),
                             call_id: id.clone(),
                             body: completed_shell.map(str::to_owned).unwrap_or_else(|| "error: interrupted; the external effect may have completed. Reconcile before retrying.".into()),
+                            is_error: None,
                         }.to_json(),
                     });
                 }
@@ -147,9 +152,14 @@ impl Host {
                 let records = store.borrow().records(&live.conversation)?;
                 // Only an assistant record written after this live snapshot can
                 // complete this response occurrence. Earlier rounds may share text.
-                let boundary = store.borrow().document_sequence(&live.conversation, "gc.live")?
+                let boundary = store
+                    .borrow()
+                    .document_sequence(&live.conversation, "gc.live")?
                     .ok_or("live document has no journal sequence")?;
-                let before = store.borrow().records_at(&live.conversation, boundary)?.len();
+                let before = store
+                    .borrow()
+                    .records_at(&live.conversation, boundary)?
+                    .len();
                 let start = if before <= records.len() { before } else { 0 };
                 if !records[start..].iter().any(
                     |record| matches!(record,Record::Assistant(answer) if answer.contains(text)),
@@ -282,12 +292,17 @@ impl Host {
                     .filter(|d| d.conversation == parent)
                 {
                     let selected = match document.fork.as_str() {
-                        "initial" => self.store.borrow().initial_document(parent, &document.kind)?
+                        "initial" => self
+                            .store
+                            .borrow()
+                            .initial_document(parent, &document.kind)?
                             .ok_or("initial document definition is missing")?,
                         "current" => document.clone(),
-                        "as_of" => snapshot.documents
+                        "as_of" => snapshot
+                            .documents
                             .get(&format!("{parent}:{}", document.kind))
-                            .cloned().ok_or("document absent at fork boundary")?,
+                            .cloned()
+                            .ok_or("document absent at fork boundary")?,
                         _ => return Err("invalid document fork policy".into()),
                     };
                     ops.push(Op::Document {
@@ -341,7 +356,14 @@ impl Host {
                     .map_err(|_| "entry cursor exceeds platform capacity")?;
                 let limit = p["limit"].as_u64().unwrap_or(25).clamp(1, 256) as usize;
                 let records = self.store.borrow().records(cv)?;
-                let epoch = self.store.borrow().state.conversations.get(cv).ok_or("unknown conversation")?.epoch;
+                let epoch = self
+                    .store
+                    .borrow()
+                    .state
+                    .conversations
+                    .get(cv)
+                    .ok_or("unknown conversation")?
+                    .epoch;
                 if cursor > records.len() {
                     return Err("entry cursor exceeds record count".into());
                 }
@@ -362,7 +384,9 @@ impl Host {
                     entries.push(value);
                     end += 1;
                 }
-                Ok(json!({"entries":entries,"cursor":end,"hasMore":end<records.len(),"epoch":epoch}))
+                Ok(
+                    json!({"entries":entries,"cursor":end,"hasMore":end<records.len(),"epoch":epoch}),
+                )
             }
             "durable/entry" => {
                 let cv = string(p, "conversationId")?;
@@ -370,12 +394,25 @@ impl Host {
                 let cursor = usize::try_from(p["cursor"].as_u64().ok_or("entry cursor required")?)
                     .map_err(|_| "entry cursor exceeds platform capacity")?;
                 let store = self.store.borrow();
-                if store.state.conversations.get(cv).ok_or("unknown conversation")?.epoch != epoch {
+                if store
+                    .state
+                    .conversations
+                    .get(cv)
+                    .ok_or("unknown conversation")?
+                    .epoch
+                    != epoch
+                {
                     return Err("transcript changed; reacquire entry cursor".into());
                 }
                 let records = store.records(cv)?;
-                let record = records.get(cursor).ok_or("entry cursor exceeds record count")?;
-                entry_chunk(record, p["offset"].as_u64().unwrap_or(0), p["limitBytes"].as_u64().unwrap_or(64 * 1024))
+                let record = records
+                    .get(cursor)
+                    .ok_or("entry cursor exceeds record count")?;
+                entry_chunk(
+                    record,
+                    p["offset"].as_u64().unwrap_or(0),
+                    p["limitBytes"].as_u64().unwrap_or(64 * 1024),
+                )
             }
             "durable/commit" => {
                 let seq = p["expectedSequence"]
@@ -818,9 +855,17 @@ impl Context {
         let cv = self.conversation.clone();
         let buffer = self.buffer.clone();
         let partial = self.partial.clone();
-        let ordinal = std::cell::Cell::new(store.borrow().state.tasks.values()
-            .filter(|child| child.kind == "gc.tool" && child.owner.as_deref() == Some(task.as_str()))
-            .count() as u64);
+        let ordinal = std::cell::Cell::new(
+            store
+                .borrow()
+                .state
+                .tasks
+                .values()
+                .filter(|child| {
+                    child.kind == "gc.tool" && child.owner.as_deref() == Some(task.as_str())
+                })
+                .count() as u64,
+        );
         let pending: RefCell<BTreeMap<String, VecDeque<String>>> = RefCell::new(BTreeMap::new());
         Rc::new(move |records, is_error| {
             if records
@@ -872,8 +917,15 @@ impl Context {
                     } => {
                         let occurrence = ordinal.get();
                         ordinal.set(occurrence.saturating_add(1));
-                        let tool_id = format!("tool-{}", token(&[&task, "occurrence", &occurrence.to_string()]));
-                        pending.borrow_mut().entry(id.clone()).or_default().push_back(tool_id.clone());
+                        let tool_id = format!(
+                            "tool-{}",
+                            token(&[&task, "occurrence", &occurrence.to_string()])
+                        );
+                        pending
+                            .borrow_mut()
+                            .entry(id.clone())
+                            .or_default()
+                            .push_back(tool_id.clone());
                         ops.push(Op::TaskCreate {
                             id: tool_id.clone(),
                             conversation: cv.clone(),
@@ -897,7 +949,9 @@ impl Context {
                         });
                     }
                     Record::ToolResult { call_id, body, .. } => {
-                        let id = pending.borrow_mut().get_mut(call_id)
+                        let id = pending
+                            .borrow_mut()
+                            .get_mut(call_id)
                             .and_then(VecDeque::pop_front)
                             .unwrap_or_else(|| format!("tool-{}", token(&[&task, call_id])));
                         if let Some(t) = store
@@ -908,8 +962,28 @@ impl Context {
                             .filter(|t| t.status == "running")
                             .cloned()
                         {
-                            let status = if t.abort_requested { "aborted" } else if is_error == Some(false) { "completed" } else { "failed" };
-                            ops.push(update(&t, status, Some(json!({"callId":call_id,"outputBytes":body.len(),"isError":is_error,"outcomeKnown":is_error.is_some()}))));
+                            // A typed outcome settles the tool task; an unknown
+                            // one (pre-typed log or synthesized result) leaves the
+                            // task for the turn settlement instead of guessing.
+                            if let Some(is_error) = is_error {
+                                let status = if t.abort_requested {
+                                    "aborted"
+                                } else if is_error {
+                                    "failed"
+                                } else {
+                                    "completed"
+                                };
+                                ops.push(update(
+                                    &t,
+                                    status,
+                                    Some(json!({
+                                        "callId": call_id,
+                                        "outputBytes": body.len(),
+                                        "isError": is_error,
+                                        "outcomeKnown": true
+                                    })),
+                                ));
+                            }
                         }
                     }
                     _ => {}
@@ -1142,17 +1216,34 @@ mod tests {
     #[test]
     fn external_commits_cannot_consume_generation_input() {
         let (dir, host) = setup();
-        commit(&host.store, vec![Op::Submit {
-            conversation: "root".into(), request_id: "request".into(),
-            task_id: "generation".into(), input: json!({"text":"keep this"}),
-        }]).unwrap();
+        commit(
+            &host.store,
+            vec![Op::Submit {
+                conversation: "root".into(),
+                request_id: "request".into(),
+                task_id: "generation".into(),
+                input: json!({"text":"keep this"}),
+            }],
+        )
+        .unwrap();
         let store = host.store.borrow();
         let generation = &store.state.tasks["generation"];
         let mut start = update(generation, "running", None);
         if let Op::TaskUpdate { checkpoint, .. } = &mut start {
             *checkpoint = json!({"phase":"executing"});
         }
-        assert!(validate_external_ops(&store, &[start, Op::Consume { id: "generation".into() }]).is_err());
+        assert!(
+            validate_external_ops(
+                &store,
+                &[
+                    start,
+                    Op::Consume {
+                        id: "generation".into()
+                    }
+                ]
+            )
+            .is_err()
+        );
         assert!(store.records("root").unwrap().is_empty());
         assert_eq!(store.state.tasks["generation"].input["text"], "keep this");
         drop(store);
@@ -1180,22 +1271,171 @@ mod tests {
     #[test]
     fn repeated_provider_call_ids_create_distinct_tool_tasks() {
         let (dir, host) = setup();
-        commit(&host.store, vec![Op::TaskCreate {
-            id: "generation".into(), conversation: "root".into(), kind: "gc.generation".into(),
-            version: 1, owner: None, background: false, replay: "safe".into(),
-            input: Value::Null, checkpoint: Value::Null,
-        }]).unwrap();
+        commit(
+            &host.store,
+            vec![Op::TaskCreate {
+                id: "generation".into(),
+                conversation: "root".into(),
+                kind: "gc.generation".into(),
+                version: 1,
+                owner: None,
+                background: false,
+                replay: "safe".into(),
+                input: Value::Null,
+                checkpoint: Value::Null,
+            }],
+        )
+        .unwrap();
         let context = Context::new(host.store.clone(), "generation".into(), "root".into());
         let observer = context.observer();
         for _ in 0..2 {
-            observer(&[Record::ToolCall { id: "same".into(), name: "host-tool".into(), arguments: "{}".into() }], None).unwrap();
-            observer(&[Record::ToolResult { call_id: "same".into(), name: "host-tool".into(), body: "error: successful content".into() }], Some(false)).unwrap();
+            observer(
+                &[Record::ToolCall {
+                    id: "same".into(),
+                    name: "host-tool".into(),
+                    arguments: "{}".into(),
+                }],
+                None,
+            )
+            .unwrap();
+            observer(
+                &[Record::ToolResult {
+                    call_id: "same".into(),
+                    name: "host-tool".into(),
+                    body: "error: successful content".into(),
+                    is_error: Some(false),
+                }],
+                Some(false),
+            )
+            .unwrap();
         }
         let store = host.store.borrow();
-        let tools: Vec<_> = store.state.tasks.values().filter(|task| task.kind == "gc.tool").collect();
+        let tools: Vec<_> = store
+            .state
+            .tasks
+            .values()
+            .filter(|task| task.kind == "gc.tool")
+            .collect();
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().all(|task| task.status == "completed"));
-        assert!(tools.iter().all(|task| task.outcome.as_ref().unwrap()["isError"] == false));
+        assert!(
+            tools
+                .iter()
+                .all(|task| task.outcome.as_ref().unwrap()["isError"] == false)
+        );
+        drop(store);
+        drop(observer);
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cached_error_result_fails_the_task_and_marks_outcome_known() {
+        let (dir, host) = setup();
+        commit(
+            &host.store,
+            vec![Op::TaskCreate {
+                id: "generation".into(),
+                conversation: "root".into(),
+                kind: "gc.generation".into(),
+                version: 1,
+                owner: None,
+                background: false,
+                replay: "safe".into(),
+                input: Value::Null,
+                checkpoint: Value::Null,
+            }],
+        )
+        .unwrap();
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        let observer = context.observer();
+        observer(
+            &[Record::ToolCall {
+                id: "same".into(),
+                name: "host-tool".into(),
+                arguments: "{}".into(),
+            }],
+            None,
+        )
+        .unwrap();
+        observer(
+            &[Record::ToolResult {
+                call_id: "same".into(),
+                name: "host-tool".into(),
+                body: "error: boom".into(),
+                is_error: Some(true),
+            }],
+            Some(true),
+        )
+        .unwrap();
+        let store = host.store.borrow();
+        let tools: Vec<_> = store
+            .state
+            .tasks
+            .values()
+            .filter(|task| task.kind == "gc.tool")
+            .collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].status, "failed");
+        assert_eq!(tools[0].outcome.as_ref().unwrap()["isError"], true);
+        assert_eq!(tools[0].outcome.as_ref().unwrap()["outcomeKnown"], true);
+        drop(store);
+        drop(observer);
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn unknown_typed_outcome_does_not_settle_the_tool_task() {
+        let (dir, host) = setup();
+        commit(
+            &host.store,
+            vec![Op::TaskCreate {
+                id: "generation".into(),
+                conversation: "root".into(),
+                kind: "gc.generation".into(),
+                version: 1,
+                owner: None,
+                background: false,
+                replay: "safe".into(),
+                input: Value::Null,
+                checkpoint: Value::Null,
+            }],
+        )
+        .unwrap();
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        let observer = context.observer();
+        observer(
+            &[Record::ToolCall {
+                id: "same".into(),
+                name: "host-tool".into(),
+                arguments: "{}".into(),
+            }],
+            None,
+        )
+        .unwrap();
+        // A pre-typed log carries no status, so the outcome stays unknown and
+        // the task is not settled as failed from body text.
+        observer(
+            &[Record::ToolResult {
+                call_id: "same".into(),
+                name: "host-tool".into(),
+                body: "interrupted".into(),
+                is_error: None,
+            }],
+            None,
+        )
+        .unwrap();
+        let store = host.store.borrow();
+        let tools: Vec<_> = store
+            .state
+            .tasks
+            .values()
+            .filter(|task| task.kind == "gc.tool")
+            .collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].status, "running");
+        assert!(tools[0].outcome.is_none());
         drop(store);
         drop(observer);
         drop(context);
@@ -1206,13 +1446,34 @@ mod tests {
     fn recovery_uses_recorded_shell_outcome() {
         let (dir, host) = setup();
         let records = [
-            Record::ToolCall { id: "shell".into(), name: "bash".into(), arguments: "{}".into() },
-            Record::Bash { call_id: Some("shell".into()), command: "echo ok".into(), output: "ok".into(), exit_code: Some(0), truncated: false, spill: None },
+            Record::ToolCall {
+                id: "shell".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            Record::Bash {
+                call_id: Some("shell".into()),
+                command: "echo ok".into(),
+                output: "ok".into(),
+                exit_code: Some(0),
+                truncated: false,
+                spill: None,
+            },
         ];
-        assert!(matches!(&crate::session::interrupted_calls(&records)[0], Record::ToolResult { body, .. } if body == "ok"));
-        commit(&host.store, records.iter().map(|record| Op::Entry {
-            conversation: "root".into(), record: record.to_json(),
-        }).collect()).unwrap();
+        assert!(
+            matches!(&crate::session::interrupted_calls(&records)[0], Record::ToolResult { body, .. } if body == "ok")
+        );
+        commit(
+            &host.store,
+            records
+                .iter()
+                .map(|record| Op::Entry {
+                    conversation: "root".into(),
+                    record: record.to_json(),
+                })
+                .collect(),
+        )
+        .unwrap();
         drop(host);
         let host = Host::open(&dir, false).unwrap();
         let records = host.store.borrow().records("root").unwrap();
@@ -1223,34 +1484,90 @@ mod tests {
     #[test]
     fn recovery_pairs_reused_tool_ids_by_occurrence() {
         let (dir, host) = setup();
-        let call = Record::ToolCall { id: "same".into(), name: "host-tool".into(), arguments: "{}".into() };
-        let result = Record::ToolResult { call_id: "same".into(), name: "host-tool".into(), body: "first done".into() };
+        let call = Record::ToolCall {
+            id: "same".into(),
+            name: "host-tool".into(),
+            arguments: "{}".into(),
+        };
+        let result = Record::ToolResult {
+            call_id: "same".into(),
+            name: "host-tool".into(),
+            body: "first done".into(),
+            is_error: None,
+        };
         let records = [call.clone(), result, call];
         assert_eq!(crate::session::interrupted_calls(&records).len(), 1);
-        commit(&host.store, records.iter().map(|record| Op::Entry {
-            conversation: "root".into(), record: record.to_json(),
-        }).collect()).unwrap();
+        commit(
+            &host.store,
+            records
+                .iter()
+                .map(|record| Op::Entry {
+                    conversation: "root".into(),
+                    record: record.to_json(),
+                })
+                .collect(),
+        )
+        .unwrap();
         drop(host);
         let host = Host::open(&dir, false).unwrap();
         let records = host.store.borrow().records("root").unwrap();
-        assert!(matches!(records.last(), Some(Record::ToolResult { call_id, body, .. }) if call_id == "same" && body.contains("interrupted")));
+        assert!(
+            matches!(records.last(), Some(Record::ToolResult { call_id, body, .. }) if call_id == "same" && body.contains("interrupted"))
+        );
         drop(host);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn recovery_matches_partial_response_occurrence() {
         let (dir, host) = setup();
-        commit(&host.store, vec![
-            Op::TaskCreate { id: "generation".into(), conversation: "root".into(), kind: "gc.generation".into(), version: 1, owner: None, background: false, replay: "safe".into(), input: Value::Null, checkpoint: Value::Null },
-            Op::Entry { conversation: "root".into(), record: Record::User("hello".into()).to_json() },
-            Op::Entry { conversation: "root".into(), record: Record::Assistant("earlier shared text".into()).to_json() },
-            Op::Document { conversation: "root".into(), kind: "gc.live".into(), version: 1, expected_revision: 0, value: json!({"taskId":"generation","text":"shared text"}), history: false, fork: "initial".into(), initial: Value::Null },
-        ]).unwrap();
+        commit(
+            &host.store,
+            vec![
+                Op::TaskCreate {
+                    id: "generation".into(),
+                    conversation: "root".into(),
+                    kind: "gc.generation".into(),
+                    version: 1,
+                    owner: None,
+                    background: false,
+                    replay: "safe".into(),
+                    input: Value::Null,
+                    checkpoint: Value::Null,
+                },
+                Op::Entry {
+                    conversation: "root".into(),
+                    record: Record::User("hello".into()).to_json(),
+                },
+                Op::Entry {
+                    conversation: "root".into(),
+                    record: Record::Assistant("earlier shared text".into()).to_json(),
+                },
+                Op::Document {
+                    conversation: "root".into(),
+                    kind: "gc.live".into(),
+                    version: 1,
+                    expected_revision: 0,
+                    value: json!({"taskId":"generation","text":"shared text"}),
+                    history: false,
+                    fork: "initial".into(),
+                    initial: Value::Null,
+                },
+            ],
+        )
+        .unwrap();
         drop(host);
         for _ in 0..2 {
             let reopened = Host::open(&dir, false).unwrap();
             let records = reopened.store.borrow().records("root").unwrap();
-            assert_eq!(records.iter().filter(|record| matches!(record, Record::Assistant(text) if text == "shared text")).count(), 1);
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(
+                        |record| matches!(record, Record::Assistant(text) if text == "shared text")
+                    )
+                    .count(),
+                1
+            );
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1260,16 +1577,50 @@ mod tests {
         for i in 0..18 {
             let cv = format!("conversation-{i}");
             let task = format!("task-{i}");
-            commit(&host.store, vec![
-                Op::ConversationCreate { id: cv.clone(), agent: json!({}), provider_identity: crate::durable::identity().unwrap(), owner: None, parent: None, fork_at: None },
-                Op::TaskCreate { id: task.clone(), conversation: cv.clone(), kind: "app.step".into(), version: 1, owner: None, background: false, replay: "safe".into(), input: Value::Null, checkpoint: Value::Null },
-                Op::Document { conversation: cv, kind: "gc.live".into(), version: 1, expected_revision: 0, value: json!({"taskId":task,"text":"x".repeat(60_000)}), history: false, fork: "initial".into(), initial: Value::Null },
-            ]).unwrap();
+            commit(
+                &host.store,
+                vec![
+                    Op::ConversationCreate {
+                        id: cv.clone(),
+                        agent: json!({}),
+                        provider_identity: crate::durable::identity().unwrap(),
+                        owner: None,
+                        parent: None,
+                        fork_at: None,
+                    },
+                    Op::TaskCreate {
+                        id: task.clone(),
+                        conversation: cv.clone(),
+                        kind: "app.step".into(),
+                        version: 1,
+                        owner: None,
+                        background: false,
+                        replay: "safe".into(),
+                        input: Value::Null,
+                        checkpoint: Value::Null,
+                    },
+                    Op::Document {
+                        conversation: cv,
+                        kind: "gc.live".into(),
+                        version: 1,
+                        expected_revision: 0,
+                        value: json!({"taskId":task,"text":"x".repeat(60_000)}),
+                        history: false,
+                        fork: "initial".into(),
+                        initial: Value::Null,
+                    },
+                ],
+            )
+            .unwrap();
         }
         drop(host);
         let host = Host::open(&dir, false).unwrap();
         for i in 0..18 {
-            let records = host.store.borrow().records(&format!("conversation-{i}")).unwrap();
+            let records = host
+                .store
+                .borrow()
+                .records(&format!("conversation-{i}"))
+                .unwrap();
             assert!(matches!(&records[0], Record::Assistant(text) if text.len() == 60_000));
             assert!(matches!(&records[1], Record::Meta(_)));
         }
@@ -1287,18 +1638,32 @@ mod tests {
                         id: format!("call-{i}"),
                         name: "host-tool".into(),
                         arguments: "{}".into(),
-                    }.to_json(),
-                }).collect();
+                    }
+                    .to_json(),
+                })
+                .collect();
             commit(&host.store, ops).unwrap();
         }
         drop(host);
         let host = Host::open(&dir, false).unwrap();
         let records = host.store.borrow().records("root").unwrap();
-        assert_eq!(records.iter().filter(|record| matches!(record, Record::ToolResult { .. })).count(), 513);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, Record::ToolResult { .. }))
+                .count(),
+            513
+        );
         drop(host);
         let host = Host::open(&dir, false).unwrap();
         let records = host.store.borrow().records("root").unwrap();
-        assert_eq!(records.iter().filter(|record| matches!(record, Record::ToolResult { .. })).count(), 513);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, Record::ToolResult { .. }))
+                .count(),
+            513
+        );
         drop(host);
         std::fs::remove_dir_all(dir).unwrap();
     }

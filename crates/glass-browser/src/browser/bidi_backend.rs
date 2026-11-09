@@ -333,7 +333,10 @@ impl BidiBrowserBackend {
         match (operation, request) {
             (BackendOperation::Initialize, BackendRequest::Initialize) => {
                 if state.session_started {
-                    return Err(lifecycle_error("initialize", "session already exists; close it first"));
+                    return Err(lifecycle_error(
+                        "initialize",
+                        "session already exists; close it first",
+                    ));
                 }
                 let result = self
                     .command(
@@ -917,7 +920,9 @@ mod tests {
 
     #[tokio::test]
     async fn close_reports_session_end_failure() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -927,23 +932,39 @@ mod tests {
                 let id = request["id"].clone();
                 let response = match request["method"].as_str().unwrap() {
                     "session.new" => json!({"id": id, "result": {"session": "s"}}),
-                    "browsingContext.getTree" => json!({"id": id, "result": {"contexts": [{"context": "c", "url": "about:blank"}]}}),
+                    "browsingContext.getTree" => {
+                        json!({"id": id, "result": {"contexts": [{"context": "c", "url": "about:blank"}]}})
+                    }
                     "session.end" => json!({"id": id, "error": {"message": "end failed"}}),
                     _ => unreachable!(),
                 };
-                socket.send(Message::Text(response.to_string().into())).await.unwrap();
+                socket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
             }
         });
-        let backend = BidiBrowserBackend::connect(format!("ws://{address}")).await.unwrap();
+        let backend = BidiBrowserBackend::connect(format!("ws://{address}"))
+            .await
+            .unwrap();
         let dispatcher = crate::browser_backend::BrowserBackendDispatcher::new(&backend);
         dispatcher.initialize().await.unwrap();
-        assert!(dispatcher.close().await.unwrap_err().to_string().contains("end failed"));
+        assert!(
+            dispatcher
+                .close()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("end failed")
+        );
         server.abort();
     }
 
     #[tokio::test]
     async fn failed_context_discovery_leaves_a_closable_session() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -959,16 +980,30 @@ mod tests {
                     "session.end" => json!({}),
                     _ => unreachable!(),
                 };
-                socket.send(Message::Text(json!({"id":request["id"], "result":result}).to_string().into())).await.unwrap();
-                if method == "session.end" { break; }
+                socket
+                    .send(Message::Text(
+                        json!({"id":request["id"], "result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                if method == "session.end" {
+                    break;
+                }
             }
             methods
         });
-        let backend = BidiBrowserBackend::connect(format!("ws://{address}")).await.unwrap();
+        let backend = BidiBrowserBackend::connect(format!("ws://{address}"))
+            .await
+            .unwrap();
         let dispatcher = crate::browser_backend::BrowserBackendDispatcher::new(&backend);
         assert!(dispatcher.initialize().await.is_err());
         assert!(dispatcher.initialize().await.is_err());
         dispatcher.close().await.unwrap();
-        assert_eq!(server.await.unwrap(), ["session.new", "browsingContext.getTree", "session.end"]);
+        assert_eq!(
+            server.await.unwrap(),
+            ["session.new", "browsingContext.getTree", "session.end"]
+        );
     }
 }

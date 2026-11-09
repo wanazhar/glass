@@ -954,8 +954,7 @@ fn seed_attention_proposal(root: &std::path::Path, data_home: &std::path::Path) 
 }
 
 fn binary() -> String {
-    std::env::var("GLASS_E2E_BINARY")
-        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_glass").to_string())
+    std::env::var("GLASS_E2E_BINARY").unwrap_or_else(|_| env!("CARGO_BIN_EXE_glass").to_string())
 }
 
 fn send_ctrl_shift_a(session: &mut Session) {
@@ -1498,7 +1497,11 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         session.visible_output()
     );
     assert!(
-        !session.terminal.screen().contents().contains("ALPHA_PREVIEW_1"),
+        !session
+            .terminal
+            .screen()
+            .contents()
+            .contains("ALPHA_PREVIEW_1"),
         "preview stayed stuck on the first file after selection moved\n{}",
         session.output_tail()
     );
@@ -4744,7 +4747,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     session.wait_for_agent_surface();
 
     start_core_conversation(&mut session, "queue-owner", "active-run-queue-target");
-    
+
     send_ctrl_shift_t(&mut session);
     assert!(session.wait_for_screen("PROJECT THREADS", Duration::from_secs(5)));
     assert!(
@@ -5920,11 +5923,16 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
             "",
         );
         if session.wait_for_screen("Enter/Y approve", Duration::from_secs(3)) {
-            confirming_resume = session.wait_for_screen("glass.agent.resume", Duration::from_secs(1));
+            confirming_resume =
+                session.wait_for_screen("glass.agent.resume", Duration::from_secs(1));
             break;
         }
         assert!(
-            session.terminal.screen().contents().contains("workspace busy"),
+            session
+                .terminal
+                .screen()
+                .contents()
+                .contains("workspace busy"),
             "resume failed without a transient workspace conflict\n{}",
             session.output_tail()
         );
@@ -5976,7 +5984,11 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
                 return;
             }
             assert!(
-                session.terminal.screen().contents().contains("Could not verify"),
+                session
+                    .terminal
+                    .screen()
+                    .contents()
+                    .contains("Could not verify"),
                 "retry did not show confirmation or a transient verification conflict\n{}",
                 session.output_tail()
             );
@@ -6496,7 +6508,6 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-
 
     for (key, marker) in [
         (b'2', "FILES"),

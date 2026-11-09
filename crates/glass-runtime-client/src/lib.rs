@@ -169,10 +169,16 @@ mod tests {
     #[test]
     fn client_rejects_unterminated_child_response() {
         let mut command = Command::new("sh");
-        command.args(["-c", "printf '%s' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'"]);
+        command.args([
+            "-c",
+            "printf '%s' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'",
+        ]);
         let client = RuntimeClient::spawn_command(command).unwrap();
         assert_eq!(
-            client.recv_timeout(Duration::from_secs(5)).unwrap_err().kind(),
+            client
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::UnexpectedEof
         );
     }

@@ -288,9 +288,16 @@ impl OperationRegistry {
         {
             return Err("request ID already belongs to a different operation".into());
         }
-        let result = self.submit(request_id, actor, operation_type, revision_before, retry_safe)?;
+        let result = self.submit(
+            request_id,
+            actor,
+            operation_type,
+            revision_before,
+            retry_safe,
+        )?;
         if result.1 {
-            self.request_fingerprints.insert(request_id.into(), fingerprint);
+            self.request_fingerprints
+                .insert(request_id.into(), fingerprint);
         }
         Ok(result)
     }
@@ -1595,9 +1602,9 @@ fn operation_event_batch(
         .cloned()
         .collect();
     let cursor = selected.last().map_or(since, |event| event.sequence);
-    let has_more = events
-        .iter()
-        .any(|event| event.sequence > cursor && operation_id.is_none_or(|id| event.operation_id == id));
+    let has_more = events.iter().any(|event| {
+        event.sequence > cursor && operation_id.is_none_or(|id| event.operation_id == id)
+    });
     serde_json::json!({
         "events": selected,
         "cursor": cursor,
@@ -2449,7 +2456,12 @@ mod tests {
         let mut registry = OperationRegistry::new("workspace".into());
         let submit = |registry: &mut OperationRegistry, fingerprint| {
             registry.submit_bound(
-                "request", fingerprint, "actor".into(), "tool".into(), 1, false,
+                "request",
+                fingerprint,
+                "actor".into(),
+                "tool".into(),
+                1,
+                false,
             )
         };
         let (first, created) = submit(&mut registry, [1; 32]).unwrap();
@@ -2463,10 +2475,19 @@ mod tests {
     #[test]
     fn closing_workspace_rejects_new_operations_but_reacquires_existing_ones() {
         let mut registry = OperationRegistry::new("workspace".into());
-        let first = registry.submit("first", "actor".into(), "tool".into(), 0, true).unwrap().0;
+        let first = registry
+            .submit("first", "actor".into(), "tool".into(), 0, true)
+            .unwrap()
+            .0;
         registry.closing = true;
-        assert!(registry.submit("new", "actor".into(), "tool".into(), 0, true).is_err());
-        let duplicate = registry.submit("first", "actor".into(), "tool".into(), 0, true).unwrap();
+        assert!(
+            registry
+                .submit("new", "actor".into(), "tool".into(), 0, true)
+                .is_err()
+        );
+        let duplicate = registry
+            .submit("first", "actor".into(), "tool".into(), 0, true)
+            .unwrap();
         assert!(!duplicate.1);
         assert_eq!(duplicate.0.id, first.id);
     }
@@ -2477,14 +2498,31 @@ mod tests {
         let mut next = 1;
         let mut dropped = 0;
         for _ in 0..4 {
-            push_workspace_event("workspace", &mut events, &mut next, &mut dropped, "changed", None, true);
+            push_workspace_event(
+                "workspace",
+                &mut events,
+                &mut next,
+                &mut dropped,
+                "changed",
+                None,
+                true,
+            );
         }
         let first = workspace_event_batch(&events, next, dropped, 0, 1);
         assert_eq!(first["cursor"], 1);
         assert_eq!(first["newestSequence"], 4);
         assert_eq!(first["hasMore"], true);
-        let second = workspace_event_batch(&events, next, dropped, first["cursor"].as_u64().unwrap(), 3);
-        assert_eq!(second["events"].as_array().unwrap().iter().map(|event| event["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 3, 4]);
+        let second =
+            workspace_event_batch(&events, next, dropped, first["cursor"].as_u64().unwrap(), 3);
+        assert_eq!(
+            second["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
         assert_eq!(second["hasMore"], false);
     }
 
@@ -2504,8 +2542,17 @@ mod tests {
         assert_eq!(first["cursor"], 1);
         assert_eq!(first["newestSequence"], 4);
         assert_eq!(first["hasMore"], true);
-        let second = operation_event_batch(&events, first["cursor"].as_u64().unwrap(), 3, Some("op"));
-        assert_eq!(second["events"].as_array().unwrap().iter().map(|event| event["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 3, 4]);
+        let second =
+            operation_event_batch(&events, first["cursor"].as_u64().unwrap(), 3, Some("op"));
+        assert_eq!(
+            second["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
         assert_eq!(second["hasMore"], false);
     }
 

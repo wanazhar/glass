@@ -1589,13 +1589,20 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.unwrap();
-            tokio::time::timeout(Duration::from_secs(2), websocket.next()).await.unwrap()
+            tokio::time::timeout(Duration::from_secs(2), websocket.next())
+                .await
+                .unwrap()
         });
-        let client = CdpClient::connect(&format!("ws://{address}")).await.unwrap();
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
         let clone = client.clone();
         drop(client);
         drop(clone);
-        assert!(matches!(server.await.unwrap(), Some(Ok(Message::Close(_))) | None));
+        assert!(matches!(
+            server.await.unwrap(),
+            Some(Ok(Message::Close(_))) | None
+        ));
     }
 
     #[tokio::test]

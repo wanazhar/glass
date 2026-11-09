@@ -3334,6 +3334,7 @@ mod tests {
             name: "bash".into(),
             call_id: "child-tool-call".into(),
             body: tool_output.clone(),
+            is_error: None,
         });
         let mut parent_secrets = crate::secrets::SecretVault::default();
         let page_secret = "parent-page-secret-sentinel";
@@ -3360,6 +3361,7 @@ mod tests {
             name: page_secret.into(),
             call_id: page_secret.into(),
             body: secret_page_output,
+            is_error: None,
         });
         let running_child = Session::create(&scratch).unwrap();
         let running_child_id = running_child.id.clone();

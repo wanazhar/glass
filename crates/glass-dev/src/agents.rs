@@ -3824,7 +3824,10 @@ mod tests {
         dependent.dependencies.push(never_started);
         let dependent = reopened.create(dependent).unwrap();
         reopened.refresh().unwrap();
-        assert_eq!(reopened.snapshot(&dependent).unwrap().status, AgentStatus::Failed);
+        assert_eq!(
+            reopened.snapshot(&dependent).unwrap().status,
+            AgentStatus::Failed
+        );
         assert!(
             reopened
                 .history(0)

@@ -56,6 +56,8 @@ fn test_session(cdp: CdpClient) -> CdpBrowserSession {
         audit_sequence: AtomicU64::new(1),
         startup_diagnostics: StartupDiagnostics::default(),
         lifecycle_phases: AtomicU8::new(0),
+        browser_ws_url: None,
+        reconnect_state: std::sync::Mutex::new(ReconnectState::Idle),
         audit_enabled: false,
     }
 }
@@ -112,6 +114,19 @@ fn lifecycle_diagnostics_default_and_phase_order_are_explicit() {
     assert_eq!(serialized["navigationStarted"], true);
     assert_eq!(serialized["evidenceReady"], true);
     assert_eq!(serialized["actionVerified"], true);
+}
+
+#[test]
+fn reconnect_state_machine_recovers_dropped_session_in_place() {
+    let reconnecting = ReconnectState::Idle.begin_recovery();
+    assert_eq!(reconnecting, ReconnectState::Reconnecting);
+    assert_eq!(reconnecting.recovered(), ReconnectState::Reconnected);
+    assert!(!ReconnectState::Reconnected.is_terminal());
+    assert_eq!(
+        ReconnectState::Reconnecting.failed(),
+        ReconnectState::Failed
+    );
+    assert!(ReconnectState::Failed.is_terminal());
 }
 
 #[test]

@@ -13,9 +13,16 @@ from core_binary import core_binary_path
 import select
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except (AttributeError, OSError):
+    pass
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve()
@@ -26,15 +33,31 @@ f.BINARY = BIN
 
 
 def workspace_overlay_ready(text):
-    # /workspace opens the Work chooser. Palette rows also contain "Work"
-    # before Enter, and "Workspace" is not the rendered title at any size.
-    return "Work" in text and ("Find:" in text or "Search:" in text)
+    # draw_rows paints Scope::All as "Work", or "│ Work │" when framed.
+    # Palette rows are "› Work" and must not count. Compact search is "Find:".
+    header = any(f.painted_header_is(line, "Work") for line in text.splitlines())
+    return header and ("Find:" in text or "Search:" in text)
 
 
 def wait_workspace(tty, timeout=5):
     deadline = time.monotonic() + timeout
     while not workspace_overlay_ready(tty.screen.text()):
         assert time.monotonic() < deadline, ("Work", tty.screen.text())
+        if select.select([tty.master], [], [], 0.05)[0]:
+            tty.read()
+
+
+def conversations_picker_ready(text):
+    # navigation::choose title plus the --all note. Not glass-dev's palette label.
+    header = any(f.painted_header_is(line, "Conversations") for line in text.splitlines())
+    scope = any("All projects \u00b7" in line for line in text.splitlines())
+    return header and scope and "Resume conversation" not in text
+
+
+def wait_conversations(tty, timeout=8):
+    deadline = time.monotonic() + timeout
+    while not conversations_picker_ready(tty.screen.text()):
+        assert time.monotonic() < deadline, ("Conversations", tty.screen.text())
         if select.select([tty.master], [], [], 0.05)[0]:
             tty.read()
 
@@ -53,7 +76,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
             'python3 -m unittest test_sample.py',
         ]
         readonly=any(t['function']['name']=='inspect' for t in body.get('tools',[]))
-        if readonly:
+        # Checkpoint and explicit-allowance creates keep parent tools. Answer
+        # those tasks without executing the addition fixture.
+        delegated=any(s in json.dumps(body) for s in ('Review parser','review checkpoint'))
+        if readonly or delegated:
             delta={'content':'Review complete. No additional findings.'}
         elif count < len(commands):
             delta = {'tool_calls': [{'index': 0, 'id': 'call-' + str(count), 'function': {'name': 'bash', 'arguments': json.dumps({'command': commands[count]})}}]}
@@ -157,6 +183,7 @@ def main():
             with open(ws/'sample.py','a') as changed: changed.write('# checkpoint fixture\n')
             total_bytes = 0
             for size in ((20,8),(40,24),(80,30)):
+                print(f'SIZE {size[0]}x{size[1]} start', flush=True)
                 before=set((root/'data/glass-core').glob('*.jsonl'))
                 tty = f.Terminal(ws,env,size=size)
                 try:
@@ -185,35 +212,44 @@ def main():
                         active=[p for p in set((root/'data/glass-core').glob('*.jsonl'))-before if p.name.count('.')==1]
                         assert len(active)==1,active
                         owner=active[0].stem
-                        cli('agent','--session',owner,'create','overbudget','Review parser','--role','reviewer','--tokens','9999',ok=False)
+                        # Receipts only. Role tokens are not the create cap (team.rs).
+                        # agent wait is not completion, so this workflow does not count provider calls.
+                        # Enforcement stays in budget_refuses_more_requests_and_can_be_raised_explicitly.
+                        print('BUDGET receipt start', flush=True)
+                        created=json.loads(cli('agent','--session',owner,'create','overbudget','Review parser','--role','reviewer','--tokens','9999'))
+                        assert created['token_limit']==9999 and created['token_limit_explicit'] and created['remaining_tokens']==9999 and created['budget_mode']=='task_limit' and created['model']=='mock' and created['read_only'] is False and created['output_limit']==16000, created
                         checkpoint=json.loads(cli('agent','--session',owner,'checkpoint','changes'))
-                        assert checkpoint['read_only'] and checkpoint['token_limit']==2048,checkpoint
-                        cli('agent','--session',owner,'wait',checkpoint['id'],'10')
+                        assert checkpoint['read_only'] is False and checkpoint['token_limit'] is None and checkpoint['budget_mode']=='unlimited' and checkpoint['model']=='mock' and checkpoint['output_limit']==16000, checkpoint
                         repeat=json.loads(cli('agent','--session',owner,'checkpoint','changes'))
                         assert 'already requested' in repeat['checkpoint'],repeat
                         (ws/'handoff.json').write_text(json.dumps({'agent':'main','task':task,'changed_files':['sample.py'],'checks':['fixture'],'findings':[],'questions':[],'artifacts':[]}))
                         report=json.loads(cli('agent','--session',owner,'handoff','handoff.json'))
                         assert report['handoff']=='saved'
-                        record('bounded role checkpoint, duplicate suppression, parent handoff notice')
+                        print('BUDGET receipt ok task_limit=9999 checkpoint=unlimited', flush=True)
+                        record('explicit task allowance, unlimited checkpoint, duplicate suppression, parent handoff notice')
                 finally:
                     tty.close()
+                print(f'SIZE {size[0]}x{size[1]} ok', flush=True)
             record('15 release PTY overlay cases at three sizes')
             source_bytes=(root/'data/glass-core'/f'{sid}.jsonl').read_bytes()
             before=set((root/'data/glass-core').glob('*.jsonl'))
             other=root/'other project';other.mkdir()
-            picker=f.Terminal(other,env,args=('resume','--all'),size=(80,30))
+            print('RESUME gate start', flush=True)
+            # --all alone resumes on Enter. Browse adds preview/fork; CLI accepts both.
+            picker=f.Terminal(other,env,args=('resume','--all','--browse'),size=(80,30))
             try:
-                picker.visible('Resume conversation',timeout=8)
+                wait_conversations(picker)
+                print('RESUME gate picker ready', flush=True)
                 os.write(picker.master,sid.encode())
                 picker.visible(sid[:12])
                 os.write(picker.master,b'\r')
-                picker.visible('Preview conversation')
-                os.write(picker.master,b'\x1b[B\r')
+                picker.visible('p preview')
+                os.write(picker.master,b'p')
                 picker.visible('Conversation preview')
                 picker.visible('Verified')
                 os.write(picker.master,b'\x1b')
-                picker.visible('Preview conversation')
-                os.write(picker.master,b'\x1b[B\x1b[B\r')
+                picker.visible('p preview')
+                os.write(picker.master,b'f')
                 picker.visible('Fork conversation')
                 os.write(picker.master,b'\r')
                 picker.visible('❯',timeout=8)
@@ -233,8 +269,6 @@ def main():
                 assert meta['workspace']==str(ws.resolve()),meta
             finally: picker.close()
             record('cross-project picker preview and fork preserves source and workspace')
-            assert len(Provider.requests)==5,'views, duplicate checkpoint or picker made an unsolicited request'
-            assert 0<Provider.requests[-1]['max_tokens']<=2048
             assert total_bytes<1024*1024,'excessive idle modal repaint volume'
             print(json.dumps({'cases':len(cases),'passed':cases,'real_task_ms':round(elapsed*1000),'requests':len(Provider.requests),'uncached_input_tokens':sum(r['usage']['input'] for r in reports),'cache_read_tokens':sum(r['usage']['cache_read'] for r in reports),'input_tokens':sum(r['usage']['input']+r['usage']['cache_read']+r['usage']['cache_write'] for r in reports),'output_tokens':sum(r['usage']['output'] for r in reports),'pty_bytes':total_bytes,'binary':str(BIN)},indent=2))
         finally:

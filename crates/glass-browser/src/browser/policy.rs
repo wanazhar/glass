@@ -6,10 +6,11 @@
 //! system sandboxing, and per-capability allow/deny controls.
 
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use url::Url;
 
 /// Version of the structured policy decision/error contract.
@@ -71,6 +72,63 @@ pub enum PolicyDecision {
     Deny { reason: String },
     RequireConfirmation { reason: String },
 }
+
+/// One bounded policy decision emitted by the enforcement path.
+///
+/// The event is observability only. A denial still resolves to a refusal and
+/// grants no capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyDecisionEvent {
+    pub capability: String,
+    pub decision: PolicyDecision,
+}
+
+impl PolicyDecisionEvent {
+    fn new(capability: PolicyCapability, decision: PolicyDecision) -> Self {
+        Self {
+            capability: capability_name(capability).to_string(),
+            decision,
+        }
+    }
+}
+
+/// Bounded policy decision events retained for policy consumers.
+const MAX_POLICY_DECISIONS: usize = 256;
+
+fn decision_events() -> &'static Mutex<VecDeque<PolicyDecisionEvent>> {
+    static STORE: OnceLock<Mutex<VecDeque<PolicyDecisionEvent>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+/// Emit one policy decision outcome without changing enforcement.
+pub fn emit_policy_decision(capability: PolicyCapability, decision: &PolicyDecision) {
+    let event = PolicyDecisionEvent::new(capability, decision.clone());
+    let Ok(mut events) = decision_events().lock() else {
+        return;
+    };
+    if events.len() >= MAX_POLICY_DECISIONS {
+        events.pop_front();
+    }
+    events.push_back(event);
+}
+
+/// Bounded policy decision events emitted so far.
+pub fn policy_decision_events() -> Vec<PolicyDecisionEvent> {
+    decision_events()
+        .lock()
+        .map(|events| events.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Drop emitted policy decision events.
+pub fn clear_policy_decisions() {
+    decision_events()
+        .lock()
+        .map(|mut events| events.clear())
+        .unwrap_or_default();
+}
+
 /// Browser-free, read-only navigation policy result.
 ///
 /// This deliberately reports only URL policy evidence. It does not resolve
@@ -450,7 +508,9 @@ impl BrowserPolicy {
     }
 
     pub fn require(&self, capability: PolicyCapability) -> Result<(), PolicyError> {
-        match self.decide(capability) {
+        let decision = self.decide(capability);
+        emit_policy_decision(capability, &decision);
+        match decision {
             PolicyDecision::Allow => Ok(()),
             PolicyDecision::Deny { reason } => Err(PolicyError::Denied {
                 operation: capability_name(capability).to_string(),
@@ -480,7 +540,9 @@ impl BrowserPolicy {
     /// preflight uses this so a token cannot be spent before the batch starts
     /// or be smuggled into a multi-step request.
     pub fn require_for_batch(&self, capability: PolicyCapability) -> Result<(), PolicyError> {
-        match self.decide(capability) {
+        let decision = self.decide(capability);
+        emit_policy_decision(capability, &decision);
+        match decision {
             PolicyDecision::Allow => Ok(()),
             PolicyDecision::Deny { reason } => Err(PolicyError::Denied {
                 operation: capability_name(capability).to_string(),
@@ -902,6 +964,54 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn hardened_denial_emits_policy_decision_event_and_grants_nothing() {
+        clear_policy_decisions();
+        let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
+        assert!(policy.require(PolicyCapability::Evaluate).is_err());
+        let events = policy_decision_events();
+        assert!(
+            events.iter().any(|event| {
+                event.capability == "evaluate"
+                    && matches!(event.decision, PolicyDecision::Deny { .. })
+            }),
+            "expected a denial decision event for evaluate"
+        );
+        assert!(matches!(
+            policy.decide(PolicyCapability::Evaluate),
+            PolicyDecision::Deny { .. }
+        ));
+        clear_policy_decisions();
+    }
+
+    #[test]
+    fn policy_decision_events_evict_oldest_entry_at_capacity() {
+        clear_policy_decisions();
+        for index in 1..=257 {
+            emit_policy_decision(
+                PolicyCapability::Evaluate,
+                &PolicyDecision::Deny {
+                    reason: format!("policy-decision-eviction-{index}"),
+                },
+            );
+        }
+        let events = policy_decision_events();
+        assert_eq!(events.len(), 256, "decision log should cap at 256 entries");
+        assert_eq!(
+            events.first().unwrap().decision,
+            PolicyDecision::Deny {
+                reason: "policy-decision-eviction-2".to_string(),
+            }
+        );
+        assert_eq!(
+            events.last().unwrap().decision,
+            PolicyDecision::Deny {
+                reason: "policy-decision-eviction-257".to_string(),
+            }
+        );
+        clear_policy_decisions();
     }
 
     #[test]

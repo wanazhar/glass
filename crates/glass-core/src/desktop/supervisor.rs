@@ -519,7 +519,7 @@ fn peer_is_current_user(_: &UnixStream) -> std::io::Result<bool> {
 }
 
 pub(super) fn write_lease(profile: &Path, lease: &str) -> Result<(), String> {
-    if !matches!(lease, "agent" | "human") {
+    if !matches!(lease, "agent" | "human" | "read-only") {
         return Err("Invalid desktop lease state".into());
     }
     let Some(mut state) = status(profile)? else {

@@ -1778,6 +1778,7 @@ fn desktop_status_message(status: &serde_json::Value) -> String {
     let lease = match status["lease"].as_str() {
         Some("human") => "with you",
         Some("agent") => "with the agent",
+        Some("read-only") => "read-only",
         _ => "not reported",
     };
     format!(

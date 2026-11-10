@@ -5,6 +5,7 @@ members = [
     "crates/glass-browser",
     "crates/glass-dev",
     "crates/glass-core",
+    "crates/glass-marble",
     "crates/glass-mod-api",
     "crates/glass-runtime-client",
     "crates/glass-tui",

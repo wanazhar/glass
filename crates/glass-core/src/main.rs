@@ -28,6 +28,8 @@ mod connect;
 mod context_audit;
 mod contracts;
 mod desktop;
+#[allow(dead_code)]
+mod desktop_contract;
 mod diagnostic_bundle;
 mod diagnostics;
 mod doctor;

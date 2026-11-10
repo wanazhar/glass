@@ -18,6 +18,7 @@ fn test_state() -> ProductState {
         id: "generation-fixture-1".into(),
         conversation_id: "durable-fixture-1".into(),
         status: "completed".into(),
+        owner: "human".into(),
     });
     state.approvals.push(PendingApproval {
         request_id: "host:fixture-session:1:call-1".into(),
@@ -127,6 +128,7 @@ fn server_state_route_returns_product_state() {
     assert_eq!(status, 200);
     let value: serde_json::Value = serde_json::from_str(&body).expect("state body should be json");
     assert_eq!(value["tasks"][0]["status"], serde_json::json!("completed"));
+    assert_eq!(value["tasks"][0]["owner"], serde_json::json!("human"));
     assert_eq!(value["approvals"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         value["transcript"][0]["kind"],
@@ -231,6 +233,7 @@ fn server_turn_route_runs_durable_turn_and_updates_state() {
     let state_value: serde_json::Value =
         serde_json::from_str(&state_body).expect("state should decode");
     assert_eq!(state_value["tasks"].as_array().map(Vec::len), Some(1));
+    assert_eq!(state_value["tasks"][0]["owner"], serde_json::json!("human"));
     assert_eq!(state_value["transcript"].as_array().map(Vec::len), Some(2));
 
     let _ = std::fs::remove_dir_all(&root);

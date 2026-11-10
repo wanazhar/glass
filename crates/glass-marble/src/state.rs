@@ -19,6 +19,7 @@ pub struct TaskRecord {
     pub id: String,
     pub conversation_id: String,
     pub status: String,
+    pub owner: String,
 }
 
 /// One inbound runtime tool request awaiting an explicit host decision.

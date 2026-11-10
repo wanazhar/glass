@@ -357,6 +357,9 @@ pub struct Agent<'a> {
     automatic_memory: bool,
     /// Pre-tool-use shell hook (wave E); None = no hook configured.
     pre_tool_hook: Option<crate::hooks_shell::PreToolUse>,
+    /// Post-write hook registry; the built-in verify pipeline runs after a
+    /// write and the outcome is recorded on the turn.
+    post_write_hooks: crate::hooks_shell::HookRegistry,
     /// Circuit breaker for paid summaries: three consecutive failures stop
     /// the paid path for the session while deterministic compaction continues.
     breaker: compact::Breaker,
@@ -561,6 +564,7 @@ impl<'a> Agent<'a> {
             automatic_memory: true,
             checkpoint_tools: false,
             pre_tool_hook: None,
+            post_write_hooks: crate::hooks_shell::HookRegistry::with_builtins(),
             breaker: compact::Breaker::default(),
             overflow_recovered: false,
             empty_recovered: false,
@@ -602,6 +606,16 @@ impl<'a> Agent<'a> {
     /// Register the pre-tool-use shell hook; fires before every tool call.
     pub fn with_pre_tool_hook(mut self, hook: Option<crate::hooks_shell::PreToolUse>) -> Self {
         self.pre_tool_hook = hook;
+        self
+    }
+
+    /// Register the post-write hook registry; runs after a write and records
+    /// the result on the turn.
+    pub fn with_post_write_hooks(
+        mut self,
+        registry: crate::hooks_shell::HookRegistry,
+    ) -> Self {
+        self.post_write_hooks = registry;
         self
     }
     /// Exclusive host execution: no built-ins, extensions, or local tool guards.
@@ -3129,9 +3143,18 @@ impl<'a> Agent<'a> {
             }
         }
         if !touched.is_empty() {
-            let note = verify::report(&touched, self.workspace, VERIFY_TAIL_LINES);
-            if !note.is_empty() {
-                body.push_str(&note);
+            // Post-write hooks run in registration order over the paths a
+            // write touched; the built-in verify pipeline is registered first.
+            // The outcome lands on the turn through the tool result below.
+            let hooks = &self.post_write_hooks;
+            for outcome in hooks.run(&touched, self.workspace, VERIFY_TAIL_LINES) {
+                if !outcome.note.is_empty() {
+                    body.push_str(&outcome.note);
+                }
+                if outcome.failed {
+                    let message = format!("post-write hook {} failed", outcome.hook);
+                    self.session.append(Record::Meta(message));
+                }
             }
         }
         // Record what the command read, so a later write can be allowed.

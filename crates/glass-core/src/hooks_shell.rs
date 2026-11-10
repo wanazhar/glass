@@ -401,6 +401,90 @@ pub fn load_config() -> Option<PreToolUse> {
     })
 }
 
+/// A post-write hook: the registry runs it over the paths a write touched and
+/// records the outcome on the turn.
+pub trait PostWriteHook: Send + Sync {
+    /// Stable hook name for records and diagnostics.
+    fn name(&self) -> &'static str;
+    /// Run the hook over the paths a write touched.
+    fn run(
+        &self,
+        written: &[std::path::PathBuf],
+        workspace: &std::path::Path,
+        tail_lines: usize,
+    ) -> HookOutcome;
+}
+
+/// Outcome of one post-write hook run, recorded on the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookOutcome {
+    /// Owning hook name, for records and diagnostics.
+    pub hook: &'static str,
+    /// Rendered result for the model; empty means nothing was checked.
+    pub note: String,
+    /// Whether the hook judged the write failed.
+    pub failed: bool,
+}
+
+/// Post-write hook registry. Hooks run in registration order; the first
+/// forward-fit slice registers the built-in verify pipeline.
+pub struct HookRegistry {
+    hooks: Vec<Box<dyn PostWriteHook + Send + Sync>>,
+}
+
+impl HookRegistry {
+    /// The first forward-fit registry: the built-in verify pipeline.
+    pub fn with_builtins() -> Self {
+        let mut registry = Self { hooks: Vec::new() };
+        registry.register(Box::new(VerifyHook));
+        registry
+    }
+
+    pub fn register(&mut self, hook: Box<dyn PostWriteHook + Send + Sync>) {
+        self.hooks.push(hook);
+    }
+
+    /// Run the registered post-write hooks over the paths a write touched.
+    pub fn run(
+        &self,
+        written: &[std::path::PathBuf],
+        workspace: &std::path::Path,
+        tail_lines: usize,
+    ) -> Vec<HookOutcome> {
+        self.hooks
+            .iter()
+            .map(|hook| {
+                let mut outcome = hook.run(written, workspace, tail_lines);
+                outcome.hook = hook.name();
+                outcome
+            })
+            .collect()
+    }
+}
+
+/// The built-in post-write hook: run the existing verify pipeline over the
+/// paths a write touched and report the outcome.
+struct VerifyHook;
+
+impl PostWriteHook for VerifyHook {
+    fn name(&self) -> &'static str {
+        "verify"
+    }
+    fn run(
+        &self,
+        written: &[std::path::PathBuf],
+        workspace: &std::path::Path,
+        tail_lines: usize,
+    ) -> HookOutcome {
+        let (note, failed) = crate::verify::check(written, workspace, tail_lines);
+        HookOutcome {
+            hook: "verify",
+            note,
+            failed,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,4 +640,29 @@ fn load_config_reads_the_hooks_table() {
     );
     assert_eq!(table.get("matcher").unwrap().as_str().unwrap(), "edit");
     let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_write_registry_runs_the_verify_pipeline() {
+        let d = std::env::temp_dir().join(format!("gc-postwrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let bad = d.join("bad.py");
+        std::fs::write(&bad, "def oops(\n").unwrap();
+        let paths = vec![bad];
+
+        let outcomes = HookRegistry::with_builtins().run(&paths, &d, 40);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].hook, "verify");
+        assert!(outcomes[0].failed, "a syntax error must fail the hook");
+        assert!(outcomes[0].note.contains("syntax error"));
+
+        let ok = d.join("ok.py");
+        std::fs::write(&ok, "x = 1\nprint(x)\n").unwrap();
+        let paths = vec![ok];
+        let outcomes = HookRegistry::with_builtins().run(&paths, &d, 40);
+        assert!(!outcomes[0].failed, "a valid write must pass the hook");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

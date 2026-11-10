@@ -1075,6 +1075,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
     let mut parent_tool_scopes =
         std::collections::BTreeMap::<String, (String, String, String)>::new();
     let mut turn = 0_usize;
+    let mut rail: Vec<ConversationEntry> = Vec::new();
     for event in events {
         let entry_id = event_entry_id(event);
         match event.kind.as_str() {
@@ -1106,6 +1107,9 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     continue;
                 }
                 subagent_parent_calls.insert(parent_call);
+                if let Some(text) = subagent_event_rail_line(&activity) {
+                    rail.push(ConversationEntry::system(text, None));
+                }
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     subagent_positions.entry(key)
                 {
@@ -1325,6 +1329,11 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     entry.entry_id = Some(scope_id.clone());
                     parent_tool_scopes.insert(scope_id, scope);
                 }
+                if tool_name(&event.payload) == "run_subagents" {
+                    if let Some(text) = delegation_tool_rail_line(&event) {
+                        rail.push(ConversationEntry::system(text, None));
+                    }
+                }
             }
             "tool_progress" => {
                 if let Some(call_id) = event
@@ -1382,6 +1391,11 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     &mut items,
                     None,
                 );
+                if tool_name(&event.payload) == "run_subagents" {
+                    if let Some(text) = delegation_tool_rail_line(&event) {
+                        rail.push(ConversationEntry::system(text, None));
+                    }
+                }
             }
             "completed" => {
                 if let Some(text) = event_text(event) {
@@ -1650,7 +1664,82 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 }))
         });
     }
-    items
+    let mut projected = items;
+    projected.extend(rail);
+    projected
+}
+
+/// Bounded user-visible event rail for delegated subagent work.
+///
+/// Subagent start, stop, and tool events fold into ordered transcript rows so
+/// hosts render delegation activity without re-deriving child state. The event
+/// family list is closed for this slice; later families can extend the same
+/// rail without changing the shared projection contract.
+pub fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
+    const RAIL_LIMIT: usize = 8;
+    let mut rows = Vec::new();
+    for event in events {
+        if let Some(text) = event_rail_line(event) {
+            rows.push(ConversationEntry::system(text, None));
+        }
+    }
+    rows.truncate(RAIL_LIMIT);
+    rows
+}
+
+fn event_rail_line(event: &crate::AgentEvent) -> Option<String> {
+    if event.kind == "subagent_event" {
+        let activity = parse_subagent_activity_event(event)?;
+        return subagent_event_rail_line(&activity);
+    }
+    delegation_tool_rail_line(event)
+}
+
+fn delegation_tool_rail_line(event: &crate::AgentEvent) -> Option<String> {
+    if event.kind != "tool_execution_start" && event.kind != "tool_execution_end" {
+        return None;
+    }
+    let name = tool_name(&event.payload);
+    if name != "run_subagents" {
+        return None;
+    }
+    Some(if event.kind == "tool_execution_start" {
+        format!("Delegated · tool {name} started")
+    } else {
+        format!("Delegated · tool {name} stopped")
+    })
+}
+
+fn subagent_event_rail_line(activity: &SubagentActivityEvent) -> Option<String> {
+    let task_position = format!("{}/{}", activity.task_index + 1, activity.task_count);
+    let line = match &activity.kind {
+        SubagentActivityEventKind::Started { task_text, truncated } => {
+            let task = task_text.trim();
+            let task = if task.is_empty() {
+                "task details unavailable"
+            } else {
+                task
+            };
+            let task = if *truncated {
+                format!("{task} … [truncated]")
+            } else {
+                task.to_string()
+            };
+            format!("Delegated · subagent {task_position} started · {task}")
+        }
+        SubagentActivityEventKind::ToolStart { tool_name } => {
+            format!("Delegated · subagent {task_position} tool {tool_name} started")
+        }
+        SubagentActivityEventKind::ToolEnd { tool_name, is_error, .. } => format!(
+            "Delegated · subagent {task_position} tool {tool_name} {}",
+            if *is_error { "failed" } else { "completed" }
+        ),
+        SubagentActivityEventKind::Finished { state, .. } => format!(
+            "Delegated · subagent {task_position} stopped · {state}"
+        ),
+        SubagentActivityEventKind::Text { .. } => return None,
+    };
+    Some(line)
 }
 
 fn core_task_graph_text(result: &Value) -> String {
@@ -1921,6 +2010,93 @@ mod tests {
         assert!(
             rendered.is_empty(),
             "model discovery belongs to palette state"
+        );
+    }
+
+    #[test]
+    fn conversation_event_rail_projects_subagent_start_stop_and_tool_events() {
+        let agent_id = crate::AgentId::parse("agent-0002").unwrap();
+        let event = |sequence, data| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "subagent_event".into(),
+            payload: serde_json::json!({
+                "parentSessionId": "parent-session",
+                "parentTurnId": "turn-2",
+                "data": data
+            }),
+        };
+        let child = |kind, seq, extra: serde_json::Value| {
+            let mut data = serde_json::json!({
+                "kind": kind,
+                "taskId": "task-17",
+                "parentCallId": "call-delegate-3",
+                "taskIndex": 0,
+                "taskCount": 1,
+                "childSessionId": "child-session-17",
+                "seq": seq
+            });
+            for (key, value) in extra.as_object().unwrap() {
+                data[key] = value.clone();
+            }
+            data
+        };
+        let events = vec![
+            event(
+                1,
+                child(
+                    "started",
+                    1,
+                    serde_json::json!({"taskText": "Inspect the parser contract."}),
+                ),
+            ),
+            event(
+                2,
+                child("tool_start", 2, serde_json::json!({"toolName": "bash"})),
+            ),
+            event(
+                3,
+                child(
+                    "tool_end",
+                    3,
+                    serde_json::json!({"toolName": "bash", "isError": false}),
+                ),
+            ),
+            event(
+                4,
+                child(
+                    "finished",
+                    4,
+                    serde_json::json!({"state": "completed"}),
+                ),
+            ),
+        ];
+
+        let rows = conversation_event_rail(&events);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].kind, ConversationKind::System);
+        assert!(rows[0].text.contains("Delegated · subagent 1/1 started"));
+        assert!(rows[1].text.contains("Delegated · subagent 1/1 tool bash started"));
+        assert!(rows[2].text.contains("Delegated · subagent 1/1 tool bash completed"));
+        assert!(rows[3].text.contains("Delegated · subagent 1/1 stopped · completed"));
+
+        let delegated = vec![crate::AgentEvent {
+            sequence: 0,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "tool_execution_start".into(),
+            payload: serde_json::json!({
+                "name": "run_subagents",
+                "callId": "call-delegate-3",
+                "command": "run_subagents",
+            }),
+        }];
+        let delegated_rows = conversation_event_rail(&delegated);
+        assert_eq!(delegated_rows.len(), 1);
+        assert_eq!(
+            delegated_rows[0].text,
+            "Delegated · tool run_subagents started"
         );
     }
 

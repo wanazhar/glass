@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glass Marble</title>
+    <style>
+      body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #101418; color: #e8ecf1; }
+      header { padding: 10px 14px; border-bottom: 1px solid #232a31; display: flex; gap: 12px; align-items: center; }
+      header h1 { font-size: 15px; margin: 0; }
+      main { display: grid; grid-template-columns: 220px 1fr; gap: 12px; padding: 12px; }
+      section { border: 1px solid #232a31; border-radius: 6px; padding: 10px; }
+      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 8px; color: #9fb0bf; }
+      ul { margin: 0; padding-left: 18px; }
+      li { margin: 2px 0; }
+      button { margin: 2px 4px 2px 0; }
+      pre { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
+      input, textarea, select { width: 100%; box-sizing: border-box; background: #0c0f12; color: #e8ecf1; border: 1px solid #2a323a; border-radius: 4px; padding: 6px; }
+      button { background: #1d6feb; color: #fff; border: 0; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+      button.deny { background: #a12626; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .pill { border: 1px solid #2a323a; border-radius: 999px; padding: 1px 8px; font-size: 11px; color: #9fb0bf; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Glass Marble</h1>
+      <div class="row">
+        <span class="pill" id="state-summary">idle</span>
+      </div>
+    </header>
+    <main>
+      <section>
+        <h2>Conversations</h2>
+        <ul id="conversations"></ul>
+      </section>
+      <section>
+        <h2>Transcript</h2>
+        <pre id="transcript">awaiting turn</pre>
+      </section>
+      <section>
+        <h2>Tasks</h2>
+        <ul id="tasks"></ul>
+      </section>
+      <section>
+        <h2>Approvals</h2>
+        <div id="approvals"></div>
+      </section>
+    </main>
+    <section>
+      <h2>Composer</h2>
+      <div class="row">
+        <input id="composer-text" placeholder="message the durable marble" />
+        <button id="composer-send">Send</button>
+      </div>
+    </section>
+    <script>
+      const stateEl = document.getElementById("state-summary");
+      const conversationsEl = document.getElementById("conversations");
+      const transcriptEl = document.getElementById("transcript");
+      const tasksEl = document.getElementById("tasks");
+      const approvalsEl = document.getElementById("approvals");
+      const composerText = document.getElementById("composer-text");
+      const composerSend = document.getElementById("composer-send");
+      let selectedConversationId = null;
+
+      async function refresh() {
+        const response = await fetch("/api/state");
+        const state = await response.json();
+        stateEl.textContent = state.approvals.length + " pending approvals";
+        conversationsEl.innerHTML = state.conversations.map((c) => {
+          const taskSummary = c.taskIds.join(", ");
+          const label = c.id + (taskSummary ? " tasks: " + taskSummary : "");
+          return "<li><button class='conversation' data-conversation-id='" + c.id + "'>" + label + "</button></li>";
+        }).join("") || "<li>no conversations</li>";
+        conversationsEl.querySelectorAll(".conversation").forEach((button) => {
+          button.addEventListener("click", () => { selectedConversationId = button.dataset.conversationId; refresh(); });
+        });
+        transcriptEl.textContent = state.transcript.map((e) => e.conversationId + " " + e.kind + ": " + e.text).join("\n") || "awaiting turn";
+        tasksEl.innerHTML = state.tasks.map((t) => "<li>" + t.id + " " + t.conversationId + " " + t.status + "</li>").join("") || "<li>no tasks</li>";
+        approvalsEl.innerHTML = state.approvals.map((a) => {
+          return "<div>" + a.tool + " " + a.requestId + " <button data-allow='" + a.requestId + "'>Allow</button> <button class='deny' data-deny='" + a.requestId + "'>Deny</button></div>";
+        }).join("") || "<div>inbox empty</div>";
+        approvalsEl.querySelectorAll("[data-allow]").forEach((button) => {
+          button.addEventListener("click", () => { fetch("/api/approvals/" + button.dataset.allow + "/allow", { method: "POST" }); refresh(); });
+        });
+        approvalsEl.querySelectorAll("[data-deny]").forEach((button) => {
+          button.addEventListener("click", () => { fetch("/api/approvals/" + button.dataset.deny + "/deny", { method: "POST" }); refresh(); });
+        });
+      }
+
+      composerSend.addEventListener("click", async () => {
+        const text = composerText.value.trim();
+        if (!text) { return; }
+        const conversationId = selectedConversationId;
+        await fetch("/api/turns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, conversationId }) });
+        composerText.value = "";
+        await refresh();
+      });
+      composerText.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); composerSend.click(); } });
+      refresh();
+    </script>
+  </body>
+</html>

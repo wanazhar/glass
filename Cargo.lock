@@ -1513,6 +1513,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "glass-marble"
+version = "0.3.14"
+dependencies = [
+ "clap",
+ "glass-runtime-client",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "glass-mod-api"
 version = "0.3.14"
 

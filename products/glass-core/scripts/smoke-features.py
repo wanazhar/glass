@@ -155,6 +155,11 @@ class Screen:
         return "\n".join("".join(row) for row in self.cells)
 
 
+def quit_dialog_visible(text):
+    # exit_dialog paints QUIT? at the sizes these smokes use, and Quit? below 6x6.
+    return "QUIT?" in text or "Quit?" in text
+
+
 class Terminal:
     def __init__(self, workspace, env, args=(), size=(80,24)):
         self.master, slave = pty.openpty()
@@ -270,25 +275,26 @@ class Terminal:
             while time.monotonic() < deadline:
                 if select.select([self.master], [], [], 0.05)[0]: self.read()
         for key in (b"\x03", b"\x04"):
+            if self.process.poll() is not None:
+                break
             try:
                 os.write(self.master, key)
             except OSError:
                 # The slave is already gone; fall through to reaping.
                 break
-            if key == b"\x03":
-                deadline = time.monotonic() + 1
-            else:
-                # Ctrl-D intentionally asks for confirmation; accept the
-                # visible dialog so shutdown exercises the clean exit path.
-                confirm_by = time.monotonic() + 2
-                while self.process.poll() is None and time.monotonic() < confirm_by:
-                    if "Quit glass-core?" in self.screen.text():
-                        os.write(self.master, b"\r")
-                        break
-                    if select.select([self.master], [], [], 0.05)[0]: self.read()
-                deadline = time.monotonic() + 5
+            # Either quit key opens the same dialog. A second quit key cancels
+            # it, so accept the rendered confirmation before sending another.
+            confirm_by = time.monotonic() + 2
+            while self.process.poll() is None and time.monotonic() < confirm_by:
+                if quit_dialog_visible(self.screen.text()):
+                    os.write(self.master, b"\r")
+                    break
+                if select.select([self.master], [], [], 0.05)[0]: self.read()
+            deadline = time.monotonic() + 5
             while self.process.poll() is None and time.monotonic() < deadline:
                 if select.select([self.master], [], [], 0.05)[0]: self.read()
+            if self.process.poll() is not None:
+                break
         if self.process.poll() is None:
             self.process.terminate()
             deadline = time.monotonic() + 2

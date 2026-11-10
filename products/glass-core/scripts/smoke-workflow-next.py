@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 from core_binary import core_binary_path
+import select
 import shlex
 import subprocess
 import tempfile
@@ -22,6 +23,20 @@ spec = importlib.util.spec_from_file_location('features', ROOT / 'scripts/smoke-
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 f.BINARY = BIN
+
+
+def workspace_overlay_ready(text):
+    # /workspace opens the Work chooser. Palette rows also contain "Work"
+    # before Enter, and "Workspace" is not the rendered title at any size.
+    return "Work" in text and ("Find:" in text or "Search:" in text)
+
+
+def wait_workspace(tty, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not workspace_overlay_ready(tty.screen.text()):
+        assert time.monotonic() < deadline, ("Work", tty.screen.text())
+        if select.select([tty.master], [], [], 0.05)[0]:
+            tty.read()
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -146,14 +161,17 @@ def main():
                 tty = f.Terminal(ws,env,size=size)
                 try:
                     tty.visible('❯',timeout=8)
-                    for command,title in (('/workspace','Workspace'),('/requests','Requests'),('/outputs','Outputs'),('/help','Help')):
+                    for command,title in (('/workspace','Work'),('/requests','Requests'),('/outputs','Outputs'),('/help','Help')):
                         tty.send(command)
-                        tty.visible(title,timeout=5)
+                        if command == '/workspace':
+                            wait_workspace(tty)
+                        else:
+                            tty.visible(title,timeout=5)
                         total_bytes += len(tty.received.encode())
                         tty.received=''
-                        os.write(tty.master,b'\x1b')
-                        tty.wait('\x1b[?25h')
-                        tty.idle()
+                        # Slash entry leaves the parent palette open, so one Esc
+                        # is not the composer. Cursor-show can arrive first.
+                        tty.dismiss()
                     # Palette open/close leaves composer usable.
                     os.write(tty.master,b'/')
                     tty.wait('Commands',timeout=5)

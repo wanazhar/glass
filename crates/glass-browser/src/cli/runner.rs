@@ -1055,6 +1055,10 @@ fn validate_alternative_runtime_command(
             action: TaskCommand::Execute { .. },
         } if native => Ok(()),
         Commands::Batch { .. } if native => Ok(()),
+        Commands::Script { .. } if native => Ok(()),
+        Commands::Script { .. } => Err(
+            "scripted browser checks currently require the native or Chromium runtime".into(),
+        ),
         Commands::Workflow { action: None, .. } if native => Ok(()),
         Commands::WorkflowResume { .. } if native => Ok(()),
         Commands::Navigate { .. }
@@ -1304,6 +1308,30 @@ async fn run_alternative_runtime_command(
                             *atomic,
                             *mode,
                             *expected_revision,
+                            append_native_batch_progress,
+                        )
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Script { input } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let payload = read_json_input(input.as_ref())?;
+                let steps_value = payload.get("steps").cloned().unwrap_or(payload);
+                let steps: Vec<BatchStep> = serde_json::from_value(steps_value)
+                    .map_err(|error| format!("invalid script document: {error}"))?;
+                crate::browser::native_batch::check_policy(policy, &steps).await?;
+                alternative_json_output(
+                    &session
+                        .native_run_batch_with_progress(
+                            &steps,
+                            false,
+                            BatchMode::Unguarded,
+                            None,
                             append_native_batch_progress,
                         )
                         .await?,
@@ -4576,6 +4604,17 @@ async fn run_command(
                     .await?,
             )?;
         }
+        Commands::Script { input } => {
+            let payload = read_json_input(input.as_ref())?;
+            let steps_value = payload.get("steps").cloned().unwrap_or(payload);
+            let steps: Vec<BatchStep> = serde_json::from_value(steps_value)
+                .map_err(|error| format!("invalid script document: {error}"))?;
+            print_json(
+                &session
+                    .run_batch_with_mode(&steps, false, BatchMode::Unguarded, None)
+                    .await?,
+            )?;
+        }
         Commands::Workflow {
             action: None,
             input,
@@ -4948,6 +4987,7 @@ fn current_browser_command() -> String {
         "pdf",
         "fill-form",
         "batch",
+        "script",
         "workflow",
         "task",
         "ir",

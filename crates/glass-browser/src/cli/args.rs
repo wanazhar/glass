@@ -895,6 +895,12 @@ pub enum Commands {
         expected_revision: Option<u64>,
     },
 
+    /// Run a scripted sequence of existing browser actions for agent checks.
+    Script {
+        /// JSON file containing the ordered script steps; omit to read stdin.
+        input: Option<PathBuf>,
+    },
+
     #[command(subcommand_precedence_over_arg = true)]
     Workflow {
         /// Offline authoring operation. Omit to execute the workflow.
@@ -2153,6 +2159,21 @@ mod tests {
                 action: SessionCommand::Start { ref name }
             }) if name == "work"
         ));
+    }
+
+    #[test]
+    fn scripted_browser_checks_run_an_ordered_action_script() {
+        let cli = try_parse_cli(["glass", "script", "check.json"]).unwrap();
+        let Some(Commands::Script { ref input }) = cli.command else {
+            panic!("expected the scripted browser check command");
+        };
+        assert_eq!(input.as_deref(), Some(std::path::Path::new("check.json")));
+
+        let cli = try_parse_cli(["glass", "script"]).unwrap();
+        let Some(Commands::Script { ref input }) = cli.command else {
+            panic!("expected the scripted browser check command");
+        };
+        assert!(input.is_none());
     }
 
     #[test]

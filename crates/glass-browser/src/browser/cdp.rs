@@ -94,6 +94,11 @@ impl CdpError {
     pub fn is_response_timeout(&self) -> bool {
         self.kind == CdpErrorKind::ResponseTimeout
     }
+
+    /// Whether this error represents a dropped or failed CDP transport.
+    pub fn is_transport_error(&self) -> bool {
+        self.kind == CdpErrorKind::Transport
+    }
 }
 
 impl Display for CdpError {

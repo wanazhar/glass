@@ -237,6 +237,8 @@ pub struct CdpBrowserSession {
     pub(crate) audit_enabled: bool,
     pub(crate) startup_diagnostics: StartupDiagnostics,
     pub(crate) lifecycle_phases: AtomicU8,
+    pub(crate) browser_ws_url: Option<String>,
+    pub(crate) reconnect_state: std::sync::Mutex<ReconnectState>,
 }
 
 struct CachedObservation {
@@ -600,6 +602,66 @@ impl CdpBrowserSession {
     pub(crate) fn mark_lifecycle_phase(&self, phase: LifecyclePhase) {
         self.lifecycle_phases
             .fetch_or(phase.bit(), Ordering::Release);
+    }
+
+    /// Current reconnect lifecycle state for this session.
+    pub fn reconnect_state(&self) -> ReconnectState {
+        let state = self
+            .reconnect_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state
+    }
+
+    fn mark_reconnect_state(&self, state: ReconnectState) {
+        let mut guard = self
+            .reconnect_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = state;
+    }
+
+    /// Transition into in-place recovery after a dropped CDP connection.
+    pub fn begin_reconnect(&self) {
+        self.mark_reconnect_state(self.reconnect_state().begin_recovery());
+    }
+
+    /// Record that in-place recovery re-attached to the same browser target.
+    pub fn mark_reconnected(&self) {
+        self.mark_reconnect_state(self.reconnect_state().recovered());
+    }
+
+    /// Record that in-place recovery failed or was not safe to retry.
+    pub fn mark_reconnect_failed(&self) {
+        self.mark_reconnect_state(self.reconnect_state().failed());
+    }
+
+    /// Recover a dropped CDP session by re-attaching to the same browser target.
+    ///
+    /// Recovery reuses the existing browser endpoint and re-attaches to the
+    /// last recorded target instead of launching a second browser. The session
+    /// must not already be in a terminal recovery state.
+    pub async fn recover_dropped_session(&mut self) -> BrowserResult<()> {
+        if self.reconnect_state().is_terminal() {
+            return Err("recovery is not permitted in a terminal state".into());
+        }
+        self.begin_reconnect();
+        let Some(browser_ws_url) = self.browser_ws_url.as_ref() else {
+            self.mark_reconnect_failed();
+            return Err("cannot recover: no browser endpoint is pinned".into());
+        };
+        let cdp = CdpClient::connect(browser_ws_url).await?;
+        self.cdp = cdp;
+        let Some(target_id) = self.topology.lock().await.active_target_id.clone() else {
+            self.mark_reconnect_failed();
+            return Err("cannot recover: no active browser target is recorded".into());
+        };
+        if let Err(error) = self.select_target(&target_id).await {
+            self.mark_reconnect_failed();
+            return Err(error);
+        }
+        self.mark_reconnected();
+        Ok(())
     }
 
     /// Allocate a bounded, session-local identifier for one action attempt.
@@ -1007,6 +1069,8 @@ impl CdpBrowserSession {
             audit_sequence: AtomicU64::new(1),
             startup_diagnostics,
             lifecycle_phases: AtomicU8::new(0),
+            browser_ws_url: Some(browser_ws_url.clone()),
+            reconnect_state: std::sync::Mutex::new(ReconnectState::Idle),
             audit_enabled: options.audit,
         };
         let initialize_frame = async {

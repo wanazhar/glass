@@ -92,6 +92,7 @@ pub fn service_running() -> bool {
 pub enum Lease {
     Agent,
     Human,
+    ReadOnly,
 }
 
 impl Lease {
@@ -99,6 +100,7 @@ impl Lease {
         match self {
             Self::Agent => "agent",
             Self::Human => "human",
+            Self::ReadOnly => "read-only",
         }
     }
 }
@@ -499,10 +501,10 @@ impl Desktop {
             accessibility_registry_ready: false,
             accessibility_targets: HashMap::new(),
             accessibility_windows: HashMap::new(),
-            lease: if descriptor["lease"].as_str() == Some("human") {
-                Lease::Human
-            } else {
-                Lease::Agent
+            lease: match descriptor["lease"].as_str() {
+                Some("human") => Lease::Human,
+                Some("read-only") => Lease::ReadOnly,
+                _ => Lease::Agent,
             },
             held_buttons: HashSet::new(),
             held_keys: HashSet::new(),
@@ -662,7 +664,23 @@ impl Desktop {
                 session.accessibility_revision = session.accessibility_revision.saturating_add(1);
                 session.accessibility_targets.clear();
             }
-            _ => return Err("action must be take-control or return-to-agent".into()),
+            "read-only" => {
+                input::release_held(
+                    &session.display,
+                    &session.auth_cookie,
+                    &session.held_buttons,
+                    &session.held_keys,
+                )
+                .map_err(|error| error.message().to_owned())?;
+                session.held_buttons.clear();
+                session.held_keys.clear();
+                session.scroll_x_remainder = 0.0;
+                session.scroll_y_remainder = 0.0;
+                session.lease = Lease::ReadOnly;
+                session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+                session.accessibility_targets.clear();
+            }
+            _ => return Err("unsupported desktop lease action".into()),
         }
         if session.lifecycle == process::Lifecycle::Reusable {
             supervisor::write_lease(&self.profile_dir(), session.lease.as_str())?;
@@ -1344,6 +1362,10 @@ fn unicode_text_conflicts_with_held_modifiers(text: &str, held_keys: &HashSet<St
 }
 
 fn require_lease(caller: Lease, owner: Lease) -> Result<(), InputError> {
+    if owner == Lease::ReadOnly {
+        // A read-only lease keeps observation open and refuses all input.
+        return Err(InputError::LeaseConflict("read-only"));
+    }
     if caller == owner {
         Ok(())
     } else {
@@ -1524,7 +1546,13 @@ impl InputError {
             Self::Invalid(message) => message,
             Self::Unavailable => "Desktop state unavailable",
             Self::NoSession => "No managed desktop session is running",
-            Self::LeaseConflict(_) => "Desktop input lease is held by the other participant",
+            Self::LeaseConflict(lease) => {
+                if lease == "read-only" {
+                    "Desktop input lease is read-only; observation remains available"
+                } else {
+                    "Desktop input lease is held by the other participant"
+                }
+            }
             Self::Display(message) => message,
         }
     }
@@ -2458,6 +2486,35 @@ mod tests {
             require_lease(Lease::Human, Lease::Agent),
             Err(InputError::LeaseConflict("agent"))
         ));
+    }
+
+    #[test]
+    fn read_only_lease_refuses_input_while_observation_remains_available() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-desktop-readonly-lease-{}-{}",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let desktop = desktop_with_test_session(&root, "read-only-session");
+        let lease = desktop
+            .set_lease_for_session("read-only", Some("read-only-session"))
+            .unwrap();
+        assert_eq!(lease["lease"], "read-only");
+        assert_eq!(desktop.status()["lease"], "read-only");
+
+        let error = desktop
+            .input(Lease::Agent, &json!({"action":"key-tap","key":"A"}))
+            .unwrap_err();
+        assert_eq!(error.lease(), Some("read-only"));
+        assert!(error.message().contains("read-only"));
+
+        let human_error = desktop
+            .input(Lease::Human, &json!({"action":"key-tap","key":"A"}))
+            .unwrap_err();
+        assert_eq!(human_error.lease(), Some("read-only"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

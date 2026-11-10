@@ -107,10 +107,10 @@ fn journal(workspace: &Path) -> Value {
             if offset > 0 && index == 0 {
                 continue;
             }
-            if let Ok(value) = serde_json::from_slice::<Value>(line) {
-                if let Some(safe) = sanitize_event(&value) {
-                    events.push(safe);
-                }
+            if let Ok(value) = serde_json::from_slice::<Value>(line)
+                && let Some(safe) = sanitize_event(&value)
+            {
+                events.push(safe);
             }
         }
     }
@@ -189,10 +189,14 @@ pub fn snapshot(cfg: &crate::config::Config, workspace: &Path) -> Value {
             // statvfs writes only to this correctly sized output buffer.
             if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } == 0 {
                 let stats = unsafe { stats.assume_init() };
-                value["host"]["diskAvailableBytes"] =
-                    json!((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64));
-                value["host"]["diskTotalBytes"] =
-                    json!((stats.f_blocks as u64).saturating_mul(stats.f_frsize as u64));
+                #[allow(clippy::unnecessary_cast)]
+                {
+                    // statvfs field widths vary across Unix targets.
+                    value["host"]["diskAvailableBytes"] =
+                        json!((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64));
+                    value["host"]["diskTotalBytes"] =
+                        json!((stats.f_blocks as u64).saturating_mul(stats.f_frsize as u64));
+                }
             }
         }
     }

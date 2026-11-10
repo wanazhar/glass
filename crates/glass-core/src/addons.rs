@@ -510,32 +510,6 @@ pub fn snapshot(cfg: &config::Config, registry: &ext::Registry) -> serde_json::V
     serde_json::json!({"configured":cfg.extensions,"loaded":registry.names(),"failures":registry.failures(),"bundles":BUNDLES.iter().map(|b|serde_json::json!({"name":b.name,"description":b.description,"access":b.access})).collect::<Vec<_>>()} )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn addon_preferences_refuse_oversized_reads_and_writes() {
-        let path = std::env::temp_dir().join(format!(
-            "gc-addon-prefs-{}-{}.json",
-            std::process::id(),
-            crate::auth::random(8).unwrap()
-        ));
-        std::fs::write(&path, vec![b' '; MAX_ADDON_PREFERENCES_BYTES + 1]).unwrap();
-        let error = load_preferences(&path).unwrap_err();
-        assert!(error.contains("65536 byte limit"), "{error}");
-        std::fs::remove_file(&path).unwrap();
-
-        let mut preferences = Preferences::default();
-        preferences
-            .custom_enabled
-            .insert("x".repeat(MAX_ADDON_PREFERENCES_BYTES));
-        let error = save_preferences(&path, &preferences).unwrap_err();
-        assert!(error.contains("65536 byte limit"), "{error}");
-        assert!(!path.exists(), "oversized preferences are never written");
-    }
-}
-
 /// Global preferences only: inspecting them never starts an extension or opens a session.
 fn global_bundle_spec(bundle: &Bundle) -> String {
     serde_json::to_string(&vec![
@@ -592,4 +566,30 @@ pub(crate) fn global_toggle(name: &str, enabled: bool) -> Result<(), String> {
         prefs.disabled.insert(spec);
     }
     save(&prefs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addon_preferences_refuse_oversized_reads_and_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-addon-prefs-{}-{}.json",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::write(&path, vec![b' '; MAX_ADDON_PREFERENCES_BYTES + 1]).unwrap();
+        let error = load_preferences(&path).unwrap_err();
+        assert!(error.contains("65536 byte limit"), "{error}");
+        std::fs::remove_file(&path).unwrap();
+
+        let mut preferences = Preferences::default();
+        preferences
+            .custom_enabled
+            .insert("x".repeat(MAX_ADDON_PREFERENCES_BYTES));
+        let error = save_preferences(&path, &preferences).unwrap_err();
+        assert!(error.contains("65536 byte limit"), "{error}");
+        assert!(!path.exists(), "oversized preferences are never written");
+    }
 }

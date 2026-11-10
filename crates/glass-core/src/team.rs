@@ -2854,20 +2854,18 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
             }
             KeyCode::Char(c @ ('x' | 'a')) => {
                 if let Some(info) = infos.get(selected) {
-                    let req = match c {
-                        _ => {
-                            let action = if c == 'x' { "interrupt" } else { "archive" };
-                            if crate::modal::choose(
-                                keys,
-                                "Confirm agent action",
-                                &format!("{action} {}? History is retained.", info.name),
-                                &["Cancel".into(), action.into()],
-                            ) == Some(1)
-                            {
-                                Some(json!({"action":action,"id":info.id,"from":"human"}))
-                            } else {
-                                None
-                            }
+                    let req = {
+                        let action = if c == 'x' { "interrupt" } else { "archive" };
+                        if crate::modal::choose(
+                            keys,
+                            "Confirm agent action",
+                            &format!("{action} {}? History is retained.", info.name),
+                            &["Cancel".into(), action.into()],
+                        ) == Some(1)
+                        {
+                            Some(json!({"action":action,"id":info.id,"from":"human"}))
+                        } else {
+                            None
                         }
                     };
                     if let Some(req) = req

@@ -243,7 +243,7 @@ pub fn shrink_tool_results(records: &mut [Record], pressure: f32) -> usize {
                 name: name.clone(),
                 call_id: call_id.clone(),
                 body: format!("[{bytes} bytes of {name} output dropped to save context]"),
-                is_error: is_error.clone(),
+                is_error: *is_error,
             };
             shrunk += 1;
         }
@@ -333,7 +333,7 @@ pub fn evict_oversized(records: &mut [Record], cap: usize) -> usize {
                 name,
                 call_id,
                 is_error,
-            } if body.len() > cap => (name.clone(), call_id.clone(), body.len(), is_error.clone()),
+            } if body.len() > cap => (name.clone(), call_id.clone(), body.len(), *is_error),
             _ => continue,
         };
         *r = Record::ToolResult {

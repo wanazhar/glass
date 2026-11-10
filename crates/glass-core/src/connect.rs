@@ -2459,7 +2459,7 @@ fn edit_file(root: &Path, path: &str) -> Result<Value, String> {
     )
 }
 fn preview_file(root: &Path, path: &str) -> Result<(String, Vec<u8>), String> {
-    preview_path(&root, path)
+    preview_path(root, path)
 }
 fn preview_attachment_at(
     data_root: &Path,

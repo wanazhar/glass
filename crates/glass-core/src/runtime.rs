@@ -1570,8 +1570,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             return Err("session ID is already open; close that conversation before adopting another source".into());
                         }
                         let external_path = p.get("sourcePath").and_then(Value::as_str);
-                        if external_path.is_some() {
-                            let source = PathBuf::from(external_path.unwrap());
+                        if let Some(external_path) = external_path {
+                            let source = PathBuf::from(external_path);
                             if !source.is_absolute()
                                 || source.extension().is_none_or(|e| e != "jsonl")
                             {

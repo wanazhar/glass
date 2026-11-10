@@ -4268,7 +4268,7 @@ mod warm_integration {
 
     #[test]
     fn provider_schema_rejection_writes_private_diagnostic_with_actual_catalog_fingerprint() {
-        struct InvalidSchemaProvider(AtomicU64);
+        struct InvalidSchemaProvider(AtomicU64, AtomicU64);
         impl Provider for InvalidSchemaProvider {
             fn id(&self) -> &str {
                 "diagnostic-provider-fixture"
@@ -4278,6 +4278,7 @@ mod warm_integration {
                 request: &Request<'_>,
             ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
                 let attempt = self.0.fetch_add(1, Ordering::SeqCst);
+                self.1.store(request.tools.len() as u64, Ordering::SeqCst);
                 if attempt == 0 {
                     let (wire_name, _, _) = request
                         .tools
@@ -4318,7 +4319,7 @@ mod warm_integration {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let schema = r#"{"type":"object","properties":{"headed":{"type":"boolean"}}}"#;
-        let provider = InvalidSchemaProvider(AtomicU64::new(0));
+        let provider = InvalidSchemaProvider(AtomicU64::new(0), AtomicU64::new(0));
         let mut session = Session::create(&root).unwrap();
         session.append(Record::User("open the local page".into()));
         let mut state = State::new();
@@ -4351,10 +4352,10 @@ mod warm_integration {
         assert_eq!(record["toolName"], "glass.browser.start");
         assert_eq!(record["errorClass"], "tool_validation");
         assert_eq!(record["status"], "error");
-        // Nine builtins plus the mixed-host browser route the schema was
-        // rejected against; no managed desktop service is attached here, so the
-        // desktop capability contributes no catalog entry.
-        assert_eq!(record["toolCatalog"]["count"].as_u64().unwrap(), 10);
+        assert_eq!(
+            record["toolCatalog"]["count"].as_u64().unwrap(),
+            provider.1.load(Ordering::SeqCst)
+        );
         assert_eq!(record["toolCatalog"]["sha256"].as_str().unwrap().len(), 64);
         let offered = record["toolCatalog"]["entries"]
             .as_array()

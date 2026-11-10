@@ -9,7 +9,13 @@ use std::{
     io::{self, Write},
 };
 thread_local! { static PRIMARY: RefCell<Option<Surface>> = const { RefCell::new(None) }; }
-thread_local! { static NOTICES: RefCell<(Option<String>,std::collections::VecDeque<(usize,glass_tui::Role,String)>,usize)> = RefCell::new((None,std::collections::VecDeque::new(),0)); }
+type NoticeEntry = (usize, glass_tui::Role, String);
+type Notices = (
+    Option<String>,
+    std::collections::VecDeque<NoticeEntry>,
+    usize,
+);
+thread_local! { static NOTICES: RefCell<Notices> = const { RefCell::new((None, std::collections::VecDeque::new(), 0)) }; }
 thread_local! { static NOTICE_TURN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub fn set_notice_turn(turn: usize) {
     NOTICE_TURN.set(turn);

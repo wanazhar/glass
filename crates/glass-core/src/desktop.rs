@@ -42,6 +42,59 @@ type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Arc<capture::Frame>);
 const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Typed action kinds for the managed desktop action contract. Callers resolve
+/// a fresh observation target and send one typed action; dispatch is bounded and
+/// rejects ad-hoc action names before input reaches the desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopAction {
+    Click,
+    Focus,
+    SetText,
+}
+
+impl DesktopAction {
+    /// Parse one typed desktop action name.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "click" => Ok(Self::Click),
+            "focus" => Ok(Self::Focus),
+            "set_text" => Ok(Self::SetText),
+            _ => Err("action must be click, focus, or set_text".to_owned()),
+        }
+    }
+
+    /// Stable typed action name used for dispatch and post-action evidence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Click => "click",
+            Self::Focus => "focus",
+            Self::SetText => "set_text",
+        }
+    }
+}
+
+/// Bounded post-action wait. Polls the action postcondition until it holds or
+/// the deadline expires, then reports the last bounded state.
+pub fn post_action_wait_until<F>(mut predicate: F, deadline: Duration) -> (bool, String)
+where
+    F: FnMut() -> bool,
+{
+    let started = Instant::now();
+    let expires_at = started + deadline;
+    let mut state = String::from("pending");
+    let satisfied = loop {
+        if predicate() {
+            state = String::from("satisfied");
+            break true;
+        }
+        if Instant::now() >= expires_at {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(150));
+    };
+    (satisfied, state)
+}
+
 #[cfg(test)]
 fn is_browser_application(name: &str) -> bool {
     name.to_ascii_lowercase().contains("chrom")
@@ -887,11 +940,12 @@ impl Desktop {
                 .get(target_id)
                 .cloned()
                 .ok_or("Accessibility target is stale; call desktop_observe again")?;
-            let action = value
-                .get("action")
-                .and_then(Value::as_str)
-                .ok_or("action is required")?
-                .to_owned();
+            let action = DesktopAction::parse(
+                value
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .ok_or("action is required")?,
+            )?;
             let text = value.get("text").and_then(Value::as_str).map(str::to_owned);
             // Reserve a new revision so every target from the old tree is
             // stale as soon as this action starts.
@@ -906,8 +960,25 @@ impl Desktop {
                 text,
             )
         };
-        let result = accessibility::act(&session_bus_address, &target, &action, text.as_deref());
+        let result =
+            accessibility::act(&session_bus_address, &target, action.as_str(), text.as_deref());
         drop(control);
+        // Bounded post-action wait for typed actions before the refreshed
+        // observation reaches the caller.
+        if matches!(action, DesktopAction::Focus | DesktopAction::SetText) {
+            post_action_wait_until(
+                || {
+                    let verified = match &result {
+                        Ok(value) => {
+                            value.get("verified").and_then(Value::as_bool).unwrap_or(false)
+                        }
+                        Err(_) => false,
+                    };
+                    verified
+                },
+                Duration::from_secs(2),
+            );
+        }
         // Refresh without holding manager/control locks. Concurrent input or
         // observation advances the revision and prevents a stale commit.
         let observation = accessibility::observe(&session_bus_address, &session_id, revision, None);
@@ -2245,6 +2316,25 @@ mod tests {
     fn text_input_scroll_deltas_are_bounded() {
         assert_eq!(input::bounded_delta(1000.0), 20);
         assert_eq!(input::bounded_delta(-1000.0), -20);
+    }
+
+    #[test]
+    fn typed_desktop_actions_and_bounded_post_action_waits_are_enforced() {
+        assert_eq!(DesktopAction::parse("click").unwrap(), DesktopAction::Click);
+        assert_eq!(DesktopAction::parse("focus").unwrap(), DesktopAction::Focus);
+        assert_eq!(DesktopAction::parse("set_text").unwrap(), DesktopAction::SetText);
+        let parse_error = DesktopAction::parse("drag").err().expect("typed parse must fail");
+        assert_eq!(parse_error, "action must be click, focus, or set_text");
+        assert_eq!(DesktopAction::Click.as_str(), "click");
+        assert_eq!(DesktopAction::Focus.as_str(), "focus");
+        assert_eq!(DesktopAction::SetText.as_str(), "set_text");
+
+        let (satisfied, state) = post_action_wait_until(|| true, Duration::from_secs(1));
+        assert!(satisfied);
+        assert_eq!(state, "satisfied");
+        let (satisfied, state) = post_action_wait_until(|| false, Duration::from_millis(1));
+        assert!(!satisfied);
+        assert_eq!(state, "pending");
     }
 
     #[test]

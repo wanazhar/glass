@@ -4268,7 +4268,9 @@ mod warm_integration {
 
     #[test]
     fn provider_schema_rejection_writes_private_diagnostic_with_actual_catalog_fingerprint() {
-        struct InvalidSchemaProvider(AtomicU64, AtomicU64);
+        struct InvalidSchemaProvider {
+            calls: std::sync::Mutex<Vec<Vec<(String, String, String)>>>,
+        }
         impl Provider for InvalidSchemaProvider {
             fn id(&self) -> &str {
                 "diagnostic-provider-fixture"
@@ -4277,8 +4279,11 @@ mod warm_integration {
                 &self,
                 request: &Request<'_>,
             ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
-                let attempt = self.0.fetch_add(1, Ordering::SeqCst);
-                self.1.store(request.tools.len() as u64, Ordering::SeqCst);
+                let attempt = {
+                    let mut calls = self.calls.lock().unwrap();
+                    calls.push(request.tools.to_vec());
+                    calls.len() - 1
+                };
                 if attempt == 0 {
                     let (wire_name, _, _) = request
                         .tools
@@ -4319,7 +4324,9 @@ mod warm_integration {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let schema = r#"{"type":"object","properties":{"headed":{"type":"boolean"}}}"#;
-        let provider = InvalidSchemaProvider(AtomicU64::new(0), AtomicU64::new(0));
+        let provider = InvalidSchemaProvider {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
         let mut session = Session::create(&root).unwrap();
         session.append(Record::User("open the local page".into()));
         let mut state = State::new();
@@ -4352,11 +4359,40 @@ mod warm_integration {
         assert_eq!(record["toolName"], "glass.browser.start");
         assert_eq!(record["errorClass"], "tool_validation");
         assert_eq!(record["status"], "error");
+        let calls = provider.calls.lock().unwrap();
+        assert!(
+            calls.len() >= 2,
+            "schema repair retries; a last-call length must not be the catalog oracle"
+        );
+        let rejected = &calls[0];
+        // shortcut: this fixture's retry advertises the same tools, so count equality cannot separate the calls; recompute the fingerprint from call 0.
+        let mut expected_entries = Vec::new();
+        for (wire, description, tool_schema) in rejected {
+            let route = description
+                .strip_prefix("Glass route: ")
+                .and_then(|rest| rest.split_once(". Invoke"))
+                .map(|(route, _)| route)
+                .unwrap_or(wire);
+            expected_entries.push(serde_json::json!({
+                "wireName": wire,
+                "routeName": route,
+                "schemaSha256": crate::hashing::sha256(tool_schema.as_bytes()),
+            }));
+        }
+        let expected_digest =
+            crate::hashing::sha256(&serde_json::to_vec(&expected_entries).unwrap());
         assert_eq!(
             record["toolCatalog"]["count"].as_u64().unwrap(),
-            provider.1.load(Ordering::SeqCst)
+            rejected.len() as u64
         );
-        assert_eq!(record["toolCatalog"]["sha256"].as_str().unwrap().len(), 64);
+        assert_eq!(
+            record["toolCatalog"]["entries"].as_array().unwrap(),
+            &expected_entries
+        );
+        assert_eq!(
+            record["toolCatalog"]["sha256"].as_str(),
+            Some(expected_digest.as_str())
+        );
         let offered = record["toolCatalog"]["entries"]
             .as_array()
             .unwrap()
@@ -6715,7 +6751,11 @@ mod recovery_tests {
         assert_eq!(latest_name, "bash");
         assert_eq!(latest_body, "[exit 3]\nfailed");
         assert_eq!(latest_is_error, Some(true));
-        assert_ne!(latest_body, "EXECUTED");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "recovery completes the provider turn without a third guess"
+        );
         assert_eq!(
             session
                 .records
@@ -6844,8 +6884,20 @@ mod recovery_tests {
             .expect("cached recovery must leave the replayed result");
         assert_eq!(latest_name, "bash");
         assert_eq!(latest_body, "error: successful content");
+        assert!(
+            latest_body.starts_with("error:"),
+            "typed success must keep an error-prefixed body"
+        );
         assert_eq!(latest_is_error, Some(false));
-        assert_ne!(latest_body, "EXECUTED");
+        assert!(
+            !latest_body.contains("EXECUTED"),
+            "recovery must not run printf EXECUTED; exit 99"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "recovery completes the provider turn without re-executing bash"
+        );
         assert_eq!(
             session
                 .records

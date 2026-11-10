@@ -353,21 +353,33 @@ mod tests {
             "{\"k\":\"user\",\"t\":\"Fallback\"}\n",
         )
         .unwrap();
+        let canonical = target.canonicalize().unwrap();
+        assert_ne!(canonical, alias);
         let rows = super::index(&alias, &alias);
         assert_eq!(rows.len(), 2);
-        assert!(
-            rows.iter()
-                .any(|r| r.id == "legacy" && r.title == "Aliased")
-        );
-        assert!(rows.iter().any(|r| r.id == "fallback"));
+        let legacy = rows.iter().find(|r| r.id == "legacy").unwrap();
+        let fallback = rows.iter().find(|r| r.id == "fallback").unwrap();
+        assert_eq!(legacy.title, "Aliased");
+        assert_eq!(fallback.title, "Fallback");
+        assert_eq!(legacy.workspace, canonical);
+        assert_eq!(fallback.workspace, canonical);
+        assert_ne!(legacy.workspace, alias);
+        assert!(legacy.path.starts_with(&canonical));
+        assert!(legacy.path.ends_with("legacy.jsonl"));
+        assert!(fallback.path.starts_with(&canonical));
+        assert!(fallback.path.ends_with("fallback.jsonl"));
         let web = super::all_for_web(&alias, &alias);
         let aliased: Vec<_> = web
             .into_iter()
-            .filter(|r| r.path.starts_with(&target))
+            .filter(|r| r.path.starts_with(&canonical))
             .collect();
         assert_eq!(aliased.len(), 2);
-        assert!(aliased.iter().any(|r| r.id == "legacy"));
-        assert!(aliased.iter().any(|r| r.id == "fallback"));
+        let web_legacy = aliased.iter().find(|r| r.id == "legacy").unwrap();
+        let web_fallback = aliased.iter().find(|r| r.id == "fallback").unwrap();
+        assert_eq!(web_legacy.title, "Aliased");
+        assert_eq!(web_fallback.title, "Fallback");
+        assert_eq!(web_legacy.workspace, alias);
+        assert_eq!(web_fallback.workspace, alias);
         std::fs::remove_dir_all(&target).unwrap();
         std::fs::remove_file(&alias).unwrap();
     }

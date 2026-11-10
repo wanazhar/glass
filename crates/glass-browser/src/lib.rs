@@ -201,6 +201,8 @@
 //! - [`tui`] — standalone Ratatui reducer, responsive layouts, semantic
 //!   selection, and bounded Herdr/Kitty/ANSI live presentation.
 //! - [`web_ir`] — stable reconciliation, validation, diff, and continuity.
+//! - [`web_inspect`] — headless stable element tree dumps and screenshot
+//!   capture.
 //! - [`workspace`] — identity, ownership, lifecycle, attachments, and
 //!   persistence.
 //!
@@ -259,6 +261,8 @@ pub mod tui;
 mod update;
 /// Stable Glass Web IR v1 reconciliation and validation.
 pub mod web_ir;
+/// Headless web UI inspection with stable element trees and screenshots.
+pub mod web_inspect;
 /// Bounded workspace identity and lifecycle contracts.
 pub mod workspace;
 
@@ -356,3 +360,6 @@ pub use web_ir::{
     WebIrRelationshipHintDiagnostic, WebIrRelationshipKind, WebIrScopeKind, WebIrSensitivity,
     WebIrValidationError, reconcile_evidence,
 };
+
+/// Re-export the headless web UI inspection contract for embedding callers.
+pub use web_inspect::{WebUiElement, WebUiInspection};

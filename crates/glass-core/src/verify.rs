@@ -21,7 +21,9 @@
 //!    not revert: reverting requires deciding the previous content was better,
 //!    which is a judgement the model should make with the error in hand.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Languages we can gate cheaply, mapped to a parser command that exits
 /// non-zero on a syntax error.
@@ -272,6 +274,186 @@ pub fn report(paths: &[PathBuf], workspace: &Path, tail_lines: usize) -> String 
     out
 }
 
+/// Bound on verifier output before it is folded into a report.
+const VERIFY_OUTPUT_CAP: usize = 2000;
+
+/// Tail lines echoed back for a CLI verification run, matching the harness.
+const VERIFY_TAIL_LINES: usize = 40;
+
+/// Upper bound on how long an optional verify command may run.
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Truncate verifier output to a head, marking the elision.
+fn clip(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= VERIFY_OUTPUT_CAP {
+        return trimmed.to_string();
+    }
+    format!(
+        "{}\n[… output elided …]",
+        trimmed.chars().take(VERIFY_OUTPUT_CAP).collect::<String>()
+    )
+}
+
+/// Run an optional post-write verification command and render its outcome
+/// through the shared post-write pipeline.
+///
+/// The command is the caller's verifier, for example `cargo check --quiet`.
+/// Writes it performs still flow through [`written_paths`] and [`report`], so
+/// the echo-back and syntax gate apply instead of trusting the exit code alone.
+pub fn run_optional(command: &str, workspace: &Path, tail_lines: usize) -> String {
+    let child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(workspace)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let (exit_code, timed_out, output_text, hit_cap) = match child {
+        Ok(mut c) => {
+            let mut out_pipe = c.stdout.take().expect("verify stdout is piped");
+            let mut err_pipe = c.stderr.take().expect("verify stderr is piped");
+            let mut out_text = String::new();
+            let mut err_text = String::new();
+            let hit_out = read_capped(&mut out_pipe, VERIFY_OUTPUT_CAP, &mut out_text);
+            let hit_err = read_capped(&mut err_pipe, VERIFY_OUTPUT_CAP, &mut err_text);
+            let hit_cap = hit_out || hit_err;
+            let output_text = format!("{}\n{}", out_text, err_text);
+            let status = wait_capped(&mut c, VERIFY_TIMEOUT);
+            let (exit_code, timed_out) = match status {
+                Some(s) => (s.code(), false),
+                None => (None, true),
+            };
+            drop(out_pipe);
+            drop(err_pipe);
+            (exit_code, timed_out, output_text, hit_cap)
+        }
+        Err(_) => (None, false, String::new(), false),
+    };
+    let mut note = report(&written_paths(command, workspace), workspace, tail_lines);
+    if timed_out {
+        note.push_str(&format!(
+            "\n[verify timeout after {}s] {command}",
+            VERIFY_TIMEOUT.as_secs()
+        ));
+    } else {
+        let body = if hit_cap {
+            format!("{}\n[… output elided …]", output_text.trim_end())
+        } else {
+            clip(&output_text)
+        };
+        match exit_code {
+            Some(0) => note.push_str("\n[verify ok]"),
+            Some(code) => note.push_str(&format!("\n[verify exit {code}] {command}\n{body}")),
+            None if hit_cap => note.push_str(&format!("\n[verify exit 1] {command}\n{body}")),
+            None => note.push_str(&format!("\n[verify unavailable] {command}")),
+        }
+    }
+    note
+}
+
+/// Read at most `cap` bytes from `reader`, appending to `out`.
+/// Returns true when the cap was reached before the stream ended.
+fn read_capped<R: Read>(reader: &mut R, cap: usize, out: &mut String) -> bool {
+    let mut chunk = [0u8; 1024];
+    let mut filled = 0;
+    while filled < cap {
+        let n = reader.read(&mut chunk).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        let take = n.min(cap - filled);
+        out.push_str(&String::from_utf8_lossy(&chunk[..take]));
+        filled += take;
+        if take < n {
+            break;
+        }
+    }
+    filled >= cap
+}
+
+/// Wait for the child, killing it when `timeout` elapses.
+fn wait_capped(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// `gc verify [--command <COMMAND>] [--json]`: run the optional post-write
+/// verification command over the current workspace, or report that none ran.
+pub fn command(args: &[String]) -> Result<(), String> {
+    let mut command: Option<String> = None;
+    let mut json = false;
+    let mut rest = args.iter();
+    while let Some(argument) = rest.next() {
+        match argument.as_str() {
+            "--json" => json = true,
+            "--command" => {
+                let value = rest
+                    .next()
+                    .ok_or_else(|| "`--command` requires a value".to_string())?;
+                if command.replace(value.clone()).is_some() {
+                    return Err("duplicate `--command`".to_string());
+                }
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let optional = command;
+    let Some(command) = optional else {
+        let value = serde_json::json!({
+            "command": null,
+            "ok": true,
+            "text": "verify: inactive",
+        });
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+            );
+        } else {
+            crate::cli::report("Verify", &value);
+        }
+        return Ok(());
+    };
+    let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    let note = run_optional(&command, &workspace, VERIFY_TAIL_LINES);
+    let ok = note.contains("[verify ok");
+    let value = serde_json::json!({
+        "command": command,
+        "ok": ok,
+        "text": note,
+    });
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+        );
+    } else {
+        crate::cli::report("Verify", &value);
+    }
+    if !ok {
+        return Err(format!("verify exit: {command}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +615,26 @@ mod tests {
         assert!(!c.failed);
         assert!(!c.report.contains("syntax"), "no parser claimed for .rs");
         assert!(c.report.contains("fn main()"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn optional_verify_command_reports_exit_codes() {
+        let d = scratch("vcmd");
+        let ok = run_optional("true", &d, 10);
+        assert!(ok.contains("[verify ok"), "{ok}");
+        let failed = run_optional("exit 3", &d, 10);
+        assert!(failed.contains("[verify exit 3]"), "{failed}");
+        let loud = run_optional(
+            "i=0; while [ $i -lt 300 ]; do printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; echo; i=$((i+1)); done; exit 9",
+            &d,
+            10,
+        );
+        assert!(loud.contains("[verify exit 9]"), "{loud}");
+        assert!(
+            loud.contains("[… output elided …]"),
+            "oversized output must be elided: {loud}"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 }

@@ -396,6 +396,13 @@ fn main() {
             }
             return;
         }
+        Some("verify") => {
+            if let Err(error) = verify::command(&args[1..]) {
+                cli::error("Verify", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
         Some("blobs") => {
             let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let action = rest.first().copied().unwrap_or("");

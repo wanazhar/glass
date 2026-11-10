@@ -407,6 +407,7 @@ fn browser_start_defaults_from_cli(
             .as_deref()
             .map(parse_tui_viewport)
             .transpose()?,
+        target_id: cli.target_id.clone(),
     })
 }
 
@@ -504,6 +505,8 @@ mod authorization_boundary_tests {
                     "--interaction",
                     "fast",
                     "--audit",
+                    "--target-id",
+                    "page-9",
                 ])
                 .unwrap();
                 let config = browser_start_defaults_from_cli(&cli).unwrap();
@@ -511,6 +514,7 @@ mod authorization_boundary_tests {
                 assert_eq!(config.profile, "work");
                 assert!(config.attach && config.headed);
                 assert_eq!(config.viewport, Some((1440, 900)));
+                assert_eq!(config.target_id.as_deref(), Some("page-9"));
                 assert_eq!(
                     config.interaction,
                     glass_browser::browser::session::InteractionMode::Fast

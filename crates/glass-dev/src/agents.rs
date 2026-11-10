@@ -813,20 +813,18 @@ impl AgentRegistry {
             match snapshot.status {
                 AgentStatus::Starting => {}
                 AgentStatus::Idle => {
-                    if let Some(record) = self.records.get_mut(&id) {
-                        if let Some(path) = &record.resume_session_path {
-                            if let Ok(bytes) = std::fs::read(path.with_extension("meta.json")) {
-                                if let Ok(meta) = serde_json::from_slice::<Value>(&bytes) {
-                                    let origin = match meta.get("origin").and_then(Value::as_str) {
-                                        Some("gc") => crate::thread_store::CreationOrigin::Gc,
-                                        Some("glass") => crate::thread_store::CreationOrigin::Glass,
-                                        _ => crate::thread_store::CreationOrigin::Unknown,
-                                    };
-                                    self.thread_store.set_origin(&record.thread_id, origin)?;
-                                    record.snapshot.origin_label = origin.label().into();
-                                }
-                            }
-                        }
+                    if let Some(record) = self.records.get_mut(&id)
+                        && let Some(path) = &record.resume_session_path
+                        && let Ok(bytes) = std::fs::read(path.with_extension("meta.json"))
+                        && let Ok(meta) = serde_json::from_slice::<Value>(&bytes)
+                    {
+                        let origin = match meta.get("origin").and_then(Value::as_str) {
+                            Some("gc") => crate::thread_store::CreationOrigin::Gc,
+                            Some("glass") => crate::thread_store::CreationOrigin::Glass,
+                            _ => crate::thread_store::CreationOrigin::Unknown,
+                        };
+                        self.thread_store.set_origin(&record.thread_id, origin)?;
+                        record.snapshot.origin_label = origin.label().into();
                     }
                     return Ok(id);
                 }

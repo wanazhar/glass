@@ -155,6 +155,43 @@ class Screen:
         return "\n".join("".join(row) for row in self.cells)
 
 
+def painted_header_is(line, title):
+    # Framed modal/palette rows are "│ {title}{pad} │". Both edges, exact inner title.
+    row = line.strip()
+    if row == title:
+        return True
+    return len(row) >= 2 and row[0] == "│" and row[-1] == "│" and row[1:-1].strip() == title
+
+
+# palette.rs: rooted && width >= 40. text::clip drops a suffix at the framed inner width.
+COMMANDS_ANNOTATED_TITLE = "Commands · search or * browse all"
+# Framed inner is width-8. Annotated title starts at width 40, so the shortest clip is 32.
+_COMMANDS_MIN_FRAMED_INNER = 40 - 8
+
+
+def painted_commands_header(line):
+    # Exact "Commands", or that annotated title after a warranted right-clip. Not startswith.
+    if painted_header_is(line, "Commands"):
+        return True
+    row = line.strip()
+    if len(row) < 2 or row[0] != "│" or row[-1] != "│":
+        return False
+    inner = row[1:-1].strip()
+    title = COMMANDS_ANNOTATED_TITLE
+    if len(inner) < len("Commands") or not title.startswith(inner):
+        return False
+    if inner == title:
+        return True
+    # shortcut: U+00B7 is width 1, so len is the clip width; upgrade if the title gains a wide char.
+    return _COMMANDS_MIN_FRAMED_INNER <= len(inner) < len(title)
+
+
+def quit_dialog_visible(text):
+    # exit_dialog paints QUIT? at the sizes these smokes use, and Quit? below 6x6.
+    # Boxed "│ QUIT? │" already contains that text; do not loosen this check.
+    return "QUIT?" in text or "Quit?" in text
+
+
 class Terminal:
     def __init__(self, workspace, env, args=(), size=(80,24)):
         self.master, slave = pty.openpty()
@@ -221,16 +258,25 @@ class Terminal:
 
     def dismiss(self):
         self.received = ""
-        # A command opened from the slash palette returns to its parent palette
-        # before the composer, so unwind the visible menu stack and verify the
-        # final screen rather than an early cursor-restore escape sequence.
-        for _ in range(4):
+        # Slash submit bookmarks the palette, then opens one overlay. Esc closes
+        # only the top. Stop at the composer; never send Esc after it is visible.
+        for _ in range(2):
+            if self.idle_composer_visible():
+                return
+            before = self.screen.text()
             os.write(self.master, b"\x1b")
-            deadline = time.monotonic() + 0.3
+            deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
                 if self.idle_composer_visible():
                     return
+                # A Commands row already on screen is not the post-Esc palette.
+                # Exact "Commands", or the width>=40 title after text::clip. "› Commands" is not this header.
+                text = self.screen.text()
+                if text != before and any(painted_commands_header(line) for line in text.splitlines()):
+                    break
                 if select.select([self.master], [], [], 0.05)[0]: self.read()
+            else:
+                assert self.idle_composer_visible(), self.screen.text()
         assert self.idle_composer_visible(), self.screen.text()
 
     def resize(self, width, height):
@@ -253,52 +299,64 @@ class Terminal:
     def close(self):
         # Cancel active provider/tool work first, then drain terminal output
         # while asking the app to exit so a full PTY cannot block shutdown.
-        if self.process.poll() is not None:
+        # Exit 0 alone is not a quit: confirm only after QUIT?/Quit? is painted.
+        # A caller already failing must still be reaped, but a quit miss here
+        # must not replace that failure.
+        caller_failure = sys.exc_info()[0] is not None
+        saw_quit = False
+        result = 1
+        try:
+            if self.process.poll() is None:
+                # Leave any open modal first: quit keys are handled by the modal, not
+                # the app, and a modal left open would turn a clean quit into a kill.
+                # Modals can stack (list -> actions -> detail), so unwind a few.
+                for _ in range(4):
+                    try:
+                        os.write(self.master, b"\x1b")
+                    except OSError:
+                        break
+                    deadline = time.monotonic() + 0.15
+                    while time.monotonic() < deadline:
+                        if select.select([self.master], [], [], 0.05)[0]: self.read()
+                for key in (b"\x03", b"\x04"):
+                    if self.process.poll() is not None:
+                        break
+                    try:
+                        os.write(self.master, key)
+                    except OSError:
+                        # The slave is already gone; fall through to reaping.
+                        break
+                    # Either quit key opens the same dialog. A second quit key cancels
+                    # it, so accept the rendered confirmation before sending another.
+                    confirm_by = time.monotonic() + 2
+                    while self.process.poll() is None and time.monotonic() < confirm_by:
+                        if quit_dialog_visible(self.screen.text()):
+                            os.write(self.master, b"\r")
+                            saw_quit = True
+                            break
+                        if select.select([self.master], [], [], 0.05)[0]: self.read()
+                    deadline = time.monotonic() + 5
+                    while self.process.poll() is None and time.monotonic() < deadline:
+                        if select.select([self.master], [], [], 0.05)[0]: self.read()
+                    if self.process.poll() is not None:
+                        break
+        except Exception:
+            if not caller_failure:
+                raise
+        finally:
+            # Reap even when the quit contract fails, without replacing that failure.
+            if self.process.poll() is None:
+                self.process.terminate()
+                deadline = time.monotonic() + 2
+                while self.process.poll() is None and time.monotonic() < deadline:
+                    if select.select([self.master], [], [], 0.05)[0]: self.read()
+                if self.process.poll() is None:
+                    self.process.kill()
             result = self.process.wait()
             os.close(self.master)
-            assert result == 0, f"PTY app exited with status {result}"
+        if caller_failure:
             return
-        # Leave any open modal first: quit keys are handled by the modal, not
-        # the app, and a modal left open would turn a clean quit into a kill.
-        # Modals can stack (list -> actions -> detail), so unwind a few.
-        for _ in range(4):
-            try:
-                os.write(self.master, b"\x1b")
-            except OSError:
-                break
-            deadline = time.monotonic() + 0.15
-            while time.monotonic() < deadline:
-                if select.select([self.master], [], [], 0.05)[0]: self.read()
-        for key in (b"\x03", b"\x04"):
-            try:
-                os.write(self.master, key)
-            except OSError:
-                # The slave is already gone; fall through to reaping.
-                break
-            if key == b"\x03":
-                deadline = time.monotonic() + 1
-            else:
-                # Ctrl-D intentionally asks for confirmation; accept the
-                # visible dialog so shutdown exercises the clean exit path.
-                confirm_by = time.monotonic() + 2
-                while self.process.poll() is None and time.monotonic() < confirm_by:
-                    if "Quit glass-core?" in self.screen.text():
-                        os.write(self.master, b"\r")
-                        break
-                    if select.select([self.master], [], [], 0.05)[0]: self.read()
-                deadline = time.monotonic() + 5
-            while self.process.poll() is None and time.monotonic() < deadline:
-                if select.select([self.master], [], [], 0.05)[0]: self.read()
-        if self.process.poll() is None:
-            self.process.terminate()
-            deadline = time.monotonic() + 2
-            while self.process.poll() is None and time.monotonic() < deadline:
-                if select.select([self.master], [], [], 0.05)[0]: self.read()
-        if self.process.poll() is None:
-            self.process.kill()
-        self.process.wait()
-        result = self.process.returncode
-        os.close(self.master)
+        assert saw_quit, "quit dialog was not observed before confirm"
         assert result == 0, f"PTY app exited with status {result}"
 
 

@@ -3589,13 +3589,12 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         .thread_picker_items
         .iter()
         .find(|item| Some(&item.agent_id) == state.selected_agent.as_ref())
+        && let Some((_, origin)) = item.status.split_once(" · ")
     {
-        if let Some((_, origin)) = item.status.split_once(" · ") {
-            header.push(Span::styled(
-                format!(" · {origin}"),
-                Style::default().fg(MUTED),
-            ));
-        }
+        header.push(Span::styled(
+            format!(" · {origin}"),
+            Style::default().fg(MUTED),
+        ));
     }
     if approval {
         header.push(Span::styled(

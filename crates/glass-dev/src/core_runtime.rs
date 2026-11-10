@@ -2213,7 +2213,7 @@ fn search_integration_tools(arguments: &Value) -> DevelopmentResult<Value> {
             (score > 0).then_some((score, tool))
         })
         .collect::<Vec<_>>();
-    tools.sort_by(|a, b| b.0.cmp(&a.0));
+    tools.sort_by_key(|item| std::cmp::Reverse(item.0));
     let page = tools
         .iter()
         .skip(cursor)

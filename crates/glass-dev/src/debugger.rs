@@ -541,7 +541,7 @@ impl DapClient {
         if let Some(socket) = self.tcp_shutdown.take() {
             let _ = socket.shutdown(Shutdown::Both);
         }
-        let mut threads = self.output_drains.drain(..).collect::<Vec<_>>();
+        let mut threads = std::mem::take(&mut self.output_drains);
         threads.extend(self.reader.take());
         let deadline = Instant::now() + Duration::from_secs(1);
         while threads.iter().any(|thread| !thread.is_finished()) && Instant::now() < deadline {

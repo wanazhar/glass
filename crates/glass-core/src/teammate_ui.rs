@@ -26,9 +26,7 @@ pub fn prompt(text: &str) -> Option<String> {
 
 pub fn notice(text: &str) -> Option<String> {
     let body = text.strip_prefix(REPORT)?;
-    let Some(rest) = body.strip_prefix("Teammate ") else {
-        return None;
-    };
+    let rest = body.strip_prefix("Teammate ")?;
     let (name, rest) = rest.split_once(" (")?;
     let (_, rest) = rest.split_once(") ")?;
     let (state, report) = rest.split_once(": ")?;

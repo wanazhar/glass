@@ -82,15 +82,15 @@ impl Hub {
         {
             return Ok(None);
         }
-        if let Some(id) = parent {
-            if state.agents.get(id).is_none_or(|w| {
+        if let Some(id) = parent
+            && state.agents.get(id).is_none_or(|w| {
                 w.info.status != "idle"
                     || w.info.pending_activation
                     || w.interrupt
                     || w.info.auto_wakes >= 8
-            }) {
-                return Ok(None);
-            }
+            })
+        {
+            return Ok(None);
         }
         // Process leaf completions before waking ancestors.
         let within = |id: &str| {

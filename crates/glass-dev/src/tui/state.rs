@@ -9468,14 +9468,13 @@ impl DevTuiState {
                         .get("agentId")
                         .and_then(serde_json::Value::as_str)
                         .and_then(|v| crate::AgentId::parse(v).ok())
+                        && !cancelled
                     {
-                        if !cancelled {
-                            if !self.select_agent(Some(id)) {
-                                return;
-                            }
-                            self.session_picker_open = false;
-                            self.status = "Conversation opened".into();
+                        if !self.select_agent(Some(id)) {
+                            return;
                         }
+                        self.session_picker_open = false;
+                        self.status = "Conversation opened".into();
                     }
                 }
                 Err(error) => self.status = format!("Could not open conversation: {error}"),

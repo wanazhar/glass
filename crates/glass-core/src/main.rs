@@ -2893,14 +2893,13 @@ fn repl(
             let message = if let Some(operation) = operation {
                 match team::human_workflow(&session.id, operation) {
                     Ok(message) => {
-                        if operation != "inspect" {
-                            if let Err(error) =
+                        if operation != "inspect"
+                            && let Err(error) =
                                 session.append_checked(&[Record::System(message.clone())])
-                            {
-                                ui_println!(
-                                    "Workflow updated, but its conversation receipt could not be saved: {error}"
-                                );
-                            }
+                        {
+                            ui_println!(
+                                "Workflow updated, but its conversation receipt could not be saved: {error}"
+                            );
                         }
                         message
                     }
@@ -4510,7 +4509,7 @@ fn drain_input(
             // follow-up draft before returning to the idle prompt.
             let notice = prepare_busy_interrupt(palette, editor);
             surface::overlay(false).ok();
-            painter.system_notice(&notice);
+            painter.system_notice(notice);
             return Some(String::new());
         }
         if palette.active() {

@@ -215,9 +215,21 @@ fn index_roots(dirs: &[PathBuf], workspace: Option<&Path>, unassigned: bool) -> 
                     ..Meta::default()
                 })
             });
-            let Some(mut meta) = meta.filter(|m| workspace.is_none() || m.workspace == root) else {
+            let Some(mut meta) = meta.filter(|m| {
+                workspace.is_none()
+                    || m.workspace
+                        .canonicalize()
+                        .unwrap_or_else(|_| m.workspace.clone())
+                        == root
+            }) else {
                 continue;
             };
+            if workspace.is_some() {
+                meta.workspace = meta
+                    .workspace
+                    .canonicalize()
+                    .unwrap_or_else(|_| meta.workspace.clone());
+            }
             if meta.origin.is_none() {
                 meta.origin = inferred_origin;
             }
@@ -300,12 +312,76 @@ mod tests {
         .unwrap();
         assert_eq!(super::all(&root).len(), 1);
         let rows = super::all_for_web(&root, &root);
-        let local: Vec<_> = rows.iter().filter(|r| r.path.starts_with(&root)).collect();
+        let canonical_root = root.canonicalize().unwrap();
+        let local: Vec<_> = rows
+            .iter()
+            .filter(|r| r.path.starts_with(&canonical_root))
+            .collect();
         assert_eq!(local.len(), 2);
         let legacy = rows.iter().find(|r| r.id == "legacy").unwrap();
         assert!(legacy.workspace.as_os_str().is_empty());
         assert_eq!(legacy.title, "Legacy");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn index_normalizes_workspace_alias_symlink_to_canonical_root() {
+        let target = std::env::temp_dir().join(format!(
+            "gc-resume-symlink-target-{}",
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::create_dir_all(&target).unwrap();
+        let alias = std::env::temp_dir().join(format!(
+            "gc-resume-symlink-alias-{}",
+            crate::auth::random(8).unwrap()
+        ));
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let store = alias.join(".glass/agent-sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(
+            store.join("legacy.jsonl"),
+            "{\"k\":\"user\",\"t\":\"Aliased\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            store.join("legacy.meta.json"),
+            serde_json::json!({"workspace": alias, "title": "Aliased"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            store.join("fallback.jsonl"),
+            "{\"k\":\"user\",\"t\":\"Fallback\"}\n",
+        )
+        .unwrap();
+        let canonical = target.canonicalize().unwrap();
+        assert_ne!(canonical, alias);
+        let rows = super::index(&alias, &alias);
+        assert_eq!(rows.len(), 2);
+        let legacy = rows.iter().find(|r| r.id == "legacy").unwrap();
+        let fallback = rows.iter().find(|r| r.id == "fallback").unwrap();
+        assert_eq!(legacy.title, "Aliased");
+        assert_eq!(fallback.title, "Fallback");
+        assert_eq!(legacy.workspace, canonical);
+        assert_eq!(fallback.workspace, canonical);
+        assert_ne!(legacy.workspace, alias);
+        assert!(legacy.path.starts_with(&canonical));
+        assert!(legacy.path.ends_with("legacy.jsonl"));
+        assert!(fallback.path.starts_with(&canonical));
+        assert!(fallback.path.ends_with("fallback.jsonl"));
+        let web = super::all_for_web(&alias, &alias);
+        let aliased: Vec<_> = web
+            .into_iter()
+            .filter(|r| r.path.starts_with(&canonical))
+            .collect();
+        assert_eq!(aliased.len(), 2);
+        let web_legacy = aliased.iter().find(|r| r.id == "legacy").unwrap();
+        let web_fallback = aliased.iter().find(|r| r.id == "fallback").unwrap();
+        assert_eq!(web_legacy.title, "Aliased");
+        assert_eq!(web_fallback.title, "Fallback");
+        assert_eq!(web_legacy.workspace, alias);
+        assert_eq!(web_fallback.workspace, alias);
+        std::fs::remove_dir_all(&target).unwrap();
+        std::fs::remove_file(&alias).unwrap();
     }
 
     use super::*;

@@ -151,11 +151,38 @@ final class MarbleClient: @unchecked Sendable {
         try await post("/api/tasks/\(taskId)/cancel")
     }
 
-    func decide(requestId: String, allow: Bool) async throws {
+    func decide(requestId: String, allow: Bool, remember: Bool = false) async throws {
         let encoded = requestId.addingPercentEncoding(
             withAllowedCharacters: .urlPathAllowed
         ) ?? requestId
-        try await post("/api/approvals/\(encoded)/\(allow ? "allow" : "deny")")
+        if allow, remember {
+            struct Body: Encodable { var remember: Bool }
+            try await post("/api/approvals/\(encoded)/allow", body: Body(remember: true))
+        } else {
+            try await post("/api/approvals/\(encoded)/\(allow ? "allow" : "deny")")
+        }
+    }
+
+    // MARK: - Control layer
+
+    func setProfile(_ profile: String) async throws {
+        struct Body: Encodable { var profile: String }
+        try await post("/api/control/profile", body: Body(profile: profile))
+    }
+
+    func setPaused(_ paused: Bool) async throws {
+        try await post(paused ? "/api/control/pause" : "/api/control/resume")
+    }
+
+    func stopEverything() async throws {
+        try await post("/api/control/stop")
+    }
+
+    func revokeGrant(_ grantId: String) async throws {
+        let encoded = grantId.addingPercentEncoding(
+            withAllowedCharacters: .urlPathAllowed
+        ) ?? grantId
+        try await post("/api/control/grants/\(encoded)/revoke")
     }
 
     func login(token: String) async throws {

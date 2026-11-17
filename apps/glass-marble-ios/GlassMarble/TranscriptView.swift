@@ -182,7 +182,8 @@ struct ComposerBar: View {
 
 struct ApprovalCard: View {
     var approval: MarbleApproval
-    var onDecision: (Bool) -> Void
+    /// `remember` widens one allow into a standing grant for this directory.
+    var onDecision: (_ allow: Bool, _ remember: Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -195,8 +196,9 @@ struct ApprovalCard: View {
                 .foregroundStyle(MarblePalette.ink)
                 .lineLimit(3)
             HStack(spacing: 8) {
-                decisionButton("Deny", tint: MarblePalette.danger, allow: false)
-                decisionButton("Allow", tint: MarblePalette.accent, allow: true)
+                decisionButton("Deny", tint: MarblePalette.danger, allow: false, remember: false)
+                decisionButton("Always", tint: MarblePalette.muted, allow: true, remember: true)
+                decisionButton("Allow", tint: MarblePalette.accent, allow: true, remember: false)
             }
         }
         .padding(14)
@@ -204,8 +206,13 @@ struct ApprovalCard: View {
         .marbleGlass(cornerRadius: 22)
     }
 
-    private func decisionButton(_ title: String, tint: Color, allow: Bool) -> some View {
-        Button(title) { onDecision(allow) }
+    private func decisionButton(
+        _ title: String,
+        tint: Color,
+        allow: Bool,
+        remember: Bool
+    ) -> some View {
+        Button(title) { onDecision(allow, remember) }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 14)

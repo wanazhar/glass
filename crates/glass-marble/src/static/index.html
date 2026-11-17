@@ -102,6 +102,7 @@
       .dot.live { background: var(--ok); box-shadow: 0 0 0 4px rgba(95, 214, 162, 0.16); }
       .dot.busy { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
       .dot.offline { background: var(--danger); }
+      .dot.paused { background: #ffb95f; }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
       .ghost, .primary, .danger {
         border-radius: 999px; padding: 8px 14px; font-size: 13px;
@@ -156,6 +157,37 @@
       .tool .name { color: var(--text); font-weight: 600; }
       .tool.failed .name { color: var(--danger); }
       .card { padding: 12px 14px; }
+      .segments { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+      .segment {
+        flex: 1 1 30%; min-height: 40px; border-radius: 12px; padding: 8px 10px;
+        border: 1px solid var(--line); background: transparent; font-size: 13px;
+      }
+      .segment.active {
+        background: rgba(110, 168, 255, 0.18); border-color: rgba(110, 168, 255, 0.5);
+      }
+      .segment small { display: block; color: var(--muted); font-size: 11px; line-height: 1.35; }
+      dialog.control { max-width: min(94vw, 620px); max-height: 86dvh; overflow: auto; }
+      dialog.control h3 {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--muted); margin: 18px 0 8px; font-weight: 600;
+      }
+      .control-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .records, .rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+      .records li, .rules li {
+        display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+        font-size: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px;
+      }
+      .records .grow { flex: 1; min-width: 0; word-break: break-word; }
+      .records .tag, .rules .tag {
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+        border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted);
+      }
+      .records .tag.allowed { color: var(--ok); border-color: rgba(95, 214, 162, 0.4); }
+      .records .tag.approved { color: var(--accent); border-color: rgba(110, 168, 255, 0.45); }
+      .records .tag.denied { color: var(--danger); border-color: rgba(180, 35, 24, 0.4); }
+      .records .muted, .rules .muted { color: var(--muted); }
+      .records button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+      .empty-row { color: var(--muted); font-size: 12px; }
       .approvals { margin: 0 16px 8px; display: flex; flex-direction: column; gap: 10px; }
       .approval { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
       .approval code { font-size: 11px; color: var(--muted); word-break: break-all; }
@@ -219,6 +251,7 @@
         </div>
         <div class="spacer"></div>
         <span class="pill"><span class="dot" id="status-dot"></span><span id="status-text">idle</span></span>
+        <button class="ghost" id="control-open" aria-haspopup="dialog">Control</button>
         <button class="ghost" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="false">Chats</button>
         <button class="ghost" id="new-chat">New</button>
       </header>
@@ -252,6 +285,29 @@
         </main>
       </div>
     </div>
+    <dialog id="control" class="control">
+      <h2>Marble control</h2>
+      <p id="control-summary">
+        Marble decides which governed tools may run before Core ever gets an answer. Nothing here is
+        inherited from the engine, and every decision is journalled below.
+      </p>
+      <div class="segments" id="control-profiles" role="group" aria-label="Control profile"></div>
+      <div class="control-actions">
+        <button class="ghost" id="control-pause" type="button">Pause queue</button>
+        <button class="danger" id="control-stop" type="button">Stop everything</button>
+      </div>
+      <h3>Queued messages</h3>
+      <ul class="records" id="control-queue"></ul>
+      <h3>Standing grants</h3>
+      <ul class="records" id="control-grants"></ul>
+      <h3>Denied paths</h3>
+      <ul class="rules" id="control-denied"></ul>
+      <h3>Recent decisions</h3>
+      <ul class="records" id="control-ledger"></ul>
+      <div class="row" style="margin-top: 16px">
+        <button class="ghost" id="control-close" type="button">Close</button>
+      </div>
+    </dialog>
     <dialog id="login">
       <form method="dialog" id="login-form">
         <h2>Access token</h2>
@@ -268,6 +324,7 @@
         "turn_start", "waiting", "text", "reasoning", "tool_start", "tool_end", "tool_progress",
         "tool_cancel", "usage", "compacted", "steered", "queued", "notice", "error", "settled",
         "cancel_requested", "approval_pending", "approval_resolved", "state",
+        "control_denied", "control",
       ];
       const app = {
         state: null,
@@ -296,6 +353,17 @@
         login: document.getElementById("login"),
         loginForm: document.getElementById("login-form"),
         token: document.getElementById("token"),
+        control: document.getElementById("control"),
+        controlOpen: document.getElementById("control-open"),
+        controlClose: document.getElementById("control-close"),
+        controlSummary: document.getElementById("control-summary"),
+        controlProfiles: document.getElementById("control-profiles"),
+        controlPause: document.getElementById("control-pause"),
+        controlStop: document.getElementById("control-stop"),
+        controlQueue: document.getElementById("control-queue"),
+        controlGrants: document.getElementById("control-grants"),
+        controlDenied: document.getElementById("control-denied"),
+        controlLedger: document.getElementById("control-ledger"),
       };
 
       function node(tag, className, text) {
@@ -437,6 +505,93 @@
         el.transcript.scrollTop = el.transcript.scrollHeight;
       }
 
+      function controlState() {
+        return (app.state && app.state.control) || {};
+      }
+
+      function emptyRow(list, text) {
+        const item = node("li", "empty-row", text);
+        list.append(item);
+      }
+
+      function renderControl() {
+        const control = controlState();
+        const profiles = control.profiles || [];
+        el.controlProfiles.textContent = "";
+        profiles.forEach((profile) => {
+          const button = node("button", "segment" + (control.profile === profile.id ? " active" : ""));
+          button.type = "button";
+          button.append(node("span", null, profile.label));
+          button.append(node("small", null, profile.description));
+          button.disabled = control.profile === profile.id;
+          button.addEventListener("click", () => controlAction("/api/control/profile", { profile: profile.id }));
+          el.controlProfiles.append(button);
+        });
+        el.controlSummary.textContent = control.paused
+          ? "Admission is paused. New messages wait in the queue below until you resume."
+          : "Marble decides which governed tools may run before Core gets an answer. Nothing here is inherited from the engine.";
+        el.controlPause.textContent = control.paused ? "Resume queue" : "Pause queue";
+
+        el.controlQueue.textContent = "";
+        const queue = control.queue || [];
+        if (!queue.length) emptyRow(el.controlQueue, "Nothing waiting.");
+        queue.forEach((entry) => {
+          const item = node("li");
+          item.append(node("span", "grow", entry.text));
+          item.append(node("span", "muted", entry.conversationId || "new conversation"));
+          el.controlQueue.append(item);
+        });
+
+        el.controlGrants.textContent = "";
+        const grants = control.grants || [];
+        if (!grants.length) emptyRow(el.controlGrants, "No standing grants. Approvals ask every time.");
+        grants.forEach((grant) => {
+          const item = node("li");
+          item.append(node("span", "grow", grant.tool + " · " + (grant.pathPrefix || "whole workspace")));
+          item.append(node("span", "muted", grant.uses + (grant.uses === 1 ? " use" : " uses")));
+          const revoke = node("button", "ghost", "Revoke");
+          revoke.type = "button";
+          revoke.addEventListener("click", () =>
+            controlAction("/api/control/grants/" + encodeURIComponent(grant.id) + "/revoke")
+          );
+          item.append(revoke);
+          el.controlGrants.append(item);
+        });
+
+        el.controlDenied.textContent = "";
+        const denied = control.deniedPaths || [];
+        if (!denied.length) emptyRow(el.controlDenied, "No denied path rules.");
+        denied.forEach((rule) => {
+          const item = node("li");
+          item.append(node("span", "tag", "deny"));
+          item.append(node("span", null, rule));
+          el.controlDenied.append(item);
+        });
+
+        el.controlLedger.textContent = "";
+        const ledger = (control.ledger || []).slice(-25).reverse();
+        if (!ledger.length) emptyRow(el.controlLedger, "No governed decisions yet.");
+        ledger.forEach((entry) => {
+          const item = node("li");
+          item.append(node("span", "tag " + entry.decision, entry.decision));
+          item.append(node("span", "grow", (entry.tool || "control") + (entry.path ? " · " + entry.path : "")));
+          item.append(node("span", "muted", entry.reason));
+          el.controlLedger.append(item);
+        });
+      }
+
+      async function controlAction(path, body) {
+        try {
+          await api(path, {
+            method: "POST",
+            body: body ? JSON.stringify(body) : undefined,
+          });
+        } catch (error) {
+          setStatus(error.message, "offline");
+        }
+        await refresh();
+      }
+
       function renderApprovals() {
         el.approvals.textContent = "";
         const approvals = (app.state && app.state.approvals) || [];
@@ -453,7 +608,11 @@
           const deny = node("button", "danger", "Deny");
           deny.type = "button";
           deny.addEventListener("click", () => decideApproval(approval.requestId, "deny"));
-          actions.append(deny, allow);
+          const always = node("button", "ghost", "Always here");
+          always.type = "button";
+          always.title = "Allow this tool in this directory from now on, until you revoke it";
+          always.addEventListener("click", () => decideApproval(approval.requestId, "allow", true));
+          actions.append(deny, always, allow);
           card.append(actions);
           el.approvals.append(card);
         });
@@ -463,11 +622,17 @@
         renderSidebar();
         renderTranscript();
         renderApprovals();
+        renderControl();
         const running = app.live.taskId;
+        const control = controlState();
         el.cancel.hidden = !running;
         el.send.disabled = Boolean(running);
         el.taskHint.textContent = running ? "task " + running : "";
+        el.controlOpen.textContent = control.paused
+          ? "Control · paused"
+          : "Control · " + (control.profile || "workspace");
         if (app.offline) setStatus("offline", "offline");
+        else if (control.paused) setStatus("paused", "paused");
         else if (running) setStatus("working", "busy");
         else setStatus("idle", "live");
       }
@@ -505,9 +670,12 @@
         }
       }
 
-      async function decideApproval(requestId, action) {
+      async function decideApproval(requestId, action, remember) {
         try {
-          await api("/api/approvals/" + encodeURIComponent(requestId) + "/" + action, { method: "POST" });
+          await api("/api/approvals/" + encodeURIComponent(requestId) + "/" + action, {
+            method: "POST",
+            body: remember ? JSON.stringify({ remember: true }) : "",
+          });
         } catch (error) {
           /* refresh below reflects the real inbox */
         }
@@ -526,6 +694,12 @@
             method: "POST",
             body: JSON.stringify({ text, conversationId: app.conversationId }),
           });
+          if (accepted.queued) {
+            app.outbox.pop();
+            setStatus("queued", "paused");
+            await refresh();
+            return;
+          }
           app.conversationId = accepted.conversationId || app.conversationId;
           app.outbox[app.outbox.length - 1].taskId = accepted.taskId;
           app.live.taskId = accepted.taskId;
@@ -580,6 +754,9 @@
           case "approval_pending":
           case "approval_resolved":
           case "state":
+          case "control":
+          case "control_denied":
+          case "queued":
             refresh();
             break;
           case "settled":
@@ -650,6 +827,15 @@
         const open = el.sidebar.classList.toggle("open");
         el.sidebarToggle.setAttribute("aria-expanded", String(open));
       });
+      el.controlOpen.addEventListener("click", () => {
+        renderControl();
+        el.control.showModal();
+      });
+      el.controlClose.addEventListener("click", () => el.control.close());
+      el.controlPause.addEventListener("click", () =>
+        controlAction(controlState().paused ? "/api/control/resume" : "/api/control/pause")
+      );
+      el.controlStop.addEventListener("click", () => controlAction("/api/control/stop"));
       el.loginForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         try {

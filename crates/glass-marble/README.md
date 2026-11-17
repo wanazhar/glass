@@ -14,6 +14,9 @@ consume.
   integrations are routed back to Marble over `tool/execute`.
 - **Governed tools**: `glass.workspace.list`, `glass.workspace.read`, and
   `glass.workspace.write`, each resolved against one canonical workspace root.
+- **Marble's own control layer**: posture (`observe`, `workspace`,
+  `unattended`), denied path rules, revocable standing grants, a FIFO admission
+  queue with pause and stop, and an audit ledger of every governed decision.
 - **Durable product state**: a revisioned `product-state.json` written
   atomically under the data directory.
 - **Turn events**: an ordered, bounded buffer with live subscribers, replayed
@@ -25,7 +28,7 @@ consume.
 
 ```text
 cargo run -p glass-marble -- "summarise the workspace"
-cargo run -p glass-marble -- serve --port 4783
+cargo run -p glass-marble -- serve --port 4783 --profile workspace
 ```
 
 Serving off loopback requires a token:

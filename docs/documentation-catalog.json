@@ -5726,6 +5726,36 @@
         },
         {
           "level": "2",
+          "title": "Marble's control layer",
+          "anchor": "marbles-control-layer"
+        },
+        {
+          "level": "3",
+          "title": "Posture",
+          "anchor": "posture"
+        },
+        {
+          "level": "3",
+          "title": "Denied paths",
+          "anchor": "denied-paths"
+        },
+        {
+          "level": "3",
+          "title": "Grants",
+          "anchor": "grants"
+        },
+        {
+          "level": "3",
+          "title": "Queue, pause, and stop",
+          "anchor": "queue-pause-and-stop"
+        },
+        {
+          "level": "3",
+          "title": "Audit ledger",
+          "anchor": "audit-ledger"
+        },
+        {
+          "level": "2",
           "title": "Build and run",
           "anchor": "build-and-run"
         },

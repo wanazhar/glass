@@ -1626,10 +1626,7 @@ impl ReconnectState {
 
     /// Whether no further recovery transitions are permitted.
     pub const fn is_terminal(self) -> bool {
-        match self {
-            Self::Failed => true,
-            _ => false,
-        }
+        matches!(self, Self::Failed)
     }
 }
 

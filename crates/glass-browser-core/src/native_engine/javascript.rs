@@ -224,7 +224,10 @@ const MAX_NATIVE_CRYPTO_DERIVE_WORK: usize = 10_000_000;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
-const NATIVE_HOST_VIEW_TIMEOUT: Duration = Duration::from_secs(15);
+// Host-view installation compiles and runs the full snapshot installer, so it
+// carries its own budget. Large bounded host views can exceed the page-script
+// budget while still fitting the realm heap.
+const NATIVE_HOST_VIEW_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
 pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_ORIGINS: usize = 64;

@@ -1618,7 +1618,7 @@ impl InputError {
             Self::Unavailable => "Desktop state unavailable",
             Self::NoSession => "No managed desktop session is running",
             Self::LeaseConflict(lease) => {
-                if lease == "read-only" {
+                if *lease == "read-only" {
                     "Desktop input lease is read-only; observation remains available"
                 } else {
                     "Desktop input lease is held by the other participant"

@@ -1103,7 +1103,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     continue;
                 }
                 let card = subagent_cards.entry(key.clone()).or_default();
-                if !card.apply(activity) {
+                if !card.apply(activity.clone()) {
                     continue;
                 }
                 subagent_parent_calls.insert(parent_call);

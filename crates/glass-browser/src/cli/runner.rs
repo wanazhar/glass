@@ -28,6 +28,7 @@ use crate::browser::session::{
     compile_workflow, default_knowledge_store_path, diff_workflows, format_workflow_yaml,
     preview_workflow, record_semantic_events,
 };
+use crate::browser::session::BatchMode;
 use crate::browser::{BackendFactory, CdpSessionBackend};
 use crate::browser_backend::{
     ActionRequest, BackendProfile, BrowserBackendDispatcher, BrowserCapability, ClickModifiers,

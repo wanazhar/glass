@@ -121,10 +121,21 @@ def main():
             if STORAGE_DIR:
                 os.makedirs(STORAGE_DIR, exist_ok=True)
             load_submissions()
+            protocol = params.get("protocolVersion")
+            required = params.get("requiredCapabilities") or []
+            if protocol == 2 and "mixedTools" not in required:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": identifier,
+                        "error": {"code": -32602, "message": "protocol v2 requires mixedTools"},
+                    }
+                )
+                continue
             reply(
                 identifier,
                 {
-                    "protocolVersion": 1,
+                    "protocolVersion": protocol or 1,
                     "runtime": {"name": "glass-core", "version": "0.3.14"},
                     "capabilities": {
                         "hostTools": True,
@@ -142,9 +153,29 @@ def main():
             )
         elif method == "durable/create":
             global CONVERSATION_SEQ
-            CONVERSATION_SEQ += 1
-            conversation_id = "durable-fixture-" + str(CONVERSATION_SEQ)
-            reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
+            if params.get("toolMode") != "mixed":
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": identifier,
+                        "error": {"code": -32602, "message": "fixture requires mixed tool ownership"},
+                    }
+                )
+                continue
+            for tool in params.get("tools") or []:
+                if not str(tool.get("name") or "").startswith("glass."):
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": identifier,
+                            "error": {"code": -32602, "message": "mixed tools must be namespaced"},
+                        }
+                    )
+                    break
+            else:
+                CONVERSATION_SEQ += 1
+                conversation_id = "durable-fixture-" + str(CONVERSATION_SEQ)
+                reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
         elif method == "durable/submit":
             conversation_id = params.get("conversationId")
             request_id = params.get("requestId")
@@ -164,6 +195,8 @@ def main():
         elif method == "durable/run":
             task_id = params.get("taskId") or task_id_for(params.get("conversationId"), params.get("requestId"))
             run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), params.get("conversationId") or SESSION_ID, params.get("requestId") or "")
+        elif method == "durable/abort":
+            reply(identifier, {"aborted": True, "taskId": params.get("taskId")})
         elif method == "shutdown":
             reply(identifier, {})
             return

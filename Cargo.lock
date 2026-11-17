@@ -1520,6 +1520,8 @@ dependencies = [
  "glass-runtime-client",
  "serde",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

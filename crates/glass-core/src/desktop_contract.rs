@@ -36,7 +36,10 @@ impl DesktopConfig {
                 "desktop environment must be gnome or xfce (got `{environment}`)"
             ));
         }
-        Ok(Self { workspace_id, environment })
+        Ok(Self {
+            workspace_id,
+            environment,
+        })
     }
 
     pub fn environment(&self) -> Option<&'static str> {
@@ -61,10 +64,7 @@ pub struct CredentialAllowlist {
 }
 
 impl CredentialAllowlist {
-    pub fn new(
-        workspace_id: impl Into<String>,
-        credentials: Vec<String>,
-    ) -> Result<Self, String> {
+    pub fn new(workspace_id: impl Into<String>, credentials: Vec<String>) -> Result<Self, String> {
         let workspace_id = workspace_id.into();
         if workspace_id.trim().is_empty() || workspace_id.len() > MAX_ID_BYTES {
             return Err("credential allowlist workspace id is invalid".into());
@@ -74,7 +74,10 @@ impl CredentialAllowlist {
                 return Err("credential allowlist entry is invalid".into());
             }
         }
-        Ok(Self { workspace_id, credentials })
+        Ok(Self {
+            workspace_id,
+            credentials,
+        })
     }
 
     /// Whether the workspace may use the credential. Fails closed: an empty

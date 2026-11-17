@@ -3,12 +3,62 @@
 [Documentation index](INDEX.md) · [Glass Core resident harness](glass-core-harness.md) ·
 [Host runtime protocol](../products/glass-core/docs/reference/runtime.md)
 
-Glass Marble is a self-hosted durable collaborator built on Glass Core. It is a
-separate product from the Glass workspace and from the `gc` terminal: Marble owns
-the conversation surface, the approvals, and the durable product document, while
-Core owns the model loop, its native coding tools, and the journal.
+Glass Marble is an always-on, self-hosted personal assistant. It is the
+assistant itself, not a surface for something else: it keeps its own
+conversations, transcript, approvals, posture, memory, routines, presence, and
+notification channels, and it stays reachable on the machine and tailnet you
+already own.
 
-The product ships in the workspace as the `glass-marble` crate.
+Core is the engine underneath. Marble runs a `glass-core runtime` subprocess,
+negotiates protocol v2 mixed tool ownership, and owns everything a person
+touches: what it is allowed to do, what it remembers, what it does on a schedule,
+and how it reaches you when it needs a decision.
+
+The product ships in the workspace as the `glass-marble` crate, with the phone
+client in `apps/glass-marble-ios`.
+
+## The shape of the assistant
+
+| Piece | What it does |
+| --- | --- |
+| Conversations and transcript | Durable, revisioned, replayable from a cursor |
+| Control layer | Posture, denied paths, grants, pause queue, audit ledger |
+| Presence | What it is doing now, how long it has been up, what a restart cost |
+| Memory | Facts you asked it to keep, plus suggestions you confirm |
+| Routines | Saved prompts on a schedule that fire without you |
+| Notifications | A webhook and APNs push when it needs you |
+| Voice | On-device speech only; nothing is sent to a provider |
+| Surfaces | One responsive WebUI and one iOS app over the same JSON API |
+
+## Always on
+
+An assistant that only exists while a terminal is open is not always on. Marble
+is designed to be installed as a login service and left alone:
+
+```text
+glass-marble install-service --host "$(tailscale ip -4)" --profile workspace --token-file ~/.marble-token
+```
+
+That renders a systemd user unit on Linux or a LaunchAgent on macOS with exactly
+the arguments you used interactively, then prints the two commands that enable
+it. Add `--write` to install it; without it nothing on disk changes, so the
+definition can be reviewed first. On Linux, `loginctl enable-linger "$USER"`
+keeps it running after you log out.
+
+### Presence
+
+`GET /api/presence` answers what the assistant is doing: `working`, `waiting`
+(an approval is pending), `paused`, or `idle`, plus uptime, the active task, the
+queued count, the machine name, how many routines are scheduled, and how many
+memories it holds. The same document is embedded in `GET /api/state` and
+summarised in `/healthz`, so both surfaces and any script agree.
+
+### Crash recovery
+
+A restart must not leave a phantom turn behind. On startup, every task still
+marked `running` is marked `interrupted`, a system transcript entry records what
+happened, the routine that owned it is marked `interrupted`, and presence reports
+`recoveredTasks`. Send the message again to continue.
 
 ## Ownership boundary
 
@@ -27,11 +77,13 @@ The governed host catalog is deliberately small:
 | --- | --- |
 | `glass.workspace.list` | List one workspace directory |
 | `glass.workspace.read` | Read a UTF-8 workspace file, bounded and truncated |
+| `glass.workspace.search` | Find text across the workspace with file and line numbers |
 | `glass.workspace.write` | Write a workspace file, creating parents |
 
 Every path is resolved against one canonical workspace root. Absolute paths,
 parent traversal, and symlinks that escape the root are refused before any
-filesystem call.
+filesystem call. Search skips `.git`, `.ssh`, `.env*`, dependencies, and build
+output, so a wide query cannot become a secret-read.
 
 ## Marble's control layer
 
@@ -75,6 +127,8 @@ Admission is Marble's decision too:
   them. `Resume queue` dispatches them in arrival order.
 - `Stop everything` pauses admission and cancels every running task in one move.
   Both are reversible: the pause switch and the queue survive a restart.
+- Routines are admitted through the same queue, so a paused assistant queues its
+  scheduled work instead of running it.
 
 ### Audit ledger
 
@@ -82,39 +136,138 @@ The last 200 decisions (`allowed`, `approved`, `denied`) keep their tool, path,
 conversation, task, and reason, so a surface can explain why a tool ran or did
 not. The ledger is part of the durable product document.
 
-These patterns follow the local-first agent workspace model OpenBot popularised:
-dedicated working scopes, a queue with pause and resume, explicit consent, and a
-record of what an agent did on the human's behalf.
-
 One-shot runs have no surface to answer an approval, so `--approve` maps to an
-approving host posture and the default refuses. The control layer's probe rules
-still apply in both cases.
+approving host posture and the default refuses. Serving waits
+`--approval-wait-secs` (default 600) for a human before a governed call fails
+closed.
 
-## Build and run
+## Memory
 
-```text
-cargo build -p glass-marble --locked
-cargo test -p glass-marble --locked
-```
+Memory is deliberately legible: a short list of statements you asked Marble to
+keep, plus suggestions it offers when it notices something durable.
 
-One-shot message, one durable turn:
-
-```text
-glass-marble "summarise the workspace" --cwd .
-```
-
-The one-shot path denies governed tools unless `--approve` is passed, because no
-surface is present to answer an approval. Serving takes `--profile observe`,
-`--profile workspace` (default), or `--profile unattended`.
-
-Serve the product:
+Say any of these in a message and Marble writes the fact itself, without a model
+turn:
 
 ```text
-glass-marble serve --cwd /path/to/project --port 4783
+remember this: the deploy key lives in 1Password
+remember that: I prefer squash merges
+update memory: my timezone is Asia/Kolkata
+save to memory: the office wifi is glassnet
+forget: the office wifi
 ```
 
-Startup prints the listen address, the workspace, the data directory, and the
-machine's Tailscale IPv4 address when `tailscale` is installed.
+Facts are carried into every turn as context, so they are used rather than merely
+stored, and each fact counts its uses. A statement Marble notices ("I prefer…",
+"my name is…", "I work…") waits as a suggestion with Save and Dismiss until you
+decide. Nothing is remembered silently, and `forget` removes it immediately.
+
+Limits are explicit: 200 facts, 280 characters each, 8 suggestions waiting.
+
+## Routines
+
+A routine is a saved prompt plus a small schedule:
+
+```text
+every:30m      every:2h      every:1d      daily:09:30
+```
+
+The scheduler wakes every 20 seconds, finds the routines that are due, and admits
+each one through the same turn channel and pause queue as a typed message, tagged
+with the routine that fired it. Minimum interval is 60 seconds, and at most 32
+routines are kept. `Run now` fires one immediately from either surface.
+
+Routine work is durable: a restart recomputes the next run from the schedule, and
+an interrupted routine run is reported as `interrupted` rather than stuck.
+
+## Reaching you
+
+Two channels, both optional, both configured from the WebUI or the API. Every
+delivery is best effort: a failed notification is logged and dropped, never
+allowed to fail or delay a turn.
+
+### Webhook
+
+Any `http://` or `https://` endpoint that accepts JSON — ntfy, Home Assistant, a
+small receiver on your tailnet. Plain HTTP is spoken directly so a tailnet
+receiver needs no TLS at all; HTTPS uses `curl`. The payload carries `event`,
+`title`, `body`, `conversationId`, `taskId`, and `at`, and an optional bearer
+token is sent when configured.
+
+### Apple Push
+
+Token-based APNs with the `.p8` key you already have. Marble builds the short
+lived ES256 JWT with `openssl`, then sends it with `curl --http2`:
+
+```json
+{
+  "apns": {
+    "keyFile": "/home/you/keys/AuthKey_ABC123.p8",
+    "teamId": "TEAMID1234",
+    "keyId": "ABC123XYZ9",
+    "topic": "com.wanazhar.glassmarble",
+    "environment": "production"
+  }
+}
+```
+
+The key file stays on the host. Device tokens are registered by the iOS app on
+`POST /api/devices`; at most 16 devices are kept. If `openssl` or `curl` is
+missing, delivery reports that plainly instead of pretending to send.
+
+Subscribed events are `approval`, `settled`, `failed`, `routine`, and `memory`.
+`Send test` exercises every configured channel and returns what happened.
+
+## Voice, on device
+
+Marble never sends audio anywhere. The phone transcribes with the on-device
+recognizer and speaks with the on-device synthesizer; the host only shapes a
+reply into something worth hearing, removing code fences, markup, and URLs
+(`POST /api/voice/speak`). The WebUI does the same with the browser's local
+speech APIs. Dictation is disabled entirely on a device without offline
+recognition rather than falling back to a network service.
+
+## HTTP surface
+
+| Route | Method | Behavior |
+| --- | --- | --- |
+| `/` | GET | Product UI |
+| `/healthz` | GET | Liveness, revision, event sequence, posture, presence summary |
+| `/api/login` | POST | Exchange the access token for an HTTP-only session cookie |
+| `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications |
+| `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts |
+| `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
+| `/api/turns` | POST | Admit a durable turn, queue it, or apply an explicit memory command |
+| `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task |
+| `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
+| `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue |
+| `/api/control/profile` | POST | Select `observe`, `workspace`, or `unattended` |
+| `/api/control/pause` and `/resume` | POST | Hold new messages, or dispatch the queue in order |
+| `/api/control/stop` | POST | Pause admission and cancel every running task |
+| `/api/control/grants` | POST | Add a standing grant (`tool`, `pathPrefix`) |
+| `/api/control/grants/{id}/revoke` | POST | Revoke one grant |
+| `/api/memory` | GET/POST | Read memory, or remember one statement (`text`, optional `kind`) |
+| `/api/memory/{id}/forget` | POST | Forget one fact |
+| `/api/memory/{id}/accept` and `/dismiss` | POST | Decide one suggestion |
+| `/api/routines` | GET/POST | Read routines, or add one (`title`, `prompt`, `schedule`) |
+| `/api/routines/{id}/run` | POST | Fire a routine now, queueing it when paused |
+| `/api/routines/{id}/enable` and `/disable` | POST | Pause or resume a routine |
+| `/api/routines/{id}/remove` | POST | Delete a routine |
+| `/api/notifications` | GET/POST | Read or update webhook, events, and APNs settings |
+| `/api/notifications/test` | POST | Deliver a test notification and report each channel |
+| `/api/devices` | GET/POST | List prefixes, or register one APNs device token |
+| `/api/devices/{token}/remove` | POST | Forget a device |
+| `/api/voice` | GET/POST | Read or set local voice preferences |
+| `/api/voice/speak` | POST | Shape a reply into a spoken form |
+
+A turn is answered as soon as the durable task id exists, so a long model turn
+never blocks the HTTP surface. Text, reasoning, tool activity, usage, memory
+suggestions, routine firings, and settlement stream over `/api/events`; the
+transcript itself stays authoritative in the product document.
+
+A turn posted while admission is paused is not rejected: it is queued and the
+route answers `202` with `"queued": true` and its position. Approvals fail closed
+when nobody answers within the configured wait.
 
 ## Self-hosting over Tailscale
 
@@ -137,6 +290,10 @@ Rules the server enforces:
 - Request heads are bounded and bodies over 256 KiB are rejected before reading.
 - Token comparisons run in constant time.
 
+Startup prints the listen address, workspace, data directory, posture, presence,
+routine and memory counts, and the notification channels in use, plus the
+machine's Tailscale IPv4 address when `tailscale` is installed.
+
 The data directory holds the runtime sessions and the product document
 (`product-state.json`). Override it with `--data-dir` or
 `GLASS_MARBLE_DATA_DIR`; the default is `$XDG_DATA_HOME/glass-marble`, then
@@ -150,45 +307,22 @@ glass-marble serve --port 4783
 tailscale serve --bg 4783
 ```
 
-## HTTP surface
-
-| Route | Method | Behavior |
-| --- | --- | --- |
-| `/` | GET | Product UI |
-| `/healthz` | GET | Liveness, state revision, event sequence, token requirement |
-| `/api/login` | POST | Exchange the access token for an HTTP-only session cookie |
-| `/api/state` | GET | Revisioned product document plus live pending approvals |
-| `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
-| `/api/turns` | POST | Admit a durable turn; answers `202` with the task id |
-| `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task |
-| `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
-| `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue |
-| `/api/control/profile` | POST | Select `observe`, `workspace`, or `unattended` |
-| `/api/control/pause` and `/resume` | POST | Hold new messages, or dispatch the queue in order |
-| `/api/control/stop` | POST | Pause admission and cancel every running task |
-| `/api/control/grants` | POST | Add a standing grant (`tool`, `pathPrefix`) |
-| `/api/control/grants/{id}/revoke` | POST | Revoke one grant |
-
-A turn is answered as soon as the durable task id exists, so a long model turn
-never blocks the HTTP surface. Text, reasoning, tool activity, usage, and
-settlement stream over `/api/events`; the transcript itself stays authoritative
-in the product document.
-
-A turn posted while admission is paused is not rejected: it is queued and the
-route answers `202` with `"queued": true` and its position.
-
-Approvals fail closed. When nobody answers within the approval window the tool
-is denied and the model receives an error result.
-
 ## Web UI
 
 `glass-marble serve` serves one page that adapts from a phone to a wide desktop:
 a collapsible conversation rail, a transcript that renders model text as text
-rather than HTML, live tool activity, approval cards with Allow, Always here,
-and Deny, task cancellation, an unlock dialog for token-protected hosts, and a
-Control sheet for posture, pause and stop, grants, denied paths, the queued
-messages, and the decision ledger. Safe-area insets keep the composer above the
-home indicator, and the layout honours reduced-motion preferences.
+rather than HTML, live tool activity, approval cards with Allow, Always here, and
+Deny, memory suggestion cards, task cancellation, an unlock dialog for
+token-protected hosts, and two sheets:
+
+- **Assistant** — presence, remembered facts, waiting suggestions, routines with
+  Run/Pause/Remove, webhook and APNs settings with a test button, registered
+  devices, and the read-aloud switch.
+- **Control** — posture, pause and stop, grants, denied paths, the queued
+  messages, and the decision ledger.
+
+Safe-area insets keep the composer above the home indicator, and the layout
+honours reduced-motion preferences.
 
 ## iOS client
 
@@ -202,11 +336,18 @@ The iOS app lives in `apps/glass-marble-ios` and is built with Xcode, not Cargo.
 - The host address is stored in `UserDefaults`; the access token is stored in the
   keychain and sent as a bearer token.
 - The client reads `/api/state` and consumes `/api/events`, so approvals,
-  cancellations, and control changes work from the phone exactly as they do in
-  the browser.
+  cancellations, control changes, routine firings, and memory suggestions work
+  from the phone exactly as they do in the browser.
 - The control screen (shield in the transcript toolbar) switches posture, pauses
   or resumes admission, stops everything, revokes grants, and reads the ledger.
-  Approval cards offer Always so a repeated question can be answered once.
+- The memory screen (brain) lists and forgets facts, saves or dismisses
+  suggestions, and holds the read-aloud switch. The routines screen (clock) adds,
+  runs, pauses, and removes routines.
+- Dictation uses the on-device recognizer and the composer's microphone button;
+  replies are spoken by the on-device synthesizer.
+- The app registers its APNs device token with the host on launch, so a
+  notification can reach the phone when an approval is waiting. APNs credentials
+  and their `.p8` key are configured on the host.
 - `NSAllowsArbitraryLoads` is enabled because a self-hosted tailnet address is a
   user-supplied plain-HTTP origin. Prefer `tailscale serve` if you want TLS.
 
@@ -220,23 +361,49 @@ Select a development team, choose a simulator or device, and run. The first
 launch shows the storyboard introduction; open host settings and enter the
 address printed by `glass-marble serve`.
 
+## Build and run
+
+```text
+cargo build -p glass-marble --locked
+cargo test -p glass-marble --locked
+```
+
+One-shot message, one durable turn:
+
+```text
+glass-marble "summarise the workspace" --cwd .
+```
+
+The one-shot path denies governed tools unless `--approve` is passed, because no
+surface is present to answer an approval. Serving takes `--profile observe`,
+`--profile workspace` (default), or `--profile unattended`.
+
+Serve the assistant:
+
+```text
+glass-marble serve --cwd /path/to/project --port 4783
+```
+
 ## Verification
 
 Local checks for this product:
 
 ```text
-cargo check -p glass-marble --all-targets --locked
 cargo test -p glass-marble --locked
 cargo clippy -p glass-marble --all-targets -- -D warnings
+cargo fmt -p glass-marble
 ```
 
 The adapter tests use `tests/fixtures/fake_glass_core_runtime.py`, so they need
-`python3` and no provider account. They cover mixed-session negotiation,
-tool execution and denial, per-message durable task identity, live approvals,
-control classification and ledger recording, paused admission and in-order
-dispatch, grant lifecycle, token authentication, cross-origin rejection, body
-limits, event replay, and the HTTP turn route end to end.
+`python3` and no provider account. They cover mixed-session negotiation, tool
+execution and denial, per-message durable task identity, live approvals, control
+classification and ledger recording, paused admission and in-order dispatch,
+grant lifecycle, token authentication, cross-origin rejection, body limits, event
+replay, the HTTP turn route end to end, presence, explicit memory commands,
+suggestion decisions, routines, notification and voice settings, and the local
+webhook delivery path.
 
 Not covered by those checks: a live provider turn against a real `glass-core`
-binary, and an iOS build. The iOS target compiles in Xcode only; the Swift
-sources and storyboards here were reviewed but not built in this environment.
+binary, an actual APNs delivery (it needs a real key, topic, and device), and an
+iOS build. The iOS target compiles in Xcode only; the Swift sources and
+storyboards here were reviewed but not built in this environment.

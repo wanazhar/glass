@@ -33,6 +33,63 @@ Every path is resolved against one canonical workspace root. Absolute paths,
 parent traversal, and symlinks that escape the root are refused before any
 filesystem call.
 
+## Marble's control layer
+
+Marble does not inherit the engine's idea of what is allowed. Every governed
+call is classified by the product's own layer first, and the answer is journalled
+before Core ever sees a result. The layer has four parts.
+
+### Posture
+
+One profile applies to the whole instance, selectable from the WebUI, the iOS
+app, or `--profile`:
+
+| Profile | Reads | Writes | Approvals |
+| --- | --- | --- | --- |
+| `observe` | Allowed | Refused | None asked |
+| `workspace` (default) | Asked unless granted | Asked unless granted | Per call |
+| `unattended` | Allowed | Allowed | None asked |
+
+Denied path rules apply to every posture, including `unattended`, and an
+approval cannot override them.
+
+### Denied paths
+
+The default rules refuse `.git`, `.ssh`, `.env`, and `node_modules` as whole path
+components, so `.env.local` is refused while `.gitignore` is not. A refusal names
+the rule, which is what the model receives as its tool error, so it can adapt
+instead of retrying the same call.
+
+### Grants
+
+"Always allow" on an approval records a standing grant for that tool in that
+directory. Grants carry a use count, cover only that exact scope, never leave the
+workspace, and can be revoked from either surface. A grant answers the repeated
+question, not every question: a write in a different directory still asks.
+
+### Queue, pause, and stop
+
+Admission is Marble's decision too:
+
+- `Pause queue` holds new messages in a durable FIFO queue instead of admitting
+  them. `Resume queue` dispatches them in arrival order.
+- `Stop everything` pauses admission and cancels every running task in one move.
+  Both are reversible: the pause switch and the queue survive a restart.
+
+### Audit ledger
+
+The last 200 decisions (`allowed`, `approved`, `denied`) keep their tool, path,
+conversation, task, and reason, so a surface can explain why a tool ran or did
+not. The ledger is part of the durable product document.
+
+These patterns follow the local-first agent workspace model OpenBot popularised:
+dedicated working scopes, a queue with pause and resume, explicit consent, and a
+record of what an agent did on the human's behalf.
+
+One-shot runs have no surface to answer an approval, so `--approve` maps to an
+approving host posture and the default refuses. The control layer's probe rules
+still apply in both cases.
+
 ## Build and run
 
 ```text
@@ -47,7 +104,8 @@ glass-marble "summarise the workspace" --cwd .
 ```
 
 The one-shot path denies governed tools unless `--approve` is passed, because no
-surface is present to answer an approval.
+surface is present to answer an approval. Serving takes `--profile observe`,
+`--profile workspace` (default), or `--profile unattended`.
 
 Serve the product:
 
@@ -103,12 +161,21 @@ tailscale serve --bg 4783
 | `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
 | `/api/turns` | POST | Admit a durable turn; answers `202` with the task id |
 | `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task |
-| `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool |
+| `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
+| `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue |
+| `/api/control/profile` | POST | Select `observe`, `workspace`, or `unattended` |
+| `/api/control/pause` and `/resume` | POST | Hold new messages, or dispatch the queue in order |
+| `/api/control/stop` | POST | Pause admission and cancel every running task |
+| `/api/control/grants` | POST | Add a standing grant (`tool`, `pathPrefix`) |
+| `/api/control/grants/{id}/revoke` | POST | Revoke one grant |
 
 A turn is answered as soon as the durable task id exists, so a long model turn
 never blocks the HTTP surface. Text, reasoning, tool activity, usage, and
 settlement stream over `/api/events`; the transcript itself stays authoritative
 in the product document.
+
+A turn posted while admission is paused is not rejected: it is queued and the
+route answers `202` with `"queued": true` and its position.
 
 Approvals fail closed. When nobody answers within the approval window the tool
 is denied and the model receives an error result.
@@ -117,9 +184,11 @@ is denied and the model receives an error result.
 
 `glass-marble serve` serves one page that adapts from a phone to a wide desktop:
 a collapsible conversation rail, a transcript that renders model text as text
-rather than HTML, live tool activity, approval cards, task cancellation, and an
-unlock dialog for token-protected hosts. Safe-area insets keep the composer
-above the home indicator, and the layout honours reduced-motion preferences.
+rather than HTML, live tool activity, approval cards with Allow, Always here,
+and Deny, task cancellation, an unlock dialog for token-protected hosts, and a
+Control sheet for posture, pause and stop, grants, denied paths, the queued
+messages, and the decision ledger. Safe-area insets keep the composer above the
+home indicator, and the layout honours reduced-motion preferences.
 
 ## iOS client
 
@@ -132,8 +201,12 @@ The iOS app lives in `apps/glass-marble-ios` and is built with Xcode, not Cargo.
   screen. Both are compiled from the synchronized `GlassMarble` source folder.
 - The host address is stored in `UserDefaults`; the access token is stored in the
   keychain and sent as a bearer token.
-- The client reads `/api/state` and consumes `/api/events`, so approvals and
-  cancellations work from the phone exactly as they do in the browser.
+- The client reads `/api/state` and consumes `/api/events`, so approvals,
+  cancellations, and control changes work from the phone exactly as they do in
+  the browser.
+- The control screen (shield in the transcript toolbar) switches posture, pauses
+  or resumes admission, stops everything, revokes grants, and reads the ledger.
+  Approval cards offer Always so a repeated question can be answered once.
 - `NSAllowsArbitraryLoads` is enabled because a self-hosted tailnet address is a
   user-supplied plain-HTTP origin. Prefer `tailscale serve` if you want TLS.
 
@@ -160,8 +233,9 @@ cargo clippy -p glass-marble --all-targets -- -D warnings
 The adapter tests use `tests/fixtures/fake_glass_core_runtime.py`, so they need
 `python3` and no provider account. They cover mixed-session negotiation,
 tool execution and denial, per-message durable task identity, live approvals,
-token authentication, cross-origin rejection, body limits, event replay, and the
-HTTP turn route end to end.
+control classification and ledger recording, paused admission and in-order
+dispatch, grant lifecycle, token authentication, cross-origin rejection, body
+limits, event replay, and the HTTP turn route end to end.
 
 Not covered by those checks: a live provider turn against a real `glass-core`
 binary, and an iOS build. The iOS target compiles in Xcode only; the Swift

@@ -2882,6 +2882,12 @@ fn execute_browser(
                     .find(|value| !value.starts_with("--"))
                     .map(str::to_string)
                     .or_else(|| defaults.chrome_path.as_ref().map(|path| path.display().to_string()));
+                let target_id = parts
+                    .iter()
+                    .position(|part| *part == "--target-id")
+                    .and_then(|index| parts.get(index + 1))
+                    .and_then(|value| value.parse::<String>().ok())
+                    .or_else(|| defaults.target_id.clone());
                 (
                     "glass.browser.start",
                     json!({
@@ -2893,7 +2899,8 @@ fn execute_browser(
                         "modalDialogs": !attach && defaults.modal_dialogs,
                         "interaction": defaults.interaction,
                         "audit": defaults.audit,
-                        "viewport": defaults.viewport
+                        "viewport": defaults.viewport,
+                        "targetId": target_id
                     }),
                     true,
                 )
@@ -3650,6 +3657,21 @@ mod tests {
             serde_json::json!([1440, 900])
         );
         let _ = fs::remove_dir_all(attached_root);
+    }
+
+    #[test]
+    fn browser_start_attaches_with_explicit_target_id() {
+        let (mut state, root) = test_state("attached-browser-target");
+        state.browser_start_defaults.attach = true;
+        state.browser_start_defaults.target_id = Some("page-target-explicit".into());
+        execute(&mut state, "browser start --attach").expect("queue Chromium attach");
+        let start = state
+            .pending_confirmation
+            .take()
+            .expect("attach confirmation");
+        assert_eq!(start.call.arguments["attach"], true);
+        assert_eq!(start.call.arguments["targetId"], "page-target-explicit");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

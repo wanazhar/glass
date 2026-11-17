@@ -2479,7 +2479,7 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
     let object = json!({"type":"object","additionalProperties":false});
     Some(match name {
         "glass.browser.start" => (
-            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. Managed Chromium defaults to port 9222 and selects a loopback ephemeral port only if that default is occupied and port is omitted. Explicit port and attach requests stay exact. If a different backend is already connected, call glass.browser.stop first; the conflict response explains the required transition. Use glass.browser.state to confirm backend provenance.",
+            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. Managed Chromium defaults to port 9222 and selects a loopback ephemeral port only if that default is occupied and port is omitted. Explicit port and attach requests stay exact. When backend=chromium, pass targetId to choose the explicit Chrome page target instead of relying on implicit selection; an attached existing CDP session also uses targetId to select its page. If a different backend is already connected, call glass.browser.stop first; the conflict response explains the required transition. Use glass.browser.state to confirm backend provenance.",
             json!({
                 "type":"object",
                 "properties":{
@@ -2492,13 +2492,14 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
                     "port":{"type":"integer","minimum":1,"maximum":65535},
                     "interaction":{"type":"string","enum":["human","fast"]},
                     "audit":{"type":"boolean"},
-                    "modalDialogs":{"type":"boolean","default":false}
+                    "modalDialogs":{"type":"boolean","default":false},
+                    "targetId":{"type":"string","minLength":1}
                 },
                 "additionalProperties":false
             }),
         ),
         "glass.browser.attach" => (
-            "Explicitly attach Glass Dev to an existing Chromium/CDP browser. Use only when that browser is requested; this is separate from selecting backend=chromium to launch a managed Chromium session, and neither path is an automatic native-engine fallback.",
+            "Explicitly attach Glass Dev to an existing Chromium/CDP browser. Use only when that browser is requested; this is separate from selecting backend=chromium to launch a managed Chromium session, and neither path is an automatic native-engine fallback. Pass targetId to select the explicit Chrome page target for the existing CDP session instead of relying on implicit selection.",
             json!({
                 "type":"object",
                 "properties":{
@@ -2509,7 +2510,8 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
                     "chromePath":{"type":"string","minLength":1},
                     "viewport":{"type":"array","items":{"type":"integer","minimum":1},"minItems":2,"maxItems":2},
                     "interaction":{"type":"string","enum":["human","fast"]},
-                    "audit":{"type":"boolean"}
+                    "audit":{"type":"boolean"},
+                    "targetId":{"type":"string","minLength":1}
                 },
                 "additionalProperties":false
             }),
@@ -3473,12 +3475,29 @@ mod tests {
             start.input_schema["properties"]["incognito"]["default"],
             true
         );
+        assert_eq!(
+            start.input_schema["properties"]["targetId"]["type"],
+            "string"
+        );
+        assert_eq!(
+            start.input_schema["properties"]["targetId"]["minLength"],
+            1
+        );
+        assert_eq!(
+            attach.input_schema["properties"]["targetId"]["type"],
+            "string"
+        );
+        assert_eq!(
+            attach.input_schema["properties"]["targetId"]["minLength"],
+            1
+        );
         assert!(attach.description.contains("Chromium/CDP"));
         assert!(
             attach
                 .description
                 .contains("automatic native-engine fallback")
         );
+        assert!(attach.description.contains("targetId"));
         assert!(state.description.contains("actual backend provenance"));
     }
 

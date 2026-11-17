@@ -1,7 +1,7 @@
 name: Native binaries
 
-# Native binaries are an opt-in validation/build artifact. The normal CI and
-# crates release workflows intentionally do not build or publish executables.
+# Native binaries are an opt-in manual validation/build artifact. Official
+# tagged GitHub Release archives are produced by release-binaries.yml.
 
 on:
   workflow_dispatch:

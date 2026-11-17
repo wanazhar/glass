@@ -1,0 +1,187 @@
+# Official size-optimized user binaries for a tagged GitHub Release.
+# crates-release.yml still publishes crates.io packages and creates the
+# source GitHub Release record. This workflow builds the archives, waits
+# for that record, and attaches the assets (plus SHA-256 checksums).
+# Manual native-binaries.yml remains a workflow_dispatch validation path
+# and does not publish a Release.
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to attach binaries to (for example v0.3.15)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-binaries-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing tag ${RELEASE_TAG}; build only stable vX.Y.Z tags." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Check tag version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --no-deps --locked --format-version 1 | python3 -c '
+          import json, os, sys
+          data = json.load(sys.stdin)
+          packages = {p["name"]: p["version"] for p in data["packages"] if p["name"] in {"glass-browser", "glass-dev"}}
+          expected = os.environ["RELEASE_TAG"].removeprefix("v")
+          if set(packages.values()) != {expected}:
+              raise SystemExit(f"package versions {packages} do not match tag {expected}")
+          '
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master @ 2026-11-15
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-binaries-${{ matrix.target }}
+          cache-targets: true
+
+      - name: Build size-optimized binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --package glass-dev --bins --profile release-size --locked
+          cargo build --package glass-browser --features native-engine \
+            --bin glass-native-content-worker --profile release-size --locked
+
+      - name: Smoke-test and package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == *-windows-* ]]; then
+            suffix=".exe"
+          else
+            suffix=""
+          fi
+          "./target/release-size/glass${suffix}" --version
+          "./target/release-size/glass-browser${suffix}" --version
+          test -s "./target/release-size/glass-native-content-worker${suffix}"
+          bash scripts/package-release-binaries.sh \
+            --target "$TARGET" \
+            --profile release-size \
+            --output-dir dist
+
+      - name: Upload packaged binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: glass-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing tag ${RELEASE_TAG}; upload only stable vX.Y.Z tags." >&2
+            exit 1
+          fi
+
+      - name: Download packaged binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: glass-*
+          path: dist
+          merge-multiple: true
+
+      - name: Combine checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          cat ./*.sha256 | sort > SHA256SUMS
+          while read -r digest filename; do
+            echo "${digest}  ${filename}" | sha256sum -c -
+          done < SHA256SUMS
+
+      - name: Wait for the GitHub Release and upload assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          # crates-release.yml creates the GitHub Release record. Wait for it
+          # rather than creating a notes-free duplicate.
+          attempts=60
+          delay=20
+          for attempt in $(seq 1 "$attempts"); do
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" -eq "$attempts" ]]; then
+              echo "GitHub Release ${RELEASE_TAG} was not found after waiting. Start or finish the Release workflow first." >&2
+              exit 1
+            fi
+            echo "Release ${RELEASE_TAG} is not ready yet (attempt ${attempt}/${attempts}); waiting ${delay}s"
+            sleep "$delay"
+          done
+          gh release upload "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          echo "Uploaded assets to ${RELEASE_TAG}:"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'

@@ -69,6 +69,26 @@ which is performance-oriented (`opt-level = 3`, no LTO). Use
 faster local compiles, install `mold` and `sccache` and see
 `scripts/cargo-config.local.toml.example` and `scripts/ci-local.sh`.
 
+The fastest way to get the official size-optimized binaries is
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall), which
+downloads the GitHub Release archive for your target:
+
+```console
+cargo binstall glass-dev
+cargo binstall glass-browser
+```
+
+`glass-dev` provides `glass`, `glass-browser`, and the
+`glass-native-content-worker` helper used by the native engine. Install
+only one of `glass-dev` or `glass-browser` into a given Cargo root, the
+same as with `cargo install`. Archives are named
+`glass-<target>.tar.gz` (`.zip` on Windows) and include a matching
+`.sha256` file plus a combined `SHA256SUMS` on the Release. Verify a
+manual download with `sha256sum -c glass-x86_64-unknown-linux-gnu.tar.gz.sha256`.
+Prebuilt archives are attached starting with the first tagged release
+after the Release binaries workflow lands; `v0.3.14` remains source-only.
+To compile from source, use `cargo install` as above.
+
 `glass-dev` owns both executable names for the complete product. `glass-browser`
 owns only `glass-browser` and exports the `glass_browser` Rust library. Cargo
 does not allow both packages to install that same executable into one root.

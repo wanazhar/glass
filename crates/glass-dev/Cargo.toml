@@ -22,8 +22,22 @@ name = "glass-browser"
 path = "src/browser_main.rs"
 doc = false
 
+[[bin]]
+name = "glass-native-content-worker"
+path = "src/content_worker_main.rs"
+doc = false
+
 [package.metadata.docs.rs]
 all-features = true
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/glass-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/glass-{ target }.zip"
+pkg-fmt = "zip"
 
 [dependencies]
 glass-browser = { version = "=0.3.14", path = "../glass-browser", features = ["native-engine"] }

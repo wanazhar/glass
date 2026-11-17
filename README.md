@@ -34,13 +34,28 @@ project access and tool execution; Glass Core runs the model session. See the
 | `glass-browser` | `glass-browser` | Browser automation and the reusable `glass_browser` Rust library. |
 | `glass-core` | `glass-core`, `gc` | The standalone coding harness used by Glass resident agents. |
 
-The two packages provide the same `glass-browser` command, so install only one
-of them in a Cargo install root. Read the [installation guide](docs/installation.md)
+Both packages also ship the `glass-native-content-worker` helper next to the
+user commands; keep it in the same directory. The two packages provide the
+same `glass-browser` command, so install only one of them in a Cargo install
+root. Read the [installation guide](docs/installation.md)
 before changing package ownership.
 
 ## Get started
 
-Install the complete workspace, check the installation, and open a project:
+The fastest way to install the published `glass` and `glass-browser`
+binaries is with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```console
+cargo binstall glass-dev
+```
+
+That downloads official GitHub Release archives for Linux x86_64 and
+aarch64, macOS x86_64 and arm64, and Windows x86_64. Prebuilt archives
+are attached starting with the first tagged release after this workflow
+lands; `v0.3.14` remains source-only.
+
+To compile from crates.io instead, check the installation, and open a
+project:
 
 ```console
 cargo install glass-dev --locked

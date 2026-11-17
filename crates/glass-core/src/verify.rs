@@ -253,12 +253,13 @@ fn run_parser(cmd: &[&str], path: &Path) -> Result<(), String> {
     }
 }
 
-/// Render the checks for a batch of written files into one block.
-///
-/// Empty means nothing was verified, so the caller can leave the tool result
-/// untouched rather than appending an empty note.
-pub fn report(paths: &[PathBuf], workspace: &Path, tail_lines: usize) -> String {
+/// Run the post-write checks over the paths a write touched and render one
+/// block of report for the model. Empty means nothing was verified, so the
+/// caller can leave the tool result untouched rather than appending an empty
+/// note. The second return value flags whether any check failed.
+pub fn check(paths: &[PathBuf], workspace: &Path, tail_lines: usize) -> (String, bool) {
     let mut out = String::new();
+    let mut failed = false;
     for p in paths {
         // `py_compile` writes a __pycache__ artifact; ignore it here.
         if p.to_string_lossy().contains("__pycache__") {
@@ -269,9 +270,10 @@ pub fn report(paths: &[PathBuf], workspace: &Path, tail_lines: usize) -> String 
             out.push('\n');
             out.push_str(&c.report);
             let _ = rel;
+            failed |= c.failed;
         }
     }
-    out
+    (out, failed)
 }
 
 /// Bound on verifier output before it is folded into a report.
@@ -602,8 +604,8 @@ mod tests {
     }
 
     #[test]
-    fn report_is_empty_when_nothing_was_written() {
-        assert_eq!(report(&[], Path::new("/w"), 10), "");
+    fn check_is_empty_when_nothing_was_written() {
+        assert_eq!(check(&[], Path::new("/w"), 10).0, "");
     }
 
     #[test]
@@ -668,7 +670,7 @@ mod integration {
             "heredoc target must be detected"
         );
 
-        let note = report(&touched, &d, 40);
+        let (note, _) = check(&touched, &d, 40);
         assert!(
             note.contains("syntax error"),
             "unclosed paren must surface: {note}"
@@ -699,7 +701,7 @@ mod integration {
             .status()
             .unwrap();
 
-        let note = report(&written_paths(cmd, &d), &d, 40);
+        let (note, _) = check(&written_paths(cmd, &d), &d, 40);
         assert!(note.contains("syntax ok"), "{note}");
 
         let _ = std::fs::remove_dir_all(&d);

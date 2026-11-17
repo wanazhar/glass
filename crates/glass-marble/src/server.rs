@@ -201,6 +201,7 @@ impl MarbleServer {
             id: reply.task_id.clone(),
             conversation_id: reply.conversation_id.clone(),
             status: "completed".to_string(),
+            owner: "human".to_string(),
         });
         if let Ok(mut guard) = state.lock() {
             *guard = updated;

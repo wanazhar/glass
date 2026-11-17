@@ -77,7 +77,7 @@
           button.addEventListener("click", () => { selectedConversationId = button.dataset.conversationId; refresh(); });
         });
         transcriptEl.textContent = state.transcript.map((e) => e.conversationId + " " + e.kind + ": " + e.text).join("\n") || "awaiting turn";
-        tasksEl.innerHTML = state.tasks.map((t) => "<li>" + t.id + " " + t.conversationId + " " + t.status + "</li>").join("") || "<li>no tasks</li>";
+        tasksEl.innerHTML = state.tasks.map((t) => "<li>" + t.id + " " + t.conversationId + " " + t.status + " owner " + t.owner + "</li>").join("") || "<li>no tasks</li>";
         approvalsEl.innerHTML = state.approvals.map((a) => {
           return "<div>" + a.tool + " " + a.requestId + " <button data-allow='" + a.requestId + "'>Allow</button> <button class='deny' data-deny='" + a.requestId + "'>Deny</button></div>";
         }).join("") || "<div>inbox empty</div>";

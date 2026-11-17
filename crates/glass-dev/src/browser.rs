@@ -54,6 +54,11 @@ pub struct BrowserStartConfig {
     pub port_explicit: bool,
     /// Attach to an existing browser rather than launching one.
     pub attach: bool,
+    /// Optional explicit Chrome page target ID for an attached or managed
+    /// Chromium session. Required whenever the selected endpoint exposes more
+    /// than one page target, so an existing CDP session never adopts a target
+    /// silently.
+    pub target_id: Option<String>,
     /// Use an isolated incognito context.
     pub incognito: bool,
     /// Show the browser window.
@@ -87,6 +92,7 @@ impl Default for BrowserStartConfig {
             interaction: InteractionMode::Human,
             audit: false,
             viewport: None,
+            target_id: None,
         }
     }
 }
@@ -729,6 +735,9 @@ impl BrowserWorker {
                 .policy(policy);
             if let Some(path) = config.chrome_path.clone() {
                 builder = builder.chrome_path(path);
+            }
+            if let Some(target_id) = config.target_id.clone() {
+                builder = builder.target_id(target_id);
             }
             let options = builder
                 .build()
@@ -1715,6 +1724,22 @@ mod tests {
         assert!(!error.to_string().is_empty());
         assert_eq!(service.state().unwrap()["connected"], false);
         assert_eq!(service.state().unwrap()["browserBackend"], Value::Null);
+    }
+
+    #[test]
+    fn browser_start_config_accepts_explicit_target_id_for_attached_chromium() {
+        let started: BrowserStartConfig = serde_json::from_value(serde_json::json!({
+            "backend": "chromium",
+            "attach": true,
+            "targetId": "page-target-explicit"
+        }))
+        .unwrap();
+        assert!(started.attach);
+        assert_eq!(started.target_id.as_deref(), Some("page-target-explicit"));
+
+        let defaulted = BrowserStartConfig::default();
+        assert_eq!(defaulted.attach, false);
+        assert_eq!(defaulted.target_id, None);
     }
 
     #[test]

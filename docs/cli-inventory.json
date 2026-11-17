@@ -14,7 +14,7 @@
       "accept-dialog", "dismiss-dialog", "dismiss-consent", "download",
       "targets", "archive-targets", "new-target", "select-target", "close-target", "frames",
       "select-frame", "evaluate", "cookies", "export-cookies",
-      "import-cookies", "pdf", "fill-form", "batch", "workflow", "task",
+      "import-cookies", "pdf", "fill-form", "batch", "script", "workflow", "task",
       "ir", "workflow-resume", "resolve-intent", "execute-intent", "verify",
       "reconcile-refs", "observe-delta", "checkpoint", "snapshot",
       "clipboard-read", "clipboard-write", "browser", "session", "tui"
@@ -31,7 +31,7 @@
       "diagnostics", "accept-dialog", "dismiss-dialog", "dismiss-consent",
       "download", "targets", "archive-targets", "new-target", "select-target", "close-target",
       "frames", "select-frame", "evaluate", "cookies", "export-cookies",
-      "import-cookies", "pdf", "fill-form", "batch", "workflow", "task",
+      "import-cookies", "pdf", "fill-form", "batch", "script", "workflow", "task",
       "ir", "workflow-resume", "resolve-intent", "execute-intent", "verify",
       "reconcile-refs", "observe-delta", "checkpoint", "snapshot",
       "clipboard-read", "clipboard-write", "browser", "session", "tui"

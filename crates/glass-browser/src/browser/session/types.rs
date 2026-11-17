@@ -1589,6 +1589,50 @@ pub struct StartupDiagnostics {
     pub total_startup_ms: u64,
 }
 
+/// Connection lifecycle state for one resident browser session.
+///
+/// A dropped CDP session moves the session into `Reconnecting` instead of
+/// failing the owning operation outright. Recovery re-attaches to the same
+/// browser target through the existing endpoint; it never launches a second
+/// browser. Only `Failed` is terminal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReconnectState {
+    /// No recovery is in flight and the session holds no usable connection.
+    #[default]
+    Idle,
+    /// A dropped connection is being recovered in place.
+    Reconnecting,
+    /// The dropped connection was recovered on the same browser target.
+    Reconnected,
+    /// Recovery was exhausted or was not safe to retry.
+    Failed,
+}
+
+impl ReconnectState {
+    /// Transition into in-place recovery after a dropped connection.
+    pub const fn begin_recovery(self) -> Self {
+        Self::Reconnecting
+    }
+
+    /// Transition after recovery re-attached to the same browser target.
+    pub const fn recovered(self) -> Self {
+        Self::Reconnected
+    }
+
+    /// Transition after recovery attempts were exhausted or unsafe to retry.
+    pub const fn failed(self) -> Self {
+        Self::Failed
+    }
+
+    /// Whether no further recovery transitions are permitted.
+    pub const fn is_terminal(self) -> bool {
+        match self {
+            Self::Failed => true,
+            _ => false,
+        }
+    }
+}
+
 /// Explicit lifecycle milestones observed by a session.
 ///
 /// A milestone is set only after the corresponding operation has actually

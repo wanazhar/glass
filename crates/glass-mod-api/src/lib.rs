@@ -358,6 +358,63 @@ pub type ModT = dyn Mod_;
 /// Metadata a mod may advertise for `--help`-style output.
 pub type Manifest = BTreeMap<String, String>;
 
+/// An approval card a plugin panel presents before a guarded operation runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalCard {
+    /// Short human-readable title for the approval card.
+    pub title: String,
+    /// Why the guarded operation requires an explicit decision.
+    pub reason: String,
+}
+
+/// One plugin panel registration.
+///
+/// A mod declares a panel together with the command that opens it and the
+/// approval card that guards it as a single unit through one schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelRegistration {
+    /// Stable panel id used by the registry.
+    pub id: String,
+    /// Human-readable panel title.
+    pub title: String,
+    /// Slash command that opens the panel.
+    pub command: String,
+    /// Approval card guarding the panel's operation.
+    pub approval: ApprovalCard,
+}
+
+/// Registry of plugin panels that mods register through one schema.
+///
+/// Hosts read panel registrations from here; rendering, command, and approval
+/// wiring arrive in later slices.
+#[derive(Clone, Debug)]
+pub struct PanelRegistry {
+    panels: BTreeMap<String, PanelRegistration>,
+}
+
+impl PanelRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self { panels: BTreeMap::new() }
+    }
+
+    /// Register one panel. A repeated id replaces the earlier registration.
+    pub fn register(&mut self, registration: PanelRegistration) {
+        self.panels.insert(registration.id.clone(), registration);
+    }
+
+    /// The registered panel, if the id is known.
+    pub fn get(&self, id: &str) -> Option<&PanelRegistration> {
+        self.panels.get(id)
+    }
+}
+
+impl Default for PanelRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +425,25 @@ mod tests {
             name: "bash".into(),
             arguments: args.to_string(),
         }
+    }
+
+    #[test]
+    fn panel_registry_registers_panel_command_and_approval_card() {
+        let mut registry = PanelRegistry::new();
+        registry.register(PanelRegistration {
+            id: "review".into(),
+            title: "Code review".into(),
+            command: "review".into(),
+            approval: ApprovalCard {
+                title: "Run the review?".into(),
+                reason: "The review runs guarded checks".into(),
+            },
+        });
+        let panel = registry.get("review").expect("registered panel should be found");
+        assert_eq!(panel.title, "Code review");
+        assert_eq!(panel.command, "review");
+        assert_eq!(panel.approval.title, "Run the review?");
+        assert_eq!(panel.approval.reason, "The review runs guarded checks");
     }
 
     #[test]

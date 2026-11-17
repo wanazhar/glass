@@ -251,6 +251,7 @@ export-cookies FILE
 import-cookies FILE
 pdf FILE
 batch [JSON_FILE|-]
+script [JSON_FILE|-]
 smoke-sites MANIFEST
 workflow [JSON_FILE]
 workflow-resume WORKFLOW CHECKPOINT
@@ -365,6 +366,7 @@ The following forms are the public Clap routes. `FILE`, `PATH`, `ID`, and
 | `delete-profile` | `NAME` |
 | `browser` | optional `tui` |
 | `session` | `start|status|stop|open [NAME]` (default `default`) |
+| `script` | `[JSON_FILE|-]` runs an ordered browser action script |
 | `help` | `[TOPIC]` |
 | `tui` | no positional arguments |
 

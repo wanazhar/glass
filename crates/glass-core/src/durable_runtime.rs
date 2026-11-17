@@ -940,6 +940,9 @@ impl Context {
                             replay: "unsafe".into(),
                             input: json!({"callId":id,"name":name,"arguments":arguments}),
                             checkpoint: json!({"phase":"execute"}),
+                            progress_limit: 0,
+                            retry_limit: 0,
+                            restart_limit: 0,
                         });
                         ops.push(Op::TaskUpdate {
                             id: tool_id,
@@ -1287,6 +1290,9 @@ mod tests {
                 replay: "safe".into(),
                 input: Value::Null,
                 checkpoint: Value::Null,
+                progress_limit: 0,
+                retry_limit: 0,
+                restart_limit: 0,
             }],
         )
         .unwrap();
@@ -1348,6 +1354,9 @@ mod tests {
                 replay: "safe".into(),
                 input: Value::Null,
                 checkpoint: Value::Null,
+                progress_limit: 0,
+                retry_limit: 0,
+                restart_limit: 0,
             }],
         )
         .unwrap();
@@ -1404,6 +1413,9 @@ mod tests {
                 replay: "safe".into(),
                 input: Value::Null,
                 checkpoint: Value::Null,
+                progress_limit: 0,
+                retry_limit: 0,
+                restart_limit: 0,
             }],
         )
         .unwrap();
@@ -1537,6 +1549,9 @@ mod tests {
                     replay: "safe".into(),
                     input: Value::Null,
                     checkpoint: Value::Null,
+                    progress_limit: 0,
+                    retry_limit: 0,
+                    restart_limit: 0,
                 },
                 Op::Entry {
                     conversation: "root".into(),
@@ -1602,6 +1617,9 @@ mod tests {
                         replay: "safe".into(),
                         input: Value::Null,
                         checkpoint: Value::Null,
+                        progress_limit: 0,
+                        retry_limit: 0,
+                        restart_limit: 0,
                     },
                     Op::Document {
                         conversation: cv,
@@ -1719,6 +1737,9 @@ mod tests {
                     replay: "safe".into(),
                     input: Value::Null,
                     checkpoint: Value::Null,
+                    progress_limit: 0,
+                    retry_limit: 0,
+                    restart_limit: 0,
                 },
             ],
         )
@@ -1748,6 +1769,9 @@ mod tests {
                     replay: "safe".into(),
                     input: json!({"text":"answer"}),
                     checkpoint: json!({"phase":"executing"}),
+                    progress_limit: 0,
+                    retry_limit: 0,
+                    restart_limit: 0,
                 },
                 Op::TaskUpdate {
                     id: id.into(),

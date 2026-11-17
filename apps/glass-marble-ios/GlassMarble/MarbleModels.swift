@@ -169,6 +169,12 @@ struct MarbleState: Decodable, Equatable {
     var approvals: [MarbleApproval]
     var transcript: [MarbleEntry]
     var control: MarbleControl?
+    var presence: MarblePresence?
+    var memory: MarbleMemory?
+    var routines: MarbleRoutines?
+    var voice: MarbleVoice?
+    var notifications: MarbleNotificationSettings?
+    var devices: [MarbleDevice]?
 
     static let empty = MarbleState(
         revision: 0,
@@ -176,11 +182,24 @@ struct MarbleState: Decodable, Equatable {
         tasks: [],
         approvals: [],
         transcript: [],
-        control: nil
+        control: nil,
+        presence: nil,
+        memory: nil,
+        routines: nil,
+        voice: nil,
+        notifications: nil,
+        devices: nil
     )
 
     /// Hosts from before the control layer answer without one.
     var controlState: MarbleControl { control ?? .empty }
+    /// What the assistant is doing, when the host reports it.
+    var presenceInfo: MarblePresence { presence ?? .empty }
+    var memoryState: MarbleMemory { memory ?? .empty }
+    var routineState: MarbleRoutines { routines ?? .empty }
+    var voiceSettings: MarbleVoice { voice ?? .empty }
+    var notificationState: MarbleNotificationSettings { notifications ?? .empty }
+    var deviceList: [MarbleDevice] { devices ?? [] }
 
     func conversation(_ id: String?) -> MarbleConversation? {
         guard let id else { return nil }
@@ -225,4 +244,149 @@ struct MarbleHealth: Decodable, Equatable {
     var revision: Int
     var sequence: UInt64
     var authRequired: Bool
+}
+
+/// What the always-on assistant is doing right now.
+struct MarblePresence: Decodable, Equatable {
+    var status: String
+    var summary: String
+    var instance: String
+    var uptimeSeconds: UInt64
+    var lastTurnAt: UInt64
+    var turnsStarted: UInt64
+    var turnsCompleted: UInt64
+    var recoveredTasks: UInt64
+    var activeTaskId: String?
+    var activePrompt: String?
+    var approvalsWaiting: Int
+    var queued: Int
+    var routinesEnabled: Int
+    var memories: Int
+
+    static let empty = MarblePresence(
+        status: "offline",
+        summary: "",
+        instance: "",
+        uptimeSeconds: 0,
+        lastTurnAt: 0,
+        turnsStarted: 0,
+        turnsCompleted: 0,
+        recoveredTasks: 0,
+        activeTaskId: nil,
+        activePrompt: nil,
+        approvalsWaiting: 0,
+        queued: 0,
+        routinesEnabled: 0,
+        memories: 0
+    )
+
+    var uptimeLabel: String {
+        if uptimeSeconds >= 86_400 {
+            return "\(uptimeSeconds / 86_400)d \((uptimeSeconds % 86_400) / 3_600)h"
+        }
+        if uptimeSeconds >= 3_600 {
+            return "\(uptimeSeconds / 3_600)h \((uptimeSeconds % 3_600) / 60)m"
+        }
+        if uptimeSeconds >= 60 { return "\(uptimeSeconds / 60)m" }
+        return "\(max(1, uptimeSeconds))s"
+    }
+}
+
+/// One durable statement Marble carries between conversations.
+struct MarbleMemoryFact: Decodable, Identifiable, Equatable {
+    var id: String
+    var text: String
+    var kind: String
+    var createdAt: UInt64
+    var uses: UInt64
+}
+
+/// Something Marble noticed and wants permission to keep.
+struct MarbleMemorySuggestion: Decodable, Identifiable, Equatable {
+    var id: String
+    var text: String
+    var kind: String
+    var reason: String
+}
+
+struct MarbleMemory: Decodable, Equatable {
+    var facts: [MarbleMemoryFact]
+    var suggestions: [MarbleMemorySuggestion]
+    var count: Int?
+    var limit: Int?
+
+    static let empty = MarbleMemory(facts: [], suggestions: [], count: 0, limit: nil)
+}
+
+/// One saved prompt on a schedule.
+struct MarbleRoutine: Decodable, Identifiable, Equatable {
+    var id: String
+    var title: String
+    var prompt: String
+    var schedule: String
+    var conversationId: String?
+    var enabled: Bool
+    var createdAt: UInt64
+    var lastRunAt: UInt64
+    var nextRunAt: UInt64
+    var runs: UInt64
+    var lastTaskId: String
+    var lastStatus: String
+}
+
+struct MarbleRoutines: Decodable, Equatable {
+    var routines: [MarbleRoutine]
+    var count: Int?
+    var limit: Int?
+    var enabled: Int?
+
+    static let empty = MarbleRoutines(routines: [], count: 0, limit: nil, enabled: 0)
+}
+
+/// Local-only voice preferences.
+struct MarbleVoice: Decodable, Equatable {
+    var enabled: Bool
+    var rate: Double
+    var voice: String
+    var provider: String?
+
+    static let empty = MarbleVoice(enabled: false, rate: 0.5, voice: "", provider: "on-device")
+}
+
+/// APNs credentials the host signs with. The key file stays on the host.
+struct MarbleApns: Codable, Equatable {
+    var keyFile: String
+    var teamId: String
+    var keyId: String
+    var topic: String
+    var environment: String?
+}
+
+struct MarbleNotificationSettings: Decodable, Equatable {
+    var webhookUrl: String
+    var webhookTokenSet: Bool
+    var events: [String]
+    var availableEvents: [String]
+    var apns: MarbleApns?
+    var apnsConfigured: Bool
+    var webhookConfigured: Bool
+
+    static let empty = MarbleNotificationSettings(
+        webhookUrl: "",
+        webhookTokenSet: false,
+        events: [],
+        availableEvents: [],
+        apns: nil,
+        apnsConfigured: false,
+        webhookConfigured: false
+    )
+}
+
+struct MarbleDevice: Decodable, Identifiable, Equatable {
+    var tokenPrefix: String
+    var platform: String
+    var topic: String
+    var lastSeenAt: UInt64
+
+    var id: String { tokenPrefix }
 }

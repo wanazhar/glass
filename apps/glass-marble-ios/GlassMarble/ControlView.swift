@@ -223,7 +223,7 @@ struct ControlView: View {
     }
 }
 
-private struct SectionTitle: View {
+struct SectionTitle: View {
     var text: String
 
     init(_ text: String) { self.text = text }
@@ -236,7 +236,7 @@ private struct SectionTitle: View {
     }
 }
 
-private struct Tag: View {
+struct Tag: View {
     var text: String
 
     init(_ text: String) { self.text = text }

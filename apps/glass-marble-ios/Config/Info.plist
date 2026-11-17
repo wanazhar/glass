@@ -29,6 +29,14 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Marble listens only while you hold the microphone button, and the audio is transcribed on this device.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Marble turns your voice into a message using on-device speech recognition. Audio never leaves the phone.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Glass Marble connects to the collaborator you self-host over your private Tailscale network.</string>
 	<key>UIApplicationSceneManifest</key>

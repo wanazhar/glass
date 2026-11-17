@@ -1,5 +1,9 @@
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+import UserNotifications
 
 /// Observable product store shared by every iOS surface.
 @MainActor
@@ -39,6 +43,7 @@ final class MarbleStore: ObservableObject {
     @Published var needsToken = false
 
     private var client: MarbleClient
+    private let speaker = MarbleSpeaker()
     private var streamTask: Task<Void, Never>?
     private var sequence: UInt64 = 0
     private var started = false
@@ -50,6 +55,14 @@ final class MarbleStore: ObservableObject {
         )
         self.endpoint = endpoint
         self.client = MarbleClient(endpoint: endpoint)
+        NotificationCenter.default.addObserver(
+            forName: .marblePushToken,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let token = notification.object as? String else { return }
+            Task { await self?.registerPushToken(token) }
+        }
     }
 
     // MARK: - Derived product state
@@ -67,9 +80,17 @@ final class MarbleStore: ObservableObject {
     /// Marble's own control layer, as published by the host.
     var control: MarbleControl { state.controlState }
 
+    /// What the assistant is doing, when the host reports it.
+    var presence: MarblePresence { state.presenceInfo }
+    var memory: MarbleMemory { state.memoryState }
+    var routines: MarbleRoutines { state.routineState }
+    var voice: MarbleVoice { state.voiceSettings }
+
     var statusLabel: String {
         if isWorking { return "working" }
-        if control.paused { return "paused" }
+        if presence.status == "waiting" { return "waiting for you" }
+        if presence.status == "paused" || control.paused { return "paused" }
+        if presence.status == "working" { return "working" }
         return connection.label
     }
 
@@ -81,6 +102,7 @@ final class MarbleStore: ObservableObject {
         Task {
             await refresh()
             listen()
+            await registerForPush()
         }
     }
 
@@ -224,6 +246,104 @@ final class MarbleStore: ObservableObject {
         }
     }
 
+    // MARK: - Remembering
+
+    func remember(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await perform { _ = try await self.client.remember(text: trimmed) }
+    }
+
+    func forget(_ fact: MarbleMemoryFact) async {
+        await perform { _ = try await self.client.forgetMemory(id: fact.id) }
+    }
+
+    func accept(_ suggestion: MarbleMemorySuggestion) async {
+        await perform { _ = try await self.client.acceptSuggestion(id: suggestion.id) }
+    }
+
+    func dismiss(_ suggestion: MarbleMemorySuggestion) async {
+        await perform { _ = try await self.client.dismissSuggestion(id: suggestion.id) }
+    }
+
+    // MARK: - Routines
+
+    func addRoutine(title: String, prompt: String, schedule: String) async {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else { return }
+        let resolvedSchedule = schedule.trimmingCharacters(in: .whitespacesAndNewlines)
+        await perform {
+            _ = try await self.client.addRoutine(
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                prompt: trimmedPrompt,
+                schedule: resolvedSchedule.isEmpty ? "every:1h" : resolvedSchedule,
+                conversationId: self.selectedConversationId
+            )
+        }
+    }
+
+    func run(_ routine: MarbleRoutine) async {
+        await perform { try await self.client.runRoutine(id: routine.id) }
+    }
+
+    func setRoutine(_ routine: MarbleRoutine, enabled: Bool) async {
+        await perform { try await self.client.setRoutine(id: routine.id, enabled: enabled) }
+    }
+
+    func remove(_ routine: MarbleRoutine) async {
+        await perform { try await self.client.removeRoutine(id: routine.id) }
+    }
+
+    // MARK: - Voice and push
+
+    func toggleVoice() async {
+        let wasEnabled = voice.enabled
+        await perform { _ = try await self.client.setVoice(enabled: !wasEnabled) }
+        if wasEnabled { speaker.stop() }
+    }
+
+    func speakLastReply(_ text: String) {
+        Task { await speak(text) }
+    }
+
+    private func speak(_ text: String) async {
+        guard voice.enabled, !text.isEmpty else { return }
+        var spoken = text
+        if let shaped = try? await client.speak(text: text), !shaped.isEmpty {
+            spoken = shaped
+        }
+        speaker.speak(spoken, rate: Float(voice.rate))
+    }
+
+    func registerPushToken(_ token: String) async {
+        do {
+            try await client.registerDevice(
+                token: token,
+                topic: Bundle.main.bundleIdentifier ?? ""
+            )
+        } catch {
+            // Push is optional: a host without APNs credentials simply ignores it.
+        }
+    }
+
+    private func registerForPush() async {
+        #if canImport(UIKit)
+        let center = UNUserNotificationCenter.current()
+        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+        UIApplication.shared.registerForRemoteNotifications()
+        #endif
+    }
+
+    private func perform(_ operation: () async throws -> Void) async {
+        do {
+            try await operation()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
     // MARK: - Streaming
 
     private func listen() {
@@ -277,11 +397,15 @@ final class MarbleStore: ObservableObject {
         case "approval_pending", "approval_resolved", "state":
             Task { await refresh() }
         case "settled":
+            let reply = liveText
             activeTaskId = nil
             liveText = ""
             liveReasoning = ""
             liveTools = []
-            Task { await refresh() }
+            Task {
+                await refresh()
+                await speak(reply)
+            }
         case "error":
             if let message = event.data.message { errorMessage = message }
             Task { await refresh() }

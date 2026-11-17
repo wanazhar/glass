@@ -137,8 +137,10 @@ struct MarbleEmptyState: View {
 struct ComposerBar: View {
     @Binding var draft: String
     var isWorking: Bool
+    var isDictating: Bool = false
     var onSend: () -> Void
     var onStop: () -> Void
+    var onDictate: (() -> Void)? = nil
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -154,6 +156,17 @@ struct ComposerBar: View {
             .onSubmit(onSend)
             .padding(.vertical, 6)
             .foregroundStyle(MarblePalette.ink)
+
+            if let onDictate {
+                Button(action: onDictate) {
+                    Image(systemName: isDictating ? "waveform" : "mic")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .foregroundStyle(isDictating ? MarblePalette.danger : MarblePalette.muted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
+            }
 
             Button(action: isWorking ? onStop : onSend) {
                 Image(systemName: isWorking ? "stop.fill" : "arrow.up")

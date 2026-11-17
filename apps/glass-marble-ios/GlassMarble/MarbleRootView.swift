@@ -6,6 +6,8 @@ struct MarbleRootView: View {
     @State private var showsIntroduction = false
     @State private var greeted = false
     @State private var showsControl = false
+    @State private var showsMemory = false
+    @State private var showsRoutines = false
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +33,14 @@ struct MarbleRootView: View {
             ControlView()
                 .environmentObject(store)
         }
+        .sheet(isPresented: $showsMemory) {
+            MemoryView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showsRoutines) {
+            RoutinesView()
+                .environmentObject(store)
+        }
         .sheet(isPresented: $showsIntroduction) {
             ConnectIntroductionView { showsIntroduction = false }
                 .ignoresSafeArea()
@@ -48,6 +58,9 @@ struct MarbleChatView: View {
     @State private var draft = ""
     @State private var showsSettings = false
     @State private var showsControl = false
+    @State private var showsMemory = false
+    @State private var showsRoutines = false
+    @StateObject private var dictation = MarbleDictation()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -56,9 +69,15 @@ struct MarbleChatView: View {
             ComposerBar(
                 draft: $draft,
                 isWorking: store.isWorking,
+                isDictating: dictation.isRecording,
                 onSend: send,
-                onStop: { Task { await store.cancelActiveTask() } }
+                onStop: { Task { await store.cancelActiveTask() } },
+                onDictate: { dictation.toggle() }
             )
+        }
+        .onChange(of: dictation.transcript) { _, transcript in
+            guard !transcript.isEmpty else { return }
+            draft = transcript
         }
         .background(Color.clear)
         .navigationTitle(store.selectedConversation?.title ?? "Marble")
@@ -79,6 +98,18 @@ struct MarbleChatView: View {
                 MarbleIconButton(systemName: "shield.lefthalf.filled", label: "Marble control") {
                     showsControl = true
                 }
+                MarbleIconButton(systemName: "brain", label: "Memory") {
+                    showsMemory = true
+                }
+                MarbleIconButton(systemName: "clock.arrow.circlepath", label: "Routines") {
+                    showsRoutines = true
+                }
+                MarbleIconButton(
+                    systemName: store.voice.enabled ? "speaker.wave.2.fill" : "speaker.slash",
+                    label: store.voice.enabled ? "Stop reading replies" : "Read replies aloud"
+                ) {
+                    Task { await store.toggleVoice() }
+                }
                 MarbleIconButton(systemName: "antenna.radiowaves.left.and.right", label: "Host settings") {
                     showsSettings = true
                 }
@@ -92,8 +123,16 @@ struct MarbleChatView: View {
             ControlView()
                 .environmentObject(store)
         }
+        .sheet(isPresented: $showsMemory) {
+            MemoryView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showsRoutines) {
+            RoutinesView()
+                .environmentObject(store)
+        }
         .overlay(alignment: .bottom) {
-            if let message = store.errorMessage {
+            if let message = store.errorMessage ?? dictation.errorMessage {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(MarblePalette.ink)
@@ -108,9 +147,21 @@ struct MarbleChatView: View {
 
     @ViewBuilder
     private var approvalRail: some View {
-        if !store.state.approvals.isEmpty {
+        if !store.memory.suggestions.isEmpty || !store.state.approvals.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
+                    ForEach(store.memory.suggestions) { suggestion in
+                        SuggestionCard(suggestion: suggestion) { keep in
+                            Task {
+                                if keep {
+                                    await store.accept(suggestion)
+                                } else {
+                                    await store.dismiss(suggestion)
+                                }
+                            }
+                        }
+                        .frame(width: 300)
+                    }
                     ForEach(store.state.approvals) { approval in
                         ApprovalCard(approval: approval) { allow, remember in
                             Task {
@@ -133,6 +184,7 @@ struct MarbleChatView: View {
     private func send() {
         let text = draft
         draft = ""
+        if dictation.isRecording { dictation.stop() }
         Task { await store.send(text) }
     }
 }

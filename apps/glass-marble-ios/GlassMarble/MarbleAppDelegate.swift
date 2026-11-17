@@ -10,6 +10,26 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate {
         true
     }
 
+    /// The device token is handed to the product store, which registers it with
+    /// the self-hosted host so Marble can push a notification when it needs you.
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        NotificationCenter.default.post(name: .marblePushToken, object: token)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        NotificationCenter.default.post(
+            name: .marblePushRegistrationFailed,
+            object: error.localizedDescription
+        )
+    }
+
     func application(
         _ application: UIApplication,
         configurationForConnecting connectingSceneSession: UISceneSession,
@@ -46,4 +66,10 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
     }
+}
+
+extension Notification.Name {
+    /// Posted with the APNs device token as a hex string.
+    static let marblePushToken = Notification.Name("marble.push.token")
+    static let marblePushRegistrationFailed = Notification.Name("marble.push.failed")
 }

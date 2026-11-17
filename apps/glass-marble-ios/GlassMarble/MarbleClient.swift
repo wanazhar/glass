@@ -190,6 +190,153 @@ final class MarbleClient: @unchecked Sendable {
         try await post("/api/login", body: Body(token: token))
     }
 
+    // MARK: - Presence, memory, routines
+
+    func presence() async throws -> MarblePresence {
+        try await fetch(try makeRequest(path: "/api/presence"))
+    }
+
+    func memory() async throws -> MarbleMemory {
+        try await fetch(try makeRequest(path: "/api/memory"))
+    }
+
+    private struct MemoryReply: Decodable { var memory: MarbleMemory }
+    private struct RoutinesReply: Decodable { var routines: MarbleRoutines }
+    private struct OkReply: Decodable { var ok: Bool }
+
+    private func encoded(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+    }
+
+    func remember(text: String) async throws -> MarbleMemory {
+        struct Body: Encodable { var text: String }
+        let reply: MemoryReply = try await postJSON("/api/memory", body: Body(text: text))
+        return reply.memory
+    }
+
+    func forgetMemory(id: String) async throws -> MarbleMemory {
+        let reply: MemoryReply = try await postJSON(
+            "/api/memory/\(encoded(id))/forget",
+            body: Optional<String>.none
+        )
+        return reply.memory
+    }
+
+    func acceptSuggestion(id: String) async throws -> MarbleMemory {
+        let reply: MemoryReply = try await postJSON(
+            "/api/memory/\(encoded(id))/accept",
+            body: Optional<String>.none
+        )
+        return reply.memory
+    }
+
+    func dismissSuggestion(id: String) async throws -> MarbleMemory {
+        let reply: MemoryReply = try await postJSON(
+            "/api/memory/\(encoded(id))/dismiss",
+            body: Optional<String>.none
+        )
+        return reply.memory
+    }
+
+    func routines() async throws -> MarbleRoutines {
+        try await fetch(try makeRequest(path: "/api/routines"))
+    }
+
+    func addRoutine(
+        title: String,
+        prompt: String,
+        schedule: String,
+        conversationId: String?
+    ) async throws -> MarbleRoutines {
+        struct Body: Encodable {
+            var title: String
+            var prompt: String
+            var schedule: String
+            var conversationId: String?
+        }
+        let reply: RoutinesReply = try await postJSON(
+            "/api/routines",
+            body: Body(
+                title: title,
+                prompt: prompt,
+                schedule: schedule,
+                conversationId: conversationId
+            )
+        )
+        return reply.routines
+    }
+
+    func runRoutine(id: String) async throws {
+        try await post("/api/routines/\(encoded(id))/run")
+    }
+
+    func setRoutine(id: String, enabled: Bool) async throws {
+        try await post("/api/routines/\(encoded(id))/\(enabled ? "enable" : "disable")")
+    }
+
+    func removeRoutine(id: String) async throws {
+        try await post("/api/routines/\(encoded(id))/remove")
+    }
+
+    // MARK: - Notifications and voice
+
+    struct NotificationUpdate: Encodable {
+        var webhookUrl: String
+        var webhookToken: String
+        var events: [String]
+        var apns: MarbleApns?
+    }
+
+    func notificationSettings() async throws -> MarbleNotificationSettings {
+        try await fetch(try makeRequest(path: "/api/notifications"))
+    }
+
+    func saveNotifications(_ update: NotificationUpdate) async throws -> MarbleNotificationSettings {
+        try await postJSON("/api/notifications", body: update)
+    }
+
+    func testNotification() async throws -> Bool {
+        let reply: OkReply = try await postJSON(
+            "/api/notifications/test",
+            body: Optional<String>.none
+        )
+        return reply.ok
+    }
+
+    func registerDevice(token: String, topic: String) async throws {
+        struct Body: Encodable {
+            var token: String
+            var platform: String
+            var topic: String
+        }
+        let _: OkReply = try await postJSON(
+            "/api/devices",
+            body: Body(token: token, platform: "ios", topic: topic)
+        )
+    }
+
+    func voice() async throws -> MarbleVoice {
+        try await fetch(try makeRequest(path: "/api/voice"))
+    }
+
+    func setVoice(enabled: Bool) async throws -> MarbleVoice {
+        struct Body: Encodable { var enabled: Bool }
+        return try await postJSON("/api/voice", body: Body(enabled: enabled))
+    }
+
+    func speak(text: String) async throws -> String {
+        struct Body: Encodable { var text: String }
+        struct Reply: Decodable { var spoken: String }
+        let reply: Reply = try await postJSON("/api/voice/speak", body: Body(text: text))
+        return reply.spoken
+    }
+
+    /// POST one JSON body and decode the reply.
+    private func postJSON<T: Decodable>(_ path: String, body: Encodable?) async throws -> T {
+        let data = try body.map { try JSONEncoder().encode($0) }
+        return try await fetch(try makeRequest(path: path, method: "POST", body: data))
+    }
+
     // MARK: - Events
 
     /// Long-lived server-sent events starting after `since`. The caller owns

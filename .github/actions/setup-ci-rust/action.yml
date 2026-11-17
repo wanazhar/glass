@@ -1,0 +1,43 @@
+name: Setup CI Rust
+description: Install a Rust toolchain, restore a shared build cache, and optional prebuilt Cargo tools.
+
+inputs:
+  components:
+    description: Extra rustup components, comma-separated
+    required: false
+    default: ""
+  shared-key:
+    description: rust-cache shared key for this job's feature/profile set
+    required: true
+  tools:
+    description: Prebuilt tools for taiki-e/install-action, comma-separated
+    required: false
+    default: ""
+  workspaces:
+    description: Extra rust-cache workspaces (e.g. "fuzz -> fuzz/target")
+    required: false
+    default: ""
+  toolchain:
+    description: Rust toolchain identifier
+    required: false
+    default: stable
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+    - name: Cache Cargo registry and target
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.shared-key }}
+        workspaces: ${{ inputs.workspaces }}
+        save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    - name: Install prebuilt Cargo tools
+      if: inputs.tools != ''
+      uses: taiki-e/install-action@v2
+      with:
+        tool: ${{ inputs.tools }}

@@ -1,23 +1,19 @@
 name: Glass Core performance smoke
 
+# Pull request performance budgets now run in glass-core-ci.yml on the Linux
+# verify job, reusing the core-release binary already built for smokes.
+# This workflow remains a standalone manual run that builds its own binary.
+
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "crates/glass-core/**"
-      - "crates/glass-tui/**"
-      - "crates/glass-mod-api/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "products/glass-core/extensions/**"
-      - "products/glass-core/web/**"
-      - "products/glass-core/scripts/check-performance.py"
-      - "products/glass-core/scripts/smoke-workflow-next.py"
-      - "products/glass-core/.github/workflows/performance.yml"
-      - ".github/workflows/glass-core-performance.yml"
 
 permissions:
   contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   performance:
@@ -28,7 +24,10 @@ jobs:
         working-directory: products/glass-core
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-ci-rust
+        with:
+          shared-key: core-release
       - name: Build standalone engine
         run: cargo build --profile core-release --locked --package glass-core --bin glass-core
       - name: Measure startup, terminal interaction, and history reading

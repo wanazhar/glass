@@ -88,7 +88,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 | Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Development Runtime](development-runtime.md), [Security](../SECURITY.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Opening a private Connect link | [Glass Core remote workspace](../products/glass-core/docs/connect.md#start) | Compact terminal links, origin-bound authentication, and recovery for incomplete links |
-| Running or building the self-hosted Marble product | [Glass Marble](marble.md) | [Host runtime protocol](../products/glass-core/docs/reference/runtime.md), [Security](../SECURITY.md) |
+| Running or building the self-hosted personal assistant | [Glass Marble](marble.md) | [Host runtime protocol](../products/glass-core/docs/reference/runtime.md), [Security](../SECURITY.md) |
 | Sharing a same-host desktop with an agent | [Glass Core remote workspace](../products/glass-core/docs/connect.md#shared-desktop) | [Quick XFCE and reusable GNOME](../products/glass-core/docs/connect.md#available-desktop-choices), [touch gestures, screenshots in nested projects, and responsive control handoffs](../products/glass-core/docs/connect.md#viewing-and-control), [transport measurements](../products/glass-core/docs/connect.md#transport-measurements) |
 | Providing sensitive input outside chat | [Glass Core remote workspace](../products/glass-core/docs/connect.md#authorization-and-http) | HTTPS owner-capability links and local masked terminal prompts |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
@@ -123,9 +123,10 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 - [Browser crate](../crates/glass-browser/README.md) and
   [Glass development crate](../crates/glass-dev/README.md) — package-level
   APIs and ownership.
-- [Glass Marble](marble.md) — self-hosted durable collaborator built on the
-  mixed-tool runtime, its governed workspace tools, token-protected HTTP
-  surface, event stream, responsive WebUI, and iOS client.
+- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant
+  built on the mixed-tool runtime: governance, presence, memory, routines,
+  webhook and APNs notifications, on-device voice, a token-protected HTTP
+  surface, a responsive WebUI, and the iOS client.
 - Workspace implementation packages: [`glass-core`](../crates/glass-core/README.md),
   [`glass-browser-core`](../crates/glass-browser-core/README.md),
   [`glass-marble`](../crates/glass-marble/README.md),

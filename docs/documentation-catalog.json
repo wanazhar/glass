@@ -5721,6 +5721,26 @@
         },
         {
           "level": "2",
+          "title": "The shape of the assistant",
+          "anchor": "the-shape-of-the-assistant"
+        },
+        {
+          "level": "2",
+          "title": "Always on",
+          "anchor": "always-on"
+        },
+        {
+          "level": "3",
+          "title": "Presence",
+          "anchor": "presence"
+        },
+        {
+          "level": "3",
+          "title": "Crash recovery",
+          "anchor": "crash-recovery"
+        },
+        {
+          "level": "2",
           "title": "Ownership boundary",
           "anchor": "ownership-boundary"
         },
@@ -5756,18 +5776,43 @@
         },
         {
           "level": "2",
-          "title": "Build and run",
-          "anchor": "build-and-run"
+          "title": "Memory",
+          "anchor": "memory"
         },
         {
           "level": "2",
-          "title": "Self-hosting over Tailscale",
-          "anchor": "self-hosting-over-tailscale"
+          "title": "Routines",
+          "anchor": "routines"
+        },
+        {
+          "level": "2",
+          "title": "Reaching you",
+          "anchor": "reaching-you"
+        },
+        {
+          "level": "3",
+          "title": "Webhook",
+          "anchor": "webhook"
+        },
+        {
+          "level": "3",
+          "title": "Apple Push",
+          "anchor": "apple-push"
+        },
+        {
+          "level": "2",
+          "title": "Voice, on device",
+          "anchor": "voice-on-device"
         },
         {
           "level": "2",
           "title": "HTTP surface",
           "anchor": "http-surface"
+        },
+        {
+          "level": "2",
+          "title": "Self-hosting over Tailscale",
+          "anchor": "self-hosting-over-tailscale"
         },
         {
           "level": "2",
@@ -5778,6 +5823,11 @@
           "level": "2",
           "title": "iOS client",
           "anchor": "ios-client"
+        },
+        {
+          "level": "2",
+          "title": "Build and run",
+          "anchor": "build-and-run"
         },
         {
           "level": "2",

@@ -8,9 +8,12 @@ use crate::Approval;
 use crate::control::ControlProfile;
 use crate::conversation::ApprovalInbox;
 use crate::events::{EventBus, TurnEvent};
+use crate::memory::{self, MemoryCommand};
+use crate::notify::{self, ApnsSettings, Notification};
 use crate::state::{PendingApproval, ProductState};
 use crate::store::StateStore;
-use crate::worker::{TurnCommand, TurnRequest};
+use crate::voice;
+use crate::worker::{TurnCommand, TurnRequest, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -334,9 +337,13 @@ impl MarbleServer {
                 );
         }
         if head.method == "GET" && path == "/healthz" {
-            let (revision, control) = {
+            let (revision, control, presence) = {
                 let guard = self.lock_state();
-                (guard.revision, guard.control.clone())
+                (
+                    guard.revision,
+                    guard.control.clone(),
+                    guard.presence.document(&guard),
+                )
             };
             return Response::json(
                 200,
@@ -348,6 +355,10 @@ impl MarbleServer {
                     "profile": control.profile,
                     "paused": control.paused,
                     "queued": control.queue.len(),
+                    "status": presence["status"],
+                    "uptimeSeconds": presence["uptimeSeconds"],
+                    "routines": presence["routines"],
+                    "memories": presence["memories"],
                 }),
             );
         }
@@ -393,6 +404,81 @@ impl MarbleServer {
         {
             return self.revoke_grant(grant_id);
         }
+        if head.method == "GET" && path == "/api/presence" {
+            return self.presence_response();
+        }
+        if head.method == "GET" && path == "/api/memory" {
+            return self.memory_response();
+        }
+        if head.method == "POST" && path == "/api/memory" {
+            return self.remember_route(body);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/memory/")
+        {
+            if let Some(id) = rest.strip_suffix("/forget") {
+                return self.forget_memory(id);
+            }
+            if let Some(id) = rest.strip_suffix("/accept") {
+                return self.accept_suggestion(id);
+            }
+            if let Some(id) = rest.strip_suffix("/dismiss") {
+                return self.dismiss_suggestion(id);
+            }
+        }
+        if head.method == "GET" && path == "/api/routines" {
+            return self.routines_response();
+        }
+        if head.method == "POST" && path == "/api/routines" {
+            return self.add_routine(body);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/routines/")
+        {
+            if let Some(id) = rest.strip_suffix("/run") {
+                return self.run_routine(id);
+            }
+            if let Some(id) = rest.strip_suffix("/enable") {
+                return self.set_routine_enabled(id, true);
+            }
+            if let Some(id) = rest.strip_suffix("/disable") {
+                return self.set_routine_enabled(id, false);
+            }
+            if let Some(id) = rest.strip_suffix("/remove") {
+                return self.remove_routine(id);
+            }
+        }
+        if head.method == "GET" && path == "/api/notifications" {
+            return self.notifications_response();
+        }
+        if head.method == "POST" && path == "/api/notifications" {
+            return self.save_notifications(body);
+        }
+        if head.method == "POST" && path == "/api/notifications/test" {
+            return self.test_notification();
+        }
+        if head.method == "GET" && path == "/api/devices" {
+            return self.devices_response();
+        }
+        if head.method == "POST" && path == "/api/devices" {
+            return self.register_device(body);
+        }
+        if head.method == "POST"
+            && let Some(token) = path
+                .strip_prefix("/api/devices/")
+                .and_then(|rest| rest.strip_suffix("/remove"))
+        {
+            return self.remove_device(token);
+        }
+        if head.method == "GET" && path == "/api/voice" {
+            return self.voice_response();
+        }
+        if head.method == "POST" && path == "/api/voice" {
+            return self.save_voice(body);
+        }
+        if head.method == "POST" && path == "/api/voice/speak" {
+            return self.speak(body);
+        }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/tasks/")
             && let Some(task_id) = rest.strip_suffix("/cancel")
@@ -429,9 +515,587 @@ impl MarbleServer {
     }
 
     fn state_response(&self) -> Response {
-        let mut snapshot = self.lock_state().clone();
-        snapshot.approvals = self.approvals.pending();
-        Response::json(200, snapshot.encode())
+        let mut guard = self.lock_state();
+        guard.approvals = self.approvals.pending();
+        let snapshot = guard.clone();
+        drop(guard);
+        let mut value = snapshot.encode();
+        if let Value::Object(ref mut map) = value {
+            // Derived documents: the raw counters are not the whole story.
+            map.insert("presence".into(), snapshot.presence.document(&snapshot));
+            map.insert("memory".into(), snapshot.memory.document());
+            map.insert("routines".into(), snapshot.routines.document());
+            map.insert("notifications".into(), snapshot.notifications.document());
+            map.insert("voice".into(), snapshot.voice.document());
+            map.insert(
+                "devices".into(),
+                Value::Array(
+                    snapshot
+                        .devices
+                        .iter()
+                        .map(|device| {
+                            json!({
+                                "tokenPrefix": device.token.chars().take(8).collect::<String>(),
+                                "platform": device.platform,
+                                "topic": device.topic,
+                                "lastSeenAt": device.last_seen_at,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        Response::json(200, value)
+    }
+
+    fn presence_response(&self) -> Response {
+        let guard = self.lock_state();
+        Response::json(200, guard.presence.document(&guard))
+    }
+
+    fn memory_response(&self) -> Response {
+        let guard = self.lock_state();
+        Response::json(200, guard.memory.document())
+    }
+
+    /// `POST /api/memory` — remember one statement explicitly.
+    fn remember_route(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let kind = parsed.get("kind").and_then(Value::as_str).unwrap_or("fact");
+        self.remember_text(text, kind, "", true)
+    }
+
+    fn remember_text(
+        &self,
+        text: &str,
+        kind: &str,
+        conversation_id: &str,
+        explicit: bool,
+    ) -> Response {
+        let outcome = {
+            let mut guard = self.lock_state();
+            let outcome = guard.memory.remember(text, kind, conversation_id, explicit);
+            if outcome.is_ok() {
+                guard.bump();
+            }
+            outcome
+        };
+        match outcome {
+            Ok(fact) => {
+                self.save_state();
+                self.events.publish(
+                    conversation_id,
+                    "",
+                    "memory",
+                    json!({"remembered": fact.id, "text": fact.text, "kind": fact.kind}),
+                );
+                Response::json(
+                    200,
+                    json!({
+                        "ok": true,
+                        "remembered": fact,
+                        "memory": self.lock_state().memory.document(),
+                    }),
+                )
+            }
+            Err(reason) => {
+                Response::json(400, json!({"error": "invalid_memory", "message": reason}))
+            }
+        }
+    }
+
+    fn forget_memory(&self, id: &str) -> Response {
+        let forgotten = {
+            let mut guard = self.lock_state();
+            let forgotten = guard.memory.forget(id);
+            if forgotten {
+                guard.bump();
+            }
+            forgotten
+        };
+        if forgotten {
+            self.save_state();
+            self.events
+                .publish("", "", "memory", json!({"forgotten": id}));
+        }
+        Response::json(
+            if forgotten { 200 } else { 404 },
+            json!({"ok": forgotten, "memory": self.lock_state().memory.document()}),
+        )
+    }
+
+    /// Explicit "forget: …" command: drop every fact matching the text.
+    fn forget_text(&self, query: &str) -> Response {
+        let forgotten = {
+            let mut guard = self.lock_state();
+            let forgotten = guard.memory.forget_matching(query);
+            if forgotten > 0 {
+                guard.bump();
+            }
+            forgotten
+        };
+        if forgotten > 0 {
+            self.save_state();
+        }
+        Response::json(
+            200,
+            json!({
+                "ok": true,
+                "forgotten": forgotten,
+                "memory": self.lock_state().memory.document(),
+            }),
+        )
+    }
+
+    fn accept_suggestion(&self, id: &str) -> Response {
+        let fact = {
+            let mut guard = self.lock_state();
+            let fact = guard.memory.accept(id);
+            if fact.is_some() {
+                guard.bump();
+            }
+            fact
+        };
+        match fact {
+            Some(fact) => {
+                self.save_state();
+                self.events.publish(
+                    "",
+                    "",
+                    "memory",
+                    json!({"remembered": fact.id, "text": fact.text}),
+                );
+                Response::json(
+                    200,
+                    json!({"ok": true, "remembered": fact, "memory": self.lock_state().memory.document()}),
+                )
+            }
+            None => Response::json(404, json!({"error": "unknown_suggestion", "id": id})),
+        }
+    }
+
+    fn dismiss_suggestion(&self, id: &str) -> Response {
+        let dismissed = {
+            let mut guard = self.lock_state();
+            let dismissed = guard.memory.dismiss(id);
+            if dismissed {
+                guard.bump();
+            }
+            dismissed
+        };
+        if dismissed {
+            self.save_state();
+        }
+        Response::json(
+            if dismissed { 200 } else { 404 },
+            json!({"ok": dismissed, "memory": self.lock_state().memory.document()}),
+        )
+    }
+
+    fn routines_response(&self) -> Response {
+        let guard = self.lock_state();
+        Response::json(200, guard.routines.document())
+    }
+
+    fn add_routine(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let title = parsed
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let prompt = parsed
+            .get("prompt")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let schedule = parsed
+            .get("schedule")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let conversation_id = parsed
+            .get("conversationId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        let outcome = {
+            let mut guard = self.lock_state();
+            let outcome = guard.routines.add(title, prompt, schedule, conversation_id);
+            if outcome.is_ok() {
+                guard.bump();
+            }
+            outcome
+        };
+        match outcome {
+            Ok(routine) => {
+                self.save_state();
+                self.events.publish(
+                    "",
+                    "",
+                    "routine",
+                    json!({"routineId": routine.id, "title": routine.title, "created": true}),
+                );
+                Response::json(
+                    200,
+                    json!({"ok": true, "routine": routine, "routines": self.lock_state().routines.document()}),
+                )
+            }
+            Err(reason) => {
+                Response::json(400, json!({"error": "invalid_routine", "message": reason}))
+            }
+        }
+    }
+
+    /// Admit one routine now, honouring the pause queue like any other message.
+    fn run_routine(&self, id: &str) -> Response {
+        let routine = {
+            let guard = self.lock_state();
+            guard.routines.get(id).cloned()
+        };
+        let Some(routine) = routine else {
+            return Response::json(404, json!({"error": "unknown_routine", "id": id}));
+        };
+        let paused = self.lock_state().control.paused;
+        if paused {
+            let queued = {
+                let mut guard = self.lock_state();
+                let outcome = guard
+                    .control
+                    .enqueue(routine.conversation_id.clone(), routine.prompt.clone());
+                if outcome.is_ok() {
+                    guard.routines.note_run(&routine.id, "", now_millis());
+                    guard.routines.note_status(&routine.id, "queued");
+                    guard.bump();
+                }
+                outcome
+            };
+            return match queued {
+                Ok(entry) => {
+                    self.save_state();
+                    Response::json(
+                        202,
+                        json!({"queued": true, "queueId": entry.id, "routines": self.lock_state().routines.document()}),
+                    )
+                }
+                Err(reason) => {
+                    Response::json(409, json!({"error": "queue_full", "message": reason}))
+                }
+            };
+        }
+        let mut request = TurnRequest::new(routine.conversation_id.clone(), routine.prompt.clone());
+        request.routine_id = Some(routine.id.clone());
+        if self
+            .turn_tx
+            .send(TurnCommand {
+                request,
+                accepted: mpsc::channel().0,
+            })
+            .is_err()
+        {
+            return Response::error(503, "turn_worker_unavailable");
+        }
+        // The worker records the run once the durable task exists, so a manual
+        // run and a scheduled one are counted exactly once.
+        self.save_state();
+        self.events.publish(
+            "",
+            "",
+            "routine",
+            json!({"routineId": routine.id, "title": routine.title, "queued": false}),
+        );
+        Response::json(
+            202,
+            json!({"admitted": true, "routines": self.lock_state().routines.document()}),
+        )
+    }
+
+    fn set_routine_enabled(&self, id: &str, enabled: bool) -> Response {
+        let changed = {
+            let mut guard = self.lock_state();
+            let changed = guard.routines.set_enabled(id, enabled);
+            if changed {
+                guard.bump();
+            }
+            changed
+        };
+        if changed {
+            self.save_state();
+        }
+        Response::json(
+            if changed { 200 } else { 404 },
+            json!({"ok": changed, "routines": self.lock_state().routines.document()}),
+        )
+    }
+
+    fn remove_routine(&self, id: &str) -> Response {
+        let removed = {
+            let mut guard = self.lock_state();
+            let removed = guard.routines.remove(id);
+            if removed {
+                guard.bump();
+            }
+            removed
+        };
+        if removed {
+            self.save_state();
+        }
+        Response::json(
+            if removed { 200 } else { 404 },
+            json!({"ok": removed, "routines": self.lock_state().routines.document()}),
+        )
+    }
+
+    fn notifications_response(&self) -> Response {
+        let guard = self.lock_state();
+        let mut document = guard.notifications.document();
+        if let Value::Object(ref mut map) = document {
+            map.insert(
+                "devices".into(),
+                Value::Array(
+                    guard
+                        .devices
+                        .iter()
+                        .map(|device| {
+                            json!({
+                                "tokenPrefix": device.token.chars().take(8).collect::<String>(),
+                                "platform": device.platform,
+                                "topic": device.topic,
+                                "lastSeenAt": device.last_seen_at,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        Response::json(200, document)
+    }
+
+    fn save_notifications(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let mut settings = self.lock_state().notifications.clone();
+        if let Some(url) = parsed.get("webhookUrl").and_then(Value::as_str) {
+            let url = url.trim();
+            if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Response::json(
+                    400,
+                    json!({"error": "invalid_webhook", "message": "use an http:// or https:// URL"}),
+                );
+            }
+            settings.webhook_url = url.to_string();
+        }
+        if let Some(token) = parsed.get("webhookToken").and_then(Value::as_str) {
+            settings.webhook_token = token.trim().to_string();
+        }
+        if let Some(events) = parsed.get("events").and_then(Value::as_array) {
+            let mut selected: Vec<String> = Vec::new();
+            for event in events {
+                let Some(name) = event.as_str() else { continue };
+                if notify::NOTIFY_EVENTS.contains(&name)
+                    && !selected.iter().any(|known| known == name)
+                {
+                    selected.push(name.to_string());
+                }
+            }
+            settings.events = selected;
+        }
+        if let Some(apns) = parsed.get("apns") {
+            if apns.is_null() {
+                settings.apns = None;
+            } else {
+                let existing = settings.apns.clone().unwrap_or_default();
+                let field = |name: &str, fallback: String| {
+                    apns.get(name)
+                        .and_then(Value::as_str)
+                        .map(|value| value.trim().to_string())
+                        .unwrap_or(fallback)
+                };
+                settings.apns = Some(ApnsSettings {
+                    key_file: field("keyFile", existing.key_file),
+                    team_id: field("teamId", existing.team_id),
+                    key_id: field("keyId", existing.key_id),
+                    topic: field("topic", existing.topic),
+                    environment: field("environment", existing.environment),
+                });
+            }
+        }
+        {
+            let mut guard = self.lock_state();
+            guard.notifications = settings;
+            guard.bump();
+        }
+        self.save_state();
+        self.notifications_response()
+    }
+
+    fn test_notification(&self) -> Response {
+        let (settings, devices) = {
+            let guard = self.lock_state();
+            (guard.notifications.clone(), guard.devices.clone())
+        };
+        let mut probe = settings;
+        probe.events = vec!["test".into()];
+        let reports: Vec<Value> = notify::deliver(
+            &probe,
+            &devices,
+            &Notification::new(
+                "test",
+                "Marble test",
+                "If you can read this, Marble can reach you.",
+                "",
+                "",
+            ),
+        )
+        .into_iter()
+        .map(|report| json!({"channel": report.channel, "ok": report.ok, "detail": report.detail}))
+        .collect();
+        Response::json(
+            200,
+            json!({
+                "ok": reports.iter().any(|report| report["ok"] == json!(true)),
+                "delivered": reports,
+            }),
+        )
+    }
+
+    fn devices_response(&self) -> Response {
+        let guard = self.lock_state();
+        Response::json(
+            200,
+            json!({
+                "devices": Value::Array(
+                    guard
+                        .devices
+                        .iter()
+                        .map(|device| {
+                            json!({
+                                "tokenPrefix": device.token.chars().take(8).collect::<String>(),
+                                "platform": device.platform,
+                                "topic": device.topic,
+                                "lastSeenAt": device.last_seen_at,
+                            })
+                        })
+                        .collect(),
+                ),
+                "limit": notify::DEVICE_LIMIT,
+            }),
+        )
+    }
+
+    fn register_device(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let token = parsed
+            .get("token")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let platform = parsed
+            .get("platform")
+            .and_then(Value::as_str)
+            .unwrap_or("ios");
+        let topic = parsed
+            .get("topic")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let outcome = {
+            let mut guard = self.lock_state();
+            let outcome = notify::upsert_device(&mut guard.devices, token, platform, topic);
+            if outcome.is_ok() {
+                guard.bump();
+            }
+            outcome
+        };
+        match outcome {
+            Ok(device) => {
+                self.save_state();
+                Response::json(
+                    200,
+                    json!({"ok": true, "device": {"tokenPrefix": device.token.chars().take(8).collect::<String>(), "platform": device.platform}}),
+                )
+            }
+            Err(reason) => {
+                Response::json(400, json!({"error": "invalid_device", "message": reason}))
+            }
+        }
+    }
+
+    fn remove_device(&self, token: &str) -> Response {
+        let needle = token.trim().to_ascii_lowercase();
+        let removed = {
+            let mut guard = self.lock_state();
+            let before = guard.devices.len();
+            guard
+                .devices
+                .retain(|device| !device.token.starts_with(&needle) || needle.is_empty());
+            let removed = guard.devices.len() != before;
+            if removed {
+                guard.bump();
+            }
+            removed
+        };
+        if removed {
+            self.save_state();
+        }
+        Response::json(if removed { 200 } else { 404 }, json!({"ok": removed}))
+    }
+
+    fn voice_response(&self) -> Response {
+        let guard = self.lock_state();
+        Response::json(200, guard.voice.document())
+    }
+
+    fn save_voice(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let mut voice = self.lock_state().voice.clone();
+        if let Some(enabled) = parsed.get("enabled").and_then(Value::as_bool) {
+            voice.enabled = enabled;
+        }
+        if let Some(rate) = parsed.get("rate").and_then(Value::as_f64) {
+            voice.rate = rate as f32;
+        }
+        if let Some(name) = parsed.get("voice").and_then(Value::as_str) {
+            voice.voice = name.to_string();
+        }
+        let voice = voice.normalize();
+        {
+            let mut guard = self.lock_state();
+            guard.voice = voice;
+            guard.bump();
+        }
+        self.save_state();
+        self.voice_response()
+    }
+
+    fn speak(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let Some(text) = parsed.get("text").and_then(Value::as_str) else {
+            return Response::error(400, "invalid_text");
+        };
+        Response::json(
+            200,
+            json!({
+                "spoken": voice::spoken_form(text, voice::SPOKEN_LIMIT),
+                "provider": "on-device",
+            }),
+        )
     }
 
     fn control_document(&self) -> Value {
@@ -643,6 +1307,20 @@ impl MarbleServer {
             Some(Value::String(id)) if valid_conversation_id(id) => Some(id.clone()),
             Some(_) => return Response::error(400, "invalid_conversation_id"),
         };
+        // Explicit memory instructions are answered by the product itself: a
+        // remembered fact is a durable write, not a model turn.
+        match memory::parse_command(&text) {
+            Some(MemoryCommand::Remember { text: fact, kind }) => {
+                return self.remember_text(
+                    &fact,
+                    &kind,
+                    conversation_id.as_deref().unwrap_or_default(),
+                    true,
+                );
+            }
+            Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),
+            None => {}
+        }
         if self.lock_state().control.paused {
             // Paused admission is a queue, not a rejection: the message keeps its
             // place, and resuming dispatches it in arrival order.

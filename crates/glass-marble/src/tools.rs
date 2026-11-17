@@ -13,6 +13,7 @@ use std::path::{Component, Path, PathBuf};
 pub const WORKSPACE_LIST: &str = "glass.workspace.list";
 pub const WORKSPACE_READ: &str = "glass.workspace.read";
 pub const WORKSPACE_WRITE: &str = "glass.workspace.write";
+pub const WORKSPACE_SEARCH: &str = "glass.workspace.search";
 
 /// Whether one governed tool changes the workspace.
 pub fn is_write_tool(name: &str) -> bool {
@@ -25,6 +26,30 @@ pub const MAX_READ_BYTES: usize = 256 * 1024;
 pub const MAX_WRITE_BYTES: usize = 256 * 1024;
 /// Bounded directory listing.
 pub const MAX_LIST_ENTRIES: usize = 500;
+/// Bounded search: matches returned, files opened, and bytes read.
+pub const MAX_SEARCH_MATCHES: usize = 100;
+const MAX_SEARCH_FILES: usize = 2_000;
+const MAX_SEARCH_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SEARCH_LINE: usize = 200;
+
+/// Directories and files a search never reads: build output, dependencies, and
+/// revision or secret metadata that the control layer also refuses.
+fn search_skips(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".ssh"
+            | "node_modules"
+            | "target"
+            | ".next"
+            | "dist"
+            | "build"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+    ) || name == ".env"
+        || name.starts_with(".env.")
+}
 
 /// Result of executing one governed host tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +121,23 @@ impl ToolRouter {
                 }),
             },
             ToolDefinition {
+                name: WORKSPACE_SEARCH.into(),
+                description: "Search workspace files for a case-insensitive text match and \
+                     return file, line number, and the matching line. Skips `.git`, `.ssh`, \
+                     `.env*`, dependencies, and build output."
+                    .into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Text to find, case-insensitive."},
+                        "path": {"type": "string", "description": "File or directory relative to the workspace root; defaults to the root."},
+                        "maxResults": {"type": "integer", "description": "Matches to return, 1 to 100."}
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDefinition {
                 name: WORKSPACE_WRITE.into(),
                 description: "Write a UTF-8 workspace file, creating parent directories. \
                      Replaces the whole file."
@@ -118,6 +160,7 @@ impl ToolRouter {
         match name {
             WORKSPACE_LIST => self.list(arguments),
             WORKSPACE_READ => self.read(arguments),
+            WORKSPACE_SEARCH => self.search(arguments),
             WORKSPACE_WRITE => self.write(arguments),
             other => ToolOutcome::error(format!("host has no tool named {other}")),
         }
@@ -257,6 +300,109 @@ impl ToolRouter {
         ToolOutcome::ok(text)
     }
 
+    fn search(&self, arguments: &Value) -> ToolOutcome {
+        let query = arguments
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if query.is_empty() {
+            return ToolOutcome::error("query must be a nonempty string");
+        }
+        if query.chars().count() > 200 {
+            return ToolOutcome::error("query is longer than 200 characters");
+        }
+        let root = match self.resolve(arguments) {
+            Ok(path) => path,
+            Err(outcome) => return outcome,
+        };
+        let limit = arguments
+            .get("maxResults")
+            .and_then(Value::as_u64)
+            .unwrap_or(40)
+            .clamp(1, MAX_SEARCH_MATCHES as u64) as usize;
+        let needle = query.to_ascii_lowercase();
+        let mut matches = Vec::new();
+        let mut files = 0usize;
+        let mut bytes_read = 0usize;
+        let mut queue = std::collections::VecDeque::from([root.clone()]);
+        'walk: while let Some(current) = queue.pop_front() {
+            if matches.len() >= limit || files >= MAX_SEARCH_FILES || bytes_read >= MAX_SEARCH_BYTES
+            {
+                break;
+            }
+            let Ok(metadata) = fs::metadata(&current) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                let Ok(entries) = fs::read_dir(&current) else {
+                    continue;
+                };
+                let mut children: Vec<PathBuf> = entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.file_name()
+                            .map(|name| !search_skips(&name.to_string_lossy()))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                children.sort();
+                queue.extend(children);
+                continue;
+            }
+            files += 1;
+            if metadata.len() > 512 * 1024 {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&current) else {
+                continue;
+            };
+            if bytes.iter().take(1024).any(|byte| *byte == 0) {
+                continue;
+            }
+            bytes_read += bytes.len();
+            let text = String::from_utf8_lossy(&bytes);
+            for (index, line) in text.lines().enumerate() {
+                if !line.to_ascii_lowercase().contains(&needle) {
+                    continue;
+                }
+                let trimmed = line.trim();
+                let trimmed = if trimmed.chars().count() > MAX_SEARCH_LINE {
+                    let short: String = trimmed.chars().take(MAX_SEARCH_LINE).collect();
+                    format!("{short}…")
+                } else {
+                    trimmed.to_string()
+                };
+                matches.push(format!(
+                    "{}:{}: {trimmed}",
+                    self.display(&current),
+                    index + 1
+                ));
+                if matches.len() >= limit {
+                    break 'walk;
+                }
+            }
+        }
+        if matches.is_empty() {
+            return ToolOutcome::ok(format!(
+                "no matches for {query} under {}",
+                self.display(&root)
+            ));
+        }
+        let mut text = format!(
+            "{} match{} for {query} under {}:\n{}",
+            matches.len(),
+            if matches.len() == 1 { "" } else { "es" },
+            self.display(&root),
+            matches.join("\n")
+        );
+        if matches.len() >= limit {
+            text.push_str(&format!("\n(stopped at {limit} matches)"));
+        }
+        ToolOutcome::ok(text)
+    }
+
     fn write(&self, arguments: &Value) -> ToolOutcome {
         let Some(content) = arguments.get("content").and_then(Value::as_str) else {
             return ToolOutcome::error("content must be a string");
@@ -356,6 +502,46 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("deep/file.txt")).unwrap(),
             "durable"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_finds_matches_with_line_numbers_and_skips_secrets() {
+        let root = workspace("search");
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(
+            root.join("docs/notes.md"),
+            "first\nGlass Marble lives here\n",
+        )
+        .unwrap();
+        fs::write(root.join("other.txt"), "nothing to see\n").unwrap();
+        fs::write(root.join(".env"), "MARBLE=glass\n").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/index.js"), "glass marble\n").unwrap();
+        let router = ToolRouter::new(&root).unwrap();
+
+        let outcome = router.execute(WORKSPACE_SEARCH, &json!({"query": "glass marble"}));
+        assert!(!outcome.is_error, "{}", outcome.text);
+        assert!(
+            outcome.text.contains("docs/notes.md:2:"),
+            "{}",
+            outcome.text
+        );
+        assert!(!outcome.text.contains("node_modules"), "{}", outcome.text);
+        assert!(!outcome.text.contains("MARBLE=glass"), "{}", outcome.text);
+
+        let empty = router.execute(WORKSPACE_SEARCH, &json!({"query": "missing"}));
+        assert!(empty.text.starts_with("no matches"));
+        assert!(
+            router
+                .execute(WORKSPACE_SEARCH, &json!({"query": ""}))
+                .is_error
+        );
+        assert!(
+            router
+                .execute(WORKSPACE_SEARCH, &json!({"query": "x", "path": "../"}))
+                .is_error
         );
         let _ = fs::remove_dir_all(&root);
     }

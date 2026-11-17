@@ -2425,6 +2425,7 @@ fn run(
     let statuses = Rc::new(RefCell::new(BTreeMap::<String, bool>::new()));
     let emit_status = statuses.clone();
     let durable = c.durable.as_ref();
+    let task_id = durable.as_ref().map(|context| context.task_id().to_string());
     let mut agent=Agent::new(provider.as_ref(),&mut c.session,&mut c.state,&[],&mut c.extensions,&c.cfg.workspace)
         .with_image_input(c.cfg.image_input)
         .with_prompt(c.instructions.clone(),None,None)
@@ -2441,6 +2442,15 @@ fn run(
                 Progress::Waiting=>publish("waiting",json!({})),
                 Progress::Compacted{kept,dropped}=>publish("compacted",json!({"kept":kept,"dropped":dropped})),
                 Progress::Steered(text)=>publish("steered",json!({"text":text})),
+                Progress::Retrying { attempt, delay_s, reason } => {
+                    let task = task_id.clone().unwrap_or_default();
+                    event(
+                        &sid,
+                        turn,
+                        "task_retry",
+                        task_retry_event(&task, attempt, delay_s, &reason),
+                    );
+                }
                 Progress::ProviderFailure(text)=>publish("error",json!({"message":text})),
                 Progress::ProviderNotice(text)=>publish("notice",json!({"text":text})),
                 _=>{},
@@ -2556,6 +2566,14 @@ fn run(
     Ok(())
 }
 
+fn task_retry_event(task_id: &str, attempt: u8, delay_s: u64, reason: &str) -> Value {
+    json!({
+        "taskId": task_id,
+        "attempt": attempt,
+        "delayS": delay_s,
+        "reason": reason,
+    })
+}
 fn settlement_reason(disconnected: bool, stop: crate::agent::Stop) -> &'static str {
     if disconnected {
         "interrupted"
@@ -3284,6 +3302,15 @@ mod tests {
             settlement_reason(false, crate::agent::Stop::Finished),
             "completed"
         );
+    }
+
+    #[test]
+    fn task_retry_event_carries_task_attempt_backoff_and_cause() {
+        let data = task_retry_event("task-1", 2, 5, "rate_limit");
+        assert_eq!(data["taskId"].as_str(), Some("task-1"));
+        assert_eq!(data["attempt"].as_u64(), Some(2));
+        assert_eq!(data["delayS"].as_u64(), Some(5));
+        assert_eq!(data["reason"].as_str(), Some("rate_limit"));
     }
 
     #[test]

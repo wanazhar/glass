@@ -1,0 +1,18 @@
+[package]
+name = "glass-marble"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Durable Glass-backed conversational harness"
+
+[[bin]]
+name = "glass-marble"
+path = "src/main.rs"
+
+[dependencies]
+glass-runtime-client = { path = "../glass-runtime-client" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "wrap_help"] }

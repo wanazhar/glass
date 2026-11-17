@@ -4,13 +4,21 @@
 //! through one channel. Each command is accepted with its durable task id as
 //! soon as the runtime admits it, which lets the HTTP surface answer at once
 //! and stream the rest.
+//!
+//! The worker is also where the assistant behaves like an always-on assistant
+//! rather than a request handler: it carries remembered facts into each turn,
+//! notices details worth remembering, records presence, and notifies the person
+//! when a turn lands or fails.
 
 use crate::events::EventBus;
+use crate::memory;
+use crate::notify::{self, Notification};
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::{
     InboundMessage, MarbleError, MarbleTurn, TurnOptions, conversation::Conversation, to_turn_input,
 };
+use glass_runtime_client::{TurnInput, protocol::ContextBlock};
 use serde_json::json;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
@@ -23,6 +31,8 @@ pub struct TurnRequest {
     pub text: String,
     pub request_id: String,
     pub cancel: Arc<AtomicBool>,
+    /// Set when a routine, not a person, admitted this turn.
+    pub routine_id: Option<String>,
 }
 
 /// Durable identity of an admitted turn.
@@ -99,13 +109,15 @@ fn run_command(
     timeout: Duration,
 ) {
     let TurnCommand { request, accepted } = command;
+    let prompt = request.text.clone();
     let turn = MarbleTurn {
         conversation_id: request.conversation_id.clone(),
         request_id: request.request_id.clone(),
-        input: to_turn_input(&InboundMessage::new(&request.text)),
+        input: turn_input(state, &prompt),
     };
     let mut sender = Some(accepted);
     let mut accepted_turn: Option<AcceptedTurn> = None;
+    let routine_id = request.routine_id.clone();
     let mut on_accepted = |conversation_id: &str, task_id: &str| {
         let identity = AcceptedTurn {
             conversation_id: conversation_id.to_string(),
@@ -117,9 +129,10 @@ fn run_command(
         }
         let snapshot = {
             let mut guard = lock(state);
+            guard.presence.mark_turn();
             guard.bump();
             let now = now_millis();
-            let title = truncate(&request.text, 64);
+            let title = truncate(&prompt, 64);
             let record = guard.conversation_mut(conversation_id);
             if record.title.is_empty() {
                 record.title = title;
@@ -133,16 +146,21 @@ fn run_command(
                 conversation_id: conversation_id.to_string(),
                 status: "running".into(),
                 owner: "agent".into(),
-                prompt: request.text.clone(),
+                prompt: prompt.clone(),
                 at: now,
+                routine_id: routine_id.clone().unwrap_or_default(),
             });
             guard.push_transcript(TranscriptEntry {
                 conversation_id: conversation_id.to_string(),
                 kind: "user".into(),
-                text: request.text.clone(),
+                text: prompt.clone(),
                 task_id: task_id.to_string(),
                 at: now,
             });
+            if let Some(routine_id) = &routine_id {
+                guard.routines.note_run(routine_id, task_id, now);
+            }
+            guard.memory.note_use();
             guard.clone()
         };
         if let Some(store) = store {
@@ -166,8 +184,9 @@ fn run_command(
     );
     match result {
         Ok(reply) => {
-            let snapshot = {
+            let (snapshot, suggestion) = {
                 let mut guard = lock(state);
+                guard.presence.mark_settled();
                 guard.bump();
                 let now = now_millis();
                 let status = if reply.cancelled {
@@ -195,7 +214,15 @@ fn run_command(
                         at: now,
                     });
                 }
-                guard.clone()
+                guard.routines.note_settled(&reply.task_id, status);
+                // A durable detail is offered, never memorized silently.
+                let suggestion = memory::detect(&prompt).and_then(|(text, kind, reason)| {
+                    guard
+                        .memory
+                        .suggest(&text, &kind, &reason, &reply.conversation_id)
+                        .map(|suggestion| (suggestion, kind))
+                });
+                (guard.clone(), suggestion)
             };
             if let Some(store) = store {
                 store::persist(store, &snapshot);
@@ -209,6 +236,48 @@ fn run_command(
                     "status": if reply.cancelled { "cancelled" } else { "completed" },
                 }),
             );
+            if let Some((suggestion, kind)) = suggestion {
+                events.publish(
+                    &reply.conversation_id,
+                    &reply.task_id,
+                    "memory_suggestion",
+                    json!({
+                        "suggestionId": suggestion.id,
+                        "text": suggestion.text,
+                        "kind": kind,
+                    }),
+                );
+                notify::spawn_delivery(
+                    snapshot.notifications.clone(),
+                    snapshot.devices.clone(),
+                    Notification::new(
+                        "memory",
+                        "Remember this?",
+                        format!("Marble can remember: {}", suggestion.text),
+                        &reply.conversation_id,
+                        &reply.task_id,
+                    ),
+                );
+            }
+            if !reply.cancelled {
+                let title = snapshot
+                    .conversations
+                    .iter()
+                    .find(|record| record.id == reply.conversation_id)
+                    .map(|record| record.title.clone())
+                    .unwrap_or_else(|| "Marble".into());
+                notify::spawn_delivery(
+                    snapshot.notifications.clone(),
+                    snapshot.devices.clone(),
+                    Notification::new(
+                        "settled",
+                        title,
+                        reply.preview(220),
+                        &reply.conversation_id,
+                        &reply.task_id,
+                    ),
+                );
+            }
         }
         Err(error) => {
             if let Some(sender) = sender.take() {
@@ -218,8 +287,10 @@ fn run_command(
             if let Some(identity) = &accepted_turn {
                 let snapshot = {
                     let mut guard = lock(state);
+                    guard.presence.mark_settled();
                     guard.bump();
                     guard.set_task_status(&identity.task_id, "failed");
+                    guard.routines.note_settled(&identity.task_id, "failed");
                     guard.push_transcript(TranscriptEntry {
                         conversation_id: identity.conversation_id.clone(),
                         kind: "system".into(),
@@ -238,11 +309,36 @@ fn run_command(
                     "error",
                     json!({"message": error.to_string(), "revision": snapshot.revision}),
                 );
+                notify::spawn_delivery(
+                    snapshot.notifications.clone(),
+                    snapshot.devices.clone(),
+                    Notification::new(
+                        "failed",
+                        "Marble hit a problem",
+                        error.to_string(),
+                        &identity.conversation_id,
+                        &identity.task_id,
+                    ),
+                );
             } else {
-                events.publish("", "", "error", json!({"message": error.to_string()}));
+                events.publish("", "", "error", json!({ "message": error.to_string() }));
             }
         }
     }
+}
+
+/// Carry remembered facts into the turn as context, so memory is used rather
+/// than merely stored.
+fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
+    let mut input = to_turn_input(&InboundMessage::new(text));
+    let block = {
+        let guard = lock(state);
+        guard.memory.context_block()
+    };
+    if let Some(block) = block {
+        input.context.push(ContextBlock::Text { text: block });
+    }
+    input
 }
 
 /// Convenience constructor for one inbound message.
@@ -253,6 +349,7 @@ impl TurnRequest {
             text: text.into(),
             request_id: crate::next_request_id(),
             cancel: Arc::new(AtomicBool::new(false)),
+            routine_id: None,
         }
     }
 }
@@ -272,5 +369,24 @@ mod tests {
         let first = TurnRequest::new(None, "a");
         let second = TurnRequest::new(None, "a");
         assert_ne!(first.request_id, second.request_id);
+        assert!(first.routine_id.is_none());
+    }
+
+    #[test]
+    fn remembered_facts_are_carried_into_the_turn() {
+        let mut product = ProductState::default();
+        let plain = turn_input(&Arc::new(Mutex::new(product.clone())), "hello");
+        assert!(plain.context.is_empty());
+        product
+            .memory
+            .remember("my name is Azhar", "role", "c1", true)
+            .unwrap();
+        let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
+        assert_eq!(with_memory.context.len(), 1);
+        assert_eq!(with_memory.text, "hello");
+        match &with_memory.context[0] {
+            ContextBlock::Text { text } => assert!(text.contains("my name is Azhar")),
+            other => panic!("unexpected context block: {other:?}"),
+        }
     }
 }

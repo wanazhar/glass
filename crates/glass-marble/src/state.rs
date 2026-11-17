@@ -2,6 +2,12 @@
 
 use crate::MarbleError;
 use crate::control::ControlState;
+use crate::memory::MemoryState;
+use crate::notify::{DeviceRegistration, NotificationSettings};
+use crate::presence::PresenceState;
+use crate::routine::RoutineState;
+use crate::voice::VoiceSettings;
+use crate::worker::now_millis;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -25,7 +31,8 @@ pub struct ConversationRecord {
 pub struct TaskRecord {
     pub id: String,
     pub conversation_id: String,
-    /// `queued`, `running`, `completed`, `cancelled`, or `failed`.
+    /// `queued`, `running`, `completed`, `cancelled`, `failed`, or
+    /// `interrupted` when the process stopped mid-turn.
     pub status: String,
     /// Who owns the running turn. Marble tasks are owned by the agent.
     pub owner: String,
@@ -33,6 +40,9 @@ pub struct TaskRecord {
     pub prompt: String,
     #[serde(default)]
     pub at: u64,
+    /// Set when a routine, rather than a person, admitted this turn.
+    #[serde(default)]
+    pub routine_id: String,
 }
 
 /// One inbound runtime tool request awaiting an explicit host decision.
@@ -60,7 +70,7 @@ pub struct TranscriptEntry {
 }
 
 /// Whole local product state served to the UI and encoded for the client.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductState {
     /// Monotonic document revision; durable commits use it for reconciliation.
@@ -74,6 +84,24 @@ pub struct ProductState {
     /// decisions, and the admission queue.
     #[serde(default)]
     pub control: ControlState,
+    /// Whether the assistant is up, what it is doing, and what it recovered.
+    #[serde(default)]
+    pub presence: PresenceState,
+    /// Durable facts and the suggestions waiting for confirmation.
+    #[serde(default)]
+    pub memory: MemoryState,
+    /// Saved prompts on a schedule.
+    #[serde(default)]
+    pub routines: RoutineState,
+    /// Webhook and APNs delivery settings.
+    #[serde(default)]
+    pub notifications: NotificationSettings,
+    /// Devices that can receive a push.
+    #[serde(default)]
+    pub devices: Vec<DeviceRegistration>,
+    /// Local-only voice preferences.
+    #[serde(default)]
+    pub voice: VoiceSettings,
 }
 
 impl ProductState {
@@ -140,6 +168,39 @@ impl ProductState {
             .cloned()
             .collect()
     }
+
+    /// Mark turns that were still running when the previous process stopped, so
+    /// a restart never leaves a phantom "working" task behind. Returns how many
+    /// tasks were recovered.
+    pub fn recover_interrupted(&mut self) -> usize {
+        let now = now_millis();
+        let recovered: Vec<(String, String)> = self
+            .tasks
+            .iter_mut()
+            .filter(|task| task.status == "running" || task.status == "queued")
+            .map(|task| {
+                task.status = "interrupted".to_string();
+                (task.id.clone(), task.conversation_id.clone())
+            })
+            .collect();
+        for (task_id, conversation_id) in &recovered {
+            self.push_transcript(TranscriptEntry {
+                conversation_id: conversation_id.clone(),
+                kind: "system".into(),
+                text: "Marble restarted while this turn was running. It is marked interrupted; \
+                       send the message again to continue."
+                    .into(),
+                task_id: task_id.clone(),
+                at: now,
+            });
+            self.routines.note_settled(task_id, "interrupted");
+        }
+        self.presence.recovered_tasks = recovered.len() as u64;
+        if !recovered.is_empty() {
+            self.bump();
+        }
+        recovered.len()
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +230,32 @@ mod tests {
         assert_eq!(state.revision, 0);
         assert_eq!(state.conversations[0].title, "");
         assert_eq!(state.tasks[0].at, 0);
+        assert_eq!(state.tasks[0].routine_id, "");
         assert_eq!(state.transcript[0].task_id, "");
+        assert!(state.memory.facts.is_empty());
+        assert!(state.routines.routines.is_empty());
+        assert!(!state.voice.enabled);
+        assert!(state.devices.is_empty());
+    }
+
+    #[test]
+    fn restarting_marks_running_turns_interrupted() {
+        let mut state = ProductState::default();
+        state.tasks.push(TaskRecord {
+            id: "t1".into(),
+            conversation_id: "c1".into(),
+            status: "running".into(),
+            owner: "agent".into(),
+            prompt: "tidy".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        assert_eq!(state.recover_interrupted(), 1);
+        assert_eq!(state.tasks[0].status, "interrupted");
+        assert_eq!(state.presence.recovered_tasks, 1);
+        let entry = state.transcript.last().expect("a recovery note");
+        assert_eq!(entry.kind, "system");
+        assert!(entry.text.contains("restarted"));
+        assert_eq!(state.recover_interrupted(), 0);
     }
 }

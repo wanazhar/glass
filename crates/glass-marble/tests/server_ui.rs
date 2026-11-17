@@ -3,6 +3,7 @@ use glass_marble::{
     MarbleServerParts, PendingApproval, ProductState, RequestHead, TaskRecord, ToolRouter,
     TranscriptEntry, TurnCommand, spawn_turn_worker,
 };
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -33,6 +34,7 @@ fn test_state() -> ProductState {
         owner: "agent".into(),
         prompt: "list the workspace".into(),
         at: 1,
+        routine_id: String::new(),
     });
     state.approvals.push(PendingApproval {
         request_id: "host:fixture-session:1:call-1".into(),
@@ -545,4 +547,203 @@ fn connect(port: u16) -> TcpStream {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!("local server should accept connections");
+}
+
+#[test]
+fn presence_reports_an_always_on_assistant() {
+    let mut state = ProductState::default();
+    state.presence.mark_start();
+    let server = free_server(state);
+    let (status, body) = server.handle("GET", "/api/presence", "");
+    assert_eq!(status, 200, "{body}");
+    let presence: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(presence["status"], json!("idle"));
+    assert!(presence["uptimeSeconds"].as_u64().is_some());
+    assert!(
+        presence["instance"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+    );
+
+    let (_, state_body) = server.handle("GET", "/api/state", "");
+    let state_document: Value = serde_json::from_str(&state_body).unwrap();
+    assert_eq!(state_document["presence"]["status"], json!("idle"));
+    assert!(
+        state_document["routines"]["limit"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+}
+
+#[test]
+fn explicit_memory_commands_are_remembered_without_a_model_turn() {
+    let (turn_tx, turn_rx) = mpsc::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let (status, body) = server.handle(
+        "POST",
+        "/api/turns",
+        r#"{"text":"Remember this: my name is Azhar","conversationId":"durable-fixture-1"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let value: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["remembered"]["kind"], json!("role"));
+    assert!(
+        turn_rx.try_recv().is_err(),
+        "a memory command must not become a model turn"
+    );
+
+    let (status, body) = server.handle("GET", "/api/memory", "");
+    assert_eq!(status, 200);
+    let memory: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(memory["facts"][0]["text"], json!("my name is Azhar"));
+
+    let (status, body) = server.handle(
+        "POST",
+        "/api/turns",
+        r#"{"text":"forget: Azhar","conversationId":"durable-fixture-1"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let forgotten: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(forgotten["forgotten"], json!(1));
+}
+
+#[test]
+fn memory_suggestions_need_an_explicit_decision() {
+    let mut state = ProductState::default();
+    let suggestion = state
+        .memory
+        .suggest(
+            "I prefer short commit messages",
+            "preference",
+            "noticed",
+            "c1",
+        )
+        .expect("a suggestion");
+    let server = free_server(state);
+    let (status, _) = server.handle("POST", "/api/memory/bogus/accept", "");
+    assert_eq!(status, 404);
+    let (status, body) =
+        server.handle("POST", &format!("/api/memory/{}/accept", suggestion.id), "");
+    assert_eq!(status, 200, "{body}");
+    let value: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        value["remembered"]["text"],
+        json!("I prefer short commit messages")
+    );
+    assert_eq!(value["memory"]["count"], json!(1));
+    assert!(
+        value["memory"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn routines_can_be_added_run_paused_and_removed() {
+    let (turn_tx, turn_rx) = mpsc::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let (status, body) = server.handle(
+        "POST",
+        "/api/routines",
+        r#"{"title":"Tidy","prompt":"tidy the notes","schedule":"every:30m","conversationId":"durable-fixture-1"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    let routine_id = created["routine"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["routines"]["enabled"], json!(1));
+
+    let (status, body) = server.handle("POST", &format!("/api/routines/{routine_id}/run"), "");
+    assert_eq!(status, 202, "{body}");
+    let command = turn_rx.try_recv().expect("the routine is admitted");
+    assert_eq!(
+        command.request.routine_id.as_deref(),
+        Some(routine_id.as_str())
+    );
+    assert_eq!(command.request.text, "tidy the notes");
+
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/routines",
+                r#"{"prompt":"x","schedule":"never"}"#
+            )
+            .0,
+        400
+    );
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/routines/{routine_id}/disable"), "")
+            .0,
+        200
+    );
+    let (_, body) = server.handle("GET", "/api/routines", "");
+    let routines: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(routines["enabled"], json!(0));
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/routines/{routine_id}/remove"), "")
+            .0,
+        200
+    );
+    assert_eq!(server.handle("POST", "/api/routines/nope/run", "").0, 404);
+}
+
+#[test]
+fn notification_and_voice_settings_round_trip() {
+    let server = free_server(ProductState::default());
+    let (status, body) = server.handle(
+        "POST",
+        "/api/notifications",
+        r#"{"webhookUrl":"http://127.0.0.1:9/hook","events":["approval","routine"],"apns":{"teamId":"TEAM","keyId":"KEY","topic":"dev.glass.marble","keyFile":"/keys/AuthKey.p8"}}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let settings: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(settings["webhookConfigured"], json!(true));
+    assert_eq!(settings["apnsConfigured"], json!(true));
+    assert_eq!(settings["events"], json!(["approval", "routine"]));
+    assert_eq!(settings["webhookTokenSet"], json!(false));
+
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/notifications",
+                r#"{"webhookUrl":"ftp://nope"}"#
+            )
+            .0,
+        400
+    );
+
+    let token = "ab".repeat(32);
+    let (status, body) = server.handle(
+        "POST",
+        "/api/devices",
+        &format!(r#"{{"token":"{token}","platform":"ios","topic":"dev.glass.marble"}}"#),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, devices) = server.handle("GET", "/api/devices", "");
+    let devices: Value = serde_json::from_str(&devices).unwrap();
+    assert_eq!(devices["devices"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        server.handle("POST", "/api/devices/nothex/remove", "").0,
+        404
+    );
+
+    let (status, body) = server.handle("POST", "/api/voice", r#"{"enabled":true,"rate":0.45}"#);
+    assert_eq!(status, 200, "{body}");
+    let voice: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(voice["enabled"], json!(true));
+    assert_eq!(voice["provider"], json!("on-device"));
+
+    let (status, body) = server.handle(
+        "POST",
+        "/api/voice/speak",
+        r#"{"text":"**Done** with `code`"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let spoken: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(spoken["spoken"], json!("Done with code"));
 }

@@ -1,35 +1,53 @@
-//! Glass Marble: a self-hosted durable Glass collaborator.
+//! Glass Marble: the always-on, self-hosted personal assistant.
 //!
-//! Marble owns the product surface (conversations, transcript, approvals,
-//! events) while Glass Core owns the model loop, native coding tools, and the
-//! durable journal. Mixed tool ownership keeps both responsibilities honest:
-//! Core executes its own tools, and only `glass.*` integrations come back to
-//! this process for an explicit human decision.
+//! Marble is the assistant itself, not a surface bolted onto one: it keeps its
+//! own conversations, transcript, approvals, memory, routines, presence, and
+//! notification channels, and it stays reachable over the operator's tailnet.
+//! Glass Core owns the model loop, native coding tools, and the durable journal;
+//! mixed tool ownership keeps both responsibilities honest. Core executes its
+//! own tools, and only `glass.*` integrations come back to this process for an
+//! explicit decision.
 
 pub mod control;
 pub mod conversation;
 pub mod events;
 pub mod host;
+pub mod memory;
 pub mod normalize;
+pub mod notify;
+pub mod presence;
+pub mod routine;
+pub mod scheduler;
 pub mod server;
+pub mod service;
 pub mod state;
 pub mod store;
 pub mod tools;
 pub mod turn;
+pub mod voice;
 pub mod worker;
 
 pub use control::{ControlEntry, ControlGrant, ControlProfile, ControlState, QueuedTurn, Verdict};
 pub use conversation::{ApprovalInbox, CancelToken, Conversation};
 pub use events::{EventBus, TurnEvent};
 pub use host::{Approval, HostPolicy};
+pub use memory::{MemoryCommand, MemoryFact, MemoryState, MemorySuggestion, parse_command};
 pub use normalize::{InboundMessage, to_turn_input};
+pub use notify::{
+    ApnsSettings, Delivery, DeviceRegistration, NOTIFY_EVENTS, Notification, NotificationSettings,
+};
+pub use presence::PresenceState;
+pub use routine::{Routine, RoutineState, Schedule, parse_schedule};
+pub use scheduler::{TICK, spawn_scheduler};
 pub use server::{
     AccessPolicy, MarbleServer, MarbleServerParts, RequestHead, Response, STATIC_HTML,
 };
+pub use service::{InstallOutcome, ServicePlatform, ServiceSpec};
 pub use state::{ConversationRecord, PendingApproval, ProductState, TaskRecord, TranscriptEntry};
 pub use store::{StateStore, default_data_dir, sessions_dir};
 pub use tools::{ToolOutcome, ToolRouter};
 pub use turn::{DEFAULT_TURN_TIMEOUT, MarbleReply, MarbleTurn, TurnOptions, run_turn};
+pub use voice::{VoiceSettings, spoken_form};
 pub use worker::{AcceptedTurn, TurnCommand, TurnRequest, spawn_turn_worker};
 
 use std::error::Error;

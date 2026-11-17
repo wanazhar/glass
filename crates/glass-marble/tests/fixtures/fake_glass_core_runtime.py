@@ -3,6 +3,22 @@ import json
 import os
 import sys
 
+def argument(flag, default=None):
+    if flag in sys.argv:
+        index = sys.argv.index(flag)
+        if index + 1 < len(sys.argv):
+            return sys.argv[index + 1]
+    return default
+
+
+# Tests can drive one governed call without editing the fixture.
+TOOL_NAME = argument("--tool", "glass.workspace.list")
+TOOL_ARGUMENTS = {}
+if argument("--path") is not None:
+    TOOL_ARGUMENTS["path"] = argument("--path")
+if argument("--content") is not None:
+    TOOL_ARGUMENTS["content"] = argument("--content")
+
 SESSION_ID = "fixture-session"
 STORAGE_DIR = None
 INPUT_TEXT = {"value": ""}
@@ -76,8 +92,8 @@ def run_turn(identifier, task, text, conversation, request):
                 "sessionId": SESSION_ID,
                 "turnId": turn,
                 "callId": "call-1",
-                "name": "glass.workspace.list",
-                "arguments": {},
+                "name": TOOL_NAME,
+                "arguments": TOOL_ARGUMENTS,
             },
         }
     )

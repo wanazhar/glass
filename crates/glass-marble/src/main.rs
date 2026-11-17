@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
 use glass_marble::{
-    AccessPolicy, ApprovalInbox, Conversation, EventBus, HostPolicy, InboundMessage, MarbleError,
-    MarbleServer, MarbleServerParts, MarbleTurn, ProductState, StateStore, ToolRouter, TurnOptions,
-    default_data_dir, run_turn, sessions_dir, spawn_turn_worker, to_turn_input,
+    AccessPolicy, ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy,
+    InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ProductState,
+    StateStore, ToolRouter, TurnOptions, default_data_dir, run_turn, sessions_dir,
+    spawn_turn_worker, to_turn_input,
 };
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -54,6 +55,9 @@ enum Commands {
         /// Per-turn wall clock budget in seconds.
         #[arg(long, default_value_t = 900)]
         timeout_secs: u64,
+        /// Marble's control posture: observe, workspace, or unattended.
+        #[arg(long, default_value = "workspace")]
+        profile: String,
     },
 }
 
@@ -101,7 +105,23 @@ fn run() -> Result<(), MarbleError> {
                 host,
                 token_file,
                 timeout_secs,
-            } => serve(&cli, &cwd, &data_dir, port, &host, token_file, timeout_secs),
+                profile,
+            } => serve(
+                &cli,
+                ServeOptions {
+                    cwd: &cwd,
+                    data_dir: &data_dir,
+                    port,
+                    host: &host,
+                    token_file,
+                    timeout_secs,
+                    profile: ControlProfile::parse(&profile).ok_or_else(|| {
+                        MarbleError::Protocol(format!(
+                            "unknown control profile {profile}: use observe, workspace, or unattended"
+                        ))
+                    })?,
+                },
+            ),
         };
     }
     let Some(message) = cli.message.clone() else {
@@ -142,15 +162,27 @@ fn one_shot(cli: &Cli, cwd: &Path, data_dir: &Path, message: &str) -> Result<(),
     Ok(())
 }
 
-fn serve(
-    cli: &Cli,
-    cwd: &Path,
-    data_dir: &Path,
+/// Inputs for the served product.
+struct ServeOptions<'a> {
+    cwd: &'a Path,
+    data_dir: &'a Path,
     port: u16,
-    host: &str,
+    host: &'a str,
     token_file: Option<PathBuf>,
     timeout_secs: u64,
-) -> Result<(), MarbleError> {
+    profile: ControlProfile,
+}
+
+fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
+    let ServeOptions {
+        cwd,
+        data_dir,
+        port,
+        host,
+        token_file,
+        timeout_secs,
+        profile,
+    } = options;
     let token = read_token(token_file.as_deref())?;
     if !is_loopback(host) && token.is_none() {
         return Err(MarbleError::Protocol(
@@ -160,16 +192,18 @@ fn serve(
         ));
     }
     let store = Arc::new(StateStore::in_data_dir(data_dir));
-    let state = match store.load() {
+    let mut loaded = match store.load() {
         Ok(state) => state,
         Err(error) => {
             tracing::warn!(%error, "starting from an empty product state");
             ProductState::default()
         }
     };
+    loaded.control.profile = profile;
     let events = EventBus::default();
     let approvals = ApprovalInbox::default();
     let router = ToolRouter::new(cwd)?;
+    let state = Arc::new(Mutex::new(loaded));
     let conversation = Conversation::spawn_with_router(
         runtime_command(cli),
         cwd,
@@ -179,9 +213,9 @@ fn serve(
         router,
         events.clone(),
     )?
-    .with_model(cli.model.clone());
+    .with_model(cli.model.clone())
+    .with_product(Arc::clone(&state));
     let timeout = Duration::from_secs(timeout_secs.max(30));
-    let state = Arc::new(Mutex::new(state));
     let turn_tx = spawn_turn_worker(
         conversation,
         Arc::clone(&state),
@@ -203,6 +237,7 @@ fn serve(
     println!("glass-marble listening on http://{address}");
     println!("workspace: {}", cwd.display());
     println!("data: {}", data_dir.display());
+    println!("control:  {} profile", profile.as_str());
     if let Some(tailnet) = tailscale_ipv4() {
         println!("tailnet:  http://{tailnet}:{}", address.port());
     } else {

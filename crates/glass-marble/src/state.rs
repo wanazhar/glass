@@ -1,6 +1,7 @@
 //! Server-owned product state for the local Glass marble UI.
 
 use crate::MarbleError;
+use crate::control::ControlState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -69,6 +70,10 @@ pub struct ProductState {
     pub tasks: Vec<TaskRecord>,
     pub approvals: Vec<PendingApproval>,
     pub transcript: Vec<TranscriptEntry>,
+    /// Marble's own control layer: posture, pause switch, rules, grants,
+    /// decisions, and the admission queue.
+    #[serde(default)]
+    pub control: ControlState,
 }
 
 impl ProductState {

@@ -1,8 +1,8 @@
 //! Durable conversation lifecycle over the Glass host runtime client.
 
 use crate::{
-    Approval, MarbleError, TURN_TIMEOUT, events::EventBus, host::HostPolicy,
-    state::PendingApproval, tools::ToolRouter,
+    Approval, MarbleError, TURN_TIMEOUT, control::Verdict, events::EventBus, host::HostPolicy,
+    state::PendingApproval, state::ProductState, tools::ToolRouter,
 };
 use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
@@ -28,8 +28,10 @@ const MAX_AUXILIARY_RESPONSES: usize = 8;
 /// Product instructions for a marble conversation.
 pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collaborator working inside the \
      user's workspace. Core executes your file and shell tools; the `glass.workspace.*` tools are \
-     governed integrations that the human approves before they run. Keep changes legible and \
-     reversible, say what you changed, and surface attribution when you act on the human's behalf.";
+     governed integrations that Marble's own control layer classifies before they run, and the human \
+     answers anything that layer leaves open. A refusal names the rule behind it, so adapt instead of \
+     retrying the same call. Keep changes legible and reversible, say what you changed, and surface \
+     attribution when you act on the human's behalf.";
 
 /// Cancel intent for one running durable task.
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +114,8 @@ pub struct Conversation {
     approval_timeout: Duration,
     active_conversation: String,
     active_task: String,
+    /// Durable product document whose control layer classifies every call.
+    product: Option<Arc<Mutex<ProductState>>>,
 }
 
 impl Conversation {
@@ -181,6 +185,7 @@ impl Conversation {
             approval_timeout: Duration::from_secs(300),
             active_conversation: String::new(),
             active_task: String::new(),
+            product: None,
         })
     }
 
@@ -207,6 +212,13 @@ impl Conversation {
             }
         }
         Ok(())
+    }
+
+    /// Give the conversation the product document whose control layer decides
+    /// what governed tools may run. Without it the host policy answers alone.
+    pub fn with_product(mut self, product: Arc<Mutex<ProductState>>) -> Self {
+        self.product = Some(product);
+        self
     }
 
     /// Select a model for new durable conversations.
@@ -393,13 +405,14 @@ impl Conversation {
                 "arguments": call.arguments,
             }),
         );
-        let approval = self.decide(&key, call);
-        let outcome = crate::host::answer_tool_request(
+        let (approval, reason) = self.decide(&key, call);
+        let outcome = crate::host::answer_tool_request_with_note(
             &mut self.client,
             request_id,
             call,
             approval,
             &self.router,
+            (!reason.is_empty()).then_some(reason.as_str()),
         )?;
         self.publish(
             "tool_end",
@@ -415,30 +428,110 @@ impl Conversation {
         Ok(())
     }
 
-    fn decide(&mut self, key: &str, call: &ToolRequest) -> Approval {
-        if !self.host.prompts() {
-            return self.host.decision();
+    /// Classify one governed call through marble's control layer, falling back
+    /// to the host posture when no product document is attached (one-shot runs).
+    fn decide(&mut self, key: &str, call: &ToolRequest) -> (Approval, String) {
+        let path = call
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let verdict = self.verdict(&call.name, &path);
+        let (approval, decision, reason) = match verdict {
+            Verdict::Allow { reason } => {
+                self.record(&call.name, &path, "allowed", &reason);
+                (Approval::Approve, "allowed", reason)
+            }
+            Verdict::Deny { reason } => {
+                self.record(&call.name, &path, "denied", &reason);
+                self.publish(
+                    "control_denied",
+                    value!({
+                        "requestId": key,
+                        "callId": call.call_id,
+                        "tool": call.name,
+                        "reason": reason,
+                    }),
+                );
+                (Approval::Deny, "denied", reason)
+            }
+            Verdict::Ask => {
+                if !self.host.prompts() {
+                    let decision = self.host.decision();
+                    let (decision_label, reason) = match decision {
+                        Approval::Approve => ("allowed", "host policy approves governed tools"),
+                        Approval::Deny => ("denied", "host policy declines governed tools"),
+                    };
+                    self.record(&call.name, &path, decision_label, reason);
+                    (decision, decision_label, reason.to_string())
+                } else {
+                    self.publish(
+                        "approval_pending",
+                        value!({
+                            "requestId": key,
+                            "callId": call.call_id,
+                            "tool": call.name,
+                            "arguments": call.arguments,
+                        }),
+                    );
+                    let decision = self
+                        .approvals
+                        .register(key, &call.call_id, &call.name, call.arguments.clone())
+                        .recv_timeout(self.approval_timeout)
+                        .unwrap_or(Approval::Deny);
+                    self.approvals.resolve(key, decision);
+                    self.publish(
+                        "approval_resolved",
+                        value!({"requestId": key, "approved": decision == Approval::Approve}),
+                    );
+                    let (decision_label, reason) = match decision {
+                        Approval::Approve => ("approved", "approved on this surface"),
+                        Approval::Deny => ("denied", "declined on this surface"),
+                    };
+                    self.record(&call.name, &path, decision_label, reason);
+                    (decision, decision_label, reason.to_string())
+                }
+            }
+        };
+        if decision == "allowed" {
+            self.note_grant_use(&call.name, &path);
         }
-        self.publish(
-            "approval_pending",
-            value!({
-                "requestId": key,
-                "callId": call.call_id,
-                "tool": call.name,
-                "arguments": call.arguments,
-            }),
+        (approval, reason)
+    }
+
+    fn verdict(&self, tool: &str, path: &str) -> Verdict {
+        match &self.product {
+            Some(product) => {
+                let state = product.lock().unwrap_or_else(|error| error.into_inner());
+                state.control.classify(tool, path)
+            }
+            None => Verdict::Ask,
+        }
+    }
+
+    fn record(&self, tool: &str, path: &str, decision: &str, reason: &str) {
+        let Some(product) = &self.product else {
+            return;
+        };
+        let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        state.control.note(
+            &self.active_conversation,
+            &self.active_task,
+            tool,
+            path,
+            decision,
+            reason,
         );
-        let decision = self
-            .approvals
-            .register(key, &call.call_id, &call.name, call.arguments.clone())
-            .recv_timeout(self.approval_timeout)
-            .unwrap_or(Approval::Deny);
-        self.approvals.resolve(key, decision);
-        self.publish(
-            "approval_resolved",
-            value!({"requestId": key, "approved": decision == Approval::Approve}),
-        );
-        decision
+        state.bump();
+    }
+
+    fn note_grant_use(&self, tool: &str, path: &str) {
+        let Some(product) = &self.product else {
+            return;
+        };
+        let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        state.control.use_grants(tool, path);
     }
 
     pub fn shutdown(&mut self) -> Result<(), MarbleError> {

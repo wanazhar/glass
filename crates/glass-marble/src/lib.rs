@@ -6,6 +6,7 @@
 //! Core executes its own tools, and only `glass.*` integrations come back to
 //! this process for an explicit human decision.
 
+pub mod control;
 pub mod conversation;
 pub mod events;
 pub mod host;
@@ -17,6 +18,7 @@ pub mod tools;
 pub mod turn;
 pub mod worker;
 
+pub use control::{ControlEntry, ControlGrant, ControlProfile, ControlState, QueuedTurn, Verdict};
 pub use conversation::{ApprovalInbox, CancelToken, Conversation};
 pub use events::{EventBus, TurnEvent};
 pub use host::{Approval, HostPolicy};

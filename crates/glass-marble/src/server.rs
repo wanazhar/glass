@@ -5,6 +5,7 @@
 //! cancellation, approvals, and one server-sent event stream.
 
 use crate::Approval;
+use crate::control::ControlProfile;
 use crate::conversation::ApprovalInbox;
 use crate::events::{EventBus, TurnEvent};
 use crate::state::{PendingApproval, ProductState};
@@ -333,13 +334,20 @@ impl MarbleServer {
                 );
         }
         if head.method == "GET" && path == "/healthz" {
+            let (revision, control) = {
+                let guard = self.lock_state();
+                (guard.revision, guard.control.clone())
+            };
             return Response::json(
                 200,
                 json!({
                     "ok": true,
-                    "revision": self.lock_state().revision,
+                    "revision": revision,
                     "sequence": self.events.sequence(),
                     "authRequired": self.policy.requires_token(),
+                    "profile": control.profile,
+                    "paused": control.paused,
+                    "queued": control.queue.len(),
                 }),
             );
         }
@@ -361,6 +369,30 @@ impl MarbleServer {
         if head.method == "POST" && path == "/api/turns" {
             return self.handle_turn(body);
         }
+        if head.method == "GET" && path == "/api/control" {
+            return Response::json(200, self.control_document());
+        }
+        if head.method == "POST" && path == "/api/control/profile" {
+            return self.set_profile(body);
+        }
+        if head.method == "POST" && path == "/api/control/pause" {
+            return self.set_paused(true);
+        }
+        if head.method == "POST" && path == "/api/control/resume" {
+            return self.set_paused(false);
+        }
+        if head.method == "POST" && path == "/api/control/stop" {
+            return self.stop_all();
+        }
+        if head.method == "POST" && path == "/api/control/grants" {
+            return self.add_grant(body);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/control/grants/")
+            && let Some(grant_id) = rest.strip_suffix("/revoke")
+        {
+            return self.revoke_grant(grant_id);
+        }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/tasks/")
             && let Some(task_id) = rest.strip_suffix("/cancel")
@@ -371,7 +403,7 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/approvals/")
             && let Some((request_id, action)) = rest.rsplit_once('/')
         {
-            return self.decide_approval(request_id, action);
+            return self.decide_approval(request_id, action, body);
         }
         Response::error(404, "not_found")
     }
@@ -402,6 +434,193 @@ impl MarbleServer {
         Response::json(200, snapshot.encode())
     }
 
+    fn control_document(&self) -> Value {
+        let control = self.lock_state().control.clone();
+        control.document()
+    }
+
+    fn set_profile(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let Some(raw) = parsed.get("profile").and_then(Value::as_str) else {
+            return Response::error(400, "invalid_profile");
+        };
+        let Some(profile) = ControlProfile::parse(raw) else {
+            return Response::json(400, json!({"error": "invalid_profile", "profile": raw}));
+        };
+        {
+            let mut guard = self.lock_state();
+            guard.control.profile = profile;
+            guard.control.note(
+                "",
+                "",
+                "",
+                "",
+                "allowed",
+                &format!("profile set to {}", profile.as_str()),
+            );
+            guard.bump();
+        }
+        self.save_state();
+        self.events
+            .publish("", "", "control", json!({"profile": profile.as_str()}));
+        Response::json(200, json!({"ok": true, "control": self.control_document()}))
+    }
+
+    /// Pause or resume admission. Resuming drains the queue in arrival order.
+    fn set_paused(&self, paused: bool) -> Response {
+        let queued = {
+            let mut guard = self.lock_state();
+            guard.control.paused = paused;
+            guard.control.note(
+                "",
+                "",
+                "",
+                "",
+                "allowed",
+                if paused {
+                    "admission paused"
+                } else {
+                    "admission resumed"
+                },
+            );
+            guard.bump();
+            if paused {
+                Vec::new()
+            } else {
+                guard.control.take_queue()
+            }
+        };
+        self.save_state();
+        let mut dispatched = 0usize;
+        for entry in queued {
+            let request = TurnRequest::new(entry.conversation_id, entry.text);
+            let (acknowledged, _ack) = mpsc::channel();
+            if self
+                .turn_tx
+                .send(TurnCommand {
+                    request,
+                    accepted: acknowledged,
+                })
+                .is_ok()
+            {
+                dispatched += 1;
+            }
+        }
+        self.events.publish(
+            "",
+            "",
+            "control",
+            json!({"paused": paused, "dispatched": dispatched}),
+        );
+        Response::json(
+            200,
+            json!({
+                "ok": true,
+                "paused": paused,
+                "dispatched": dispatched,
+                "control": self.control_document(),
+            }),
+        )
+    }
+
+    /// Pause admission and cancel every running task in one deliberate stop.
+    fn stop_all(&self) -> Response {
+        {
+            let mut guard = self.lock_state();
+            guard.control.paused = true;
+            guard
+                .control
+                .note("", "", "", "", "allowed", "stop requested for every task");
+            guard.bump();
+        }
+        self.save_state();
+        let flags: Vec<(String, Arc<AtomicBool>)> = self
+            .cancellations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .map(|(task_id, flag)| (task_id.clone(), Arc::clone(flag)))
+            .collect();
+        let mut cancelled = Vec::new();
+        for (task_id, flag) in flags {
+            flag.store(true, Ordering::Relaxed);
+            self.events.publish(
+                "",
+                &task_id,
+                "cancel_requested",
+                json!({ "taskId": task_id }),
+            );
+            cancelled.push(task_id);
+        }
+        self.events
+            .publish("", "", "control", json!({ "stopped": cancelled.len() }));
+        Response::json(
+            200,
+            json!({
+                "ok": true,
+                "paused": true,
+                "cancelled": cancelled,
+                "control": self.control_document(),
+            }),
+        )
+    }
+
+    fn add_grant(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let tool = parsed
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let prefix = parsed
+            .get("pathPrefix")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let outcome = {
+            let mut guard = self.lock_state();
+            let outcome = guard.control.grant(tool, prefix);
+            if outcome.is_ok() {
+                guard.bump();
+            }
+            outcome
+        };
+        match outcome {
+            Ok(grant) => {
+                self.save_state();
+                Response::json(
+                    200,
+                    json!({ "ok": true, "grant": grant, "control": self.control_document() }),
+                )
+            }
+            Err(reason) => {
+                Response::json(400, json!({ "error": "invalid_grant", "message": reason }))
+            }
+        }
+    }
+
+    fn revoke_grant(&self, grant_id: &str) -> Response {
+        let revoked = {
+            let mut guard = self.lock_state();
+            let revoked = guard.control.revoke(grant_id);
+            if revoked {
+                guard.bump();
+            }
+            revoked
+        };
+        if revoked {
+            self.save_state();
+        }
+        Response::json(
+            if revoked { 200 } else { 404 },
+            json!({ "ok": revoked, "grantId": grant_id, "control": self.control_document() }),
+        )
+    }
+
     fn handle_turn(&self, body: &str) -> Response {
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
@@ -424,6 +643,44 @@ impl MarbleServer {
             Some(Value::String(id)) if valid_conversation_id(id) => Some(id.clone()),
             Some(_) => return Response::error(400, "invalid_conversation_id"),
         };
+        if self.lock_state().control.paused {
+            // Paused admission is a queue, not a rejection: the message keeps its
+            // place, and resuming dispatches it in arrival order.
+            let queued = {
+                let mut guard = self.lock_state();
+                match guard.control.enqueue(conversation_id, text) {
+                    Ok(entry) => {
+                        let position = guard.control.queue.len();
+                        guard.bump();
+                        Ok((entry, position))
+                    }
+                    Err(reason) => Err(reason),
+                }
+            };
+            return match queued {
+                Ok((entry, position)) => {
+                    self.save_state();
+                    self.events.publish(
+                        "",
+                        "",
+                        "queued",
+                        json!({ "queueId": entry.id, "position": position }),
+                    );
+                    Response::json(
+                        202,
+                        json!({
+                            "queued": true,
+                            "queueId": entry.id,
+                            "position": position,
+                            "paused": true,
+                        }),
+                    )
+                }
+                Err(reason) => {
+                    Response::json(409, json!({ "error": "queue_full", "message": reason }))
+                }
+            };
+        }
         let request = TurnRequest::new(conversation_id, text);
         let request_id = request.request_id.clone();
         let cancel = request.cancel.clone();
@@ -482,7 +739,7 @@ impl MarbleServer {
         }
     }
 
-    fn decide_approval(&self, request_id: &str, action: &str) -> Response {
+    fn decide_approval(&self, request_id: &str, action: &str, body: &str) -> Response {
         let approval = match action {
             "allow" => Approval::Approve,
             "deny" => Approval::Deny,
@@ -490,10 +747,44 @@ impl MarbleServer {
                 return Response::json(400, json!({"error": "unknown_action", "action": other}));
             }
         };
+        // "Allow and remember" widens one decision into a standing grant for the
+        // directory it was approved in, which the human can revoke later.
+        let remember = serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|value| value.get("remember").and_then(Value::as_bool))
+            .unwrap_or(false);
+        let mut granted = None;
+        if approval == Approval::Approve
+            && remember
+            && let Some(pending) = self
+                .approvals
+                .pending()
+                .into_iter()
+                .find(|pending| pending.request_id == request_id)
+        {
+            let path = pending
+                .arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let scope = crate::control::directory_scope(path);
+            let outcome = {
+                let mut guard = self.lock_state();
+                let outcome = guard.control.grant(&pending.tool, &scope);
+                if outcome.is_ok() {
+                    guard.bump();
+                }
+                outcome
+            };
+            if let Ok(grant) = outcome {
+                granted = Some(grant);
+                self.save_state();
+            }
+        }
         let resolved = self.approvals.resolve(request_id, approval);
         Response::json(
             if resolved { 200 } else { 409 },
-            json!({"ok": resolved, "requestId": request_id}),
+            json!({"ok": resolved, "requestId": request_id, "grant": granted}),
         )
     }
 

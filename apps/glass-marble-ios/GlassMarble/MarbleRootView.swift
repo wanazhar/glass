@@ -5,6 +5,7 @@ struct MarbleRootView: View {
     @State private var showsSettings = false
     @State private var showsIntroduction = false
     @State private var greeted = false
+    @State private var showsControl = false
 
     var body: some View {
         NavigationSplitView {
@@ -26,6 +27,10 @@ struct MarbleRootView: View {
             ConnectSettingsView()
                 .environmentObject(store)
         }
+        .sheet(isPresented: $showsControl) {
+            ControlView()
+                .environmentObject(store)
+        }
         .sheet(isPresented: $showsIntroduction) {
             ConnectIntroductionView { showsIntroduction = false }
                 .ignoresSafeArea()
@@ -42,6 +47,7 @@ struct MarbleChatView: View {
     @EnvironmentObject private var store: MarbleStore
     @State private var draft = ""
     @State private var showsSettings = false
+    @State private var showsControl = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,6 +76,9 @@ struct MarbleChatView: View {
                 MarbleIconButton(systemName: "square.and.pencil", label: "New conversation") {
                     store.selectedConversationId = nil
                 }
+                MarbleIconButton(systemName: "shield.lefthalf.filled", label: "Marble control") {
+                    showsControl = true
+                }
                 MarbleIconButton(systemName: "antenna.radiowaves.left.and.right", label: "Host settings") {
                     showsSettings = true
                 }
@@ -77,6 +86,10 @@ struct MarbleChatView: View {
         }
         .sheet(isPresented: $showsSettings) {
             ConnectSettingsView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showsControl) {
+            ControlView()
                 .environmentObject(store)
         }
         .overlay(alignment: .bottom) {
@@ -99,8 +112,14 @@ struct MarbleChatView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(store.state.approvals) { approval in
-                        ApprovalCard(approval: approval) { allow in
-                            Task { await store.decide(approval, allow: allow) }
+                        ApprovalCard(approval: approval) { allow, remember in
+                            Task {
+                                await store.decide(
+                                    approval,
+                                    allow: allow,
+                                    remember: remember
+                                )
+                            }
                         }
                         .frame(width: 300)
                     }

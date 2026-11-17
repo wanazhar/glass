@@ -96,20 +96,91 @@ struct MarbleEntry: Decodable, Identifiable, Equatable {
     }
 }
 
+/// One selectable posture offered by the host's control layer.
+struct MarbleProfileOption: Decodable, Identifiable, Equatable {
+    var id: String
+    var label: String
+    var description: String
+    var allowsWrites: Bool
+    var prompts: Bool
+}
+
+/// A standing answer the host remembers until it is revoked.
+struct MarbleGrant: Decodable, Identifiable, Equatable {
+    var id: String
+    var tool: String
+    var pathPrefix: String
+    var createdAt: UInt64
+    var uses: UInt64
+
+    var scopeLabel: String { pathPrefix.isEmpty ? "whole workspace" : pathPrefix }
+}
+
+/// One journalled control decision.
+struct MarbleControlEntry: Decodable, Identifiable, Equatable {
+    var at: UInt64
+    var conversationId: String
+    var taskId: String
+    var tool: String
+    var path: String
+    var decision: String
+    var reason: String
+
+    var id: String { "\(at)|\(tool)|\(path)|\(decision)|\(reason)" }
+}
+
+/// A message the host is holding while admission is paused.
+struct MarbleQueuedTurn: Decodable, Identifiable, Equatable {
+    var id: String
+    var conversationId: String?
+    var text: String
+    var at: UInt64
+}
+
+/// Marble's own layer of control as served by the host.
+struct MarbleControl: Decodable, Equatable {
+    var profile: String
+    var paused: Bool
+    var grants: [MarbleGrant]
+    var deniedPaths: [String]
+    var ledger: [MarbleControlEntry]
+    var queue: [MarbleQueuedTurn]
+    var profiles: [MarbleProfileOption]
+
+    static let empty = MarbleControl(
+        profile: "workspace",
+        paused: false,
+        grants: [],
+        deniedPaths: [],
+        ledger: [],
+        queue: [],
+        profiles: []
+    )
+
+    func label(for profile: String) -> String {
+        profiles.first { $0.id == profile }?.label ?? profile
+    }
+}
+
 struct MarbleState: Decodable, Equatable {
     var revision: Int
     var conversations: [MarbleConversation]
     var tasks: [MarbleTask]
     var approvals: [MarbleApproval]
     var transcript: [MarbleEntry]
+    var control: MarbleControl?
 
     static let empty = MarbleState(
         revision: 0,
         conversations: [],
         tasks: [],
         approvals: [],
-        transcript: []
+        transcript: [],
+        control: nil
     )
+
+    /// Hosts from before the control layer answer without one.
+    var controlState: MarbleControl { control ?? .empty }
 
     func conversation(_ id: String?) -> MarbleConversation? {
         guard let id else { return nil }

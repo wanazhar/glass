@@ -64,8 +64,12 @@ final class MarbleStore: ObservableObject {
 
     var isWorking: Bool { activeTaskId != nil }
 
+    /// Marble's own control layer, as published by the host.
+    var control: MarbleControl { state.controlState }
+
     var statusLabel: String {
         if isWorking { return "working" }
+        if control.paused { return "paused" }
         return connection.label
     }
 
@@ -159,9 +163,51 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    func decide(_ approval: MarbleApproval, allow: Bool) async {
+    func decide(_ approval: MarbleApproval, allow: Bool, remember: Bool = false) async {
         do {
-            try await client.decide(requestId: approval.requestId, allow: allow)
+            try await client.decide(
+                requestId: approval.requestId,
+                allow: allow,
+                remember: remember
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    // MARK: - Control layer
+
+    func setProfile(_ profile: String) async {
+        do {
+            try await client.setProfile(profile)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func setPaused(_ paused: Bool) async {
+        do {
+            try await client.setPaused(paused)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func stopEverything() async {
+        do {
+            try await client.stopEverything()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func revokeGrant(_ grantId: String) async {
+        do {
+            try await client.revokeGrant(grantId)
         } catch {
             errorMessage = error.localizedDescription
         }

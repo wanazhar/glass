@@ -1,42 +1,302 @@
-//! Minimal local HTTP surface for the Glass marble product UI.
+//! Self-hosted HTTP surface for the Glass marble product.
+//!
+//! Bound to loopback by default; a Tailscale address needs an explicit host and
+//! an access token. The surface is intentionally small: state, a turn intake,
+//! cancellation, approvals, and one server-sent event stream.
 
+use crate::Approval;
 use crate::conversation::ApprovalInbox;
-use crate::state::{ConversationRecord, ProductState, TaskRecord, TranscriptEntry};
-use crate::turn::MarbleTurn;
-use crate::{Approval, InboundMessage, MarbleError, MarbleReply, to_turn_input};
+use crate::events::{EventBus, TurnEvent};
+use crate::state::{PendingApproval, ProductState};
+use crate::store::StateStore;
+use crate::worker::{TurnCommand, TurnRequest};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 pub const STATIC_HTML: &str = include_str!("static/index.html");
+/// Largest accepted JSON request body.
+pub const MAX_BODY_BYTES: usize = 256 * 1024;
+/// Largest accepted request head.
+const MAX_HEAD_BYTES: usize = 16 * 1024;
+const SESSION_COOKIE: &str = "marble_token";
+const ACCEPT_TIMEOUT: Duration = Duration::from_secs(25);
+const STREAM_KEEPALIVE: Duration = Duration::from_secs(15);
 
-/// One queued durable turn awaiting a runtime reply.
-pub struct TurnCommand {
-    pub reply: mpsc::Sender<Result<MarbleReply, MarbleError>>,
-    pub turn: MarbleTurn,
+/// One HTTP response returned by the router.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Response {
+    pub status: u16,
+    pub body: String,
+    pub headers: Vec<(String, String)>,
 }
 
-/// Local server owning product state and explicit host decisions.
+impl Response {
+    pub fn json(status: u16, value: Value) -> Self {
+        Self {
+            status,
+            body: value.to_string(),
+            headers: vec![(
+                "Content-Type".into(),
+                "application/json; charset=utf-8".into(),
+            )],
+        }
+    }
+
+    pub fn html(body: impl Into<String>) -> Self {
+        Self {
+            status: 200,
+            body: body.into(),
+            headers: vec![("Content-Type".into(), "text/html; charset=utf-8".into())],
+        }
+    }
+
+    pub fn error(status: u16, code: &str) -> Self {
+        Self::json(status, json!({"error": code}))
+    }
+
+    pub fn with_header(mut self, name: &str, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn into_parts(self) -> (u16, String) {
+        (self.status, self.body)
+    }
+
+    pub fn reason(&self) -> &'static str {
+        match self.status {
+            200 => "OK",
+            202 => "Accepted",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            405 => "Method Not Allowed",
+            409 => "Conflict",
+            413 => "Payload Too Large",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            504 => "Gateway Timeout",
+            _ => "OK",
+        }
+    }
+}
+
+/// Parsed request line plus headers, without a body.
+#[derive(Debug, Clone)]
+pub struct RequestHead {
+    pub method: String,
+    pub target: String,
+    pub headers: Vec<(String, String)>,
+}
+
+impl RequestHead {
+    pub fn new(method: &str, target: &str) -> Self {
+        Self {
+            method: method.to_string(),
+            target: target.to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Request path without the query string.
+    pub fn path(&self) -> &str {
+        self.target.split('?').next().unwrap_or(&self.target)
+    }
+
+    /// Minimal query parameter extraction (`+` and percent escapes decoded).
+    pub fn query_param(&self, name: &str) -> Option<String> {
+        let query = self.target.split_once('?')?.1;
+        for pair in query.split('&') {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            if key == name {
+                return Some(decode_query(value));
+            }
+        }
+        None
+    }
+
+    fn cookie(&self, name: &str) -> Option<&str> {
+        self.header("cookie")?
+            .split(';')
+            .filter_map(|pair| pair.trim().split_once('='))
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.trim())
+    }
+
+    /// Cross-site guard for mutating requests: a present `Origin` must match the
+    /// `Host` that served the page.
+    pub fn same_origin(&self) -> bool {
+        let Some(origin) = self.header("origin") else {
+            return true;
+        };
+        let origin_authority = origin
+            .trim_end_matches('/')
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(origin.trim_end_matches('/'));
+        match self.header("host") {
+            Some(host) => host_of(host).eq_ignore_ascii_case(origin_authority),
+            None => false,
+        }
+    }
+}
+
+fn host_of(authority: &str) -> &str {
+    authority.split('/').next().unwrap_or(authority)
+}
+
+fn decode_query(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => decoded.push(b' '),
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or_default();
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        decoded.push(byte);
+                        index += 2;
+                    }
+                    Err(_) => decoded.push(b'%'),
+                }
+            }
+            byte => decoded.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut difference = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        difference |= usize::from(a ^ b);
+    }
+    difference == 0
+}
+
+/// Who may call the product API.
+#[derive(Debug, Clone, Default)]
+pub struct AccessPolicy {
+    token: Option<String>,
+}
+
+impl AccessPolicy {
+    /// `None` allows loopback-only deployments without a token.
+    pub fn new(token: Option<String>) -> Self {
+        Self {
+            token: token.filter(|token| !token.is_empty()),
+        }
+    }
+
+    pub fn requires_token(&self) -> bool {
+        self.token.is_some()
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        self.token
+            .as_deref()
+            .map(|token| constant_time_eq(token, candidate))
+            .unwrap_or(false)
+    }
+
+    /// Cookie first so server-sent events work without custom headers, then the
+    /// bearer and explicit header forms for scripts, then a query token.
+    pub fn authorize(&self, head: &RequestHead) -> bool {
+        let Some(token) = self.token.as_deref() else {
+            return true;
+        };
+        if head
+            .cookie(SESSION_COOKIE)
+            .map(|candidate| constant_time_eq(token, candidate))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if head
+            .header("authorization")
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(|candidate| constant_time_eq(token, candidate.trim()))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if head
+            .header("x-marble-token")
+            .map(|candidate| constant_time_eq(token, candidate.trim()))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        head.query_param("token")
+            .map(|candidate| constant_time_eq(token, &candidate))
+            .unwrap_or(false)
+    }
+
+    /// Validate a token submitted to the login route.
+    pub fn accepts_token(&self, candidate: &str) -> bool {
+        self.matches(candidate)
+    }
+}
+
+/// Construction inputs for a served marble product.
+pub struct MarbleServerParts {
+    pub listener: TcpListener,
+    pub state: Arc<Mutex<ProductState>>,
+    pub store: Option<Arc<StateStore>>,
+    pub approvals: ApprovalInbox,
+    pub events: EventBus,
+    pub turn_tx: mpsc::Sender<TurnCommand>,
+    pub policy: AccessPolicy,
+}
+
+/// Local server owning product state, events, and explicit host decisions.
 pub struct MarbleServer {
     listener: TcpListener,
     state: Arc<Mutex<ProductState>>,
+    store: Option<Arc<StateStore>>,
     approvals: ApprovalInbox,
+    events: EventBus,
     turn_tx: mpsc::Sender<TurnCommand>,
+    policy: AccessPolicy,
+    cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl MarbleServer {
-    pub fn bind(
-        listener: TcpListener,
-        state: Arc<Mutex<ProductState>>,
-        approvals: ApprovalInbox,
-        turn_tx: mpsc::Sender<TurnCommand>,
-    ) -> Self {
+    pub fn new(parts: MarbleServerParts) -> Self {
         Self {
-            listener,
-            state,
-            approvals,
-            turn_tx,
+            listener: parts.listener,
+            state: parts.state,
+            store: parts.store,
+            approvals: parts.approvals,
+            events: parts.events,
+            turn_tx: parts.turn_tx,
+            policy: parts.policy,
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -47,244 +307,312 @@ impl MarbleServer {
     }
 
     pub fn state(&self) -> ProductState {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+        self.lock_state().clone()
     }
 
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, ProductState> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Route one request without transport, used by tests.
     pub fn handle(&self, method: &str, target: &str, body: &str) -> (u16, String) {
-        let approvals = self.approvals.clone();
-        let turn_tx = self.turn_tx.clone();
-        Self::route(&self.state, &approvals, turn_tx, method, target, body)
+        self.handle_request(&RequestHead::new(method, target), body)
+            .into_parts()
     }
 
-    fn route(
-        state: &Arc<Mutex<ProductState>>,
-        approvals: &ApprovalInbox,
-        turn_tx: mpsc::Sender<TurnCommand>,
-        method: &str,
-        target: &str,
-        body: &str,
-    ) -> (u16, String) {
-        let path = target.split('?').next().unwrap_or(target);
-        if method == "GET" && (path == "/" || path == "/index.html") {
-            return (200, STATIC_HTML.to_string());
-        }
-        if method == "GET" && path == "/api/state" {
-            let mut state = state
-                .lock()
-                .map(|state| state.clone())
-                .unwrap_or_else(|_| ProductState::default());
-            state.approvals = approvals.pending();
-            let encoded = serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string());
-            return (200, encoded);
-        }
-        if method == "POST" && path == "/api/turns" {
-            return Self::handle_turn(turn_tx, state, body);
-        }
-        if method == "POST"
-            && let Some(rest) = path.strip_prefix("/api/approvals/")
-            && let Some((request_id, action)) = rest.split_once('/')
-        {
-            let approval = if action == "allow" {
-                Approval::Approve
-            } else if action == "deny" {
-                Approval::Deny
-            } else {
-                return (
-                    400,
-                    serde_json::to_string(&serde_json::json!({
-                        "error": "unknown_action",
-                        "action": action,
-                    }))
-                    .unwrap_or_default(),
+    pub fn handle_request(&self, head: &RequestHead, body: &str) -> Response {
+        let path = head.path();
+        if head.method == "GET" && (path == "/" || path == "/index.html") {
+            return Response::html(STATIC_HTML)
+                .with_header("X-Content-Type-Options", "nosniff")
+                .with_header("Referrer-Policy", "no-referrer")
+                .with_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
+                     script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
                 );
-            };
-            let resolved = approvals.resolve(request_id, approval);
-            let status = if resolved { 200 } else { 409 };
-            return (
-                status,
-                serde_json::to_string(&serde_json::json!({ "ok": resolved })).unwrap_or_default(),
+        }
+        if head.method == "GET" && path == "/healthz" {
+            return Response::json(
+                200,
+                json!({
+                    "ok": true,
+                    "revision": self.lock_state().revision,
+                    "sequence": self.events.sequence(),
+                    "authRequired": self.policy.requires_token(),
+                }),
             );
         }
-        (
-            404,
-            serde_json::to_string(&serde_json::json!({ "error": "not_found" })).unwrap_or_default(),
+        if head.method == "POST" && path == "/api/login" {
+            return self.login(body);
+        }
+        if !self.policy.authorize(head) {
+            return Response::error(401, "unauthorized");
+        }
+        if head.method == "POST" && !head.same_origin() {
+            return Response::error(403, "cross_origin_request");
+        }
+        if head.method == "GET" && path == "/api/state" {
+            return self.state_response();
+        }
+        if head.method == "GET" && path == "/api/events" {
+            return Response::error(400, "stream_requires_socket");
+        }
+        if head.method == "POST" && path == "/api/turns" {
+            return self.handle_turn(body);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/tasks/")
+            && let Some(task_id) = rest.strip_suffix("/cancel")
+        {
+            return self.cancel_task(task_id);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/approvals/")
+            && let Some((request_id, action)) = rest.rsplit_once('/')
+        {
+            return self.decide_approval(request_id, action);
+        }
+        Response::error(404, "not_found")
+    }
+
+    fn login(&self, body: &str) -> Response {
+        if !self.policy.requires_token() {
+            return Response::json(200, json!({"ok": true, "required": false}));
+        }
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let Some(token) = parsed.get("token").and_then(Value::as_str) else {
+            return Response::error(400, "invalid_token");
+        };
+        if !self.policy.accepts_token(token) {
+            return Response::error(401, "unauthorized");
+        }
+        Response::json(200, json!({"ok": true, "required": true})).with_header(
+            "Set-Cookie",
+            format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"),
         )
     }
 
-    fn handle_turn(
-        turn_tx: mpsc::Sender<TurnCommand>,
-        state: &Arc<Mutex<ProductState>>,
-        body: &str,
-    ) -> (u16, String) {
-        let parsed: serde_json::Value = match serde_json::from_str(body) {
+    fn state_response(&self) -> Response {
+        let mut snapshot = self.lock_state().clone();
+        snapshot.approvals = self.approvals.pending();
+        Response::json(200, snapshot.encode())
+    }
+
+    fn handle_turn(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
-            Err(_) => {
-                return (
-                    400,
-                    serde_json::to_string(&serde_json::json!({ "error": "invalid_json" }))
-                        .unwrap_or_default(),
-                );
-            }
+            Err(_) => return Response::error(400, "invalid_json"),
         };
         let text = parsed
             .get("text")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
+            .map(str::trim)
             .unwrap_or_default()
             .to_string();
-        let conversation_id = parsed
-            .get("conversationId")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let turn = MarbleTurn {
-            conversation_id,
-            request_id: format!("marble-{}", std::process::id()),
-            input: to_turn_input(&InboundMessage::new(&text)),
+        if text.is_empty() {
+            return Response::error(400, "empty_message");
+        }
+        if text.len() > 64 * 1024 {
+            return Response::error(413, "message_too_large");
+        }
+        let conversation_id = match parsed.get("conversationId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) if valid_conversation_id(id) => Some(id.clone()),
+            Some(_) => return Response::error(400, "invalid_conversation_id"),
         };
-        let (reply_tx, reply_rx) = mpsc::channel();
-        if turn_tx
+        let request = TurnRequest::new(conversation_id, text);
+        let request_id = request.request_id.clone();
+        let cancel = request.cancel.clone();
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        if self
+            .turn_tx
             .send(TurnCommand {
-                reply: reply_tx,
-                turn,
+                request,
+                accepted: accepted_tx,
             })
             .is_err()
         {
-            return (
-                503,
-                serde_json::to_string(&serde_json::json!({ "error": "turn_rejected" }))
-                    .unwrap_or_default(),
-            );
+            return Response::error(503, "turn_worker_unavailable");
         }
-        let reply = reply_rx
-            .recv_timeout(Duration::from_secs(crate::TURN_TIMEOUT.as_secs()))
-            .ok()
-            .and_then(|result| result.ok());
-        let Some(reply) = reply else {
-            return (
-                504,
-                serde_json::to_string(&serde_json::json!({ "error": "turn_timeout" }))
-                    .unwrap_or_default(),
-            );
+        let accepted = match accepted_rx.recv_timeout(ACCEPT_TIMEOUT) {
+            Ok(Ok(accepted)) => accepted,
+            Ok(Err(error)) => {
+                return Response::json(
+                    502,
+                    json!({"error": "turn_failed", "message": error.to_string()}),
+                );
+            }
+            Err(_) => return Response::error(504, "turn_accept_timeout"),
         };
-        let mut updated = state
+        self.cancellations
             .lock()
-            .map(|state| state.clone())
-            .unwrap_or_else(|_| ProductState::default());
-        updated.transcript.push(TranscriptEntry {
-            conversation_id: reply.conversation_id.clone(),
-            kind: "user".to_string(),
-            text: text.clone(),
-        });
-        updated.transcript.push(TranscriptEntry {
-            conversation_id: reply.conversation_id.clone(),
-            kind: "assistant".to_string(),
-            text: reply.text.clone(),
-        });
-        if let Some(conversation) = updated
-            .conversations
-            .iter_mut()
-            .find(|conversation| conversation.id == reply.conversation_id)
-        {
-            if !conversation.task_ids.contains(&reply.task_id) {
-                conversation.task_ids.push(reply.task_id.clone());
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(accepted.task_id.clone(), cancel);
+        Response::json(
+            202,
+            json!({
+                "accepted": true,
+                "requestId": request_id,
+                "conversationId": accepted.conversation_id,
+                "taskId": accepted.task_id,
+            }),
+        )
+    }
+
+    fn cancel_task(&self, task_id: &str) -> Response {
+        let flag = self
+            .cancellations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(task_id)
+            .cloned();
+        match flag {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                self.events
+                    .publish("", task_id, "cancel_requested", json!({"taskId": task_id}));
+                self.save_state();
+                Response::json(202, json!({"cancelRequested": true, "taskId": task_id}))
             }
-        } else {
-            updated.conversations.push(ConversationRecord {
-                id: reply.conversation_id.clone(),
-                task_ids: vec![reply.task_id.clone()],
-            });
+            None => Response::error(404, "unknown_task"),
         }
-        updated.tasks.retain(|task| task.id != reply.task_id);
-        updated.tasks.push(TaskRecord {
-            id: reply.task_id.clone(),
-            conversation_id: reply.conversation_id.clone(),
-            status: "completed".to_string(),
-            owner: "human".to_string(),
-        });
-        if let Ok(mut guard) = state.lock() {
-            *guard = updated;
-        }
-        let body = serde_json::to_string(&serde_json::json!({
-            "reply": {
-                "conversationId": reply.conversation_id,
-                "taskId": reply.task_id,
-                "text": reply.text,
+    }
+
+    fn decide_approval(&self, request_id: &str, action: &str) -> Response {
+        let approval = match action {
+            "allow" => Approval::Approve,
+            "deny" => Approval::Deny,
+            other => {
+                return Response::json(400, json!({"error": "unknown_action", "action": other}));
             }
-        }))
-        .unwrap_or_default();
-        (200, body)
+        };
+        let resolved = self.approvals.resolve(request_id, approval);
+        Response::json(
+            if resolved { 200 } else { 409 },
+            json!({"ok": resolved, "requestId": request_id}),
+        )
+    }
+
+    fn save_state(&self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let snapshot = self.lock_state().clone();
+        crate::store::persist(store, &snapshot)
     }
 
     pub fn serve(self) -> std::io::Result<()> {
+        let server = Arc::new(self);
         loop {
-            let next = self.listener.incoming().next();
+            let next = server.listener.incoming().next();
             let stream = match next {
                 Some(Ok(stream)) => stream,
                 Some(Err(error)) => return Err(error),
                 None => break,
             };
-            let state = self.state.clone();
-            let approvals = self.approvals.clone();
-            let turn_tx = self.turn_tx.clone();
+            let server = Arc::clone(&server);
             std::thread::spawn(move || {
-                let _ = Self::serve_connection(stream, state, approvals, turn_tx);
+                let _ = server.serve_connection(stream);
             });
         }
         Ok(())
     }
 
-    fn serve_connection(
-        stream: TcpStream,
-        state: Arc<Mutex<ProductState>>,
-        approvals: ApprovalInbox,
-        turn_tx: mpsc::Sender<TurnCommand>,
-    ) -> std::io::Result<()> {
-        let mut stream = stream;
+    fn serve_connection(&self, mut stream: TcpStream) -> std::io::Result<()> {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let mut reader = BufReader::new(&mut stream);
-        let head = read_head(&mut reader)?;
-        let head_text = String::from_utf8_lossy(&head).to_string();
-        let mut content_length = 0usize;
-        for line in head_text.split("\r\n") {
-            if let Some((key, value)) = line.split_once(':')
-                && key.trim().eq_ignore_ascii_case("content-length")
-            {
-                content_length = value.trim().parse().unwrap_or(0);
-            }
+        let head_bytes = read_head(&mut reader)?;
+        let head_text = String::from_utf8_lossy(&head_bytes).to_string();
+        let head = parse_head(&head_text);
+        let content_length = head
+            .header("content-length")
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        if content_length > MAX_BODY_BYTES {
+            return write_response(&mut stream, Response::error(413, "body_too_large"));
         }
         let mut body = vec![0u8; content_length];
-        reader.read_exact(&mut body)?;
+        if content_length > 0 {
+            reader.read_exact(&mut body)?;
+        }
         let body = String::from_utf8_lossy(&body).to_string();
-        let mut parts = head_text.splitn(3, ' ');
-        let method = parts.next().unwrap_or_default().to_string();
-        let target = parts.next().unwrap_or_default().to_string();
-        let _version = parts.next();
-        let (status, response_body) =
-            Self::route(&state, &approvals, turn_tx, &method, &target, &body);
-        let path = target.split('?').next().unwrap_or_default().to_string();
-        let content_type = if method == "GET" && (path == "/" || path == "/index.html") {
-            "text/html; charset=utf-8"
-        } else {
-            "application/json; charset=utf-8"
-        };
-        let reason = match status {
-            200 => "OK",
-            400 => "Bad Request",
-            404 => "Not Found",
-            409 => "Conflict",
-            503 => "Service Unavailable",
-            504 => "Gateway Timeout",
-            _ => "OK",
-        };
-        let response = format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
-            response_body.len()
-        );
-        stream.write_all(response.as_bytes())?;
+        if head.method == "GET" && head.path() == "/api/events" {
+            if !self.policy.authorize(&head) {
+                return write_response(&mut stream, Response::error(401, "unauthorized"));
+            }
+            return self.stream_events(&head, &mut stream);
+        }
+        let response = self.handle_request(&head, &body);
+        write_response(&mut stream, response)
+    }
+
+    /// Server-sent events with bounded replay from the client's own cursor.
+    fn stream_events(&self, head: &RequestHead, stream: &mut TcpStream) -> std::io::Result<()> {
+        let since = head
+            .query_param("since")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| self.events.sequence());
+        stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\n\
+              Cache-Control: no-store\r\nConnection: close\r\nX-Accel-Buffering: no\r\n\r\n",
+        )?;
         stream.flush()?;
+        let receiver = self.events.subscribe();
+        for event in self.events.since(since) {
+            write_event(stream, &event)?;
+        }
+        loop {
+            match receiver.recv_timeout(STREAM_KEEPALIVE) {
+                Ok(event) => write_event(stream, &event)?,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    stream.write_all(b": keepalive\n\n")?;
+                    stream.flush()?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
         Ok(())
     }
+}
+
+fn valid_conversation_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn write_event(stream: &mut TcpStream, event: &TurnEvent) -> std::io::Result<()> {
+    let data = serde_json::to_string(&EventBus::encode(event)).unwrap_or_default();
+    stream.write_all(
+        format!(
+            "id: {}\nevent: {}\ndata: {}\n\n",
+            event.sequence, event.kind, data
+        )
+        .as_bytes(),
+    )?;
+    stream.flush()
+}
+
+fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result<()> {
+    let mut head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        response.status,
+        response.reason(),
+        response.body.len()
+    );
+    for (name, value) in &response.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(response.body.as_bytes())?;
+    stream.flush()
 }
 
 fn read_head(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
@@ -299,6 +627,101 @@ fn read_head(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
         if head.ends_with(b"\r\n\r\n") {
             break;
         }
+        if head.len() > MAX_HEAD_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "request head exceeds the accepted limit",
+            ));
+        }
     }
     Ok(head)
+}
+
+fn parse_head(head_text: &str) -> RequestHead {
+    let mut lines = head_text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.splitn(3, ' ');
+    let method = parts.next().unwrap_or_default().to_string();
+    let target = parts.next().unwrap_or_default().to_string();
+    let mut head = RequestHead::new(&method, &target);
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            head.headers
+                .push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    head
+}
+
+/// Approvals still waiting for an explicit decision, for product surfaces that
+/// read state before the next poll.
+pub fn pending_approvals(approvals: &ApprovalInbox) -> Vec<PendingApproval> {
+    approvals.pending()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_tokens_decode_and_match() {
+        let head = RequestHead::new("GET", "/api/events?since=4&token=a%2Bb+c");
+        assert_eq!(head.query_param("since"), Some("4".to_string()));
+        assert_eq!(head.query_param("token"), Some("a+b c".to_string()));
+        assert_eq!(head.path(), "/api/events");
+    }
+
+    #[test]
+    fn access_policy_accepts_cookie_bearer_and_query_tokens() {
+        let policy = AccessPolicy::new(Some("secret".into()));
+        assert!(!policy.authorize(&RequestHead::new("GET", "/api/state")));
+        assert!(policy.authorize(
+            &RequestHead::new("GET", "/api/state").with_header("cookie", "marble_token=secret")
+        ));
+        assert!(policy.authorize(
+            &RequestHead::new("GET", "/api/state").with_header("authorization", "Bearer secret")
+        ));
+        assert!(policy.authorize(&RequestHead::new("GET", "/api/events?token=secret")));
+        assert!(!policy.authorize(&RequestHead::new("GET", "/api/events?token=wrong")));
+    }
+
+    #[test]
+    fn loopback_deployment_without_a_token_allows_requests() {
+        let policy = AccessPolicy::new(None);
+        assert!(!policy.requires_token());
+        assert!(policy.authorize(&RequestHead::new("GET", "/api/state")));
+    }
+
+    #[test]
+    fn cross_origin_posts_are_rejected() {
+        let same = RequestHead::new("POST", "/api/turns")
+            .with_header("host", "127.0.0.1:4783")
+            .with_header("origin", "http://127.0.0.1:4783");
+        assert!(same.same_origin());
+        let foreign = RequestHead::new("POST", "/api/turns")
+            .with_header("host", "127.0.0.1:4783")
+            .with_header("origin", "https://evil.example");
+        assert!(!foreign.same_origin());
+        assert!(
+            !RequestHead::new("POST", "/api/turns")
+                .with_header("origin", "https://evil.example")
+                .same_origin()
+        );
+    }
+
+    #[test]
+    fn conversation_ids_are_restricted_to_safe_characters() {
+        assert!(valid_conversation_id("durable-fixture-1"));
+        assert!(!valid_conversation_id(""));
+        assert!(!valid_conversation_id("../../etc"));
+        assert!(!valid_conversation_id("has space"));
+    }
+
+    #[test]
+    fn constant_time_comparison_matches_ordinary_equality() {
+        assert!(constant_time_eq("abc", "abc"));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(!constant_time_eq("abc", "ab"));
+        assert!(constant_time_eq("", ""));
+    }
 }

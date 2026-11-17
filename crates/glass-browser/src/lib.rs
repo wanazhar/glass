@@ -201,6 +201,7 @@
 //! - [`tui`] — standalone Ratatui reducer, responsive layouts, semantic
 //!   selection, and bounded Herdr/Kitty/ANSI live presentation.
 //! - [`web_ir`] — stable reconciliation, validation, diff, and continuity.
+//! - [`web_action`] — named web UI actions, server-owned state, Allow/Deny.
 //! - [`workspace`] — identity, ownership, lifecycle, attachments, and
 //!   persistence.
 //!
@@ -259,6 +260,9 @@ pub mod tui;
 mod update;
 /// Stable Glass Web IR v1 reconciliation and validation.
 pub mod web_ir;
+/// Small web UI action contract with named actions, server-owned state, and
+/// explicit Allow/Deny decisions.
+pub mod web_action;
 /// Bounded workspace identity and lifecycle contracts.
 pub mod workspace;
 
@@ -356,3 +360,6 @@ pub use web_ir::{
     WebIrRelationshipHintDiagnostic, WebIrRelationshipKind, WebIrScopeKind, WebIrSensitivity,
     WebIrValidationError, reconcile_evidence,
 };
+
+/// Re-export the bounded web UI action contract for embedding callers.
+pub use web_action::{WebUiAction, WebUiActionDecision, WebUiActionState, WebUiActionStatus};

@@ -834,6 +834,10 @@ pub struct Context {
     buffer: Rc<RefCell<Vec<Record>>>,
 }
 impl Context {
+    /// Durable task this context runs; operator-visible events name it.
+    pub fn task_id(&self) -> &str {
+        &self.task
+    }
     fn new(store: Shared, task: String, conversation: String) -> Self {
         Self {
             store,

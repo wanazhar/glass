@@ -66,6 +66,15 @@ pub struct Task {
     pub due_at_ms: u64,
     pub outcome: Option<Value>,
     pub abort_requested: bool,
+    /// Bounded progress ceiling for this task; reported progress stops at the limit.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub progress_limit: u64,
+    /// Retries allowed before this task settles terminal.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retry_limit: u32,
+    /// Restart attempts allowed before this task settles terminal.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub restart_limit: u32,
 }
 impl Task {
     fn terminal(&self) -> bool {
@@ -123,6 +132,12 @@ pub enum Op {
         input: Value,
         #[serde(default)]
         checkpoint: Value,
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        progress_limit: u64,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        retry_limit: u32,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        restart_limit: u32,
     },
     #[serde(rename = "task.update")]
     TaskUpdate {
@@ -183,6 +198,12 @@ fn unsafe_replay() -> String {
 }
 fn all_settled() -> String {
     "all_settled".into()
+}
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -537,6 +558,9 @@ fn apply(
             replay,
             input,
             checkpoint,
+            progress_limit,
+            retry_limit,
+            restart_limit,
         } => {
             require_cv(state, conversation)?;
             if !valid(id)
@@ -574,6 +598,9 @@ fn apply(
                     due_at_ms: 0,
                     outcome: None,
                     abort_requested: false,
+                    progress_limit: *progress_limit,
+                    retry_limit: *retry_limit,
+                    restart_limit: *restart_limit,
                 },
             );
         }
@@ -733,6 +760,9 @@ fn apply(
                     replay: "safe".into(),
                     input: input.clone(),
                     checkpoint: json!({"phase":"admitted"}),
+                    progress_limit: 0,
+                    retry_limit: 0,
+                    restart_limit: 0,
                 },
                 sequence,
                 preserve_decisions,
@@ -1349,6 +1379,8 @@ impl Store {
                 "id":task.id, "conversation":task.conversation, "kind":task.kind,
                 "status":task.status, "owner":task.owner, "background":task.background,
                 "on":task.on, "abortRequested":task.abort_requested,
+                "progressLimit":task.progress_limit, "retryLimit":task.retry_limit,
+                "restartLimit":task.restart_limit,
             });
             let row_size = row.to_string().len() + 1;
             if rows.len() == limit || size + row_size > 700 * 1024 {
@@ -1397,6 +1429,9 @@ mod tests {
             replay: if safe { "safe" } else { "unsafe" }.into(),
             input: json!({}),
             checkpoint: json!({"phase":"start"}),
+            progress_limit: 0,
+            retry_limit: 0,
+            restart_limit: 0,
         }
     }
     fn transition(store: &Store, id: &str, status: &str) -> Op {
@@ -1447,6 +1482,40 @@ mod tests {
         assert_eq!(last["tasks"].as_array().unwrap().len(), 21);
         assert_eq!(last["hasMore"], false);
         assert!(first["tasks"][0].get("checkpoint").is_none());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn task_progress_retry_and_restart_limits_survive_restart() {
+        let path = dir();
+        let mut store = Store::open(&path, false).unwrap();
+        let mut created = task("limits", None, true, false);
+        if let Op::TaskCreate { retry_limit, .. } = &mut created {
+            *retry_limit = 2;
+        }
+        if let Op::TaskCreate { progress_limit, .. } = &mut created {
+            *progress_limit = 3;
+        }
+        if let Op::TaskCreate { restart_limit, .. } = &mut created {
+            *restart_limit = 1;
+        }
+        transact(&mut store, vec![create("root"), created]);
+        let task = &store.state.tasks["limits"];
+        assert_eq!(task.progress_limit, 3);
+        assert_eq!(task.retry_limit, 2);
+        assert_eq!(task.restart_limit, 1);
+        let graph = store.task_graph(&json!({"limit":128})).unwrap();
+        let rows = graph["tasks"].as_array().unwrap().to_vec();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["progressLimit"].as_u64(), Some(3));
+        assert_eq!(rows[0]["retryLimit"].as_u64(), Some(2));
+        assert_eq!(rows[0]["restartLimit"].as_u64(), Some(1));
+        drop(store);
+        let store = Store::open(&path, false).unwrap();
+        let task = &store.state.tasks["limits"];
+        assert_eq!(task.progress_limit, 3);
+        assert_eq!(task.retry_limit, 2);
+        assert_eq!(task.restart_limit, 1);
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1635,6 +1704,9 @@ mod tests {
             replay: "safe".into(),
             input: json!({}),
             checkpoint: json!({"phase":"admitted"}),
+            progress_limit: 0,
+            retry_limit: 0,
+            restart_limit: 0,
         };
         transact(
             &mut store,

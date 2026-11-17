@@ -15,6 +15,8 @@ mod auth;
 mod blobs;
 mod btw;
 mod budget;
+#[allow(dead_code)]
+mod capabilities;
 mod capture;
 mod checkpoint;
 mod checkpoint_tools;
@@ -28,6 +30,8 @@ mod connect;
 mod context_audit;
 mod contracts;
 mod desktop;
+#[allow(dead_code)]
+mod desktop_contract;
 mod diagnostic_bundle;
 mod diagnostics;
 mod doctor;
@@ -392,6 +396,13 @@ fn main() {
             })();
             if let Err(error) = result {
                 cli::error("Usage", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("verify") => {
+            if let Err(error) = verify::command(&args[1..]) {
+                cli::error("Verify", &error);
                 std::process::exit(2);
             }
             return;
@@ -1778,6 +1789,7 @@ fn desktop_status_message(status: &serde_json::Value) -> String {
     let lease = match status["lease"].as_str() {
         Some("human") => "with you",
         Some("agent") => "with the agent",
+        Some("read-only") => "read-only",
         _ => "not reported",
     };
     format!(

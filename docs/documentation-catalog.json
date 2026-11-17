@@ -1786,6 +1786,47 @@
       ]
     },
     {
+      "path": "crates/glass-marble/README.md",
+      "class": "current",
+      "topic": "api",
+      "audience": "api-or-package",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Cargo package documentation is included by package metadata and routes users to the canonical product/API guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "glass-marble"
+      ],
+      "dependencies": [
+        "docs/marble.md"
+      ],
+      "topicRoute": "docs/INDEX.md#interface-references",
+      "route": "crates/glass-marble/README.md#glass-marble",
+      "sections": [
+        {
+          "level": "1",
+          "title": "glass-marble",
+          "anchor": "glass-marble"
+        },
+        {
+          "level": "2",
+          "title": "What it owns",
+          "anchor": "what-it-owns"
+        },
+        {
+          "level": "2",
+          "title": "Use",
+          "anchor": "use"
+        },
+        {
+          "level": "2",
+          "title": "Checks",
+          "anchor": "checks"
+        }
+      ]
+    },
+    {
       "path": "crates/glass-mod-api/README.md",
       "class": "current",
       "topic": "api",
@@ -1887,6 +1928,7 @@
         "README.md",
         "docs/documentation-style.md",
         "docs/maintainers/README.md",
+        "docs/marble.md",
         "docs/plan/README.md",
         "docs/plan/tasks/issue64-attention-keyboard-journey-001.md",
         "docs/plan/tasks/issue64-queue-retarget-retry-001.md",
@@ -1907,6 +1949,7 @@
         "crates/glass-browser/README.md",
         "crates/glass-core/README.md",
         "crates/glass-dev/README.md",
+        "crates/glass-marble/README.md",
         "crates/glass-mod-api/README.md",
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
@@ -1962,6 +2005,7 @@
         "docs/knowledge.md",
         "docs/local-platform.md",
         "docs/maintainers/README.md",
+        "docs/marble.md",
         "docs/mcp-schema-budget.md",
         "docs/mcp-tools.md",
         "docs/mcp.md",
@@ -2026,6 +2070,7 @@
         "products/glass-core/docs/development.md",
         "products/glass-core/docs/getting-started.md",
         "products/glass-core/docs/plan/README.md",
+        "products/glass-core/docs/reference/runtime.md",
         "products/glass-core/docs/terminal.md",
         "products/glass-core/docs/web-tools.md",
         "products/glass-core/extensions/README.md",
@@ -5096,6 +5141,7 @@
         "docs/glass-core-product.md",
         "docs/harness-architecture.md",
         "docs/installation.md",
+        "docs/marble.md",
         "docs/migration/pi-sdk-runtime.md",
         "docs/task-dag.md"
       ],
@@ -5644,6 +5690,69 @@
           "level": "2",
           "title": "Failure and recovery",
           "anchor": "failure-and-recovery"
+        }
+      ]
+    },
+    {
+      "path": "docs/marble.md",
+      "class": "current",
+      "topic": "reference",
+      "audience": "glass-user",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "crates/glass-marble/README.md",
+        "docs/INDEX.md"
+      ],
+      "dependencies": [
+        "docs/INDEX.md",
+        "docs/glass-core-harness.md",
+        "products/glass-core/docs/reference/runtime.md"
+      ],
+      "topicRoute": "docs/INDEX.md#glass-documentation",
+      "route": "docs/marble.md#glass-marble",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass Marble",
+          "anchor": "glass-marble"
+        },
+        {
+          "level": "2",
+          "title": "Ownership boundary",
+          "anchor": "ownership-boundary"
+        },
+        {
+          "level": "2",
+          "title": "Build and run",
+          "anchor": "build-and-run"
+        },
+        {
+          "level": "2",
+          "title": "Self-hosting over Tailscale",
+          "anchor": "self-hosting-over-tailscale"
+        },
+        {
+          "level": "2",
+          "title": "HTTP surface",
+          "anchor": "http-surface"
+        },
+        {
+          "level": "2",
+          "title": "Web UI",
+          "anchor": "web-ui"
+        },
+        {
+          "level": "2",
+          "title": "iOS client",
+          "anchor": "ios-client"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
         }
       ]
     },
@@ -91719,6 +91828,8 @@
       "canonicalSuccessor": null,
       "consumers": [
         "crates/glass-runtime-client/README.md",
+        "docs/INDEX.md",
+        "docs/marble.md",
         "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/task-agent-coordination-001.md",
         "products/glass-core/README.md",

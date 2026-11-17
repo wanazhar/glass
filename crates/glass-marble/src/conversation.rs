@@ -81,12 +81,17 @@ impl ApprovalInbox {
     }
 
     /// Resolve one pending tool request with the host decision.
+    ///
+    /// A delivered decision counts as resolved even when the turn already
+    /// cleared its own pending entry while waking up, so the product surface
+    /// does not report a successful approval as a conflict.
     pub fn resolve(&self, request_id: &str, approval: Approval) -> bool {
-        let sender = self.senders_map().remove(request_id);
-        if let Some(sender) = sender {
-            let _ = sender.send(approval);
+        let mut delivered = false;
+        if let Some(sender) = self.senders_map().remove(request_id) {
+            delivered = sender.send(approval).is_ok();
         }
-        self.pending_map().remove(request_id).is_some()
+        let pending = self.pending_map().remove(request_id).is_some();
+        delivered || pending
     }
 
     /// Snapshot of tool requests still awaiting an explicit decision.
@@ -551,6 +556,17 @@ mod tests {
             "resume": resume,
             "mixedTools": mixed,
         })
+    }
+
+    #[test]
+    fn a_decided_approval_is_resolved_exactly_once() {
+        let inbox = ApprovalInbox::default();
+        let receiver = inbox.register("host:1", "call-1", "glass.workspace.list", Value::Null);
+        assert_eq!(inbox.pending().len(), 1);
+        assert!(inbox.resolve("host:1", Approval::Approve));
+        assert_eq!(receiver.recv().unwrap(), Approval::Approve);
+        assert!(inbox.pending().is_empty());
+        assert!(!inbox.resolve("host:1", Approval::Approve));
     }
 
     #[test]

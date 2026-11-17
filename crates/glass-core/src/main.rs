@@ -15,6 +15,8 @@ mod auth;
 mod blobs;
 mod btw;
 mod budget;
+#[allow(dead_code)]
+mod capabilities;
 mod capture;
 mod checkpoint;
 mod checkpoint_tools;

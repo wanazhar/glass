@@ -41,6 +41,18 @@ The workflow builds both `glass-dev` entry points (`glass` and
 `glass-browser`) for Linux, macOS, and Windows, then uploads short-lived
 validation artifacts. It is not part of the normal CI or crates release gate.
 
+While GitHub Actions is unavailable, or before opening a PR, run the local
+Linux gates. The script uses `cargo-nextest`, `cargo-deny`, and `cargo-audit`
+(installing prebuilt copies when needed) and will use mold and sccache if they
+are on `PATH`. See `scripts/cargo-config.local.toml.example` for the mold
+linker flags. macOS, Windows, Playwright connect smokes, fuzz, and native
+certification are not covered:
+
+```console
+scripts/ci-local.sh
+scripts/ci-local.sh --build-core smokes
+```
+
 Run the full certification before merging or releasing:
 
 ```console

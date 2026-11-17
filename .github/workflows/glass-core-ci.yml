@@ -60,8 +60,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
@@ -78,7 +78,7 @@ jobs:
           components: clippy
           shared-key: core-release
           tools: nextest
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
       - name: Install PTY test dependency
@@ -120,7 +120,7 @@ jobs:
         run: python3 scripts/check-performance.py
       - name: Upload performance reports
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glass-core-performance-${{ github.run_id }}
           path: |
@@ -139,7 +139,7 @@ jobs:
           tar -czf "dist/$(cat dist/name).tar.gz" -C dist/package .
           tar -czf dist/glass-core-web-assets.tar.gz -C web/dist .
           python3 -c 'import hashlib,pathlib; [(p.with_suffix(p.suffix+".sha256").write_text(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n")) for p in pathlib.Path("dist").glob("*.tar.gz")]'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glass-core-${{ matrix.os }}
           path: |

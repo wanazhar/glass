@@ -11,6 +11,9 @@ on:
   schedule:
     - cron: "17 3 * * 1"
 
+permissions:
+  contents: read
+
 concurrency:
   group: fuzz-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,7 +32,7 @@ jobs:
       matrix:
         target: [mcp_frame, cdp_message, ax_dom, locator, url_policy, semantic_contracts]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Setup Rust
         uses: ./.github/actions/setup-ci-rust
         with:
@@ -39,11 +42,14 @@ jobs:
           tools: cargo-fuzz@0.13.2
       - name: Run bounded fuzz target
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FUZZ_TARGET: ${{ matrix.target }}
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" ]]; then
-            cargo fuzz run "${{ matrix.target }}" fuzz/corpus/${{ matrix.target }} -- -max_total_time=120
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            cargo fuzz run "${FUZZ_TARGET}" "fuzz/corpus/${FUZZ_TARGET}" -- -max_total_time=120
           else
-            cargo fuzz run "${{ matrix.target }}" fuzz/corpus/${{ matrix.target }} -- -runs=512
+            cargo fuzz run "${FUZZ_TARGET}" "fuzz/corpus/${FUZZ_TARGET}" -- -runs=512
           fi
 
   release-certification:
@@ -81,7 +87,7 @@ jobs:
           PY
 
       - name: Upload exact-source fuzz certification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fuzz-certification-${{ github.sha }}
           path: fuzz-certification.json

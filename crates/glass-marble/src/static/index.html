@@ -1,104 +1,691 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1016" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#eef2f8" media="(prefers-color-scheme: light)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Marble" />
     <title>Glass Marble</title>
     <style>
-      body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #101418; color: #e8ecf1; }
-      header { padding: 10px 14px; border-bottom: 1px solid #232a31; display: flex; gap: 12px; align-items: center; }
-      header h1 { font-size: 15px; margin: 0; }
-      main { display: grid; grid-template-columns: 220px 1fr; gap: 12px; padding: 12px; }
-      section { border: 1px solid #232a31; border-radius: 6px; padding: 10px; }
-      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 8px; color: #9fb0bf; }
-      ul { margin: 0; padding-left: 18px; }
-      li { margin: 2px 0; }
-      button { margin: 2px 4px 2px 0; }
-      pre { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
-      input, textarea, select { width: 100%; box-sizing: border-box; background: #0c0f12; color: #e8ecf1; border: 1px solid #2a323a; border-radius: 4px; padding: 6px; }
-      button { background: #1d6feb; color: #fff; border: 0; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
-      button.deny { background: #a12626; }
-      .row { display: flex; gap: 8px; align-items: center; }
-      .pill { border: 1px solid #2a323a; border-radius: 999px; padding: 1px 8px; font-size: 11px; color: #9fb0bf; }
+      :root {
+        color-scheme: dark light;
+        --bg: #070b11;
+        --bg-glow: radial-gradient(120% 90% at 15% -10%, #1d3a63 0%, transparent 60%),
+          radial-gradient(90% 70% at 100% 0%, #3a2a5e 0%, transparent 55%);
+        --surface: rgba(20, 27, 37, 0.72);
+        --surface-strong: rgba(28, 37, 50, 0.94);
+        --line: rgba(148, 176, 210, 0.16);
+        --text: #e9eef7;
+        --muted: #93a3ba;
+        --accent: #6ea8ff;
+        --accent-strong: #2f7bf2;
+        --danger: #ff7a7a;
+        --ok: #5fd6a2;
+        --radius: 20px;
+        --shadow: 0 18px 60px rgba(2, 8, 20, 0.48);
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #eef2f8;
+          --bg-glow: radial-gradient(120% 90% at 15% -10%, #cfe2ff 0%, transparent 60%),
+            radial-gradient(90% 70% at 100% 0%, #e7dcff 0%, transparent 55%);
+          --surface: rgba(255, 255, 255, 0.68);
+          --surface-strong: rgba(255, 255, 255, 0.92);
+          --line: rgba(24, 44, 74, 0.12);
+          --text: #0d1726;
+          --muted: #56667e;
+          --accent: #1f6feb;
+          --accent-strong: #1450b8;
+          --danger: #b42318;
+          --ok: #0f7a54;
+          --shadow: 0 18px 50px rgba(31, 58, 100, 0.16);
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg-glow), var(--bg);
+        background-attachment: fixed;
+        color: var(--text);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+      }
+      button, input, textarea { font: inherit; color: inherit; }
+      button { cursor: pointer; }
+      .glass {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(24px) saturate(160%);
+        -webkit-backdrop-filter: blur(24px) saturate(160%);
+      }
+      .app {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 100dvh;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+          env(safe-area-inset-left);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px max(14px, env(safe-area-inset-left)) 10px
+          max(14px, env(safe-area-inset-right));
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+        backdrop-filter: blur(24px) saturate(160%);
+        -webkit-backdrop-filter: blur(24px) saturate(160%);
+      }
+      .mark {
+        width: 30px; height: 30px; border-radius: 50%;
+        background: conic-gradient(from 210deg, #7fb0ff, #b49aff, #7ff0d4, #7fb0ff);
+        box-shadow: inset 0 1px 6px rgba(255, 255, 255, 0.55), 0 4px 14px rgba(63, 122, 226, 0.35);
+        flex: none;
+      }
+      header h1 { font-size: 15px; margin: 0; letter-spacing: 0.01em; }
+      header .sub { color: var(--muted); font-size: 12px; }
+      .spacer { flex: 1; }
+      .pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        border: 1px solid var(--line); border-radius: 999px;
+        padding: 3px 10px; font-size: 12px; color: var(--muted);
+        background: rgba(255, 255, 255, 0.04);
+        white-space: nowrap;
+      }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+      .dot.live { background: var(--ok); box-shadow: 0 0 0 4px rgba(95, 214, 162, 0.16); }
+      .dot.busy { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+      .dot.offline { background: var(--danger); }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      .ghost, .primary, .danger {
+        border-radius: 999px; padding: 8px 14px; font-size: 13px;
+        border: 1px solid var(--line); background: transparent; color: var(--text);
+        min-height: 38px;
+      }
+      .primary { background: linear-gradient(180deg, var(--accent), var(--accent-strong)); border-color: transparent; color: #fff; }
+      .danger { border-color: rgba(180, 35, 24, 0.4); color: var(--danger); }
+      .ghost:hover, .primary:hover, .danger:hover { filter: brightness(1.08); }
+      .ghost:disabled, .primary:disabled, .danger:disabled { opacity: 0.45; cursor: default; }
+      .shell {
+        display: grid; grid-template-columns: 1fr; gap: 12px;
+        min-height: 0; padding: 12px;
+      }
+      .sidebar {
+        display: none; min-height: 0; flex-direction: column; padding: 12px; gap: 10px;
+      }
+      .sidebar.open { display: flex; }
+      .sidebar h2, .card h2 {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--muted); margin: 0 0 8px; font-weight: 600;
+      }
+      .conv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; overflow: auto; }
+      .conv {
+        width: 100%; text-align: left; border: 1px solid transparent; border-radius: 14px;
+        background: transparent; padding: 9px 11px; display: flex; flex-direction: column; gap: 2px;
+      }
+      .conv:hover { border-color: var(--line); }
+      .conv[aria-current="true"] { background: rgba(110, 168, 255, 0.14); border-color: rgba(110, 168, 255, 0.4); }
+      .conv .title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .conv .meta { font-size: 11px; color: var(--muted); }
+      .chat { display: grid; grid-template-rows: 1fr auto; min-height: 0; overflow: hidden; }
+      .transcript {
+        overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px;
+        scroll-behavior: smooth;
+      }
+      .empty { color: var(--muted); font-size: 13px; max-width: 46ch; }
+      .msg { display: flex; flex-direction: column; gap: 4px; max-width: 78ch; }
+      .msg .who { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+      .bubble {
+        border-radius: 16px; padding: 10px 13px; white-space: pre-wrap; word-break: break-word;
+        border: 1px solid var(--line); background: var(--surface-strong);
+      }
+      .msg.user { align-self: flex-end; align-items: flex-end; }
+      .msg.user .bubble { background: linear-gradient(180deg, rgba(110, 168, 255, 0.28), rgba(47, 123, 242, 0.22)); }
+      .msg.reasoning .bubble, .msg.system .bubble { color: var(--muted); font-size: 13px; background: transparent; border-style: dashed; }
+      .msg.pending .bubble { opacity: 0.72; }
+      .tool {
+        display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted);
+        border-left: 2px solid var(--line); padding-left: 9px; word-break: break-word;
+      }
+      .tool .name { color: var(--text); font-weight: 600; }
+      .tool.failed .name { color: var(--danger); }
+      .card { padding: 12px 14px; }
+      .approvals { margin: 0 16px 8px; display: flex; flex-direction: column; gap: 10px; }
+      .approval { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+      .approval code { font-size: 11px; color: var(--muted); word-break: break-all; }
+      .approval .actions { display: flex; gap: 8px; }
+      .composer { border-top: 1px solid var(--line); background: var(--surface); padding: 10px 12px; }
+      .composer-row {
+        display: flex; gap: 8px; align-items: flex-end;
+        border: 1px solid var(--line); border-radius: 22px; padding: 6px 6px 6px 14px;
+        background: var(--surface-strong);
+      }
+      textarea {
+        flex: 1; resize: none; border: 0; background: transparent; outline: none;
+        max-height: 40dvh; min-height: 24px; padding: 7px 0; line-height: 1.45;
+      }
+      .hint { color: var(--muted); font-size: 11px; margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+      .banner {
+        margin: 16px; padding: 12px 14px; border-radius: 14px; font-size: 13px;
+        border: 1px solid rgba(110, 168, 255, 0.35); background: rgba(110, 168, 255, 0.12);
+      }
+      dialog {
+        border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
+        background: var(--surface-strong); color: var(--text); max-width: min(92vw, 420px);
+        box-shadow: var(--shadow);
+      }
+      dialog::backdrop { background: rgba(4, 8, 16, 0.6); backdrop-filter: blur(6px); }
+      dialog h2 { margin: 0 0 6px; font-size: 16px; }
+      dialog p { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+      dialog input {
+        width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+        background: rgba(0, 0, 0, 0.16); margin-bottom: 12px;
+      }
+      dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+      }
+      @media (min-width: 900px) {
+        .shell { grid-template-columns: 280px 1fr; padding: 16px; gap: 16px; }
+        .sidebar { display: flex; }
+        #sidebar-toggle { display: none; }
+        .transcript, .composer { padding-left: 22px; padding-right: 22px; }
+      }
+      @media (max-width: 899px) {
+        .sidebar.open {
+          position: fixed; inset: 64px 12px auto 12px; max-height: 60dvh; z-index: 20;
+          border-radius: var(--radius); box-shadow: var(--shadow);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+      }
     </style>
   </head>
   <body>
-    <header>
-      <h1>Glass Marble</h1>
-      <div class="row">
-        <span class="pill" id="state-summary">idle</span>
+    <div class="app">
+      <header>
+        <div class="mark" aria-hidden="true"></div>
+        <div>
+          <h1>Glass Marble</h1>
+          <div class="sub" id="workspace-label">durable collaborator</div>
+        </div>
+        <div class="spacer"></div>
+        <span class="pill"><span class="dot" id="status-dot"></span><span id="status-text">idle</span></span>
+        <button class="ghost" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="false">Chats</button>
+        <button class="ghost" id="new-chat">New</button>
+      </header>
+      <div class="shell">
+        <aside class="sidebar glass" id="sidebar">
+          <div>
+            <h2>Conversations</h2>
+            <ul class="conv-list" id="conversations"></ul>
+          </div>
+          <div class="spacer"></div>
+          <div class="card" style="padding: 0">
+            <h2>Tasks</h2>
+            <ul class="conv-list" id="tasks"></ul>
+          </div>
+        </aside>
+        <main class="chat glass">
+          <div class="transcript" id="transcript" aria-live="polite"></div>
+          <div class="approvals" id="approvals"></div>
+          <div class="composer">
+            <div class="composer-row">
+              <label class="sr-only" for="composer">Message</label>
+              <textarea id="composer" rows="1" placeholder="Ask Marble to work in this workspace…"></textarea>
+              <button class="primary" id="send">Send</button>
+            </div>
+            <div class="hint">
+              <span>Enter sends · Shift+Enter adds a line</span>
+              <span id="task-hint"></span>
+              <button class="danger" id="cancel" hidden>Stop</button>
+            </div>
+          </div>
+        </main>
       </div>
-    </header>
-    <main>
-      <section>
-        <h2>Conversations</h2>
-        <ul id="conversations"></ul>
-      </section>
-      <section>
-        <h2>Transcript</h2>
-        <pre id="transcript">awaiting turn</pre>
-      </section>
-      <section>
-        <h2>Tasks</h2>
-        <ul id="tasks"></ul>
-      </section>
-      <section>
-        <h2>Approvals</h2>
-        <div id="approvals"></div>
-      </section>
-    </main>
-    <section>
-      <h2>Composer</h2>
-      <div class="row">
-        <input id="composer-text" placeholder="message the durable marble" />
-        <button id="composer-send">Send</button>
-      </div>
-    </section>
+    </div>
+    <dialog id="login">
+      <form method="dialog" id="login-form">
+        <h2>Access token</h2>
+        <p>This Marble instance is shared over your private network. Paste the token configured on the host.</p>
+        <label class="sr-only" for="token">Token</label>
+        <input id="token" type="password" autocomplete="current-password" required />
+        <div class="row">
+          <button class="primary" value="submit" type="submit">Unlock</button>
+        </div>
+      </form>
+    </dialog>
     <script>
-      const stateEl = document.getElementById("state-summary");
-      const conversationsEl = document.getElementById("conversations");
-      const transcriptEl = document.getElementById("transcript");
-      const tasksEl = document.getElementById("tasks");
-      const approvalsEl = document.getElementById("approvals");
-      const composerText = document.getElementById("composer-text");
-      const composerSend = document.getElementById("composer-send");
-      let selectedConversationId = null;
+      const KINDS = [
+        "turn_start", "waiting", "text", "reasoning", "tool_start", "tool_end", "tool_progress",
+        "tool_cancel", "usage", "compacted", "steered", "queued", "notice", "error", "settled",
+        "cancel_requested", "approval_pending", "approval_resolved", "state",
+      ];
+      const app = {
+        state: null,
+        conversationId: null,
+        sequence: 0,
+        outbox: [],
+        live: { taskId: null, text: "", reasoning: "", tools: [] },
+        stream: null,
+        offline: false,
+        frame: 0,
+      };
+      const el = {
+        transcript: document.getElementById("transcript"),
+        conversations: document.getElementById("conversations"),
+        tasks: document.getElementById("tasks"),
+        approvals: document.getElementById("approvals"),
+        composer: document.getElementById("composer"),
+        send: document.getElementById("send"),
+        cancel: document.getElementById("cancel"),
+        statusDot: document.getElementById("status-dot"),
+        statusText: document.getElementById("status-text"),
+        taskHint: document.getElementById("task-hint"),
+        workspace: document.getElementById("workspace-label"),
+        sidebar: document.getElementById("sidebar"),
+        sidebarToggle: document.getElementById("sidebar-toggle"),
+        login: document.getElementById("login"),
+        loginForm: document.getElementById("login-form"),
+        token: document.getElementById("token"),
+      };
 
-      async function refresh() {
-        const response = await fetch("/api/state");
-        const state = await response.json();
-        stateEl.textContent = state.approvals.length + " pending approvals";
-        conversationsEl.innerHTML = state.conversations.map((c) => {
-          const taskSummary = c.taskIds.join(", ");
-          const label = c.id + (taskSummary ? " tasks: " + taskSummary : "");
-          return "<li><button class='conversation' data-conversation-id='" + c.id + "'>" + label + "</button></li>";
-        }).join("") || "<li>no conversations</li>";
-        conversationsEl.querySelectorAll(".conversation").forEach((button) => {
-          button.addEventListener("click", () => { selectedConversationId = button.dataset.conversationId; refresh(); });
+      function node(tag, className, text) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        if (text !== undefined && text !== null) element.textContent = String(text);
+        return element;
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, {
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          ...options,
         });
-        transcriptEl.textContent = state.transcript.map((e) => e.conversationId + " " + e.kind + ": " + e.text).join("\n") || "awaiting turn";
-        tasksEl.innerHTML = state.tasks.map((t) => "<li>" + t.id + " " + t.conversationId + " " + t.status + " owner " + t.owner + "</li>").join("") || "<li>no tasks</li>";
-        approvalsEl.innerHTML = state.approvals.map((a) => {
-          return "<div>" + a.tool + " " + a.requestId + " <button data-allow='" + a.requestId + "'>Allow</button> <button class='deny' data-deny='" + a.requestId + "'>Deny</button></div>";
-        }).join("") || "<div>inbox empty</div>";
-        approvalsEl.querySelectorAll("[data-allow]").forEach((button) => {
-          button.addEventListener("click", () => { fetch("/api/approvals/" + button.dataset.allow + "/allow", { method: "POST" }); refresh(); });
-        });
-        approvalsEl.querySelectorAll("[data-deny]").forEach((button) => {
-          button.addEventListener("click", () => { fetch("/api/approvals/" + button.dataset.deny + "/deny", { method: "POST" }); refresh(); });
+        if (response.status === 401) {
+          el.login.showModal();
+          throw new Error("unauthorized");
+        }
+        const text = await response.text();
+        let body = null;
+        try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+        if (!response.ok) {
+          const message = (body && (body.message || body.error)) || "request failed";
+          throw new Error(message);
+        }
+        return body;
+      }
+
+      function conversationRecord(id) {
+        if (!app.state) return null;
+        return (app.state.conversations || []).find((item) => item.id === id) || null;
+      }
+
+      function activeConversation() {
+        return app.conversationId;
+      }
+
+      function setStatus(label, kind) {
+        el.statusText.textContent = label;
+        el.statusDot.className = "dot" + (kind ? " " + kind : "");
+      }
+
+      function renderSidebar() {
+        el.conversations.textContent = "";
+        const conversations = (app.state && app.state.conversations) || [];
+        if (!conversations.length) {
+          el.conversations.append(node("li", "empty", "No conversations yet."));
+        }
+        conversations
+          .slice()
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+          .forEach((conversation) => {
+            const item = node("li");
+            const button = node("button", "conv");
+            button.type = "button";
+            if (conversation.id === app.conversationId) button.setAttribute("aria-current", "true");
+            button.append(node("span", "title", conversation.title || conversation.id));
+            const count = (conversation.taskIds || []).length;
+            button.append(node("span", "meta", count === 1 ? "1 turn" : count + " turns"));
+            button.addEventListener("click", () => {
+              app.conversationId = conversation.id;
+              el.sidebar.classList.remove("open");
+              el.sidebarToggle.setAttribute("aria-expanded", "false");
+              render();
+            });
+            item.append(button);
+            el.conversations.append(item);
+          });
+
+        el.tasks.textContent = "";
+        const tasks = ((app.state && app.state.tasks) || []).slice().reverse().slice(0, 12);
+        if (!tasks.length) el.tasks.append(node("li", "empty", "No durable tasks yet."));
+        tasks.forEach((task) => {
+          const item = node("li");
+          const label = task.status + " · " + task.owner;
+          const row = node("div", "conv");
+          row.append(node("span", "title", task.prompt || task.id));
+          row.append(node("span", "meta", label));
+          item.append(row);
+          el.tasks.append(item);
         });
       }
 
-      composerSend.addEventListener("click", async () => {
-        const text = composerText.value.trim();
-        if (!text) { return; }
-        const conversationId = selectedConversationId;
-        await fetch("/api/turns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, conversationId }) });
-        composerText.value = "";
-        await refresh();
+      function messageBlock(kind, text, extraClass) {
+        const wrapper = node("div", "msg " + kind + (extraClass ? " " + extraClass : ""));
+        const who = { user: "you", assistant: "marble", reasoning: "reasoning", system: "system", tool: "tool" }[kind] || kind;
+        wrapper.append(node("div", "who", who));
+        wrapper.append(node("div", "bubble", text));
+        return wrapper;
+      }
+
+      function renderTranscript() {
+        el.transcript.textContent = "";
+        const conversationId = activeConversation();
+        const entries = ((app.state && app.state.transcript) || []).filter(
+          (entry) => !conversationId || entry.conversationId === conversationId
+        );
+        const known = new Set(entries.map((entry) => entry.taskId).filter(Boolean));
+
+        if (!entries.length && !app.outbox.length && !app.live.text && !app.live.tools.length) {
+          el.transcript.append(
+            node(
+              "p",
+              "empty",
+              "Marble runs on your machine. Ask it to read, change, or explain something in this workspace — every turn is journaled, so you can stop, resume, and audit it later."
+            )
+          );
+        }
+
+        entries.forEach((entry) => {
+          if (entry.kind === "tool") {
+            const row = node("div", "tool");
+            row.append(node("span", "name", "tool"));
+            row.append(node("span", null, entry.text));
+            el.transcript.append(row);
+            return;
+          }
+          el.transcript.append(messageBlock(entry.kind, entry.text));
+        });
+
+        app.outbox
+          .filter((item) => !item.taskId || !known.has(item.taskId))
+          .forEach((item) => el.transcript.append(messageBlock("user", item.text, "pending")));
+
+        app.live.tools.forEach((tool) => {
+          const row = node("div", "tool" + (tool.isError ? " failed" : ""));
+          row.append(node("span", "name", tool.tool));
+          row.append(node("span", null, tool.summary));
+          el.transcript.append(row);
+        });
+
+        if (app.live.reasoning) {
+          el.transcript.append(messageBlock("reasoning", app.live.reasoning));
+        }
+        if (app.live.text) {
+          el.transcript.append(messageBlock("assistant", app.live.text));
+        }
+        el.transcript.scrollTop = el.transcript.scrollHeight;
+      }
+
+      function renderApprovals() {
+        el.approvals.textContent = "";
+        const approvals = (app.state && app.state.approvals) || [];
+        approvals.forEach((approval) => {
+          const card = node("div", "card glass approval");
+          const info = node("div");
+          info.append(node("h2", null, "Approval · " + approval.tool));
+          info.append(node("code", null, JSON.stringify(approval.arguments)));
+          card.append(info);
+          const actions = node("div", "actions");
+          const allow = node("button", "primary", "Allow");
+          allow.type = "button";
+          allow.addEventListener("click", () => decideApproval(approval.requestId, "allow"));
+          const deny = node("button", "danger", "Deny");
+          deny.type = "button";
+          deny.addEventListener("click", () => decideApproval(approval.requestId, "deny"));
+          actions.append(deny, allow);
+          card.append(actions);
+          el.approvals.append(card);
+        });
+      }
+
+      function render() {
+        renderSidebar();
+        renderTranscript();
+        renderApprovals();
+        const running = app.live.taskId;
+        el.cancel.hidden = !running;
+        el.send.disabled = Boolean(running);
+        el.taskHint.textContent = running ? "task " + running : "";
+        if (app.offline) setStatus("offline", "offline");
+        else if (running) setStatus("working", "busy");
+        else setStatus("idle", "live");
+      }
+
+      function scheduleRender() {
+        if (app.frame) return;
+        app.frame = requestAnimationFrame(() => {
+          app.frame = 0;
+          renderTranscript();
+        });
+      }
+
+      async function refresh() {
+        try {
+          const state = await api("/api/state");
+          app.state = state;
+          app.offline = false;
+          if (!app.conversationId && state.conversations.length) {
+            const newest = state.conversations
+              .slice()
+              .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+            app.conversationId = newest.id;
+          }
+          const running = (state.tasks || []).find((task) => task.status === "running");
+          app.live.taskId = running ? running.id : null;
+          if (!running) {
+            app.live.text = "";
+            app.live.reasoning = "";
+            app.live.tools = [];
+          }
+          render();
+        } catch (error) {
+          app.offline = true;
+          render();
+        }
+      }
+
+      async function decideApproval(requestId, action) {
+        try {
+          await api("/api/approvals/" + encodeURIComponent(requestId) + "/" + action, { method: "POST" });
+        } catch (error) {
+          /* refresh below reflects the real inbox */
+        }
+        refresh();
+      }
+
+      async function send() {
+        const text = el.composer.value.trim();
+        if (!text) return;
+        el.composer.value = "";
+        autosize();
+        app.outbox.push({ text });
+        renderTranscript();
+        try {
+          const accepted = await api("/api/turns", {
+            method: "POST",
+            body: JSON.stringify({ text, conversationId: app.conversationId }),
+          });
+          app.conversationId = accepted.conversationId || app.conversationId;
+          app.outbox[app.outbox.length - 1].taskId = accepted.taskId;
+          app.live.taskId = accepted.taskId;
+          render();
+        } catch (error) {
+          app.outbox.pop();
+          renderTranscript();
+          setStatus(error.message, "offline");
+        }
+      }
+
+      async function cancel() {
+        if (!app.live.taskId) return;
+        try {
+          await api("/api/tasks/" + encodeURIComponent(app.live.taskId) + "/cancel", { method: "POST" });
+        } catch (error) {
+          setStatus(error.message, "offline");
+        }
+      }
+
+      function handleEvent(kind, payload) {
+        if (payload && typeof payload.sequence === "number") app.sequence = payload.sequence;
+        const data = (payload && payload.data) || {};
+        switch (kind) {
+          case "text":
+            app.live.text += data.text || "";
+            scheduleRender();
+            break;
+          case "reasoning":
+            app.live.reasoning += data.text || "";
+            scheduleRender();
+            break;
+          case "tool_start":
+            app.live.tools.push({ tool: data.tool || "tool", summary: "running…", isError: false });
+            scheduleRender();
+            break;
+          case "tool_end": {
+            const tool = app.live.tools.find((item) => item.tool === data.tool && item.summary === "running…");
+            if (tool) {
+              tool.summary = (data.isError ? "failed · " : "done · ") + String(data.text || "").slice(0, 160);
+              tool.isError = Boolean(data.isError);
+            } else {
+              app.live.tools.push({
+                tool: data.tool || "tool",
+                summary: String(data.text || "").slice(0, 160),
+                isError: Boolean(data.isError),
+              });
+            }
+            scheduleRender();
+            break;
+          }
+          case "approval_pending":
+          case "approval_resolved":
+          case "state":
+            refresh();
+            break;
+          case "settled":
+            app.live.taskId = null;
+            app.live.text = "";
+            app.live.reasoning = "";
+            app.live.tools = [];
+            refresh();
+            break;
+          case "error":
+            setStatus(data.message || "error", "offline");
+            refresh();
+            break;
+          case "cancel_requested":
+            setStatus("cancelling", "busy");
+            break;
+          default:
+            break;
+        }
+      }
+
+      function connectStream() {
+        if (app.stream) app.stream.close();
+        const stream = new EventSource("/api/events?since=" + app.sequence);
+        app.stream = stream;
+        KINDS.forEach((kind) => {
+          stream.addEventListener(kind, (event) => {
+            try {
+              handleEvent(kind, JSON.parse(event.data));
+            } catch {
+              /* ignore malformed frame */
+            }
+          });
+        });
+        stream.addEventListener("open", () => {
+          app.offline = false;
+          setStatus(app.live.taskId ? "working" : "idle", app.live.taskId ? "busy" : "live");
+        });
+        stream.addEventListener("error", () => {
+          app.offline = true;
+          setStatus("reconnecting", "offline");
+          if (stream.readyState === EventSource.CLOSED) {
+            setTimeout(connectStream, 2000);
+          }
+        });
+      }
+
+      function autosize() {
+        el.composer.style.height = "auto";
+        el.composer.style.height = Math.min(el.composer.scrollHeight, window.innerHeight * 0.4) + "px";
+      }
+
+      el.send.addEventListener("click", send);
+      el.cancel.addEventListener("click", cancel);
+      el.composer.addEventListener("input", autosize);
+      el.composer.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          send();
+        }
       });
-      composerText.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); composerSend.click(); } });
-      refresh();
+      document.getElementById("new-chat").addEventListener("click", () => {
+        app.conversationId = null;
+        render();
+        el.composer.focus();
+      });
+      el.sidebarToggle.addEventListener("click", () => {
+        const open = el.sidebar.classList.toggle("open");
+        el.sidebarToggle.setAttribute("aria-expanded", String(open));
+      });
+      el.loginForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          await fetch("/api/login", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: el.token.value }),
+          });
+        } catch {
+          /* refresh reports the failure */
+        }
+        el.login.close();
+        el.token.value = "";
+        refresh();
+        connectStream();
+      });
+
+      (async function start() {
+        try {
+          const health = await fetch("/healthz", { credentials: "same-origin" });
+          if (health.ok) {
+            const body = await health.json();
+            el.workspace.textContent = "durable collaborator · revision " + body.revision;
+            app.sequence = body.sequence || 0;
+          }
+        } catch {
+          /* state refresh reports connectivity */
+        }
+        await refresh();
+        if (!app.state) {
+          el.login.showModal();
+          return;
+        }
+        connectStream();
+      })();
     </script>
   </body>
 </html>

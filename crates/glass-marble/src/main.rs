@@ -2,9 +2,10 @@ use clap::{Parser, Subcommand};
 use glass_marble::{
     AccessPolicy, ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy,
     InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ProductState,
-    StateStore, ToolRouter, TurnOptions, default_data_dir, run_turn, sessions_dir,
-    spawn_turn_worker, to_turn_input,
+    ServiceSpec, StateStore, TICK, ToolRouter, TurnOptions, default_data_dir, run_turn,
+    sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
+use glass_marble::{notify, service};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,7 +15,7 @@ use std::time::Duration;
 #[derive(Debug, Parser)]
 #[command(
     name = "glass-marble",
-    about = "Self-hosted durable Glass collaborator",
+    about = "Always-on, self-hosted personal assistant built on Glass Core",
     version
 )]
 struct Cli {
@@ -58,6 +59,24 @@ enum Commands {
         /// Marble's control posture: observe, workspace, or unattended.
         #[arg(long, default_value = "workspace")]
         profile: String,
+        /// How long a governed tool waits for a human decision before failing closed.
+        #[arg(long, default_value_t = 600)]
+        approval_wait_secs: u64,
+    },
+    /// Install a login service so the assistant keeps running after logout.
+    InstallService {
+        #[arg(long, default_value_t = 4783)]
+        port: u16,
+        /// Address the service binds. Use the Tailscale address to share it.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value = "workspace")]
+        profile: String,
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<PathBuf>,
+        /// Write the unit file instead of printing it for review.
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -106,6 +125,7 @@ fn run() -> Result<(), MarbleError> {
                 token_file,
                 timeout_secs,
                 profile,
+                approval_wait_secs,
             } => serve(
                 &cli,
                 ServeOptions {
@@ -115,11 +135,30 @@ fn run() -> Result<(), MarbleError> {
                     host: &host,
                     token_file,
                     timeout_secs,
+                    approval_wait_secs,
                     profile: ControlProfile::parse(&profile).ok_or_else(|| {
                         MarbleError::Protocol(format!(
                             "unknown control profile {profile}: use observe, workspace, or unattended"
                         ))
                     })?,
+                },
+            ),
+            Commands::InstallService {
+                port,
+                host,
+                profile,
+                token_file,
+                write,
+            } => install_service(
+                &cli,
+                ServiceOptions {
+                    cwd: &cwd,
+                    data_dir: &data_dir,
+                    port,
+                    host: &host,
+                    profile: &profile,
+                    token_file,
+                    write,
                 },
             ),
         };
@@ -170,6 +209,7 @@ struct ServeOptions<'a> {
     host: &'a str,
     token_file: Option<PathBuf>,
     timeout_secs: u64,
+    approval_wait_secs: u64,
     profile: ControlProfile,
 }
 
@@ -181,6 +221,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         host,
         token_file,
         timeout_secs,
+        approval_wait_secs,
         profile,
     } = options;
     let token = read_token(token_file.as_deref())?;
@@ -200,6 +241,14 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         }
     };
     loaded.control.profile = profile;
+    // An always-on assistant has to be honest about what a restart cost it: a
+    // turn that was running when the process stopped is marked interrupted, not
+    // left looking like it is still working.
+    loaded.presence.mark_start();
+    let recovered = loaded.recover_interrupted();
+    if recovered > 0 {
+        tracing::warn!(recovered, "marked interrupted turns from the previous run");
+    }
     let events = EventBus::default();
     let approvals = ApprovalInbox::default();
     let router = ToolRouter::new(cwd)?;
@@ -214,7 +263,8 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         events.clone(),
     )?
     .with_model(cli.model.clone())
-    .with_product(Arc::clone(&state));
+    .with_product(Arc::clone(&state))
+    .with_approval_timeout(Duration::from_secs(approval_wait_secs.max(30)));
     let timeout = Duration::from_secs(timeout_secs.max(30));
     let turn_tx = spawn_turn_worker(
         conversation,
@@ -223,10 +273,20 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         events.clone(),
         timeout,
     );
+    // Routines fire on their own clock, and approvals reach the person who is
+    // not looking at a screen.
+    spawn_scheduler(
+        Arc::clone(&state),
+        Some(Arc::clone(&store)),
+        events.clone(),
+        turn_tx.clone(),
+        TICK,
+    );
+    notify::spawn_event_watcher(events.clone(), Arc::clone(&state));
     let listener = TcpListener::bind((host, port)).map_err(MarbleError::Io)?;
     let server = MarbleServer::new(MarbleServerParts {
         listener,
-        state,
+        state: Arc::clone(&state),
         store: Some(store),
         approvals,
         events,
@@ -238,6 +298,33 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     println!("workspace: {}", cwd.display());
     println!("data: {}", data_dir.display());
     println!("control:  {} profile", profile.as_str());
+    {
+        let state = state.lock().unwrap_or_else(|error| error.into_inner());
+        println!(
+            "presence: {} · {} routines · {} memories",
+            state.presence.status(&state),
+            state.routines.routines.len(),
+            state.memory.facts.len()
+        );
+        if recovered > 0 {
+            println!("recovery: {recovered} interrupted turn(s) marked");
+        }
+        let channels = match (
+            !state.notifications.webhook_url.is_empty(),
+            state
+                .notifications
+                .apns
+                .as_ref()
+                .map(|apns| !apns.topic.is_empty())
+                .unwrap_or(false),
+        ) {
+            (true, true) => "webhook + apns",
+            (true, false) => "webhook",
+            (false, true) => "apns",
+            (false, false) => "none yet — set one in Control",
+        };
+        println!("notify:   {channels}");
+    }
     if let Some(tailnet) = tailscale_ipv4() {
         println!("tailnet:  http://{tailnet}:{}", address.port());
     } else {
@@ -246,6 +333,64 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         );
     }
     server.serve().map_err(MarbleError::Io)
+}
+
+/// Inputs for the login service that keeps the assistant running.
+struct ServiceOptions<'a> {
+    cwd: &'a Path,
+    data_dir: &'a Path,
+    port: u16,
+    host: &'a str,
+    profile: &'a str,
+    token_file: Option<PathBuf>,
+    write: bool,
+}
+
+/// Render or write the login service that keeps the assistant running.
+fn install_service(cli: &Cli, options: ServiceOptions<'_>) -> Result<(), MarbleError> {
+    let ServiceOptions {
+        cwd,
+        data_dir,
+        port,
+        host,
+        profile,
+        token_file,
+        write,
+    } = options;
+    let profile = ControlProfile::parse(profile).ok_or_else(|| {
+        MarbleError::Protocol(format!(
+            "unknown control profile {profile}: use observe, workspace, or unattended"
+        ))
+    })?;
+    let binary = std::env::current_exe().unwrap_or_else(|_| core_binary(cli));
+    let spec = ServiceSpec {
+        binary,
+        cwd: cwd.to_path_buf(),
+        data_dir: data_dir.to_path_buf(),
+        host: host.to_string(),
+        port,
+        profile: profile.as_str().to_string(),
+        token_file,
+        log_file: service::default_log_file(data_dir),
+    };
+    let outcome = service::install(service::current_platform(), &spec, write)
+        .map_err(MarbleError::Protocol)?;
+    println!("{}", outcome.rendered);
+    println!();
+    if outcome.written {
+        println!("wrote {}", outcome.path.display());
+    } else {
+        println!(
+            "review the definition above, then rerun with --write to install it at {}",
+            outcome.path.display()
+        );
+    }
+    println!();
+    println!("next:");
+    for line in &outcome.instructions {
+        println!("  {line}");
+    }
+    Ok(())
 }
 
 fn read_token(token_file: Option<&Path>) -> Result<Option<String>, MarbleError> {

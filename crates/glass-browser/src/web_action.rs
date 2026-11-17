@@ -145,7 +145,7 @@ mod tests {
         let state = WebUiActionState {
             action,
             status: WebUiActionStatus::Pending,
-            decision: Some(denied),
+            decision: Some(denied.clone()),
         };
         assert_eq!(state.action, WebUiAction::Click);
         assert_eq!(state.status, WebUiActionStatus::Pending);

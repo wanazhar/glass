@@ -301,7 +301,7 @@ fn clip(text: &str) -> String {
 /// through the shared post-write pipeline.
 ///
 /// The command is the caller's verifier, for example `cargo check --quiet`.
-/// Writes it performs still flow through [`written_paths`] and [`report`], so
+/// Writes it performs still flow through [`written_paths`] and [`check`], so
 /// the echo-back and syntax gate apply instead of trusting the exit code alone.
 pub fn run_optional(command: &str, workspace: &Path, tail_lines: usize) -> String {
     let child = std::process::Command::new("/bin/sh")
@@ -333,7 +333,7 @@ pub fn run_optional(command: &str, workspace: &Path, tail_lines: usize) -> Strin
         }
         Err(_) => (None, false, String::new(), false),
     };
-    let mut note = report(&written_paths(command, workspace), workspace, tail_lines);
+    let (mut note, _) = check(&written_paths(command, workspace), workspace, tail_lines);
     if timed_out {
         note.push_str(&format!(
             "\n[verify timeout after {}s] {command}",

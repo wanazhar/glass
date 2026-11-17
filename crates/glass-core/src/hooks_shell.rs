@@ -614,32 +614,30 @@ mod tests {
             "exact stdin match must prove the JSON shape: {v:?}"
         );
     }
-}
 
-#[cfg(all(test, unix))]
-#[test]
-fn load_config_reads_the_hooks_table() {
-    let dir = std::env::temp_dir().join(format!("gc-hooks-cfg-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.toml"), "[hooks.pre_tool_use]\ncommand = \"echo blocked\"\nmatcher = \"edit\"\n[pricing]\ninput = 0.0\n").unwrap();
-    // load_config reads the default path only; test via a temp override is
-    // out of reach here, so assert the shape on a hand-built config text.
-    let value: toml::Value =
-        toml::from_str(&std::fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
-    let table = value
-        .get("hooks")
-        .unwrap()
-        .get("pre_tool_use")
-        .unwrap()
-        .as_table()
-        .unwrap();
-    assert_eq!(
-        table.get("command").unwrap().as_str().unwrap(),
-        "echo blocked"
-    );
-    assert_eq!(table.get("matcher").unwrap().as_str().unwrap(), "edit");
-    let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn load_config_reads_the_hooks_table() {
+        let dir = std::env::temp_dir().join(format!("gc-hooks-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[hooks.pre_tool_use]\ncommand = \"echo blocked\"\nmatcher = \"edit\"\n[pricing]\ninput = 0.0\n").unwrap();
+        // load_config reads the default path only; test via a temp override is
+        // out of reach here, so assert the shape on a hand-built config text.
+        let value: toml::Value =
+            toml::from_str(&std::fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
+        let table = value
+            .get("hooks")
+            .unwrap()
+            .get("pre_tool_use")
+            .unwrap()
+            .as_table()
+            .unwrap();
+        assert_eq!(
+            table.get("command").unwrap().as_str().unwrap(),
+            "echo blocked"
+        );
+        assert_eq!(table.get("matcher").unwrap().as_str().unwrap(), "edit");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

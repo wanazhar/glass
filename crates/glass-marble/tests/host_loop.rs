@@ -1,9 +1,10 @@
 use glass_marble::{
-    ApprovalInbox, Conversation, EventBus, HostPolicy, InboundMessage, MarbleReply, MarbleTurn,
-    ToolRouter, TurnOptions, run_turn, to_turn_input,
+    ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy, InboundMessage, MarbleReply,
+    MarbleTurn, ProductState, ToolRouter, TurnOptions, run_turn, to_turn_input,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 const FAKE_RUNTIME_SOURCE: &str = include_str!("fixtures/fake_glass_core_runtime.py");
 
@@ -135,7 +136,11 @@ fn denied_tool_fails_closed_without_running() {
 
     let outcome = tool_outcome(&root);
     assert_eq!(outcome["isError"], serde_json::json!(true));
-    assert!(outcome["text"].as_str().unwrap().contains("host declined"));
+    let text = outcome["text"].as_str().unwrap();
+    assert!(
+        text.contains("declined glass.workspace.list") && text.contains("host policy"),
+        "a denial should name the tool and its reason: {text}"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -225,6 +230,74 @@ fn asking_policy_waits_for_an_explicit_inbox_decision() {
     assert_eq!(worker.text, "handled please list the workspace");
     assert_eq!(tool_outcome(&root)["isError"], serde_json::json!(false));
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn marble_control_refuses_a_write_the_host_would_have_approved() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("control-observe");
+    let script = write_fake_runtime(&root);
+    let storage_dir = root.join("sessions");
+    let mut state = ProductState::default();
+    state.control.profile = ControlProfile::Observe;
+    let product = Arc::new(Mutex::new(state));
+    let mut python = Command::new("python3");
+    python
+        .arg(&script)
+        .arg("runtime")
+        .arg("--tool")
+        .arg("glass.workspace.write")
+        .arg("--path")
+        .arg("notes.md")
+        .arg("--content")
+        .arg("rewritten");
+    let mut conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        // The host posture would approve, so only marble's own layer can refuse.
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        EventBus::default(),
+    )
+    .unwrap()
+    .with_product(Arc::clone(&product));
+
+    let reply = run_turn(
+        &turn("rewrite the notes", None),
+        &mut conversation,
+        TurnOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(reply.text, "handled rewrite the notes");
+
+    let outcome = tool_outcome(&root);
+    assert_eq!(outcome["isError"], serde_json::json!(true));
+    assert!(
+        outcome["text"].as_str().unwrap().contains("read-only"),
+        "a refusal should name its rule: {outcome}"
+    );
+    assert!(
+        !root.join("notes.md").exists(),
+        "the observe profile must not change the workspace"
+    );
+
+    let guard = product.lock().unwrap();
+    let entry = guard
+        .control
+        .ledger
+        .last()
+        .expect("every governed decision is journalled");
+    assert_eq!(entry.decision, "denied");
+    assert_eq!(entry.tool, "glass.workspace.write");
+    assert!(entry.reason.contains("read-only"), "{}", entry.reason);
+    drop(guard);
+
+    let _ = conversation.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -14,6 +14,11 @@ pub const WORKSPACE_LIST: &str = "glass.workspace.list";
 pub const WORKSPACE_READ: &str = "glass.workspace.read";
 pub const WORKSPACE_WRITE: &str = "glass.workspace.write";
 
+/// Whether one governed tool changes the workspace.
+pub fn is_write_tool(name: &str) -> bool {
+    name == WORKSPACE_WRITE
+}
+
 /// Largest file the read tool returns in one call.
 pub const MAX_READ_BYTES: usize = 256 * 1024;
 /// Largest payload the write tool accepts in one call.

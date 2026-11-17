@@ -1,7 +1,7 @@
 use glass_marble::{
     AccessPolicy, ApprovalInbox, Conversation, EventBus, HostPolicy, MarbleServer,
     MarbleServerParts, PendingApproval, ProductState, RequestHead, TaskRecord, ToolRouter,
-    TranscriptEntry, spawn_turn_worker,
+    TranscriptEntry, TurnCommand, spawn_turn_worker,
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -66,6 +66,167 @@ fn server_with(
         turn_tx: mpsc::channel().0,
         policy,
     })
+}
+
+/// Server whose turn channel is kept alive by the caller, so dispatch is observable
+/// without a real runtime.
+fn server_with_turn_channel(
+    state: ProductState,
+    turn_tx: mpsc::Sender<TurnCommand>,
+) -> MarbleServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::new(Mutex::new(state)),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx,
+        policy: AccessPolicy::new(None),
+    })
+}
+
+fn control_of(server: &MarbleServer) -> serde_json::Value {
+    let (status, body) = server.handle("GET", "/api/control", "");
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+#[test]
+fn paused_admission_queues_messages_and_resume_dispatches_in_order() {
+    let (turn_tx, turn_rx) = mpsc::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"first"}"#);
+    assert_eq!(status, 202, "{body}");
+    let queued: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(queued["queued"], serde_json::json!(true));
+    assert_eq!(queued["position"], serde_json::json!(1));
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"second"}"#);
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        control_of(&server)["queue"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert!(
+        turn_rx.try_recv().is_err(),
+        "a paused instance must not admit turns"
+    );
+
+    let (status, body) = server.handle("POST", "/api/control/resume", "");
+    assert_eq!(status, 200, "{body}");
+    let resumed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(resumed["dispatched"], serde_json::json!(2));
+    let first = turn_rx
+        .try_recv()
+        .expect("first queued message is dispatched");
+    let second = turn_rx
+        .try_recv()
+        .expect("second queued message is dispatched");
+    assert_eq!(first.request.text, "first");
+    assert_eq!(second.request.text, "second");
+    assert_eq!(
+        control_of(&server)["queue"].as_array().map(Vec::len),
+        Some(0)
+    );
+}
+
+#[test]
+fn control_routes_change_the_profile_and_manage_grants() {
+    let server = free_server(ProductState::default());
+    assert_eq!(
+        control_of(&server)["profile"],
+        serde_json::json!("workspace")
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/control/profile", r#"{"profile":"chaos"}"#)
+            .0,
+        400
+    );
+
+    let (status, body) = server.handle("POST", "/api/control/profile", r#"{"profile":"observe"}"#);
+    assert_eq!(status, 200, "{body}");
+    let control = control_of(&server);
+    assert_eq!(control["profile"], serde_json::json!("observe"));
+    assert_eq!(control["profiles"].as_array().map(Vec::len), Some(3));
+    assert!(
+        control["deniedPaths"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty())
+    );
+
+    let (status, body) = server.handle(
+        "POST",
+        "/api/control/grants",
+        r#"{"tool":"glass.workspace.read","pathPrefix":"docs"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let granted: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let grant_id = granted["grant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        control_of(&server)["grants"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/control/grants",
+                r#"{"tool":"shell","pathPrefix":"/"}"#
+            )
+            .0,
+        400
+    );
+
+    let (status, _) = server.handle(
+        "POST",
+        &format!("/api/control/grants/{grant_id}/revoke"),
+        "",
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        control_of(&server)["grants"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                &format!("/api/control/grants/{grant_id}/revoke"),
+                ""
+            )
+            .0,
+        404
+    );
+}
+
+#[test]
+fn allowing_an_approval_with_remember_leaves_a_revocable_grant() {
+    let approvals = ApprovalInbox::default();
+    let server = server_with(
+        ProductState::default(),
+        approvals.clone(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    approvals.register(
+        "host:fixture-session:1:call-1",
+        "call-1",
+        "glass.workspace.read",
+        serde_json::json!({"path": "docs/notes.md"}),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/approvals/host:fixture-session:1:call-1/allow",
+        r#"{"remember":true}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let control = control_of(&server);
+    let grant = control["grants"][0].clone();
+    assert_eq!(grant["tool"], serde_json::json!("glass.workspace.read"));
+    assert_eq!(grant["pathPrefix"], serde_json::json!("docs"));
 }
 
 fn free_server(state: ProductState) -> MarbleServer {

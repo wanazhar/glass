@@ -86,10 +86,26 @@ pub fn answer_tool_request(
     approval: Approval,
     router: &ToolRouter,
 ) -> Result<ToolOutcome, MarbleError> {
+    answer_tool_request_with_note(client, request_id, call, approval, router, None)
+}
+
+/// Answer one inbound tool request, telling Core why a denial happened so the
+/// model can adapt instead of retrying blindly.
+pub fn answer_tool_request_with_note(
+    client: &mut RuntimeClient,
+    request_id: Value,
+    call: &ToolRequest,
+    approval: Approval,
+    router: &ToolRouter,
+    note: Option<&str>,
+) -> Result<ToolOutcome, MarbleError> {
     let outcome = if approval == Approval::Approve {
         router.execute(&call.name, &call.arguments)
     } else {
-        ToolOutcome::error(format!("host declined tool {}", call.name))
+        ToolOutcome::error(match note.filter(|note| !note.is_empty()) {
+            Some(note) => format!("marble declined {}: {note}", call.name),
+            None => format!("host declined tool {}", call.name),
+        })
     };
     client
         .tool_result(request_id, &outcome.text, outcome.is_error)

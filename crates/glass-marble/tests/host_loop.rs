@@ -4,6 +4,7 @@ use glass_marble::{
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const FAKE_RUNTIME_SOURCE: &str = include_str!("fixtures/fake_glass_core_runtime.py");
@@ -353,6 +354,60 @@ fn a_restarted_engine_keeps_the_durable_conversation() {
     )
     .unwrap();
     assert_eq!(second.conversation_id, first.conversation_id);
+    assert_eq!(second.text, "handled second message");
+
+    let _ = conversation.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_cancelled_turn_leaves_no_stale_reply_for_the_next_turn() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("cancel-late-ack");
+    let script = write_fake_runtime(&root);
+    let storage_dir = root.join("sessions");
+    let mut python = Command::new("python3");
+    python.arg(&script).arg("runtime").arg("--late-abort-ack");
+    let mut conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        EventBus::default(),
+    )
+    .unwrap();
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&cancelled);
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            stop.store(true, Ordering::Relaxed);
+        });
+        let first = run_turn(
+            &turn("first message", None),
+            &mut conversation,
+            TurnOptions {
+                cancel: Some(&cancelled),
+                ..TurnOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(first.cancelled, "a cancelled turn reports the cancellation");
+    });
+
+    // The abort acknowledgement arrived after the run reply it was racing, so
+    // the next turn has to recognise it as a reply from the previous turn.
+    let second = run_turn(
+        &turn("second message", None),
+        &mut conversation,
+        TurnOptions::default(),
+    )
+    .unwrap();
     assert_eq!(second.text, "handled second message");
 
     let _ = conversation.shutdown();

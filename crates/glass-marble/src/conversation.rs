@@ -24,6 +24,9 @@ pub const PUMP_INTERVAL: Duration = Duration::from_millis(200);
 /// Bound on auxiliary responses (for example a cancel acknowledgement) a turn
 /// may observe before its own response arrives.
 const MAX_AUXILIARY_RESPONSES: usize = 8;
+/// Bound on request ids remembered until their response arrives, so a runtime
+/// that never answers a steer cannot grow this table without limit.
+const MAX_OUTSTANDING_RESPONSES: usize = 64;
 
 /// Product instructions for a marble conversation.
 pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collaborator working inside the \
@@ -158,6 +161,14 @@ pub struct Conversation {
     /// Set when the engine stopped answering; the next turn restarts it first.
     transport_failed: bool,
     restarts: u64,
+    /// Request ids this conversation issued and has not consumed yet.
+    ///
+    /// A turn can end before every reply it asked for arrives: cancellation
+    /// aborts a running task while that task's `durable/run` reply is still in
+    /// flight, and the two replies cross on the wire. Those replies belong to
+    /// the turn that asked for them, so the next turn drops them instead of
+    /// failing on a response id it never used.
+    outstanding: Vec<String>,
 }
 
 impl Conversation {
@@ -233,6 +244,7 @@ impl Conversation {
             storage_dir: storage_dir.to_path_buf(),
             transport_failed: false,
             restarts: 0,
+            outstanding: Vec::new(),
         })
     }
 
@@ -328,6 +340,8 @@ impl Conversation {
         drop(previous);
         self.set_active("", "");
         self.transport_failed = false;
+        // The ids belonged to the engine that just went away.
+        self.outstanding.clear();
         self.restarts = self.restarts.saturating_add(1);
         tracing::warn!(
             restarts = self.restarts,
@@ -350,6 +364,32 @@ impl Conversation {
                 Err(MarbleError::Io(error))
             }
         }
+    }
+
+    /// Remember one response this conversation still has to consume.
+    fn note_issued(&mut self, id: String) {
+        if self.outstanding.len() >= MAX_OUTSTANDING_RESPONSES {
+            self.outstanding.remove(0);
+        }
+        self.outstanding.push(id);
+    }
+
+    /// Consume one response id; true when this conversation issued it.
+    fn note_answered(&mut self, id: &str) -> bool {
+        match self.outstanding.iter().position(|known| known == id) {
+            Some(index) => {
+                self.outstanding.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Send one request and remember the response id it will answer with.
+    fn issue(&mut self, outcome: std::io::Result<String>) -> Result<String, MarbleError> {
+        let id = self.note_io(outcome)?;
+        self.note_issued(id.clone());
+        Ok(id)
     }
 
     /// Select a model for new durable conversations.
@@ -375,10 +415,8 @@ impl Conversation {
         let mut options = SessionOptions::mixed(self.cwd.clone(), ToolRouter::catalog());
         options.instructions = Some(SESSION_INSTRUCTIONS.to_string());
         options.model = self.model.clone();
-        let create_id = self
-            .client
-            .durable_create(&options)
-            .map_err(MarbleError::Io)?;
+        let created = self.client.durable_create(&options);
+        let create_id = self.issue(created)?;
         let result = self.pump(&create_id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
         let conversation_id = result["conversationId"]
             .as_str()
@@ -401,10 +439,10 @@ impl Conversation {
         input: &TurnInput,
     ) -> Result<String, MarbleError> {
         self.set_active(conversation_id, "");
-        let submit_id = self
+        let submitted = self
             .client
-            .durable_submit(conversation_id, request_id, input)
-            .map_err(MarbleError::Io)?;
+            .durable_submit(conversation_id, request_id, input);
+        let submit_id = self.issue(submitted)?;
         let result = self.pump(&submit_id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
         let task_id = result["submission"]["id"]
             .as_str()
@@ -441,14 +479,14 @@ impl Conversation {
 
     /// Start one durable task; returns the runtime response id to await.
     pub fn start(&mut self, task_id: &str) -> Result<String, MarbleError> {
-        let outcome = self.client.durable_run(Some(task_id));
-        self.note_io(outcome)
+        let started = self.client.durable_run(Some(task_id));
+        self.issue(started)
     }
 
     /// Request cancellation of one durable task.
     pub fn abort(&mut self, task_id: &str) -> Result<String, MarbleError> {
-        let outcome = self.client.durable_abort(task_id, false);
-        self.note_io(outcome)
+        let aborted = self.client.durable_abort(task_id, false);
+        self.issue(aborted)
     }
 
     /// Drain events and tool requests until the correlated response arrives.
@@ -501,6 +539,7 @@ impl Conversation {
             match incoming {
                 Incoming::Response { id, result } => {
                     if id.as_str() == Some(expected) {
+                        self.note_answered(expected);
                         return result.map_err(|error| {
                             MarbleError::Protocol(format!(
                                 "runtime error {}: {}",
@@ -512,7 +551,14 @@ impl Conversation {
                         .as_str()
                         .map(str::to_owned)
                         .unwrap_or_else(|| id.to_string());
-                    if auxiliary.contains(&text) {
+                    if auxiliary.contains(&text) || self.note_answered(&text) {
+                        // A reply from a turn that already ended — a cancelled
+                        // run settling, or the abort that raced it — is not an
+                        // answer to this turn, and must not fail it.
+                        tracing::debug!(
+                            response = %text,
+                            "dropped a runtime response from an earlier turn"
+                        );
                         continue;
                     }
                     return Err(MarbleError::Protocol(format!(
@@ -559,6 +605,7 @@ impl Conversation {
             let input = crate::to_turn_input(&crate::InboundMessage::new(&request.text));
             match self.client.steer(&self.active_conversation, &input) {
                 Ok(id) => {
+                    self.note_issued(id.clone());
                     if auxiliary.len() < MAX_AUXILIARY_RESPONSES {
                         auxiliary.push(id);
                     }

@@ -19,6 +19,12 @@ if argument("--path") is not None:
 if argument("--content") is not None:
     TOOL_ARGUMENTS["content"] = argument("--content")
 
+# A cancelled turn leaves replies in flight. In this mode the fixture parks the
+# first durable run until an abort arrives, then answers the run before the
+# abort so the abort acknowledgement is stranded for whatever turn comes next.
+LATE_ABORT_ACK = "--late-abort-ack" in sys.argv
+PARKED_RUN = {}
+
 SESSION_ID = "fixture-session"
 STORAGE_DIR = None
 INPUT_TEXT = {"value": ""}
@@ -209,9 +215,15 @@ def main():
                 {"submission": {"id": task_id, "status": "pending"}, "duplicate": duplicate},
             )
         elif method == "durable/run":
+            if LATE_ABORT_ACK and not PARKED_RUN.get("used"):
+                PARKED_RUN["used"] = True
+                PARKED_RUN["id"] = identifier
+                continue
             task_id = params.get("taskId") or task_id_for(params.get("conversationId"), params.get("requestId"))
             run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), params.get("conversationId") or SESSION_ID, params.get("requestId") or "")
         elif method == "durable/abort":
+            if PARKED_RUN.get("id"):
+                reply(PARKED_RUN.pop("id"), {"sessionId": SESSION_ID, "settled": True})
             reply(identifier, {"aborted": True, "taskId": params.get("taskId")})
         elif method == "shutdown":
             reply(identifier, {})

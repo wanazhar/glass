@@ -717,7 +717,14 @@
           meta: "held while admission is paused" +
             (entry.conversationId ? " · " + entry.conversationId : " · new conversation"),
         }));
-        const rows = queuedTurns.concat(held);
+        // The worker admits the human lane before the routine lane, so list the
+        // rows in the order they will actually run, not the order they arrived.
+        // Sorting is stable, so arrival order still holds inside each lane.
+        const rows = queuedTurns
+          .concat(held)
+          .sort((left, right) =>
+            Number(Boolean(left.routineId)) - Number(Boolean(right.routineId))
+          );
         const note = waiting.note || "";
         el.controlQueueNote.textContent = note;
         el.controlQueueNote.hidden = !note;

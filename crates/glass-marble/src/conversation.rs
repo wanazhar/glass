@@ -169,6 +169,15 @@ fn wait_for_approval(
     }
 }
 
+/// Workspace path a governed call names, for the control ledger.
+fn call_path(call: &ToolRequest) -> String {
+    call.arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Durable conversation handle over the local runtime.
 pub struct Conversation {
     client: RuntimeClient,
@@ -678,21 +687,36 @@ impl Conversation {
             }),
         );
         let (approval, reason) = self.decide(&key, call, cancel);
-        let outcome = crate::host::answer_tool_request_with_note(
+        let answer = crate::host::answer_tool(
             &mut self.client,
             request_id,
             call,
             approval,
             &self.router,
             (!reason.is_empty()).then_some(reason.as_str()),
+            cancel,
         )?;
+        let (approved, outcome) = match answer {
+            crate::host::ToolAnswer::Answered(outcome) => (approval == Approval::Approve, outcome),
+            crate::host::ToolAnswer::Stopped(outcome) => {
+                // A stop request ended this call while it ran, so the ledger says
+                // it was refused and the surface shows an errored call.
+                self.record(
+                    &call.name,
+                    &call_path(call),
+                    "denied",
+                    crate::host::STOPPED_TOOL,
+                );
+                (false, outcome)
+            }
+        };
         self.publish(
             "tool_end",
             value!({
                 "requestId": key,
                 "callId": call.call_id,
                 "tool": call.name,
-                "approved": approval == Approval::Approve,
+                "approved": approved,
                 "isError": outcome.is_error,
                 "text": outcome.text,
             }),
@@ -708,12 +732,7 @@ impl Conversation {
         call: &ToolRequest,
         cancel: Option<CancelToken<'_>>,
     ) -> (Approval, String) {
-        let path = call
-            .arguments
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let path = call_path(call);
         let verdict = self.verdict(&call.name, &path);
         let (approval, decision, reason) = match verdict {
             Verdict::Allow { reason } => {

@@ -481,6 +481,88 @@ fn a_cancelled_turn_leaves_no_stale_reply_for_the_next_turn() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A stop pressed while a governed tool is already executing. The read below
+/// blocks on a FIFO nobody writes to, so only an interruptible call lets the turn
+/// settle without waiting for the tool to report back.
+#[test]
+fn a_stop_request_interrupts_a_governed_tool_that_is_already_running() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("stop-running-tool");
+    let fifo = root.join("slow.txt");
+    let made = Command::new("python3")
+        .arg("-c")
+        .arg("import os,sys; os.mkfifo(sys.argv[1])")
+        .arg(&fifo)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !made {
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    let script = write_fake_runtime(&root);
+    let storage_dir = root.join("sessions");
+    let mut python = Command::new("python3");
+    python
+        .arg(&script)
+        .arg("runtime")
+        .arg("--tool")
+        .arg("glass.workspace.read")
+        .arg("--path")
+        .arg("slow.txt");
+    let mut conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        EventBus::default(),
+    )
+    .unwrap();
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&cancelled);
+    let started = std::time::Instant::now();
+    let reply = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            stop.store(true, Ordering::Relaxed);
+        });
+        run_turn(
+            &turn("read the slow file", None),
+            &mut conversation,
+            TurnOptions {
+                cancel: Some(&cancelled),
+                timeout: std::time::Duration::from_secs(20),
+                ..TurnOptions::default()
+            },
+        )
+        .unwrap()
+    });
+    assert!(reply.cancelled, "the stopped turn reports the cancellation");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the turn must settle on the stop request, not on the blocked read: {:?}",
+        started.elapsed()
+    );
+
+    let outcome = tool_outcome(&root);
+    assert_eq!(outcome["isError"], serde_json::json!(true));
+    assert!(
+        outcome["text"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled while this tool call was running"),
+        "the runtime learns the running call was stopped: {outcome}"
+    );
+
+    let _ = conversation.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn a_runtime_without_mixed_capability_is_rejected() {
     if !python3_available() {

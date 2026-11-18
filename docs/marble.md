@@ -179,6 +179,12 @@ Admission is Marble's decision too:
   the skip is published with the routine id.
 - `Stop everything` pauses admission and cancels every running task in one move.
   Both are reversible: the pause switch and the queue survive a restart.
+- A stop reaches governed calls as well as the model loop. A call parked on an
+  approval is refused at once, and a call that is already running stops being
+  waited on: the runtime is told the call was stopped and the task is aborted
+  without waiting for a slow search or write to report back. The executor itself
+  is not preempted mid-call, so a write already in flight may still land, and the
+  ledger records the call as denied with that reason.
 - Routines are admitted through the same queue, so a paused assistant queues its
   scheduled work instead of running it. Running a disabled routine by hand is a
   deliberate override: it still runs, and the answer says it overrode the pause.

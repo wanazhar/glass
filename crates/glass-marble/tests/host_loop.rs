@@ -235,6 +235,73 @@ fn asking_policy_waits_for_an_explicit_inbox_decision() {
 }
 
 #[test]
+fn a_stopped_turn_does_not_wait_out_a_pending_approval() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("cancel-approval");
+    let script = write_fake_runtime(&root);
+    let storage_dir = root.join("sessions");
+    let approvals = ApprovalInbox::default();
+    let mut conversation = spawn_conversation(
+        &root,
+        &script,
+        &storage_dir,
+        HostPolicy::asking(),
+        approvals.clone(),
+    )
+    .with_approval_timeout(std::time::Duration::from_secs(60));
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&cancelled);
+    let watched = approvals.clone();
+    let started = std::time::Instant::now();
+    let reply = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while watched.pending().is_empty() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the turn never parked on an approval"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        run_turn(
+            &turn("please list the workspace", None),
+            &mut conversation,
+            TurnOptions {
+                cancel: Some(&cancelled),
+                ..TurnOptions::default()
+            },
+        )
+        .unwrap()
+    });
+    let elapsed = started.elapsed();
+
+    assert!(reply.cancelled, "a stopped turn reports the cancellation");
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "a stopped turn must not wait out its approval timeout: {elapsed:?}"
+    );
+    assert!(
+        approvals.pending().is_empty(),
+        "a stopped approval leaves nothing pending"
+    );
+    let outcome = tool_outcome(&root);
+    assert_eq!(outcome["isError"], serde_json::json!(true));
+    let text = outcome["text"].as_str().unwrap();
+    assert!(
+        text.contains("cancelled"),
+        "a stopped call should say it never ran: {text}"
+    );
+
+    let _ = conversation.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn marble_control_refuses_a_write_the_host_would_have_approved() {
     if !python3_available() {
         return;

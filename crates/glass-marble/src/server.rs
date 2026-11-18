@@ -16,7 +16,7 @@ use crate::voice;
 use crate::worker::{CancelRegistry, TurnCommand, TurnRequest, TurnSender, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -2451,18 +2451,16 @@ impl MarbleServer {
             served += 1;
             let head_text = String::from_utf8_lossy(&head_bytes).to_string();
             let head = parse_head(&head_text);
-            let content_length = head
-                .header("content-length")
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            if content_length > MAX_BODY_BYTES {
-                return write_response(&mut stream, Response::error(413, "body_too_large"), false);
-            }
-            let mut body = vec![0u8; content_length];
-            if content_length > 0 {
-                reader.read_exact(&mut body)?;
-            }
-            let body = String::from_utf8_lossy(&body).to_string();
+            let body = match read_body(&mut reader, &head)? {
+                BodyRead::Bytes(body) => String::from_utf8_lossy(&body).to_string(),
+                BodyRead::TooLarge => {
+                    return write_response(
+                        &mut stream,
+                        Response::error(413, "body_too_large"),
+                        false,
+                    );
+                }
+            };
             if head.method == "GET" && head.path() == "/api/events" {
                 if !self.policy.authorize(&head) {
                     return write_response(
@@ -2593,6 +2591,85 @@ fn write_response(
         stream.write_all(response.body.as_bytes())?;
     }
     stream.flush()
+}
+
+/// A request body read from the wire, or the fact that it is larger than this
+/// instance accepts.
+enum BodyRead {
+    Bytes(Vec<u8>),
+    TooLarge,
+}
+
+/// Read one request body. A reverse proxy may forward an upload with
+/// `Transfer-Encoding: chunked` even when the client sent a length, so both
+/// framings are accepted; both are bounded by `MAX_BODY_BYTES` before the body
+/// is buffered.
+fn read_body(reader: &mut impl BufRead, head: &RequestHead) -> std::io::Result<BodyRead> {
+    let chunked = head
+        .header("transfer-encoding")
+        .map(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("chunked"))
+        })
+        .unwrap_or(false);
+    if chunked {
+        return read_chunked_body(reader);
+    }
+    let content_length = head
+        .header("content-length")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    if content_length > MAX_BODY_BYTES {
+        return Ok(BodyRead::TooLarge);
+    }
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        reader.read_exact(&mut body)?;
+    }
+    Ok(BodyRead::Bytes(body))
+}
+
+fn read_chunked_body(reader: &mut impl BufRead) -> std::io::Result<BodyRead> {
+    let mut body = Vec::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(BodyRead::Bytes(body));
+        }
+        let size_text = line.trim().split(';').next().unwrap_or_default().trim();
+        let size = usize::from_str_radix(size_text, 16).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a chunk size is hexadecimal",
+            )
+        })?;
+        if size == 0 {
+            // Trailer fields carry nothing here, but they still end at a blank
+            // line and must be consumed before the next request on this socket.
+            loop {
+                let mut trailer = String::new();
+                if reader.read_line(&mut trailer)? == 0 || trailer.trim().is_empty() {
+                    break;
+                }
+            }
+            return Ok(BodyRead::Bytes(body));
+        }
+        if body.len() + size > MAX_BODY_BYTES {
+            return Ok(BodyRead::TooLarge);
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..])?;
+        let mut terminator = [0u8; 2];
+        reader.read_exact(&mut terminator)?;
+        if &terminator != b"\r\n" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a chunk ends with CRLF",
+            ));
+        }
+    }
 }
 
 fn read_head(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {

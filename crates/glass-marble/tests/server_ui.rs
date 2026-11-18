@@ -424,6 +424,45 @@ fn oversized_bodies_are_rejected_before_reading() {
 }
 
 #[test]
+fn chunked_request_bodies_are_decoded() {
+    // A reverse proxy may forward a login chunked even though the browser sent
+    // a length, so the body has to arrive either way.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::new(Mutex::new(ProductState::default())),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(Some("s3cret".into())),
+        cancels: CancelRegistry::default(),
+    });
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+    let body = r#"{"token":"s3cret"}"#;
+    let mut stream = connect(port);
+    stream
+        .write_all(
+            format!(
+                "POST /api/login HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                 Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\
+                 Connection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("marble_token=s3cret"), "{response}");
+}
+
+#[test]
 fn event_stream_replays_from_a_cursor() {
     let events = EventBus::default();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

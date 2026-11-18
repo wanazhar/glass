@@ -136,6 +136,18 @@ pub struct Routine {
     pub last_task_id: String,
     #[serde(default)]
     pub last_status: String,
+    /// Occurrences that passed while Marble was not running, cumulatively.
+    #[serde(default)]
+    pub missed_runs: u64,
+    /// Occurrences missed in the most recent gap.
+    #[serde(default)]
+    pub missed_last_gap: u64,
+    #[serde(default)]
+    pub last_missed_at: u64,
+    /// Whether the first tick after a gap runs the routine once. With this off,
+    /// a missed occurrence is skipped and the schedule simply resumes.
+    #[serde(default = "enabled_by_default")]
+    pub catch_up: bool,
 }
 
 fn enabled_by_default() -> bool {
@@ -153,6 +165,25 @@ impl Routine {
         self.parsed_schedule()
             .map(Schedule::label)
             .unwrap_or_else(|| self.schedule.clone())
+    }
+
+    /// One line describing what happened while Marble was away.
+    pub fn missed_label(&self) -> String {
+        match self.missed_last_gap {
+            0 => "on schedule".to_string(),
+            1 => "1 run missed, caught up".to_string(),
+            count => format!("{count} runs missed, caught up"),
+        }
+    }
+}
+
+/// How many occurrences of `schedule` passed between `scheduled` and `now`.
+/// The occurrence that is due right now is not counted as missed.
+fn missed_occurrences(schedule: Schedule, scheduled: u64, now: u64) -> u64 {
+    let elapsed = now.saturating_sub(scheduled);
+    match schedule {
+        Schedule::Every(seconds) => elapsed / (seconds.max(1) * 1000),
+        Schedule::Daily(_) => elapsed / 86_400_000,
     }
 }
 
@@ -207,6 +238,10 @@ impl RoutineState {
             runs: 0,
             last_task_id: String::new(),
             last_status: "scheduled".into(),
+            missed_runs: 0,
+            missed_last_gap: 0,
+            last_missed_at: 0,
+            catch_up: true,
         };
         self.routines.push(routine.clone());
         Ok(routine)
@@ -217,6 +252,15 @@ impl RoutineState {
         let before = self.routines.len();
         self.routines.retain(|routine| routine.id != id);
         self.routines.len() != before
+    }
+
+    /// Choose whether the first tick after a gap runs the missed occurrence.
+    pub fn set_catch_up(&mut self, id: &str, catch_up: bool) -> bool {
+        let Some(routine) = self.routines.iter_mut().find(|routine| routine.id == id) else {
+            return false;
+        };
+        routine.catch_up = catch_up;
+        true
     }
 
     /// Enable or disable one routine, recomputing its next run when enabled.
@@ -271,6 +315,12 @@ impl RoutineState {
 
     /// Routines whose next run has arrived. Every returned routine has already
     /// been advanced, so a second call in the same tick returns nothing.
+    ///
+    /// A laptop sleeps overnight and a host reboots; either way Marble was not
+    /// awake for its schedule. Rather than silently skipping those runs, the gap
+    /// is counted on the routine and, when catch-up is on, the routine runs once
+    /// on the first tick. A routine with catch-up off records the missed runs
+    /// and resumes its schedule without a burst of work.
     pub fn due(&mut self, now: u64) -> Vec<Routine> {
         let mut due = Vec::new();
         for routine in self.routines.iter_mut() {
@@ -285,6 +335,17 @@ impl RoutineState {
                 routine.last_status = "invalid schedule".into();
                 continue;
             };
+            let missed = missed_occurrences(schedule, routine.next_run_at, now);
+            routine.missed_last_gap = missed;
+            if missed > 0 {
+                routine.missed_runs = routine.missed_runs.saturating_add(missed);
+                routine.last_missed_at = now;
+                if !routine.catch_up {
+                    routine.next_run_at = schedule.next_after(now);
+                    routine.last_status = format!("missed {missed}");
+                    continue;
+                }
+            }
             routine.next_run_at = schedule.next_after(now);
             due.push(routine.clone());
         }
@@ -383,6 +444,43 @@ mod tests {
         assert_eq!(routines.routines[0].last_task_id, "task-1");
         routines.note_settled("task-1", "completed");
         assert_eq!(routines.routines[0].last_status, "completed");
+    }
+
+    #[test]
+    fn a_gap_is_counted_and_caught_up_exactly_once() {
+        let mut routines = RoutineState::default();
+        let routine = routines
+            .add("Daily digest", "summarize today", "every:1h", None)
+            .unwrap();
+        // Three hours later: three occurrences passed at +0h, +1h, and +2h;
+        // the one at +3h is due now and runs as the catch-up.
+        let now = routine.next_run_at + 3 * 3_600_000;
+        let fired = routines.due(now);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].missed_last_gap, 3);
+        assert_eq!(routines.routines[0].missed_runs, 3);
+        assert_eq!(routines.routines[0].last_missed_at, now);
+        assert_eq!(
+            routines.routines[0].missed_label(),
+            "3 runs missed, caught up"
+        );
+        assert!(routines.due(now + 1000).is_empty());
+    }
+
+    #[test]
+    fn catch_up_can_be_turned_off_without_losing_the_count() {
+        let mut routines = RoutineState::default();
+        let routine = routines
+            .add("Daily digest", "summarize today", "every:1h", None)
+            .unwrap();
+        assert!(routines.set_catch_up(&routine.id, false));
+        let now = routine.next_run_at + 2 * 3_600_000;
+        assert!(routines.due(now).is_empty());
+        let stored = routines.get(&routine.id).unwrap();
+        assert_eq!(stored.missed_runs, 2);
+        assert_eq!(stored.last_status, "missed 2");
+        assert!(stored.next_run_at > now);
+        assert!(!routines.set_catch_up("missing", true));
     }
 
     #[test]

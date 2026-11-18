@@ -69,8 +69,28 @@ pub fn run_tick(
         let mut guard = lock(state);
         guard.presence.beat();
         let due = guard.routines.due(now);
+        // The heartbeat tick is where a months-long instance folds its document
+        // back inside the retention bounds.
+        let pruned = if persist_heartbeat {
+            guard.prune(now)
+        } else {
+            crate::state::PruneSummary::default()
+        };
         if due.is_empty() && !persist_heartbeat {
             return 0;
+        }
+        if !pruned.is_empty() {
+            events.publish(
+                "",
+                "",
+                "retention",
+                json!({
+                    "transcript": pruned.transcript,
+                    "tasks": pruned.tasks,
+                    "conversations": pruned.conversations,
+                    "revision": guard.revision,
+                }),
+            );
         }
         for routine in due {
             if guard.control.paused {
@@ -90,6 +110,7 @@ pub fn run_tick(
                                 "title": routine.title,
                                 "queued": true,
                                 "queueId": entry.id,
+                                "missed": routine.missed_last_gap,
                             }),
                         );
                         notifications.push(Notification::new(
@@ -129,11 +150,26 @@ pub fn run_tick(
                         "routineId": routine.id,
                         "title": routine.title,
                         "queued": false,
+                        "missed": routine.missed_last_gap,
                     }),
                 );
+                let title = if routine.missed_last_gap > 0 {
+                    format!(
+                        "{} caught up after {} missed run{}",
+                        routine.title,
+                        routine.missed_last_gap,
+                        if routine.missed_last_gap == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )
+                } else {
+                    format!("{} started", routine.title)
+                };
                 notifications.push(Notification::new(
                     "routine",
-                    format!("{} started", routine.title),
+                    title,
                     routine.prompt.clone(),
                     routine.conversation_id.as_deref().unwrap_or_default(),
                     "",

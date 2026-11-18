@@ -22,8 +22,10 @@ person touches.
 - **Presence**: what it is doing now, uptime, and what a restart cost it.
 - **Memory**: facts you asked it to keep, and suggestions it waits for you to
   confirm. Facts are carried into every turn.
-- **Routines**: saved prompts on a schedule that fire through the same queue.
-- **Notifications**: a JSON webhook, and APNs push for the iOS app.
+- **Routines**: saved prompts on a schedule that fire through the same queue,
+  count the runs a sleeping host missed, and catch up once on wake.
+- **Notifications**: a JSON webhook and APNs push, with retries, duplicate
+  suppression, quiet hours, and re-alerts until an approval is answered.
 - **Voice, on device only**: the host shapes a reply for speech and never sees
   audio.
 - **Durable product state**: a revisioned `product-state.json` written atomically

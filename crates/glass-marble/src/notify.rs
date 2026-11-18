@@ -9,18 +9,23 @@
 //!   `.p8` key the operator already has. The JWT is signed with `openssl` and
 //!   the request is sent with `curl --http2`, so no TLS stack is vendored here.
 //!
-//! Every delivery is best effort: a failed notification is logged and dropped,
-//! never allowed to fail or delay a turn.
+//! Every delivery is best effort: a failed notification is logged and retried a
+//! bounded number of times, never allowed to fail or delay a turn. A reachable
+//! assistant also avoids becoming noise: duplicate notifications inside a short
+//! window are dropped, quiet hours hold back routine news, and an unanswered
+//! approval asks again instead of waiting silently.
 
 use crate::events::EventBus;
 use crate::state::ProductState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Device tokens one instance pushes to.
@@ -29,6 +34,12 @@ pub const DEVICE_LIMIT: usize = 16;
 pub const NOTIFY_EVENTS: [&str; 5] = ["approval", "settled", "failed", "routine", "memory"];
 /// Bound on any outbound notification request.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Delivery attempts kept for `/api/notifications`.
+pub const DELIVERY_LOG_LIMIT: usize = 40;
+/// Wait before the first retry; each further attempt doubles it.
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(300);
+/// Times one unanswered approval is repeated before Marble stops asking.
+const MAX_RE_ALERTS: u32 = 5;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -88,6 +99,79 @@ pub struct DeviceRegistration {
     pub last_seen_at: u64,
 }
 
+/// When Marble should stay quiet unless something is urgent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuietHours {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minutes after local midnight when quiet starts (22:00 = 1320).
+    #[serde(default = "default_quiet_start")]
+    pub start_minute: u16,
+    /// Minutes after local midnight when quiet ends (07:00 = 420).
+    #[serde(default = "default_quiet_end")]
+    pub end_minute: u16,
+    /// Offset from UTC in minutes, so the host needs no timezone database.
+    #[serde(default)]
+    pub offset_minutes: i32,
+}
+
+fn default_quiet_start() -> u16 {
+    22 * 60
+}
+
+fn default_quiet_end() -> u16 {
+    7 * 60
+}
+
+impl Default for QuietHours {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            start_minute: default_quiet_start(),
+            end_minute: default_quiet_end(),
+            offset_minutes: 0,
+        }
+    }
+}
+
+impl QuietHours {
+    /// Whether `minute` (0–1439, local) falls inside the quiet window.
+    pub fn allows_minute(&self, minute: u16) -> bool {
+        let minute = minute % 1440;
+        let start = self.start_minute % 1440;
+        let end = self.end_minute % 1440;
+        if start == end {
+            return true;
+        }
+        if start < end {
+            !(minute >= start && minute < end)
+        } else {
+            !(minute >= start || minute < end)
+        }
+    }
+
+    /// Local minute of the day for one unix-millisecond instant.
+    pub fn local_minute(&self, now: u64) -> u16 {
+        let utc_minute = (now / 60_000) as i64;
+        let local = utc_minute + self.offset_minutes as i64;
+        local.rem_euclid(1440) as u16
+    }
+
+    /// Whether one event may interrupt during this window. Urgent events always
+    /// reach the person; routine news and memory prompts wait for morning.
+    pub fn allows(&self, event: &str, now: u64) -> bool {
+        if !self.enabled || is_urgent(event) {
+            return true;
+        }
+        self.allows_minute(self.local_minute(now))
+    }
+}
+
+fn is_urgent(event: &str) -> bool {
+    matches!(event, "approval" | "failed" | "test")
+}
+
 /// Where notifications go, and which events are worth waking a phone for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +185,29 @@ pub struct NotificationSettings {
     pub events: Vec<String>,
     #[serde(default)]
     pub apns: Option<ApnsSettings>,
+    /// Extra delivery attempts after a channel fails.
+    #[serde(default = "default_retries")]
+    pub retries: u32,
+    /// Notifications of the same event inside this window are dropped.
+    #[serde(default = "default_dedupe_seconds")]
+    pub dedupe_seconds: u64,
+    /// Repeat an unanswered approval after this long; zero disables it.
+    #[serde(default = "default_re_alert_seconds")]
+    pub re_alert_seconds: u64,
+    #[serde(default)]
+    pub quiet_hours: QuietHours,
+}
+
+fn default_retries() -> u32 {
+    2
+}
+
+fn default_dedupe_seconds() -> u64 {
+    120
+}
+
+fn default_re_alert_seconds() -> u64 {
+    300
 }
 
 fn default_events() -> Vec<String> {
@@ -117,6 +224,10 @@ impl Default for NotificationSettings {
             webhook_token: String::new(),
             events: default_events(),
             apns: None,
+            retries: default_retries(),
+            dedupe_seconds: default_dedupe_seconds(),
+            re_alert_seconds: default_re_alert_seconds(),
+            quiet_hours: QuietHours::default(),
         }
     }
 }
@@ -149,6 +260,10 @@ impl NotificationSettings {
                 .map(ApnsSettings::is_configured)
                 .unwrap_or(false),
             "webhookConfigured": !self.webhook_url.trim().is_empty(),
+            "retries": self.retries,
+            "dedupeSeconds": self.dedupe_seconds,
+            "reAlertSeconds": self.re_alert_seconds,
+            "quietHours": self.quiet_hours,
         })
     }
 
@@ -162,6 +277,7 @@ impl NotificationSettings {
                 .map(ApnsSettings::is_configured)
                 .unwrap_or(false),
             "events": self.events,
+            "quietHours": self.quiet_hours.enabled,
         })
     }
 }
@@ -289,24 +405,174 @@ pub fn deliver(
     reports
 }
 
+/// One recorded delivery or suppression, surfaced by `/api/notifications`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryRecord {
+    pub event: String,
+    pub title: String,
+    pub channel: String,
+    pub ok: bool,
+    pub detail: String,
+    pub at: u64,
+    pub attempts: u32,
+    /// True when Marble chose not to send, with the reason in `detail`.
+    pub suppressed: bool,
+}
+
+/// In-memory delivery history and the keys recently sent, so a burst of related
+/// turns does not wake the person once per turn.
+#[derive(Default)]
+struct DeliveryTracker {
+    recent: VecDeque<DeliveryRecord>,
+    last_sent: HashMap<String, u64>,
+}
+
+impl DeliveryTracker {
+    fn record(&mut self, record: DeliveryRecord) {
+        if self.recent.len() >= DELIVERY_LOG_LIMIT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(record);
+    }
+
+    fn mark_sent(&mut self, key: &str, now: u64) {
+        self.last_sent.insert(key.to_string(), now);
+        let cutoff = now.saturating_sub(86_400_000);
+        self.last_sent.retain(|_, sent| *sent >= cutoff);
+    }
+
+    /// Why this notification should not be sent, if it should not be.
+    fn suppress(
+        &self,
+        settings: &NotificationSettings,
+        notification: &Notification,
+        now: u64,
+    ) -> Option<&'static str> {
+        if !settings.quiet_hours.allows(&notification.event, now) {
+            return Some("quiet hours");
+        }
+        if settings.dedupe_seconds == 0 {
+            return None;
+        }
+        let key = notification_key(notification);
+        match self.last_sent.get(&key) {
+            Some(sent) if now.saturating_sub(*sent) < settings.dedupe_seconds * 1000 => {
+                Some("duplicate inside the dedupe window")
+            }
+            _ => None,
+        }
+    }
+
+    fn recent(&self) -> Vec<DeliveryRecord> {
+        self.recent.iter().cloned().collect()
+    }
+}
+
+fn tracker() -> &'static Mutex<DeliveryTracker> {
+    static TRACKER: OnceLock<Mutex<DeliveryTracker>> = OnceLock::new();
+    TRACKER.get_or_init(|| Mutex::new(DeliveryTracker::default()))
+}
+
+fn notification_key(notification: &Notification) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        notification.event, notification.conversation_id, notification.task_id, notification.title
+    )
+}
+
+/// Recent delivery attempts, newest last, for the product surfaces.
+pub fn recent_deliveries() -> Vec<DeliveryRecord> {
+    tracker()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .recent()
+}
+
 /// Deliver off the caller's thread so a slow receiver never delays a turn.
 pub fn spawn_delivery(
     settings: NotificationSettings,
     devices: Vec<DeviceRegistration>,
     notification: Notification,
 ) {
+    spawn_delivery_inner(settings, devices, notification, false);
+}
+
+/// Repeat an unanswered ask without duplicate suppression, because the point is
+/// to send it again.
+pub fn spawn_re_alert(
+    settings: NotificationSettings,
+    devices: Vec<DeviceRegistration>,
+    notification: Notification,
+) {
+    spawn_delivery_inner(settings, devices, notification, true);
+}
+
+fn spawn_delivery_inner(
+    settings: NotificationSettings,
+    devices: Vec<DeviceRegistration>,
+    notification: Notification,
+    repeat: bool,
+) {
     if !settings.wants(&notification.event) {
         return;
     }
+    let key = notification_key(&notification);
+    let now = now_millis();
+    {
+        let mut guard = tracker().lock().unwrap_or_else(|error| error.into_inner());
+        if !repeat && let Some(reason) = guard.suppress(&settings, &notification, now) {
+            guard.record(DeliveryRecord {
+                event: notification.event.clone(),
+                title: notification.title.clone(),
+                channel: "held".into(),
+                ok: false,
+                detail: reason.to_string(),
+                at: now,
+                attempts: 0,
+                suppressed: true,
+            });
+            tracing::info!(event = %notification.event, reason, "notification held back");
+            return;
+        }
+        guard.mark_sent(&key, now);
+    }
+    let retries = settings.retries.min(5);
     let spawned = std::thread::Builder::new()
         .name("glass-marble-notify".into())
         .spawn(move || {
-            for report in deliver(&settings, &devices, &notification) {
-                if report.ok {
-                    tracing::info!(channel = %report.channel, detail = %report.detail, "notification delivered");
-                } else {
-                    tracing::warn!(channel = %report.channel, detail = %report.detail, "notification failed");
+            let mut attempts = 0u32;
+            loop {
+                attempts += 1;
+                let reports = deliver(&settings, &devices, &notification);
+                let delivered = reports.iter().all(|report| report.ok);
+                for report in &reports {
+                    if report.ok {
+                        tracing::info!(channel = %report.channel, detail = %report.detail, attempts, "notification delivered");
+                    } else {
+                        tracing::warn!(channel = %report.channel, detail = %report.detail, attempts, "notification failed");
+                    }
                 }
+                let exhausted = attempts > retries;
+                if delivered || exhausted || reports.is_empty() {
+                    let mut guard = tracker()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    for report in reports {
+                        guard.record(DeliveryRecord {
+                            event: notification.event.clone(),
+                            title: notification.title.clone(),
+                            channel: report.channel,
+                            ok: report.ok,
+                            detail: report.detail,
+                            at: now_millis(),
+                            attempts,
+                            suppressed: false,
+                        });
+                    }
+                    break;
+                }
+                std::thread::sleep(RETRY_BASE_DELAY * attempts);
             }
         });
     if let Err(error) = spawned {
@@ -316,40 +582,87 @@ pub fn spawn_delivery(
 
 /// Watch the product event bus for the one thing a turn worker cannot see: a
 /// governed tool call that is now waiting for a human. An always-on assistant
-/// should reach the person instead of quietly timing out.
+/// should reach the person instead of quietly timing out, and should keep
+/// asking when the first notification was missed rather than waiting out the
+/// approval window in silence.
 pub fn spawn_event_watcher(events: EventBus, state: Arc<Mutex<ProductState>>) {
     let receiver = events.subscribe();
     let spawned = std::thread::Builder::new()
         .name("glass-marble-alerts".into())
         .spawn(move || {
-            while let Ok(event) = receiver.recv() {
-                if event.kind != "approval_pending" {
+            // request id -> notification, last sent, re-alerts so far
+            let mut outstanding: HashMap<String, (Notification, u64, u32)> = HashMap::new();
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(5)) {
+                    Ok(event) if event.kind == "approval_pending" => {
+                        let (settings, devices) = {
+                            let guard =
+                                state.lock().unwrap_or_else(|error| error.into_inner());
+                            if !guard.notifications.wants("approval") {
+                                continue;
+                            }
+                            (guard.notifications.clone(), guard.devices.clone())
+                        };
+                        let request_id = event
+                            .data
+                            .get("requestId")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let tool = event
+                            .data
+                            .get("tool")
+                            .and_then(Value::as_str)
+                            .unwrap_or("a governed tool");
+                        let arguments =
+                            event.data.get("arguments").cloned().unwrap_or(Value::Null);
+                        let notification = Notification::new(
+                            "approval",
+                            "Marble needs your approval",
+                            format!("{tool} is waiting for your decision: {arguments}"),
+                            &event.conversation_id,
+                            &event.task_id,
+                        );
+                        if !request_id.is_empty() {
+                            outstanding.insert(
+                                request_id,
+                                (notification.clone(), now_millis(), 0),
+                            );
+                        }
+                        spawn_delivery(settings, devices, notification);
+                    }
+                    Ok(event) if event.kind == "approval_resolved" => {
+                        if let Some(request_id) =
+                            event.data.get("requestId").and_then(Value::as_str)
+                        {
+                            outstanding.remove(request_id);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+                if outstanding.is_empty() {
                     continue;
                 }
                 let (settings, devices) = {
                     let guard = state.lock().unwrap_or_else(|error| error.into_inner());
-                    if !guard.notifications.wants("approval") {
-                        continue;
-                    }
                     (guard.notifications.clone(), guard.devices.clone())
                 };
-                let tool = event
-                    .data
-                    .get("tool")
-                    .and_then(Value::as_str)
-                    .unwrap_or("a governed tool");
-                let arguments = event.data.get("arguments").cloned().unwrap_or(Value::Null);
-                spawn_delivery(
-                    settings,
-                    devices,
-                    Notification::new(
-                        "approval",
-                        "Marble needs your approval",
-                        format!("{tool} is waiting for your decision: {arguments}"),
-                        &event.conversation_id,
-                        &event.task_id,
-                    ),
-                );
+                let interval = settings.re_alert_seconds.saturating_mul(1000);
+                if interval == 0 {
+                    continue;
+                }
+                let now = now_millis();
+                for (notification, last_sent, alerts) in outstanding.values_mut() {
+                    if *alerts >= MAX_RE_ALERTS || now.saturating_sub(*last_sent) < interval {
+                        continue;
+                    }
+                    *last_sent = now;
+                    *alerts += 1;
+                    tracing::info!(event = %notification.event, alerts = *alerts, "re-alerting an unanswered approval");
+                    spawn_re_alert(settings.clone(), devices.clone(), notification.clone());
+                }
             }
         });
     if let Err(error) = spawned {
@@ -731,6 +1044,50 @@ mod tests {
         assert!(raw[..32].iter().all(|byte| *byte == 0x11));
         assert!(raw[32..].iter().all(|byte| *byte == 0x22));
         assert_eq!(der_to_raw_signature(b"nonsense"), None);
+    }
+
+    #[test]
+    fn quiet_hours_wrap_midnight_and_let_urgent_events_through() {
+        let quiet = QuietHours {
+            enabled: true,
+            start_minute: 22 * 60,
+            end_minute: 7 * 60,
+            offset_minutes: 0,
+        };
+        assert!(!quiet.allows_minute(23 * 60));
+        assert!(!quiet.allows_minute(6 * 60 + 59));
+        assert!(quiet.allows_minute(7 * 60));
+        assert!(quiet.allows_minute(12 * 60));
+        let evening = 23 * 60 * 60_000;
+        assert!(!quiet.allows("settled", evening));
+        assert!(quiet.allows("approval", evening));
+        assert!(QuietHours::default().allows("settled", evening));
+        let shifted = QuietHours {
+            offset_minutes: 120,
+            ..quiet.clone()
+        };
+        assert_eq!(shifted.local_minute(0), 120);
+        // A day later is the same local minute again.
+        assert_eq!(shifted.local_minute(24 * 60 * 60_000), 120);
+    }
+
+    #[test]
+    fn duplicate_deliveries_inside_the_window_are_held() {
+        let mut tracker = DeliveryTracker::default();
+        let settings = NotificationSettings {
+            webhook_url: "http://127.0.0.1:9/hook".into(),
+            dedupe_seconds: 120,
+            ..NotificationSettings::default()
+        };
+        let notification = Notification::new("settled", "Marble", "done", "c1", "t1");
+        assert_eq!(tracker.suppress(&settings, &notification, 1_000), None);
+        tracker.mark_sent(&notification_key(&notification), 1_000);
+        assert_eq!(
+            tracker.suppress(&settings, &notification, 50_000),
+            Some("duplicate inside the dedupe window")
+        );
+        assert_eq!(tracker.suppress(&settings, &notification, 200_000), None);
+        assert_eq!(tracker.recent().len(), 0);
     }
 
     #[test]

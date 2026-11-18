@@ -358,6 +358,12 @@
       </div>
       <div class="segments" id="notify-events" role="group" aria-label="Notify me about"></div>
       <div class="routine-form">
+        <label class="muted" for="quiet-enabled"><input id="quiet-enabled" type="checkbox" /> Quiet hours</label>
+        <input id="quiet-start" type="time" aria-label="Quiet hours start" />
+        <input id="quiet-end" type="time" aria-label="Quiet hours end" />
+      </div>
+      <p class="empty-row">Approvals and failures always reach you. Routine news waits until quiet hours end.</p>
+      <div class="routine-form">
         <input id="apns-key" placeholder="AuthKey.p8 path" aria-label="APNs key file" />
         <input id="apns-team" placeholder="Team ID" aria-label="APNs team id" />
         <input id="apns-keyid" placeholder="Key ID" aria-label="APNs key id" />
@@ -368,6 +374,8 @@
         <button class="ghost" id="notify-test" type="button">Send test</button>
       </div>
       <ul class="records" id="notify-devices"></ul>
+      <h3>Recent deliveries</h3>
+      <ul class="records" id="notify-recent"></ul>
 
       <h3>Voice</h3>
       <p class="empty-row" id="voice-note">Speech stays on this device. Marble shapes the reply; the browser speaks it.</p>
@@ -394,7 +402,7 @@
         "turn_start", "waiting", "text", "reasoning", "tool_start", "tool_end", "tool_progress",
         "tool_cancel", "usage", "compacted", "steered", "queued", "notice", "error", "settled",
         "cancel_requested", "approval_pending", "approval_resolved", "state",
-        "control_denied", "control", "memory", "memory_suggestion", "routine",
+        "control_denied", "control", "memory", "memory_suggestion", "routine", "retention",
       ];
       const app = {
         state: null,
@@ -455,6 +463,10 @@
         notifySave: document.getElementById("notify-save"),
         notifyTest: document.getElementById("notify-test"),
         notifyDevices: document.getElementById("notify-devices"),
+        notifyRecent: document.getElementById("notify-recent"),
+        quietEnabled: document.getElementById("quiet-enabled"),
+        quietStart: document.getElementById("quiet-start"),
+        quietEnd: document.getElementById("quiet-end"),
         webhookUrl: document.getElementById("webhook-url"),
         webhookToken: document.getElementById("webhook-token"),
         apnsKey: document.getElementById("apns-key"),
@@ -758,7 +770,10 @@
         routines.forEach((routine) => {
           const item = node("li");
           const state = routine.lastStatus || (routine.enabled ? "scheduled" : "paused");
-          item.append(node("span", "grow", (routine.title || routine.prompt) + " · " + routine.schedule + " · " + state));
+          const missed = Number(routine.missedRuns || 0) > 0
+            ? " · missed " + routine.missedRuns + (routine.catchUp === false ? " (skipped)" : "")
+            : "";
+          item.append(node("span", "grow", (routine.title || routine.prompt) + " · " + routine.schedule + " · " + state + missed));
           const run = node("button", "ghost", "Run now");
           run.type = "button";
           run.addEventListener("click", () =>
@@ -803,8 +818,32 @@
           el.notifyDevices.append(item);
         });
 
+        const notifications = (app.state && app.state.notifications) || {};
+        el.notifyRecent.textContent = "";
+        const recent = (notifications.recent || []).slice().reverse();
+        if (!recent.length) emptyRow(el.notifyRecent, "Nothing sent yet.");
+        recent.forEach((record) => {
+          const item = node("li");
+          item.append(node("span", "tag " + (record.suppressed ? "held" : record.ok ? "allowed" : "denied"),
+            record.suppressed ? "held" : record.ok ? "sent" : "failed"));
+          item.append(node("span", "grow", record.title + " · " + record.channel));
+          item.append(node("span", "muted", record.detail));
+          el.notifyRecent.append(item);
+        });
+
         const voice = (app.state && app.state.voice) || {};
         el.voiceToggle.textContent = voice.enabled ? "Stop reading replies" : "Read replies aloud";
+      }
+
+      function minutesToTime(minutes) {
+        const total = ((Number(minutes) || 0) % 1440 + 1440) % 1440;
+        return String(Math.floor(total / 60)).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0");
+      }
+
+      function timeToMinutes(value, fallback) {
+        const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) return fallback;
+        return (Number(match[1]) % 24) * 60 + (Number(match[2]) % 60);
       }
 
       function fillAssistant() {
@@ -816,6 +855,10 @@
         el.apnsTeam.value = apns.teamId || "";
         el.apnsKeyId.value = apns.keyId || "";
         el.apnsTopic.value = apns.topic || "";
+        const quiet = notifications.quietHours || {};
+        el.quietEnabled.checked = Boolean(quiet.enabled);
+        el.quietStart.value = minutesToTime(quiet.startMinute === undefined ? 22 * 60 : quiet.startMinute);
+        el.quietEnd.value = minutesToTime(quiet.endMinute === undefined ? 7 * 60 : quiet.endMinute);
         app.notifyDraft = (notifications.events || []).slice();
         renderAssistant();
       }
@@ -854,6 +897,12 @@
               webhookToken: el.webhookToken.value.trim(),
               events: app.notifyDraft || [],
               apns: configured ? apns : null,
+              quietHours: {
+                enabled: el.quietEnabled.checked,
+                startMinute: timeToMinutes(el.quietStart.value, 22 * 60),
+                endMinute: timeToMinutes(el.quietEnd.value, 7 * 60),
+                offsetMinutes: -new Date().getTimezoneOffset(),
+              },
             }),
           });
           setStatus("notifications saved", "live");
@@ -1091,6 +1140,7 @@
           case "memory":
           case "memory_suggestion":
           case "routine":
+          case "retention":
             refresh();
             break;
           case "settled": {

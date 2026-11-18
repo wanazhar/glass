@@ -447,6 +447,9 @@ impl MarbleServer {
             if let Some(id) = rest.strip_suffix("/remove") {
                 return self.remove_routine(id);
             }
+            if let Some(id) = rest.strip_suffix("/catch-up") {
+                return self.set_routine_catch_up(id, body);
+            }
         }
         if head.method == "GET" && path == "/api/notifications" {
             return self.notifications_response();
@@ -527,6 +530,7 @@ impl MarbleServer {
             map.insert("routines".into(), snapshot.routines.document());
             map.insert("notifications".into(), snapshot.notifications.document());
             map.insert("voice".into(), snapshot.voice.document());
+            map.insert("retention".into(), snapshot.retention.document());
             map.insert(
                 "devices".into(),
                 Value::Array(
@@ -835,6 +839,33 @@ impl MarbleServer {
         )
     }
 
+    /// `POST /api/routines/{id}/catch-up` with `{"enabled": bool}`.
+    fn set_routine_catch_up(&self, id: &str, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let enabled = parsed
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let changed = {
+            let mut guard = self.lock_state();
+            let changed = guard.routines.set_catch_up(id, enabled);
+            if changed {
+                guard.bump();
+            }
+            changed
+        };
+        if changed {
+            self.save_state();
+        }
+        Response::json(
+            if changed { 200 } else { 404 },
+            json!({"ok": changed, "routines": self.lock_state().routines.document()}),
+        )
+    }
+
     fn remove_routine(&self, id: &str) -> Response {
         let removed = {
             let mut guard = self.lock_state();
@@ -857,6 +888,7 @@ impl MarbleServer {
         let guard = self.lock_state();
         let mut document = guard.notifications.document();
         if let Value::Object(ref mut map) = document {
+            map.insert("recent".into(), json!(notify::recent_deliveries()));
             map.insert(
                 "devices".into(),
                 Value::Array(
@@ -927,6 +959,42 @@ impl MarbleServer {
                     topic: field("topic", existing.topic),
                     environment: field("environment", existing.environment),
                 });
+            }
+        }
+        if let Some(retries) = parsed.get("retries").and_then(Value::as_u64) {
+            settings.retries = retries.min(5) as u32;
+        }
+        if let Some(dedupe) = parsed.get("dedupeSeconds").and_then(Value::as_u64) {
+            settings.dedupe_seconds = dedupe.min(86_400);
+        }
+        if let Some(re_alert) = parsed.get("reAlertSeconds").and_then(Value::as_u64) {
+            settings.re_alert_seconds = re_alert.min(86_400);
+        }
+        if let Some(quiet) = parsed.get("quietHours") {
+            if quiet.is_null() {
+                settings.quiet_hours = notify::QuietHours::default();
+            } else {
+                let existing = settings.quiet_hours.clone();
+                let minute = |name: &str, fallback: u16| {
+                    quiet
+                        .get(name)
+                        .and_then(Value::as_u64)
+                        .map(|value| (value % 1440) as u16)
+                        .unwrap_or(fallback)
+                };
+                settings.quiet_hours = notify::QuietHours {
+                    enabled: quiet
+                        .get("enabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(existing.enabled),
+                    start_minute: minute("startMinute", existing.start_minute),
+                    end_minute: minute("endMinute", existing.end_minute),
+                    offset_minutes: quiet
+                        .get("offsetMinutes")
+                        .and_then(Value::as_i64)
+                        .map(|value| value.clamp(-840, 840) as i32)
+                        .unwrap_or(existing.offset_minutes),
+                };
             }
         }
         {

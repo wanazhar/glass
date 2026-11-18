@@ -60,6 +60,17 @@ marked `running` is marked `interrupted`, a system transcript entry records what
 happened, the routine that owned it is marked `interrupted`, and presence reports
 `recoveredTasks`. Send the message again to continue.
 
+### Retention
+
+Months of turns must not turn into a state file that every response has to parse.
+The product document is bounded: 400 transcript entries per conversation, 4,000
+transcript entries overall, 500 settled tasks, and 100 conversations by most
+recent activity. Work that has not settled — `queued`, `running`, or waiting for
+approval — is never trimmed. A heartbeat tick folds the document back inside the
+bounds, startup does the same once, and `GET /api/state` reports the limits plus
+`trimmedTranscript`, `trimmedTasks`, `trimmedConversations`, and `lastTrimAt`, so
+the trade-off stays visible instead of silent.
+
 ## Ownership boundary
 
 Marble uses protocol v2 mixed tool ownership:
@@ -180,11 +191,36 @@ routines are kept. `Run now` fires one immediately from either surface.
 Routine work is durable: a restart recomputes the next run from the schedule, and
 an interrupted routine run is reported as `interrupted` rather than stuck.
 
+A laptop sleeps and a host reboots, so Marble does not pretend it was awake for
+every scheduled run. When a tick finds that occurrences passed while the process
+was down, it counts them on the routine (`missedRuns`, `missedLastGap`) and runs
+the routine once on that tick, announcing how many runs it caught up on. A
+routine with catch-up turned off records the same counts and silently resumes its
+schedule instead of starting late work. `POST /api/routines/{id}/catch-up` with
+`{"enabled": false}` chooses that, and both surfaces show what was missed.
+
 ## Reaching you
 
 Two channels, both optional, both configured from the WebUI or the API. Every
-delivery is best effort: a failed notification is logged and dropped, never
+delivery is best effort and happens off the turn's thread: a failed notification
+is retried a bounded number of times with a growing delay, then logged, never
 allowed to fail or delay a turn.
+
+Reachable is not the same as noisy. Marble keeps the person from being woken by
+the same news twice:
+
+- `dedupeSeconds` (default 120) drops a repeat of the same event, conversation,
+task, and title inside the window.
+- `quietHours` holds routine news and memory prompts inside a local window
+(default 22:00–07:00). Approvals and failures always go through, and the WebUI
+sends the browser's UTC offset so the host needs no timezone database.
+- `reAlertSeconds` (default 300) repeats an unanswered approval up to five
+times, and stops as soon as it is decided.
+- `retries` (default 2) is the number of extra attempts after a channel fails.
+
+`GET /api/notifications` reports the settings plus `recent`, the last 40 delivery
+attempts (and the notifications Marble deliberately held back, with the reason).
+The Assistant panel shows the same list under **Recent deliveries**.
 
 ### Webhook
 
@@ -234,7 +270,7 @@ recognition rather than falling back to a network service.
 | `/` | GET | Product UI |
 | `/healthz` | GET | Liveness, revision, event sequence, posture, presence summary |
 | `/api/login` | POST | Exchange the access token for an HTTP-only session cookie |
-| `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications |
+| `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications, retention |
 | `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts |
 | `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
 | `/api/turns` | POST | Admit a durable turn, queue it, or apply an explicit memory command |
@@ -253,7 +289,8 @@ recognition rather than falling back to a network service.
 | `/api/routines/{id}/run` | POST | Fire a routine now, queueing it when paused |
 | `/api/routines/{id}/enable` and `/disable` | POST | Pause or resume a routine |
 | `/api/routines/{id}/remove` | POST | Delete a routine |
-| `/api/notifications` | GET/POST | Read or update webhook, events, and APNs settings |
+| `/api/routines/{id}/catch-up` | POST | Run the first tick after a gap, or skip to the next run (`enabled`) |
+| `/api/notifications` | GET/POST | Read or update webhook, events, APNs, retries, dedupe, quiet hours, and re-alert settings |
 | `/api/notifications/test` | POST | Deliver a test notification and report each channel |
 | `/api/devices` | GET/POST | List prefixes, or register one APNs device token |
 | `/api/devices/{token}/remove` | POST | Forget a device |

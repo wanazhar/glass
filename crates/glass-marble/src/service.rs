@@ -236,11 +236,21 @@ pub fn install(
             "loginctl enable-linger \"$USER\"   # keep it running without a login session"
                 .to_string(),
             format!("journalctl --user -u {} -f", ServicePlatform::LABEL),
+            // An always-on assistant writes a log forever; an unbounded file is
+            // the one thing that fills a small host's disk without warning.
+            format!(
+                "rotate the log: add a logrotate rule for {} (daily, rotate 7, copytruncate)",
+                spec.log_file.display()
+            ),
         ],
         ServicePlatform::Launchd => vec![
             format!("launchctl unload -w {} 2>/dev/null || true", path.display()),
             format!("launchctl load -w {}", path.display()),
             format!("tail -f {}", spec.log_file.display()),
+            format!(
+                "rotate the log with newsyslog or a periodic trim: {}",
+                spec.log_file.display()
+            ),
         ],
     };
     if write {

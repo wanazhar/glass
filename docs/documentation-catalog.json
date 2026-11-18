@@ -5731,6 +5731,11 @@
         },
         {
           "level": "3",
+          "title": "Supervision, one instance, and honest health",
+          "anchor": "supervision-one-instance-and-honest-health"
+        },
+        {
+          "level": "3",
           "title": "Presence",
           "anchor": "presence"
         },
@@ -5738,6 +5743,11 @@
           "level": "3",
           "title": "Crash recovery",
           "anchor": "crash-recovery"
+        },
+        {
+          "level": "3",
+          "title": "Retention",
+          "anchor": "retention"
         },
         {
           "level": "2",
@@ -5781,6 +5791,11 @@
         },
         {
           "level": "2",
+          "title": "Correcting a running turn",
+          "anchor": "correcting-a-running-turn"
+        },
+        {
+          "level": "2",
           "title": "Routines",
           "anchor": "routines"
         },
@@ -5810,6 +5825,16 @@
           "anchor": "http-surface"
         },
         {
+          "level": "3",
+          "title": "What a poll costs",
+          "anchor": "what-a-poll-costs"
+        },
+        {
+          "level": "2",
+          "title": "Reading history without moving it all",
+          "anchor": "reading-history-without-moving-it-all"
+        },
+        {
           "level": "2",
           "title": "Self-hosting over Tailscale",
           "anchor": "self-hosting-over-tailscale"
@@ -5833,6 +5858,11 @@
           "level": "2",
           "title": "Verification",
           "anchor": "verification"
+        },
+        {
+          "level": "2",
+          "title": "Design note: when one session is not enough",
+          "anchor": "design-note-when-one-session-is-not-enough"
         }
       ]
     },

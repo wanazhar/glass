@@ -6,8 +6,10 @@
 
 use crate::MarbleError;
 use crate::state::ProductState;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the durable product document.
@@ -17,6 +19,32 @@ const STATE_TEMP_FILE: &str = "product-state.json.tmp";
 pub const BACKUP_DIR: &str = "backups";
 /// Daily backups kept before the oldest is removed.
 pub const BACKUP_KEEP: usize = 7;
+
+/// Whether the last durable write succeeded.
+///
+/// A failed write is the difference between an assistant that looks healthy and
+/// one that is silently forgetting everything since the last successful one, so
+/// `/healthz` reports it instead of leaving it in a log.
+static LAST_PERSIST_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn persist_slot() -> &'static Mutex<Option<String>> {
+    LAST_PERSIST_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+/// The last write failure, or `None` when the document is being written.
+pub fn last_persist_error() -> Option<String> {
+    persist_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn record_persist_outcome(error: Option<&MarbleError>) {
+    let mut slot = persist_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *slot = error.map(|error| error.to_string());
+}
 
 /// Resolve the self-hosted data directory.
 ///
@@ -226,6 +254,60 @@ impl StateStore {
         Some(path)
     }
 
+    /// Directory the document and its backups live in.
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.path.parent()
+    }
+
+    /// Whether a durable document exists at all.
+    pub fn document_exists(&self) -> bool {
+        self.path.exists()
+    }
+
+    /// Daily backups on disk, how old the newest one is, and how many are kept.
+    ///
+    /// An assistant that has been up for a month without a backup is one bad
+    /// write away from starting over, and that is not something an operator
+    /// should have to discover from a directory listing.
+    pub fn backup_status(&self) -> Value {
+        let paths = self.backup_paths();
+        let newest = paths.last().cloned();
+        let age_seconds = newest
+            .as_ref()
+            .and_then(|path| fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|elapsed| unix_millis().saturating_sub(elapsed.as_millis() as u64) / 1000);
+        json!({
+            "count": paths.len(),
+            "keep": BACKUP_KEEP,
+            "newest": newest.map(|path| path.display().to_string()),
+            "ageSeconds": age_seconds,
+        })
+    }
+
+    /// Documents moved aside because they could not be parsed.
+    ///
+    /// They are kept so the operator can inspect them; each one is also a sign
+    /// that a write or a disk went wrong, so the count is part of health.
+    pub fn quarantined_count(&self) -> usize {
+        let Some(parent) = self.path.parent() else {
+            return 0;
+        };
+        let Ok(entries) = fs::read_dir(parent) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("product-state.corrupt-")
+            })
+            .count()
+    }
+
     /// Write the document atomically, replacing the previous revision.
     pub fn save(&self, state: &ProductState) -> Result<(), MarbleError> {
         let parent = self
@@ -259,7 +341,9 @@ pub fn load_or_default(data_dir: &Path) -> ProductState {
 
 /// Persist one snapshot, keeping the revision the caller already bumped.
 pub fn persist(store: &StateStore, state: &ProductState) {
-    if let Err(error) = store.save(state) {
+    let outcome = store.save(state);
+    record_persist_outcome(outcome.as_ref().err());
+    if let Err(error) = outcome {
         tracing::warn!(%error, "could not persist marble product state");
     }
 }
@@ -426,6 +510,43 @@ mod tests {
             .filter_map(Result::ok)
             .count();
         assert_eq!(files, BACKUP_KEEP);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_reports_backups_and_quarantined_documents() {
+        let dir = data_dir("health");
+        let store = StateStore::in_data_dir(&dir);
+        assert!(!store.document_exists());
+        store.save(&ProductState::default()).unwrap();
+        assert!(store.document_exists());
+        assert_eq!(store.data_dir(), Some(dir.as_path()));
+        assert_eq!(store.backup_status()["count"], json!(0));
+        assert!(store.backup_status()["ageSeconds"].is_null());
+        store
+            .write_daily_backup(&ProductState::default(), 86_400_000)
+            .unwrap();
+        assert_eq!(store.backup_status()["count"], json!(1));
+        assert!(store.backup_status()["ageSeconds"].as_u64().is_some());
+        fs::write(dir.join("product-state.corrupt-1.json"), b"{ partial").unwrap();
+        assert_eq!(store.quarantined_count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_write_is_visible_until_the_next_successful_one() {
+        let dir = data_dir("persist-health");
+        let store = StateStore::in_data_dir(&dir);
+        persist(&store, &ProductState::default());
+        assert_eq!(last_persist_error(), None);
+        // A directory where the document should be makes the atomic write fail.
+        fs::remove_file(store.path()).unwrap();
+        fs::create_dir(store.path()).unwrap();
+        persist(&store, &ProductState::default());
+        assert!(last_persist_error().is_some());
+        fs::remove_dir(store.path()).unwrap();
+        persist(&store, &ProductState::default());
+        assert_eq!(last_persist_error(), None);
         let _ = fs::remove_dir_all(&dir);
     }
 

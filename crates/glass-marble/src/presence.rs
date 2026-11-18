@@ -11,6 +11,78 @@ use crate::worker::now_millis;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// Whether the engine behind the assistant is answering.
+///
+/// Marble owns one long-lived `glass-core runtime` subprocess. Supervision is
+/// only honest if a surface can see it: a runtime that died mid-turn is
+/// restarted before the next turn, and what happened stays in the document
+/// rather than only in a log nobody is reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeHealth {
+    /// `ok`, `restarting`, or `failed`.
+    #[serde(default = "healthy")]
+    pub health: String,
+    /// Times the runtime was restarted in place after the transport failed.
+    #[serde(default)]
+    pub restarts: u64,
+    #[serde(default)]
+    pub last_restart_at: u64,
+    /// Last transport failure, kept after a successful restart so a flapping
+    /// engine is visible rather than silently forgiven.
+    #[serde(default)]
+    pub last_error: String,
+}
+
+fn healthy() -> String {
+    "ok".to_string()
+}
+
+impl Default for RuntimeHealth {
+    fn default() -> Self {
+        Self {
+            health: healthy(),
+            restarts: 0,
+            last_restart_at: 0,
+            last_error: String::new(),
+        }
+    }
+}
+
+impl RuntimeHealth {
+    pub fn is_ok(&self) -> bool {
+        self.health == "ok"
+    }
+
+    /// Record a transport failure, before or instead of a restart.
+    pub fn note_failure(&mut self, message: impl Into<String>) {
+        self.health = "failed".to_string();
+        self.last_error = message.into();
+    }
+
+    /// Record a successful in-place restart.
+    pub fn note_restart(&mut self) {
+        self.health = healthy();
+        self.restarts = self.restarts.saturating_add(1);
+        self.last_restart_at = now_millis();
+    }
+
+    /// Mark the engine as answering again without counting a restart.
+    pub fn note_ok(&mut self) {
+        self.health = healthy();
+    }
+
+    /// Presence document: one small block a surface can trust.
+    pub fn document(&self) -> Value {
+        json!({
+            "health": self.health,
+            "restarts": self.restarts,
+            "lastRestartAt": self.last_restart_at,
+            "lastError": self.last_error,
+        })
+    }
+}
+
 /// Durable presence counters for one instance.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +109,9 @@ pub struct PresenceState {
     /// Machine name, so several tailnet hosts are distinguishable.
     #[serde(default)]
     pub instance: String,
+    /// Liveness of the engine this process drives.
+    #[serde(default)]
+    pub runtime: RuntimeHealth,
 }
 
 impl PresenceState {
@@ -47,6 +122,8 @@ impl PresenceState {
         self.heartbeat_at = now;
         self.recovered_tasks = 0;
         self.instance = instance_name();
+        // A fresh process has a fresh engine; the restart history stays visible.
+        self.runtime.note_ok();
     }
 
     /// Record that a heartbeat is still alive.
@@ -148,6 +225,7 @@ impl PresenceState {
             "memories": state.memory.facts.len(),
             "notifications": state.notifications.summary(),
             "retention": state.retention.document(),
+            "runtime": self.runtime.document(),
         })
     }
 }
@@ -214,6 +292,38 @@ mod tests {
             arguments: Value::Null,
         });
         assert_eq!(presence.status(&state), "waiting");
+    }
+
+    #[test]
+    fn runtime_health_records_failures_and_restarts() {
+        let mut presence = PresenceState::default();
+        presence.mark_start();
+        let state = ProductState::default();
+        assert_eq!(presence.document(&state)["runtime"]["health"], json!("ok"));
+        presence
+            .runtime
+            .note_failure("the runtime transport closed");
+        let document = presence.document(&state);
+        assert_eq!(document["runtime"]["health"], json!("failed"));
+        assert_eq!(
+            document["runtime"]["lastError"],
+            json!("the runtime transport closed")
+        );
+        presence.runtime.note_restart();
+        let document = presence.document(&state);
+        assert_eq!(document["runtime"]["health"], json!("ok"));
+        assert_eq!(document["runtime"]["restarts"], json!(1));
+        assert!(
+            document["runtime"]["lastRestartAt"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            document["runtime"]["lastError"],
+            json!("the runtime transport closed"),
+            "a restart keeps the reason it was needed"
+        );
     }
 
     #[test]

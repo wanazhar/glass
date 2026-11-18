@@ -39,6 +39,21 @@ person touches.
   under the data directory, with bounded history; an unreadable document is
   recovered from the newest daily backup instead of starting empty, and
   `glass-marble restore` puts a backup or export back in place.
+- **Supervision**: a dead engine transport is replaced in place before the next
+  turn, a turn that lost it settles `failed` with the reason, and presence keeps
+  the restart count and the last error.
+- **One instance per data directory**: `serve` and `restore` take a lock file
+  and refuse a second copy by pid instead of overwriting the first one's
+  history.
+- **Honest health**: `/healthz` reports the engine, the document, backup age,
+  quarantined documents, and the last write error, answers `503` when any of it
+  is wrong, and `glass-marble doctor` checks the same ground from the terminal.
+- **A busy host queues**: a message that arrives while a turn is running is
+  answered `202` with its place in line, not a gateway timeout.
+- **Recovery on demand**: repeat the last failed or interrupted turn, and hold
+  scheduled routines inside a quiet window.
+- **Cheap polling**: `/api/state` revalidates with an `ETag`, responses keep the
+  connection alive, connections are capped, and login failures are throttled.
 - **Turn events**: an ordered, bounded buffer with live subscribers, replayed
   from a cursor after a reconnect.
 - **Access control**: loopback by default, an access token off loopback, origin

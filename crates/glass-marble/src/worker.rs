@@ -20,7 +20,8 @@ use crate::{
 };
 use glass_runtime_client::{TurnInput, protocol::ContextBlock};
 use serde_json::json;
-use std::sync::atomic::AtomicBool;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -46,6 +47,111 @@ pub struct AcceptedTurn {
 pub struct TurnCommand {
     pub request: TurnRequest,
     pub accepted: mpsc::Sender<Result<AcceptedTurn, MarbleError>>,
+}
+
+/// Cancel flags for the turns the worker is actually running.
+///
+/// The worker owns this table because it is the only place that knows a task id
+/// for every turn: a routine firing on its own clock and a queued message
+/// dispatched by resuming admission are both running turns, and a person who
+/// presses stop should not have to care which one it is.
+#[derive(Debug, Clone, Default)]
+pub struct CancelRegistry {
+    flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+impl CancelRegistry {
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<AtomicBool>>> {
+        self.flags.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn register(&self, task_id: &str, flag: Arc<AtomicBool>) {
+        self.map().insert(task_id.to_string(), flag);
+    }
+
+    pub fn forget(&self, task_id: &str) {
+        self.map().remove(task_id);
+    }
+
+    /// Ask one running turn to stop; returns whether it was still running.
+    pub fn request(&self, task_id: &str) -> bool {
+        let flag = self.map().get(task_id).cloned();
+        match flag {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Every running turn, so one deliberate stop can cancel all of them.
+    pub fn running(&self) -> Vec<(String, Arc<AtomicBool>)> {
+        self.map()
+            .iter()
+            .map(|(task_id, flag)| (task_id.clone(), Arc::clone(flag)))
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.map().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map().is_empty()
+    }
+}
+
+/// Shared view of the turn worker: how much work is waiting, and what it is
+/// running right now.
+#[derive(Debug, Clone, Default)]
+pub struct TurnQueue {
+    pending: Arc<AtomicUsize>,
+    cancels: CancelRegistry,
+}
+
+impl TurnQueue {
+    /// Commands a surface handed over that the worker has not picked up yet.
+    pub fn waiting(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
+    }
+
+    /// Count one command handed to the worker; returns its place in line.
+    pub fn note_enqueued(&self) -> usize {
+        self.pending
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1)
+    }
+
+    /// Count one command the worker started, or one that was never delivered.
+    pub fn note_finished(&self) {
+        // Compare-and-set rather than a plain decrement, so a mismatched call
+        // can never wrap the counter around to a huge place in line.
+        let mut waiting = self.pending.load(Ordering::SeqCst);
+        while waiting > 0 {
+            match self.pending.compare_exchange(
+                waiting,
+                waiting - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(current) => waiting = current,
+            }
+        }
+    }
+
+    pub fn cancels(&self) -> &CancelRegistry {
+        &self.cancels
+    }
+
+    pub fn request_cancel(&self, task_id: &str) -> bool {
+        self.cancels.request(task_id)
+    }
+
+    pub fn running(&self) -> Vec<(String, Arc<AtomicBool>)> {
+        self.cancels.running()
+    }
 }
 
 /// Current unix time in milliseconds.
@@ -77,12 +183,14 @@ pub fn spawn_turn_worker(
     store: Option<Arc<StateStore>>,
     events: EventBus,
     timeout: Duration,
+    queue: TurnQueue,
 ) -> mpsc::Sender<TurnCommand> {
     let (sender, receiver) = mpsc::channel::<TurnCommand>();
     let spawned = std::thread::Builder::new()
         .name("glass-marble-turns".into())
         .spawn(move || {
             while let Ok(command) = receiver.recv() {
+                queue.note_finished();
                 run_command(
                     command,
                     &mut conversation,
@@ -90,6 +198,7 @@ pub fn spawn_turn_worker(
                     store.as_deref(),
                     &events,
                     timeout,
+                    &queue,
                 );
             }
             let _ = conversation.shutdown();
@@ -107,8 +216,51 @@ fn run_command(
     store: Option<&StateStore>,
     events: &EventBus,
     timeout: Duration,
+    queue: &TurnQueue,
 ) {
     let TurnCommand { request, accepted } = command;
+    let mut sender = Some(accepted);
+    // A turn cannot start on an engine that stopped answering. Replacing it
+    // here, before the durable task exists, means the person gets either a real
+    // answer or a clear failure — never a turn that was silently lost.
+    match conversation.ensure_runtime() {
+        Ok(false) => {}
+        Ok(true) => {
+            let (snapshot, restarts) = {
+                let mut guard = lock(state);
+                guard.presence.runtime.note_restart();
+                guard.bump();
+                let restarts = guard.presence.runtime.restarts;
+                (guard.clone(), restarts)
+            };
+            if let Some(store) = store {
+                store::persist(store, &snapshot);
+            }
+            events.publish(
+                "",
+                "",
+                "runtime",
+                json!({"restarted": true, "restarts": restarts, "revision": snapshot.revision}),
+            );
+        }
+        Err(error) => {
+            {
+                let mut guard = lock(state);
+                guard.presence.runtime.note_failure(error.to_string());
+                guard.bump();
+            }
+            events.publish(
+                "",
+                "",
+                "runtime",
+                json!({"restarted": false, "error": error.to_string()}),
+            );
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(Err(error));
+            }
+            return;
+        }
+    }
     let prompt = request.text.clone();
     // A model chosen from a surface applies to conversations created from now
     // on; Core keeps an existing session on the model it started with.
@@ -122,15 +274,18 @@ fn run_command(
         request_id: request.request_id.clone(),
         input: turn_input(state, &prompt),
     };
-    let mut sender = Some(accepted);
     let mut accepted_turn: Option<AcceptedTurn> = None;
     let routine_id = request.routine_id.clone();
+    let cancel = Arc::clone(&request.cancel);
     let mut on_accepted = |conversation_id: &str, task_id: &str| {
         let identity = AcceptedTurn {
             conversation_id: conversation_id.to_string(),
             task_id: task_id.to_string(),
         };
         accepted_turn = Some(identity.clone());
+        // The worker registers the flag, so every admitted turn is cancellable —
+        // including one a routine fired or one a resume dispatched.
+        queue.cancels.register(task_id, Arc::clone(&cancel));
         if let Some(sender) = sender.take() {
             let _ = sender.send(Ok(identity));
         }
@@ -191,9 +346,11 @@ fn run_command(
     );
     match result {
         Ok(reply) => {
+            queue.cancels.forget(&reply.task_id);
             let (snapshot, suggestion) = {
                 let mut guard = lock(state);
                 guard.presence.mark_settled();
+                guard.presence.runtime.note_ok();
                 guard.bump();
                 let now = now_millis();
                 let status = if reply.cancelled {
@@ -292,9 +449,14 @@ fn run_command(
                 return;
             }
             if let Some(identity) = &accepted_turn {
+                queue.cancels.forget(&identity.task_id);
+                let transport_failed = conversation.transport_failed();
                 let snapshot = {
                     let mut guard = lock(state);
                     guard.presence.mark_settled();
+                    if transport_failed {
+                        guard.presence.runtime.note_failure(error.to_string());
+                    }
                     guard.bump();
                     guard.set_task_status(&identity.task_id, "failed");
                     guard.routines.note_settled(&identity.task_id, "failed");
@@ -364,6 +526,26 @@ impl TurnRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_queue_reports_its_depth_and_cancels_what_it_runs() {
+        let queue = TurnQueue::default();
+        assert_eq!(queue.waiting(), 0);
+        assert_eq!(queue.note_enqueued(), 1);
+        assert_eq!(queue.note_enqueued(), 2);
+        assert_eq!(queue.waiting(), 2);
+        queue.note_finished();
+        assert_eq!(queue.waiting(), 1);
+
+        let flag = Arc::new(AtomicBool::new(false));
+        queue.cancels().register("task-1", Arc::clone(&flag));
+        assert_eq!(queue.running().len(), 1);
+        assert!(queue.request_cancel("task-1"));
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(!queue.request_cancel("task-2"));
+        queue.cancels().forget("task-1");
+        assert!(!queue.request_cancel("task-1"));
+    }
 
     #[test]
     fn titles_are_bounded_and_trimmed() {

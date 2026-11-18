@@ -302,6 +302,64 @@ fn marble_control_refuses_a_write_the_host_would_have_approved() {
 }
 
 #[test]
+fn a_restarted_engine_keeps_the_durable_conversation() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("restart");
+    let script = write_fake_runtime(&root);
+    let storage_dir = root.join("sessions");
+    let mut python = Command::new("python3");
+    python.arg(&script).arg("runtime");
+    // The same recipe the served product holds, so a dead engine can be
+    // replaced without restarting the assistant itself.
+    let respawn_script = script.clone();
+    let mut conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        EventBus::default(),
+    )
+    .unwrap()
+    .with_respawn(move || {
+        let mut command = Command::new("python3");
+        command.arg(&respawn_script).arg("runtime");
+        command
+    });
+
+    let first = run_turn(
+        &turn("first message", None),
+        &mut conversation,
+        TurnOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(first.text, "handled first message");
+    assert!(
+        !conversation.ensure_runtime().unwrap(),
+        "a healthy engine is not replaced"
+    );
+
+    conversation.restart().unwrap();
+    assert_eq!(conversation.restarts(), 1);
+    assert!(!conversation.transport_failed());
+
+    let second = run_turn(
+        &turn("second message", Some(first.conversation_id.clone())),
+        &mut conversation,
+        TurnOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(second.conversation_id, first.conversation_id);
+    assert_eq!(second.text, "handled second message");
+
+    let _ = conversation.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_runtime_without_mixed_capability_is_rejected() {
     if !python3_available() {
         return;

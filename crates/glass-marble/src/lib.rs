@@ -12,6 +12,7 @@ pub mod control;
 pub mod conversation;
 pub mod events;
 pub mod host;
+pub mod lock;
 pub mod memory;
 pub mod normalize;
 pub mod notify;
@@ -31,13 +32,14 @@ pub use control::{ControlEntry, ControlGrant, ControlProfile, ControlState, Queu
 pub use conversation::{ApprovalInbox, CancelToken, Conversation, SteerRequest};
 pub use events::{EventBus, TurnEvent};
 pub use host::{Approval, HostPolicy};
+pub use lock::DataDirLock;
 pub use memory::{MemoryCommand, MemoryFact, MemoryState, MemorySuggestion, parse_command};
 pub use normalize::{InboundMessage, to_turn_input};
 pub use notify::{
     ApnsSettings, Delivery, DeliveryRecord, DeviceRegistration, NOTIFY_EVENTS, Notification,
     NotificationSettings, QuietHours, recent_deliveries,
 };
-pub use presence::PresenceState;
+pub use presence::{PresenceState, RuntimeHealth};
 pub use routine::{Routine, RoutineState, Schedule, parse_schedule};
 pub use scheduler::{TICK, spawn_scheduler};
 pub use server::{
@@ -53,7 +55,9 @@ pub use store::{StateStore, default_data_dir, sessions_dir};
 pub use tools::{ToolOutcome, ToolRouter};
 pub use turn::{DEFAULT_TURN_TIMEOUT, MarbleReply, MarbleTurn, TurnOptions, run_turn};
 pub use voice::{VoiceSettings, spoken_form};
-pub use worker::{AcceptedTurn, TurnCommand, TurnRequest, spawn_turn_worker};
+pub use worker::{
+    AcceptedTurn, CancelRegistry, TurnCommand, TurnQueue, TurnRequest, spawn_turn_worker,
+};
 
 use std::error::Error;
 use std::fmt;

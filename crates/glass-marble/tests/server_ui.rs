@@ -1,7 +1,7 @@
 use glass_marble::{
     AccessPolicy, ApprovalInbox, Conversation, EventBus, HostPolicy, MarbleServer,
     MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest, TaskRecord,
-    ToolRouter, TranscriptEntry, TurnCommand, spawn_turn_worker,
+    ToolRouter, TranscriptEntry, TurnCommand, TurnQueue, spawn_turn_worker,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -68,6 +68,7 @@ fn server_with(
         turn_tx: mpsc::channel().0,
         steer_tx: mpsc::channel().0,
         policy,
+        queue: TurnQueue::default(),
     })
 }
 
@@ -83,6 +84,7 @@ fn server_with_steering(state: ProductState, steer_tx: mpsc::Sender<SteerRequest
         turn_tx: mpsc::channel().0,
         steer_tx,
         policy: AccessPolicy::new(None),
+        queue: TurnQueue::default(),
     })
 }
 
@@ -102,6 +104,7 @@ fn server_with_turn_channel(
         turn_tx,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
+        queue: TurnQueue::default(),
     })
 }
 
@@ -407,6 +410,7 @@ fn oversized_bodies_are_rejected_before_reading() {
         turn_tx: mpsc::channel().0,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
+        queue: TurnQueue::default(),
     });
     std::thread::spawn(move || {
         let _ = server.serve();
@@ -436,6 +440,7 @@ fn event_stream_replays_from_a_cursor() {
         turn_tx: mpsc::channel().0,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
+        queue: TurnQueue::default(),
     });
     std::thread::spawn(move || {
         let _ = server.serve();
@@ -503,6 +508,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         None,
         events.clone(),
         Duration::from_secs(60),
+        TurnQueue::default(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MarbleServer::new(MarbleServerParts {
@@ -514,6 +520,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         turn_tx,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
+        queue: TurnQueue::default(),
     });
 
     let (status, body) = server.handle(
@@ -553,8 +560,11 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
+    // The turn has settled, so the worker no longer holds a cancel flag for it.
     let (status, _) = server.handle("POST", &format!("/api/tasks/{task_id}/cancel"), "");
-    assert_eq!(status, 202);
+    assert_eq!(status, 409);
+    let (status, _) = server.handle("POST", "/api/tasks/not-a-task/cancel", "");
+    assert_eq!(status, 404);
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1073,4 +1083,237 @@ fn the_model_can_be_changed_and_is_validated() {
             .0,
         400
     );
+}
+
+#[test]
+fn a_busy_worker_answers_queued_with_its_place_in_line() {
+    let (turn_tx, turn_rx) = mpsc::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+
+    let started = Instant::now();
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"first"}"#);
+    assert_eq!(status, 202, "{body}");
+    let queued: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(queued["queued"], json!(true));
+    assert_eq!(queued["accepted"], json!(false));
+    assert_eq!(queued["position"], json!(1));
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "the surface waits briefly for a free worker before answering"
+    );
+
+    // The message is in the worker's channel, not answered and forgotten.
+    let command = turn_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the queued message is waiting for the worker");
+    assert_eq!(command.request.text, "first");
+
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"second"}"#);
+    assert_eq!(status, 202, "{body}");
+    let queued: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(queued["position"], json!(2));
+}
+
+#[test]
+fn health_reports_the_runtime_the_document_and_the_backup() {
+    let dir = std::env::temp_dir().join(format!("glass-marble-health-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = glass_marble::StateStore::in_data_dir(&dir);
+    store.save(&test_state()).unwrap();
+    let state = Arc::new(Mutex::new(test_state()));
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::clone(&state),
+        store: Some(Arc::new(store)),
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: mpsc::channel().0,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        queue: TurnQueue::default(),
+    });
+
+    let (status, body) = server.handle("GET", "/healthz", "");
+    assert_eq!(status, 200, "{body}");
+    let health: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(health["ok"], json!(true));
+    assert!(
+        health["version"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(health["runtime"]["health"], json!("ok"));
+    assert_eq!(health["storage"]["document"], json!(true));
+    assert_eq!(health["storage"]["quarantined"], json!(0));
+    assert_eq!(health["storage"]["backup"]["count"], json!(0));
+    assert!(health["lastPersistError"].is_null());
+    assert_eq!(health["recoveredTasks"], json!(0));
+
+    // An engine that stopped answering is not a healthy host, and the answer
+    // says so instead of reporting "ok" and leaving it to a log.
+    state
+        .lock()
+        .unwrap()
+        .presence
+        .runtime
+        .note_failure("the pipe closed");
+    let (status, body) = server.handle("GET", "/healthz", "");
+    assert_eq!(status, 503, "{body}");
+    let health: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(health["ok"], json!(false));
+    assert_eq!(health["runtime"]["lastError"], json!("the pipe closed"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn retry_repeats_the_last_turn_that_did_not_finish() {
+    let mut state = ProductState::default();
+    state.tasks.push(TaskRecord {
+        id: "t-old".into(),
+        conversation_id: "c1".into(),
+        status: "completed".into(),
+        owner: "agent".into(),
+        prompt: "already done".into(),
+        at: 1,
+        routine_id: String::new(),
+    });
+    state.tasks.push(TaskRecord {
+        id: "t-failed".into(),
+        conversation_id: "c1".into(),
+        status: "failed".into(),
+        owner: "agent".into(),
+        prompt: "tidy the notes".into(),
+        at: 2,
+        routine_id: String::new(),
+    });
+    let (turn_tx, turn_rx) = mpsc::channel();
+    let server = server_with_turn_channel(state, turn_tx);
+    let accept = std::thread::spawn(move || {
+        let command = turn_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the retried turn reaches the worker");
+        assert_eq!(command.request.text, "tidy the notes");
+        assert_eq!(command.request.conversation_id.as_deref(), Some("c1"));
+        command
+            .accepted
+            .send(Ok(glass_marble::AcceptedTurn {
+                conversation_id: "c1".into(),
+                task_id: "t-retry".into(),
+            }))
+            .unwrap();
+    });
+    let (status, body) = server.handle("POST", "/api/turns/retry", "{}");
+    assert_eq!(status, 202, "{body}");
+    let retried: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(retried["accepted"], json!(true));
+    assert_eq!(retried["taskId"], json!("t-retry"));
+    assert_eq!(retried["retrying"], json!("t-failed"));
+    accept.join().unwrap();
+
+    // Nothing failed in a fresh document, so there is nothing to repeat.
+    let server = free_server(ProductState::default());
+    assert_eq!(server.handle("POST", "/api/turns/retry", "{}").0, 409);
+}
+
+#[test]
+fn routines_can_hold_a_quiet_window() {
+    let server = free_server(ProductState::default());
+    let (status, body) = server.handle(
+        "POST",
+        "/api/routines/quiet",
+        r#"{"enabled":true,"startMinute":1320,"endMinute":420,"offsetMinutes":330}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let routines: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(routines["changed"], json!(true));
+    assert_eq!(routines["routines"]["quietHours"]["enabled"], json!(true));
+    assert_eq!(
+        routines["routines"]["quietHours"]["startMinute"],
+        json!(1320)
+    );
+    assert_eq!(
+        routines["routines"]["quietHours"]["offsetMinutes"],
+        json!(330)
+    );
+
+    // Saving the same window again changes nothing.
+    let (status, body) = server.handle(
+        "POST",
+        "/api/routines/quiet",
+        r#"{"startMinute":1320,"endMinute":420,"offsetMinutes":330}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["changed"],
+        json!(false)
+    );
+    assert_eq!(
+        server.handle("POST", "/api/routines/quiet", "{ not json").0,
+        400
+    );
+}
+
+#[test]
+fn state_revalidates_with_an_etag_instead_of_resending_the_document() {
+    let server = free_server(test_state());
+    let first = server.handle_request(&RequestHead::new("GET", "/api/state?lean=1"), "");
+    assert_eq!(first.status, 200);
+    let etag = first
+        .headers
+        .iter()
+        .find(|(name, _)| name == "ETag")
+        .map(|(_, value)| value.clone())
+        .expect("state responses carry an ETag");
+
+    let second = server.handle_request(
+        &RequestHead::new("GET", "/api/state?lean=1").with_header("if-none-match", &etag),
+        "",
+    );
+    assert_eq!(second.status, 304);
+    assert!(second.body.is_empty());
+    assert_eq!(
+        second
+            .headers
+            .iter()
+            .find(|(name, _)| name == "ETag")
+            .map(|(_, value)| value.as_str()),
+        Some(etag.as_str())
+    );
+
+    // The full document is a different representation of the same revision.
+    let full = server.handle_request(
+        &RequestHead::new("GET", "/api/state").with_header("if-none-match", &etag),
+        "",
+    );
+    assert_eq!(full.status, 200);
+    assert!(!full.body.is_empty());
+}
+
+#[test]
+fn repeated_login_failures_are_throttled_per_caller() {
+    let server = server_with(
+        test_state(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(Some("s3cret".into())),
+    );
+    for _ in 0..5 {
+        let (status, _) = server.handle("POST", "/api/login", r#"{"token":"nope"}"#);
+        assert_eq!(status, 401);
+    }
+    let (status, body) = server.handle("POST", "/api/login", r#"{"token":"s3cret"}"#);
+    assert_eq!(status, 429, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["error"],
+        json!("too_many_attempts")
+    );
+
+    // Another address is unaffected, so one attacker cannot lock the owner out.
+    let response = server.handle_request_from(
+        &RequestHead::new("POST", "/api/login"),
+        r#"{"token":"s3cret"}"#,
+        "100.64.0.9",
+    );
+    assert_eq!(response.status, 200);
 }

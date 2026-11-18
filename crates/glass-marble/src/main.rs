@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use glass_marble::{
-    AccessPolicy, ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy,
+    AccessPolicy, ApprovalInbox, ControlProfile, Conversation, DataDirLock, EventBus, HostPolicy,
     InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ServiceSpec,
-    StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, default_data_dir, run_turn,
+    StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, TurnQueue, default_data_dir, run_turn,
     sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
 use glass_marble::{notify, service};
@@ -63,6 +63,8 @@ enum Commands {
         #[arg(long, default_value_t = 600)]
         approval_wait_secs: u64,
     },
+    /// Check this host's data, engine, and configuration.
+    Doctor,
     /// Restore the product state from a backup or an export file.
     /// Stop the running service first.
     Restore {
@@ -119,6 +121,16 @@ fn runtime_command(cli: &Cli) -> Command {
     command
 }
 
+/// The recipe the served product uses to replace a dead engine.
+fn runtime_factory(cli: &Cli) -> impl Fn() -> Command + Send + 'static {
+    let binary = core_binary(cli);
+    move || {
+        let mut command = Command::new(&binary);
+        command.arg("runtime");
+        command
+    }
+}
+
 fn run() -> Result<(), MarbleError> {
     let mut cli = Cli::parse();
     let data_dir = cli.data_dir.clone().unwrap_or_else(default_data_dir);
@@ -150,6 +162,7 @@ fn run() -> Result<(), MarbleError> {
                     })?,
                 },
             ),
+            Commands::Doctor => doctor(&cli, &cwd, &data_dir),
             Commands::Restore { from } => restore(&data_dir, from.as_deref()),
             Commands::InstallService {
                 port,
@@ -180,6 +193,9 @@ fn run() -> Result<(), MarbleError> {
 }
 
 fn restore(data_dir: &Path, from: Option<&Path>) -> Result<(), MarbleError> {
+    // The same lock serving takes, so a restore cannot overwrite the document
+    // underneath an instance that still holds the old revision in memory.
+    let _lock = DataDirLock::acquire(data_dir)?;
     let store = StateStore::in_data_dir(data_dir);
     let (state, source) = store.restore(from)?;
     println!(
@@ -264,6 +280,10 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
                 .into(),
         ));
     }
+    // One instance per data directory: two servers would each write the whole
+    // document from their own memory and silently overwrite each other's turns.
+    let lock = DataDirLock::acquire(data_dir)?;
+    tracing::info!(lock = %lock.path().display(), pid = lock.pid(), "holding the data directory");
     let store = Arc::new(StateStore::in_data_dir(data_dir));
     // An unreadable document is refused here, not replaced: load() restores the
     // newest backup when it can, and otherwise leaves the file for the operator.
@@ -306,14 +326,17 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     .with_model(cli.model.clone())
     .with_product(Arc::clone(&state))
     .with_steering(steer_rx)
+    .with_respawn(runtime_factory(cli))
     .with_approval_timeout(Duration::from_secs(approval_wait_secs.max(30)));
     let timeout = Duration::from_secs(timeout_secs.max(30));
+    let queue = TurnQueue::default();
     let turn_tx = spawn_turn_worker(
         conversation,
         Arc::clone(&state),
         Some(Arc::clone(&store)),
         events.clone(),
         timeout,
+        queue.clone(),
     );
     // Routines fire on their own clock, and approvals reach the person who is
     // not looking at a screen.
@@ -335,9 +358,11 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         turn_tx,
         steer_tx,
         policy: AccessPolicy::new(token),
+        queue,
     });
     let address = server.local_addr();
     println!("glass-marble listening on http://{address}");
+    println!("pid: {}", std::process::id());
     println!("workspace: {}", cwd.display());
     println!("data: {}", data_dir.display());
     println!("control:  {} profile", profile.as_str());
@@ -376,6 +401,159 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         );
     }
     server.serve().map_err(MarbleError::Io)
+}
+
+/// Findings collected by `glass-marble doctor`.
+#[derive(Default)]
+struct DoctorReport {
+    findings: Vec<(&'static str, String)>,
+    problems: usize,
+}
+
+impl DoctorReport {
+    fn ok(&mut self, message: impl Into<String>) {
+        self.findings.push(("ok", message.into()));
+    }
+
+    fn warn(&mut self, message: impl Into<String>) {
+        self.findings.push(("warn", message.into()));
+    }
+
+    fn info(&mut self, message: impl Into<String>) {
+        self.findings.push(("info", message.into()));
+    }
+
+    fn fail(&mut self, message: impl Into<String>) {
+        self.findings.push(("fail", message.into()));
+        self.problems += 1;
+    }
+}
+
+/// Check what an always-on instance needs, without touching anything.
+///
+/// Marble is meant to run unattended for months, so the questions an operator
+/// actually has — is the document readable, is a backup recent, is the engine
+/// installed, is another copy already running — should be answerable in one
+/// command instead of by reading the data directory by hand.
+fn doctor(cli: &Cli, cwd: &Path, data_dir: &Path) -> Result<(), MarbleError> {
+    let mut report = DoctorReport::default();
+
+    match std::fs::create_dir_all(data_dir) {
+        Ok(()) => {
+            let probe = data_dir.join(".doctor-probe");
+            match std::fs::write(&probe, b"ok").and_then(|()| std::fs::remove_file(&probe)) {
+                Ok(()) => report.ok(format!("{} is writable", data_dir.display())),
+                Err(error) => {
+                    report.fail(format!("cannot write to {}: {error}", data_dir.display()))
+                }
+            }
+        }
+        Err(error) => report.fail(format!("cannot create {}: {error}", data_dir.display())),
+    }
+
+    let store = StateStore::in_data_dir(data_dir);
+    match store.load() {
+        Ok(state) => report.ok(format!(
+            "document revision {} · {} conversation(s) · {} task(s) · {} transcript entr{}",
+            state.revision,
+            state.conversations.len(),
+            state.tasks.len(),
+            state.transcript.len(),
+            if state.transcript.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        )),
+        Err(error) => report.fail(format!("the product document is unreadable: {error}")),
+    }
+
+    let backup = store.backup_status();
+    match backup["ageSeconds"].as_u64() {
+        Some(seconds) if seconds > 8 * 86_400 => report.warn(format!(
+            "{} backup(s); the newest is {} days old",
+            backup["count"],
+            seconds / 86_400
+        )),
+        Some(seconds) => report.ok(format!(
+            "{} backup(s); the newest is {} hours old",
+            backup["count"],
+            seconds / 3_600
+        )),
+        None => report
+            .warn("no daily backup yet; one is written within five minutes of serving".to_string()),
+    }
+    let quarantined = store.quarantined_count();
+    if quarantined > 0 {
+        report.warn(format!(
+            "{quarantined} unreadable document(s) kept aside as product-state.corrupt-*; inspect them"
+        ));
+    }
+
+    match DataDirLock::acquire(data_dir) {
+        Ok(lock) => {
+            let held = lock.held();
+            drop(lock);
+            if held {
+                report.ok("no other instance is serving this data directory".to_string());
+            }
+        }
+        Err(_) => report.info(
+            "another instance is serving this data directory; expected while the service runs",
+        ),
+    }
+
+    let binary = core_binary(cli);
+    match which(&binary) {
+        Some(path) => report.ok(format!("engine {}", path.display())),
+        None => report.fail(format!(
+            "engine binary {} was not found; pass --core-binary or set GLASS_CORE_BINARY",
+            binary.display()
+        )),
+    }
+
+    match std::fs::create_dir_all(sessions_dir(data_dir)) {
+        Ok(()) => report.ok(format!(
+            "engine sessions live in {}",
+            sessions_dir(data_dir).display()
+        )),
+        Err(error) => report.fail(format!("cannot create the sessions directory: {error}")),
+    }
+
+    if std::env::var("GLASS_MARBLE_TOKEN")
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false)
+    {
+        report.ok("GLASS_MARBLE_TOKEN is set, so off-loopback serving can authenticate");
+    } else {
+        report.info("no token in the environment; serving off loopback needs --token-file");
+    }
+    report.info(format!("workspace {}", cwd.display()));
+
+    println!("glass-marble doctor");
+    println!("version: {}", env!("CARGO_PKG_VERSION"));
+    for (level, message) in &report.findings {
+        println!("  {level:<4} {message}");
+    }
+    if report.problems == 0 {
+        println!("\nall checks passed");
+        return Ok(());
+    }
+    Err(MarbleError::Protocol(format!(
+        "{} check(s) need attention",
+        report.problems
+    )))
+}
+
+/// Resolve one binary the way a shell would.
+fn which(binary: &Path) -> Option<PathBuf> {
+    if binary.components().count() > 1 {
+        return binary.is_file().then(|| binary.to_path_buf());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(binary))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Inputs for the login service that keeps the assistant running.

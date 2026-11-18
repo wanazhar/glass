@@ -147,6 +147,19 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
+    /// Correct the running turn without stopping and restarting it.
+    func steer(text: String, conversationId: String?, taskId: String?) async throws {
+        struct Body: Encodable {
+            var text: String
+            var conversationId: String?
+            var taskId: String?
+        }
+        try await post(
+            "/api/turns/steer",
+            body: Body(text: text, conversationId: conversationId, taskId: taskId)
+        )
+    }
+
     func cancel(taskId: String) async throws {
         try await post("/api/tasks/\(taskId)/cancel")
     }
@@ -211,6 +224,18 @@ final class MarbleClient: @unchecked Sendable {
     func remember(text: String) async throws -> MarbleMemory {
         struct Body: Encodable { var text: String }
         let reply: MemoryReply = try await postJSON("/api/memory", body: Body(text: text))
+        return reply.memory
+    }
+
+    func updateMemory(id: String, text: String, kind: String? = nil) async throws -> MarbleMemory {
+        struct Body: Encodable {
+            var text: String
+            var kind: String?
+        }
+        let reply: MemoryReply = try await postJSON(
+            "/api/memory/\(encoded(id))/update",
+            body: Body(text: text, kind: kind)
+        )
         return reply.memory
     }
 

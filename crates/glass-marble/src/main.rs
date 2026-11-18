@@ -2,14 +2,14 @@ use clap::{Parser, Subcommand};
 use glass_marble::{
     AccessPolicy, ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy,
     InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ProductState,
-    ServiceSpec, StateStore, TICK, ToolRouter, TurnOptions, default_data_dir, run_turn,
-    sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
+    ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, default_data_dir,
+    run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
 use glass_marble::{notify, service};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -259,6 +259,9 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     let approvals = ApprovalInbox::default();
     let router = ToolRouter::new(cwd)?;
     let state = Arc::new(Mutex::new(loaded));
+    // Corrections are handed to the worker that owns the running turn, so the
+    // HTTP surface never has to guess which conversation is active.
+    let (steer_tx, steer_rx) = mpsc::channel::<SteerRequest>();
     let conversation = Conversation::spawn_with_router(
         runtime_command(cli),
         cwd,
@@ -270,6 +273,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     )?
     .with_model(cli.model.clone())
     .with_product(Arc::clone(&state))
+    .with_steering(steer_rx)
     .with_approval_timeout(Duration::from_secs(approval_wait_secs.max(30)));
     let timeout = Duration::from_secs(timeout_secs.max(30));
     let turn_tx = spawn_turn_worker(
@@ -297,6 +301,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         approvals,
         events,
         turn_tx,
+        steer_tx,
         policy: AccessPolicy::new(token),
     });
     let address = server.local_addr();

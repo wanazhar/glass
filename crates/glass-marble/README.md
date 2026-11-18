@@ -20,8 +20,10 @@ person touches.
   `unattended`), denied path rules, revocable standing grants, a FIFO admission
   queue with pause and stop, and an audit ledger of every governed decision.
 - **Presence**: what it is doing now, uptime, and what a restart cost it.
-- **Memory**: facts you asked it to keep, and suggestions it waits for you to
-  confirm. Facts are carried into every turn.
+- **Memory**: facts you asked it to keep, suggestions it waits for you to
+  confirm, and in-place edits. Facts are carried into every turn.
+- **Corrections**: a running turn can be steered with a new instruction, keeping
+  its context instead of stopping and starting over.
 - **Routines**: saved prompts on a schedule that fire through the same queue,
   count the runs a sleeping host missed, and catch up once on wake.
 - **Notifications**: a JSON webhook and APNs push, with retries, duplicate

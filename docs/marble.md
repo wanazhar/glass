@@ -173,7 +173,37 @@ stored, and each fact counts its uses. A statement Marble notices ("I prefer…"
 "my name is…", "I work…") waits as a suggestion with Save and Dismiss until you
 decide. Nothing is remembered silently, and `forget` removes it immediately.
 
+A fact can also be corrected in place: `POST /api/memory/{id}/update` with the
+new `text` (and optionally `kind`) keeps the same id and use count instead of
+forgetting and re-adding it. Both surfaces offer Edit next to Forget, so a fact
+that has drifted out of date is one edit away rather than a loss.
+
 Limits are explicit: 200 facts, 280 characters each, 8 suggestions waiting.
+
+## Correcting a running turn
+
+Stopping a turn to fix a wrong assumption throws away everything it has already
+read. Core's `turn/steer` interrupts the current request, keeps the context, and
+continues the same turn with the correction. Marble exposes that as:
+
+```text
+POST /api/turns/steer
+{"text": "use src/lib.rs, not src/main.rs", "taskId": "task-…", "conversationId": "conv-…"}
+```
+
+The route resolves the request against the durable task table before handing it
+to the worker: the target must be a task whose status is `running`, so a
+correction can never land on a different turn than the one you were watching. An
+idle host answers `409 no_running_turn`. Accepted corrections are published as
+`steer_queued`, then `steered` when Core accepts them, and `steer_rejected` with
+a reason when the runtime refuses.
+
+While a turn runs, the WebUI and the iOS composer show a correction field: text
+there goes to the running turn, not a new one. Steer is applied between runtime
+frames, so a turn blocked inside a host approval answers the approval first.
+
+The runtime also offers `turn/followUp` for queueing a new turn after the
+current one; Marble's own pause queue already covers that, so it is not wired.
 
 ## Routines
 
@@ -274,6 +304,7 @@ recognition rather than falling back to a network service.
 | `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts |
 | `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
 | `/api/turns` | POST | Admit a durable turn, queue it, or apply an explicit memory command |
+| `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
 | `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task |
 | `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
 | `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue |
@@ -283,6 +314,7 @@ recognition rather than falling back to a network service.
 | `/api/control/grants` | POST | Add a standing grant (`tool`, `pathPrefix`) |
 | `/api/control/grants/{id}/revoke` | POST | Revoke one grant |
 | `/api/memory` | GET/POST | Read memory, or remember one statement (`text`, optional `kind`) |
+| `/api/memory/{id}/update` | POST | Correct one fact in place (`text`, optional `kind`) |
 | `/api/memory/{id}/forget` | POST | Forget one fact |
 | `/api/memory/{id}/accept` and `/dismiss` | POST | Decide one suggestion |
 | `/api/routines` | GET/POST | Read routines, or add one (`title`, `prompt`, `schedule`) |
@@ -349,12 +381,13 @@ tailscale serve --bg 4783
 `glass-marble serve` serves one page that adapts from a phone to a wide desktop:
 a collapsible conversation rail, a transcript that renders model text as text
 rather than HTML, live tool activity, approval cards with Allow, Always here, and
-Deny, memory suggestion cards, task cancellation, an unlock dialog for
-token-protected hosts, and two sheets:
+Deny, memory suggestion cards, a correction field while a turn runs, task
+cancellation, an unlock dialog for token-protected hosts, and two sheets:
 
-- **Assistant** — presence, remembered facts, waiting suggestions, routines with
-  Run/Pause/Remove, webhook and APNs settings with a test button, registered
-  devices, and the read-aloud switch.
+- **Assistant** — presence, remembered facts with Edit and Forget, waiting
+  suggestions, routines with Run/Pause/Remove and missed-run counts, webhook and
+  APNs settings with quiet hours and a test button, registered devices, recent
+  deliveries, and the read-aloud switch.
 - **Control** — posture, pause and stop, grants, denied paths, the queued
   messages, and the decision ledger.
 

@@ -154,6 +154,43 @@ impl MemoryState {
         Ok(fact)
     }
 
+    /// Correct one fact in place, keeping its id and history.
+    ///
+    /// A remembered detail changes (a new timezone, a different editor), and
+    /// forgetting then re-adding it would lose the fact's id and use count. The
+    /// edit is explicit, so it is marked as such.
+    pub fn update(&mut self, id: &str, text: &str, kind: &str) -> Result<MemoryFact, String> {
+        let text = normalize(text);
+        if text.is_empty() {
+            return Err("there is nothing to remember".into());
+        }
+        if text.chars().count() > MAX_FACT_CHARS {
+            return Err(format!(
+                "a memory is at most {MAX_FACT_CHARS} characters; keep it to one statement"
+            ));
+        }
+        let candidate = text.to_ascii_lowercase();
+        if self
+            .facts
+            .iter()
+            .any(|fact| fact.id != id && normalize(&fact.text).to_ascii_lowercase() == candidate)
+        {
+            return Err("an equivalent memory is already kept".into());
+        }
+        let fact = self
+            .facts
+            .iter_mut()
+            .find(|fact| fact.id == id)
+            .ok_or_else(|| "unknown memory".to_string())?;
+        fact.text = text;
+        if !kind.trim().is_empty() {
+            fact.kind = normalize_kind(kind).to_string();
+        }
+        fact.updated_at = now_millis();
+        fact.explicit = true;
+        Ok(fact.clone())
+    }
+
     /// Forget one fact by id.
     pub fn forget(&mut self, id: &str) -> bool {
         let before = self.facts.len();
@@ -503,6 +540,32 @@ mod tests {
                 .is_none()
         );
         assert!(!memory.dismiss(&suggestion.id));
+    }
+
+    #[test]
+    fn editing_a_memory_keeps_its_identity_and_rejects_duplicates() {
+        let mut memory = MemoryState::default();
+        let fact = memory
+            .remember("my timezone is UTC", "fact", "c1", true)
+            .unwrap();
+        memory
+            .remember("the office wifi is glassnet", "fact", "c1", true)
+            .unwrap();
+        let updated = memory
+            .update(&fact.id, "  my timezone is Asia/Kolkata ", "preference")
+            .unwrap();
+        assert_eq!(updated.id, fact.id);
+        assert_eq!(updated.text, "my timezone is Asia/Kolkata");
+        assert_eq!(updated.kind, "preference");
+        assert!(updated.explicit);
+        assert!(memory.update(&fact.id, "", "fact").is_err());
+        assert!(memory.update("missing", "anything", "fact").is_err());
+        assert!(
+            memory
+                .update(&fact.id, "the office wifi is glassnet", "fact")
+                .is_err(),
+            "an edit cannot collide with another memory"
+        );
     }
 
     #[test]

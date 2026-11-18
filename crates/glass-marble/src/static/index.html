@@ -287,6 +287,11 @@
               <textarea id="composer" rows="1" placeholder="Ask Marble to work in this workspace…"></textarea>
               <button class="primary" id="send">Send</button>
             </div>
+            <div class="memory-form" id="steer-row" hidden>
+              <label class="sr-only" for="steer">Correct the running turn</label>
+              <input id="steer" placeholder="Correct Marble while it works…" />
+              <button class="ghost" id="steer-send" type="button">Steer</button>
+            </div>
             <div class="hint">
               <span>Enter sends · Shift+Enter adds a line</span>
               <span id="task-hint"></span>
@@ -403,6 +408,7 @@
         "tool_cancel", "usage", "compacted", "steered", "queued", "notice", "error", "settled",
         "cancel_requested", "approval_pending", "approval_resolved", "state",
         "control_denied", "control", "memory", "memory_suggestion", "routine", "retention",
+        "steer_queued", "steer_rejected",
       ];
       const app = {
         state: null,
@@ -421,6 +427,9 @@
         tasks: document.getElementById("tasks"),
         approvals: document.getElementById("approvals"),
         composer: document.getElementById("composer"),
+        steerRow: document.getElementById("steer-row"),
+        steer: document.getElementById("steer"),
+        steerSend: document.getElementById("steer-send"),
         send: document.getElementById("send"),
         cancel: document.getElementById("cancel"),
         statusDot: document.getElementById("status-dot"),
@@ -735,12 +744,15 @@
           const item = node("li");
           item.append(node("span", "tag", fact.kind || "fact"));
           item.append(node("span", "grow", fact.text));
+          const edit = node("button", "ghost", "Edit");
+          edit.type = "button";
+          edit.addEventListener("click", () => editMemory(fact));
           const forget = node("button", "ghost", "Forget");
           forget.type = "button";
           forget.addEventListener("click", () =>
             controlAction("/api/memory/" + encodeURIComponent(fact.id) + "/forget")
           );
-          item.append(forget);
+          item.append(edit, forget);
           el.memoryFacts.append(item);
         });
 
@@ -1001,6 +1013,7 @@
         const running = app.live.taskId;
         const control = controlState();
         el.cancel.hidden = !running;
+        el.steerRow.hidden = !running;
         el.send.disabled = Boolean(running);
         el.taskHint.textContent = running ? "task " + running : "";
         el.controlOpen.textContent = control.paused
@@ -1091,6 +1104,42 @@
         }
       }
 
+      /// Correct the turn that is already running, without restarting it.
+      async function steer() {
+        const text = el.steer.value.trim();
+        if (!text || !app.live.taskId) return;
+        el.steer.value = "";
+        try {
+          await api("/api/turns/steer", {
+            method: "POST",
+            body: JSON.stringify({
+              text,
+              conversationId: app.conversationId,
+              taskId: app.live.taskId,
+            }),
+          });
+          setStatus("correction sent", "busy");
+        } catch (error) {
+          setStatus(error.message, "offline");
+        }
+      }
+
+      async function editMemory(fact) {
+        const text = window.prompt("Edit this memory", fact.text);
+        if (text === null) return;
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        try {
+          await api("/api/memory/" + encodeURIComponent(fact.id) + "/update", {
+            method: "POST",
+            body: JSON.stringify({ text: trimmed }),
+          });
+        } catch (error) {
+          setStatus(error.message, "offline");
+        }
+        await refresh();
+      }
+
       async function cancel() {
         if (!app.live.taskId) return;
         try {
@@ -1157,6 +1206,15 @@
             setStatus(data.message || "error", "offline");
             refresh();
             break;
+          case "steer_queued":
+            setStatus("correction queued", "busy");
+            break;
+          case "steered":
+            setStatus("steering", "busy");
+            break;
+          case "steer_rejected":
+            setStatus(data.reason || "correction refused", "offline");
+            break;
           case "cancel_requested":
             setStatus("cancelling", "busy");
             break;
@@ -1198,6 +1256,13 @@
 
       el.send.addEventListener("click", send);
       el.cancel.addEventListener("click", cancel);
+      el.steerSend.addEventListener("click", steer);
+      el.steer.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          steer();
+        }
+      });
       el.composer.addEventListener("input", autosize);
       el.composer.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && !event.shiftKey) {

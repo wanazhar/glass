@@ -6,7 +6,7 @@
 
 use crate::Approval;
 use crate::control::ControlProfile;
-use crate::conversation::ApprovalInbox;
+use crate::conversation::{ApprovalInbox, SteerRequest};
 use crate::events::{EventBus, TurnEvent};
 use crate::memory::{self, MemoryCommand};
 use crate::notify::{self, ApnsSettings, Notification};
@@ -275,6 +275,8 @@ pub struct MarbleServerParts {
     pub approvals: ApprovalInbox,
     pub events: EventBus,
     pub turn_tx: mpsc::Sender<TurnCommand>,
+    /// Corrections for a turn that is already running.
+    pub steer_tx: mpsc::Sender<SteerRequest>,
     pub policy: AccessPolicy,
 }
 
@@ -286,6 +288,7 @@ pub struct MarbleServer {
     approvals: ApprovalInbox,
     events: EventBus,
     turn_tx: mpsc::Sender<TurnCommand>,
+    steer_tx: mpsc::Sender<SteerRequest>,
     policy: AccessPolicy,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -299,6 +302,7 @@ impl MarbleServer {
             approvals: parts.approvals,
             events: parts.events,
             turn_tx: parts.turn_tx,
+            steer_tx: parts.steer_tx,
             policy: parts.policy,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -380,6 +384,9 @@ impl MarbleServer {
         if head.method == "POST" && path == "/api/turns" {
             return self.handle_turn(body);
         }
+        if head.method == "POST" && path == "/api/turns/steer" {
+            return self.steer_turn(body);
+        }
         if head.method == "GET" && path == "/api/control" {
             return Response::json(200, self.control_document());
         }
@@ -418,6 +425,9 @@ impl MarbleServer {
         {
             if let Some(id) = rest.strip_suffix("/forget") {
                 return self.forget_memory(id);
+            }
+            if let Some(id) = rest.strip_suffix("/update") {
+                return self.update_memory(id, body);
             }
             if let Some(id) = rest.strip_suffix("/accept") {
                 return self.accept_suggestion(id);
@@ -608,6 +618,55 @@ impl MarbleServer {
                         "memory": self.lock_state().memory.document(),
                     }),
                 )
+            }
+            Err(reason) => {
+                Response::json(400, json!({"error": "invalid_memory", "message": reason}))
+            }
+        }
+    }
+
+    /// `POST /api/memory/{id}/update` — correct one remembered statement.
+    fn update_memory(&self, id: &str, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let kind = parsed
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let outcome = {
+            let mut guard = self.lock_state();
+            let outcome = guard.memory.update(id, text, kind);
+            if outcome.is_ok() {
+                guard.bump();
+            }
+            outcome
+        };
+        match outcome {
+            Ok(fact) => {
+                self.save_state();
+                self.events.publish(
+                    "",
+                    "",
+                    "memory",
+                    json!({"updated": fact.id, "text": fact.text, "kind": fact.kind}),
+                );
+                Response::json(
+                    200,
+                    json!({
+                        "ok": true,
+                        "remembered": fact,
+                        "memory": self.lock_state().memory.document(),
+                    }),
+                )
+            }
+            Err(reason) if reason == "unknown memory" => {
+                Response::json(404, json!({"error": "unknown_memory", "id": id}))
             }
             Err(reason) => {
                 Response::json(400, json!({"error": "invalid_memory", "message": reason}))
@@ -1462,6 +1521,96 @@ impl MarbleServer {
                 "requestId": request_id,
                 "conversationId": accepted.conversation_id,
                 "taskId": accepted.task_id,
+            }),
+        )
+    }
+
+    /// `POST /api/turns/steer` — correct the turn that is running now.
+    ///
+    /// The request is matched against the durable task table before it reaches
+    /// the worker, so a correction can never land on a different turn than the
+    /// one the person was looking at.
+    fn steer_turn(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if text.is_empty() {
+            return Response::error(400, "empty_message");
+        }
+        if text.len() > 64 * 1024 {
+            return Response::error(413, "message_too_large");
+        }
+        let requested_conversation = parsed
+            .get("conversationId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let requested_task = parsed
+            .get("taskId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let target = {
+            let guard = self.lock_state();
+            let running = |task: &&crate::state::TaskRecord| task.status == "running";
+            if let Some(task_id) = requested_task {
+                guard
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == task_id && task.status == "running")
+                    .map(|task| (task.conversation_id.clone(), task.id.clone()))
+            } else if let Some(conversation_id) = requested_conversation {
+                guard
+                    .tasks
+                    .iter()
+                    .rev()
+                    .find(running)
+                    .filter(|task| task.conversation_id == conversation_id)
+                    .map(|task| (task.conversation_id.clone(), task.id.clone()))
+            } else {
+                guard
+                    .tasks
+                    .iter()
+                    .rev()
+                    .find(running)
+                    .map(|task| (task.conversation_id.clone(), task.id.clone()))
+            }
+        };
+        let Some((conversation_id, task_id)) = target else {
+            return Response::json(
+                409,
+                json!({
+                    "error": "no_running_turn",
+                    "message": "there is no running turn to correct",
+                }),
+            );
+        };
+        let request = SteerRequest {
+            conversation_id: conversation_id.clone(),
+            task_id: task_id.clone(),
+            text: text.clone(),
+        };
+        if self.steer_tx.send(request).is_err() {
+            return Response::error(503, "turn_worker_unavailable");
+        }
+        self.events.publish(
+            &conversation_id,
+            &task_id,
+            "steer_queued",
+            json!({"text": text, "taskId": task_id}),
+        );
+        Response::json(
+            202,
+            json!({
+                "steered": true,
+                "conversationId": conversation_id,
+                "taskId": task_id,
+                "text": text,
             }),
         )
     }

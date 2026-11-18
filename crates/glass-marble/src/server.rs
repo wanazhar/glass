@@ -1744,7 +1744,8 @@ impl MarbleServer {
         Response::json(200, json!({"ok": true, "control": self.control_document()}))
     }
 
-    /// Pause or resume admission. Resuming drains the queue in arrival order.
+    /// Pause or resume admission. Resuming hands each held entry to its lane, so
+    /// a typed message still drains before a held routine firing.
     fn set_paused(&self, paused: bool) -> Response {
         let queued = {
             let mut guard = self.lock_state();
@@ -1769,19 +1770,55 @@ impl MarbleServer {
             }
         };
         self.save_state();
-        let mut dispatched = 0usize;
+        // An idle worker takes the first thing offered, so hand over typed
+        // messages first: a resume keeps the priority the lanes promise instead
+        // of admitting whichever entry happened to be held first.
+        let mut queued = queued;
+        queued.sort_by_key(|entry| entry.routine_id.is_some());
+        let mut requests = Vec::with_capacity(queued.len());
         for entry in queued {
-            let request = TurnRequest::new(entry.conversation_id, entry.text);
+            let mut request = TurnRequest::new(entry.conversation_id, entry.text);
+            if let Some(routine_id) = entry.routine_id {
+                // A held firing resumes as a firing: it goes back in the routine
+                // lane, and its run was counted when admission held it, so only
+                // the task id is recorded now.
+                request = request.counted_routine(routine_id);
+            }
+            requests.push(request);
+        }
+        // A resumed entry waits in its lane like any other queued turn, so it
+        // gets the same durable row and presence can still count it; the worker
+        // replaces the row when the engine admits the turn.
+        if !requests.is_empty() {
+            let mut guard = self.lock_state();
+            for request in &requests {
+                guard.upsert_task(TaskRecord {
+                    id: format!("queued-{}", request.request_id),
+                    conversation_id: request.conversation_id.clone().unwrap_or_default(),
+                    status: "queued".into(),
+                    owner: "agent".into(),
+                    prompt: request.text.clone(),
+                    at: now_millis(),
+                    routine_id: request.routine_id.clone().unwrap_or_default(),
+                });
+            }
+            guard.bump();
+            drop(guard);
+            self.save_state();
+        }
+        let mut dispatched = 0usize;
+        for request in requests {
+            let queued_id = format!("queued-{}", request.request_id);
             let (acknowledged, _ack) = mpsc::channel();
-            if self
-                .turn_tx
-                .send(TurnCommand {
-                    request,
-                    accepted: acknowledged,
-                })
-                .is_ok()
-            {
-                dispatched += 1;
+            match self.turn_tx.send(TurnCommand {
+                request,
+                accepted: acknowledged,
+            }) {
+                Ok(_) => dispatched += 1,
+                Err(error) => {
+                    tracing::warn!(%error, "the turn worker is gone; dropping a queued message");
+                    self.forget_queued(&queued_id);
+                }
             }
         }
         self.events.publish(

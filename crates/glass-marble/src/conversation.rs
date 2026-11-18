@@ -27,6 +27,9 @@ const MAX_AUXILIARY_RESPONSES: usize = 8;
 /// Bound on request ids remembered until their response arrives, so a runtime
 /// that never answers a steer cannot grow this table without limit.
 const MAX_OUTSTANDING_RESPONSES: usize = 64;
+/// Refusal recorded for a governed call whose approval wait a stop request
+/// ended, so the model learns the call never ran.
+const CANCELLED_APPROVAL: &str = "cancelled before this tool call ran";
 
 /// Product instructions for a marble conversation.
 pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collaborator working inside the \
@@ -135,6 +138,35 @@ fn steer_allowed(
         return Err("that turn is not the one running");
     }
     Ok(())
+}
+
+/// Park for one explicit decision, but stop waiting as soon as the turn is
+/// cancelled.
+///
+/// A pending approval is the longest pause in a turn, and a person pressing
+/// stop is usually looking at exactly that pause, so a stop request has to end
+/// the wait instead of leaving the turn parked until the approval timeout
+/// expires. `None` means the turn was cancelled; the call must not run.
+fn wait_for_approval(
+    receiver: &Receiver<Approval>,
+    timeout: Duration,
+    cancel: Option<CancelToken<'_>>,
+) -> Option<Approval> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel.is_some_and(|token| token.requested.load(Ordering::Relaxed)) {
+            return None;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Some(Approval::Deny);
+        }
+        match receiver.recv_timeout(remaining.min(PUMP_INTERVAL)) {
+            Ok(decision) => return Some(decision),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Some(Approval::Deny),
+        }
+    }
 }
 
 /// Durable conversation handle over the local runtime.
@@ -570,7 +602,7 @@ impl Conversation {
                     sink(&event);
                 }
                 Incoming::Tool { request_id, call } => {
-                    self.handle_tool(request_id, &call)?;
+                    self.handle_tool(request_id, &call, cancel)?;
                 }
                 Incoming::Unknown(_) => {}
             }
@@ -626,7 +658,12 @@ impl Conversation {
         }
     }
 
-    fn handle_tool(&mut self, request_id: Value, call: &ToolRequest) -> Result<(), MarbleError> {
+    fn handle_tool(
+        &mut self,
+        request_id: Value,
+        call: &ToolRequest,
+        cancel: Option<CancelToken<'_>>,
+    ) -> Result<(), MarbleError> {
         let key = request_id
             .as_str()
             .map(str::to_owned)
@@ -640,7 +677,7 @@ impl Conversation {
                 "arguments": call.arguments,
             }),
         );
-        let (approval, reason) = self.decide(&key, call);
+        let (approval, reason) = self.decide(&key, call, cancel);
         let outcome = crate::host::answer_tool_request_with_note(
             &mut self.client,
             request_id,
@@ -665,7 +702,12 @@ impl Conversation {
 
     /// Classify one governed call through marble's control layer, falling back
     /// to the host posture when no product document is attached (one-shot runs).
-    fn decide(&mut self, key: &str, call: &ToolRequest) -> (Approval, String) {
+    fn decide(
+        &mut self,
+        key: &str,
+        call: &ToolRequest,
+        cancel: Option<CancelToken<'_>>,
+    ) -> (Approval, String) {
         let path = call
             .arguments
             .get("path")
@@ -710,11 +752,28 @@ impl Conversation {
                             "arguments": call.arguments,
                         }),
                     );
-                    let decision = self
-                        .approvals
-                        .register(key, &call.call_id, &call.name, call.arguments.clone())
-                        .recv_timeout(self.approval_timeout)
-                        .unwrap_or(Approval::Deny);
+                    let receiver = self.approvals.register(
+                        key,
+                        &call.call_id,
+                        &call.name,
+                        call.arguments.clone(),
+                    );
+                    let decision = match wait_for_approval(&receiver, self.approval_timeout, cancel)
+                    {
+                        Some(decision) => decision,
+                        None => {
+                            // The turn was stopped while this call was parked:
+                            // clear the pending entry, answer the runtime so it
+                            // can settle, and let the caller abort the task.
+                            self.approvals.resolve(key, Approval::Deny);
+                            self.publish(
+                                "approval_resolved",
+                                value!({"requestId": key, "approved": false}),
+                            );
+                            self.record(&call.name, &path, "denied", CANCELLED_APPROVAL);
+                            return (Approval::Deny, CANCELLED_APPROVAL.to_string());
+                        }
+                    };
                     self.approvals.resolve(key, decision);
                     self.publish(
                         "approval_resolved",
@@ -910,6 +969,45 @@ mod tests {
         assert_eq!(receiver.recv().unwrap(), Approval::Approve);
         assert!(inbox.pending().is_empty());
         assert!(!inbox.resolve("host:1", Approval::Approve));
+    }
+
+    #[test]
+    fn a_stop_request_ends_an_approval_wait_promptly() {
+        let (_sender, receiver) = mpsc::channel::<Approval>();
+        let requested = AtomicBool::new(false);
+        let cancel = CancelToken {
+            requested: &requested,
+            task_id: "task-1",
+        };
+        let started = Instant::now();
+        let decision = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                requested.store(true, Ordering::Relaxed);
+            });
+            wait_for_approval(&receiver, Duration::from_secs(60), Some(cancel))
+        });
+        assert_eq!(decision, None, "a stop request ends the wait undecided");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait must end on the stop request, not on its timeout: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn an_approval_wait_still_takes_a_decision_and_still_times_out() {
+        let (sender, receiver) = mpsc::channel::<Approval>();
+        sender.send(Approval::Approve).unwrap();
+        assert_eq!(
+            wait_for_approval(&receiver, Duration::from_secs(5), None),
+            Some(Approval::Approve)
+        );
+        let (_sender, receiver) = mpsc::channel::<Approval>();
+        assert_eq!(
+            wait_for_approval(&receiver, Duration::ZERO, None),
+            Some(Approval::Deny)
+        );
     }
 
     #[test]

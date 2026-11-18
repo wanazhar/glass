@@ -174,7 +174,9 @@ Admission is Marble's decision too:
   run was counted when admission held it, so resuming only records the task that
   carries it, and settlement still reaches the routine. A resumed entry keeps a
   durable `queued` row while it waits in its lane, so it stays visible until the
-  engine admits it.
+  engine admits it. A firing whose routine is removed or disabled while it waits
+  is skipped when its turn comes instead of running work nobody asked for, and
+  the skip is published with the routine id.
 - `Stop everything` pauses admission and cancels every running task in one move.
   Both are reversible: the pause switch and the queue survive a restart.
 - Routines are admitted through the same queue, so a paused assistant queues its

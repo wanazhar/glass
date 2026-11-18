@@ -403,6 +403,17 @@ pub fn spawn_turn_worker(
     sender
 }
 
+/// Whether a routine firing is still wanted at the moment it is admitted.
+///
+/// A firing can wait behind typed messages, behind another turn, or in the pause
+/// queue, and the routine may be removed or disabled meanwhile.
+fn firing_still_wanted(state: &Mutex<ProductState>, routine_id: &str) -> bool {
+    lock(state)
+        .routines
+        .get(routine_id)
+        .is_some_and(|routine| routine.enabled)
+}
+
 fn run_command(
     command: TurnCommand,
     conversation: &mut Conversation,
@@ -419,6 +430,33 @@ fn run_command(
     // soon as the engine issues an id, and it is removed if the turn never
     // starts at all.
     let queued_id = format!("queued-{}", request.request_id);
+    // A firing waits in the routine lane, and the routine can be removed or
+    // disabled while it waits. Running it then would be work nobody asked for
+    // any more, so drop the placeholder and say why instead of starting a turn.
+    if let Some(routine_id) = request.routine_id.clone()
+        && !firing_still_wanted(state, &routine_id)
+    {
+        let snapshot = {
+            let mut guard = lock(state);
+            guard.tasks.retain(|task| task.id != queued_id);
+            guard.bump();
+            guard.clone()
+        };
+        if let Some(store) = store {
+            store::persist(store, &snapshot);
+        }
+        events.publish(
+            "",
+            "",
+            "routine",
+            json!({
+                "routineId": routine_id,
+                "skipped": true,
+                "reason": "the routine was removed or disabled while its firing waited",
+            }),
+        );
+        return;
+    }
     // A turn cannot start on an engine that stopped answering. Replacing it
     // here, before the durable task exists, means the person gets either a real
     // answer or a clear failure — never a turn that was silently lost.
@@ -763,6 +801,32 @@ impl TurnRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_firing_for_a_removed_or_disabled_routine_is_not_wanted() {
+        let state = Arc::new(Mutex::new(ProductState::default()));
+        let routine_id = {
+            let mut guard = lock(&state);
+            guard
+                .routines
+                .add("Sweep", "sweep the notes", "every:1h", None)
+                .expect("a routine")
+                .id
+        };
+        assert!(firing_still_wanted(&state, &routine_id));
+
+        lock(&state).routines.set_enabled(&routine_id, false);
+        assert!(
+            !firing_still_wanted(&state, &routine_id),
+            "a disabled routine's waiting firing is skipped"
+        );
+
+        lock(&state).routines.remove(&routine_id);
+        assert!(
+            !firing_still_wanted(&state, &routine_id),
+            "a removed routine's waiting firing is skipped"
+        );
+    }
 
     #[test]
     fn typed_messages_drain_before_routine_firings() {

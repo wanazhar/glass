@@ -10,7 +10,7 @@ use crate::conversation::{ApprovalInbox, SteerRequest};
 use crate::events::{EventBus, TurnEvent};
 use crate::memory::{self, MemoryCommand};
 use crate::notify::{self, ApnsSettings, Notification};
-use crate::state::{PendingApproval, ProductState};
+use crate::state::{PendingApproval, ProductState, TaskRecord};
 use crate::store::StateStore;
 use crate::voice;
 use crate::worker::{TurnCommand, TurnQueue, TurnRequest, now_millis};
@@ -2017,8 +2017,34 @@ impl MarbleServer {
     /// says where the message stands, and it is already in the worker's channel.
     fn submit_request(&self, request: TurnRequest) -> Response {
         let request_id = request.request_id.clone();
+        let queued_id = format!("queued-{request_id}");
+        let conversation_id = request.conversation_id.clone().unwrap_or_default();
+        // A queued message is a durable row, not only a slot in the worker's
+        // channel: otherwise `202 queued` is a promise the document does not
+        // keep, and a restart would forget the message entirely. The worker
+        // swaps this row for the real task once the engine issues an id.
+        {
+            let mut guard = self.lock_state();
+            guard.upsert_task(TaskRecord {
+                id: queued_id.clone(),
+                conversation_id: conversation_id.clone(),
+                status: "queued".into(),
+                owner: "agent".into(),
+                prompt: request.text.clone(),
+                at: now_millis(),
+                routine_id: request.routine_id.clone().unwrap_or_default(),
+            });
+            guard.bump();
+        }
+        self.save_state();
         let (accepted_tx, accepted_rx) = mpsc::channel();
         let position = self.queue.note_enqueued();
+        self.events.publish(
+            &conversation_id,
+            &queued_id,
+            "queued",
+            json!({"taskId": queued_id, "requestId": request_id, "position": position}),
+        );
         if self
             .turn_tx
             .send(TurnCommand {
@@ -2028,11 +2054,13 @@ impl MarbleServer {
             .is_err()
         {
             self.queue.note_finished();
+            self.forget_queued(&queued_id);
             return Response::error(503, "turn_worker_unavailable");
         }
         let accepted = match accepted_rx.recv_timeout(ADMISSION_WAIT) {
             Ok(Ok(accepted)) => accepted,
             Ok(Err(error)) => {
+                self.forget_queued(&queued_id);
                 return Response::json(
                     502,
                     json!({"error": "turn_failed", "message": error.to_string()}),
@@ -2068,6 +2096,23 @@ impl MarbleServer {
                 "position": position,
             }),
         )
+    }
+
+    /// Drop a queued placeholder once it can never become a turn.
+    fn forget_queued(&self, queued_id: &str) {
+        let removed = {
+            let mut guard = self.lock_state();
+            let before = guard.tasks.len();
+            guard.tasks.retain(|task| task.id != queued_id);
+            let removed = guard.tasks.len() != before;
+            if removed {
+                guard.bump();
+            }
+            removed
+        };
+        if removed {
+            self.save_state();
+        }
     }
 
     /// `POST /api/turns/retry` — run the last turn that did not finish.

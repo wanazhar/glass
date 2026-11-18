@@ -1,7 +1,7 @@
 use glass_marble::{
     AccessPolicy, ApprovalInbox, CancelRegistry, Conversation, EventBus, HostPolicy, MarbleServer,
     MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest, TaskRecord,
-    ToolRouter, TranscriptEntry, TurnInbox, TurnSender, spawn_turn_worker,
+    ToolRouter, TranscriptEntry, TurnInbox, TurnLane, TurnSender, spawn_turn_worker,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -742,13 +742,20 @@ fn routines_can_be_added_run_paused_and_removed() {
     let control = control_of(&server);
     assert_eq!(control["queue"][0]["routineId"], json!(routine_id));
     assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+    let resumed = inbox
+        .try_recv()
+        .expect("resuming dispatches the queued firing")
+        .request;
+    assert_eq!(resumed.text, "tidy the notes");
     assert_eq!(
-        inbox
-            .try_recv()
-            .expect("resuming dispatches the queued firing")
-            .request
-            .text,
-        "tidy the notes"
+        resumed.routine_id.as_deref(),
+        Some(routine_id.as_str()),
+        "a held firing resumes as a firing, not as a typed message"
+    );
+    assert_eq!(resumed.lane(), TurnLane::Routine);
+    assert!(
+        resumed.routine_counted,
+        "the run was counted when admission held it, so admitting it must not count again"
     );
 
     assert_eq!(
@@ -777,6 +784,64 @@ fn routines_can_be_added_run_paused_and_removed() {
         200
     );
     assert_eq!(server.handle("POST", "/api/routines/nope/run", "").0, 404);
+}
+
+#[test]
+fn resuming_admits_typed_messages_before_held_firings() {
+    let (turn_tx, inbox) = TurnInbox::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let (_, body) = server.handle(
+        "POST",
+        "/api/routines",
+        r#"{"title":"Sweep","prompt":"sweep the notes","schedule":"every:1h"}"#,
+    );
+    let routine_id = serde_json::from_str::<Value>(&body).unwrap()["routine"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    // The firing is held first, so a plain arrival-order drain would admit it
+    // ahead of the message the person typed.
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/routines/{routine_id}/run"), "")
+            .0,
+        202
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/turns", r#"{"text":"typed while paused"}"#)
+            .0,
+        202
+    );
+    assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+
+    let typed = inbox
+        .try_recv()
+        .expect("the typed message is admitted first")
+        .request;
+    assert_eq!(typed.text, "typed while paused");
+    assert_eq!(typed.lane(), TurnLane::Human);
+    let firing = inbox.try_recv().expect("the held firing follows");
+    assert_eq!(
+        firing.request.routine_id.as_deref(),
+        Some(routine_id.as_str())
+    );
+    assert_eq!(firing.request.lane(), TurnLane::Routine);
+    assert!(firing.request.routine_counted);
+
+    // While it waits in the routine lane it is still a durable row, so the panel
+    // and presence can name it instead of losing sight of it on resume.
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    let waiting = state["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["status"] == json!("queued") && task["routineId"] == json!(routine_id))
+        .expect("the resumed firing keeps a durable row while it waits");
+    assert_eq!(waiting["prompt"], json!("sweep the notes"));
+    assert_eq!(state["presence"]["waiting"]["routine"], json!(1));
 }
 
 #[test]

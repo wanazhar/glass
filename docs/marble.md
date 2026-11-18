@@ -169,7 +169,12 @@ question, not every question: a write in a different directory still asks.
 Admission is Marble's decision too:
 
 - `Pause queue` holds new messages in a durable FIFO queue instead of admitting
-  them. `Resume queue` dispatches them in arrival order.
+  them. `Resume queue` hands each held entry back to its lane, so a typed message
+  still runs before a held routine firing. A held firing resumes as a firing: its
+  run was counted when admission held it, so resuming only records the task that
+  carries it, and settlement still reaches the routine. A resumed entry keeps a
+  durable `queued` row while it waits in its lane, so it stays visible until the
+  engine admits it.
 - `Stop everything` pauses admission and cancels every running task in one move.
   Both are reversible: the pause switch and the queue survive a restart.
 - Routines are admitted through the same queue, so a paused assistant queues its

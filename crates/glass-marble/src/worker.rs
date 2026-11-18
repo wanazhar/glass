@@ -36,6 +36,9 @@ pub struct TurnRequest {
     pub cancel: Arc<AtomicBool>,
     /// Set when a routine, not a person, admitted this turn.
     pub routine_id: Option<String>,
+    /// Set when this firing's run was already counted while admission held it.
+    /// Admitting it then records the task id without counting the run again.
+    pub routine_counted: bool,
 }
 
 /// Durable identity of an admitted turn.
@@ -518,7 +521,13 @@ fn run_command(
                 at: now,
             });
             if let Some(routine_id) = &routine_id {
-                guard.routines.note_run(routine_id, task_id, now);
+                if request.routine_counted {
+                    // The firing was counted when admission held it, so record
+                    // which task carries it instead of counting it twice.
+                    guard.routines.note_admitted(routine_id, task_id);
+                } else {
+                    guard.routines.note_run(routine_id, task_id, now);
+                }
             }
             guard.memory.note_use();
             guard.clone()
@@ -728,7 +737,17 @@ impl TurnRequest {
             request_id: crate::next_request_id(),
             cancel: Arc::new(AtomicBool::new(false)),
             routine_id: None,
+            routine_counted: false,
         }
+    }
+
+    /// A routine firing whose run was already counted while admission held it.
+    /// Resuming a paused queue hands it back in the routine lane, and admission
+    /// attaches its task id so settlement still reaches the routine.
+    pub fn counted_routine(mut self, routine_id: impl Into<String>) -> Self {
+        self.routine_id = Some(routine_id.into());
+        self.routine_counted = true;
+        self
     }
 
     /// A turn a person typed outranks one a schedule fired.

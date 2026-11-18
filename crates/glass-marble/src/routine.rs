@@ -346,6 +346,20 @@ impl RoutineState {
         }
     }
 
+    /// Record the task carrying a firing whose run was already counted while
+    /// admission held it, without touching the run counters or the schedule.
+    ///
+    /// A paused queue counts the firing when it is held, because the person was
+    /// owed that answer then; resuming it later only has to say which task now
+    /// carries it, so settlement and cancellation still find the routine.
+    pub fn note_admitted(&mut self, id: &str, task_id: &str) {
+        let Some(routine) = self.routines.iter_mut().find(|routine| routine.id == id) else {
+            return;
+        };
+        routine.last_task_id = task_id.to_string();
+        routine.last_status = "running".to_string();
+    }
+
     /// Record the settlement of one routine's task.
     pub fn note_settled(&mut self, task_id: &str, status: &str) {
         if let Some(routine) = self
@@ -535,6 +549,32 @@ mod tests {
         assert_eq!(routines.routines[0].runs, 1);
         assert_eq!(routines.routines[0].last_task_id, "task-1");
         routines.note_settled("task-1", "completed");
+        assert_eq!(routines.routines[0].last_status, "completed");
+    }
+
+    #[test]
+    fn an_admitted_firing_records_its_task_without_counting_twice() {
+        let mut routines = RoutineState::default();
+        let routine = routines
+            .add("Tidy", "tidy the notes", "every:10m", None)
+            .unwrap();
+        let now = routine.next_run_at + 1000;
+        assert_eq!(routines.due(now).len(), 1);
+        // A paused queue counts the firing when it holds it.
+        routines.note_run(&routine.id, "", now);
+        routines.note_status(&routine.id, "queued");
+        let runs = routines.routines[0].runs;
+        let next_run_at = routines.routines[0].next_run_at;
+
+        // Resuming attaches the task without counting the run again.
+        routines.note_admitted(&routine.id, "task-9");
+        assert_eq!(routines.routines[0].runs, runs);
+        assert_eq!(routines.routines[0].next_run_at, next_run_at);
+        assert_eq!(routines.routines[0].last_task_id, "task-9");
+        assert_eq!(routines.routines[0].last_status, "running");
+
+        // Settlement still finds the routine through that task id.
+        routines.note_settled("task-9", "completed");
         assert_eq!(routines.routines[0].last_status, "completed");
     }
 

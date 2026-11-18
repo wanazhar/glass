@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use glass_marble::{
     AccessPolicy, ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy,
-    InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ProductState,
-    ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, default_data_dir,
-    run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
+    InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ServiceSpec,
+    StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, default_data_dir, run_turn,
+    sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
 use glass_marble::{notify, service};
 use std::net::TcpListener;
@@ -62,6 +62,13 @@ enum Commands {
         /// How long a governed tool waits for a human decision before failing closed.
         #[arg(long, default_value_t = 600)]
         approval_wait_secs: u64,
+    },
+    /// Restore the product state from a backup or an export file.
+    /// Stop the running service first.
+    Restore {
+        /// Backup or `/api/export` file. Defaults to the newest daily backup.
+        #[arg(long, value_name = "PATH")]
+        from: Option<PathBuf>,
     },
     /// Install a login service so the assistant keeps running after logout.
     InstallService {
@@ -143,6 +150,7 @@ fn run() -> Result<(), MarbleError> {
                     })?,
                 },
             ),
+            Commands::Restore { from } => restore(&data_dir, from.as_deref()),
             Commands::InstallService {
                 port,
                 host,
@@ -169,6 +177,30 @@ fn run() -> Result<(), MarbleError> {
         ));
     };
     one_shot(&cli, &cwd, &data_dir, &message)
+}
+
+fn restore(data_dir: &Path, from: Option<&Path>) -> Result<(), MarbleError> {
+    let store = StateStore::in_data_dir(data_dir);
+    let (state, source) = store.restore(from)?;
+    println!(
+        "restored {} into {}",
+        source.display(),
+        store.path().display()
+    );
+    println!(
+        "{} conversation(s), {} task(s), {} transcript entr{}, revision {}",
+        state.conversations.len(),
+        state.tasks.len(),
+        state.transcript.len(),
+        if state.transcript.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        state.revision
+    );
+    println!("start the service again to serve the restored state");
+    Ok(())
 }
 
 fn one_shot(cli: &Cli, cwd: &Path, data_dir: &Path, message: &str) -> Result<(), MarbleError> {
@@ -233,13 +265,9 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         ));
     }
     let store = Arc::new(StateStore::in_data_dir(data_dir));
-    let mut loaded = match store.load() {
-        Ok(state) => state,
-        Err(error) => {
-            tracing::warn!(%error, "starting from an empty product state");
-            ProductState::default()
-        }
-    };
+    // An unreadable document is refused here, not replaced: load() restores the
+    // newest backup when it can, and otherwise leaves the file for the operator.
+    let mut loaded = store.load()?;
     loaded.control.profile = profile;
     if let Some(model) = cli.model.clone() {
         // An explicit flag wins; otherwise a model chosen from a surface stays.

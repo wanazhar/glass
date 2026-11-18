@@ -8,6 +8,7 @@ use crate::MarbleError;
 use crate::state::ProductState;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the durable product document.
 pub const STATE_FILE: &str = "product-state.json";
@@ -40,6 +41,14 @@ pub fn default_data_dir() -> PathBuf {
     std::env::temp_dir().join("glass-marble")
 }
 
+/// Wall clock in milliseconds, used only to name kept-aside documents.
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 /// Durable runtime session storage under the product data directory.
 pub fn sessions_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("sessions")
@@ -66,19 +75,124 @@ impl StateStore {
     }
 
     /// Load the document, returning an empty state when it does not exist yet.
+    ///
+    /// A document that cannot be parsed is never treated as empty: empty is a
+    /// real state that the next write would make permanent. The newest daily
+    /// backup is restored instead, and the unreadable file is moved aside so it
+    /// can still be inspected. With no backup to fall back on, this refuses to
+    /// start rather than overwrite what the operator had.
     pub fn load(&self) -> Result<ProductState, MarbleError> {
         match fs::read_to_string(&self.path) {
-            Ok(encoded) => serde_json::from_str(&encoded).map_err(|error| {
-                MarbleError::Protocol(format!(
-                    "cannot read product state at {}: {error}",
-                    self.path.display()
-                ))
-            }),
+            Ok(encoded) => match serde_json::from_str(&encoded) {
+                Ok(state) => Ok(state),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        path = %self.path.display(),
+                        "product state is unreadable; trying the newest daily backup"
+                    );
+                    self.recover_from_backup(&error)
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(ProductState::default())
             }
             Err(error) => Err(MarbleError::Io(error)),
         }
+    }
+
+    fn recover_from_backup(
+        &self,
+        parse_error: &serde_json::Error,
+    ) -> Result<ProductState, MarbleError> {
+        let Some(backup) = self.newest_backup() else {
+            return Err(MarbleError::Protocol(format!(
+                "cannot read product state at {}: {parse_error}; no daily backup is available, so \
+                 nothing was replaced — run `glass-marble restore --from <file>` or move the file aside",
+                self.path.display()
+            )));
+        };
+        let state = Self::read_document(&backup)?;
+        let quarantined = self
+            .path
+            .with_file_name(format!("product-state.corrupt-{}.json", unix_millis()));
+        fs::rename(&self.path, &quarantined).map_err(MarbleError::Io)?;
+        self.save(&state)?;
+        tracing::warn!(
+            backup = %backup.display(),
+            quarantined = %quarantined.display(),
+            "restored the product state from the newest daily backup"
+        );
+        Ok(state)
+    }
+
+    /// Daily backups on disk, oldest first.
+    fn backup_paths(&self) -> Vec<PathBuf> {
+        let Some(parent) = self.path.parent() else {
+            return Vec::new();
+        };
+        let Ok(entries) = fs::read_dir(parent.join(BACKUP_DIR)) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| candidate.extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// The newest daily backup, when one exists.
+    pub fn newest_backup(&self) -> Option<PathBuf> {
+        self.backup_paths().pop()
+    }
+
+    /// Read a daily backup, or an export written by `/api/export`.
+    fn read_document(path: &Path) -> Result<ProductState, MarbleError> {
+        let encoded = fs::read_to_string(path).map_err(MarbleError::Io)?;
+        let value: serde_json::Value = serde_json::from_str(&encoded).map_err(|error| {
+            MarbleError::Protocol(format!("cannot read {}: {error}", path.display()))
+        })?;
+        let document = value.get("state").cloned().unwrap_or(value);
+        serde_json::from_value(document).map_err(|error| {
+            MarbleError::Protocol(format!(
+                "{} is not a marble product document: {error}",
+                path.display()
+            ))
+        })
+    }
+
+    /// Replace the live document with a daily backup, or with `from` (a backup
+    /// or an `/api/export` file). The document being replaced is copied aside
+    /// first, so a restore is itself reversible.
+    ///
+    /// Stop the service before restoring: it holds the document in memory and
+    /// would write that copy back on its next change.
+    pub fn restore(&self, from: Option<&Path>) -> Result<(ProductState, PathBuf), MarbleError> {
+        let source = match from {
+            Some(path) => path.to_path_buf(),
+            None => self.newest_backup().ok_or_else(|| {
+                MarbleError::Protocol(format!(
+                    "no backups under {} and no --from file given",
+                    self.path
+                        .parent()
+                        .map(|parent| parent.join(BACKUP_DIR).display().to_string())
+                        .unwrap_or_else(|| BACKUP_DIR.into())
+                ))
+            })?,
+        };
+        let state = Self::read_document(&source)?;
+        if self.path.exists() {
+            let replaced = self
+                .path
+                .with_file_name(format!("product-state.replaced-{}.json", unix_millis()));
+            if let Err(error) = fs::copy(&self.path, &replaced) {
+                tracing::warn!(%error, "could not keep a copy of the replaced product state");
+            }
+        }
+        self.save(&state)?;
+        Ok((state, source))
     }
 
     /// Write one backup per UTC day, keeping a week of history.
@@ -129,7 +243,11 @@ impl StateStore {
     }
 }
 
-/// Load product state from `data_dir`, or an empty document when unreadable.
+/// Load product state from `data_dir`, falling back to an empty document only
+/// when nothing at all can be read.
+///
+/// Serving does not use this: a surface that would write the document back must
+/// report an unreadable file instead of quietly starting over.
 pub fn load_or_default(data_dir: &Path) -> ProductState {
     StateStore::in_data_dir(data_dir)
         .load()
@@ -160,6 +278,7 @@ mod tests {
 
     #[test]
     fn missing_document_loads_as_empty_state() {
+        // A missing file is a first start, not damage; nothing to recover.
         let dir = data_dir("missing");
         let store = StateStore::in_data_dir(&dir);
         assert_eq!(store.load().unwrap(), ProductState::default());
@@ -185,6 +304,92 @@ mod tests {
         let store = StateStore::in_data_dir(&dir);
         fs::write(store.path(), b"{not json").unwrap();
         assert!(store.load().is_err());
+        assert!(
+            fs::read(store.path()).unwrap() == b"{not json",
+            "an unreadable document with no backup is left untouched"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupt_document_recovers_from_the_newest_backup() {
+        let dir = data_dir("recover");
+        let store = StateStore::in_data_dir(&dir);
+        let mut older = ProductState::default();
+        older.conversation_mut("old").title = "older".into();
+        store.write_daily_backup(&older, 86_400_000).unwrap();
+        let mut newer = ProductState::default();
+        newer.conversation_mut("new").title = "newer".into();
+        newer.bump();
+        store.write_daily_backup(&newer, 2 * 86_400_000).unwrap();
+        fs::write(store.path(), b"{ truncated").unwrap();
+
+        let loaded = store.load().expect("recovered from a backup");
+        assert_eq!(loaded, newer);
+        let quarantined = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("product-state.corrupt-")
+            });
+        assert!(quarantined, "the unreadable file is kept for inspection");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_accepts_an_export_and_keeps_the_replaced_document() {
+        let dir = data_dir("restore");
+        let store = StateStore::in_data_dir(&dir);
+        let mut live = ProductState::default();
+        live.conversation_mut("live").title = "live".into();
+        store.save(&live).unwrap();
+
+        let mut wanted = ProductState::default();
+        wanted.conversation_mut("c1").title = "from export".into();
+        let export = dir.join("export.json");
+        fs::write(
+            &export,
+            serde_json::to_vec(&serde_json::json!({
+                "format": "glass-marble/v1",
+                "exportedAt": 1,
+                "revision": 2,
+                "state": wanted,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (restored, source) = store.restore(Some(&export)).unwrap();
+        assert_eq!(source, export);
+        assert_eq!(restored, wanted);
+        assert_eq!(store.load().unwrap(), wanted);
+        assert!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("product-state.replaced-")),
+            "the replaced document is copied aside"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_without_a_file_uses_the_newest_backup() {
+        let dir = data_dir("restore-newest");
+        let store = StateStore::in_data_dir(&dir);
+        assert!(store.restore(None).is_err(), "nothing to restore from yet");
+        let mut state = ProductState::default();
+        state.conversation_mut("c1").title = "backed up".into();
+        let path = store.write_daily_backup(&state, 86_400_000).unwrap();
+        assert_eq!(store.newest_backup(), Some(path));
+        let (restored, _) = store.restore(None).unwrap();
+        assert_eq!(restored, state);
         let _ = fs::remove_dir_all(&dir);
     }
 

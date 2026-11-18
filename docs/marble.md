@@ -174,6 +174,10 @@ Admission is Marble's decision too:
   Both are reversible: the pause switch and the queue survive a restart.
 - Routines are admitted through the same queue, so a paused assistant queues its
   scheduled work instead of running it.
+- Typed messages and routine firings share the queue but not the priority: a
+  message you type runs before any routine firing that is waiting, whether the
+  scheduler fired it or you ran it by hand. Presence counts both lanes and says
+  which one the worker takes next.
 
 ### Audit ledger
 
@@ -383,14 +387,19 @@ never blocks the HTTP surface. Text, reasoning, tool activity, usage, memory
 suggestions, routine firings, and settlement stream over `/api/events`; the
 transcript itself stays authoritative in the product document.
 
-One worker runs one turn at a time. A message that arrives while a turn is
-running is not answered with a gateway timeout: the route waits a short bound,
-then answers `202` with `"queued": true`, its `position`, and the `requestId` it
-will carry. The message is a durable `queued` task in the document while it
-waits — counted as `waitingTurns` in presence — so a restart does not forget it,
-and it is replaced by the real task when the engine admits it. A turn posted
-while admission is paused is queued the same way, with `"paused": true`.
-Approvals fail closed when nobody answers within the configured wait.
+One worker runs one turn at a time, and its queue has two lanes: messages a
+person typed drain first, then routine firings, each lane in arrival order. A
+routine that was bumped waits without looking stuck, because presence explains
+it. A message that arrives while a turn is running is not answered with a
+gateway timeout: the route waits a short bound, then answers `202` with
+`"queued": true`, its `position` in its lane, and the `requestId` it will carry.
+The message is a durable `queued` task in the document while it waits — counted
+as `waitingTurns` in presence, with a `waiting` block that splits `human` from
+`routine`, names the `nextLane`, and says why a firing is held — so a restart
+does not forget it, and it is replaced by the real task when the engine admits
+it. A turn posted while admission is paused is queued the same way, with
+`"paused": true`. Approvals fail closed when nobody answers within the
+configured wait.
 
 ### What a poll costs
 
@@ -593,6 +602,8 @@ The adapter tests use `tests/fixtures/fake_glass_core_runtime.py`, so they need
 `python3` and no provider account. They cover mixed-session negotiation, tool
 execution and denial, per-message durable task identity, live approvals, control
 classification and ledger recording, paused admission and in-order dispatch,
+typed-message priority over routine firings and the presence block that explains
+the wait,
 grant lifecycle, token authentication, cross-origin rejection, body limits, event
 replay, the HTTP turn route end to end, presence, explicit memory commands,
 suggestion decisions, routines and their timezone offset, notification and voice
@@ -637,11 +648,16 @@ has to keep saying *which* session it is talking about.
 honest: typed messages jump ahead of routine firings, a person can preempt a
 routine mid-turn by stopping it, and presence says why the wait is long. This is
 much smaller, keeps one durable history, and covers the case that actually
-happens on a personal host — one person, one assistant, several routines.
+happens on a personal host — one person, one assistant, several routines. That
+is what this crate does: the turn queue holds a human lane and a routine lane,
+the worker drains the human lane first, and presence reports both counts plus
+the lane it takes next. The cost is that a long conversation starves scheduled
+work instead of interleaving it, so a routine that came due at 09:00 can wait
+until the conversation ends; the alternative hides that trade-off rather than
+making it visible.
 
-The recommendation is to do the second now and treat the first as a product
+The remaining choice is whether to add a session pool, and that stays a product
 decision rather than an optimisation. The queue already records who admitted a
-turn (owner, routine id) and the worker already serializes; a priority field and
-a promotion rule are a contained change. A session pool changes the shape of the
-cancel table, presence, and approvals, and should be designed with the surfaces
-that display them, not added underneath them.
+turn (owner, routine id), and priority lanes are in place. A session pool changes
+the shape of the cancel table, presence, and approvals, and should be designed
+with the surfaces that display them, not added underneath them.

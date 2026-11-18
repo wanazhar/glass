@@ -473,7 +473,14 @@ replay, the HTTP turn route end to end, presence, explicit memory commands,
 suggestion decisions, routines, notification and voice settings, and the local
 webhook delivery path.
 
+`.github/workflows/glass-marble.yml` runs the same checks on Linux and adds the
+part a Rust-only loop cannot: a signing-free simulator build of the iOS target
+on a macOS runner with an Xcode that carries the iOS 26 SDK the Liquid Glass
+APIs need. It runs on changes to the crate, the runtime client, the iOS app, or
+the lockfile, so a Swift break is caught in review rather than on a phone.
+
 Not covered by those checks: a live provider turn against a real `glass-core`
-binary, an actual APNs delivery (it needs a real key, topic, and device), and an
-iOS build. The iOS target compiles in Xcode only; the Swift sources and
-storyboards here were reviewed but not built in this environment.
+binary, an actual APNs delivery (it needs a real key, topic, and device), and
+steering on a real turn (the route and target matching are unit-tested, but the
+local runtime never sees a provider that supports it). The simulator build
+proves the Swift compiles; it does not exercise the app against a host.

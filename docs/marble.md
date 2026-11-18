@@ -180,7 +180,8 @@ Admission is Marble's decision too:
 - `Stop everything` pauses admission and cancels every running task in one move.
   Both are reversible: the pause switch and the queue survive a restart.
 - Routines are admitted through the same queue, so a paused assistant queues its
-  scheduled work instead of running it.
+  scheduled work instead of running it. Running a disabled routine by hand is a
+  deliberate override: it still runs, and the answer says it overrode the pause.
 - Typed messages and routine firings share the queue but not the priority: a
   message you type runs before any routine firing that is waiting, whether the
   scheduler fired it or you ran it by hand. Presence counts both lanes and says
@@ -378,7 +379,7 @@ recognition rather than falling back to a network service.
 | `/api/routines` | GET/POST | Read routines, or add one (`title`, `prompt`, `schedule`, optional `offsetMinutes`) |
 | `/api/routines/offset` | POST | Set the UTC offset `daily:HH:MM` is interpreted in |
 | `/api/routines/quiet` | POST | Hold scheduled work inside a window (`enabled`, `startMinute`, `endMinute`, `offsetMinutes`) |
-| `/api/routines/{id}/run` | POST | Fire a routine now, queueing it when paused |
+| `/api/routines/{id}/run` | POST | Fire a routine now, queueing it when admission is paused; a disabled routine's run answers with `override: true` |
 | `/api/routines/{id}/enable` and `/disable` | POST | Pause or resume a routine |
 | `/api/routines/{id}/remove` | POST | Delete a routine |
 | `/api/routines/{id}/catch-up` | POST | Run the first tick after a gap, or skip to the next run (`enabled`) |

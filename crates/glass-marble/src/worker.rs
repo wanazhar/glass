@@ -39,6 +39,9 @@ pub struct TurnRequest {
     /// Set when this firing's run was already counted while admission held it.
     /// Admitting it then records the task id without counting the run again.
     pub routine_counted: bool,
+    /// Set when a person ran the routine by hand while it was disabled. The
+    /// schedule is paused, but this firing was asked for, so it still runs.
+    pub routine_override: bool,
 }
 
 /// Durable identity of an admitted turn.
@@ -406,12 +409,18 @@ pub fn spawn_turn_worker(
 /// Whether a routine firing is still wanted at the moment it is admitted.
 ///
 /// A firing can wait behind typed messages, behind another turn, or in the pause
-/// queue, and the routine may be removed or disabled meanwhile.
-fn firing_still_wanted(state: &Mutex<ProductState>, routine_id: &str) -> bool {
+/// queue, and the routine may be removed or disabled meanwhile. A removed
+/// routine always drops its firing; a disabled one only does so unless a person
+/// ran it by hand, which overrides the pause.
+fn firing_still_wanted(
+    state: &Mutex<ProductState>,
+    routine_id: &str,
+    override_pause: bool,
+) -> bool {
     lock(state)
         .routines
         .get(routine_id)
-        .is_some_and(|routine| routine.enabled)
+        .is_some_and(|routine| routine.enabled || override_pause)
 }
 
 fn run_command(
@@ -434,7 +443,7 @@ fn run_command(
     // disabled while it waits. Running it then would be work nobody asked for
     // any more, so drop the placeholder and say why instead of starting a turn.
     if let Some(routine_id) = request.routine_id.clone()
-        && !firing_still_wanted(state, &routine_id)
+        && !firing_still_wanted(state, &routine_id, request.routine_override)
     {
         let snapshot = {
             let mut guard = lock(state);
@@ -776,6 +785,7 @@ impl TurnRequest {
             cancel: Arc::new(AtomicBool::new(false)),
             routine_id: None,
             routine_counted: false,
+            routine_override: false,
         }
     }
 
@@ -813,18 +823,22 @@ mod tests {
                 .expect("a routine")
                 .id
         };
-        assert!(firing_still_wanted(&state, &routine_id));
+        assert!(firing_still_wanted(&state, &routine_id, false));
 
         lock(&state).routines.set_enabled(&routine_id, false);
         assert!(
-            !firing_still_wanted(&state, &routine_id),
+            !firing_still_wanted(&state, &routine_id, false),
             "a disabled routine's waiting firing is skipped"
+        );
+        assert!(
+            firing_still_wanted(&state, &routine_id, true),
+            "but a firing a person ran by hand overrides the pause"
         );
 
         lock(&state).routines.remove(&routine_id);
         assert!(
-            !firing_still_wanted(&state, &routine_id),
-            "a removed routine's waiting firing is skipped"
+            !firing_still_wanted(&state, &routine_id, true),
+            "a removed routine's waiting firing is skipped, override or not"
         );
     }
 

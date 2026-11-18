@@ -1290,6 +1290,10 @@ impl MarbleServer {
         let Some(routine) = routine else {
             return Response::json(404, json!({"error": "unknown_routine", "id": id}));
         };
+        // A disabled routine keeps its schedule paused, but running it by hand
+        // is a deliberate act: the firing runs and the answer says it overrode
+        // the pause, instead of failing silently or pretending the routine is on.
+        let overrides_pause = !routine.enabled;
         let paused = self.lock_state().control.paused;
         if paused {
             let queued = {
@@ -1298,6 +1302,7 @@ impl MarbleServer {
                     routine.id.clone(),
                     routine.conversation_id.clone(),
                     routine.prompt.clone(),
+                    overrides_pause,
                 );
                 if outcome.is_ok() {
                     guard.routines.note_run(&routine.id, "", now_millis());
@@ -1309,10 +1314,18 @@ impl MarbleServer {
             return match queued {
                 Ok(entry) => {
                     self.save_state();
-                    Response::json(
-                        202,
-                        json!({"queued": true, "queueId": entry.id, "routines": self.lock_state().routines.document()}),
-                    )
+                    let mut value = json!({"queued": true, "queueId": entry.id});
+                    if overrides_pause && let Value::Object(ref mut map) = value {
+                        map.insert("override".into(), json!(true));
+                        map.insert(
+                            "message".into(),
+                            json!("that routine is paused; this run will override the pause when the queue resumes"),
+                        );
+                    }
+                    if let Value::Object(ref mut map) = value {
+                        map.insert("routines".into(), self.lock_state().routines.document());
+                    }
+                    Response::json(202, value)
                 }
                 Err(reason) => {
                     Response::json(409, json!({"error": "queue_full", "message": reason}))
@@ -1321,6 +1334,7 @@ impl MarbleServer {
         }
         let mut request = TurnRequest::new(routine.conversation_id.clone(), routine.prompt.clone());
         request.routine_id = Some(routine.id.clone());
+        request.routine_override = overrides_pause;
         // A firing waits in the routine lane behind typed messages, so it gets
         // the same durable row a typed message has while it waits. The worker
         // replaces the row once the engine admits the turn.
@@ -1356,12 +1370,25 @@ impl MarbleServer {
             "",
             "",
             "routine",
-            json!({"routineId": routine.id, "title": routine.title, "queued": false}),
+            json!({
+                "routineId": routine.id,
+                "title": routine.title,
+                "queued": false,
+                "override": overrides_pause,
+            }),
         );
-        Response::json(
-            202,
-            json!({"admitted": true, "routines": self.lock_state().routines.document()}),
-        )
+        let mut value = json!({"admitted": true});
+        if overrides_pause && let Value::Object(ref mut map) = value {
+            map.insert("override".into(), json!(true));
+            map.insert(
+                "message".into(),
+                json!("that routine is paused; this run overrides the pause"),
+            );
+        }
+        if let Value::Object(ref mut map) = value {
+            map.insert("routines".into(), self.lock_state().routines.document());
+        }
+        Response::json(202, value)
     }
 
     fn set_routine_enabled(&self, id: &str, enabled: bool) -> Response {
@@ -1781,8 +1808,10 @@ impl MarbleServer {
             if let Some(routine_id) = entry.routine_id {
                 // A held firing resumes as a firing: it goes back in the routine
                 // lane, and its run was counted when admission held it, so only
-                // the task id is recorded now.
+                // the task id is recorded now. A hand-run firing of a disabled
+                // routine keeps its override through the queue.
                 request = request.counted_routine(routine_id);
+                request.routine_override = entry.routine_override;
             }
             requests.push(request);
         }

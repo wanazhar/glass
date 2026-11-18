@@ -225,6 +225,10 @@ pub struct QueuedTurn {
     /// surface can say which routine is waiting and why.
     #[serde(default)]
     pub routine_id: Option<String>,
+    /// Set when a person ran the routine by hand while it was disabled. The
+    /// schedule is paused, but this firing was asked for, so it still runs.
+    #[serde(default)]
+    pub routine_override: bool,
 }
 
 /// Durable control document: profile, switch, rules, grants, ledger, and queue.
@@ -416,23 +420,33 @@ impl ControlState {
         conversation_id: Option<String>,
         text: impl Into<String>,
     ) -> Result<QueuedTurn, String> {
-        self.enqueue_turn(conversation_id, None, text)
+        self.enqueue_turn(conversation_id, None, false, text)
     }
 
     /// Hold one routine firing while admission is paused, keeping its routine.
+    ///
+    /// `override_pause` keeps a hand-run firing of a disabled routine intact
+    /// through the queue, so resuming still runs work a person asked for.
     pub fn enqueue_routine(
         &mut self,
         routine_id: impl Into<String>,
         conversation_id: Option<String>,
         text: impl Into<String>,
+        override_pause: bool,
     ) -> Result<QueuedTurn, String> {
-        self.enqueue_turn(conversation_id, Some(routine_id.into()), text)
+        self.enqueue_turn(
+            conversation_id,
+            Some(routine_id.into()),
+            override_pause,
+            text,
+        )
     }
 
     fn enqueue_turn(
         &mut self,
         conversation_id: Option<String>,
         routine_id: Option<String>,
+        routine_override: bool,
         text: impl Into<String>,
     ) -> Result<QueuedTurn, String> {
         if self.queue.len() >= QUEUE_LIMIT {
@@ -446,6 +460,7 @@ impl ControlState {
             text: text.into(),
             at: now_millis(),
             routine_id,
+            routine_override,
         };
         self.queue.push(entry.clone());
         Ok(entry)

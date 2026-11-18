@@ -176,6 +176,22 @@ final class MarbleStore: ObservableObject {
         }
     }
 
+    /// Send a correction into the turn that is running now.
+    func steer(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let taskId = activeTaskId else { return }
+        do {
+            try await client.steer(
+                text: trimmed,
+                conversationId: selectedConversationId,
+                taskId: taskId
+            )
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func cancelActiveTask() async {
         guard let taskId = activeTaskId else { return }
         do {
@@ -252,6 +268,14 @@ final class MarbleStore: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         await perform { _ = try await self.client.remember(text: trimmed) }
+    }
+
+    func update(_ fact: MarbleMemoryFact, text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await perform {
+            _ = try await self.client.updateMemory(id: fact.id, text: trimmed, kind: fact.kind)
+        }
     }
 
     func forget(_ fact: MarbleMemoryFact) async {

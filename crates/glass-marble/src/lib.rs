@@ -28,7 +28,7 @@ pub mod voice;
 pub mod worker;
 
 pub use control::{ControlEntry, ControlGrant, ControlProfile, ControlState, QueuedTurn, Verdict};
-pub use conversation::{ApprovalInbox, CancelToken, Conversation};
+pub use conversation::{ApprovalInbox, CancelToken, Conversation, SteerRequest};
 pub use events::{EventBus, TurnEvent};
 pub use host::{Approval, HostPolicy};
 pub use memory::{MemoryCommand, MemoryFact, MemoryState, MemorySuggestion, parse_command};

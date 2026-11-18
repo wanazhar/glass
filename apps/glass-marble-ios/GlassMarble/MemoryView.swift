@@ -5,6 +5,8 @@ struct MemoryView: View {
     @EnvironmentObject private var store: MarbleStore
     @Environment(\.dismiss) private var dismiss
     @State private var draft = ""
+    @State private var editing: MarbleMemoryFact?
+    @State private var editDraft = ""
 
     var body: some View {
         NavigationStack {
@@ -32,7 +34,28 @@ struct MemoryView: View {
                 }
             }
             .task { await store.refresh() }
+            .alert("Edit memory", isPresented: editingBinding) {
+                TextField("Memory", text: $editDraft, axis: .vertical)
+                Button("Cancel", role: .cancel) { editing = nil }
+                Button("Save") {
+                    guard let fact = editing else { return }
+                    let text = editDraft
+                    editing = nil
+                    Task { await store.update(fact, text: text) }
+                }
+            } message: {
+                Text("Marble carries this into every conversation as soon as you save.")
+            }
         }
+    }
+
+    private var editingBinding: Binding<Bool> {
+        Binding(
+            get: { editing != nil },
+            set: { presented in
+                if !presented { editing = nil }
+            }
+        )
     }
 
     private var composer: some View {
@@ -73,6 +96,12 @@ struct MemoryView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
+                    Button("Edit") {
+                        editing = fact
+                        editDraft = fact.text
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(MarblePalette.accent)
                     Button("Forget") {
                         Task { await store.forget(fact) }
                     }

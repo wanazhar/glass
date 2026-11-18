@@ -1,7 +1,7 @@
 use glass_marble::{
     AccessPolicy, ApprovalInbox, Conversation, EventBus, HostPolicy, MarbleServer,
-    MarbleServerParts, PendingApproval, ProductState, RequestHead, TaskRecord, ToolRouter,
-    TranscriptEntry, TurnCommand, spawn_turn_worker,
+    MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest, TaskRecord,
+    ToolRouter, TranscriptEntry, TurnCommand, spawn_turn_worker,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -66,7 +66,23 @@ fn server_with(
         approvals,
         events,
         turn_tx: mpsc::channel().0,
+        steer_tx: mpsc::channel().0,
         policy,
+    })
+}
+
+/// Server with a live steering channel, so corrections are observable.
+fn server_with_steering(state: ProductState, steer_tx: mpsc::Sender<SteerRequest>) -> MarbleServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::new(Mutex::new(state)),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: mpsc::channel().0,
+        steer_tx,
+        policy: AccessPolicy::new(None),
     })
 }
 
@@ -84,6 +100,7 @@ fn server_with_turn_channel(
         approvals: ApprovalInbox::default(),
         events: EventBus::default(),
         turn_tx,
+        steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
     })
 }
@@ -388,6 +405,7 @@ fn oversized_bodies_are_rejected_before_reading() {
         approvals: ApprovalInbox::default(),
         events: EventBus::default(),
         turn_tx: mpsc::channel().0,
+        steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
     });
     std::thread::spawn(move || {
@@ -416,6 +434,7 @@ fn event_stream_replays_from_a_cursor() {
         approvals: ApprovalInbox::default(),
         events: events.clone(),
         turn_tx: mpsc::channel().0,
+        steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
     });
     std::thread::spawn(move || {
@@ -493,6 +512,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         approvals: ApprovalInbox::default(),
         events,
         turn_tx,
+        steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
     });
 
@@ -746,4 +766,131 @@ fn notification_and_voice_settings_round_trip() {
     assert_eq!(status, 200, "{body}");
     let spoken: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(spoken["spoken"], json!("Done with code"));
+}
+
+#[test]
+fn a_correction_reaches_the_running_turn_and_idle_hosts_refuse_it() {
+    let (steer_tx, steer_rx) = mpsc::channel();
+    let mut state = ProductState::default();
+    state.tasks.push(TaskRecord {
+        id: "t1".into(),
+        conversation_id: "c1".into(),
+        status: "running".into(),
+        owner: "agent".into(),
+        prompt: "tidy".into(),
+        at: 1,
+        routine_id: String::new(),
+    });
+    let server = server_with_steering(state, steer_tx);
+    let (status, body) = server.handle(
+        "POST",
+        "/api/turns/steer",
+        r#"{"conversationId":"c1","text":"use the other file"}"#,
+    );
+    assert_eq!(status, 202, "{body}");
+    let request = steer_rx
+        .try_recv()
+        .expect("the worker receives the correction");
+    assert_eq!(request.conversation_id, "c1");
+    assert_eq!(request.task_id, "t1");
+    assert_eq!(request.text, "use the other file");
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/turns/steer",
+                r#"{"conversationId":"gone","text":"x"}"#
+            )
+            .0,
+        409
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/turns/steer", r#"{"text":"  "}"#)
+            .0,
+        400
+    );
+}
+
+#[test]
+fn memory_can_be_edited_in_place() {
+    let server = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle("POST", "/api/memory", r#"{"text":"my timezone is UTC"}"#);
+    assert_eq!(status, 200, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["remembered"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) = server.handle(
+        "POST",
+        &format!("/api/memory/{id}/update"),
+        r#"{"text":"my timezone is Asia/Kolkata","kind":"preference"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("Asia/Kolkata"));
+    assert_eq!(
+        server
+            .handle("POST", "/api/memory/missing/update", r#"{"text":"x"}"#)
+            .0,
+        404
+    );
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                &format!("/api/memory/{id}/update"),
+                r#"{"text":""}"#
+            )
+            .0,
+        400
+    );
+    let (_, memory) = server.handle("GET", "/api/memory", "");
+    let memory: Value = serde_json::from_str(&memory).unwrap();
+    assert_eq!(memory["facts"].as_array().map(Vec::len), Some(1));
+    assert_eq!(memory["facts"][0]["kind"], json!("preference"));
+}
+
+#[test]
+fn state_reports_retention_and_routines_can_skip_catch_up() {
+    let server = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (_, body) = server.handle("GET", "/api/state", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["retention"]["trimmedTasks"], json!(0));
+    assert_eq!(state["retention"]["limits"]["tasks"], json!(500));
+
+    let (status, body) = server.handle(
+        "POST",
+        "/api/routines",
+        r#"{"title":"Digest","prompt":"summarize","schedule":"every:1h"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["routine"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) = server.handle(
+        "POST",
+        &format!("/api/routines/{id}/catch-up"),
+        r#"{"enabled":false}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, body) = server.handle("GET", "/api/routines", "");
+    let routines: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(routines["routines"][0]["catchUp"], json!(false));
+
+    let (_, body) = server.handle("GET", "/api/notifications", "");
+    let notifications: Value = serde_json::from_str(&body).unwrap();
+    assert!(notifications["recent"].is_array());
+    assert_eq!(notifications["quietHours"]["enabled"], json!(false));
+    assert_eq!(notifications["retries"], json!(2));
 }

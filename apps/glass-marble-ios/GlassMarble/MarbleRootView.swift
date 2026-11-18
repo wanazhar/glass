@@ -71,6 +71,7 @@ struct MarbleChatView: View {
                 isWorking: store.isWorking,
                 isDictating: dictation.isRecording,
                 onSend: send,
+                onSteer: steer,
                 onStop: { Task { await store.cancelActiveTask() } },
                 onDictate: { dictation.toggle() }
             )
@@ -186,5 +187,13 @@ struct MarbleChatView: View {
         draft = ""
         if dictation.isRecording { dictation.stop() }
         Task { await store.send(text) }
+    }
+
+    /// Send the draft into the running turn, keeping its context.
+    private func steer() {
+        let text = draft
+        draft = ""
+        if dictation.isRecording { dictation.stop() }
+        Task { await store.steer(text) }
     }
 }

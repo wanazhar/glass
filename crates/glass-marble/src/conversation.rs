@@ -40,6 +40,20 @@ pub struct CancelToken<'a> {
     pub task_id: &'a str,
 }
 
+/// One correction aimed at a running turn.
+///
+/// Core's `turn/steer` interrupts the current request, keeps the context, and
+/// continues the same turn with the correction. A person watching Marble work
+/// should be able to say "use the other file" without stopping and restarting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteerRequest {
+    /// Empty targets whatever is running.
+    pub conversation_id: String,
+    /// Empty accepts any task in the targeted conversation.
+    pub task_id: String,
+    pub text: String,
+}
+
 /// Awaiting tool request plus the explicit host decision channel.
 #[derive(Debug, Clone, Default)]
 pub struct ApprovalInbox {
@@ -102,6 +116,24 @@ impl ApprovalInbox {
     }
 }
 
+/// Whether a correction may be applied to the turn that is active now.
+fn steer_allowed(
+    conversation_id: &str,
+    task_id: &str,
+    active_conversation: &str,
+    active_task: &str,
+) -> Result<(), &'static str> {
+    if active_conversation.is_empty() || active_task.is_empty() {
+        return Err("no turn is running");
+    }
+    let wrong_conversation = !conversation_id.is_empty() && conversation_id != active_conversation;
+    let wrong_task = !task_id.is_empty() && task_id != active_task;
+    if wrong_conversation || wrong_task {
+        return Err("that turn is not the one running");
+    }
+    Ok(())
+}
+
 /// Durable conversation handle over the local runtime.
 pub struct Conversation {
     client: RuntimeClient,
@@ -116,6 +148,8 @@ pub struct Conversation {
     active_task: String,
     /// Durable product document whose control layer classifies every call.
     product: Option<Arc<Mutex<ProductState>>>,
+    /// Corrections arriving while a turn runs, drained between runtime frames.
+    steering: Option<mpsc::Receiver<SteerRequest>>,
 }
 
 impl Conversation {
@@ -186,6 +220,7 @@ impl Conversation {
             active_conversation: String::new(),
             active_task: String::new(),
             product: None,
+            steering: None,
         })
     }
 
@@ -218,6 +253,12 @@ impl Conversation {
     /// what governed tools may run. Without it the host policy answers alone.
     pub fn with_product(mut self, product: Arc<Mutex<ProductState>>) -> Self {
         self.product = Some(product);
+        self
+    }
+
+    /// Supply the channel the HTTP surface uses to correct a running turn.
+    pub fn with_steering(mut self, steering: mpsc::Receiver<SteerRequest>) -> Self {
+        self.steering = Some(steering);
         self
     }
 
@@ -327,6 +368,7 @@ impl Conversation {
         let mut auxiliary: Vec<String> = Vec::new();
         let mut cancelled = false;
         loop {
+            self.drain_steering(&mut auxiliary);
             if let Some(token) = cancel
                 && token.requested.load(Ordering::Relaxed)
                 && !cancelled
@@ -387,6 +429,54 @@ impl Conversation {
                     self.handle_tool(request_id, &call)?;
                 }
                 Incoming::Unknown(_) => {}
+            }
+        }
+    }
+
+    /// Apply every queued correction to the turn that is running now. A request
+    /// aimed at a different turn is rejected in a product event rather than
+    /// silently steered into whatever happens to be active.
+    fn drain_steering(&mut self, auxiliary: &mut Vec<String>) {
+        while let Some(request) = self
+            .steering
+            .as_ref()
+            .and_then(|channel| channel.try_recv().ok())
+        {
+            if let Err(reason) = steer_allowed(
+                &request.conversation_id,
+                &request.task_id,
+                &self.active_conversation,
+                &self.active_task,
+            ) {
+                self.publish(
+                    "steer_rejected",
+                    value!({
+                        "reason": reason,
+                        "conversationId": request.conversation_id,
+                        "taskId": request.task_id,
+                    }),
+                );
+                continue;
+            }
+            let input = crate::to_turn_input(&crate::InboundMessage::new(&request.text));
+            match self.client.steer(&self.active_conversation, &input) {
+                Ok(id) => {
+                    if auxiliary.len() < MAX_AUXILIARY_RESPONSES {
+                        auxiliary.push(id);
+                    }
+                    self.publish(
+                        "steered",
+                        value!({
+                            "text": request.text,
+                            "conversationId": self.active_conversation,
+                            "taskId": self.active_task,
+                        }),
+                    );
+                }
+                Err(error) => self.publish(
+                    "steer_rejected",
+                    value!({"reason": error.to_string(), "text": request.text}),
+                ),
             }
         }
     }
@@ -649,6 +739,21 @@ mod tests {
             "resume": resume,
             "mixedTools": mixed,
         })
+    }
+
+    #[test]
+    fn a_correction_only_matches_the_active_turn() {
+        assert!(steer_allowed("", "", "c1", "t1").is_ok());
+        assert!(steer_allowed("c1", "t1", "c1", "t1").is_ok());
+        assert_eq!(
+            steer_allowed("c2", "", "c1", "t1"),
+            Err("that turn is not the one running")
+        );
+        assert_eq!(
+            steer_allowed("", "t2", "c1", "t1"),
+            Err("that turn is not the one running")
+        );
+        assert_eq!(steer_allowed("", "", "", ""), Err("no turn is running"));
     }
 
     #[test]

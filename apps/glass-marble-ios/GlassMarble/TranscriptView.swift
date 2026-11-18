@@ -139,6 +139,8 @@ struct ComposerBar: View {
     var isWorking: Bool
     var isDictating: Bool = false
     var onSend: () -> Void
+    /// Correct the running turn instead of starting a new one.
+    var onSteer: () -> Void = {}
     var onStop: () -> Void
     var onDictate: (() -> Void)? = nil
     @FocusState private var focused: Bool
@@ -146,7 +148,9 @@ struct ComposerBar: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField(
-                "Ask Marble to work in this workspace…",
+                isWorking
+                    ? "Correct Marble while it works…"
+                    : "Ask Marble to work in this workspace…",
                 text: $draft,
                 axis: .vertical
             )
@@ -168,17 +172,29 @@ struct ComposerBar: View {
                 .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
             }
 
-            Button(action: isWorking ? onStop : onSend) {
-                Image(systemName: isWorking ? "stop.fill" : "arrow.up")
+            Button(action: isWorking ? onSteer : onSend) {
+                Image(systemName: isWorking ? "arrow.turn.up.left" : "arrow.up")
                     .font(.system(size: 15, weight: .bold))
                     .frame(width: 34, height: 34)
-                    .background(isWorking ? MarblePalette.danger : MarblePalette.accent, in: Circle())
+                    .background(MarblePalette.accent, in: Circle())
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
-            .disabled(!isWorking && trimmed.isEmpty)
-            .opacity(!isWorking && trimmed.isEmpty ? 0.4 : 1)
-            .accessibilityLabel(isWorking ? "Stop" : "Send")
+            .disabled(trimmed.isEmpty)
+            .opacity(trimmed.isEmpty ? 0.4 : 1)
+            .accessibilityLabel(isWorking ? "Steer" : "Send")
+
+            if isWorking {
+                Button(action: onStop) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(width: 34, height: 34)
+                        .background(MarblePalette.danger, in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop")
+            }
         }
         .padding(.leading, 16)
         .padding(.trailing, 8)

@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use glass_marble::{
-    AccessPolicy, ApprovalInbox, ControlProfile, Conversation, DataDirLock, EventBus, HostPolicy,
-    InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn, ServiceSpec,
-    StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, TurnQueue, default_data_dir, run_turn,
-    sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
+    AccessPolicy, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, DataDirLock,
+    EventBus, HostPolicy, InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn,
+    ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, default_data_dir,
+    run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
 use glass_marble::{notify, service};
 use std::net::TcpListener;
@@ -329,14 +329,14 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     .with_respawn(runtime_factory(cli))
     .with_approval_timeout(Duration::from_secs(approval_wait_secs.max(30)));
     let timeout = Duration::from_secs(timeout_secs.max(30));
-    let queue = TurnQueue::default();
+    let cancels = CancelRegistry::default();
     let turn_tx = spawn_turn_worker(
         conversation,
         Arc::clone(&state),
         Some(Arc::clone(&store)),
         events.clone(),
         timeout,
-        queue.clone(),
+        cancels.clone(),
     );
     // Routines fire on their own clock, and approvals reach the person who is
     // not looking at a screen.
@@ -358,7 +358,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         turn_tx,
         steer_tx,
         policy: AccessPolicy::new(token),
-        queue,
+        cancels,
     });
     let address = server.local_addr();
     println!("glass-marble listening on http://{address}");

@@ -2,14 +2,16 @@
 //!
 //! The scheduler is a single thread that wakes on a fixed tick, asks the
 //! durable routine document what is due, and admits each due routine through
-//! the same turn channel and pause queue a typed message uses. Nothing about an
-//! unattended run takes a shortcut around the control layer.
+//! the same turn queue and pause queue a typed message uses. A firing joins the
+//! routine lane, so it waits behind the messages a person typed and presence can
+//! explain the wait. Nothing about an unattended run takes a shortcut around the
+//! control layer.
 
 use crate::events::EventBus;
 use crate::notify::{self, Notification};
-use crate::state::ProductState;
+use crate::state::{ProductState, TaskRecord};
 use crate::store::{self, StateStore};
-use crate::worker::{TurnCommand, TurnRequest, now_millis};
+use crate::worker::{TurnCommand, TurnRequest, TurnSender, now_millis};
 use serde_json::json;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -28,7 +30,7 @@ pub fn spawn_scheduler(
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
     events: EventBus,
-    turn_tx: mpsc::Sender<TurnCommand>,
+    turn_tx: TurnSender,
     tick: Duration,
 ) {
     let spawned = std::thread::Builder::new()
@@ -59,7 +61,7 @@ pub fn run_tick(
     state: &Arc<Mutex<ProductState>>,
     store: Option<&StateStore>,
     events: &EventBus,
-    turn_tx: &mpsc::Sender<TurnCommand>,
+    turn_tx: &TurnSender,
     now: u64,
     persist_heartbeat: bool,
 ) -> usize {
@@ -140,6 +142,20 @@ pub fn run_tick(
             let mut request =
                 TurnRequest::new(routine.conversation_id.clone(), routine.prompt.clone());
             request.routine_id = Some(routine.id.clone());
+            // A firing that has not started yet is a durable `queued` row, like a
+            // typed message waiting its turn, so presence can report it and a
+            // restart does not lose sight of it. The worker replaces the row with
+            // the real task when the engine admits the turn.
+            let queued_id = format!("queued-{}", request.request_id);
+            guard.upsert_task(TaskRecord {
+                id: queued_id.clone(),
+                conversation_id: routine.conversation_id.clone().unwrap_or_default(),
+                status: "queued".into(),
+                owner: "agent".into(),
+                prompt: routine.prompt.clone(),
+                at: now,
+                routine_id: routine.id.clone(),
+            });
             if turn_tx
                 .send(TurnCommand {
                     request,
@@ -183,6 +199,7 @@ pub fn run_tick(
                 ));
                 fired += 1;
             } else {
+                guard.tasks.retain(|task| task.id != queued_id);
                 tracing::warn!(routine = %routine.id, "routine could not be admitted");
             }
         }
@@ -208,6 +225,7 @@ pub fn run_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker::TurnInbox;
 
     fn state_with_routine(schedule: &str) -> (Arc<Mutex<ProductState>>, String, u64) {
         let mut state = ProductState::default();
@@ -222,11 +240,11 @@ mod tests {
     #[test]
     fn a_due_routine_becomes_a_tagged_turn() {
         let (state, routine_id, next) = state_with_routine("every:10m");
-        let (turn_tx, turn_rx) = mpsc::channel();
+        let (turn_tx, inbox) = TurnInbox::channel();
         let events = EventBus::default();
         let fired = run_tick(&state, None, &events, &turn_tx, next + 1000, false);
         assert_eq!(fired, 1);
-        let command = turn_rx.try_recv().expect("the routine is admitted");
+        let command = inbox.try_recv().expect("the routine is admitted");
         assert_eq!(command.request.text, "tidy the notes");
         assert_eq!(command.request.conversation_id.as_deref(), Some("c1"));
         assert_eq!(
@@ -248,11 +266,11 @@ mod tests {
     fn a_paused_assistant_queues_routines_instead_of_running_them() {
         let (state, routine_id, next) = state_with_routine("every:10m");
         state.lock().unwrap().control.paused = true;
-        let (turn_tx, turn_rx) = mpsc::channel();
+        let (turn_tx, inbox) = TurnInbox::channel();
         let events = EventBus::default();
         let fired = run_tick(&state, None, &events, &turn_tx, next + 1000, false);
         assert_eq!(fired, 0);
-        assert!(turn_rx.try_recv().is_err());
+        assert!(inbox.try_recv().is_none());
         let guard = state.lock().unwrap();
         assert_eq!(guard.control.queue.len(), 1);
         assert_eq!(guard.control.queue[0].text, "tidy the notes");
@@ -265,12 +283,12 @@ mod tests {
     #[test]
     fn a_tick_before_the_next_run_does_nothing() {
         let (state, _, next) = state_with_routine("every:10m");
-        let (turn_tx, turn_rx) = mpsc::channel();
+        let (turn_tx, inbox) = TurnInbox::channel();
         let events = EventBus::default();
         assert_eq!(
             run_tick(&state, None, &events, &turn_tx, next - 30_000, false),
             0
         );
-        assert!(turn_rx.try_recv().is_err());
+        assert!(inbox.try_recv().is_none());
     }
 }

@@ -196,6 +196,7 @@ impl PresenceState {
     /// Presence document served by `/api/presence` and embedded in state.
     pub fn document(&self, state: &ProductState) -> Value {
         let now = now_millis();
+        let waiting = Waiting::of(state);
         let active = state
             .tasks
             .iter()
@@ -218,13 +219,16 @@ impl PresenceState {
             "activePrompt": active.map(|task| task.prompt.clone()),
             "approvalsWaiting": state.approvals.len(),
             "queued": state.control.queue.len(),
-            // Messages already handed to the worker but not admitted yet. They
-            // are durable rows, so this count survives a restart.
-            "waitingTurns": state
-                .tasks
-                .iter()
-                .filter(|task| task.status == "queued")
-                .count(),
+            // Work already handed to the worker but not admitted yet. It is a
+            // durable row, so the count survives a restart, and the lanes say
+            // whose turn the worker takes next.
+            "waitingTurns": waiting.human + waiting.routine,
+            "waiting": {
+                "human": waiting.human,
+                "routine": waiting.routine,
+                "nextLane": waiting.next_lane(),
+                "note": waiting.note(),
+            },
             "paused": state.control.paused,
             "profile": state.control.profile.as_str(),
             "routines": state.routines.routines.len(),
@@ -234,6 +238,52 @@ impl PresenceState {
             "retention": state.retention.document(),
             "runtime": self.runtime.document(),
         })
+    }
+}
+
+/// What is waiting for the turn worker, split by lane.
+///
+/// The worker drains typed messages before routine firings, so these two counts
+/// explain why a routine that is due has not started yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Waiting {
+    pub human: usize,
+    pub routine: usize,
+}
+
+impl Waiting {
+    pub fn of(state: &ProductState) -> Self {
+        let mut waiting = Self::default();
+        for task in state.tasks.iter().filter(|task| task.status == "queued") {
+            if task.routine_id.is_empty() {
+                waiting.human += 1;
+            } else {
+                waiting.routine += 1;
+            }
+        }
+        waiting
+    }
+
+    /// Whose turn the worker takes next, or empty when nothing is waiting.
+    pub fn next_lane(&self) -> &'static str {
+        if self.human > 0 {
+            "human"
+        } else if self.routine > 0 {
+            "routine"
+        } else {
+            ""
+        }
+    }
+
+    /// One sentence for a surface, when the wait needs explaining.
+    pub fn note(&self) -> &'static str {
+        if self.human > 0 && self.routine > 0 {
+            "typed messages run before routine firings"
+        } else if self.routine > 1 {
+            "routine firings run one at a time"
+        } else {
+            ""
+        }
     }
 }
 

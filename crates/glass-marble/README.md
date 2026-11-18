@@ -17,8 +17,9 @@ person touches.
   `glass.workspace.search`, and `glass.workspace.write`, each resolved against
   one canonical workspace root.
 - **Marble's own control layer**: posture (`observe`, `workspace`,
-  `unattended`), denied path rules, revocable standing grants, a FIFO admission
-  queue with pause and stop, and an audit ledger of every governed decision.
+  `unattended`), denied path rules, revocable standing grants, a two-lane
+  admission queue with pause and stop, and an audit ledger of every governed
+  decision. Typed messages run before waiting routine firings.
 - **Presence**: what it is doing now, uptime, and what a restart cost it.
 - **Memory**: facts you asked it to keep, suggestions it waits for you to
   confirm, and in-place edits. Facts are carried into every turn.
@@ -48,8 +49,9 @@ person touches.
 - **Honest health**: `/healthz` reports the engine, the document, backup age,
   quarantined documents, and the last write error, answers `503` when any of it
   is wrong, and `glass-marble doctor` checks the same ground from the terminal.
-- **A busy host queues**: a message that arrives while a turn is running is
-  answered `202` with its place in line, not a gateway timeout.
+- **A busy host queues honestly**: a message that arrives while a turn is
+  running is answered `202` with its place in line, not a gateway timeout, and
+  a routine firing that is bumped by a typed message is reported in presence.
 - **Recovery on demand**: repeat the last failed or interrupted turn, and hold
   scheduled routines inside a quiet window.
 - **Cheap polling**: `/api/state` revalidates with an `ETag`, responses keep the

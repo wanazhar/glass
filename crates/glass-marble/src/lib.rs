@@ -39,7 +39,7 @@ pub use notify::{
     ApnsSettings, Delivery, DeliveryRecord, DeviceRegistration, NOTIFY_EVENTS, Notification,
     NotificationSettings, QuietHours, recent_deliveries,
 };
-pub use presence::{PresenceState, RuntimeHealth};
+pub use presence::{PresenceState, RuntimeHealth, Waiting};
 pub use routine::{Routine, RoutineState, Schedule, parse_schedule};
 pub use scheduler::{TICK, spawn_scheduler};
 pub use server::{
@@ -56,7 +56,8 @@ pub use tools::{ToolOutcome, ToolRouter};
 pub use turn::{DEFAULT_TURN_TIMEOUT, MarbleReply, MarbleTurn, TurnOptions, run_turn};
 pub use voice::{VoiceSettings, spoken_form};
 pub use worker::{
-    AcceptedTurn, CancelRegistry, TurnCommand, TurnQueue, TurnRequest, spawn_turn_worker,
+    AcceptedTurn, CancelRegistry, TurnCommand, TurnInbox, TurnLane, TurnRequest, TurnSender,
+    TurnWorkerGone, spawn_turn_worker,
 };
 
 use std::error::Error;

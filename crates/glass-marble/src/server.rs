@@ -13,7 +13,7 @@ use crate::notify::{self, ApnsSettings, Notification};
 use crate::state::{PendingApproval, ProductState, TaskRecord};
 use crate::store::StateStore;
 use crate::voice;
-use crate::worker::{TurnCommand, TurnQueue, TurnRequest, now_millis};
+use crate::worker::{CancelRegistry, TurnCommand, TurnRequest, TurnSender, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -299,12 +299,13 @@ pub struct MarbleServerParts {
     pub store: Option<Arc<StateStore>>,
     pub approvals: ApprovalInbox,
     pub events: EventBus,
-    pub turn_tx: mpsc::Sender<TurnCommand>,
+    /// Two-lane turn queue: typed messages first, then routine firings.
+    pub turn_tx: TurnSender,
     /// Corrections for a turn that is already running.
     pub steer_tx: mpsc::Sender<SteerRequest>,
     pub policy: AccessPolicy,
-    /// How many turns are waiting, and which ones may be cancelled.
-    pub queue: TurnQueue,
+    /// Turns the worker is running, so one stop can cancel them all.
+    pub cancels: CancelRegistry,
 }
 
 /// Login attempts per caller, so a token cannot be guessed at wire speed.
@@ -372,10 +373,10 @@ pub struct MarbleServer {
     store: Option<Arc<StateStore>>,
     approvals: ApprovalInbox,
     events: EventBus,
-    turn_tx: mpsc::Sender<TurnCommand>,
+    turn_tx: TurnSender,
     steer_tx: mpsc::Sender<SteerRequest>,
     policy: AccessPolicy,
-    queue: TurnQueue,
+    cancels: CancelRegistry,
     login: LoginThrottle,
 }
 
@@ -390,7 +391,7 @@ impl MarbleServer {
             turn_tx: parts.turn_tx,
             steer_tx: parts.steer_tx,
             policy: parts.policy,
-            queue: parts.queue,
+            cancels: parts.cancels,
             login: LoginThrottle::default(),
         }
     }
@@ -473,8 +474,8 @@ impl MarbleServer {
                     "profile": control.profile,
                     "paused": control.paused,
                     "queued": control.queue.len(),
-                    "waiting": self.queue.waiting(),
-                    "running": self.queue.running().len(),
+                    "waiting": self.turn_tx.waiting(),
+                    "running": self.cancels.running().len(),
                     "status": presence["status"],
                     "uptimeSeconds": presence["uptimeSeconds"],
                     "routines": presence["routines"],
@@ -1318,6 +1319,23 @@ impl MarbleServer {
         }
         let mut request = TurnRequest::new(routine.conversation_id.clone(), routine.prompt.clone());
         request.routine_id = Some(routine.id.clone());
+        // A firing waits in the routine lane behind typed messages, so it gets
+        // the same durable row a typed message has while it waits. The worker
+        // replaces the row once the engine admits the turn.
+        let queued_id = format!("queued-{}", request.request_id);
+        {
+            let mut guard = self.lock_state();
+            guard.upsert_task(TaskRecord {
+                id: queued_id.clone(),
+                conversation_id: routine.conversation_id.clone().unwrap_or_default(),
+                status: "queued".into(),
+                owner: "agent".into(),
+                prompt: routine.prompt.clone(),
+                at: now_millis(),
+                routine_id: routine.id.clone(),
+            });
+            guard.bump();
+        }
         if self
             .turn_tx
             .send(TurnCommand {
@@ -1326,6 +1344,7 @@ impl MarbleServer {
             })
             .is_err()
         {
+            self.forget_queued(&queued_id);
             return Response::error(503, "turn_worker_unavailable");
         }
         // The worker records the run once the durable task exists, so a manual
@@ -1848,7 +1867,7 @@ impl MarbleServer {
             guard.bump();
         }
         self.save_state();
-        let flags = self.queue.running();
+        let flags = self.cancels.running();
         let mut cancelled = Vec::new();
         for (task_id, flag) in flags {
             flag.store(true, Ordering::Relaxed);
@@ -2038,25 +2057,25 @@ impl MarbleServer {
         }
         self.save_state();
         let (accepted_tx, accepted_rx) = mpsc::channel();
-        let position = self.queue.note_enqueued();
+        // A typed message joins the human lane, which the worker drains before
+        // any routine firing, so its place in line counts messages only.
+        let position = match self.turn_tx.send(TurnCommand {
+            request,
+            accepted: accepted_tx,
+        }) {
+            Ok(position) => position,
+            Err(error) => {
+                tracing::warn!(%error, "the turn worker is gone; dropping the message");
+                self.forget_queued(&queued_id);
+                return Response::error(503, "turn_worker_unavailable");
+            }
+        };
         self.events.publish(
             &conversation_id,
             &queued_id,
             "queued",
             json!({"taskId": queued_id, "requestId": request_id, "position": position}),
         );
-        if self
-            .turn_tx
-            .send(TurnCommand {
-                request,
-                accepted: accepted_tx,
-            })
-            .is_err()
-        {
-            self.queue.note_finished();
-            self.forget_queued(&queued_id);
-            return Response::error(503, "turn_worker_unavailable");
-        }
         let accepted = match accepted_rx.recv_timeout(ADMISSION_WAIT) {
             Ok(Ok(accepted)) => accepted,
             Ok(Err(error)) => {
@@ -2275,7 +2294,7 @@ impl MarbleServer {
     /// dispatched all answer here. A task that already settled is reported as
     /// such rather than as unknown.
     fn cancel_task(&self, task_id: &str) -> Response {
-        if self.queue.request_cancel(task_id) {
+        if self.cancels.request(task_id) {
             self.events
                 .publish("", task_id, "cancel_requested", json!({"taskId": task_id}));
             self.save_state();

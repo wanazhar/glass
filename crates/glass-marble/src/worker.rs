@@ -1,9 +1,10 @@
 //! The single durable turn worker.
 //!
 //! One runtime subprocess serves every conversation, so turns are serialized
-//! through one channel. Each command is accepted with its durable task id as
-//! soon as the runtime admits it, which lets the HTTP surface answer at once
-//! and stream the rest.
+//! through one queue with two lanes: a message a person typed outranks a
+//! routine firing, and a firing that is held back says so through presence.
+//! Each command is accepted with its durable task id as soon as the runtime
+//! admits it, which lets the HTTP surface answer at once and stream the rest.
 //!
 //! The worker is also where the assistant behaves like an always-on assistant
 //! rather than a request handler: it carries remembered facts into each turn,
@@ -20,9 +21,10 @@ use crate::{
 };
 use glass_runtime_client::{TurnInput, protocol::ContextBlock};
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One message waiting for the durable turn worker.
@@ -102,55 +104,245 @@ impl CancelRegistry {
     }
 }
 
-/// Shared view of the turn worker: how much work is waiting, and what it is
-/// running right now.
-#[derive(Debug, Clone, Default)]
-pub struct TurnQueue {
-    pending: Arc<AtomicUsize>,
-    cancels: CancelRegistry,
+/// Which lane a waiting command belongs to.
+///
+/// One worker runs one turn at a time, so work submitted now waits for the
+/// running turn to settle. What it must not do is wait behind scheduled work: a
+/// routine firing can run later, while a person is standing in front of the
+/// assistant. Typed messages therefore drain first, and routine firings wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnLane {
+    Human,
+    Routine,
 }
 
-impl TurnQueue {
-    /// Commands a surface handed over that the worker has not picked up yet.
-    pub fn waiting(&self) -> usize {
-        self.pending.load(Ordering::Relaxed)
+impl TurnLane {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Routine => "routine",
+        }
     }
+}
 
-    /// Count one command handed to the worker; returns its place in line.
-    pub fn note_enqueued(&self) -> usize {
-        self.pending
-            .fetch_add(1, Ordering::SeqCst)
-            .saturating_add(1)
+/// Commands waiting for the turn worker, one lane per priority.
+struct Inbox {
+    state: Mutex<InboxState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct InboxState {
+    human: VecDeque<TurnCommand>,
+    routine: VecDeque<TurnCommand>,
+    /// Live [`TurnSender`] handles; the last one leaving stops the worker.
+    senders: usize,
+}
+
+fn lock_inbox(inbox: &Inbox) -> std::sync::MutexGuard<'_, InboxState> {
+    inbox
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Next command to run: typed messages first, then routine firings, each lane in
+/// arrival order.
+fn pop_next(state: &mut InboxState) -> Option<TurnCommand> {
+    state
+        .human
+        .pop_front()
+        .or_else(|| state.routine.pop_front())
+}
+
+/// The turn worker is not running, so nothing can be handed over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnWorkerGone;
+
+impl fmt::Display for TurnWorkerGone {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the turn worker is not running")
     }
+}
 
-    /// Count one command the worker started, or one that was never delivered.
-    pub fn note_finished(&self) {
-        // Compare-and-set rather than a plain decrement, so a mismatched call
-        // can never wrap the counter around to a huge place in line.
-        let mut waiting = self.pending.load(Ordering::SeqCst);
-        while waiting > 0 {
-            match self.pending.compare_exchange(
-                waiting,
-                waiting - 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return,
-                Err(current) => waiting = current,
-            }
+impl std::error::Error for TurnWorkerGone {}
+
+/// Hand a command to the turn worker.
+///
+/// Every clone keeps the worker alive, so dropping the last surface stops it
+/// once its current turn settles.
+pub struct TurnSender {
+    inbox: Arc<Inbox>,
+    live: bool,
+}
+
+impl TurnSender {
+    /// A sender with no worker behind it, for a surface that never dispatches.
+    pub fn detached() -> Self {
+        Self {
+            inbox: Arc::new(Inbox {
+                state: Mutex::new(InboxState::default()),
+                ready: Condvar::new(),
+            }),
+            live: false,
         }
     }
 
-    pub fn cancels(&self) -> &CancelRegistry {
-        &self.cancels
+    /// Queue one command; the answer is its place among the commands waiting in
+    /// front of it in the same lane.
+    pub fn send(&self, command: TurnCommand) -> Result<usize, TurnWorkerGone> {
+        if !self.live {
+            return Err(TurnWorkerGone);
+        }
+        let lane = command.request.lane();
+        let mut state = lock_inbox(&self.inbox);
+        if state.senders == 0 {
+            return Err(TurnWorkerGone);
+        }
+        let position = match lane {
+            TurnLane::Human => {
+                state.human.push_back(command);
+                state.human.len()
+            }
+            TurnLane::Routine => {
+                state.routine.push_back(command);
+                state.routine.len()
+            }
+        };
+        drop(state);
+        self.inbox.ready.notify_one();
+        Ok(position)
     }
 
-    pub fn request_cancel(&self, task_id: &str) -> bool {
-        self.cancels.request(task_id)
+    /// Commands handed over that the worker has not started yet.
+    pub fn waiting(&self) -> usize {
+        self.waiting_in(TurnLane::Human) + self.waiting_in(TurnLane::Routine)
     }
 
-    pub fn running(&self) -> Vec<(String, Arc<AtomicBool>)> {
-        self.cancels.running()
+    /// Commands waiting in one lane.
+    pub fn waiting_in(&self, lane: TurnLane) -> usize {
+        let state = lock_inbox(&self.inbox);
+        match lane {
+            TurnLane::Human => state.human.len(),
+            TurnLane::Routine => state.routine.len(),
+        }
+    }
+}
+
+impl fmt::Debug for TurnSender {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TurnSender")
+            .field("live", &self.live)
+            .field("waiting", &self.waiting())
+            .finish()
+    }
+}
+
+impl Clone for TurnSender {
+    fn clone(&self) -> Self {
+        if self.live {
+            let mut state = lock_inbox(&self.inbox);
+            state.senders = state.senders.saturating_add(1);
+        }
+        Self {
+            inbox: Arc::clone(&self.inbox),
+            live: self.live,
+        }
+    }
+}
+
+impl Drop for TurnSender {
+    fn drop(&mut self) {
+        if !self.live {
+            return;
+        }
+        let last = {
+            let mut state = lock_inbox(&self.inbox);
+            state.senders = state.senders.saturating_sub(1);
+            state.senders == 0
+        };
+        if last {
+            // Nothing can send any more, so a waiting worker wakes up and stops.
+            self.inbox.ready.notify_all();
+        }
+    }
+}
+
+/// The worker side of the turn queue.
+pub struct TurnInbox {
+    inbox: Arc<Inbox>,
+}
+
+impl TurnInbox {
+    /// A sender for every surface, and the worker's own receiving handle.
+    pub fn channel() -> (TurnSender, Self) {
+        let inbox = Arc::new(Inbox {
+            state: Mutex::new(InboxState {
+                human: VecDeque::new(),
+                routine: VecDeque::new(),
+                senders: 1,
+            }),
+            ready: Condvar::new(),
+        });
+        (
+            TurnSender {
+                inbox: Arc::clone(&inbox),
+                live: true,
+            },
+            Self { inbox },
+        )
+    }
+
+    /// Block until a command is waiting. `None` once every sender is gone.
+    pub fn recv(&self) -> Option<TurnCommand> {
+        let mut state = lock_inbox(&self.inbox);
+        loop {
+            if let Some(command) = pop_next(&mut state) {
+                return Some(command);
+            }
+            if state.senders == 0 {
+                return None;
+            }
+            state = self
+                .inbox
+                .ready
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    /// Wait at most `timeout` for a command.
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<TurnCommand> {
+        let state = lock_inbox(&self.inbox);
+        let (mut state, _) = self
+            .inbox
+            .ready
+            .wait_timeout_while(state, timeout, |state| {
+                state.human.is_empty() && state.routine.is_empty() && state.senders > 0
+            })
+            .unwrap_or_else(|error| error.into_inner());
+        pop_next(&mut state)
+    }
+
+    /// Take a command if one is already waiting.
+    pub fn try_recv(&self) -> Option<TurnCommand> {
+        pop_next(&mut lock_inbox(&self.inbox))
+    }
+
+    /// Commands waiting across both lanes.
+    pub fn waiting(&self) -> usize {
+        let state = lock_inbox(&self.inbox);
+        state.human.len() + state.routine.len()
+    }
+}
+
+impl fmt::Debug for TurnInbox {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TurnInbox")
+            .field("waiting", &self.waiting())
+            .finish()
     }
 }
 
@@ -183,14 +375,13 @@ pub fn spawn_turn_worker(
     store: Option<Arc<StateStore>>,
     events: EventBus,
     timeout: Duration,
-    queue: TurnQueue,
-) -> mpsc::Sender<TurnCommand> {
-    let (sender, receiver) = mpsc::channel::<TurnCommand>();
+    cancels: CancelRegistry,
+) -> TurnSender {
+    let (sender, inbox) = TurnInbox::channel();
     let spawned = std::thread::Builder::new()
         .name("glass-marble-turns".into())
         .spawn(move || {
-            while let Ok(command) = receiver.recv() {
-                queue.note_finished();
+            while let Some(command) = inbox.recv() {
                 run_command(
                     command,
                     &mut conversation,
@@ -198,7 +389,7 @@ pub fn spawn_turn_worker(
                     store.as_deref(),
                     &events,
                     timeout,
-                    &queue,
+                    &cancels,
                 );
             }
             let _ = conversation.shutdown();
@@ -216,7 +407,7 @@ fn run_command(
     store: Option<&StateStore>,
     events: &EventBus,
     timeout: Duration,
-    queue: &TurnQueue,
+    cancels: &CancelRegistry,
 ) {
     let TurnCommand { request, accepted } = command;
     let mut sender = Some(accepted);
@@ -291,7 +482,7 @@ fn run_command(
         accepted_turn = Some(identity.clone());
         // The worker registers the flag, so every admitted turn is cancellable —
         // including one a routine fired or one a resume dispatched.
-        queue.cancels.register(task_id, Arc::clone(&cancel));
+        cancels.register(task_id, Arc::clone(&cancel));
         if let Some(sender) = sender.take() {
             let _ = sender.send(Ok(identity));
         }
@@ -353,7 +544,7 @@ fn run_command(
     );
     match result {
         Ok(reply) => {
-            queue.cancels.forget(&reply.task_id);
+            cancels.forget(&reply.task_id);
             let (snapshot, suggestion) = {
                 let mut guard = lock(state);
                 guard.presence.mark_settled();
@@ -467,7 +658,7 @@ fn run_command(
                 return;
             }
             if let Some(identity) = &accepted_turn {
-                queue.cancels.forget(&identity.task_id);
+                cancels.forget(&identity.task_id);
                 let transport_failed = conversation.transport_failed();
                 let snapshot = {
                     let mut guard = lock(state);
@@ -539,6 +730,15 @@ impl TurnRequest {
             routine_id: None,
         }
     }
+
+    /// A turn a person typed outranks one a schedule fired.
+    pub fn lane(&self) -> TurnLane {
+        if self.routine_id.is_some() {
+            TurnLane::Routine
+        } else {
+            TurnLane::Human
+        }
+    }
 }
 
 #[cfg(test)]
@@ -546,23 +746,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_queue_reports_its_depth_and_cancels_what_it_runs() {
-        let queue = TurnQueue::default();
-        assert_eq!(queue.waiting(), 0);
-        assert_eq!(queue.note_enqueued(), 1);
-        assert_eq!(queue.note_enqueued(), 2);
-        assert_eq!(queue.waiting(), 2);
-        queue.note_finished();
-        assert_eq!(queue.waiting(), 1);
+    fn typed_messages_drain_before_routine_firings() {
+        let (sender, inbox) = TurnInbox::channel();
+        let routine = |text: &str| {
+            let mut request = TurnRequest::new(None, text);
+            request.routine_id = Some("routine-1".into());
+            TurnCommand {
+                request,
+                accepted: mpsc::channel().0,
+            }
+        };
+        assert_eq!(sender.send(routine("sweep")).expect("queued"), 1);
+        assert_eq!(sender.send(routine("tidy")).expect("queued"), 2);
+        let typed = TurnCommand {
+            request: TurnRequest::new(None, "typed now"),
+            accepted: mpsc::channel().0,
+        };
+        assert_eq!(
+            sender.send(typed).expect("queued"),
+            1,
+            "a typed message counts only typed messages in front of it"
+        );
+        assert_eq!(sender.waiting(), 3);
+        assert_eq!(sender.waiting_in(TurnLane::Routine), 2);
 
+        let first = inbox.try_recv().expect("the typed message is next");
+        assert_eq!(first.request.text, "typed now");
+        assert_eq!(first.request.lane(), TurnLane::Human);
+        let second = inbox.try_recv().expect("then the first firing");
+        assert_eq!(second.request.text, "sweep");
+        assert_eq!(second.request.lane(), TurnLane::Routine);
+        assert_eq!(
+            inbox
+                .try_recv()
+                .expect("then the second firing")
+                .request
+                .text,
+            "tidy"
+        );
+        assert!(inbox.try_recv().is_none());
+
+        drop(sender);
+        assert!(
+            inbox.recv().is_none(),
+            "the worker stops when the last surface is gone"
+        );
+    }
+
+    #[test]
+    fn the_cancel_table_covers_every_running_turn() {
+        let cancels = CancelRegistry::default();
         let flag = Arc::new(AtomicBool::new(false));
-        queue.cancels().register("task-1", Arc::clone(&flag));
-        assert_eq!(queue.running().len(), 1);
-        assert!(queue.request_cancel("task-1"));
+        cancels.register("task-1", Arc::clone(&flag));
+        assert_eq!(cancels.running().len(), 1);
+        assert!(cancels.request("task-1"));
         assert!(flag.load(Ordering::Relaxed));
-        assert!(!queue.request_cancel("task-2"));
-        queue.cancels().forget("task-1");
-        assert!(!queue.request_cancel("task-1"));
+        assert!(!cancels.request("task-2"));
+        cancels.forget("task-1");
+        assert!(!cancels.request("task-1"));
     }
 
     #[test]

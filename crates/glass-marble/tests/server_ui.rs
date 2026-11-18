@@ -1,7 +1,7 @@
 use glass_marble::{
-    AccessPolicy, ApprovalInbox, Conversation, EventBus, HostPolicy, MarbleServer,
+    AccessPolicy, ApprovalInbox, CancelRegistry, Conversation, EventBus, HostPolicy, MarbleServer,
     MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest, TaskRecord,
-    ToolRouter, TranscriptEntry, TurnCommand, TurnQueue, spawn_turn_worker,
+    ToolRouter, TranscriptEntry, TurnInbox, TurnSender, spawn_turn_worker,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -65,10 +65,10 @@ fn server_with(
         store: None,
         approvals,
         events,
-        turn_tx: mpsc::channel().0,
+        turn_tx: TurnSender::detached(),
         steer_tx: mpsc::channel().0,
         policy,
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     })
 }
 
@@ -81,19 +81,16 @@ fn server_with_steering(state: ProductState, steer_tx: mpsc::Sender<SteerRequest
         store: None,
         approvals: ApprovalInbox::default(),
         events: EventBus::default(),
-        turn_tx: mpsc::channel().0,
+        turn_tx: TurnSender::detached(),
         steer_tx,
         policy: AccessPolicy::new(None),
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     })
 }
 
 /// Server whose turn channel is kept alive by the caller, so dispatch is observable
 /// without a real runtime.
-fn server_with_turn_channel(
-    state: ProductState,
-    turn_tx: mpsc::Sender<TurnCommand>,
-) -> MarbleServer {
+fn server_with_turn_channel(state: ProductState, turn_tx: TurnSender) -> MarbleServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     MarbleServer::new(MarbleServerParts {
         listener,
@@ -104,7 +101,7 @@ fn server_with_turn_channel(
         turn_tx,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     })
 }
 
@@ -116,7 +113,7 @@ fn control_of(server: &MarbleServer) -> serde_json::Value {
 
 #[test]
 fn paused_admission_queues_messages_and_resume_dispatches_in_order() {
-    let (turn_tx, turn_rx) = mpsc::channel();
+    let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(ProductState::default(), turn_tx);
 
     assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
@@ -132,7 +129,7 @@ fn paused_admission_queues_messages_and_resume_dispatches_in_order() {
         Some(2)
     );
     assert!(
-        turn_rx.try_recv().is_err(),
+        inbox.try_recv().is_none(),
         "a paused instance must not admit turns"
     );
 
@@ -140,10 +137,10 @@ fn paused_admission_queues_messages_and_resume_dispatches_in_order() {
     assert_eq!(status, 200, "{body}");
     let resumed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(resumed["dispatched"], serde_json::json!(2));
-    let first = turn_rx
+    let first = inbox
         .try_recv()
         .expect("first queued message is dispatched");
-    let second = turn_rx
+    let second = inbox
         .try_recv()
         .expect("second queued message is dispatched");
     assert_eq!(first.request.text, "first");
@@ -407,10 +404,10 @@ fn oversized_bodies_are_rejected_before_reading() {
         store: None,
         approvals: ApprovalInbox::default(),
         events: EventBus::default(),
-        turn_tx: mpsc::channel().0,
+        turn_tx: TurnSender::detached(),
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     });
     std::thread::spawn(move || {
         let _ = server.serve();
@@ -437,10 +434,10 @@ fn event_stream_replays_from_a_cursor() {
         store: None,
         approvals: ApprovalInbox::default(),
         events: events.clone(),
-        turn_tx: mpsc::channel().0,
+        turn_tx: TurnSender::detached(),
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     });
     std::thread::spawn(move || {
         let _ = server.serve();
@@ -508,7 +505,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         None,
         events.clone(),
         Duration::from_secs(60),
-        TurnQueue::default(),
+        CancelRegistry::default(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MarbleServer::new(MarbleServerParts {
@@ -520,7 +517,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         turn_tx,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     });
 
     let (status, body) = server.handle(
@@ -613,7 +610,7 @@ fn presence_reports_an_always_on_assistant() {
 
 #[test]
 fn explicit_memory_commands_are_remembered_without_a_model_turn() {
-    let (turn_tx, turn_rx) = mpsc::channel();
+    let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(ProductState::default(), turn_tx);
     let (status, body) = server.handle(
         "POST",
@@ -624,7 +621,7 @@ fn explicit_memory_commands_are_remembered_without_a_model_turn() {
     let value: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(value["remembered"]["kind"], json!("role"));
     assert!(
-        turn_rx.try_recv().is_err(),
+        inbox.try_recv().is_none(),
         "a memory command must not become a model turn"
     );
 
@@ -677,7 +674,7 @@ fn memory_suggestions_need_an_explicit_decision() {
 
 #[test]
 fn routines_can_be_added_run_paused_and_removed() {
-    let (turn_tx, turn_rx) = mpsc::channel();
+    let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(ProductState::default(), turn_tx);
     let (status, body) = server.handle(
         "POST",
@@ -691,7 +688,7 @@ fn routines_can_be_added_run_paused_and_removed() {
 
     let (status, body) = server.handle("POST", &format!("/api/routines/{routine_id}/run"), "");
     assert_eq!(status, 202, "{body}");
-    let command = turn_rx.try_recv().expect("the routine is admitted");
+    let command = inbox.try_recv().expect("the routine is admitted");
     assert_eq!(
         command.request.routine_id.as_deref(),
         Some(routine_id.as_str())
@@ -1092,7 +1089,7 @@ fn the_model_can_be_changed_and_is_validated() {
 
 #[test]
 fn a_busy_worker_answers_queued_with_its_place_in_line() {
-    let (turn_tx, turn_rx) = mpsc::channel();
+    let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(ProductState::default(), turn_tx);
 
     let started = Instant::now();
@@ -1108,7 +1105,7 @@ fn a_busy_worker_answers_queued_with_its_place_in_line() {
     );
 
     // The message is in the worker's channel, not answered and forgotten.
-    let command = turn_rx
+    let command = inbox
         .recv_timeout(Duration::from_secs(1))
         .expect("the queued message is waiting for the worker");
     assert_eq!(command.request.text, "first");
@@ -1116,7 +1113,11 @@ fn a_busy_worker_answers_queued_with_its_place_in_line() {
     let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"second"}"#);
     assert_eq!(status, 202, "{body}");
     let queued: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(queued["position"], json!(2));
+    assert_eq!(
+        queued["position"],
+        json!(1),
+        "the first message is already in the worker's hands, so this one is next in its lane"
+    );
 
     // The queued message is durable while it waits, not only a channel slot.
     let (_, body) = server.handle("GET", "/api/state?lean=1", "");
@@ -1137,6 +1138,58 @@ fn a_busy_worker_answers_queued_with_its_place_in_line() {
 }
 
 #[test]
+fn a_typed_message_runs_before_a_waiting_routine_firing() {
+    let (turn_tx, inbox) = TurnInbox::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let (status, body) = server.handle(
+        "POST",
+        "/api/routines",
+        r#"{"title":"Tidy","prompt":"tidy the notes","schedule":"every:30m","conversationId":"durable-fixture-1"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    let routine_id = created["routine"]["id"].as_str().unwrap().to_string();
+    let (status, body) = server.handle("POST", &format!("/api/routines/{routine_id}/run"), "");
+    assert_eq!(status, 202, "{body}");
+
+    // The firing is already waiting in the routine lane when a person types.
+    let (status, body) = server.handle(
+        "POST",
+        "/api/turns",
+        r#"{"text":"tell me where I left off"}"#,
+    );
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["position"],
+        json!(1),
+        "a typed message counts only typed messages in front of it"
+    );
+
+    let typed = inbox.try_recv().expect("the typed message runs next");
+    assert_eq!(typed.request.text, "tell me where I left off");
+    assert!(typed.request.routine_id.is_none());
+    let firing = inbox.try_recv().expect("the routine follows");
+    assert_eq!(
+        firing.request.routine_id.as_deref(),
+        Some(routine_id.as_str())
+    );
+    assert_eq!(firing.request.text, "tidy the notes");
+
+    // Presence explains the wait instead of leaving it a mystery.
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    let presence = &state["presence"];
+    assert_eq!(presence["waitingTurns"], json!(2));
+    assert_eq!(presence["waiting"]["human"], json!(1));
+    assert_eq!(presence["waiting"]["routine"], json!(1));
+    assert_eq!(presence["waiting"]["nextLane"], json!("human"));
+    assert_eq!(
+        presence["waiting"]["note"],
+        json!("typed messages run before routine firings")
+    );
+}
+
+#[test]
 fn health_reports_the_runtime_the_document_and_the_backup() {
     let dir = std::env::temp_dir().join(format!("glass-marble-health-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1150,10 +1203,10 @@ fn health_reports_the_runtime_the_document_and_the_backup() {
         store: Some(Arc::new(store)),
         approvals: ApprovalInbox::default(),
         events: EventBus::default(),
-        turn_tx: mpsc::channel().0,
+        turn_tx: TurnSender::detached(),
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
-        queue: TurnQueue::default(),
+        cancels: CancelRegistry::default(),
     });
 
     let (status, body) = server.handle("GET", "/healthz", "");
@@ -1209,10 +1262,10 @@ fn retry_repeats_the_last_turn_that_did_not_finish() {
         at: 2,
         routine_id: String::new(),
     });
-    let (turn_tx, turn_rx) = mpsc::channel();
+    let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(state, turn_tx);
     let accept = std::thread::spawn(move || {
-        let command = turn_rx
+        let command = inbox
             .recv_timeout(Duration::from_secs(5))
             .expect("the retried turn reaches the worker");
         assert_eq!(command.request.text, "tidy the notes");

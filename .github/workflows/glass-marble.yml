@@ -81,11 +81,15 @@ jobs:
             echo "::error::This Mac needs an Xcode with the iOS 26 SDK; found $sdk_version."
             exit 1
           fi
+      - name: List the shared scheme
+        run: >
+          xcodebuild -list
+          -project apps/glass-marble-ios/GlassMarble.xcodeproj
       - name: Build for the simulator without signing
         run: >
           xcodebuild
           -project apps/glass-marble-ios/GlassMarble.xcodeproj
-          -target "Glass Marble"
+          -scheme "Glass Marble"
           -configuration Debug
           -sdk iphonesimulator
           -destination "generic/platform=iOS Simulator"

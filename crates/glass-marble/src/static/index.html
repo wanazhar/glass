@@ -270,6 +270,9 @@
         <aside class="sidebar glass" id="sidebar">
           <div>
             <h2>Conversations</h2>
+            <label class="sr-only" for="conversation-search">Search conversations</label>
+            <input id="conversation-search" type="search" placeholder="Search chats and transcript…" />
+            <ul class="conv-list" id="search-results" hidden></ul>
             <ul class="conv-list" id="conversations"></ul>
           </div>
           <div class="spacer"></div>
@@ -343,6 +346,9 @@
       <h3>Suggested memories</h3>
       <ul class="records" id="memory-suggestions"></ul>
 
+      <h3>Conversations</h3>
+      <ul class="records" id="conversations-manage"></ul>
+
       <h3>Routines</h3>
       <div class="routine-form">
         <input id="routine-title" placeholder="Title" aria-label="Routine title" />
@@ -353,6 +359,17 @@
         <button class="primary" id="routine-add" type="button">Add</button>
       </div>
       <ul class="records" id="routines"></ul>
+      <div class="control-actions">
+        <button class="ghost" id="routine-offset" type="button">Use this device's time</button>
+      </div>
+
+      <h3>Model</h3>
+      <div class="memory-form">
+        <label class="sr-only" for="model-name">Model</label>
+        <input id="model-name" placeholder="Engine default" />
+        <button class="ghost" id="model-save" type="button">Save</button>
+      </div>
+      <p class="empty-row">Applies to new conversations. A turn already running keeps its model.</p>
 
       <h3>Notifications</h3>
       <div class="memory-form">
@@ -382,6 +399,12 @@
       <h3>Recent deliveries</h3>
       <ul class="records" id="notify-recent"></ul>
 
+      <h3>Data</h3>
+      <div class="control-actions">
+        <button class="ghost" id="export-all" type="button">Export everything</button>
+      </div>
+      <p class="empty-row">A JSON copy of conversations, memory, routines, and settings. The host also writes one backup a day beside its state file and keeps a week.</p>
+
       <h3>Voice</h3>
       <p class="empty-row" id="voice-note">Speech stays on this device. Marble shapes the reply; the browser speaks it.</p>
       <div class="control-actions">
@@ -408,7 +431,7 @@
         "tool_cancel", "usage", "compacted", "steered", "queued", "notice", "error", "settled",
         "cancel_requested", "approval_pending", "approval_resolved", "state",
         "control_denied", "control", "memory", "memory_suggestion", "routine", "retention",
-        "steer_queued", "steer_rejected",
+        "steer_queued", "steer_rejected", "conversation",
       ];
       const app = {
         state: null,
@@ -416,14 +439,21 @@
         sequence: 0,
         outbox: [],
         live: { taskId: null, text: "", reasoning: "", tools: [] },
+        transcript: [],
+        transcriptConversation: null,
+        transcriptCursor: 0,
         stream: null,
         offline: false,
         frame: 0,
         notifyDraft: null,
+        searchTimer: null,
       };
       const el = {
         transcript: document.getElementById("transcript"),
         conversations: document.getElementById("conversations"),
+        conversationsManage: document.getElementById("conversations-manage"),
+        conversationSearch: document.getElementById("conversation-search"),
+        searchResults: document.getElementById("search-results"),
         tasks: document.getElementById("tasks"),
         approvals: document.getElementById("approvals"),
         composer: document.getElementById("composer"),
@@ -459,6 +489,8 @@
         assistantDot: document.getElementById("assistant-dot"),
         assistantUptime: document.getElementById("assistant-uptime"),
         assistantSummary: document.getElementById("assistant-summary"),
+        modelName: document.getElementById("model-name"),
+        modelSave: document.getElementById("model-save"),
         memoryText: document.getElementById("memory-text"),
         memoryAdd: document.getElementById("memory-add"),
         memoryFacts: document.getElementById("memory-facts"),
@@ -468,10 +500,12 @@
         routineSchedule: document.getElementById("routine-schedule"),
         routineAdd: document.getElementById("routine-add"),
         routines: document.getElementById("routines"),
+        routineOffset: document.getElementById("routine-offset"),
         notifyEvents: document.getElementById("notify-events"),
         notifySave: document.getElementById("notify-save"),
         notifyTest: document.getElementById("notify-test"),
         notifyDevices: document.getElementById("notify-devices"),
+        exportAll: document.getElementById("export-all"),
         notifyRecent: document.getElementById("notify-recent"),
         quietEnabled: document.getElementById("quiet-enabled"),
         quietStart: document.getElementById("quiet-start"),
@@ -543,11 +577,14 @@
             button.append(node("span", "title", conversation.title || conversation.id));
             const count = (conversation.taskIds || []).length;
             button.append(node("span", "meta", count === 1 ? "1 turn" : count + " turns"));
-            button.addEventListener("click", () => {
+            button.addEventListener("click", async () => {
               app.conversationId = conversation.id;
+              app.transcriptConversation = null;
+              app.transcriptCursor = 0;
               el.sidebar.classList.remove("open");
               el.sidebarToggle.setAttribute("aria-expanded", "false");
               render();
+              await refresh();
             });
             item.append(button);
             el.conversations.append(item);
@@ -578,7 +615,7 @@
       function renderTranscript() {
         el.transcript.textContent = "";
         const conversationId = activeConversation();
-        const entries = ((app.state && app.state.transcript) || []).filter(
+        const entries = (app.transcript || []).filter(
           (entry) => !conversationId || entry.conversationId === conversationId
         );
         const known = new Set(entries.map((entry) => entry.taskId).filter(Boolean));
@@ -785,7 +822,10 @@
           const missed = Number(routine.missedRuns || 0) > 0
             ? " · missed " + routine.missedRuns + (routine.catchUp === false ? " (skipped)" : "")
             : "";
-          item.append(node("span", "grow", (routine.title || routine.prompt) + " · " + routine.schedule + " · " + state + missed));
+          const next = routine.nextRunAt
+            ? " · next " + new Date(routine.nextRunAt).toLocaleString()
+            : "";
+          item.append(node("span", "grow", (routine.title || routine.prompt) + " · " + routine.schedule + " · " + state + missed + next));
           const run = node("button", "ghost", "Run now");
           run.type = "button";
           run.addEventListener("click", () =>
@@ -843,8 +883,96 @@
           el.notifyRecent.append(item);
         });
 
+        el.conversationsManage.textContent = "";
+        const conversations = (app.state && app.state.conversations) || [];
+        if (!conversations.length) emptyRow(el.conversationsManage, "No conversations yet.");
+        conversations.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).forEach((conversation) => {
+          const item = node("li");
+          item.append(node("span", "grow", conversation.title || conversation.id));
+          const rename = node("button", "ghost", "Rename");
+          rename.type = "button";
+          rename.addEventListener("click", () => renameConversation(conversation));
+          const remove = node("button", "ghost", "Delete");
+          remove.type = "button";
+          remove.addEventListener("click", () => deleteConversation(conversation));
+          item.append(rename, remove);
+          el.conversationsManage.append(item);
+        });
+
         const voice = (app.state && app.state.voice) || {};
         el.voiceToggle.textContent = voice.enabled ? "Stop reading replies" : "Read replies aloud";
+      }
+
+      async function renameConversation(conversation) {
+        const title = window.prompt("Rename conversation", conversation.title || "");
+        if (title === null || !title.trim()) return;
+        try {
+          await api("/api/conversations/" + encodeURIComponent(conversation.id) + "/rename", {
+            method: "POST",
+            body: JSON.stringify({ title: title.trim() }),
+          });
+        } catch (error) {
+          setStatus(error.message, "offline");
+          return;
+        }
+        await refresh();
+      }
+
+      async function deleteConversation(conversation) {
+        const label = conversation.title || conversation.id;
+        if (!window.confirm(`Delete "${label}"? Its transcript is removed from the host.`)) return;
+        try {
+          await api("/api/conversations/" + encodeURIComponent(conversation.id) + "/delete", {
+            method: "POST",
+          });
+        } catch (error) {
+          setStatus(error.message, "offline");
+          return;
+        }
+        if (app.conversationId === conversation.id) {
+          app.conversationId = null;
+          app.transcript = [];
+          app.transcriptConversation = null;
+          app.transcriptCursor = 0;
+        }
+        await refresh();
+      }
+
+      async function openConversation(id) {
+        app.conversationId = id;
+        app.transcript = [];
+        app.transcriptConversation = null;
+        app.transcriptCursor = 0;
+        el.searchResults.hidden = true;
+        el.conversationSearch.value = "";
+        render();
+        await refresh();
+      }
+
+      async function searchConversations(query) {
+        const needle = query.trim();
+        if (needle.length < 2) {
+          el.searchResults.hidden = true;
+          el.searchResults.textContent = "";
+          return;
+        }
+        const page = await api("/api/transcript/search?q=" + encodeURIComponent(needle) + "&limit=20");
+        el.searchResults.textContent = "";
+        const hits = page.hits || [];
+        if (!hits.length) {
+          el.searchResults.append(node("li", "empty-row", "No matches for \u201c" + needle + "\u201d."));
+        }
+        hits.forEach((hit) => {
+          const item = node("li");
+          const button = node("button", "conv");
+          button.type = "button";
+          button.append(node("span", "title", hit.title || hit.conversationId));
+          button.append(node("span", "meta", (hit.kind || "entry") + " · " + hit.text));
+          button.addEventListener("click", () => openConversation(hit.conversationId));
+          item.append(button);
+          el.searchResults.append(item);
+        });
+        el.searchResults.hidden = false;
       }
 
       function minutesToTime(minutes) {
@@ -867,6 +995,7 @@
         el.apnsTeam.value = apns.teamId || "";
         el.apnsKeyId.value = apns.keyId || "";
         el.apnsTopic.value = apns.topic || "";
+        el.modelName.value = (app.state && app.state.model) || "";
         const quiet = notifications.quietHours || {};
         el.quietEnabled.checked = Boolean(quiet.enabled);
         el.quietStart.value = minutesToTime(quiet.startMinute === undefined ? 22 * 60 : quiet.startMinute);
@@ -1038,9 +1167,34 @@
         });
       }
 
+      /// Fetch the transcript for the active conversation, resuming from the
+      /// last cursor. The lean state no longer carries every conversation.
+      async function syncTranscript() {
+        const conversationId = activeConversation();
+        if (conversationId !== app.transcriptConversation) {
+          app.transcriptConversation = conversationId;
+          app.transcript = [];
+          app.transcriptCursor = 0;
+        }
+        if (!conversationId) return;
+        const query = "conversationId=" + encodeURIComponent(conversationId) +
+          (app.transcriptCursor ? "&after=" + app.transcriptCursor : "");
+        const page = await api("/api/transcript?" + query);
+        const keyOf = (entry) => [entry.at, entry.kind, entry.taskId, entry.text].join("|");
+        const known = new Set((app.transcript || []).map(keyOf));
+        (page.entries || []).forEach((entry) => {
+          const key = keyOf(entry);
+          if (!known.has(key)) {
+            known.add(key);
+            app.transcript.push(entry);
+          }
+        });
+        app.transcriptCursor = Math.max(app.transcriptCursor || 0, Number(page.cursor) || 0);
+      }
+
       async function refresh() {
         try {
-          const state = await api("/api/state");
+          const state = await api("/api/state?lean=1");
           app.state = state;
           app.offline = false;
           if (!app.conversationId && state.conversations.length) {
@@ -1055,6 +1209,11 @@
             app.live.text = "";
             app.live.reasoning = "";
             app.live.tools = [];
+          }
+          try {
+            await syncTranscript();
+          } catch {
+            /* the transcript retries on the next refresh */
           }
           render();
         } catch (error) {
@@ -1190,6 +1349,7 @@
           case "memory_suggestion":
           case "routine":
           case "retention":
+          case "conversation":
             refresh();
             break;
           case "settled": {
@@ -1256,6 +1416,12 @@
 
       el.send.addEventListener("click", send);
       el.cancel.addEventListener("click", cancel);
+      el.conversationSearch.addEventListener("input", () => {
+        clearTimeout(app.searchTimer);
+        app.searchTimer = setTimeout(() => {
+          searchConversations(el.conversationSearch.value).catch(() => {});
+        }, 250);
+      });
       el.steerSend.addEventListener("click", steer);
       el.steer.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -1272,6 +1438,9 @@
       });
       document.getElementById("new-chat").addEventListener("click", () => {
         app.conversationId = null;
+        app.transcript = [];
+        app.transcriptConversation = null;
+        app.transcriptCursor = 0;
         render();
         el.composer.focus();
       });
@@ -1321,11 +1490,44 @@
               prompt,
               schedule: el.routineSchedule.value.trim() || "every:1h",
               conversationId: app.conversationId,
+              offsetMinutes: -new Date().getTimezoneOffset(),
             }),
           });
           el.routineTitle.value = "";
           el.routinePrompt.value = "";
           el.routineSchedule.value = "";
+        } catch (error) {
+          setStatus(error.message, "offline");
+        }
+        await refresh();
+      });
+      el.exportAll.addEventListener("click", () => {
+        const link = document.createElement("a");
+        link.href = "/api/export";
+        link.download = "marble-export.json";
+        document.body.append(link);
+        link.click();
+        link.remove();
+      });
+      el.modelSave.addEventListener("click", async () => {
+        try {
+          await api("/api/model", {
+            method: "POST",
+            body: JSON.stringify({ model: el.modelName.value.trim() }),
+          });
+          setStatus("model saved for new conversations", "live");
+        } catch (error) {
+          setStatus(error.message, "offline");
+        }
+        await refresh();
+      });
+      el.routineOffset.addEventListener("click", async () => {
+        try {
+          await api("/api/routines/offset", {
+            method: "POST",
+            body: JSON.stringify({ offsetMinutes: -new Date().getTimezoneOffset() }),
+          });
+          setStatus("routine times follow this device", "live");
         } catch (error) {
           setStatus(error.message, "offline");
         }

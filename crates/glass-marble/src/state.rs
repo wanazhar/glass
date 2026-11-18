@@ -169,6 +169,10 @@ pub struct ProductState {
     /// Bounds the document keeps, and what has been trimmed from it.
     #[serde(default)]
     pub retention: RetentionState,
+    /// Model requested for new conversations; empty means the engine default.
+    /// Existing conversations keep the model they were created with.
+    #[serde(default)]
+    pub model: String,
 }
 
 impl ProductState {
@@ -220,6 +224,71 @@ impl ProductState {
             return true;
         }
         false
+    }
+
+    /// Rename one conversation; returns whether it existed.
+    pub fn rename_conversation(&mut self, id: &str, title: &str) -> bool {
+        let title = title.trim();
+        if title.is_empty() {
+            return false;
+        }
+        let updated = now_millis();
+        let Some(conversation) = self
+            .conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id)
+        else {
+            return false;
+        };
+        conversation.title = title.chars().take(120).collect();
+        conversation.updated_at = updated;
+        true
+    }
+
+    /// Remove one conversation and its settled history.
+    ///
+    /// A conversation with a queued or running turn is not removed: deleting
+    /// the record would orphan work that is still using it. Stop or settle that
+    /// turn first.
+    pub fn delete_conversation(&mut self, id: &str) -> Result<(), String> {
+        if !self
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == id)
+        {
+            return Err("unknown conversation".into());
+        }
+        if self
+            .tasks
+            .iter()
+            .any(|task| task.conversation_id == id && !settled(&task.status))
+        {
+            return Err("a turn is still running in this conversation".into());
+        }
+        self.conversations
+            .retain(|conversation| conversation.id != id);
+        self.tasks.retain(|task| task.conversation_id != id);
+        self.transcript.retain(|entry| entry.conversation_id != id);
+        self.control
+            .queue
+            .retain(|entry| entry.conversation_id.as_deref() != Some(id));
+        Ok(())
+    }
+
+    /// Newest transcript entries whose text contains `query`.
+    pub fn search_transcript(&self, query: &str, limit: usize) -> Vec<&TranscriptEntry> {
+        let needle = query.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<&TranscriptEntry> = self
+            .transcript
+            .iter()
+            .filter(|entry| entry.text.to_ascii_lowercase().contains(&needle))
+            .collect();
+        hits.sort_by_key(|entry| std::cmp::Reverse(entry.at));
+        hits.truncate(limit.clamp(1, 100));
+        hits
     }
 
     /// Append one transcript entry.
@@ -483,6 +552,45 @@ mod tests {
         assert_eq!(state.retention.last_trim_at, 9_999);
         assert!(state.retention.trimmed_transcript > 0);
         assert!(state.prune(10_000).is_empty(), "a second pass is a no-op");
+    }
+
+    #[test]
+    fn conversations_can_be_renamed_deleted_and_searched() {
+        let mut state = ProductState::default();
+        state.conversation_mut("c1").title = "old".into();
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "c1".into(),
+            kind: "assistant".into(),
+            text: "the deploy key is in 1Password".into(),
+            task_id: "t1".into(),
+            at: 5,
+        });
+        state.tasks.push(settled_task("t1", 5));
+
+        assert!(state.rename_conversation("c1", "  Deploys  "));
+        assert_eq!(state.conversations[0].title, "Deploys");
+        assert!(!state.rename_conversation("c1", "   "));
+        assert!(!state.rename_conversation("missing", "x"));
+
+        assert_eq!(state.search_transcript("DEPLOY KEY", 10).len(), 1);
+        assert!(state.search_transcript("nothing here", 10).is_empty());
+
+        state.tasks.push(TaskRecord {
+            id: "t2".into(),
+            conversation_id: "c1".into(),
+            status: "running".into(),
+            owner: "agent".into(),
+            prompt: "working".into(),
+            at: 6,
+            routine_id: String::new(),
+        });
+        assert!(state.delete_conversation("c1").is_err());
+        state.tasks[1].status = "completed".into();
+        assert!(state.delete_conversation("c1").is_ok());
+        assert!(state.conversations.is_empty());
+        assert!(state.transcript.is_empty());
+        assert!(state.tasks.is_empty());
+        assert!(state.delete_conversation("c1").is_err());
     }
 
     #[test]

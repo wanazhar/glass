@@ -30,8 +30,13 @@ person touches.
   suppression, quiet hours, and re-alerts until an approval is answered.
 - **Voice, on device only**: the host shapes a reply for speech and never sees
   audio.
+- **Model choice**: the model new conversations use, visible and changeable
+  without restarting the service.
+- **History you can read and keep**: lean state plus a cursor-paged transcript,
+  transcript search, conversation rename/delete, JSON export, and one daily
+  backup beside the state file.
 - **Durable product state**: a revisioned `product-state.json` written atomically
-  under the data directory.
+  under the data directory, with bounded history.
 - **Turn events**: an ordered, bounded buffer with live subscribers, replayed
   from a cursor after a reconnect.
 - **Access control**: loopback by default, an access token off loopback, origin

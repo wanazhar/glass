@@ -241,6 +241,10 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         }
     };
     loaded.control.profile = profile;
+    if let Some(model) = cli.model.clone() {
+        // An explicit flag wins; otherwise a model chosen from a surface stays.
+        loaded.model = model;
+    }
     // An always-on assistant has to be honest about what a restart cost it: a
     // turn that was running when the process stopped is marked interrupted, not
     // left looking like it is still working.

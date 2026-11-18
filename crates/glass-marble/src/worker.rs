@@ -110,6 +110,13 @@ fn run_command(
 ) {
     let TurnCommand { request, accepted } = command;
     let prompt = request.text.clone();
+    // A model chosen from a surface applies to conversations created from now
+    // on; Core keeps an existing session on the model it started with.
+    let model = {
+        let guard = lock(state);
+        guard.model.trim().to_string()
+    };
+    conversation.set_model((!model.is_empty()).then_some(model));
     let turn = MarbleTurn {
         conversation_id: request.conversation_id.clone(),
         request_id: request.request_id.clone(),

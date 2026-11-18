@@ -268,6 +268,12 @@ impl Conversation {
         self
     }
 
+    /// Change the model used the next time a conversation is created. A live
+    /// session keeps the model it started with.
+    pub fn set_model(&mut self, model: Option<String>) {
+        self.model = model;
+    }
+
     /// Override how long an unanswered approval waits before it is denied.
     pub fn with_approval_timeout(mut self, timeout: Duration) -> Self {
         self.approval_timeout = timeout;

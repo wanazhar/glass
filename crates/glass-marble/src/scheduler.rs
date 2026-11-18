@@ -184,6 +184,9 @@ pub fn run_tick(
     };
     if let Some(store) = store {
         store::persist(store, &snapshot);
+        if persist_heartbeat && let Some(path) = store.write_daily_backup(&snapshot, now) {
+            tracing::info!(path = %path.display(), "wrote the daily product-state backup");
+        }
     }
     for notification in notifications {
         notify::spawn_delivery(

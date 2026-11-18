@@ -894,3 +894,183 @@ fn state_reports_retention_and_routines_can_skip_catch_up() {
     assert_eq!(notifications["quietHours"]["enabled"], json!(false));
     assert_eq!(notifications["retries"], json!(2));
 }
+
+#[test]
+fn transcript_pages_search_and_conversation_lifecycle() {
+    let mut state = ProductState::default();
+    state.conversation_mut("c1").title = "Notes".into();
+    for (index, text) in ["first note", "second note", "third note"]
+        .iter()
+        .enumerate()
+    {
+        state.push_transcript(crate::TranscriptEntry {
+            conversation_id: "c1".into(),
+            kind: "assistant".into(),
+            text: (*text).into(),
+            task_id: format!("t{index}"),
+            at: 10 * (index as u64 + 1),
+        });
+    }
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let lean: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(lean["transcript"].as_array().map(Vec::len), Some(0));
+    assert_eq!(lean["transcriptCount"], json!(3));
+    assert_eq!(lean["transcriptOmitted"], json!(true));
+
+    let (status, body) = server.handle("GET", "/api/transcript?conversationId=c1&after=15", "");
+    assert_eq!(status, 200, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(page["entries"].as_array().map(Vec::len), Some(2));
+    assert_eq!(page["cursor"], json!(30));
+
+    let (_, body) = server.handle("GET", "/api/transcript/search?q=SECOND", "");
+    let hits: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(hits["hits"].as_array().map(Vec::len), Some(1));
+    assert_eq!(hits["hits"][0]["conversationId"], json!("c1"));
+    assert_eq!(hits["hits"][0]["title"], json!("Notes"));
+
+    let (status, _) = server.handle(
+        "POST",
+        "/api/conversations/c1/rename",
+        r#"{"title":"Deploys"}"#,
+    );
+    assert_eq!(status, 200);
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let lean: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(lean["conversations"][0]["title"], json!("Deploys"));
+
+    let (status, _) = server.handle("POST", "/api/conversations/c1/delete", "");
+    assert_eq!(status, 200);
+    let (_, body) = server.handle("GET", "/api/transcript?conversationId=c1", "");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(page["entries"].as_array().map(Vec::len), Some(0));
+    assert_eq!(
+        server
+            .handle("POST", "/api/conversations/c1/rename", r#"{"title":"x"}"#)
+            .0,
+        404
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/conversations/c1/rename", r#"{"title":" "}"#)
+            .0,
+        400
+    );
+    assert_eq!(
+        server.handle("POST", "/api/conversations/c1/delete", "").0,
+        404
+    );
+}
+
+#[test]
+fn a_daily_routine_takes_its_timezone_from_the_surface_that_saved_it() {
+    let server = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/routines",
+        r#"{"title":"Digest","prompt":"summarize","schedule":"daily:09:00","offsetMinutes":330}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let routines: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(routines["routines"]["offsetMinutes"], json!(330));
+    let (status, body) = server.handle("POST", "/api/routines/offset", r#"{"offsetMinutes":-480}"#);
+    assert_eq!(status, 200, "{body}");
+    let routines: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(routines["routines"]["offsetMinutes"], json!(-480));
+    assert_eq!(
+        server.handle("POST", "/api/routines/offset", r#"{}"#).0,
+        400
+    );
+}
+
+#[test]
+fn export_covers_the_whole_document_or_one_conversation() {
+    let mut state = ProductState::default();
+    state.conversation_mut("c1").title = "Notes".into();
+    state.tasks.push(TaskRecord {
+        id: "t1".into(),
+        conversation_id: "c1".into(),
+        status: "completed".into(),
+        owner: "agent".into(),
+        prompt: "tidy".into(),
+        at: 4,
+        routine_id: String::new(),
+    });
+    state.push_transcript(crate::TranscriptEntry {
+        conversation_id: "c1".into(),
+        kind: "assistant".into(),
+        text: "tidied the notes".into(),
+        task_id: "t1".into(),
+        at: 5,
+    });
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+
+    let (status, body) = server.handle("GET", "/api/export", "");
+    assert_eq!(status, 200, "{body}");
+    let export: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(export["format"], json!("glass-marble/v1"));
+    assert_eq!(
+        export["state"]["transcript"].as_array().map(Vec::len),
+        Some(1)
+    );
+
+    let (status, body) = server.handle("GET", "/api/export?conversationId=c1", "");
+    assert_eq!(status, 200, "{body}");
+    let export: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(export["format"], json!("glass-marble-conversation/v1"));
+    assert_eq!(export["conversation"]["title"], json!("Notes"));
+    assert_eq!(export["transcript"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        server
+            .handle("GET", "/api/export?conversationId=missing", "")
+            .0,
+        404
+    );
+}
+
+#[test]
+fn the_model_can_be_changed_and_is_validated() {
+    let server = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle("POST", "/api/model", r#"{"model":"claude-sonnet-4"}"#);
+    assert_eq!(status, 200, "{body}");
+    let changed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(changed["appliesTo"], json!("new conversations"));
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["model"], json!("claude-sonnet-4"));
+
+    let (status, body) = server.handle("POST", "/api/model", r#"{"model":""}"#);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["engineDefault"],
+        json!(true)
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/model", r#"{"model":"bad\u0000name"}"#)
+            .0,
+        400
+    );
+}

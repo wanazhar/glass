@@ -175,6 +175,7 @@ struct MarbleState: Decodable, Equatable {
     var voice: MarbleVoice?
     var notifications: MarbleNotificationSettings?
     var devices: [MarbleDevice]?
+    var transcriptCount: Int?
 
     static let empty = MarbleState(
         revision: 0,
@@ -188,7 +189,8 @@ struct MarbleState: Decodable, Equatable {
         routines: nil,
         voice: nil,
         notifications: nil,
-        devices: nil
+        devices: nil,
+        transcriptCount: 0
     )
 
     /// Hosts from before the control layer answer without one.
@@ -230,6 +232,15 @@ struct MarbleEventData: Decodable, Equatable {
     var status: String?
     var revision: Int?
     var taskId: String?
+}
+
+/// One bounded page of durable history for a conversation.
+struct MarbleTranscriptPage: Decodable, Equatable {
+    var conversationId: String
+    var entries: [MarbleEntry]
+    var cursor: UInt64
+    var omitted: Int?
+    var revision: Int?
 }
 
 struct MarbleAccepted: Decodable, Equatable {
@@ -332,6 +343,15 @@ struct MarbleRoutine: Decodable, Identifiable, Equatable {
     var runs: UInt64
     var lastTaskId: String
     var lastStatus: String
+    var missedRuns: UInt64?
+    var missedLastGap: UInt64?
+    var catchUp: Bool?
+
+    var nextRunLabel: String? {
+        guard nextRunAt > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: Double(nextRunAt) / 1000)
+        return "next " + date.formatted(date: .abbreviated, time: .shortened)
+    }
 }
 
 struct MarbleRoutines: Decodable, Equatable {
@@ -339,8 +359,9 @@ struct MarbleRoutines: Decodable, Equatable {
     var count: Int?
     var limit: Int?
     var enabled: Int?
+    var offsetMinutes: Int?
 
-    static let empty = MarbleRoutines(routines: [], count: 0, limit: nil, enabled: 0)
+    static let empty = MarbleRoutines(routines: [], count: 0, limit: nil, enabled: 0, offsetMinutes: nil)
 }
 
 /// Local-only voice preferences.

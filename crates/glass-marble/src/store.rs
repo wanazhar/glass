@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 /// File name of the durable product document.
 pub const STATE_FILE: &str = "product-state.json";
 const STATE_TEMP_FILE: &str = "product-state.json.tmp";
+/// Directory beside the state file where daily backups are written.
+pub const BACKUP_DIR: &str = "backups";
+/// Daily backups kept before the oldest is removed.
+pub const BACKUP_KEEP: usize = 7;
 
 /// Resolve the self-hosted data directory.
 ///
@@ -75,6 +79,37 @@ impl StateStore {
             }
             Err(error) => Err(MarbleError::Io(error)),
         }
+    }
+
+    /// Write one backup per UTC day, keeping a week of history.
+    ///
+    /// Trimming bounds the live document, and an export is only useful if the
+    /// person remembers to ask for it. A daily copy beside the state file means
+    /// a bad edit, a corrupt document, or a mistaken deletion is recoverable
+    /// without a service to restore from. Returns the path when a new backup was
+    /// written.
+    pub fn write_daily_backup(&self, state: &ProductState, now: u64) -> Option<std::path::PathBuf> {
+        let parent = self.path.parent()?;
+        let directory = parent.join(BACKUP_DIR);
+        let path = directory.join(format!("product-state-{}.json", now / 86_400_000));
+        if path.exists() {
+            return None;
+        }
+        fs::create_dir_all(&directory).ok()?;
+        let encoded = serde_json::to_vec_pretty(state).ok()?;
+        fs::write(&path, encoded).ok()?;
+        let mut backups: Vec<std::path::PathBuf> = fs::read_dir(&directory)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| candidate.extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        backups.sort();
+        while backups.len() > BACKUP_KEEP {
+            let oldest = backups.remove(0);
+            let _ = fs::remove_file(oldest);
+        }
+        Some(path)
     }
 
     /// Write the document atomically, replacing the previous revision.
@@ -160,6 +195,32 @@ mod tests {
         store.save(&ProductState::default()).unwrap();
         assert!(store.path().exists());
         assert!(!dir.join(STATE_TEMP_FILE).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daily_backups_are_written_once_and_capped() {
+        let dir = data_dir("backups");
+        let store = StateStore::in_data_dir(&dir);
+        let state = ProductState::default();
+        let first = store
+            .write_daily_backup(&state, 86_400_000)
+            .expect("a backup");
+        assert!(first.exists());
+        assert!(
+            store
+                .write_daily_backup(&state, 86_400_000 + 1000)
+                .is_none(),
+            "the same day is written only once"
+        );
+        for day in 2..=(BACKUP_KEEP as u64 + 3) {
+            store.write_daily_backup(&state, day * 86_400_000);
+        }
+        let files = fs::read_dir(dir.join(BACKUP_DIR))
+            .unwrap()
+            .filter_map(Result::ok)
+            .count();
+        assert_eq!(files, BACKUP_KEEP);
         let _ = fs::remove_dir_all(&dir);
     }
 

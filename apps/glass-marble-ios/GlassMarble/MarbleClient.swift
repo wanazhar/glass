@@ -130,8 +130,17 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(path: "/healthz"))
     }
 
+    /// Lean state: control, presence, and counts without every transcript.
     func state() async throws -> MarbleState {
-        try await fetch(try makeRequest(path: "/api/state"))
+        try await fetch(try makeRequest(path: "/api/state?lean=1"))
+    }
+
+    func transcript(conversationId: String, after: UInt64?) async throws -> MarbleTranscriptPage {
+        var path = "/api/transcript?conversationId=\(encoded(conversationId))"
+        if let after, after > 0 {
+            path += "&after=\(after)"
+        }
+        return try await fetch(try makeRequest(path: path))
     }
 
     func send(text: String, conversationId: String?) async throws -> MarbleAccepted {
@@ -158,6 +167,15 @@ final class MarbleClient: @unchecked Sendable {
             "/api/turns/steer",
             body: Body(text: text, conversationId: conversationId, taskId: taskId)
         )
+    }
+
+    func renameConversation(id: String, title: String) async throws {
+        struct Body: Encodable { var title: String }
+        try await post("/api/conversations/\(encoded(id))/rename", body: Body(title: title))
+    }
+
+    func deleteConversation(id: String) async throws {
+        try await post("/api/conversations/\(encoded(id))/delete")
     }
 
     func cancel(taskId: String) async throws {
@@ -278,6 +296,7 @@ final class MarbleClient: @unchecked Sendable {
             var prompt: String
             var schedule: String
             var conversationId: String?
+            var offsetMinutes: Int
         }
         let reply: RoutinesReply = try await postJSON(
             "/api/routines",
@@ -285,10 +304,17 @@ final class MarbleClient: @unchecked Sendable {
                 title: title,
                 prompt: prompt,
                 schedule: schedule,
-                conversationId: conversationId
+                conversationId: conversationId,
+                offsetMinutes: TimeZone.current.secondsFromGMT() / 60
             )
         )
         return reply.routines
+    }
+
+    /// Tell the host which timezone `daily:HH:MM` means to this phone.
+    func setRoutineOffset(minutes: Int) async throws {
+        struct Body: Encodable { var offsetMinutes: Int }
+        try await post("/api/routines/offset", body: Body(offsetMinutes: minutes))
     }
 
     func runRoutine(id: String) async throws {

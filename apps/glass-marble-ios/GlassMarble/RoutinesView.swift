@@ -68,6 +68,12 @@ struct RoutinesView: View {
             .marbleGlass(cornerRadius: 18)
             .buttonStyle(.plain)
             .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Button("Use this phone's time for daily schedules") {
+                Task { await store.useLocalRoutineTime() }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(MarblePalette.accent)
         }
     }
 
@@ -94,7 +100,15 @@ struct RoutinesView: View {
                         if routine.runs > 0 {
                             Tag("\(routine.runs) run\(routine.runs == 1 ? "" : "s")")
                         }
+                        if let missed = routine.missedRuns, missed > 0 {
+                            Tag("missed \(missed)")
+                        }
                         Spacer(minLength: 0)
+                    }
+                    if let next = routine.nextRunLabel {
+                        Text(next)
+                            .font(.caption2)
+                            .foregroundStyle(MarblePalette.muted)
                     }
                     HStack(spacing: 8) {
                         Button("Run now") {

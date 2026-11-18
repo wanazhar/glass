@@ -34,7 +34,17 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var state: MarbleState = .empty
     @Published private(set) var connection: Connection = .idle
     @Published private(set) var endpoint: MarbleEndpoint
-    @Published var selectedConversationId: String?
+    @Published var selectedConversationId: String? {
+        didSet {
+            guard oldValue != selectedConversationId else { return }
+            Task { await self.refresh() }
+        }
+    }
+    /// History for the selected conversation, fetched separately from state.
+    @Published private(set) var conversationTranscript: [MarbleEntry] = []
+    private var transcriptConversationId: String?
+    private var transcriptCursor: UInt64 = 0
+    private var transcriptRevision: Int = -1
     @Published private(set) var liveText = ""
     @Published private(set) var liveReasoning = ""
     @Published private(set) var liveTools: [LiveTool] = []
@@ -63,6 +73,14 @@ final class MarbleStore: ObservableObject {
             guard let token = notification.object as? String else { return }
             Task { await self?.registerPushToken(token) }
         }
+        NotificationCenter.default.addObserver(
+            forName: .marbleOpenConversation,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let id = notification.object as? String else { return }
+            self?.open(conversationId: id)
+        }
     }
 
     // MARK: - Derived product state
@@ -72,7 +90,11 @@ final class MarbleStore: ObservableObject {
     }
 
     var transcript: [MarbleEntry] {
-        state.transcript(for: selectedConversationId)
+        if transcriptConversationId == selectedConversationId,
+           !conversationTranscript.isEmpty {
+            return conversationTranscript
+        }
+        return state.transcript(for: selectedConversationId)
     }
 
     var isWorking: Bool { activeTaskId != nil }
@@ -106,12 +128,24 @@ final class MarbleStore: ObservableObject {
         }
     }
 
+    /// Select the conversation a notification pointed at.
+    func open(conversationId: String) {
+        guard !conversationId.isEmpty else { return }
+        if selectedConversationId != conversationId {
+            selectedConversationId = conversationId
+        }
+    }
+
     func apply(_ endpoint: MarbleEndpoint) {
         self.endpoint = endpoint
         MarblePreferences.save(endpoint)
         client = MarbleClient(endpoint: endpoint)
         sequence = 0
         needsToken = false
+        conversationTranscript = []
+        transcriptConversationId = nil
+        transcriptCursor = 0
+        transcriptRevision = -1
         Task {
             await loginIfNeeded()
             await refresh()
@@ -138,9 +172,12 @@ final class MarbleStore: ObservableObject {
             errorMessage = nil
             if connection != .live { connection = .live }
             if selectedConversationId == nil || snapshot.conversation(selectedConversationId) == nil {
-                selectedConversationId = snapshot.conversations
+                let newest = snapshot.conversations
                     .sorted { $0.updatedAt > $1.updatedAt }
                     .first?.id
+                if selectedConversationId != newest {
+                    selectedConversationId = newest
+                }
             }
             activeTaskId = snapshot.runningTask?.id
             if activeTaskId == nil {
@@ -148,6 +185,7 @@ final class MarbleStore: ObservableObject {
                 liveReasoning = ""
                 liveTools = []
             }
+            await loadTranscript()
         } catch MarbleClientError.unauthorized {
             needsToken = true
             connection = .offline
@@ -155,6 +193,45 @@ final class MarbleStore: ObservableObject {
             connection = .offline
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Fetch the selected conversation's history separately, resuming from the
+    /// last cursor so a refresh does not carry every conversation at once.
+    private func loadTranscript() async {
+        guard let conversationId = selectedConversationId else {
+            conversationTranscript = []
+            transcriptConversationId = nil
+            transcriptCursor = 0
+            transcriptRevision = -1
+            return
+        }
+        if transcriptConversationId != conversationId {
+            transcriptConversationId = conversationId
+            conversationTranscript = []
+            transcriptCursor = 0
+            transcriptRevision = -1
+        }
+        guard transcriptRevision != state.revision || conversationTranscript.isEmpty else {
+            return
+        }
+        do {
+            let page = try await client.transcript(
+                conversationId: conversationId,
+                after: transcriptCursor == 0 ? nil : transcriptCursor
+            )
+            var known = Set(conversationTranscript.map(Self.transcriptKey))
+            for entry in page.entries where known.insert(Self.transcriptKey(entry)).inserted {
+                conversationTranscript.append(entry)
+            }
+            transcriptCursor = max(transcriptCursor, page.cursor)
+            transcriptRevision = state.revision
+        } catch {
+            // Keep the previous page; the next refresh retries.
+        }
+    }
+
+    private static func transcriptKey(_ entry: MarbleEntry) -> String {
+        "\(entry.at)|\(entry.kind)|\(entry.taskId)|\(entry.text)"
     }
 
     func send(_ text: String) async {
@@ -270,6 +347,26 @@ final class MarbleStore: ObservableObject {
         await perform { _ = try await self.client.remember(text: trimmed) }
     }
 
+    func rename(_ conversation: MarbleConversation, title: String) async {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await perform { try await self.client.renameConversation(id: conversation.id, title: trimmed) }
+    }
+
+    func delete(_ conversation: MarbleConversation) async {
+        do {
+            try await client.deleteConversation(id: conversation.id)
+            if selectedConversationId == conversation.id {
+                conversationTranscript = []
+                selectedConversationId = nil
+            }
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
     func update(_ fact: MarbleMemoryFact, text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -304,6 +401,12 @@ final class MarbleStore: ObservableObject {
                 conversationId: self.selectedConversationId
             )
         }
+    }
+
+    /// Align `daily:` routines with this phone's timezone.
+    func useLocalRoutineTime() async {
+        let minutes = TimeZone.current.secondsFromGMT() / 60
+        await perform { try await self.client.setRoutineOffset(minutes: minutes) }
     }
 
     func run(_ routine: MarbleRoutine) async {

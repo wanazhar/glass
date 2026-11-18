@@ -376,10 +376,31 @@ impl MarbleServer {
             return Response::error(403, "cross_origin_request");
         }
         if head.method == "GET" && path == "/api/state" {
-            return self.state_response();
+            let lean = head.query_param("lean").as_deref() == Some("1")
+                || head.query_param("transcript").as_deref() == Some("0");
+            return self.state_response(lean);
+        }
+        if head.method == "GET" && path == "/api/transcript/search" {
+            return self.search_transcript(head);
+        }
+        if head.method == "GET" && path == "/api/transcript" {
+            return self.transcript_response(head);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/conversations/")
+        {
+            if let Some(id) = rest.strip_suffix("/rename") {
+                return self.rename_conversation(id, body);
+            }
+            if let Some(id) = rest.strip_suffix("/delete") {
+                return self.delete_conversation(id);
+            }
         }
         if head.method == "GET" && path == "/api/events" {
             return Response::error(400, "stream_requires_socket");
+        }
+        if head.method == "POST" && path == "/api/model" {
+            return self.set_model(body);
         }
         if head.method == "POST" && path == "/api/turns" {
             return self.handle_turn(body);
@@ -411,6 +432,9 @@ impl MarbleServer {
         {
             return self.revoke_grant(grant_id);
         }
+        if head.method == "GET" && path == "/api/export" {
+            return self.export_response(head);
+        }
         if head.method == "GET" && path == "/api/presence" {
             return self.presence_response();
         }
@@ -441,6 +465,9 @@ impl MarbleServer {
         }
         if head.method == "POST" && path == "/api/routines" {
             return self.add_routine(body);
+        }
+        if head.method == "POST" && path == "/api/routines/offset" {
+            return self.set_routine_offset(body);
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/routines/")
@@ -507,6 +534,48 @@ impl MarbleServer {
         Response::error(404, "not_found")
     }
 
+    /// `POST /api/model` — choose the model new conversations use. The worker
+    /// applies it before the next conversation is created; Core keeps a live
+    /// session on the model it started with.
+    fn set_model(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let model = parsed
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if model.chars().count() > 200 || model.chars().any(char::is_control) {
+            return Response::json(
+                400,
+                json!({
+                    "error": "invalid_model",
+                    "message": "a model name is at most 200 printable characters",
+                }),
+            );
+        }
+        {
+            let mut guard = self.lock_state();
+            guard.model = model.clone();
+            guard.bump();
+        }
+        self.save_state();
+        self.events
+            .publish("", "", "control", json!({"model": model}));
+        Response::json(
+            200,
+            json!({
+                "ok": true,
+                "model": model,
+                "engineDefault": model.is_empty(),
+                "appliesTo": "new conversations",
+            }),
+        )
+    }
+
     fn login(&self, body: &str) -> Response {
         if !self.policy.requires_token() {
             return Response::json(200, json!({"ok": true, "required": false}));
@@ -527,13 +596,22 @@ impl MarbleServer {
         )
     }
 
-    fn state_response(&self) -> Response {
+    /// Product document. `lean` keeps the structure but omits the transcript, so
+    /// a polling client can refresh control, presence, and counts without
+    /// re-reading months of history over the tailnet.
+    fn state_response(&self, lean: bool) -> Response {
         let mut guard = self.lock_state();
         guard.approvals = self.approvals.pending();
         let snapshot = guard.clone();
         drop(guard);
+        let transcript_count = snapshot.transcript.len();
         let mut value = snapshot.encode();
         if let Value::Object(ref mut map) = value {
+            map.insert("transcriptCount".into(), json!(transcript_count));
+            if lean {
+                map.insert("transcript".into(), Value::Array(Vec::new()));
+                map.insert("transcriptOmitted".into(), json!(true));
+            }
             // Derived documents: the raw counters are not the whole story.
             map.insert("presence".into(), snapshot.presence.document(&snapshot));
             map.insert("memory".into(), snapshot.memory.document());
@@ -560,6 +638,206 @@ impl MarbleServer {
             );
         }
         Response::json(200, value)
+    }
+
+    /// `GET /api/export` — a portable copy of the durable document. With
+    /// `conversationId`, only that conversation's record, tasks, and history.
+    fn export_response(&self, head: &RequestHead) -> Response {
+        let conversation_id = head.query_param("conversationId").unwrap_or_default();
+        if !conversation_id.is_empty() && !valid_conversation_id(&conversation_id) {
+            return Response::error(400, "invalid_conversation_id");
+        }
+        let guard = self.lock_state();
+        if conversation_id.is_empty() {
+            return Response::json(
+                200,
+                json!({
+                    "format": "glass-marble/v1",
+                    "exportedAt": now_millis(),
+                    "revision": guard.revision,
+                    "state": &*guard,
+                }),
+            )
+            .with_header(
+                "Content-Disposition",
+                "attachment; filename=\"marble-export.json\"",
+            );
+        }
+        let Some(conversation) = guard
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == conversation_id)
+        else {
+            return Response::json(404, json!({"error": "unknown_conversation"}));
+        };
+        let tasks: Vec<&crate::state::TaskRecord> = guard
+            .tasks
+            .iter()
+            .filter(|task| task.conversation_id == conversation_id)
+            .collect();
+        let transcript: Vec<&crate::state::TranscriptEntry> = guard
+            .transcript
+            .iter()
+            .filter(|entry| entry.conversation_id == conversation_id)
+            .collect();
+        Response::json(
+            200,
+            json!({
+                "format": "glass-marble-conversation/v1",
+                "exportedAt": now_millis(),
+                "revision": guard.revision,
+                "conversation": conversation,
+                "tasks": tasks,
+                "transcript": transcript,
+            }),
+        )
+        .with_header(
+            "Content-Disposition",
+            "attachment; filename=\"marble-conversation.json\"",
+        )
+    }
+
+    /// `GET /api/transcript/search?q=…` — newest matches across all history.
+    fn search_transcript(&self, head: &RequestHead) -> Response {
+        let query = head.query_param("q").unwrap_or_default();
+        if query.trim().is_empty() {
+            return Response::json(200, json!({"query": query, "hits": []}));
+        }
+        let limit = head
+            .query_param("limit")
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(30);
+        let guard = self.lock_state();
+        let hits: Vec<Value> = guard
+            .search_transcript(&query, limit)
+            .into_iter()
+            .map(|entry| {
+                let title = guard
+                    .conversations
+                    .iter()
+                    .find(|conversation| conversation.id == entry.conversation_id)
+                    .map(|conversation| conversation.title.clone())
+                    .unwrap_or_default();
+                let preview: String = entry.text.chars().take(280).collect();
+                json!({
+                    "conversationId": entry.conversation_id,
+                    "title": title,
+                    "kind": entry.kind,
+                    "text": preview,
+                    "at": entry.at,
+                    "taskId": entry.task_id,
+                })
+            })
+            .collect();
+        Response::json(200, json!({"query": query, "hits": hits}))
+    }
+
+    fn rename_conversation(&self, id: &str, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let title = parsed
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if title.trim().is_empty() {
+            return Response::error(400, "invalid_title");
+        }
+        let renamed = {
+            let mut guard = self.lock_state();
+            let renamed = guard.rename_conversation(id, title);
+            if renamed {
+                guard.bump();
+            }
+            renamed
+        };
+        if renamed {
+            self.save_state();
+            self.events
+                .publish("", "", "conversation", json!({"renamed": id}));
+        }
+        Response::json(
+            if renamed { 200 } else { 404 },
+            json!({"ok": renamed, "conversations": self.lock_state().conversations}),
+        )
+    }
+
+    fn delete_conversation(&self, id: &str) -> Response {
+        let outcome = {
+            let mut guard = self.lock_state();
+            let outcome = guard.delete_conversation(id);
+            if outcome.is_ok() {
+                guard.bump();
+            }
+            outcome
+        };
+        match outcome {
+            Ok(()) => {
+                self.save_state();
+                self.events
+                    .publish("", "", "conversation", json!({"deleted": id}));
+                Response::json(
+                    200,
+                    json!({"ok": true, "conversations": self.lock_state().conversations}),
+                )
+            }
+            Err(reason) if reason == "unknown conversation" => {
+                Response::json(404, json!({"error": "unknown_conversation", "id": id}))
+            }
+            Err(reason) => Response::json(
+                409,
+                json!({"error": "conversation_busy", "message": reason}),
+            ),
+        }
+    }
+
+    /// `GET /api/transcript?conversationId=…&after=…` — bounded history for one
+    /// conversation. `after` is inclusive so entries that share a millisecond
+    /// are never lost; clients deduplicate by content.
+    fn transcript_response(&self, head: &RequestHead) -> Response {
+        let conversation_id = head.query_param("conversationId").unwrap_or_default();
+        if !conversation_id.is_empty() && !valid_conversation_id(&conversation_id) {
+            return Response::error(400, "invalid_conversation_id");
+        }
+        let after = match head.query_param("after") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<u64>() {
+                Ok(value) => Some(value),
+                Err(_) => return Response::error(400, "invalid_cursor"),
+            },
+            _ => None,
+        };
+        let limit = head
+            .query_param("limit")
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .map(|value| value.clamp(1, 1_000))
+            .unwrap_or(500);
+        let guard = self.lock_state();
+        let mut entries: Vec<&crate::state::TranscriptEntry> = guard
+            .transcript
+            .iter()
+            .filter(|entry| conversation_id.is_empty() || entry.conversation_id == conversation_id)
+            .filter(|entry| after.is_none_or(|cursor| entry.at >= cursor))
+            .collect();
+        let omitted = entries.len().saturating_sub(limit);
+        if omitted > 0 {
+            entries.drain(..omitted);
+        }
+        let cursor = entries
+            .iter()
+            .map(|entry| entry.at)
+            .max()
+            .unwrap_or_default();
+        Response::json(
+            200,
+            json!({
+                "conversationId": conversation_id,
+                "entries": entries,
+                "cursor": cursor,
+                "omitted": omitted,
+                "revision": guard.revision,
+            }),
+        )
     }
 
     fn presence_response(&self) -> Response {
@@ -791,6 +1069,11 @@ impl MarbleServer {
             .map(str::to_string);
         let outcome = {
             let mut guard = self.lock_state();
+            if let Some(offset) = parsed.get("offsetMinutes").and_then(Value::as_i64) {
+                // A surface knows its own timezone, so saving a routine from it
+                // also fixes what `daily:HH:MM` means on this host.
+                guard.routines.set_offset(offset as i32);
+            }
             let outcome = guard.routines.add(title, prompt, schedule, conversation_id);
             if outcome.is_ok() {
                 guard.bump();
@@ -815,6 +1098,32 @@ impl MarbleServer {
                 Response::json(400, json!({"error": "invalid_routine", "message": reason}))
             }
         }
+    }
+
+    /// `POST /api/routines/offset` with `{"offsetMinutes": n}`.
+    fn set_routine_offset(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let Some(offset) = parsed.get("offsetMinutes").and_then(Value::as_i64) else {
+            return Response::error(400, "invalid_offset");
+        };
+        let changed = {
+            let mut guard = self.lock_state();
+            let changed = guard.routines.set_offset(offset as i32);
+            if changed {
+                guard.bump();
+            }
+            changed
+        };
+        if changed {
+            self.save_state();
+        }
+        Response::json(
+            200,
+            json!({"ok": true, "changed": changed, "routines": self.lock_state().routines.document()}),
+        )
     }
 
     /// Admit one routine now, honouring the pause queue like any other message.

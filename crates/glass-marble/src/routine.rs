@@ -69,19 +69,24 @@ pub fn parse_schedule(spec: &str) -> Option<Schedule> {
 }
 
 impl Schedule {
-    /// Next run after `now` (unix milliseconds), strictly in the future.
+    /// Next run after `now` in UTC, strictly in the future.
     pub fn next_after(self, now: u64) -> u64 {
+        self.next_after_offset(now, 0)
+    }
+
+    /// Next run after `now`, with a daily time interpreted in the host's local
+    /// time. `offset_minutes` is minutes east of UTC, the same convention the
+    /// quiet-hours setting uses; `every:` schedules are unaffected.
+    pub fn next_after_offset(self, now: u64, offset_minutes: i32) -> u64 {
         let now_secs = now / 1000;
         match self {
             Self::Every(seconds) => (now_secs + seconds) * 1000,
             Self::Daily(second_of_day) => {
-                let today = now_secs / 86_400 * 86_400 + second_of_day;
-                let next = if today > now_secs {
-                    today
-                } else {
-                    today + 86_400
-                };
-                next * 1000
+                let offset = i64::from(offset_minutes.clamp(-840, 840)) * 60;
+                let local = now_secs as i64 + offset;
+                let today = local.div_euclid(86_400) * 86_400 + second_of_day as i64;
+                let next = if today > local { today } else { today + 86_400 };
+                ((next - offset) * 1000) as u64
             }
         }
     }
@@ -193,6 +198,10 @@ fn missed_occurrences(schedule: Schedule, scheduled: u64, now: u64) -> u64 {
 pub struct RoutineState {
     #[serde(default)]
     pub routines: Vec<Routine>,
+    /// Minutes east of UTC used to interpret `daily:HH:MM`, supplied by the
+    /// surface that saved the routine.
+    #[serde(default)]
+    pub offset_minutes: i32,
 }
 
 impl RoutineState {
@@ -234,7 +243,7 @@ impl RoutineState {
             enabled: true,
             created_at: now,
             last_run_at: 0,
-            next_run_at: parsed.next_after(now),
+            next_run_at: parsed.next_after_offset(now, self.offset_minutes),
             runs: 0,
             last_task_id: String::new(),
             last_status: "scheduled".into(),
@@ -276,7 +285,24 @@ impl RoutineState {
             "paused".to_string()
         };
         if enabled && let Some(schedule) = routine.parsed_schedule() {
-            routine.next_run_at = schedule.next_after(now);
+            routine.next_run_at = schedule.next_after_offset(now, self.offset_minutes);
+        }
+        true
+    }
+
+    /// Set the offset used for `daily:` schedules and recompute every daily
+    /// routine's next run, so changing timezones takes effect immediately.
+    pub fn set_offset(&mut self, offset_minutes: i32) -> bool {
+        let offset = offset_minutes.clamp(-840, 840);
+        if offset == self.offset_minutes {
+            return false;
+        }
+        self.offset_minutes = offset;
+        let now = now_millis();
+        for routine in &mut self.routines {
+            if let Some(schedule @ Schedule::Daily(_)) = routine.parsed_schedule() {
+                routine.next_run_at = schedule.next_after_offset(now, offset);
+            }
         }
         true
     }
@@ -291,7 +317,7 @@ impl RoutineState {
         routine.last_task_id = task_id.to_string();
         routine.last_status = "running".to_string();
         if let Some(schedule) = routine.parsed_schedule() {
-            routine.next_run_at = schedule.next_after(now);
+            routine.next_run_at = schedule.next_after_offset(now, self.offset_minutes);
         }
     }
 
@@ -341,12 +367,12 @@ impl RoutineState {
                 routine.missed_runs = routine.missed_runs.saturating_add(missed);
                 routine.last_missed_at = now;
                 if !routine.catch_up {
-                    routine.next_run_at = schedule.next_after(now);
+                    routine.next_run_at = schedule.next_after_offset(now, self.offset_minutes);
                     routine.last_status = format!("missed {missed}");
                     continue;
                 }
             }
-            routine.next_run_at = schedule.next_after(now);
+            routine.next_run_at = schedule.next_after_offset(now, self.offset_minutes);
             due.push(routine.clone());
         }
         due
@@ -363,6 +389,7 @@ impl RoutineState {
         if let Value::Object(ref mut map) = value {
             map.insert("count".into(), json!(self.routines.len()));
             map.insert("limit".into(), json!(ROUTINE_LIMIT));
+            map.insert("offsetMinutes".into(), json!(self.offset_minutes));
             map.insert(
                 "enabled".into(),
                 json!(
@@ -393,6 +420,46 @@ mod tests {
         assert_eq!(parse_schedule("every:0m"), None);
         assert_eq!(Schedule::Every(900).label(), "every 15m");
         assert_eq!(Schedule::Daily(34_200).label(), "daily at 09:30");
+    }
+
+    #[test]
+    fn daily_schedules_follow_the_supplied_offset() {
+        // 2026-01-01T00:00:00Z
+        let now = 1_767_225_600_000u64;
+        assert_eq!(
+            Schedule::Daily(9 * 3600).next_after_offset(now, 330),
+            now + 3 * 3_600_000 + 30 * 60_000,
+            "09:00 IST is 03:30 UTC"
+        );
+        assert_eq!(
+            Schedule::Daily(9 * 3600).next_after(now),
+            now + 9 * 3_600_000
+        );
+        // A negative offset crosses the previous UTC day instead.
+        assert_eq!(
+            Schedule::Daily(0).next_after_offset(now, -480),
+            now + 8 * 3_600_000,
+            "midnight PST is 08:00 UTC"
+        );
+    }
+
+    #[test]
+    fn changing_the_offset_moves_daily_routines_immediately() {
+        let mut routines = RoutineState::default();
+        let routine = routines
+            .add("Digest", "summarize", "daily:09:00", None)
+            .unwrap();
+        let before = routine.next_run_at;
+        assert!(routines.set_offset(330));
+        assert!(!routines.set_offset(330));
+        let after = routines.get(&routine.id).unwrap().next_run_at;
+        assert_ne!(before, after);
+        assert_eq!(routines.document()["offsetMinutes"], json!(330));
+        // `every:` schedules are unaffected by a timezone.
+        let hourly = routines.add("Hourly", "tidy", "every:1h", None).unwrap();
+        let hourly_next = hourly.next_run_at;
+        routines.set_offset(-480);
+        assert_eq!(routines.get(&hourly.id).unwrap().next_run_at, hourly_next);
     }
 
     #[test]

@@ -103,10 +103,11 @@ pub fn run_tick(
         }
         for routine in due {
             if guard.control.paused {
-                match guard
-                    .control
-                    .enqueue(routine.conversation_id.clone(), routine.prompt.clone())
-                {
+                match guard.control.enqueue_routine(
+                    routine.id.clone(),
+                    routine.conversation_id.clone(),
+                    routine.prompt.clone(),
+                ) {
                     Ok(entry) => {
                         guard.routines.note_run(&routine.id, "", now);
                         guard.routines.note_status(&routine.id, "queued");
@@ -274,6 +275,11 @@ mod tests {
         let guard = state.lock().unwrap();
         assert_eq!(guard.control.queue.len(), 1);
         assert_eq!(guard.control.queue[0].text, "tidy the notes");
+        assert_eq!(
+            guard.control.queue[0].routine_id.as_deref(),
+            Some(routine_id.as_str()),
+            "a surface can tell a queued firing from a queued message"
+        );
         assert_eq!(
             guard.routines.get(&routine_id).unwrap().last_status,
             "queued"

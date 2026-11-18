@@ -178,6 +178,10 @@ Admission is Marble's decision too:
   message you type runs before any routine firing that is waiting, whether the
   scheduler fired it or you ran it by hand. Presence counts both lanes and says
   which one the worker takes next.
+- The control panel's queue lists every waiting turn, tagged `typed` or
+  `routine`, with the reason it has not started: behind how many typed messages,
+  next in the routine lane, or held because admission is paused. A routine held
+  by pause names the routine that fired it, so queued work is never anonymous.
 
 ### Audit ledger
 

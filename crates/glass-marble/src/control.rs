@@ -221,6 +221,10 @@ pub struct QueuedTurn {
     pub text: String,
     #[serde(default)]
     pub at: u64,
+    /// Set when a routine, rather than a person, put this message here, so a
+    /// surface can say which routine is waiting and why.
+    #[serde(default)]
+    pub routine_id: Option<String>,
 }
 
 /// Durable control document: profile, switch, rules, grants, ledger, and queue.
@@ -412,6 +416,25 @@ impl ControlState {
         conversation_id: Option<String>,
         text: impl Into<String>,
     ) -> Result<QueuedTurn, String> {
+        self.enqueue_turn(conversation_id, None, text)
+    }
+
+    /// Hold one routine firing while admission is paused, keeping its routine.
+    pub fn enqueue_routine(
+        &mut self,
+        routine_id: impl Into<String>,
+        conversation_id: Option<String>,
+        text: impl Into<String>,
+    ) -> Result<QueuedTurn, String> {
+        self.enqueue_turn(conversation_id, Some(routine_id.into()), text)
+    }
+
+    fn enqueue_turn(
+        &mut self,
+        conversation_id: Option<String>,
+        routine_id: Option<String>,
+        text: impl Into<String>,
+    ) -> Result<QueuedTurn, String> {
         if self.queue.len() >= QUEUE_LIMIT {
             return Err(format!(
                 "marble holds at most {QUEUE_LIMIT} queued messages"
@@ -422,6 +445,7 @@ impl ControlState {
             conversation_id,
             text: text.into(),
             at: now_millis(),
+            routine_id,
         };
         self.queue.push(entry.clone());
         Ok(entry)

@@ -695,6 +695,23 @@ fn routines_can_be_added_run_paused_and_removed() {
     );
     assert_eq!(command.request.text, "tidy the notes");
 
+    // A paused assistant queues a firing with its routine, so the queue panel
+    // can name the routine and say it is held rather than admit it silently.
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    let (status, body) = server.handle("POST", &format!("/api/routines/{routine_id}/run"), "");
+    assert_eq!(status, 202, "{body}");
+    let control = control_of(&server);
+    assert_eq!(control["queue"][0]["routineId"], json!(routine_id));
+    assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+    assert_eq!(
+        inbox
+            .try_recv()
+            .expect("resuming dispatches the queued firing")
+            .request
+            .text,
+        "tidy the notes"
+    );
+
     assert_eq!(
         server
             .handle(

@@ -1294,9 +1294,11 @@ impl MarbleServer {
         if paused {
             let queued = {
                 let mut guard = self.lock_state();
-                let outcome = guard
-                    .control
-                    .enqueue(routine.conversation_id.clone(), routine.prompt.clone());
+                let outcome = guard.control.enqueue_routine(
+                    routine.id.clone(),
+                    routine.conversation_id.clone(),
+                    routine.prompt.clone(),
+                );
                 if outcome.is_ok() {
                     guard.routines.note_run(&routine.id, "", now_millis());
                     guard.routines.note_status(&routine.id, "queued");

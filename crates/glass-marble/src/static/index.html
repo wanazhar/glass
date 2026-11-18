@@ -185,6 +185,8 @@
       .records .tag.allowed { color: var(--ok); border-color: rgba(95, 214, 162, 0.4); }
       .records .tag.approved { color: var(--accent); border-color: rgba(110, 168, 255, 0.45); }
       .records .tag.denied { color: var(--danger); border-color: rgba(180, 35, 24, 0.4); }
+      .records .tag.routine { color: var(--accent); border-color: rgba(110, 168, 255, 0.45); }
+      .records .tag.typed { color: var(--muted); }
       .records .muted, .rules .muted { color: var(--muted); }
       .records button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
       .empty-row { color: var(--muted); font-size: 12px; }
@@ -315,7 +317,8 @@
         <button class="ghost" id="control-pause" type="button">Pause queue</button>
         <button class="danger" id="control-stop" type="button">Stop everything</button>
       </div>
-      <h3>Queued messages</h3>
+      <h3>Waiting to run</h3>
+      <p class="empty-row" id="control-queue-note" hidden></p>
       <ul class="records" id="control-queue"></ul>
       <h3>Standing grants</h3>
       <ul class="records" id="control-grants"></ul>
@@ -479,6 +482,7 @@
         controlPause: document.getElementById("control-pause"),
         controlStop: document.getElementById("control-stop"),
         controlQueue: document.getElementById("control-queue"),
+        controlQueueNote: document.getElementById("control-queue-note"),
         controlGrants: document.getElementById("control-grants"),
         controlDenied: document.getElementById("control-denied"),
         controlLedger: document.getElementById("control-ledger"),
@@ -689,12 +693,42 @@
         el.controlPause.textContent = control.paused ? "Resume queue" : "Pause queue";
 
         el.controlQueue.textContent = "";
-        const queue = control.queue || [];
-        if (!queue.length) emptyRow(el.controlQueue, "Nothing waiting.");
-        queue.forEach((entry) => {
+        const waiting = presenceState().waiting || {};
+        // Two kinds of work wait here: turns already handed to the worker, and
+        // messages held because admission is paused. Both say whose turn it is
+        // and why it has not started, so a queued routine never looks stuck.
+        const typedAhead = Number(waiting.human || 0);
+        const queuedTurns = ((app.state && app.state.tasks) || [])
+          .filter((task) => task.status === "queued")
+          .map((task) => {
+            const routineId = task.routineId || "";
+            let reason = "waiting for the turn that is running now";
+            if (routineId) {
+              reason = typedAhead > 0
+                ? "behind " + typedAhead + " typed message" + (typedAhead === 1 ? "" : "s")
+                : "next in the routine lane";
+              reason = routineTitle(routineId) + " · " + reason;
+            }
+            return { routineId, text: task.prompt || task.id, meta: reason };
+          });
+        const held = (control.queue || []).map((entry) => ({
+          routineId: entry.routineId || "",
+          text: entry.text,
+          meta: "held while admission is paused" +
+            (entry.conversationId ? " · " + entry.conversationId : " · new conversation"),
+        }));
+        const rows = queuedTurns.concat(held);
+        const note = waiting.note || "";
+        el.controlQueueNote.textContent = note;
+        el.controlQueueNote.hidden = !note;
+        if (!rows.length) {
+          emptyRow(el.controlQueue, control.paused ? "Nothing waiting. Admission is paused." : "Nothing waiting.");
+        }
+        rows.forEach((row) => {
           const item = node("li");
-          item.append(node("span", "grow", entry.text));
-          item.append(node("span", "muted", entry.conversationId || "new conversation"));
+          item.append(node("span", "tag " + (row.routineId ? "routine" : "typed"), row.routineId ? "routine" : "typed"));
+          item.append(node("span", "grow", row.text));
+          item.append(node("span", "muted", row.meta));
           el.controlQueue.append(item);
         });
 
@@ -742,6 +776,12 @@
 
       function routineState() {
         return (app.state && app.state.routines) || { routines: [] };
+      }
+
+      function routineTitle(id) {
+        const routines = routineState().routines || [];
+        const match = routines.find((routine) => routine.id === id);
+        return (match && match.title) || "routine";
       }
 
       function presenceState() {

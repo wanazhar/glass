@@ -5,6 +5,7 @@
 //! and control layer as a typed message, so an unattended run is never a
 //! different permission path.
 
+use crate::notify::QuietHours;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,6 +203,9 @@ pub struct RoutineState {
     /// surface that saved the routine.
     #[serde(default)]
     pub offset_minutes: i32,
+    /// Window in which scheduled work waits for the person to be awake.
+    #[serde(default)]
+    pub quiet_hours: QuietHours,
 }
 
 impl RoutineState {
@@ -305,6 +309,27 @@ impl RoutineState {
             }
         }
         true
+    }
+
+    /// Replace the quiet window; returns whether anything changed.
+    pub fn set_quiet(&mut self, quiet: QuietHours) -> bool {
+        if self.quiet_hours == quiet {
+            return false;
+        }
+        self.quiet_hours = quiet;
+        true
+    }
+
+    /// Whether a schedule firing right now would interrupt the quiet window.
+    ///
+    /// Nothing is advanced while this is true, so a routine keeps its place and
+    /// runs when the window ends; the gap is counted, so catch-up still runs it
+    /// once rather than replaying every occurrence.
+    pub fn quiet_now(&self, now: u64) -> bool {
+        self.quiet_hours.enabled
+            && !self
+                .quiet_hours
+                .allows_minute(self.quiet_hours.local_minute(now))
     }
 
     /// Record that one routine was admitted for a task.
@@ -561,6 +586,31 @@ mod tests {
         assert_eq!(routines.due(now).len(), 1);
         assert!(routines.remove(&routine.id));
         assert!(routines.routines.is_empty());
+    }
+
+    #[test]
+    fn a_quiet_window_holds_a_routine_until_morning() {
+        let mut routines = RoutineState::default();
+        let routine = routines
+            .add("Digest", "summarize", "every:1h", None)
+            .unwrap();
+        assert!(!routines.quiet_now(routine.next_run_at));
+        assert!(routines.set_quiet(QuietHours {
+            enabled: true,
+            start_minute: 22 * 60,
+            end_minute: 7 * 60,
+            offset_minutes: 0,
+        }));
+        assert!(!routines.set_quiet(routines.quiet_hours.clone()));
+        // 23:30 UTC is inside the window; 08:00 is not.
+        let start_of_day = (routine.next_run_at / 86_400_000) * 86_400_000;
+        assert!(routines.quiet_now(start_of_day + 23 * 3_600_000 + 30 * 60_000));
+        assert!(!routines.quiet_now(start_of_day + 12 * 3_600_000));
+        assert_eq!(
+            routines.document()["quietHours"]["enabled"],
+            json!(true),
+            "the window is part of the routine document"
+        );
     }
 
     #[test]

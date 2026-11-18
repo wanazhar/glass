@@ -68,7 +68,14 @@ pub fn run_tick(
     let snapshot = {
         let mut guard = lock(state);
         guard.presence.beat();
-        let due = guard.routines.due(now);
+        // A quiet window belongs to the schedule, not to notifications: a routine
+        // that would run at 03:00 waits, and the gap is counted so catch-up runs
+        // it once when the person is awake instead of replaying every occurrence.
+        let due = if guard.routines.quiet_now(now) {
+            Vec::new()
+        } else {
+            guard.routines.due(now)
+        };
         // The heartbeat tick is where a months-long instance folds its document
         // back inside the retention bounds.
         let pruned = if persist_heartbeat {

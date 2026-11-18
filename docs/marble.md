@@ -45,6 +45,40 @@ it. Add `--write` to install it; without it nothing on disk changes, so the
 definition can be reviewed first. On Linux, `loginctl enable-linger "$USER"`
 keeps it running after you log out.
 
+### Supervision, one instance, and honest health
+
+Marble stays up by itself. The service definition restarts the process, and
+inside it the turn worker supervises the engine: when the `glass-core runtime`
+transport dies, the next turn first replaces the engine in place — same
+workspace, same sessions directory, same negotiated capabilities — and then
+runs. A turn that lost its engine settles `failed` with the reason in the
+transcript rather than looking like it is still working. Presence carries a
+`runtime` block (`health`, `restarts`, `lastRestartAt`, `lastError`), kept after
+a successful restart so a flapping engine is visible rather than forgiven.
+
+`serve` and `restore` both take a lock file (`marble.lock`) in the data
+directory. A second copy is refused with the owning pid instead of silently
+rewriting the first one's document, and a lock left by a process that is gone is
+taken over rather than requiring a manual delete. `restore` therefore cannot
+write underneath a running service.
+
+`GET /healthz` is the one place that answers "is this host actually working":
+version, pid, revision, event sequence, posture, waiting and running turns,
+recovered tasks, the runtime block, the data directory with its document, backup
+count and age, quarantined documents, and `lastPersistError`. It answers `200`
+only when the engine is answering and the last durable write succeeded, and
+`503` otherwise.
+
+The installed service writes `marble.log`, so the installer prints a rotation
+reminder. An always-on assistant writes forever, and an unbounded log is the one
+thing that fills a small host's disk without warning.
+
+`glass-marble doctor` checks the same ground without changing anything: data
+directory writability, the document and its revision, the newest backup's age,
+quarantined documents, whether another instance holds the lock, the engine
+binary on `PATH`, the sessions directory, and whether a token is configured. It
+exits non-zero when a check needs attention, so it is safe to run from a timer.
+
 ### Presence
 
 `GET /api/presence` answers what the assistant is doing: `working`, `waiting`
@@ -304,16 +338,17 @@ recognition rather than falling back to a network service.
 | Route | Method | Behavior |
 | --- | --- | --- |
 | `/` | GET | Product UI |
-| `/healthz` | GET | Liveness, revision, event sequence, posture, presence summary |
+| `/healthz` | GET | Version, revision, posture, waiting and running turns, engine health, document and backup state, last write error; `503` when the engine or the last write is unhealthy |
 | `/api/login` | POST | Exchange the access token for an HTTP-only session cookie |
-| `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications, retention; `?lean=1` omits the transcript |
+| `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications, retention; `?lean=1` omits the transcript; revalidates with `ETag` and `If-None-Match` |
 | `/api/transcript?conversationId=…&after=…` | GET | Bounded history for one conversation, resumable from a cursor |
 | `/api/transcript/search?q=…` | GET | Newest transcript matches across conversations |
 | `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts |
 | `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
-| `/api/turns` | POST | Admit a durable turn, queue it, or apply an explicit memory command |
+| `/api/turns` | POST | Admit a durable turn (`202` accepted, or `202` queued with its place in line while the worker is busy), queue it while paused, or apply an explicit memory command |
 | `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
-| `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task |
+| `/api/turns/retry` | POST | Repeat the newest failed, cancelled, or interrupted turn (`taskId` or `conversationId` to choose one) |
+| `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task, including one a routine fired or a resume dispatched |
 | `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
 | `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue |
 | `/api/control/profile` | POST | Select `observe`, `workspace`, or `unattended` |
@@ -327,6 +362,7 @@ recognition rather than falling back to a network service.
 | `/api/memory/{id}/accept` and `/dismiss` | POST | Decide one suggestion |
 | `/api/routines` | GET/POST | Read routines, or add one (`title`, `prompt`, `schedule`, optional `offsetMinutes`) |
 | `/api/routines/offset` | POST | Set the UTC offset `daily:HH:MM` is interpreted in |
+| `/api/routines/quiet` | POST | Hold scheduled work inside a window (`enabled`, `startMinute`, `endMinute`, `offsetMinutes`) |
 | `/api/routines/{id}/run` | POST | Fire a routine now, queueing it when paused |
 | `/api/routines/{id}/enable` and `/disable` | POST | Pause or resume a routine |
 | `/api/routines/{id}/remove` | POST | Delete a routine |
@@ -347,9 +383,28 @@ never blocks the HTTP surface. Text, reasoning, tool activity, usage, memory
 suggestions, routine firings, and settlement stream over `/api/events`; the
 transcript itself stays authoritative in the product document.
 
-A turn posted while admission is paused is not rejected: it is queued and the
-route answers `202` with `"queued": true` and its position. Approvals fail closed
-when nobody answers within the configured wait.
+One worker runs one turn at a time. A message that arrives while a turn is
+running is not answered with a gateway timeout: the route waits a short bound,
+then answers `202` with `"queued": true`, its `position`, and the `requestId` it
+will carry. The message is already in the worker's channel and is admitted next;
+the task appears in the document when it starts. A turn posted while admission is
+paused is queued the same way, with `"paused": true`. Approvals fail closed when
+nobody answers within the configured wait.
+
+### What a poll costs
+
+A tailnet client polls this surface for months, so the transport is part of the
+product. `/api/state` answers with an `ETag` derived from the document revision
+and the pending-approval count, and `304 Not Modified` when `If-None-Match`
+already matches, so an unchanged refresh costs headers instead of the whole
+document. Non-SSE responses keep the connection alive for up to 32 requests
+before the client reconnects, which removes a handshake from every poll. The
+server accepts at most 64 connections at once and answers `503 busy` beyond
+that instead of growing a thread per client, and `/api/login` throttles a caller
+after five failures in five minutes so a token cannot be guessed at wire speed.
+
+Persisting a change writes the borrowed document directly; the full clone that
+used to happen before each write is gone.
 
 ## Reading history without moving it all
 
@@ -554,4 +609,38 @@ Not covered by those checks: a live provider turn against a real `glass-core`
 binary, an actual APNs delivery (it needs a real key, topic, and device), and
 steering on a real turn (the route and target matching are unit-tested, but the
 local runtime never sees a provider that supports it). The simulator build
-proves the Swift compiles; it does not exercise the app against a host.
+proves the Swift compiles; it does not exercise the app against a host. The
+engine is restarted against the fixture, but a real `glass-core` crash is not
+reproduced here.
+
+## Design note: when one session is not enough
+
+Every turn in this design runs in one `glass-core` session, because that is what
+the host protocol offers today: one runtime process, one mixed-ownership
+session, one turn at a time. That is the right shape for an assistant that is
+mostly idle, and it is why a busy host answers `202 queued` instead of pretending
+to run two things at once. It is the wrong shape for two people asking for
+something at the same time, and it is worth naming the options before building
+one.
+
+*A small session pool.* Two or three runtime processes, each with its own
+workspace and sessions directory, and a work queue that hands a turn to a free
+one. Turns stop waiting behind each other, and a crash takes out one session
+rather than the whole assistant. The cost is real: memory and provider
+connections multiply, the "one conversation, one session" mapping has to become
+explicit, and the control layer, cancel table, and presence document all have to
+be keyed per session. Anything a person sees — approvals, presence, the ledger —
+has to keep saying *which* session it is talking about.
+
+*Human priority instead of parallelism.* Keep one session and make the queue
+honest: typed messages jump ahead of routine firings, a person can preempt a
+routine mid-turn by stopping it, and presence says why the wait is long. This is
+much smaller, keeps one durable history, and covers the case that actually
+happens on a personal host — one person, one assistant, several routines.
+
+The recommendation is to do the second now and treat the first as a product
+decision rather than an optimisation. The queue already records who admitted a
+turn (owner, routine id) and the worker already serializes; a priority field and
+a promotion rule are a contained change. A session pool changes the shape of the
+cancel table, presence, and approvals, and should be designed with the surfaces
+that display them, not added underneath them.

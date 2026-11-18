@@ -13,12 +13,12 @@ use crate::notify::{self, ApnsSettings, Notification};
 use crate::state::{PendingApproval, ProductState};
 use crate::store::StateStore;
 use crate::voice;
-use crate::worker::{TurnCommand, TurnRequest, now_millis};
+use crate::worker::{TurnCommand, TurnQueue, TurnRequest, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -28,8 +28,18 @@ pub const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Largest accepted request head.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 const SESSION_COOKIE: &str = "marble_token";
-const ACCEPT_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long a turn request waits for the worker before it is answered as queued.
+const ADMISSION_WAIT: Duration = Duration::from_secs(2);
 const STREAM_KEEPALIVE: Duration = Duration::from_secs(15);
+/// Socket threads one instance runs at once. Beyond this a connection is told
+/// the host is busy instead of growing an unbounded thread per client.
+const MAX_CONNECTIONS: usize = 64;
+/// Requests one keep-alive connection may serve before it is closed.
+const MAX_REQUESTS_PER_CONNECTION: usize = 32;
+/// Failed logins from one address inside the window before it is throttled.
+const LOGIN_FAILURE_LIMIT: u32 = 5;
+const LOGIN_WINDOW: Duration = Duration::from_secs(300);
+const LOGIN_BLOCK: Duration = Duration::from_secs(60);
 
 /// One HTTP response returned by the router.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +78,18 @@ impl Response {
         self
     }
 
+    /// A validated cache hit: no body, and the tag the client already has.
+    pub fn not_modified(etag: &str) -> Self {
+        Self {
+            status: 304,
+            body: String::new(),
+            headers: vec![
+                ("ETag".into(), etag.to_string()),
+                ("Cache-Control".into(), "no-cache".into()),
+            ],
+        }
+    }
+
     pub fn into_parts(self) -> (u16, String) {
         (self.status, self.body)
     }
@@ -81,10 +103,13 @@ impl Response {
             403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
+            304 => "Not Modified",
             409 => "Conflict",
             413 => "Payload Too Large",
+            429 => "Too Many Requests",
             500 => "Internal Server Error",
             502 => "Bad Gateway",
+            503 => "Service Unavailable",
             504 => "Gateway Timeout",
             _ => "OK",
         }
@@ -278,6 +303,66 @@ pub struct MarbleServerParts {
     /// Corrections for a turn that is already running.
     pub steer_tx: mpsc::Sender<SteerRequest>,
     pub policy: AccessPolicy,
+    /// How many turns are waiting, and which ones may be cancelled.
+    pub queue: TurnQueue,
+}
+
+/// Login attempts per caller, so a token cannot be guessed at wire speed.
+#[derive(Debug, Default)]
+pub struct LoginThrottle {
+    attempts: Mutex<HashMap<String, Attempt>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Attempt {
+    failures: u32,
+    window_start: u64,
+    blocked_until: u64,
+}
+
+impl LoginThrottle {
+    /// Seconds the caller must wait, when it is currently throttled.
+    fn blocked(&self, peer: &str, now: u64) -> Option<u64> {
+        let attempts = self
+            .attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let attempt = attempts.get(peer)?;
+        (attempt.blocked_until > now).then(|| (attempt.blocked_until - now).div_ceil(1000))
+    }
+
+    fn record_failure(&self, peer: &str, now: u64) {
+        let mut attempts = self
+            .attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if attempts.len() > 1_024 {
+            attempts.clear();
+        }
+        let attempt = attempts.entry(peer.to_string()).or_insert(Attempt {
+            failures: 0,
+            window_start: now,
+            blocked_until: 0,
+        });
+        if now.saturating_sub(attempt.window_start) > LOGIN_WINDOW.as_millis() as u64 {
+            attempt.failures = 0;
+            attempt.window_start = now;
+        }
+        attempt.failures = attempt.failures.saturating_add(1);
+        if attempt.failures >= LOGIN_FAILURE_LIMIT {
+            attempt.failures = 0;
+            attempt.window_start = now;
+            attempt.blocked_until = now + LOGIN_BLOCK.as_millis() as u64;
+            tracing::warn!(peer, "too many failed logins; throttling this caller");
+        }
+    }
+
+    fn record_success(&self, peer: &str) {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(peer);
+    }
 }
 
 /// Local server owning product state, events, and explicit host decisions.
@@ -290,7 +375,8 @@ pub struct MarbleServer {
     turn_tx: mpsc::Sender<TurnCommand>,
     steer_tx: mpsc::Sender<SteerRequest>,
     policy: AccessPolicy,
-    cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    queue: TurnQueue,
+    login: LoginThrottle,
 }
 
 impl MarbleServer {
@@ -304,7 +390,8 @@ impl MarbleServer {
             turn_tx: parts.turn_tx,
             steer_tx: parts.steer_tx,
             policy: parts.policy,
-            cancellations: Arc::new(Mutex::new(HashMap::new())),
+            queue: parts.queue,
+            login: LoginThrottle::default(),
         }
     }
 
@@ -329,6 +416,12 @@ impl MarbleServer {
     }
 
     pub fn handle_request(&self, head: &RequestHead, body: &str) -> Response {
+        self.handle_request_from(head, body, "")
+    }
+
+    /// Route one request together with the caller that sent it, so login
+    /// failures can be throttled per address.
+    pub fn handle_request_from(&self, head: &RequestHead, body: &str, peer: &str) -> Response {
         let path = head.path();
         if head.method == "GET" && (path == "/" || path == "/index.html") {
             return Response::html(STATIC_HTML)
@@ -341,33 +434,60 @@ impl MarbleServer {
                 );
         }
         if head.method == "GET" && path == "/healthz" {
-            let (revision, control, presence) = {
+            // Liveness means the pieces Marble depends on are actually working:
+            // an engine that answers, a document that is being written, and a
+            // backup that is not months stale. Reporting `ok` unconditionally is
+            // worse than reporting nothing, because it hides the one failure a
+            // person would want to be told about.
+            let (revision, control, presence, recovered) = {
                 let guard = self.lock_state();
                 (
                     guard.revision,
                     guard.control.clone(),
                     guard.presence.document(&guard),
+                    guard.presence.recovered_tasks,
                 )
             };
+            let runtime = presence.get("runtime").cloned().unwrap_or(Value::Null);
+            let runtime_ok = runtime.get("health").and_then(Value::as_str) == Some("ok");
+            let persist_error = crate::store::last_persist_error();
+            let healthy = runtime_ok && persist_error.is_none();
+            let storage = match self.store.as_deref() {
+                Some(store) => json!({
+                    "path": store.data_dir().map(|dir| dir.display().to_string()),
+                    "document": store.document_exists(),
+                    "backup": store.backup_status(),
+                    "quarantined": store.quarantined_count(),
+                }),
+                None => Value::Null,
+            };
             return Response::json(
-                200,
+                if healthy { 200 } else { 503 },
                 json!({
-                    "ok": true,
+                    "ok": healthy,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "pid": std::process::id(),
                     "revision": revision,
                     "sequence": self.events.sequence(),
                     "authRequired": self.policy.requires_token(),
                     "profile": control.profile,
                     "paused": control.paused,
                     "queued": control.queue.len(),
+                    "waiting": self.queue.waiting(),
+                    "running": self.queue.running().len(),
                     "status": presence["status"],
                     "uptimeSeconds": presence["uptimeSeconds"],
                     "routines": presence["routines"],
                     "memories": presence["memories"],
+                    "recoveredTasks": recovered,
+                    "runtime": runtime,
+                    "storage": storage,
+                    "lastPersistError": persist_error,
                 }),
             );
         }
         if head.method == "POST" && path == "/api/login" {
-            return self.login(body);
+            return self.login(body, peer);
         }
         if !self.policy.authorize(head) {
             return Response::error(401, "unauthorized");
@@ -378,7 +498,7 @@ impl MarbleServer {
         if head.method == "GET" && path == "/api/state" {
             let lean = head.query_param("lean").as_deref() == Some("1")
                 || head.query_param("transcript").as_deref() == Some("0");
-            return self.state_response(lean);
+            return self.state_response(head, lean);
         }
         if head.method == "GET" && path == "/api/transcript/search" {
             return self.search_transcript(head);
@@ -407,6 +527,9 @@ impl MarbleServer {
         }
         if head.method == "POST" && path == "/api/turns/steer" {
             return self.steer_turn(body);
+        }
+        if head.method == "POST" && path == "/api/turns/retry" {
+            return self.retry_turn(body);
         }
         if head.method == "GET" && path == "/api/control" {
             return Response::json(200, self.control_document());
@@ -468,6 +591,9 @@ impl MarbleServer {
         }
         if head.method == "POST" && path == "/api/routines/offset" {
             return self.set_routine_offset(body);
+        }
+        if head.method == "POST" && path == "/api/routines/quiet" {
+            return self.set_routine_quiet(body);
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/routines/")
@@ -576,9 +702,20 @@ impl MarbleServer {
         )
     }
 
-    fn login(&self, body: &str) -> Response {
+    fn login(&self, body: &str, peer: &str) -> Response {
         if !self.policy.requires_token() {
             return Response::json(200, json!({"ok": true, "required": false}));
+        }
+        if let Some(remaining) = self.login.blocked(peer, now_millis()) {
+            return Response::json(
+                429,
+                json!({
+                    "error": "too_many_attempts",
+                    "message": "too many failed logins; wait before trying again",
+                    "retryAfter": remaining,
+                }),
+            )
+            .with_header("Retry-After", remaining.to_string());
         }
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
@@ -588,8 +725,10 @@ impl MarbleServer {
             return Response::error(400, "invalid_token");
         };
         if !self.policy.accepts_token(token) {
+            self.login.record_failure(peer, now_millis());
             return Response::error(401, "unauthorized");
         }
+        self.login.record_success(peer);
         Response::json(200, json!({"ok": true, "required": true})).with_header(
             "Set-Cookie",
             format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"),
@@ -599,7 +738,20 @@ impl MarbleServer {
     /// Product document. `lean` keeps the structure but omits the transcript, so
     /// a polling client can refresh control, presence, and counts without
     /// re-reading months of history over the tailnet.
-    fn state_response(&self, lean: bool) -> Response {
+    fn state_response(&self, head: &RequestHead, lean: bool) -> Response {
+        // A revision is the document's identity: nothing in it changes without a
+        // bump, so an unchanged poll can be answered without encoding a copy.
+        // Pending approvals arrive from the runtime rather than the document, so
+        // their count is part of the identity too.
+        let revision = self.lock_state().revision;
+        let approvals = self.approvals.pending().len();
+        let etag = format!(
+            "\"{revision}-{approvals}{}\"",
+            if lean { "-lean" } else { "" }
+        );
+        if etag_matches(head, &etag) {
+            return Response::not_modified(&etag);
+        }
         let mut guard = self.lock_state();
         guard.approvals = self.approvals.pending();
         let snapshot = guard.clone();
@@ -638,6 +790,8 @@ impl MarbleServer {
             );
         }
         Response::json(200, value)
+            .with_header("ETag", etag)
+            .with_header("Cache-Control", "no-cache")
     }
 
     /// `GET /api/export` — a portable copy of the durable document. With
@@ -1626,6 +1780,63 @@ impl MarbleServer {
         )
     }
 
+    /// `POST /api/routines/quiet` — hold scheduled routines inside a window.
+    ///
+    /// A routine exists to be useful at a time that suits the person, so the
+    /// quiet window belongs to the routine document rather than to notification
+    /// settings: a message that runs at 06:00 is not made acceptable by merely
+    /// not pushing it. A skipped occurrence is counted, so a routine with
+    /// catch-up runs once when the window ends.
+    fn set_routine_quiet(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let quiet = {
+            let guard = self.lock_state();
+            let existing = guard.routines.quiet_hours.clone();
+            let minute = |name: &str, fallback: u16| {
+                parsed
+                    .get(name)
+                    .and_then(Value::as_u64)
+                    .map(|value| (value % 1440) as u16)
+                    .unwrap_or(fallback)
+            };
+            notify::QuietHours {
+                enabled: parsed
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(existing.enabled),
+                start_minute: minute("startMinute", existing.start_minute),
+                end_minute: minute("endMinute", existing.end_minute),
+                offset_minutes: parsed
+                    .get("offsetMinutes")
+                    .and_then(Value::as_i64)
+                    .map(|value| value.clamp(-840, 840) as i32)
+                    .unwrap_or(existing.offset_minutes),
+            }
+        };
+        let changed = {
+            let mut guard = self.lock_state();
+            let changed = guard.routines.set_quiet(quiet);
+            if changed {
+                guard.bump();
+            }
+            changed
+        };
+        if changed {
+            self.save_state();
+        }
+        Response::json(
+            200,
+            json!({
+                "ok": true,
+                "changed": changed,
+                "routines": self.lock_state().routines.document(),
+            }),
+        )
+    }
+
     /// Pause admission and cancel every running task in one deliberate stop.
     fn stop_all(&self) -> Response {
         {
@@ -1637,13 +1848,7 @@ impl MarbleServer {
             guard.bump();
         }
         self.save_state();
-        let flags: Vec<(String, Arc<AtomicBool>)> = self
-            .cancellations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .iter()
-            .map(|(task_id, flag)| (task_id.clone(), Arc::clone(flag)))
-            .collect();
+        let flags = self.queue.running();
         let mut cancelled = Vec::new();
         for (task_id, flag) in flags {
             flag.store(true, Ordering::Relaxed);
@@ -1757,6 +1962,11 @@ impl MarbleServer {
             Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),
             None => {}
         }
+        self.submit_text(conversation_id, text)
+    }
+
+    /// Hold a message while admission is paused, or hand it to the worker.
+    fn submit_text(&self, conversation_id: Option<String>, text: String) -> Response {
         if self.lock_state().control.paused {
             // Paused admission is a queue, not a rejection: the message keeps its
             // place, and resuming dispatches it in arrival order.
@@ -1795,10 +2005,20 @@ impl MarbleServer {
                 }
             };
         }
-        let request = TurnRequest::new(conversation_id, text);
+        self.submit_request(TurnRequest::new(conversation_id, text))
+    }
+
+    /// Hand one message to the worker, answering as soon as it is admitted.
+    ///
+    /// The worker runs one turn at a time. A busy host used to leave the caller
+    /// waiting until a timeout and then answer a gateway error, which was both
+    /// slow and untrue: the message was never lost. Waiting a short bound keeps
+    /// the immediate answer when the worker is free; when it is not, the `202`
+    /// says where the message stands, and it is already in the worker's channel.
+    fn submit_request(&self, request: TurnRequest) -> Response {
         let request_id = request.request_id.clone();
-        let cancel = request.cancel.clone();
         let (accepted_tx, accepted_rx) = mpsc::channel();
+        let position = self.queue.note_enqueued();
         if self
             .turn_tx
             .send(TurnCommand {
@@ -1807,9 +2027,10 @@ impl MarbleServer {
             })
             .is_err()
         {
+            self.queue.note_finished();
             return Response::error(503, "turn_worker_unavailable");
         }
-        let accepted = match accepted_rx.recv_timeout(ACCEPT_TIMEOUT) {
+        let accepted = match accepted_rx.recv_timeout(ADMISSION_WAIT) {
             Ok(Ok(accepted)) => accepted,
             Ok(Err(error)) => {
                 return Response::json(
@@ -1817,21 +2038,99 @@ impl MarbleServer {
                     json!({"error": "turn_failed", "message": error.to_string()}),
                 );
             }
-            Err(_) => return Response::error(504, "turn_accept_timeout"),
+            Err(_) => {
+                self.events.publish(
+                    "",
+                    "",
+                    "queued",
+                    json!({"requestId": request_id, "position": position}),
+                );
+                return Response::json(
+                    202,
+                    json!({
+                        "queued": true,
+                        "accepted": false,
+                        "requestId": request_id,
+                        "position": position,
+                        "message": "the assistant is busy; this message keeps its place and runs next",
+                    }),
+                );
+            }
         };
-        self.cancellations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(accepted.task_id.clone(), cancel);
         Response::json(
             202,
             json!({
                 "accepted": true,
+                "queued": false,
                 "requestId": request_id,
                 "conversationId": accepted.conversation_id,
                 "taskId": accepted.task_id,
+                "position": position,
             }),
         )
+    }
+
+    /// `POST /api/turns/retry` — run the last turn that did not finish.
+    ///
+    /// An interrupted or failed turn is the most likely thing a person wants to
+    /// repeat, and retyping it is a poor way to recover. `taskId` picks one
+    /// explicitly; otherwise the newest failed, cancelled, or interrupted turn
+    /// is used, optionally scoped to `conversationId`.
+    fn retry_turn(&self, body: &str) -> Response {
+        let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let requested_task = parsed
+            .get("taskId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let requested_conversation = parsed
+            .get("conversationId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let retryable = |task: &crate::state::TaskRecord| {
+            matches!(task.status.as_str(), "failed" | "cancelled" | "interrupted")
+        };
+        let task = {
+            let guard = self.lock_state();
+            match requested_task {
+                Some(task_id) => guard
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == task_id && retryable(task))
+                    .cloned(),
+                None => guard
+                    .tasks
+                    .iter()
+                    .rev()
+                    .filter(|task| retryable(task))
+                    .find(|task| requested_conversation.is_none_or(|id| task.conversation_id == id))
+                    .cloned(),
+            }
+        };
+        let Some(task) = task else {
+            return Response::json(
+                409,
+                json!({
+                    "error": "nothing_to_retry",
+                    "message": "no failed, cancelled, or interrupted turn to retry",
+                }),
+            );
+        };
+        if task.prompt.trim().is_empty() {
+            return Response::json(
+                409,
+                json!({ "error": "nothing_to_retry", "message": "that turn has no prompt to repeat" }),
+            );
+        }
+        let retrying = task.id.clone();
+        let mut response = self.submit_text(Some(task.conversation_id), task.prompt);
+        // Name the turn being repeated, so a surface can say what it restarted.
+        if let Ok(mut body) = serde_json::from_str::<Value>(&response.body)
+            && let Value::Object(ref mut map) = body
+        {
+            map.insert("retrying".to_string(), json!(retrying));
+            response.body = body.to_string();
+        }
+        response
     }
 
     /// `POST /api/turns/steer` — correct the turn that is running now.
@@ -1924,21 +2223,44 @@ impl MarbleServer {
         )
     }
 
+    /// `POST /api/tasks/{id}/cancel` — stop one running turn.
+    ///
+    /// The worker owns the cancel table, so every turn it runs is cancellable:
+    /// a typed message, a routine firing on its own clock, and one a resume
+    /// dispatched all answer here. A task that already settled is reported as
+    /// such rather than as unknown.
     fn cancel_task(&self, task_id: &str) -> Response {
-        let flag = self
-            .cancellations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(task_id)
-            .cloned();
-        match flag {
-            Some(flag) => {
-                flag.store(true, Ordering::Relaxed);
-                self.events
-                    .publish("", task_id, "cancel_requested", json!({"taskId": task_id}));
-                self.save_state();
-                Response::json(202, json!({"cancelRequested": true, "taskId": task_id}))
-            }
+        if self.queue.request_cancel(task_id) {
+            self.events
+                .publish("", task_id, "cancel_requested", json!({"taskId": task_id}));
+            self.save_state();
+            return Response::json(202, json!({"cancelRequested": true, "taskId": task_id}));
+        }
+        let known = {
+            let guard = self.lock_state();
+            guard
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .map(|task| task.status.clone())
+        };
+        match known.as_deref() {
+            Some("queued" | "running") => Response::json(
+                409,
+                json!({
+                    "error": "turn_not_running",
+                    "message": "this turn is not on the engine that is running now, so there is nothing to stop",
+                    "taskId": task_id,
+                }),
+            ),
+            Some(status) => Response::json(
+                409,
+                json!({
+                    "error": "turn_settled",
+                    "message": format!("that turn already finished as {status}"),
+                    "taskId": task_id,
+                }),
+            ),
             None => Response::error(404, "unknown_task"),
         }
     }
@@ -1996,12 +2318,15 @@ impl MarbleServer {
         let Some(store) = &self.store else {
             return;
         };
-        let snapshot = self.lock_state().clone();
-        crate::store::persist(store, &snapshot)
+        // Persist straight from the borrowed document: a full clone per mutation
+        // is the most expensive part of a write that is otherwise bounded.
+        let guard = self.lock_state();
+        crate::store::persist(store, &guard)
     }
 
     pub fn serve(self) -> std::io::Result<()> {
         let server = Arc::new(self);
+        let active = Arc::new(AtomicUsize::new(0));
         loop {
             let next = server.listener.incoming().next();
             let stream = match next {
@@ -2009,8 +2334,32 @@ impl MarbleServer {
                 Some(Err(error)) => return Err(error),
                 None => break,
             };
+            if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                active.fetch_sub(1, Ordering::SeqCst);
+                // Refusing here is honest: accepting the socket and queueing it
+                // would only move the queue into the kernel and hold a thread.
+                let mut stream = stream;
+                let _ = write_response(
+                    &mut stream,
+                    Response::json(
+                        503,
+                        json!({
+                            "error": "busy",
+                            "message": format!(
+                                "this instance serves at most {MAX_CONNECTIONS} connections at once"
+                            ),
+                        }),
+                    ),
+                    false,
+                );
+                continue;
+            }
+            let guard = ConnectionGuard {
+                active: Arc::clone(&active),
+            };
             let server = Arc::clone(&server);
             std::thread::spawn(move || {
+                let _guard = guard;
                 let _ = server.serve_connection(stream);
             });
         }
@@ -2019,30 +2368,54 @@ impl MarbleServer {
 
     fn serve_connection(&self, mut stream: TcpStream) -> std::io::Result<()> {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-        let mut reader = BufReader::new(&mut stream);
-        let head_bytes = read_head(&mut reader)?;
-        let head_text = String::from_utf8_lossy(&head_bytes).to_string();
-        let head = parse_head(&head_text);
-        let content_length = head
-            .header("content-length")
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .unwrap_or(0);
-        if content_length > MAX_BODY_BYTES {
-            return write_response(&mut stream, Response::error(413, "body_too_large"));
-        }
-        let mut body = vec![0u8; content_length];
-        if content_length > 0 {
-            reader.read_exact(&mut body)?;
-        }
-        let body = String::from_utf8_lossy(&body).to_string();
-        if head.method == "GET" && head.path() == "/api/events" {
-            if !self.policy.authorize(&head) {
-                return write_response(&mut stream, Response::error(401, "unauthorized"));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+        let peer = stream
+            .peer_addr()
+            .map(|address| address.ip().to_string())
+            .unwrap_or_default();
+        // Read through a clone so the buffer survives across requests while the
+        // responses are written to the original stream.
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut served = 0usize;
+        loop {
+            let head_bytes = read_head(&mut reader)?;
+            if head_bytes.is_empty() {
+                return Ok(());
             }
-            return self.stream_events(&head, &mut stream);
+            served += 1;
+            let head_text = String::from_utf8_lossy(&head_bytes).to_string();
+            let head = parse_head(&head_text);
+            let content_length = head
+                .header("content-length")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if content_length > MAX_BODY_BYTES {
+                return write_response(&mut stream, Response::error(413, "body_too_large"), false);
+            }
+            let mut body = vec![0u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut body)?;
+            }
+            let body = String::from_utf8_lossy(&body).to_string();
+            if head.method == "GET" && head.path() == "/api/events" {
+                if !self.policy.authorize(&head) {
+                    return write_response(
+                        &mut stream,
+                        Response::error(401, "unauthorized"),
+                        false,
+                    );
+                }
+                return self.stream_events(&head, &mut stream);
+            }
+            let response = self.handle_request_from(&head, &body, &peer);
+            let keep_alive = wants_keep_alive(&head)
+                && response.status < 400
+                && served < MAX_REQUESTS_PER_CONNECTION;
+            write_response(&mut stream, response, keep_alive)?;
+            if !keep_alive {
+                return Ok(());
+            }
         }
-        let response = self.handle_request(&head, &body);
-        write_response(&mut stream, response)
     }
 
     /// Server-sent events with bounded replay from the client's own cursor.
@@ -2074,6 +2447,42 @@ impl MarbleServer {
     }
 }
 
+/// One accepted connection, counted until its thread finishes.
+struct ConnectionGuard {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether one request asked for the connection to stay open.
+///
+/// HTTP/1.1 keeps connections alive unless told otherwise; a client that sends
+/// `Connection: close` gets exactly that.
+fn wants_keep_alive(head: &RequestHead) -> bool {
+    match head.header("connection") {
+        Some(value) => value
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case("keep-alive")),
+        None => true,
+    }
+}
+
+/// Whether the caller already holds this exact representation.
+fn etag_matches(head: &RequestHead, etag: &str) -> bool {
+    head.header("if-none-match")
+        .map(|value| {
+            value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*" || candidate == etag || candidate.strip_prefix("W/") == Some(etag)
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn valid_conversation_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -2094,19 +2503,29 @@ fn write_event(stream: &mut TcpStream, event: &TurnEvent) -> std::io::Result<()>
     stream.flush()
 }
 
-fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    response: Response,
+    keep_alive: bool,
+) -> std::io::Result<()> {
     let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        "HTTP/1.1 {} {}\r\nConnection: {}\r\n",
         response.status,
         response.reason(),
-        response.body.len()
+        if keep_alive { "keep-alive" } else { "close" }
     );
+    // A 304 carries no body, so it must not claim a length for one.
+    if response.status != 304 {
+        head.push_str(&format!("Content-Length: {}\r\n", response.body.len()));
+    }
     for (name, value) in &response.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
-    stream.write_all(response.body.as_bytes())?;
+    if response.status != 304 {
+        stream.write_all(response.body.as_bytes())?;
+    }
     stream.flush()
 }
 

@@ -150,6 +150,14 @@ pub struct Conversation {
     product: Option<Arc<Mutex<ProductState>>>,
     /// Corrections arriving while a turn runs, drained between runtime frames.
     steering: Option<mpsc::Receiver<SteerRequest>>,
+    /// How to start a fresh engine after the transport dies. `None` means this
+    /// conversation drives a runtime it cannot replace (one-shot runs, tests).
+    respawn: Option<Box<dyn Fn() -> Command + Send>>,
+    /// Where the engine keeps its durable session journal.
+    storage_dir: PathBuf,
+    /// Set when the engine stopped answering; the next turn restarts it first.
+    transport_failed: bool,
+    restarts: u64,
 }
 
 impl Conversation {
@@ -221,6 +229,10 @@ impl Conversation {
             active_task: String::new(),
             product: None,
             steering: None,
+            respawn: None,
+            storage_dir: storage_dir.to_path_buf(),
+            transport_failed: false,
+            restarts: 0,
         })
     }
 
@@ -260,6 +272,84 @@ impl Conversation {
     pub fn with_steering(mut self, steering: mpsc::Receiver<SteerRequest>) -> Self {
         self.steering = Some(steering);
         self
+    }
+
+    /// Supply the recipe for starting the engine again.
+    ///
+    /// Marble is meant to stay up for months, and the engine is a separate
+    /// process that can crash, be killed, or lose its pipe. Without a recipe the
+    /// only recovery is the service manager restarting the whole assistant,
+    /// which also loses the loaded document; with one, the next turn gets a
+    /// fresh engine and the product never stops serving.
+    pub fn with_respawn(mut self, factory: impl Fn() -> Command + Send + 'static) -> Self {
+        self.respawn = Some(Box::new(factory));
+        self
+    }
+
+    /// Whether the engine transport has failed since the last restart.
+    pub fn transport_failed(&self) -> bool {
+        self.transport_failed
+    }
+
+    /// How many times this conversation restarted its engine.
+    pub fn restarts(&self) -> u64 {
+        self.restarts
+    }
+
+    /// Replace a dead engine before the next turn, and report whether it did.
+    ///
+    /// Replacing is done ahead of a turn rather than in the middle of one: a
+    /// turn that lost its transport is already unanswerable, and pretending
+    /// otherwise would hand a person a reply that was never delivered.
+    pub fn ensure_runtime(&mut self) -> Result<bool, MarbleError> {
+        if !self.transport_failed {
+            return Ok(false);
+        }
+        self.restart()?;
+        Ok(true)
+    }
+
+    /// Spawn a fresh engine, negotiate capabilities, and adopt it.
+    pub fn restart(&mut self) -> Result<(), MarbleError> {
+        let Some(factory) = self.respawn.as_ref() else {
+            return Err(MarbleError::Protocol(
+                "the engine transport failed and this conversation has no way to restart it".into(),
+            ));
+        };
+        let mut command = factory();
+        command.current_dir(&self.cwd);
+        let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
+        let init_id = client
+            .initialize_mixed(&self.storage_dir)
+            .map_err(MarbleError::Io)?;
+        let init = Self::wait_response(&mut client, &self.router, &self.events, &init_id)?;
+        Self::require_capabilities(&init)?;
+        let previous = std::mem::replace(&mut self.client, client);
+        drop(previous);
+        self.set_active("", "");
+        self.transport_failed = false;
+        self.restarts = self.restarts.saturating_add(1);
+        tracing::warn!(
+            restarts = self.restarts,
+            "restarted the glass-core runtime after a transport failure"
+        );
+        Ok(())
+    }
+
+    /// Mark the engine as gone and describe why the turn cannot continue.
+    fn transport_error(&mut self, error: MarbleError) -> MarbleError {
+        self.transport_failed = true;
+        MarbleError::Protocol(format!("the engine stopped answering: {error}"))
+    }
+
+    fn note_io<T>(&mut self, outcome: std::io::Result<T>) -> Result<T, MarbleError> {
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.transport_failed = true;
+                Err(MarbleError::Io(error))
+            }
+        }
     }
 
     /// Select a model for new durable conversations.
@@ -329,20 +419,6 @@ impl Conversation {
         Ok(task_id)
     }
 
-    /// Start one durable task; returns the runtime response id to await.
-    pub fn start(&mut self, task_id: &str) -> Result<String, MarbleError> {
-        self.client
-            .durable_run(Some(task_id))
-            .map_err(MarbleError::Io)
-    }
-
-    /// Request cancellation of one durable task.
-    pub fn abort(&mut self, task_id: &str) -> Result<String, MarbleError> {
-        self.client
-            .durable_abort(task_id, false)
-            .map_err(MarbleError::Io)
-    }
-
     /// Publish one product event for the active conversation and task.
     pub fn publish(&self, kind: &str, data: Value) {
         self.events
@@ -361,6 +437,18 @@ impl Conversation {
         self.client
             .recv_typed_timeout(timeout)
             .map_err(MarbleError::Io)
+    }
+
+    /// Start one durable task; returns the runtime response id to await.
+    pub fn start(&mut self, task_id: &str) -> Result<String, MarbleError> {
+        let outcome = self.client.durable_run(Some(task_id));
+        self.note_io(outcome)
+    }
+
+    /// Request cancellation of one durable task.
+    pub fn abort(&mut self, task_id: &str) -> Result<String, MarbleError> {
+        let outcome = self.client.durable_abort(task_id, false);
+        self.note_io(outcome)
     }
 
     /// Drain events and tool requests until the correlated response arrives.
@@ -393,7 +481,11 @@ impl Conversation {
                     }
                 }
             }
-            let incoming = self.recv_typed_timeout(PUMP_INTERVAL)?;
+            let incoming = self.recv_typed_timeout(PUMP_INTERVAL);
+            let incoming = match incoming {
+                Ok(incoming) => incoming,
+                Err(error) => return Err(self.transport_error(error)),
+            };
             let Some(incoming) = incoming else {
                 if Instant::now() >= deadline {
                     self.publish(

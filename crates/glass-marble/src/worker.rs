@@ -220,6 +220,11 @@ fn run_command(
 ) {
     let TurnCommand { request, accepted } = command;
     let mut sender = Some(accepted);
+    // The surface records a queued placeholder before handing the message over,
+    // so a `202 queued` is visible in the document. The real task replaces it as
+    // soon as the engine issues an id, and it is removed if the turn never
+    // starts at all.
+    let queued_id = format!("queued-{}", request.request_id);
     // A turn cannot start on an engine that stopped answering. Replacing it
     // here, before the durable task exists, means the person gets either a real
     // answer or a clear failure — never a turn that was silently lost.
@@ -247,6 +252,7 @@ fn run_command(
             {
                 let mut guard = lock(state);
                 guard.presence.runtime.note_failure(error.to_string());
+                guard.tasks.retain(|task| task.id != queued_id);
                 guard.bump();
             }
             events.publish(
@@ -303,6 +309,7 @@ fn run_command(
             if !record.task_ids.iter().any(|id| id == task_id) {
                 record.task_ids.push(task_id.to_string());
             }
+            guard.tasks.retain(|task| task.id != queued_id);
             guard.upsert_task(TaskRecord {
                 id: task_id.to_string(),
                 conversation_id: conversation_id.to_string(),
@@ -445,6 +452,17 @@ fn run_command(
         }
         Err(error) => {
             if let Some(sender) = sender.take() {
+                // The turn never started, so the queued placeholder must not
+                // outlive it and look like work that is still waiting.
+                let snapshot = {
+                    let mut guard = lock(state);
+                    guard.tasks.retain(|task| task.id != queued_id);
+                    guard.bump();
+                    guard.clone()
+                };
+                if let Some(store) = store {
+                    store::persist(store, &snapshot);
+                }
                 let _ = sender.send(Err(error));
                 return;
             }

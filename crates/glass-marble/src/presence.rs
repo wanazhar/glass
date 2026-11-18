@@ -218,6 +218,13 @@ impl PresenceState {
             "activePrompt": active.map(|task| task.prompt.clone()),
             "approvalsWaiting": state.approvals.len(),
             "queued": state.control.queue.len(),
+            // Messages already handed to the worker but not admitted yet. They
+            // are durable rows, so this count survives a restart.
+            "waitingTurns": state
+                .tasks
+                .iter()
+                .filter(|task| task.status == "queued")
+                .count(),
             "paused": state.control.paused,
             "profile": state.control.profile.as_str(),
             "routines": state.routines.routines.len(),

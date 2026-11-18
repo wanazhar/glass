@@ -386,10 +386,11 @@ transcript itself stays authoritative in the product document.
 One worker runs one turn at a time. A message that arrives while a turn is
 running is not answered with a gateway timeout: the route waits a short bound,
 then answers `202` with `"queued": true`, its `position`, and the `requestId` it
-will carry. The message is already in the worker's channel and is admitted next;
-the task appears in the document when it starts. A turn posted while admission is
-paused is queued the same way, with `"paused": true`. Approvals fail closed when
-nobody answers within the configured wait.
+will carry. The message is a durable `queued` task in the document while it
+waits — counted as `waitingTurns` in presence — so a restart does not forget it,
+and it is replaced by the real task when the engine admits it. A turn posted
+while admission is paused is queued the same way, with `"paused": true`.
+Approvals fail closed when nobody answers within the configured wait.
 
 ### What a poll costs
 

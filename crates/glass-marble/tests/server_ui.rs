@@ -548,6 +548,11 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
             && task["status"] == serde_json::json!("completed")
         {
             assert_eq!(task["owner"], serde_json::json!("agent"));
+            assert_eq!(
+                state["tasks"].as_array().map(Vec::len),
+                Some(1),
+                "the queued placeholder is replaced by the real task: {body}"
+            );
             assert_eq!(state["transcript"].as_array().map(Vec::len), Some(2));
             assert_eq!(state["transcript"][0]["kind"], serde_json::json!("user"));
             assert_eq!(
@@ -1112,6 +1117,23 @@ fn a_busy_worker_answers_queued_with_its_place_in_line() {
     assert_eq!(status, 202, "{body}");
     let queued: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(queued["position"], json!(2));
+
+    // The queued message is durable while it waits, not only a channel slot.
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    let statuses: Vec<&str> = state["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["status"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(statuses, vec!["queued", "queued"], "{body}");
+    assert_eq!(state["presence"]["waitingTurns"], json!(2));
+    assert_eq!(
+        state["tasks"][0]["prompt"],
+        json!("first"),
+        "the waiting row keeps the message"
+    );
 }
 
 #[test]

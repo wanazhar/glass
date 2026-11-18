@@ -36,7 +36,9 @@ person touches.
   transcript search, conversation rename/delete, JSON export, and one daily
   backup beside the state file.
 - **Durable product state**: a revisioned `product-state.json` written atomically
-  under the data directory, with bounded history.
+  under the data directory, with bounded history; an unreadable document is
+  recovered from the newest daily backup instead of starting empty, and
+  `glass-marble restore` puts a backup or export back in place.
 - **Turn events**: an ordered, bounded buffer with live subscribers, replayed
   from a cursor after a reconnect.
 - **Access control**: loopback by default, an access token off loopback, origin

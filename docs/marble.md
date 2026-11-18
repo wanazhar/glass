@@ -404,6 +404,21 @@ The data directory holds the runtime sessions and the product document
 `GLASS_MARBLE_DATA_DIR`; the default is `$XDG_DATA_HOME/glass-marble`, then
 `~/.local/share/glass-marble`.
 
+The document is replaced atomically, so a crash leaves one complete revision.
+If it is ever unreadable, startup does not treat that as an empty assistant: it
+restores the newest daily backup and moves the bad file aside as
+`product-state.corrupt-<millis>.json`. With no backup available it refuses to
+start and names the file, so a first write cannot erase what is still there.
+Restore deliberately, with the service stopped:
+
+```text
+glass-marble restore                      # newest daily backup
+glass-marble restore --from ~/marble-export.json  # an /api/export download
+```
+
+The document being replaced is copied aside as
+`product-state.replaced-<millis>.json`, so a restore is also reversible.
+
 If you need TLS, put Tailscale in front of the loopback listener instead of
 terminating TLS in Marble:
 
@@ -500,6 +515,14 @@ Serve the assistant:
 glass-marble serve --cwd /path/to/project --port 4783
 ```
 
+Restore after a bad edit, a corrupt document, or a mistaken deletion. Stop the
+service first, because it holds the document in memory and writes it back on the
+next change:
+
+```text
+glass-marble restore --from ~/marble-export.json
+```
+
 ## Verification
 
 Local checks for this product:
@@ -518,7 +541,8 @@ grant lifecycle, token authentication, cross-origin rejection, body limits, even
 replay, the HTTP turn route end to end, presence, explicit memory commands,
 suggestion decisions, routines and their timezone offset, notification and voice
 settings, the local webhook delivery path, lean state, cursor-paged and searched
-history, conversation rename/delete, model selection, and export.
+history, conversation rename/delete, model selection, export, backup recovery,
+and restore from a backup or an export file.
 
 `.github/workflows/glass-marble.yml` runs the same checks on Linux and adds the
 part a Rust-only loop cannot: a signing-free simulator build of the iOS target by

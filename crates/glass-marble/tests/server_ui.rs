@@ -845,6 +845,67 @@ fn resuming_admits_typed_messages_before_held_firings() {
 }
 
 #[test]
+fn a_hand_run_of_a_disabled_routine_overrides_the_pause() {
+    let (turn_tx, inbox) = TurnInbox::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let (_, body) = server.handle(
+        "POST",
+        "/api/routines",
+        r#"{"title":"Sweep","prompt":"sweep the notes","schedule":"every:1h"}"#,
+    );
+    let routine_id = serde_json::from_str::<Value>(&body).unwrap()["routine"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/routines/{routine_id}/disable"), "")
+            .0,
+        200
+    );
+    let (status, body) = server.handle("POST", &format!("/api/routines/{routine_id}/run"), "");
+    assert_eq!(status, 202, "{body}");
+    let value: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["override"], json!(true));
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("overrides the pause"),
+        "{body}"
+    );
+    let request = inbox.try_recv().expect("the hand run is admitted").request;
+    assert_eq!(
+        request.routine_id.as_deref(),
+        Some(routine_id.as_str()),
+        "it is still the routine's firing"
+    );
+    assert!(request.routine_override);
+
+    // A paused queue keeps the override, so resuming still runs what was asked
+    // for even though the routine stays disabled.
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/routines/{routine_id}/run"), "")
+            .0,
+        202
+    );
+    assert_eq!(
+        control_of(&server)["queue"][0]["routineOverride"],
+        json!(true)
+    );
+    assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+    let resumed = inbox
+        .try_recv()
+        .expect("resuming dispatches the held hand run")
+        .request;
+    assert!(resumed.routine_override);
+    assert!(resumed.routine_counted);
+    assert_eq!(resumed.lane(), TurnLane::Routine);
+}
+
+#[test]
 fn notification_and_voice_settings_round_trip() {
     let server = free_server(ProductState::default());
     let (status, body) = server.handle(

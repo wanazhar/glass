@@ -107,6 +107,7 @@ pub fn run_tick(
                     routine.id.clone(),
                     routine.conversation_id.clone(),
                     routine.prompt.clone(),
+                    false,
                 ) {
                     Ok(entry) => {
                         guard.routines.note_run(&routine.id, "", now);

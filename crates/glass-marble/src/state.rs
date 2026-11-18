@@ -9,7 +9,71 @@ use crate::routine::RoutineState;
 use crate::voice::VoiceSettings;
 use crate::worker::now_millis;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// Transcript entries one conversation keeps before its oldest are trimmed.
+pub const TRANSCRIPT_PER_CONVERSATION: usize = 400;
+/// Transcript entries the whole product keeps.
+pub const TRANSCRIPT_LIMIT: usize = 4_000;
+/// Settled tasks the product keeps; unfinished work is never trimmed.
+pub const TASK_LIMIT: usize = 500;
+/// Conversations the product keeps, by most recent activity.
+pub const CONVERSATION_LIMIT: usize = 100;
+
+/// What retention has trimmed, so a long-running instance stays legible.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionState {
+    /// Transcript entries dropped to stay inside the bounds.
+    #[serde(default)]
+    pub trimmed_transcript: u64,
+    /// Settled task records dropped to stay inside the bounds.
+    #[serde(default)]
+    pub trimmed_tasks: u64,
+    /// Conversations dropped once their history was gone.
+    #[serde(default)]
+    pub trimmed_conversations: u64,
+    /// Unix milliseconds of the last trim that removed anything.
+    #[serde(default)]
+    pub last_trim_at: u64,
+}
+
+impl RetentionState {
+    /// Product document: the bounds plus what has been trimmed.
+    pub fn document(&self) -> Value {
+        json!({
+            "limits": {
+                "transcriptPerConversation": TRANSCRIPT_PER_CONVERSATION,
+                "transcript": TRANSCRIPT_LIMIT,
+                "tasks": TASK_LIMIT,
+                "conversations": CONVERSATION_LIMIT,
+            },
+            "trimmedTranscript": self.trimmed_transcript,
+            "trimmedTasks": self.trimmed_tasks,
+            "trimmedConversations": self.trimmed_conversations,
+            "lastTrimAt": self.last_trim_at,
+        })
+    }
+}
+
+/// One trim pass's result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneSummary {
+    pub transcript: usize,
+    pub tasks: usize,
+    pub conversations: usize,
+}
+
+impl PruneSummary {
+    pub fn is_empty(&self) -> bool {
+        self.transcript == 0 && self.tasks == 0 && self.conversations == 0
+    }
+}
+
+/// Whether a task can be trimmed without losing unfinished work.
+fn settled(status: &str) -> bool {
+    matches!(status, "completed" | "cancelled" | "failed" | "interrupted")
+}
 
 /// One durable conversation the local product knows about.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +166,9 @@ pub struct ProductState {
     /// Local-only voice preferences.
     #[serde(default)]
     pub voice: VoiceSettings,
+    /// Bounds the document keeps, and what has been trimmed from it.
+    #[serde(default)]
+    pub retention: RetentionState,
 }
 
 impl ProductState {
@@ -167,6 +234,140 @@ impl ProductState {
             .filter(|entry| entry.conversation_id == conversation_id)
             .cloned()
             .collect()
+    }
+
+    /// Fold the document back inside its retention bounds.
+    ///
+    /// An always-on assistant runs for months, and every turn appends to the
+    /// transcript, adds a task, and touches a conversation. Without a bound the
+    /// durable file grows forever and every state response gets slower. Work
+    /// that has not settled is always kept; only finished history is trimmed,
+    /// newest first, and the counters stay visible in `/api/state`.
+    pub fn prune(&mut self, now: u64) -> PruneSummary {
+        let mut summary = PruneSummary::default();
+
+        // Tasks: keep every unfinished task, plus the newest settled ones.
+        if self.tasks.len() > TASK_LIMIT {
+            let protected = self
+                .tasks
+                .iter()
+                .filter(|task| !settled(&task.status))
+                .count();
+            let room = TASK_LIMIT.saturating_sub(protected);
+            let settled_total = self.tasks.len() - protected;
+            let to_drop = settled_total.saturating_sub(room);
+            if to_drop > 0 {
+                let mut order: Vec<usize> = self
+                    .tasks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, task)| settled(&task.status))
+                    .map(|(index, _)| index)
+                    .collect();
+                order.sort_by_key(|index| self.tasks[*index].at);
+                let mut drop = vec![false; self.tasks.len()];
+                for index in order.into_iter().take(to_drop) {
+                    drop[index] = true;
+                }
+                let before = self.tasks.len();
+                let mut index = 0usize;
+                self.tasks.retain(|_| {
+                    let keep = !drop[index];
+                    index += 1;
+                    keep
+                });
+                summary.tasks = before - self.tasks.len();
+            }
+        }
+
+        // Keep each conversation's task ids pointing at surviving tasks.
+        if summary.tasks > 0 {
+            let known: std::collections::HashSet<&str> =
+                self.tasks.iter().map(|task| task.id.as_str()).collect();
+            for conversation in &mut self.conversations {
+                conversation
+                    .task_ids
+                    .retain(|id| known.contains(id.as_str()));
+            }
+        }
+
+        // Conversations: newest activity wins, but anything still working stays.
+        if self.conversations.len() > CONVERSATION_LIMIT {
+            let mut order: Vec<usize> = (0..self.conversations.len()).collect();
+            order.sort_by_key(|index| std::cmp::Reverse(self.conversations[*index].updated_at));
+            let mut keep: std::collections::HashSet<usize> =
+                order.into_iter().take(CONVERSATION_LIMIT).collect();
+            for (index, conversation) in self.conversations.iter().enumerate() {
+                if self
+                    .tasks
+                    .iter()
+                    .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
+                {
+                    keep.insert(index);
+                }
+            }
+            let dropped: std::collections::HashSet<String> = self
+                .conversations
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !keep.contains(index))
+                .map(|(_, conversation)| conversation.id.clone())
+                .collect();
+            if !dropped.is_empty() {
+                summary.conversations = dropped.len();
+                self.conversations
+                    .retain(|conversation| !dropped.contains(&conversation.id));
+                let before = self.transcript.len();
+                self.transcript
+                    .retain(|entry| !dropped.contains(&entry.conversation_id));
+                summary.transcript += before - self.transcript.len();
+            }
+        }
+
+        // Transcript: bound each conversation, then the document as a whole.
+        if self.transcript.len() > TRANSCRIPT_PER_CONVERSATION {
+            let mut counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            let mut keep = vec![false; self.transcript.len()];
+            for (index, entry) in self.transcript.iter().enumerate().rev() {
+                let count = counts.entry(entry.conversation_id.as_str()).or_default();
+                if *count < TRANSCRIPT_PER_CONVERSATION {
+                    keep[index] = true;
+                    *count += 1;
+                }
+            }
+            let before = self.transcript.len();
+            let mut index = 0usize;
+            self.transcript.retain(|_| {
+                let kept = keep[index];
+                index += 1;
+                kept
+            });
+            summary.transcript += before - self.transcript.len();
+        }
+        if self.transcript.len() > TRANSCRIPT_LIMIT {
+            let excess = self.transcript.len() - TRANSCRIPT_LIMIT;
+            self.transcript.drain(..excess);
+            summary.transcript += excess;
+        }
+
+        if !summary.is_empty() {
+            self.retention.trimmed_transcript = self
+                .retention
+                .trimmed_transcript
+                .saturating_add(summary.transcript as u64);
+            self.retention.trimmed_tasks = self
+                .retention
+                .trimmed_tasks
+                .saturating_add(summary.tasks as u64);
+            self.retention.trimmed_conversations = self
+                .retention
+                .trimmed_conversations
+                .saturating_add(summary.conversations as u64);
+            self.retention.last_trim_at = now;
+            self.bump();
+        }
+        summary
     }
 
     /// Mark turns that were still running when the previous process stopped, so
@@ -236,6 +437,74 @@ mod tests {
         assert!(state.routines.routines.is_empty());
         assert!(!state.voice.enabled);
         assert!(state.devices.is_empty());
+        assert_eq!(state.retention, RetentionState::default());
+    }
+
+    fn settled_task(id: &str, at: u64) -> TaskRecord {
+        TaskRecord {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: String::new(),
+            at,
+            routine_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn pruning_bounds_transcript_tasks_and_conversations() {
+        let mut state = ProductState::default();
+        for index in 0..(TRANSCRIPT_LIMIT + 12) {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: format!("c{}", index % 4),
+                kind: "assistant".into(),
+                text: format!("entry {index}"),
+                task_id: String::new(),
+                at: index as u64,
+            });
+        }
+        for index in 0..(TASK_LIMIT + 7) {
+            state
+                .tasks
+                .push(settled_task(&format!("t{index}"), index as u64));
+        }
+        for index in 0..(CONVERSATION_LIMIT + 5) {
+            let conversation = state.conversation_mut(&format!("old{index}"));
+            conversation.updated_at = index as u64;
+        }
+        let summary = state.prune(9_999);
+        assert!(summary.transcript > 0, "{summary:?}");
+        assert_eq!(summary.tasks, TASK_LIMIT + 7 - TASK_LIMIT);
+        assert!(summary.conversations > 0, "{summary:?}");
+        assert!(state.transcript.len() <= TRANSCRIPT_LIMIT);
+        assert!(state.tasks.len() <= TASK_LIMIT);
+        assert!(state.conversations.len() <= CONVERSATION_LIMIT);
+        assert_eq!(state.retention.last_trim_at, 9_999);
+        assert!(state.retention.trimmed_transcript > 0);
+        assert!(state.prune(10_000).is_empty(), "a second pass is a no-op");
+    }
+
+    #[test]
+    fn pruning_never_drops_unfinished_work() {
+        let mut state = ProductState::default();
+        for index in 0..TASK_LIMIT {
+            state
+                .tasks
+                .push(settled_task(&format!("t{index}"), index as u64));
+        }
+        state.tasks.push(TaskRecord {
+            id: "running".into(),
+            conversation_id: "c1".into(),
+            status: "running".into(),
+            owner: "agent".into(),
+            prompt: "working".into(),
+            at: 0,
+            routine_id: String::new(),
+        });
+        state.prune(1);
+        assert!(state.tasks.iter().any(|task| task.id == "running"));
+        assert!(state.tasks.len() <= TASK_LIMIT);
     }
 
     #[test]

@@ -249,6 +249,12 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     if recovered > 0 {
         tracing::warn!(recovered, "marked interrupted turns from the previous run");
     }
+    // A document written by an older build may already be past the bounds, so
+    // the first thing a restart does is fold it back in.
+    let pruned = loaded.prune(glass_marble::worker::now_millis());
+    if !pruned.is_empty() {
+        tracing::info!(?pruned, "trimmed durable history on startup");
+    }
     let events = EventBus::default();
     let approvals = ApprovalInbox::default();
     let router = ToolRouter::new(cwd)?;

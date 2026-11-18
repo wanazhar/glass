@@ -147,6 +147,7 @@ impl PresenceState {
             "routinesEnabled": state.routines.routines.iter().filter(|routine| routine.enabled).count(),
             "memories": state.memory.facts.len(),
             "notifications": state.notifications.summary(),
+            "retention": state.retention.document(),
         })
     }
 }

@@ -34,7 +34,8 @@ pub use host::{Approval, HostPolicy};
 pub use memory::{MemoryCommand, MemoryFact, MemoryState, MemorySuggestion, parse_command};
 pub use normalize::{InboundMessage, to_turn_input};
 pub use notify::{
-    ApnsSettings, Delivery, DeviceRegistration, NOTIFY_EVENTS, Notification, NotificationSettings,
+    ApnsSettings, Delivery, DeliveryRecord, DeviceRegistration, NOTIFY_EVENTS, Notification,
+    NotificationSettings, QuietHours, recent_deliveries,
 };
 pub use presence::PresenceState;
 pub use routine::{Routine, RoutineState, Schedule, parse_schedule};
@@ -43,7 +44,11 @@ pub use server::{
     AccessPolicy, MarbleServer, MarbleServerParts, RequestHead, Response, STATIC_HTML,
 };
 pub use service::{InstallOutcome, ServicePlatform, ServiceSpec};
-pub use state::{ConversationRecord, PendingApproval, ProductState, TaskRecord, TranscriptEntry};
+pub use state::{
+    CONVERSATION_LIMIT, ConversationRecord, PendingApproval, ProductState, PruneSummary,
+    RetentionState, TASK_LIMIT, TRANSCRIPT_LIMIT, TRANSCRIPT_PER_CONVERSATION, TaskRecord,
+    TranscriptEntry,
+};
 pub use store::{StateStore, default_data_dir, sessions_dir};
 pub use tools::{ToolOutcome, ToolRouter};
 pub use turn::{DEFAULT_TURN_TIMEOUT, MarbleReply, MarbleTurn, TurnOptions, run_turn};

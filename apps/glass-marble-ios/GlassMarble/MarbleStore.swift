@@ -50,6 +50,8 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var liveTools: [LiveTool] = []
     @Published private(set) var activeTaskId: String?
     @Published var errorMessage: String?
+    /// Last accepted Prism change, shown inside the Prism sheet.
+    @Published var prismNotice: String?
     @Published var needsToken = false
 
     private var client: MarbleClient
@@ -107,6 +109,10 @@ final class MarbleStore: ObservableObject {
     var memory: MarbleMemory { state.memoryState }
     var routines: MarbleRoutines { state.routineState }
     var voice: MarbleVoice { state.voiceSettings }
+    var prism: MarblePrism { state.prismState }
+
+    /// The full tool inventory, fetched on demand because it changes slowly.
+    @Published private(set) var toolInventory: MarbleToolInventory = .empty
 
     var statusLabel: String {
         if isWorking { return "working" }
@@ -264,6 +270,61 @@ final class MarbleStore: ObservableObject {
                 taskId: taskId
             )
             errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func addMarble(name: String, role: String, glyph: String, hue: Int, workspace: String) async {
+        do {
+            let draft = MarbleClient.MarbleDraft(
+                name: name,
+                role: role,
+                glyph: glyph,
+                hue: hue,
+                workspace: workspace
+            )
+            _ = try await client.addMarble(draft)
+            errorMessage = nil
+            prismNotice = "\(draft.name) joined the roster."
+        } catch {
+            prismNotice = nil
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func removeMarble(_ marble: MarblePrismMarble) async {
+        do {
+            try await client.removeMarble(id: marble.id)
+            errorMessage = nil
+            prismNotice = "\(marble.name) left the roster. Its conversation stays."
+        } catch {
+            prismNotice = nil
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    /// Fan one prompt out to the whole roster, or to the marbles named.
+    func dispatchSwarm(text: String, marbles: [String] = []) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let reply = try await client.dispatchSwarm(text: trimmed, marbles: marbles)
+            errorMessage = nil
+            prismNotice = (reply.swarm ? "Swarm sent to " : "Sent to ")
+                + reply.names.joined(separator: ", ") + "."
+        } catch {
+            prismNotice = nil
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func loadTools() async {
+        do {
+            toolInventory = try await client.tools()
         } catch {
             errorMessage = error.localizedDescription
         }

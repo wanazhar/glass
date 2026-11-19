@@ -31,6 +31,10 @@ struct TranscriptView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
+                // Cap the measure on iPad and Mac so a reply never becomes a
+                // single 1,000-character line.
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: store.transcript.count) { _, _ in scroll(proxy) }
@@ -202,6 +206,8 @@ struct ComposerBar: View {
         .marbleGlass(cornerRadius: 26)
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
+        .frame(maxWidth: 820)
+        .frame(maxWidth: .infinity)
     }
 
     private var trimmed: String {
@@ -226,7 +232,7 @@ struct ApprovalCard: View {
                 .lineLimit(3)
             HStack(spacing: 8) {
                 decisionButton("Deny", tint: MarblePalette.danger, allow: false, remember: false)
-                decisionButton("Always", tint: MarblePalette.muted, allow: true, remember: true)
+                decisionButton("Always allow", tint: MarblePalette.muted, allow: true, remember: true)
                 decisionButton("Allow", tint: MarblePalette.accent, allow: true, remember: false)
             }
         }

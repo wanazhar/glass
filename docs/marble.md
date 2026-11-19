@@ -124,11 +124,135 @@ The governed host catalog is deliberately small:
 | `glass.workspace.read` | Read a UTF-8 workspace file, bounded and truncated |
 | `glass.workspace.search` | Find text across the workspace with file and line numbers |
 | `glass.workspace.write` | Write a workspace file, creating parents |
+| `glass.crates.list` | Read the workspace's Rust crates, their binaries, and their sibling dependencies |
 
 Every path is resolved against one canonical workspace root. Absolute paths,
 parent traversal, and symlinks that escape the root are refused before any
 filesystem call. Search skips `.git`, `.ssh`, `.env*`, dependencies, and build
 output, so a wide query cannot become a secret-read.
+
+## Prism protocol: several marbles at once
+
+One marble is one assistant, and one engine process runs one turn at a time.
+That is the right shape for a person talking to an assistant, and the wrong one
+for handing the same question to four specialists at once. The **Prism
+protocol** is the second shape: a roster of named marbles, dispatched together
+like a hive leaving the hive.
+
+```text
+GET  /api/prism
+POST /api/prism/marbles                        {"name", "role", "glyph", "hue", "workspace"}
+POST /api/prism/marbles/{id}/update
+POST /api/prism/marbles/{id}/remove
+POST /api/prism/dispatch                       {"text", "marbles": [ids]}
+```
+
+A marble is a name, a role, a shape (`circle`, `hex`, `shield`, `drop`, `star`,
+`square`), a hue, and one optional workspace subdirectory inside the host
+workspace. It keeps its own conversation, so coming back to it tomorrow is
+coming back to the same marble rather than to a new thread. The roster holds at
+most eight, because a roster is meant to be read at a glance rather than paged.
+
+What stays shared is the product document, the event bus, the approval inbox,
+the cancel table, and the control layer. What is per marble is identity,
+conversation, workspace root, and the engine process: Core's runtime protocol
+serialises turns inside one process and tells hosts to use separate processes
+for concurrent agents, so Prism starts an engine per marble on the first
+dispatch and leaves a host that never swarms paying nothing.
+
+Discipline that keeps a swarm legible:
+
+- A marble takes one turn at a time. Asking a busy marble answers `409` with
+  its name instead of parking the work out of sight.
+- A dispatch is refused while admission is paused, because a swarm would
+  otherwise be the one kind of work that ignores the switch.
+- Every dispatched turn lands in the same durable task table and cancel table as
+  a typed message, so `Stop everything` reaches it and presence counts it.
+- A missing workspace blocks that marble with the reason on its roster row; it
+  does not silently fall back to the host root.
+- Removing a marble stops its engine and leaves its conversation in the
+  document: leaving a roster is a change of who works, not permission to delete
+  what was already said.
+
+Each running turn appears in the roster as `working`; a settled one shows
+`done`, a failed one `blocked` with the last error kept on the row. The WebUI
+and the iOS app draw a marble as one shape with two eyes and carry its state in
+motion on that same object, so a roster can be read without reading every name.
+
+## Tooling
+
+A marble reaches for two kinds of tool, and the difference matters to anyone
+deciding how much to trust it.
+
+- **Core-native tools.** Core executes its own coding tools inside the mixed
+  session, under Core's policy. Marble cannot approve them, so it does not
+  claim to. It records every `tool_start` and `tool_end` it observes, keeps the
+  newest 200 names with run and failure counts, and lists them.
+- **Governed integrations.** The `glass.workspace.*` tools are executed by Marble
+  itself, and every call is classified by the control layer before Core sees a
+  result.
+
+`GET /api/tools` reports both owners, the posture in force, and what the engine
+has actually used:
+
+```json
+{
+  "protocol": "mixed",
+  "profile": "workspace",
+  "core": { "nativeTools": true, "observed": [{"name": "read_file", "runs": 3, "errors": 0, "lastAt": 1763500000000}] },
+  "governed": [{"name": "glass.workspace.write", "owner": "marble", "effect": "write"}],
+  "counts": { "governed": 4, "observed": 1 }
+}
+```
+
+The Control panel lists that inventory as it happens, so "Marble can read and
+write files" becomes "Marble wrote `src/main.rs` at 14:02, and you approved it".
+
+### Working across Glass crates
+
+Glass is several crates that only mean something together: Core owns the model
+loop, `glass-runtime-client` speaks its protocol, `glass-browser` owns the
+browser, `glass-dev` owns the development workspace, and `glass-mod-api` is the
+extension boundary. A marble asked to change behaviour sees file paths, and a
+path does not say which crate owns what it found.
+
+So Marble reads the workspace manifests and keeps the map:
+
+```json
+{
+  "workspace": { "version": "0.3.14", "members": 8, "marble": "glass-marble" },
+  "crates": [
+    {
+      "name": "glass-browser",
+      "crateName": "glass_browser",
+      "version": "0.3.14",
+      "path": "crates/glass-browser",
+      "binaries": [{ "name": "glass-browser", "onPath": null }],
+      "dependsOn": ["glass-browser-core", "glass-tui"],
+      "reach": []
+    }
+  ],
+  "edges": [{ "from": "glass-browser", "to": "glass-browser-core" }]
+}
+```
+
+`reach` is the honest part. `library` means this host links the crate, because
+the marble's own manifest says so; `binary` means the crate ships an executable
+that resolves on `PATH` right now. An empty `reach` means Marble has no direct
+route and the map is telling it to go through the crate that does, instead of
+inventing an import.
+
+Three surfaces, one document:
+
+- every conversation is briefed with the crate names and told to ask
+  `glass.crates.list` rather than infer ownership from a path;
+- `glass.crates.list` answers mid-turn, with `name` for one crate and what
+depends on it, so a change can be scoped before it is written;
+- `GET /api/crates` serves the same map to a surface.
+
+The manifests stay the source, so a crate added to the workspace appears without
+a code change, and a member that cannot be read is simply absent rather than
+invented.
 
 ## Marble's control layer
 
@@ -365,7 +489,14 @@ recognition rather than falling back to a network service.
 | `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications, retention; `?lean=1` omits the transcript; revalidates with `ETag` and `If-None-Match` |
 | `/api/transcript?conversationId=…&after=…` | GET | Bounded history for one conversation, resumable from a cursor |
 | `/api/transcript/search?q=…` | GET | Newest transcript matches across conversations |
-| `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts |
+| `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts, and the Prism block |
+| `/api/tools` | GET | Every tool the marble can reach for: Core-native names it has used, plus the governed integrations and the posture in force |
+| `/api/crates` | GET | The workspace's Rust crates with their binaries, sibling dependencies, and how this host can reach each one; `503` when the host was not started in a workspace |
+| `/api/prism` | GET | The Prism roster, its limits, glyphs, swarm count, and per-marble state |
+| `/api/prism/marbles` | POST | Add one named marble (`name`, optional `role`, `glyph`, `hue`, `workspace`) |
+| `/api/prism/marbles/{id}/update` | POST | Change a marble's name, role, shape, hue, or workspace |
+| `/api/prism/marbles/{id}/remove` | POST | Take a marble off the roster; its conversation stays |
+| `/api/prism/dispatch` | POST | Hand one prompt to several marbles at once (`text`, optional `marbles`) |
 | `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
 | `/api/turns` | POST | Admit a durable turn (`202` accepted, or `202` queued with its place in line while the worker is busy), queue it while paused, or apply an explicit memory command |
 | `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
@@ -524,8 +655,12 @@ sheets:
   Run/Pause/Remove, missed-run counts and next run, the model, webhook and APNs
   settings with quiet hours and a test button, registered devices, recent
   deliveries, Export everything, and the read-aloud switch.
-- **Control** — posture, pause and stop, grants, denied paths, the queued
-  messages, and the decision ledger.
+- **Control** — posture, pause and stop, grants, denied paths, the tool
+  inventory, the queued messages, and the decision ledger.
+- **Prism** — the marble roster with a shape, a hue, and a live state per
+  marble, a swarm composer, and an editor for adding a marble. A dispatch,
+  removal, or refusal is reported inside the sheet, where the person acting is
+  looking, rather than only in the header behind it.
 
 Safe-area insets keep the composer above the home indicator, and the layout
 honours reduced-motion preferences.
@@ -546,6 +681,9 @@ The iOS app lives in `apps/glass-marble-ios` and is built with Xcode, not Cargo.
   from the phone exactly as they do in the browser.
 - The control screen (shield in the transcript toolbar) switches posture, pauses
   or resumes admission, stops everything, revokes grants, and reads the ledger.
+- The Prism screen draws each marble as a shape with two eyes, dispatches a
+  swarm, and opens a marble's own conversation. The tooling screen lists what
+  Core has used and what Marble governs.
 - The memory screen (brain) lists, edits, and forgets facts, saves or dismisses
   suggestions, and holds the read-aloud switch. The routines screen (clock) adds,
   runs, pauses, and removes routines, shows the computed next run and missed

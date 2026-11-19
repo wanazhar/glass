@@ -15,7 +15,9 @@ person touches.
   integrations are routed back to Marble over `tool/execute`.
 - **Governed tools**: `glass.workspace.list`, `glass.workspace.read`,
   `glass.workspace.search`, and `glass.workspace.write`, each resolved against
-  one canonical workspace root.
+  one canonical workspace root, plus `glass.crates.list`, which reports the
+  workspace's Rust crates, the binaries they ship, and their sibling
+  dependencies so a change is scoped to the crate that owns it.
 - **Marble's own control layer**: posture (`observe`, `workspace`,
   `unattended`), denied path rules, revocable standing grants, a two-lane
   admission queue with pause and stop, and an audit ledger of every governed

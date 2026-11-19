@@ -162,6 +162,92 @@ struct MarbleControl: Decodable, Equatable {
     }
 }
 
+/// One named marble on the Prism roster.
+///
+/// Identity is a shape, a hue, and two eyes; state lives on the same object so a
+/// roster can be read at a glance instead of by reading every name.
+struct MarblePrismMarble: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var role: String
+    var glyph: String
+    var hue: Int
+    var workspace: String
+    var state: String
+    var conversationId: String
+    var taskId: String
+    var lastAt: UInt64
+    var runs: UInt64
+    var lastError: String
+
+    var isWorking: Bool { state == "working" }
+    var stateLabel: String { state.isEmpty ? "idle" : state }
+}
+
+/// The Prism roster as the host serves it.
+struct MarblePrism: Decodable, Equatable {
+    var marbles: [MarblePrismMarble]
+    var limit: Int?
+    var swarms: UInt64?
+    var dispatched: UInt64?
+    var working: Int?
+    var engine: Bool?
+
+    static let empty = MarblePrism(
+        marbles: [],
+        limit: nil,
+        swarms: nil,
+        dispatched: nil,
+        working: nil,
+        engine: nil
+    )
+
+    var summary: String {
+        let count = marbles.count
+        let swarms = swarms ?? 0
+        return "\(count) / \(limit ?? 8) marbles · \(swarms) swarm\(swarms == 1 ? "" : "s")"
+    }
+}
+
+/// A Core-native tool the host has seen the engine use.
+struct MarbleObservedTool: Decodable, Identifiable, Equatable {
+    var name: String
+    var runs: UInt64
+    var errors: UInt64
+    var lastAt: UInt64
+
+    var id: String { name }
+}
+
+/// A `glass.*` integration Marble classifies and executes itself.
+struct MarbleGovernedTool: Decodable, Identifiable, Equatable {
+    var name: String
+    var description: String
+    var owner: String
+    var effect: String
+
+    var id: String { name }
+}
+
+/// Everything this marble can reach for, split by who owns the call.
+struct MarbleToolInventory: Decodable, Equatable {
+    var profile: String?
+    var core: MarbleCoreTools?
+    var governed: [MarbleGovernedTool]
+
+    static let empty = MarbleToolInventory(profile: nil, core: nil, governed: [])
+
+    var observed: [MarbleObservedTool] {
+        (core?.observed ?? []).sorted { $0.lastAt > $1.lastAt }
+    }
+}
+
+struct MarbleCoreTools: Decodable, Equatable {
+    var nativeTools: Bool
+    var observed: [MarbleObservedTool]
+    var note: String?
+}
+
 struct MarbleState: Decodable, Equatable {
     var revision: Int
     var conversations: [MarbleConversation]
@@ -176,6 +262,7 @@ struct MarbleState: Decodable, Equatable {
     var notifications: MarbleNotificationSettings?
     var devices: [MarbleDevice]?
     var transcriptCount: Int?
+    var prism: MarblePrism?
 
     static let empty = MarbleState(
         revision: 0,
@@ -190,7 +277,8 @@ struct MarbleState: Decodable, Equatable {
         voice: nil,
         notifications: nil,
         devices: nil,
-        transcriptCount: 0
+        transcriptCount: 0,
+        prism: nil
     )
 
     /// Hosts from before the control layer answer without one.
@@ -202,6 +290,7 @@ struct MarbleState: Decodable, Equatable {
     var voiceSettings: MarbleVoice { voice ?? .empty }
     var notificationState: MarbleNotificationSettings { notifications ?? .empty }
     var deviceList: [MarbleDevice] { devices ?? [] }
+    var prismState: MarblePrism { prism ?? .empty }
 
     func conversation(_ id: String?) -> MarbleConversation? {
         guard let id else { return nil }

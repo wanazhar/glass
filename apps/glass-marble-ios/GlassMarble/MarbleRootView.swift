@@ -5,9 +5,6 @@ struct MarbleRootView: View {
     @State private var showsSettings = false
     @State private var showsIntroduction = false
     @State private var greeted = false
-    @State private var showsControl = false
-    @State private var showsMemory = false
-    @State private var showsRoutines = false
 
     var body: some View {
         NavigationSplitView {
@@ -17,7 +14,6 @@ struct MarbleRootView: View {
             MarbleChatView()
         }
         .navigationSplitViewStyle(.balanced)
-        .background(MarbleBackdrop())
         .tint(MarblePalette.accent)
         .task { store.start() }
         .onAppear {
@@ -27,18 +23,6 @@ struct MarbleRootView: View {
         }
         .sheet(isPresented: $showsSettings) {
             ConnectSettingsView()
-                .environmentObject(store)
-        }
-        .sheet(isPresented: $showsControl) {
-            ControlView()
-                .environmentObject(store)
-        }
-        .sheet(isPresented: $showsMemory) {
-            MemoryView()
-                .environmentObject(store)
-        }
-        .sheet(isPresented: $showsRoutines) {
-            RoutinesView()
                 .environmentObject(store)
         }
         .sheet(isPresented: $showsIntroduction) {
@@ -60,27 +44,31 @@ struct MarbleChatView: View {
     @State private var showsControl = false
     @State private var showsMemory = false
     @State private var showsRoutines = false
+    @State private var showsPrism = false
+    @State private var showsTools = false
     @StateObject private var dictation = MarbleDictation()
 
     var body: some View {
-        VStack(spacing: 0) {
-            approvalRail
-            TranscriptView()
-            ComposerBar(
-                draft: $draft,
-                isWorking: store.isWorking,
-                isDictating: dictation.isRecording,
-                onSend: send,
-                onSteer: steer,
-                onStop: { Task { await store.cancelActiveTask() } },
-                onDictate: { dictation.toggle() }
-            )
+        ZStack {
+            MarbleBackdrop()
+            VStack(spacing: 0) {
+                approvalRail
+                TranscriptView()
+                ComposerBar(
+                    draft: $draft,
+                    isWorking: store.isWorking,
+                    isDictating: dictation.isRecording,
+                    onSend: send,
+                    onSteer: steer,
+                    onStop: { Task { await store.cancelActiveTask() } },
+                    onDictate: { dictation.toggle() }
+                )
+            }
         }
         .onChange(of: dictation.transcript) { _, transcript in
             guard !transcript.isEmpty else { return }
             draft = transcript
         }
-        .background(Color.clear)
         .navigationTitle(store.selectedConversation?.title ?? "Marble")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -96,24 +84,56 @@ struct MarbleChatView: View {
                 MarbleIconButton(systemName: "square.and.pencil", label: "New conversation") {
                     store.selectedConversationId = nil
                 }
-                MarbleIconButton(systemName: "shield.lefthalf.filled", label: "Marble control") {
-                    showsControl = true
+                // Five icon buttons crowded most phones; the work that is not
+                // done every turn lives behind one menu instead.
+                Menu {
+                    Button {
+                        showsControl = true
+                    } label: {
+                        Label("Marble control", systemImage: "shield.lefthalf.filled")
+                    }
+                    Button {
+                        showsMemory = true
+                    } label: {
+                        Label("Memory", systemImage: "brain")
+                    }
+                    Button {
+                        showsRoutines = true
+                    } label: {
+                        Label("Routines", systemImage: "clock.arrow.circlepath")
+                    }
+                    Button {
+                        showsPrism = true
+                    } label: {
+                        Label("Prism protocol", systemImage: "hexagon")
+                    }
+                    Button {
+                        showsTools = true
+                    } label: {
+                        Label("Tooling", systemImage: "wrench.and.screwdriver")
+                    }
+                    Button {
+                        Task { await store.toggleVoice() }
+                    } label: {
+                        Label(
+                            store.voice.enabled ? "Stop reading replies" : "Read replies aloud",
+                            systemImage: store.voice.enabled ? "speaker.slash" : "speaker.wave.2"
+                        )
+                    }
+                    Divider()
+                    Button {
+                        showsSettings = true
+                    } label: {
+                        Label("Host settings", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                        .foregroundStyle(MarblePalette.ink)
+                        .marbleGlass(cornerRadius: 19)
                 }
-                MarbleIconButton(systemName: "brain", label: "Memory") {
-                    showsMemory = true
-                }
-                MarbleIconButton(systemName: "clock.arrow.circlepath", label: "Routines") {
-                    showsRoutines = true
-                }
-                MarbleIconButton(
-                    systemName: store.voice.enabled ? "speaker.wave.2.fill" : "speaker.slash",
-                    label: store.voice.enabled ? "Stop reading replies" : "Read replies aloud"
-                ) {
-                    Task { await store.toggleVoice() }
-                }
-                MarbleIconButton(systemName: "antenna.radiowaves.left.and.right", label: "Host settings") {
-                    showsSettings = true
-                }
+                .accessibilityLabel("Tools and settings")
             }
         }
         .sheet(isPresented: $showsSettings) {
@@ -130,6 +150,14 @@ struct MarbleChatView: View {
         }
         .sheet(isPresented: $showsRoutines) {
             RoutinesView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showsPrism) {
+            PrismView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showsTools) {
+            ToolsView()
                 .environmentObject(store)
         }
         .overlay(alignment: .bottom) {

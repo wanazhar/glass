@@ -39,6 +39,18 @@ pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collabor
      retrying the same call. Keep changes legible and reversible, say what you changed, and surface \
      attribution when you act on the human's behalf.";
 
+/// Session instructions for one conversation: the product posture, plus what the
+/// workspace is made of so the marble does not infer crate ownership from a file
+/// path.
+fn session_instructions(cwd: &Path) -> String {
+    let mut instructions = SESSION_INSTRUCTIONS.to_string();
+    if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
+        instructions.push('\n');
+        instructions.push_str(&briefing);
+    }
+    instructions
+}
+
 /// Cancel intent for one running durable task.
 #[derive(Debug, Clone, Copy)]
 pub struct CancelToken<'a> {
@@ -454,7 +466,7 @@ impl Conversation {
     /// Create a durable conversation and return its id.
     pub fn create(&mut self) -> Result<String, MarbleError> {
         let mut options = SessionOptions::mixed(self.cwd.clone(), ToolRouter::catalog());
-        options.instructions = Some(SESSION_INSTRUCTIONS.to_string());
+        options.instructions = Some(session_instructions(&self.cwd));
         options.model = self.model.clone();
         let created = self.client.durable_create(&options);
         let create_id = self.issue(created)?;
@@ -496,6 +508,40 @@ impl Conversation {
         }
         self.set_active(conversation_id, &task_id);
         Ok(task_id)
+    }
+
+    /// Record one Core-native tool call in the product's tool inventory.
+    ///
+    /// Core executes its own coding tools, so they never reach the control
+    /// layer. They do arrive as runtime events, and a person deciding how much
+    /// to trust a marble should be able to see what it actually reached for
+    /// rather than only the integrations that asked permission first.
+    fn note_engine_tool(&self, event: &RuntimeEvent) {
+        let Some(product) = &self.product else {
+            return;
+        };
+        let name = event
+            .data
+            .get("name")
+            .or_else(|| event.data.get("tool"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let Some(name) = name else {
+            return;
+        };
+        let failed = event
+            .data
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        match event.kind.as_str() {
+            "tool_start" => state.note_engine_tool(name),
+            "tool_end" if failed => state.note_engine_tool_error(name),
+            _ => return,
+        }
+        state.bump();
     }
 
     /// Publish one product event for the active conversation and task.
@@ -607,6 +653,7 @@ impl Conversation {
                     )));
                 }
                 Incoming::Event(event) => {
+                    self.note_engine_tool(&event);
                     self.publish(&event.kind, event.data.clone());
                     sink(&event);
                 }

@@ -21,6 +21,11 @@ const RESOURCE: &str = "https://api.openai.com/v1";
 const MAX_AUTH_STORE_BYTES: usize = 1024 * 1024;
 const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
+/// OpenAI's Codex public client, used for the device-code sign-in method.
+const DEVICE_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const DEVICE_VERIFICATION_URI: &str = "https://auth.openai.com/codex/device";
+const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
+const DEVICE_FLOW: &str = "device_code";
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connection {
     pub id: String,
@@ -48,6 +53,10 @@ pub struct Credential {
     pub id_token: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Empty for the browser dynamic-client flow, `device_code` for the
+    /// Codex device flow. The two flows refresh against different endpoints.
+    #[serde(default)]
+    pub flow: String,
 }
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
@@ -244,12 +253,20 @@ pub fn resolve_credential(id: &str) -> Result<String, String> {
             if cred.refresh_token.is_empty() {
                 return Err("ChatGPT session expired. Use /login to reconnect.".into());
             }
-            let token = match token_form(&[
-                ("grant_type", "refresh_token"),
-                ("client_id", &cred.client_id),
-                ("refresh_token", &cred.refresh_token),
-                ("resource", RESOURCE),
-            ]) {
+            let token = match if cred.flow == DEVICE_FLOW {
+                oauth_token_form(&[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", &cred.client_id),
+                    ("refresh_token", &cred.refresh_token),
+                ])
+            } else {
+                token_form(&[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", &cred.client_id),
+                    ("refresh_token", &cred.refresh_token),
+                    ("resource", RESOURCE),
+                ])
+            } {
                 Ok(token) => token,
                 Err(e) if e.starts_with("ChatGPT session expired or was revoked") => {
                     cred.refresh_token.clear();
@@ -268,7 +285,8 @@ pub fn resolve_credential(id: &str) -> Result<String, String> {
                 }
                 cred.email = email;
             }
-            update_tokens(&mut cred, &token, false)?;
+            let plan_required = cred.flow != DEVICE_FLOW;
+            update_tokens_with(&mut cred, &token, false, plan_required)?;
             store.credentials.insert(id.into(), cred.clone());
         }
         Ok(cred.access_token)
@@ -363,6 +381,14 @@ fn token_form(form: &[(&str, &str)]) -> Result<Value, String> {
     Ok(v)
 }
 fn update_tokens(c: &mut Credential, v: &Value, initial: bool) -> Result<(), String> {
+    update_tokens_with(c, v, initial, true)
+}
+fn update_tokens_with(
+    c: &mut Credential,
+    v: &Value,
+    initial: bool,
+    plan_required: bool,
+) -> Result<(), String> {
     c.access_token = v["access_token"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -376,10 +402,10 @@ fn update_tokens(c: &mut Credential, v: &Value, initial: bool) -> Result<(), Str
     }
     if let Some(s) = v["scope"].as_str() {
         c.scopes = s.split_whitespace().map(str::to_string).collect();
-    } else if initial {
+    } else if initial && plan_required {
         return Err("Sign-in did not grant ChatGPT plan permissions".into());
     }
-    if !c.scopes.iter().any(|s| s == "chatgpt.tokens.use.direct") {
+    if plan_required && !c.scopes.iter().any(|s| s == "chatgpt.tokens.use.direct") {
         return Err(
             "ChatGPT plan usage is not enabled. Use /login and approve plan access.".into(),
         );
@@ -704,8 +730,163 @@ impl Attempt {
             email,
             id_token: id.into(),
             scopes: Vec::new(),
+            flow: String::new(),
         };
         update_tokens(&mut cred, &v, true)?;
+        Ok(cred)
+    }
+}
+/// A pending Codex device-code sign-in. The browser never redirects to this
+/// host, so it works from a phone web UI or an SSH session.
+#[derive(Clone)]
+pub struct DeviceAttempt {
+    device_auth_id: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub interval: u64,
+    pub expires_at: u64,
+}
+fn device_json(url: &str, body: Value) -> Result<(u16, Value), String> {
+    let mut response = http()
+        .post(url)
+        .header("Content-Type", "application/json")
+        .send_json(body)
+        .map_err(|_| {
+            "Could not reach ChatGPT sign-in. Check your connection and retry.".to_string()
+        })?;
+    let status = response.status().as_u16();
+    let value = response.body_mut().read_json().unwrap_or(Value::Null);
+    Ok((status, value))
+}
+fn oauth_token_form(form: &[(&str, &str)]) -> Result<Value, String> {
+    let mut response = http()
+        .post(format!("{ISSUER}/oauth/token"))
+        .send_form(form.iter().copied())
+        .map_err(|_| {
+            "Could not reach ChatGPT sign-in. Check your connection and retry.".to_string()
+        })?;
+    let status = response.status().as_u16();
+    let v: Value = response
+        .body_mut()
+        .read_json()
+        .map_err(|_| "Invalid sign-in server response".to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(if matches!(v["error"].as_str(), Some("invalid_grant")) {
+            "ChatGPT session expired or was revoked. Start sign-in again.".into()
+        } else {
+            format!("ChatGPT device sign-in failed (HTTP {status}). Retry.")
+        });
+    }
+    Ok(v)
+}
+fn parse_device_start(v: &Value) -> Result<DeviceAttempt, String> {
+    let device_auth_id = v["device_auth_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Device sign-in returned no identifier")?;
+    let user_code = v["user_code"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Device sign-in returned no code")?;
+    let interval = v["interval"]
+        .as_u64()
+        .or_else(|| v["interval"].as_str().and_then(|s| s.trim().parse().ok()))
+        .unwrap_or(5)
+        .max(1);
+    let expires_at = v["expires_at"].as_u64().unwrap_or_else(|| now() + 900);
+    Ok(DeviceAttempt {
+        device_auth_id: device_auth_id.into(),
+        user_code: user_code.into(),
+        verification_uri: DEVICE_VERIFICATION_URI.into(),
+        interval,
+        expires_at,
+    })
+}
+/// `Some((authorization_code, code_verifier))` only once approved.
+fn device_poll_result(status: u16, v: &Value) -> Result<Option<(String, String)>, String> {
+    if (200..300).contains(&status) {
+        let code = v["authorization_code"].as_str().filter(|s| !s.is_empty());
+        let verifier = v["code_verifier"].as_str().filter(|s| !s.is_empty());
+        return match (code, verifier) {
+            (Some(code), Some(verifier)) => Ok(Some((code.into(), verifier.into()))),
+            _ => Err("Device sign-in returned an incomplete authorization".into()),
+        };
+    }
+    let code = v["error"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| v["error"]["code"].as_str().map(str::to_string));
+    if status == 403
+        || status == 404
+        || matches!(
+            code.as_deref(),
+            Some("deviceauth_authorization_pending" | "authorization_pending" | "slow_down")
+        )
+    {
+        return Ok(None);
+    }
+    Err(format!("Device sign-in failed (HTTP {status}). Retry."))
+}
+impl DeviceAttempt {
+    pub fn start() -> Result<Self, String> {
+        let (status, v) = device_json(
+            &format!("{ISSUER}/api/accounts/deviceauth/usercode"),
+            serde_json::json!({"client_id": DEVICE_CLIENT_ID}),
+        )?;
+        if status == 404 {
+            return Err(
+                "Device sign-in is not enabled for this account. Enable device code authorization in ChatGPT settings, or use browser sign-in."
+                    .into(),
+            );
+        }
+        if !(200..300).contains(&status) {
+            return Err(format!(
+                "Could not start device sign-in (HTTP {status}). Retry."
+            ));
+        }
+        parse_device_start(&v)
+    }
+    /// One poll. `None` means the user has not approved yet.
+    pub fn poll(&self) -> Result<Option<Credential>, String> {
+        if now() >= self.expires_at {
+            return Err("Device sign-in expired. Start again.".into());
+        }
+        let (status, v) = device_json(
+            &format!("{ISSUER}/api/accounts/deviceauth/token"),
+            serde_json::json!({
+                "device_auth_id": self.device_auth_id,
+                "user_code": self.user_code
+            }),
+        )?;
+        match device_poll_result(status, &v)? {
+            None => Ok(None),
+            Some((code, verifier)) => self.finish(&code, &verifier).map(Some),
+        }
+    }
+    fn finish(&self, code: &str, verifier: &str) -> Result<Credential, String> {
+        let v = oauth_token_form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", DEVICE_CLIENT_ID),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", DEVICE_REDIRECT_URI),
+        ])?;
+        let id = v["id_token"]
+            .as_str()
+            .ok_or("Device sign-in returned no identity token")?;
+        let (subject, email) = validate_identity(id, DEVICE_CLIENT_ID, "")?;
+        let mut cred = Credential {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            expires_at: 0,
+            client_id: DEVICE_CLIENT_ID.into(),
+            subject,
+            email,
+            id_token: id.into(),
+            scopes: Vec::new(),
+            flow: DEVICE_FLOW.into(),
+        };
+        update_tokens_with(&mut cred, &v, true, false)?;
         Ok(cred)
     }
 }
@@ -887,6 +1068,7 @@ mod tests {
             email: "test@example.invalid".into(),
             id_token: String::new(),
             scopes: vec!["chatgpt.tokens.use.direct".into()],
+            flow: String::new(),
         }
     }
     fn attempt(existing: bool) -> Attempt {
@@ -933,6 +1115,7 @@ mod tests {
                 email: String::new(),
                 id_token: String::new(),
                 scopes: vec![],
+                flow: String::new(),
             },
         );
         let error = save_to(&path, &store).unwrap_err();
@@ -1077,6 +1260,41 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn device_sign_in_parses_start_and_poll_responses() {
+        let started = parse_device_start(&json!({
+            "device_auth_id": "device-1",
+            "user_code": "ABCD-EFGH",
+            "interval": "5",
+            "expires_at": 4102444800u64
+        }))
+        .unwrap();
+        assert_eq!(started.user_code, "ABCD-EFGH");
+        assert_eq!(started.interval, 5);
+        assert_eq!(started.verification_uri, DEVICE_VERIFICATION_URI);
+        assert!(parse_device_start(&json!({"user_code": "ABCD"})).is_err());
+
+        let approved = device_poll_result(
+            200,
+            &json!({"authorization_code": "code-1", "code_verifier": "verifier-1"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(approved, ("code-1".into(), "verifier-1".into()));
+        assert!(
+            device_poll_result(403, &json!({"error": "deviceauth_authorization_pending"}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            device_poll_result(400, &json!({"error": {"code": "slow_down"}}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(device_poll_result(400, &json!({"error": "invalid_request"})).is_err());
+        assert!(device_poll_result(200, &json!({"authorization_code": "c"})).is_err());
+    }
+
     #[test]
     fn credential_writes_are_private_and_locks_release() {
         let dir = std::env::temp_dir().join(format!("glass-auth-test-{}", random(12).unwrap()));

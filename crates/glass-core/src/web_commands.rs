@@ -175,7 +175,7 @@ pub fn form(name: &str) -> Value {
             ("label", "Connection name", "text"),
             (
                 "secret",
-                "API key or complete OAuth callback URL",
+                "API key, OAuth callback URL, or authorization code",
                 "password",
             ),
         ],
@@ -1439,7 +1439,7 @@ pub(crate) fn login(
                 },
             );
             Ok(
-                json!({"attempt":id,"authorize_url":url,"instructions":"Open the sign-in link. After authorization, paste the complete final localhost callback URL here using action callback. The callback may not load on your phone; its URL is sufficient."}),
+                json!({"attempt":id,"authorize_url":url,"instructions":"Open the sign-in link. ChatGPT returns to a 127.0.0.1 address that only the device running the browser can open. If the page does not load, copy its full address (or just the code value) and submit it here with action callback."}),
             )
         }
         "api" | "callback" => {

@@ -503,6 +503,7 @@ fn setup(
                         email: String::new(),
                         id_token: String::new(),
                         scopes: Vec::new(),
+                        flow: String::new(),
                     },
                 );
             }
@@ -581,6 +582,7 @@ pub fn login(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
                                 email: String::new(),
                                 id_token: String::new(),
                                 scopes: Vec::new(),
+                                flow: String::new(),
                             },
                         );
                         c.credential = Some(id);

@@ -163,7 +163,11 @@ pub fn form(name: &str) -> Value {
             ("text", "Instructions (optional)", "textarea"),
         ],
         "login" => vec![
-            ("action", "list | use | api | oauth | callback", "text"),
+            (
+                "action",
+                "list | use | api | oauth | callback | device | device-poll",
+                "text",
+            ),
             ("args", "Saved connection ID / OAuth attempt ID", "text"),
             (
                 "provider",
@@ -1374,10 +1378,14 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
         _ => Err("Choose status, diff, stage, unstage, or commit".into()),
     }
 }
+enum LoginFlow {
+    Browser(crate::auth::Attempt),
+    Device(crate::auth::DeviceAttempt),
+}
 struct LoginAttempt {
     session: String,
     created: std::time::Instant,
-    attempt: crate::auth::Attempt,
+    flow: LoginFlow,
 }
 fn login_attempts() -> &'static std::sync::Mutex<std::collections::HashMap<String, LoginAttempt>> {
     static STORE: std::sync::OnceLock<
@@ -1435,12 +1443,107 @@ pub(crate) fn login(
                 LoginAttempt {
                     session: owner.to_string(),
                     created: std::time::Instant::now(),
-                    attempt,
+                    flow: LoginFlow::Browser(attempt),
                 },
             );
             Ok(
                 json!({"attempt":id,"authorize_url":url,"instructions":"Open the sign-in link. ChatGPT returns to a 127.0.0.1 address that only the device running the browser can open. If the page does not load, copy its full address (or just the code value) and submit it here with action callback."}),
             )
+        }
+        "device" => {
+            // The browser never contacts this host, so a phone web UI or an
+            // SSH session can finish sign-in inside the app.
+            let device = crate::auth::DeviceAttempt::start()?;
+            let mut attempts = login_attempts().lock().map_err(|_| "Sign-in unavailable")?;
+            attempts.retain(|_, v| v.created.elapsed().as_secs() < 600);
+            if attempts.len() >= 8 {
+                return Err("Too many sign-in attempts; wait ten minutes".into());
+            }
+            let id = crate::auth::random(24)?;
+            let payload = json!({
+                "attempt": id,
+                "device": {
+                    "user_code": device.user_code,
+                    "verification_uri": device.verification_uri,
+                    "interval": device.interval,
+                    "expires_in": device.expires_at.saturating_sub(crate::auth::now()),
+                },
+                "instructions": "Open the verification link on any device, enter the code, and approve ChatGPT access. This page finishes sign-in automatically."
+            });
+            attempts.insert(
+                id,
+                LoginAttempt {
+                    session: owner.to_string(),
+                    created: std::time::Instant::now(),
+                    flow: LoginFlow::Device(device),
+                },
+            );
+            Ok(payload)
+        }
+        "device-poll" => {
+            let attempt_id = label(v, "args")?;
+            let device = {
+                let attempts = login_attempts().lock().map_err(|_| "Sign-in unavailable")?;
+                let a = attempts
+                    .get(&attempt_id)
+                    .ok_or("Sign-in attempt missing or expired")?;
+                if a.session != owner || a.created.elapsed().as_secs() >= 600 {
+                    return Err("Sign-in attempt does not belong to this session or expired".into());
+                }
+                match &a.flow {
+                    LoginFlow::Device(device) => device.clone(),
+                    LoginFlow::Browser(_) => {
+                        return Err("This sign-in is not a device attempt".into());
+                    }
+                }
+            };
+            let credential = match device.poll() {
+                Ok(Some(credential)) => credential,
+                Ok(None) => return Ok(json!({"status":"pending"})),
+                Err(error) => {
+                    if let Ok(mut attempts) = login_attempts().lock() {
+                        attempts.remove(&attempt_id);
+                    }
+                    return Err(error);
+                }
+            };
+            if v["confirmed"] != true {
+                return Err("Confirm saving this connection on the host".into());
+            }
+            let model = label(v, "model")?;
+            if model.len() > 256 || model.chars().any(char::is_control) {
+                return Err("Enter a model ID up to 256 bytes".into());
+            }
+            if let Ok(mut attempts) = login_attempts().lock() {
+                attempts.remove(&attempt_id);
+            }
+            let id = crate::auth::random(16)?;
+            // Device-code tokens are Codex OAuth tokens: use the ChatGPT
+            // backend the provider adapter adds account headers for.
+            let provider = "openai-responses".to_string();
+            let endpoint = "https://chatgpt.com/backend-api/codex".to_string();
+            let name = label(v, "label")?;
+            let connection = crate::auth::Connection {
+                id: id.clone(),
+                label: if name.is_empty() {
+                    format!("ChatGPT · {}", credential.email)
+                } else {
+                    name
+                },
+                provider,
+                base_url: endpoint,
+                model,
+                api_key_env: None,
+                credential: Some(id.clone()),
+            };
+            crate::auth::edit(|store| {
+                store.credentials.insert(id.clone(), credential);
+                store.connections.push(connection.clone());
+                store.active = Some(id.clone());
+                Ok(())
+            })?;
+            crate::auth::configure(cfg, &connection);
+            Ok(json!({"connected":connection.label,"model":connection.model,"status":"connected"}))
         }
         "api" | "callback" => {
             let requested_model = label(v, "model")?;
@@ -1467,7 +1570,11 @@ pub(crate) fn login(
                             "Sign-in attempt does not belong to this session or expired".into()
                         );
                     }
-                    attempts.remove(&attempt_id).unwrap().attempt
+                    let flow = attempts.remove(&attempt_id).unwrap().flow;
+                    let LoginFlow::Browser(attempt) = flow else {
+                        return Err("This sign-in is not a browser attempt".into());
+                    };
+                    attempt
                 };
                 (
                     "openai-responses".into(),
@@ -1497,6 +1604,7 @@ pub(crate) fn login(
                     email: String::new(),
                     id_token: String::new(),
                     scopes: Vec::new(),
+                    flow: String::new(),
                 };
                 (provider, endpoint, credential)
             };
@@ -1527,7 +1635,7 @@ pub(crate) fn login(
             crate::auth::configure(cfg, &connection);
             Ok(json!({"connected":connection.label,"model":connection.model}))
         }
-        _ => Err("Choose list, use, api, oauth, or callback".into()),
+        _ => Err("Choose list, use, api, oauth, callback, device, or device-poll".into()),
     }
 }
 

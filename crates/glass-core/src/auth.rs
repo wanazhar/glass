@@ -596,8 +596,15 @@ impl Attempt {
         let url =
             url::Url::parse(value).map_err(|_| "Paste the complete callback URL".to_string())?;
         let expected = url::Url::parse(&self.redirect).map_err(|e| e.to_string())?;
+        // Accept both 127.0.0.1 and localhost as equivalent loopback addresses.
+        let url_host = url.host_str().map(|h| {
+            if h == "localhost" { "127.0.0.1" } else { h }
+        });
+        let expected_host = expected.host_str().map(|h| {
+            if h == "localhost" { "127.0.0.1" } else { h }
+        });
         if url.scheme() != expected.scheme()
-            || url.host_str() != expected.host_str()
+            || url_host != expected_host
             || url.port() != expected.port()
             || url.path() != expected.path()
         {
@@ -904,7 +911,6 @@ mod tests {
         );
         for bad in [
             valid.replace("test-state", "wrong"),
-            valid.replace("127.0.0.1", "localhost"),
             valid.replace("1455", "1234"),
             valid.replace("/auth/callback", "/callback"),
             valid.replace("&client_id=oaiapp_test", ""),
@@ -913,6 +919,11 @@ mod tests {
         ] {
             assert!(a.callback(&bad).is_err(), "{bad}");
         }
+        // localhost should now be accepted as equivalent to 127.0.0.1
+        assert_eq!(
+            a.callback(&valid.replace("127.0.0.1", "localhost")).unwrap(),
+            ("c".into(), "oaiapp_test".into())
+        );
         let a = attempt(true);
         assert!(
             a.callback(&valid.replace("oaiapp_test", "oaiapp_other"))

@@ -89,10 +89,51 @@ summarised in `/healthz`, so both surfaces and any script agree.
 
 ### Crash recovery
 
-A restart must not leave a phantom turn behind. On startup, every task still
-marked `running` is marked `interrupted`, a system transcript entry records what
-happened, the routine that owned it is marked `interrupted`, and presence reports
-`recoveredTasks`. Send the message again to continue.
+Durability is the product, not a feature on top of it. Three layers make a kill
+mid-turn survivable, and each one answers a different question:
+
+- **Core's session journal** is what makes a conversation resumable. Marble does
+  not copy it. Each engine keeps its journal under the data directory
+  (`sessions/`, and `sessions/prism/<marble>/` for a marble's own engine), so a
+  conversation survives a restart of Marble and of Core with its context intact.
+- **The live journal** is what keeps the reply being written. `product-state.json`
+  only learns about a reply when the turn settles, so a crash in between used to
+  lose every word a person had already watched arrive. Each running turn keeps a
+  small record under `live/`, rewritten at most every 250 ms with who is running
+  it, for which conversation, and the text so far. On startup each record is
+  folded back in: the partial reply is appended to its conversation, the task is
+  marked `interrupted`, and a system entry says the host restarted mid-turn and
+  how far the reply got. The record is then removed, so a recovery can never
+  replay as a second transcript entry. An unreadable record is kept aside as
+  `*.corrupt-<ms>` instead of being dropped.
+- **The document** records the outcome. On startup, every task still marked
+  `running` or `queued` is marked `interrupted`, a system transcript entry
+  records what happened, the routine that owned it is marked `interrupted`, and
+  presence reports `recoveredTasks`. Send the message again or retry to continue.
+
+The record is also the intent: a turn that was admitted and never wrote a word
+still leaves a visible interrupted task instead of disappearing. The same is true
+of a **Prism** marble — one caught mid-dispatch restarts `blocked`, keeps its
+conversation, says why on its roster row, and is dispatchable again instead of
+sitting `working` forever behind a refused dispatch.
+
+Writes are durable past the process: the document and the live records are
+written to a temporary file, `fsync`ed, renamed over the old bytes, and the
+parent directory is synced. That is the difference between surviving `kill -9`
+and surviving a power loss.
+
+### Switching surface
+
+A chat belongs to the host, not to the app that opened it. The web UI and the
+iOS app read the same document, page the same transcript, and post to the same
+`POST /api/turns`, so opening either one lands on the conversation list the other
+already has, with the same titles, tasks, and history.
+
+A marble's conversation is answered by the engine that created it. Posting a
+message into one from a chat surface routes it to that marble's engine rather
+than to the chat engine, which cannot see that session: the same conversation
+continues, from the roster, the phone, or the browser, and it runs beside the
+chat engine instead of waiting behind it.
 
 ### Retention
 
@@ -173,6 +214,11 @@ Discipline that keeps a swarm legible:
 - Removing a marble stops its engine and leaves its conversation in the
   document: leaving a roster is a change of who works, not permission to delete
   what was already said.
+- A marble's conversation is continuable from any surface: a typed message for
+  it is routed to that marble's engine, and a held-then-resumed message goes the
+  same way.
+- A restart does not strand a working marble: on startup it becomes `blocked`
+  with the reason, keeps its conversation, and can be dispatched again.
 
 Each running turn appears in the roster as `working`; a settled one shows
 `done`, a failed one `blocked` with the last error kept on the row. The WebUI
@@ -563,7 +609,9 @@ that instead of growing a thread per client, and `/api/login` throttles a caller
 after five failures in five minutes so a token cannot be guessed at wire speed.
 
 Persisting a change writes the borrowed document directly; the full clone that
-used to happen before each write is gone.
+used to happen before each write is gone. A lean poll also drops the transcript
+before cloning the document, so the common refresh copies control, presence, and
+counts rather than thousands of transcript entries it is about to omit.
 
 ## Reading history without moving it all
 

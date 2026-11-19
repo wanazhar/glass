@@ -3,6 +3,7 @@
 use crate::{
     MarbleError,
     conversation::{CancelToken, Conversation},
+    live::LiveTurn,
 };
 use glass_runtime_client::TurnInput;
 use serde_json::Value;
@@ -55,6 +56,9 @@ pub struct TurnOptions<'a> {
     pub timeout: Duration,
     /// Called once the durable task id exists, before the model runs.
     pub on_accepted: Option<AcceptedHook<'a>>,
+    /// Where to journal the turn while it runs, so a crash keeps the partial
+    /// reply instead of losing everything written since admission.
+    pub live: Option<&'a mut LiveTurn>,
 }
 
 impl<'a> Default for TurnOptions<'a> {
@@ -63,6 +67,7 @@ impl<'a> Default for TurnOptions<'a> {
             cancel: None,
             timeout: DEFAULT_TURN_TIMEOUT,
             on_accepted: None,
+            live: None,
         }
     }
 }
@@ -86,7 +91,19 @@ pub fn run_turn(
     if let Some(on_accepted) = options.on_accepted {
         on_accepted(&conversation_id, &task_id);
     }
-    let run_id = conversation.start(&task_id)?;
+    let mut live = options.live;
+    if let Some(turn) = live.as_deref_mut() {
+        turn.note_task(&conversation_id, &task_id);
+    }
+    let run_id = match conversation.start(&task_id) {
+        Ok(run_id) => run_id,
+        Err(error) => {
+            if let Some(turn) = live.as_deref_mut() {
+                turn.finish();
+            }
+            return Err(error);
+        }
+    };
     let deadline = Instant::now() + options.timeout;
     let mut text = String::new();
     let mut reasoning = String::new();
@@ -102,19 +119,33 @@ pub fn run_turn(
         "text" => {
             if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
                 text.push_str(delta);
+                if let Some(turn) = live.as_deref_mut() {
+                    turn.progress(&text, &reasoning);
+                }
             }
         }
         "reasoning" => {
             if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
                 reasoning.push_str(delta);
+                if let Some(turn) = live.as_deref_mut() {
+                    turn.progress(&text, &reasoning);
+                }
             }
         }
         "usage" => usage = Some(event.data.clone()),
         _ => {}
     });
     if let Err(error) = outcome {
+        if let Some(turn) = live.as_deref_mut() {
+            turn.finish();
+        }
         conversation.publish("error", serde_json::json!({ "message": error.to_string() }));
         return Err(error);
+    }
+    // The turn settled, so the journal entry has nothing left to recover; the
+    // product document records the outcome instead.
+    if let Some(turn) = live {
+        turn.finish();
     }
     let cancelled = options
         .cancel

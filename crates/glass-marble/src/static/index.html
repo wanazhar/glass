@@ -1680,6 +1680,15 @@
             await refresh();
             return;
           }
+          // A marble's conversation is answered by that marble's own engine, so
+          // the reply arrives as events and the next state poll carries the task.
+          if (accepted.marbleId) {
+            app.outbox.pop();
+            app.conversationId = accepted.conversationId || app.conversationId;
+            setStatus((accepted.marbleName || "the marble") + " is answering", "busy");
+            await refresh();
+            return;
+          }
           app.conversationId = accepted.conversationId || app.conversationId;
           app.outbox[app.outbox.length - 1].taskId = accepted.taskId;
           app.live.taskId = accepted.taskId;

@@ -1,7 +1,7 @@
 use glass_marble::{
-    AccessPolicy, ApprovalInbox, CancelRegistry, Conversation, EventBus, HostPolicy, MarbleServer,
-    MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest, TaskRecord,
-    ToolRouter, TranscriptEntry, TurnInbox, TurnLane, TurnSender, spawn_turn_worker,
+    AccessPolicy, ApprovalInbox, CancelRegistry, Conversation, EventBus, HostPolicy, LiveStore,
+    MarbleServer, MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest,
+    TaskRecord, ToolRouter, TranscriptEntry, TurnInbox, TurnLane, TurnSender, spawn_turn_worker,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -542,6 +542,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         conversation,
         Arc::clone(&state),
         None,
+        LiveStore::in_data_dir(&root),
         events.clone(),
         Duration::from_secs(60),
         CancelRegistry::default(),

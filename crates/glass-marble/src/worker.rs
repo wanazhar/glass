@@ -12,6 +12,7 @@
 //! when a turn lands or fails.
 
 use crate::events::EventBus;
+use crate::live::LiveStore;
 use crate::memory;
 use crate::notify::{self, Notification};
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
@@ -379,6 +380,7 @@ pub fn spawn_turn_worker(
     mut conversation: Conversation,
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
+    live: LiveStore,
     events: EventBus,
     timeout: Duration,
     cancels: CancelRegistry,
@@ -393,6 +395,7 @@ pub fn spawn_turn_worker(
                     &mut conversation,
                     &state,
                     store.as_deref(),
+                    &live,
                     &events,
                     timeout,
                     &cancels,
@@ -423,11 +426,13 @@ fn firing_still_wanted(
         .is_some_and(|routine| routine.enabled || override_pause)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_command(
     command: TurnCommand,
     conversation: &mut Conversation,
     state: &Arc<Mutex<ProductState>>,
     store: Option<&StateStore>,
+    live: &LiveStore,
     events: &EventBus,
     timeout: Duration,
     cancels: &CancelRegistry,
@@ -509,6 +514,15 @@ fn run_command(
         }
     }
     let prompt = request.text.clone();
+    // Journal the turn while it runs: the durable document only learns about the
+    // reply when the turn settles, so a crash in between used to lose every word
+    // a person had already watched arrive.
+    let mut live_turn = live.begin(
+        &prompt,
+        "Marble",
+        request.conversation_id.as_deref().unwrap_or_default(),
+        &request.request_id,
+    );
     // A model chosen from a surface applies to conversations created from now
     // on; Core keeps an existing session on the model it started with.
     let model = {
@@ -596,6 +610,7 @@ fn run_command(
             cancel: Some(request.cancel.as_ref()),
             timeout,
             on_accepted: Some(&mut on_accepted),
+            live: live_turn.as_mut(),
         },
     );
     match result {

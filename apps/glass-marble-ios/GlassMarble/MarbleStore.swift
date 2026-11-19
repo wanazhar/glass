@@ -249,7 +249,12 @@ final class MarbleStore: ObservableObject {
                 conversationId: selectedConversationId
             )
             selectedConversationId = accepted.conversationId
-            activeTaskId = accepted.taskId
+            // A marble answers in its own engine and reports its task through the
+            // next state poll, so an empty id must not look like a live turn.
+            activeTaskId = accepted.taskId.isEmpty ? nil : accepted.taskId
+            if let marble = accepted.marbleName {
+                prismNotice = "\(marble) is answering in its own conversation."
+            }
             liveText = ""
             liveReasoning = ""
             liveTools = []

@@ -18,6 +18,7 @@
 //! see, so presence never claims two things are happening in one place.
 
 use crate::events::EventBus;
+use crate::live::LiveStore;
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::tools::ToolRouter;
@@ -120,6 +121,47 @@ impl PrismState {
 
     pub fn find_mut(&mut self, id: &str) -> Option<&mut PrismMarble> {
         self.marbles.iter_mut().find(|marble| marble.id == id)
+    }
+
+    /// The marble that keeps a conversation, if the roster owns it.
+    ///
+    /// This is what lets any surface continue a marble's chat: the engine that
+    /// created a session is the only one that can resume it, so a message is
+    /// routed to the owner rather than submitted to whichever engine happens to
+    /// be serving the composer.
+    pub fn owner_of(&self, conversation_id: &str) -> Option<&PrismMarble> {
+        if conversation_id.is_empty() {
+            return None;
+        }
+        self.marbles
+            .iter()
+            .find(|marble| marble.conversation_id == conversation_id)
+    }
+
+    /// Clear turns a previous process left looking busy.
+    ///
+    /// A dispatched marble is marked `working` before its engine starts, and the
+    /// document is durable, so a crash mid-swarm used to leave that marble
+    /// `working` forever — every later dispatch refused with "already working"
+    /// and no way to clear it from a surface. On start each one becomes blocked
+    /// with the reason, keeps its conversation, and is dispatchable again.
+    pub fn recover_interrupted(&mut self) -> usize {
+        let mut recovered = 0usize;
+        for marble in &mut self.marbles {
+            if !marble.is_working() {
+                continue;
+            }
+            marble.state = "blocked".to_string();
+            marble.task_id.clear();
+            marble.last_error = format!(
+                "{} stopped when the host restarted. Its conversation is kept; dispatch again to \
+                 continue.",
+                marble.name
+            );
+            marble.last_at = now_millis();
+            recovered += 1;
+        }
+        recovered
     }
 
     /// Add one marble, refusing anything a roster cannot show legibly.
@@ -467,6 +509,8 @@ pub struct PrismPoolParts {
     pub sessions: PathBuf,
     pub state: Arc<Mutex<ProductState>>,
     pub store: Option<Arc<StateStore>>,
+    /// In-flight journal, so a swarm that dies mid-turn keeps its partial reply.
+    pub live: LiveStore,
     pub events: EventBus,
     /// Shared with the turn worker, so one stop cancels a swarm too.
     pub cancels: CancelRegistry,
@@ -481,6 +525,7 @@ pub struct PrismPool {
     sessions: PathBuf,
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
+    live: LiveStore,
     events: EventBus,
     cancels: CancelRegistry,
     approvals: ApprovalInbox,
@@ -508,6 +553,7 @@ impl PrismPool {
             sessions: parts.sessions,
             state: parts.state,
             store: parts.store,
+            live: parts.live,
             events: parts.events,
             cancels: parts.cancels,
             approvals: parts.approvals,
@@ -690,6 +736,9 @@ impl PrismPool {
         };
         let mut accepted: Option<(String, String)> = None;
         let request_id = crate::next_request_id();
+        let mut live_turn = self
+            .live
+            .begin(text, &marble.name, &conversation_id, &request_id);
         let input = self.turn_input(text);
         let turn = crate::MarbleTurn {
             conversation_id: (!conversation_id.is_empty()).then_some(conversation_id),
@@ -751,6 +800,7 @@ impl PrismPool {
                 cancel: Some(cancel.as_ref()),
                 timeout: self.timeout,
                 on_accepted: Some(&mut on_accepted),
+                live: live_turn.as_mut(),
             },
         );
         match result {
@@ -1065,6 +1115,56 @@ mod tests {
         state.note_settled(&id, "failed", "engine went away");
         assert_eq!(state.get(&id).unwrap().state, "blocked");
         assert_eq!(state.get(&id).unwrap().last_error, "engine went away");
+    }
+
+    #[test]
+    fn a_marble_caught_mid_turn_restarts_blocked_but_ready() {
+        let mut state = roster();
+        let id = state.marbles[0].id.clone();
+        state.mark_dispatched(&id, "conv-1");
+        state.note_task(&id, "conv-1", "task-1");
+        assert!(state.get(&id).unwrap().is_working());
+
+        assert_eq!(state.recover_interrupted(), 1);
+        let marble = state.get(&id).unwrap();
+        assert_eq!(marble.state, "blocked");
+        assert!(marble.task_id.is_empty());
+        assert!(
+            !marble.is_working(),
+            "a restart must not leave a marble busy"
+        );
+        assert!(
+            marble.last_error.contains("restarted"),
+            "{}",
+            marble.last_error
+        );
+        assert_eq!(
+            marble.conversation_id, "conv-1",
+            "the conversation survives the crash"
+        );
+        assert_eq!(state.recover_interrupted(), 0, "already recovered");
+
+        // The marble is dispatchable again, so a swarm after a restart works.
+        let mut product = ProductState {
+            prism: state,
+            ..ProductState::default()
+        };
+        product.prism.marbles[1].state = "idle".into();
+        let planned = plan_dispatch(&product, "continue", Some(&[id])).unwrap();
+        assert_eq!(planned.len(), 1);
+    }
+
+    #[test]
+    fn a_conversation_names_the_marble_that_owns_it() {
+        let mut state = roster();
+        let id = state.marbles[0].id.clone();
+        state.note_task(&id, "conv-1", "task-1");
+        assert_eq!(
+            state.owner_of("conv-1").map(|m| m.name.as_str()),
+            Some("Scout")
+        );
+        assert!(state.owner_of("conv-2").is_none());
+        assert!(state.owner_of("").is_none());
     }
 
     #[test]

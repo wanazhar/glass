@@ -38,10 +38,19 @@ person touches.
 - **History you can read and keep**: lean state plus a cursor-paged transcript,
   transcript search, conversation rename/delete, JSON export, and one daily
   backup beside the state file.
-- **Durable product state**: a revisioned `product-state.json` written atomically
-  under the data directory, with bounded history; an unreadable document is
-  recovered from the newest daily backup instead of starting empty, and
-  `glass-marble restore` puts a backup or export back in place.
+- **Durable product state**: a revisioned `product-state.json` written
+  atomically, `fsync`ed, and renamed under the data directory, with bounded
+  history; an unreadable document is recovered from the newest daily backup
+  instead of starting empty, and `glass-marble restore` puts a backup or export
+  back in place.
+- **Crash-durable turns and prisms**: every running turn journals its owner and
+  partial reply under `live/` at a bounded rate, so a restart keeps what a person
+  already watched arrive, marks the task `interrupted`, and explains it once; a
+  marble caught mid-dispatch restarts `blocked` with its conversation intact
+  instead of looking busy forever.
+- **One chat, any surface**: the web UI and the iOS app share the document,
+  transcript pages, and turn intake, and a marble's conversation is routed back
+  to the engine that owns it, so it continues from either surface.
 - **Supervision**: a dead engine transport is replaced in place before the next
   turn, a turn that lost it settles `failed` with the reason, and presence keeps
   the restart count and the last error.

@@ -337,6 +337,8 @@ struct MarbleAccepted: Decodable, Equatable {
     var requestId: String
     var conversationId: String
     var taskId: String
+    /// Set when a marble's own engine took the turn instead of the chat engine.
+    var marbleName: String?
 }
 
 struct MarbleHealth: Decodable, Equatable {

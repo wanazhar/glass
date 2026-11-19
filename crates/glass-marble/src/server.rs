@@ -11,7 +11,7 @@ use crate::crates::CrateMap;
 use crate::events::{EventBus, TurnEvent};
 use crate::memory::{self, MemoryCommand};
 use crate::notify::{self, ApnsSettings, Notification};
-use crate::prism::PrismPool;
+use crate::prism::{DispatchRefusal, PrismMarble, PrismPool};
 use crate::state::{PendingApproval, ProductState, TaskRecord};
 use crate::store::StateStore;
 use crate::voice;
@@ -1026,9 +1026,18 @@ impl MarbleServer {
         }
         let mut guard = self.lock_state();
         guard.approvals = self.approvals.pending();
-        let snapshot = guard.clone();
+        let transcript_count = guard.transcript.len();
+        // A lean poll omits the transcript, so drop it before the clone: copying
+        // thousands of entries only to encode an empty array is the most
+        // expensive thing a polling surface asks this host to do.
+        let snapshot = if lean {
+            let mut snapshot = guard.clone();
+            snapshot.transcript.clear();
+            snapshot
+        } else {
+            guard.clone()
+        };
         drop(guard);
-        let transcript_count = snapshot.transcript.len();
         let mut value = snapshot.encode();
         if let Value::Object(ref mut map) = value {
             map.insert("transcriptCount".into(), json!(transcript_count));
@@ -2110,6 +2119,22 @@ impl MarbleServer {
         let mut dispatched = 0usize;
         for request in requests {
             let queued_id = format!("queued-{}", request.request_id);
+            // A held message for a marble's conversation resumes into that
+            // marble's engine, not into the chat engine that cannot see it.
+            if let Some((_, outcome)) =
+                self.dispatch_to_owner(request.conversation_id.as_deref(), &request.text)
+            {
+                match outcome {
+                    Ok(_) => dispatched += 1,
+                    Err(refusal) => tracing::warn!(
+                        code = refusal.code,
+                        message = %refusal.message,
+                        "could not resume a held marble turn"
+                    ),
+                }
+                self.forget_queued(&queued_id);
+                continue;
+            }
             let (acknowledged, _ack) = mpsc::channel();
             match self.turn_tx.send(TurnCommand {
                 request,
@@ -2364,7 +2389,54 @@ impl MarbleServer {
                 }
             };
         }
+        // A conversation belongs to the engine that created its session. A
+        // marble's chat therefore goes back to that marble, so the same chat is
+        // continuable from any surface and runs beside the chat engine instead
+        // of waiting behind it.
+        if let Some((marble, outcome)) = self.dispatch_to_owner(conversation_id.as_deref(), &text) {
+            return match outcome {
+                Ok(dispatch) => Response::json(
+                    202,
+                    json!({
+                        "accepted": true,
+                        "queued": false,
+                        "conversationId": marble.conversation_id,
+                        "requestId": "",
+                        "marbleId": marble.id,
+                        "marbleName": marble.name,
+                        // The pool records the durable task while the turn is
+                        // admitted; the surface learns it from the next state.
+                        "taskId": "",
+                        "message": format!("{} is answering in its own conversation", marble.name),
+                        "dispatch": dispatch.document(),
+                    }),
+                ),
+                Err(refusal) => Response::json(
+                    refusal.status,
+                    json!({"error": refusal.code, "message": refusal.message}),
+                ),
+            };
+        }
         self.submit_request(TurnRequest::new(conversation_id, text))
+    }
+
+    /// The marble that keeps a conversation, when the roster has one.
+    fn dispatch_to_owner(
+        &self,
+        conversation_id: Option<&str>,
+        text: &str,
+    ) -> Option<(
+        PrismMarble,
+        Result<crate::prism::PrismDispatch, DispatchRefusal>,
+    )> {
+        let id = conversation_id.filter(|id| !id.is_empty())?;
+        let marble = {
+            let state = self.lock_state();
+            state.prism.owner_of(id).cloned()
+        }?;
+        let prism = self.prism.as_ref()?;
+        let outcome = prism.dispatch(text, Some(std::slice::from_ref(&marble.id)));
+        Some((marble, outcome))
     }
 
     /// Hand one message to the worker, answering as soon as it is admitted.

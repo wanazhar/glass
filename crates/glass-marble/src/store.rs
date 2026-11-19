@@ -14,7 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// File name of the durable product document.
 pub const STATE_FILE: &str = "product-state.json";
-const STATE_TEMP_FILE: &str = "product-state.json.tmp";
+/// Temporary file name used while replacing the document.
+pub const STATE_TEMP_FILE: &str = "product-state.json.tmp";
 /// Directory beside the state file where daily backups are written.
 pub const BACKUP_DIR: &str = "backups";
 /// Daily backups kept before the oldest is removed.
@@ -80,6 +81,44 @@ fn unix_millis() -> u64 {
 /// Durable runtime session storage under the product data directory.
 pub fn sessions_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("sessions")
+}
+
+/// In-flight turn journal beside the product document.
+pub fn live_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("live")
+}
+
+/// Replace one small file so a crash leaves the old bytes or the new ones.
+///
+/// `sync_all` is what makes this survive a power loss rather than only a
+/// process crash: without it the rename can be visible while the contents it
+/// points at are still in the page cache. The parent directory is synced too,
+/// because a rename is itself a directory change.
+pub fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "durable write path has no parent directory",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "document".into());
+    let temp = parent.join(format!("{name}.tmp"));
+    {
+        let mut file = fs::File::create(&temp)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&temp, path)?;
+    // Best effort: not every platform lets a directory be opened for sync, and
+    // the document itself is already durable when this fails.
+    if let Ok(directory) = fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
 }
 
 /// Revisioned product state document.
@@ -315,12 +354,12 @@ impl StateStore {
             .parent()
             .ok_or_else(|| MarbleError::Protocol("product state path has no parent".into()))?;
         fs::create_dir_all(parent).map_err(MarbleError::Io)?;
-        let temp = parent.join(STATE_TEMP_FILE);
         let encoded = serde_json::to_vec_pretty(state).map_err(|error| {
             MarbleError::Protocol(format!("cannot encode product state: {error}"))
         })?;
-        fs::write(&temp, encoded).map_err(MarbleError::Io)?;
-        fs::rename(&temp, &self.path).map_err(MarbleError::Io)?;
+        // The temporary file is named after the document so a failed write
+        // leaves nothing else behind; `write_durably` fsyncs before the rename.
+        write_durably(&self.path, &encoded).map_err(MarbleError::Io)?;
         Ok(())
     }
 }

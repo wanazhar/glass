@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use glass_marble::{
     AccessPolicy, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, DataDirLock,
-    EventBus, HostPolicy, InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn,
-    PrismPool, ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions,
+    EventBus, HostPolicy, InboundMessage, LiveStore, MarbleError, MarbleServer, MarbleServerParts,
+    MarbleTurn, PrismPool, ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions,
     default_data_dir, run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
 use glass_marble::{notify, service};
@@ -297,6 +297,20 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     // turn that was running when the process stopped is marked interrupted, not
     // left looking like it is still working.
     loaded.presence.mark_start();
+    // Turns that were running when the previous process stopped left a live
+    // journal entry. Fold those in first: the partial reply belongs in the
+    // conversation, and recovering it marks its task interrupted, so the generic
+    // pass below does not explain the same turn a second time.
+    let live = LiveStore::in_data_dir(data_dir);
+    let live_recovery = live.recover(&mut loaded);
+    if !live_recovery.is_empty() {
+        tracing::warn!(
+            turns = live_recovery.turns,
+            partials = live_recovery.partials,
+            unreadable = live_recovery.unreadable,
+            "recovered live turns from the previous run"
+        );
+    }
     let recovered = loaded.recover_interrupted();
     if recovered > 0 {
         tracing::warn!(recovered, "marked interrupted turns from the previous run");
@@ -334,6 +348,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         conversation,
         Arc::clone(&state),
         Some(Arc::clone(&store)),
+        live.clone(),
         events.clone(),
         timeout,
         cancels.clone(),
@@ -358,6 +373,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         sessions: sessions_dir(data_dir).join("prism"),
         state: Arc::clone(&state),
         store: Some(Arc::clone(&store)),
+        live: live.clone(),
         events: events.clone(),
         cancels: cancels.clone(),
         approvals: approvals.clone(),
@@ -397,6 +413,12 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         );
         if recovered > 0 {
             println!("recovery: {recovered} interrupted turn(s) marked");
+        }
+        if live_recovery.turns > 0 {
+            println!(
+                "recovery: {} live turn(s) restored ({} with a partial reply)",
+                live_recovery.turns, live_recovery.partials
+            );
         }
         let channels = match (
             !state.notifications.webhook_url.is_empty(),

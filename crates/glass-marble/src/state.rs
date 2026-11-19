@@ -530,7 +530,14 @@ impl ProductState {
             self.routines.note_settled(task_id, "interrupted");
         }
         self.presence.recovered_tasks = recovered.len() as u64;
-        if !recovered.is_empty() {
+        // The roster is durable too, and a marble mid-dispatch is the case a
+        // restart used to leave permanently unusable: `working` with no engine
+        // behind it. Clearing it here keeps the roster honest about the crash.
+        let marbles = self.prism.recover_interrupted();
+        if marbles > 0 {
+            tracing::warn!(marbles, "cleared prism turns interrupted by a restart");
+        }
+        if !recovered.is_empty() || marbles > 0 {
             self.bump();
         }
         recovered.len()
@@ -698,5 +705,23 @@ mod tests {
         assert_eq!(entry.kind, "system");
         assert!(entry.text.contains("restarted"));
         assert_eq!(state.recover_interrupted(), 0);
+    }
+
+    #[test]
+    fn restarting_also_clears_a_marble_that_was_working() {
+        let mut state = ProductState::default();
+        let marble = state
+            .prism
+            .add("Scout", "reads the repo", "hex", 210, "")
+            .expect("a marble")
+            .id
+            .clone();
+        state.prism.marbles[0].state = "working".into();
+        state.prism.marbles[0].task_id = "task-1".into();
+        assert_eq!(state.recover_interrupted(), 0, "no host task was running");
+        let recovered = &state.prism.get(&marble).expect("the marble stays");
+        assert_eq!(recovered.state, "blocked");
+        assert!(recovered.last_error.contains("restarted"));
+        assert!(recovered.task_id.is_empty());
     }
 }

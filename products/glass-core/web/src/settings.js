@@ -99,7 +99,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     const form=el('form','connection-form');form.append(el('h3','',callback?'Complete sign-in':'Add a connection'));
     const inputs={},formKey=callback?'oauth-form':'connection-form',saved=drafts.get(callback?'oauth-form':'connection-form')||{};
     const remember=()=>drafts.set(formKey,Object.fromEntries(Object.entries(inputs).map(([key,input])=>[key,input.value])));
-    const fields=callback?[['model','Model','text'],['label','Connection name','text'],['secret','Final callback URL','password']]:[['label','Connection name','text'],['provider','Provider','select'],['endpoint','API endpoint','url'],['model','Model','text'],['secret','API key','password']];
+    const fields=callback?[['model','Model','text'],['label','Connection name','text'],['secret','Callback URL or code','password']]:[['label','Connection name','text'],['provider','Provider','select'],['endpoint','API endpoint','url'],['model','Model','text'],['secret','API key','password']];
     for(const [key,label,type]of fields){const field=el('label','',label),input=el(type==='select'?'select':'input');input.name=key;input.setAttribute('aria-label',label);if(type==='select'){for(const [v,t]of [['openai','OpenAI compatible'],['openai-responses','OpenAI Responses'],['anthropic','Anthropic']]){const o=el('option','',t);o.value=v;input.append(o);}}else input.type=type;input.required=!['label'].includes(key);input.autocomplete=type==='password'?'new-password':'off';if(saved[key]!==undefined)input.value=saved[key];input.oninput=remember;inputs[key]=input;field.append(input);form.append(field);}
     if(inputs.endpoint){inputs.endpoint.value=saved.endpoint||'https://api.openai.com/v1';inputs.provider.onchange=()=>{inputs.endpoint.value=inputs.provider.value==='anthropic'?'https://api.anthropic.com':'https://api.openai.com/v1';remember();};}
     const save=el('button','command-run',callback?'Complete sign-in':'Save connection');save.type='submit';form.append(save);const cancel=el('button','quiet','Cancel');cancel.type='button';cancel.onclick=()=>guard(()=>{addConnection=false;oauth=null;renderBody();});form.append(cancel);
@@ -117,7 +117,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     const add=el('button','command-run');add.append(icon(Plus),el('span','','Add connection'));add.disabled=addConnection;add.onclick=()=>guard(()=>{addConnection=true;oauth=null;renderBody();});box.append(add);
     if(addConnection)accountForm(box);
     const oauthButton=el('button','quiet','Connect ChatGPT');oauthButton.onclick=()=>guard(async()=>{if(await request({action:'oauth'})){addConnection=false;oauth=data.sign_in;renderBody();}});box.append(oauthButton);
-    if(oauth){const link=el('a','command-run','Continue sign-in');link.href=oauth.authorize_url;link.target='_blank';link.rel='noopener noreferrer';box.append(link);text(box,'After signing in, paste the final localhost callback URL below.');accountForm(box,true);}
+    if(oauth){const link=el('a','command-run','Continue sign-in');link.href=oauth.authorize_url;link.target='_blank';link.rel='noopener noreferrer';box.append(link);text(box,'After signing in, the browser returns to a 127.0.0.1 address only that device can open. If the page does not load, paste its full address or just the code below.');accountForm(box,true);}
   }
   function tools(parent){
     const mods=group(parent,'Optional native modules','Optional behaviors added to the built-in tools for new conversations.');

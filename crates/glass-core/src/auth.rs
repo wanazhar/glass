@@ -517,6 +517,14 @@ pub fn browser(url: &str) -> bool {
         false
     }
 }
+/// Browsers may show either spelling of the loopback host after a copy.
+fn loopback_host(host: &str) -> &str {
+    if host == "localhost" {
+        "127.0.0.1"
+    } else {
+        host
+    }
+}
 pub(crate) struct Attempt {
     listener: TcpListener,
     state: String,
@@ -593,31 +601,63 @@ impl Attempt {
         })
     }
     fn callback(&self, value: &str) -> Result<(String, String), String> {
-        let url =
-            url::Url::parse(value).map_err(|_| "Paste the complete callback URL".to_string())?;
-        let expected = url::Url::parse(&self.redirect).map_err(|e| e.to_string())?;
-        // Accept both 127.0.0.1 and localhost as equivalent loopback addresses.
-        let url_host = url.host_str().map(|h| {
-            if h == "localhost" { "127.0.0.1" } else { h }
-        });
-        let expected_host = expected.host_str().map(|h| {
-            if h == "localhost" { "127.0.0.1" } else { h }
-        });
-        if url.scheme() != expected.scheme()
-            || url_host != expected_host
-            || url.port() != expected.port()
-            || url.path() != expected.path()
-        {
-            return Err("Callback address does not match this sign-in attempt".into());
+        // A browser on another device (phone PWA or an SSH session) cannot
+        // reach this host's loopback listener, so the failed page's URL is
+        // pasted back. Accept the full callback URL, its query string,
+        // `code#state`, or a bare authorization code.
+        let value = value.trim();
+        if value.is_empty() || value.len() > 8192 || value.chars().any(char::is_control) {
+            return Err("Paste the complete callback URL or authorization code".into());
         }
+        let expected = url::Url::parse(&self.redirect).map_err(|e| e.to_string())?;
         let mut pairs = BTreeMap::new();
-        for (k, v) in url.query_pairs().into_owned() {
-            if pairs.insert(k, v).is_some() {
-                return Err("Duplicate sign-in callback parameter".into());
+        let mut from_url = false;
+        if let Ok(url) = url::Url::parse(value) {
+            if matches!(url.scheme(), "http" | "https") {
+                from_url = true;
+                if url.scheme() != expected.scheme()
+                    || url.host_str().map(loopback_host) != expected.host_str().map(loopback_host)
+                    || url.port() != expected.port()
+                    || url.path() != expected.path()
+                {
+                    return Err("Callback address does not match this sign-in attempt".into());
+                }
+                for (k, v) in url.query_pairs().into_owned() {
+                    if pairs.insert(k, v).is_some() {
+                        return Err("Duplicate sign-in callback parameter".into());
+                    }
+                }
             }
         }
-        if pairs.get("state") != Some(&self.state) {
-            return Err("Sign-in state did not match. Start a fresh /login.".into());
+        if !from_url {
+            if let Some((code, state)) = value.split_once('#') {
+                pairs.insert("code".into(), code.trim().to_string());
+                pairs.insert("state".into(), state.trim().to_string());
+            } else {
+                let query = value.split_once('?').map_or(value, |(_, query)| query);
+                let query = query.strip_prefix('?').unwrap_or(query);
+                if query.contains("code=") {
+                    for (k, v) in url::form_urlencoded::parse(query.as_bytes()).into_owned() {
+                        if pairs.insert(k, v).is_some() {
+                            return Err("Duplicate sign-in callback parameter".into());
+                        }
+                    }
+                } else {
+                    // A bare code stays bound to this attempt by its ID and
+                    // PKCE verifier, so it does not need a state value.
+                    pairs.insert("code".into(), value.to_string());
+                }
+            }
+        }
+        match pairs.get("state") {
+            Some(state) if state == &self.state => {}
+            Some(_) => return Err("Sign-in state did not match. Start a fresh /login.".into()),
+            // A full callback URL must carry state; a manually pasted code is
+            // already bound to the pending attempt and its PKCE verifier.
+            None if from_url => {
+                return Err("Sign-in callback is missing state. Start a fresh /login.".into());
+            }
+            None => {}
         }
         if pairs.contains_key("error") {
             return Err("Sign-in was declined. Use /login to try again.".into());
@@ -698,7 +738,7 @@ pub fn chatgpt(
             },
             "Waiting for sign-in…".into(),
             String::new(),
-            "Remote terminal? Press P and paste the final callback URL.".into(),
+            "Remote terminal? Press P and paste the callback URL or code.".into(),
         ];
         {
             lines.push("Browser link (no tokens):".into());
@@ -810,7 +850,7 @@ pub fn chatgpt(
                     if let Some(url) = modal::field(
                         keys,
                         "Continue with ChatGPT",
-                        "Paste the final callback URL",
+                        "Paste the callback URL or authorization code",
                         "",
                         true,
                     ) {
@@ -919,12 +959,36 @@ mod tests {
         ] {
             assert!(a.callback(&bad).is_err(), "{bad}");
         }
-        // localhost should now be accepted as equivalent to 127.0.0.1
+        // Remote sign-in: the browser cannot reach this host's loopback
+        // listener, so the callback is pasted back. Browsers may spell the
+        // loopback host either way, and the query or `code#state` may arrive
+        // without the surrounding URL.
+        for pasted in [
+            valid.replace("127.0.0.1", "localhost"),
+            "code=c&state=test-state&client_id=oaiapp_test".into(),
+            "?code=c&state=test-state&client_id=oaiapp_test".into(),
+            "localhost:1455/auth/callback?code=c&state=test-state&client_id=oaiapp_test".into(),
+        ] {
+            assert_eq!(
+                a.callback(&pasted).unwrap(),
+                ("c".into(), "oaiapp_test".into()),
+                "{pasted}"
+            );
+        }
+        assert!(
+            a.callback("code=c&state=wrong&client_id=oaiapp_test")
+                .is_err()
+        );
+        assert!(a.callback("").is_err());
+        let a = attempt(true);
+        // A saved registration keeps its issued client ID, so a bare code or
+        // `code#state` is enough when only part of the callback was copied.
         assert_eq!(
-            a.callback(&valid.replace("127.0.0.1", "localhost")).unwrap(),
+            a.callback("c#test-state").unwrap(),
             ("c".into(), "oaiapp_test".into())
         );
-        let a = attempt(true);
+        assert_eq!(a.callback("c").unwrap(), ("c".into(), "oaiapp_test".into()));
+        assert!(a.callback("c#wrong").is_err());
         assert!(
             a.callback(&valid.replace("oaiapp_test", "oaiapp_other"))
                 .is_err()

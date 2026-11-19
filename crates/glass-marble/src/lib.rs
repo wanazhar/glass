@@ -10,6 +10,7 @@
 
 pub mod control;
 pub mod conversation;
+pub mod crates;
 pub mod events;
 pub mod host;
 pub mod lock;
@@ -17,6 +18,7 @@ pub mod memory;
 pub mod normalize;
 pub mod notify;
 pub mod presence;
+pub mod prism;
 pub mod routine;
 pub mod scheduler;
 pub mod server;
@@ -30,6 +32,7 @@ pub mod worker;
 
 pub use control::{ControlEntry, ControlGrant, ControlProfile, ControlState, QueuedTurn, Verdict};
 pub use conversation::{ApprovalInbox, CancelToken, Conversation, SteerRequest};
+pub use crates::{BinaryReach, CRATES_TOOL, CrateMap, WorkspaceCrate};
 pub use events::{EventBus, TurnEvent};
 pub use host::{Approval, HostPolicy};
 pub use lock::DataDirLock;
@@ -40,6 +43,7 @@ pub use notify::{
     NotificationSettings, QuietHours, recent_deliveries,
 };
 pub use presence::{PresenceState, RuntimeHealth, Waiting};
+pub use prism::{PRISM_LIMIT, PrismDispatch, PrismMarble, PrismPool, PrismState, plan_dispatch};
 pub use routine::{Routine, RoutineState, Schedule, parse_schedule};
 pub use scheduler::{TICK, spawn_scheduler};
 pub use server::{
@@ -47,9 +51,9 @@ pub use server::{
 };
 pub use service::{InstallOutcome, ServicePlatform, ServiceSpec};
 pub use state::{
-    CONVERSATION_LIMIT, ConversationRecord, PendingApproval, ProductState, PruneSummary,
-    RetentionState, TASK_LIMIT, TRANSCRIPT_LIMIT, TRANSCRIPT_PER_CONVERSATION, TaskRecord,
-    TranscriptEntry,
+    CONVERSATION_LIMIT, ConversationRecord, ENGINE_TOOL_LIMIT, ObservedTool, PendingApproval,
+    ProductState, PruneSummary, RetentionState, TASK_LIMIT, TRANSCRIPT_LIMIT,
+    TRANSCRIPT_PER_CONVERSATION, TaskRecord, TranscriptEntry,
 };
 pub use store::{StateStore, default_data_dir, sessions_dir};
 pub use tools::{ToolOutcome, ToolRouter};

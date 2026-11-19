@@ -39,6 +39,14 @@ extension View {
     func marbleGlass(cornerRadius: CGFloat = 26) -> some View {
         modifier(MarbleGlass(cornerRadius: cornerRadius))
     }
+
+    /// A text field that belongs on the glass surface rather than inside a
+    /// system-grey rounded border.
+    func marbleField(cornerRadius: CGFloat = 14) -> some View {
+        padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .marbleGlass(cornerRadius: cornerRadius)
+    }
 }
 
 struct MarbleBackdrop: View {
@@ -88,11 +96,13 @@ struct MarbleIconButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 15, weight: .semibold))
-                .frame(width: 34, height: 34)
+                // A 38pt mark still needs a 44pt target to be reachable.
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(MarblePalette.ink)
-        .marbleGlass(cornerRadius: 17)
+        .marbleGlass(cornerRadius: 22)
         .accessibilityLabel(label)
     }
 }

@@ -329,6 +329,58 @@ final class MarbleClient: @unchecked Sendable {
         try await post("/api/routines/\(encoded(id))/remove")
     }
 
+    // MARK: - Prism and tooling
+
+    func prism() async throws -> MarblePrism {
+        try await fetch(try makeRequest(path: "/api/prism"))
+    }
+
+    struct MarbleDraft: Encodable {
+        var name: String
+        var role: String
+        var glyph: String
+        var hue: Int
+        var workspace: String
+    }
+
+    private struct PrismReply: Decodable { var prism: MarblePrism }
+
+    private struct DispatchReply: Decodable {
+        var dispatched: [String]
+        var marbles: [String]
+        var swarm: Bool
+    }
+
+    @discardableResult
+    func addMarble(_ draft: MarbleDraft) async throws -> MarblePrism {
+        let reply: PrismReply = try await postJSON("/api/prism/marbles", body: draft)
+        return reply.prism
+    }
+
+    func removeMarble(id: String) async throws {
+        let _: OkReply = try await postJSON(
+            "/api/prism/marbles/\(encoded(id))/remove",
+            body: Optional<String>.none
+        )
+    }
+
+    /// Hand one prompt to several marbles at once. Empty `marbles` means all.
+    func dispatchSwarm(text: String, marbles: [String]) async throws -> (names: [String], swarm: Bool) {
+        struct Body: Encodable {
+            var text: String
+            var marbles: [String]?
+        }
+        let reply: DispatchReply = try await postJSON(
+            "/api/prism/dispatch",
+            body: Body(text: text, marbles: marbles.isEmpty ? nil : marbles)
+        )
+        return (reply.marbles, reply.swarm)
+    }
+
+    func tools() async throws -> MarbleToolInventory {
+        try await fetch(try makeRequest(path: "/api/tools"))
+    }
+
     // MARK: - Notifications and voice
 
     struct NotificationUpdate: Encodable {

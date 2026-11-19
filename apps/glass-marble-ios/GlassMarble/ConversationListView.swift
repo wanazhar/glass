@@ -51,7 +51,8 @@ struct ConversationListView: View {
         }
         .scrollContentBackground(.hidden)
         .background(MarbleBackdrop())
-        .navigationTitle("Marble")
+        .navigationTitle("Glass Marble")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, placement: .sidebar, prompt: "Search conversations")
         .alert("Rename conversation", isPresented: renameBinding) {
             TextField("Title", text: $renameDraft)
@@ -87,26 +88,23 @@ struct ConversationListView: View {
                 .accessibilityLabel("New conversation")
             }
         }
+        // The navigation title already says which app this is; the strip below
+        // only has to say which host is answering and what it is doing.
         .safeAreaInset(edge: .top) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 MarbleMarbleMark()
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Glass Marble")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(MarblePalette.ink)
-                    Text(store.endpoint.displayHost)
-                        .font(.caption2)
-                        .foregroundStyle(MarblePalette.muted)
-                        .lineLimit(1)
-                }
-                Spacer()
+                Text(store.endpoint.displayHost)
+                    .font(.caption)
+                    .foregroundStyle(MarblePalette.muted)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
                 MarbleStatusPill(
                     label: store.statusLabel,
                     tone: store.connection == .live ? MarblePalette.success : MarblePalette.muted
                 )
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.vertical, 6)
         }
     }
 

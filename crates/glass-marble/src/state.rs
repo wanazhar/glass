@@ -5,6 +5,7 @@ use crate::control::ControlState;
 use crate::memory::MemoryState;
 use crate::notify::{DeviceRegistration, NotificationSettings};
 use crate::presence::PresenceState;
+use crate::prism::PrismState;
 use crate::routine::RoutineState;
 use crate::voice::VoiceSettings;
 use crate::worker::now_millis;
@@ -119,6 +120,26 @@ pub struct PendingApproval {
     pub arguments: Value,
 }
 
+/// One Core-native tool the engine has actually reached for.
+///
+/// Core executes its own coding tools, so they never pass through Marble's
+/// control layer. They still arrive as runtime events, and recording them is the
+/// difference between "Marble can read files" and "Marble read these four files
+/// at 14:02". The list is bounded; the newest use wins a place.
+pub const ENGINE_TOOL_LIMIT: usize = 200;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedTool {
+    pub name: String,
+    #[serde(default)]
+    pub runs: u64,
+    #[serde(default)]
+    pub errors: u64,
+    #[serde(default)]
+    pub last_at: u64,
+}
+
 /// One durable transcript entry for a conversation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,6 +194,12 @@ pub struct ProductState {
     /// Existing conversations keep the model they were created with.
     #[serde(default)]
     pub model: String,
+    /// The Prism roster: several named marbles that can work at once.
+    #[serde(default)]
+    pub prism: PrismState,
+    /// Core-native tools this host has seen the engine use.
+    #[serde(default)]
+    pub engine_tools: Vec<ObservedTool>,
 }
 
 impl ProductState {
@@ -289,6 +316,43 @@ impl ProductState {
         hits.sort_by_key(|entry| std::cmp::Reverse(entry.at));
         hits.truncate(limit.clamp(1, 100));
         hits
+    }
+
+    /// Note that the engine started one of its own tools.
+    pub fn note_engine_tool(&mut self, name: &str) {
+        let now = now_millis();
+        if let Some(tool) = self.engine_tools.iter_mut().find(|tool| tool.name == name) {
+            tool.runs = tool.runs.saturating_add(1);
+            tool.last_at = now;
+            return;
+        }
+        if self.engine_tools.len() >= ENGINE_TOOL_LIMIT {
+            // Drop the least recently used name instead of refusing to learn a
+            // new one, so a long session still reports what is being used now.
+            if let Some(index) = self
+                .engine_tools
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, tool)| tool.last_at)
+                .map(|(index, _)| index)
+            {
+                self.engine_tools.remove(index);
+            }
+        }
+        self.engine_tools.push(ObservedTool {
+            name: name.to_string(),
+            runs: 1,
+            errors: 0,
+            last_at: now,
+        });
+    }
+
+    /// Note that an engine tool reported an error.
+    pub fn note_engine_tool_error(&mut self, name: &str) {
+        if let Some(tool) = self.engine_tools.iter_mut().find(|tool| tool.name == name) {
+            tool.errors = tool.errors.saturating_add(1);
+            tool.last_at = now_millis();
+        }
     }
 
     /// Append one transcript entry.

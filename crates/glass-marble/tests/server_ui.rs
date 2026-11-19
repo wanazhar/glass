@@ -1574,3 +1574,115 @@ fn repeated_login_failures_are_throttled_per_caller() {
     );
     assert_eq!(response.status, 200);
 }
+
+#[test]
+fn prism_roster_is_served_and_editable_without_an_engine() {
+    let server = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+
+    let (status, body) = server.handle("GET", "/api/prism", "");
+    assert_eq!(status, 200, "{body}");
+    let document: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(document["protocol"], json!("prism"));
+    assert_eq!(document["marbles"].as_array().unwrap().len(), 0);
+    assert_eq!(document["engine"], json!(false));
+
+    let (status, body) = server.handle(
+        "POST",
+        "/api/prism/marbles",
+        r#"{"name":"Scout","role":"reads the repo","glyph":"hex","hue":210}"#,
+    );
+    assert_eq!(status, 202, "{body}");
+    let added: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(added["marble"]["name"], json!("Scout"));
+    assert_eq!(added["prism"]["marbles"].as_array().unwrap().len(), 1);
+
+    // A roster is only scannable if two marbles cannot share a name.
+    let (status, _) = server.handle("POST", "/api/prism/marbles", r#"{"name":"scout"}"#);
+    assert_eq!(status, 400);
+
+    // Without a pool the host says so instead of accepting work nobody runs.
+    let (status, body) = server.handle("POST", "/api/prism/dispatch", r#"{"text":"look around"}"#);
+    assert_eq!(status, 503, "{body}");
+
+    let id = added["marble"]["id"].as_str().unwrap().to_string();
+    let path = format!("/api/prism/marbles/{id}/remove");
+    assert_eq!(server.handle("POST", &path, "").0, 200);
+    let (_, body) = server.handle("GET", "/api/prism", "");
+    let document: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(document["marbles"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn the_tool_inventory_reports_both_owners() {
+    let mut state = ProductState::default();
+    state.note_engine_tool("read_file");
+    state.note_engine_tool("read_file");
+    state.note_engine_tool_error("read_file");
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle("GET", "/api/tools", "");
+    assert_eq!(status, 200, "{body}");
+    let tools: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(tools["protocol"], json!("mixed"));
+    assert_eq!(tools["core"]["observed"][0]["name"], json!("read_file"));
+    assert_eq!(tools["core"]["observed"][0]["runs"], json!(2));
+    assert_eq!(tools["core"]["observed"][0]["errors"], json!(1));
+    let governed = tools["governed"].as_array().unwrap();
+    assert_eq!(governed.len(), 5);
+    assert!(governed.iter().any(|tool| {
+        tool["name"] == json!("glass.workspace.write") && tool["effect"] == json!("write")
+    }));
+    assert!(governed.iter().any(|tool| {
+        tool["name"] == json!("glass.crates.list") && tool["effect"] == json!("read")
+    }));
+}
+
+#[test]
+fn the_workspace_crate_map_is_served_when_the_host_has_one() {
+    let root = std::env::temp_dir().join(format!("glass-marble-crates-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("crates/alpha")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/alpha\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("crates/alpha/Cargo.toml"),
+        "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"alpha-cli\"\n",
+    )
+    .unwrap();
+
+    // Without a map the host says so instead of inventing a workspace.
+    let server = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle("GET", "/api/crates", "");
+    assert_eq!(status, 503, "{body}");
+
+    let server = server.with_crates(glass_marble::CrateMap::load(&root));
+    let (status, body) = server.handle("GET", "/api/crates", "");
+    assert_eq!(status, 200, "{body}");
+    let document: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(document["workspace"]["members"], json!(1));
+    assert_eq!(document["crates"][0]["name"], json!("alpha"));
+    assert_eq!(
+        document["crates"][0]["binaries"][0]["name"],
+        json!("alpha-cli")
+    );
+    assert_eq!(document["crates"][0]["path"], json!("crates/alpha"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

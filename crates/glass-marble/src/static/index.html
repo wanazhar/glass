@@ -21,9 +21,13 @@
         --muted: #93a3ba;
         --accent: #6ea8ff;
         --accent-strong: #2f7bf2;
+        --accent-soft: rgba(110, 168, 255, 0.16);
+        --accent-line: rgba(110, 168, 255, 0.42);
         --danger: #ff7a7a;
         --ok: #5fd6a2;
         --radius: 20px;
+        --field: rgba(4, 9, 16, 0.55);
+        --field-soft: rgba(255, 255, 255, 0.05);
         --shadow: 0 18px 60px rgba(2, 8, 20, 0.48);
       }
       @media (prefers-color-scheme: light) {
@@ -38,8 +42,12 @@
           --muted: #56667e;
           --accent: #1f6feb;
           --accent-strong: #1450b8;
+          --accent-soft: rgba(31, 111, 235, 0.12);
+          --accent-line: rgba(31, 111, 235, 0.38);
           --danger: #b42318;
           --ok: #0f7a54;
+          --field: rgba(255, 255, 255, 0.9);
+          --field-soft: rgba(24, 44, 74, 0.05);
           --shadow: 0 18px 50px rgba(31, 58, 100, 0.16);
         }
       }
@@ -56,6 +64,10 @@
       }
       button, input, textarea { font: inherit; color: inherit; }
       button { cursor: pointer; }
+      button:focus-visible, input:focus-visible, textarea:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
       .glass {
         background: var(--surface);
         border: 1px solid var(--line);
@@ -90,12 +102,15 @@
       }
       header h1 { font-size: 15px; margin: 0; letter-spacing: 0.01em; }
       header .sub { color: var(--muted); font-size: 12px; }
+      .title-block { min-width: 0; }
+      .title-block .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .header-actions { display: flex; align-items: center; gap: 8px; }
       .spacer { flex: 1; }
       .pill {
         display: inline-flex; align-items: center; gap: 6px;
         border: 1px solid var(--line); border-radius: 999px;
         padding: 3px 10px; font-size: 12px; color: var(--muted);
-        background: rgba(255, 255, 255, 0.04);
+        background: var(--field-soft);
         white-space: nowrap;
       }
       .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
@@ -112,8 +127,15 @@
       .primary { background: linear-gradient(180deg, var(--accent), var(--accent-strong)); border-color: transparent; color: #fff; }
       .danger { border-color: rgba(180, 35, 24, 0.4); color: var(--danger); }
       .ghost:hover, .primary:hover, .danger:hover { filter: brightness(1.08); }
-      .ghost:disabled, .primary:disabled, .danger:disabled { opacity: 0.45; cursor: default; }
+      .ghost:disabled, .danger:disabled { opacity: 0.45; cursor: default; }
+      /* A dimmed gradient keeps white text at a contrast nobody can read; a
+         disabled primary says "not available yet" in the muted palette. */
+      .primary:disabled {
+        background: var(--field-soft); color: var(--muted); border-color: var(--line);
+        cursor: default; filter: none;
+      }
       .shell {
+        position: relative;
         display: grid; grid-template-columns: 1fr; gap: 12px;
         min-height: 0; padding: 12px;
       }
@@ -131,7 +153,7 @@
         background: transparent; padding: 9px 11px; display: flex; flex-direction: column; gap: 2px;
       }
       .conv:hover { border-color: var(--line); }
-      .conv[aria-current="true"] { background: rgba(110, 168, 255, 0.14); border-color: rgba(110, 168, 255, 0.4); }
+      .conv[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent-line); }
       .conv .title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .conv .meta { font-size: 11px; color: var(--muted); }
       .chat { display: grid; grid-template-rows: 1fr auto; min-height: 0; overflow: hidden; }
@@ -163,14 +185,79 @@
         border: 1px solid var(--line); background: transparent; font-size: 13px;
       }
       .segment.active {
-        background: rgba(110, 168, 255, 0.18); border-color: rgba(110, 168, 255, 0.5);
+        background: var(--accent-soft); border-color: var(--accent-line);
       }
       .segment small { display: block; color: var(--muted); font-size: 11px; line-height: 1.35; }
-      dialog.control { max-width: min(94vw, 620px); max-height: 86dvh; overflow: auto; }
+      /* Shrink-to-fit left the roster with a 399px column on a desktop screen,
+         wrapping three row actions under every marble. The dialog claims the
+         width it was allowed instead. */
+      dialog.control {
+        width: min(94vw, 620px); max-width: min(94vw, 620px);
+        max-height: 86dvh; overflow: auto;
+      }
+      #prism-note:empty { display: none; }
       dialog.control h3 {
         font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
         color: var(--muted); margin: 18px 0 8px; font-weight: 600;
       }
+      dialog select {
+        width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px;
+        background: var(--field); color: var(--text);
+      }
+      #marble-hue { padding: 0; border: 0; background: transparent; accent-color: var(--accent); }
+      /* A marble is a shape and two eyes. Identity comes from the shape and the
+         hue; state comes from motion, so one object answers "who is this" and
+         "what are they doing" without a second row of indicators. */
+      .roster-row { align-items: flex-start; }
+      .roster-info { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+      .roster-name { font-size: 13px; font-weight: 600; }
+      .roster-role { font-size: 11px; color: var(--muted); }
+      .roster-error { font-size: 11px; color: var(--danger); word-break: break-word; }
+      .roster-meta { font-size: 11px; color: var(--muted); }
+      .roster-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+      .avatar {
+        position: relative; width: 38px; height: 38px; flex: none; display: grid;
+        place-items: center; border-radius: 50%;
+      }
+      .avatar .shape {
+        position: absolute; inset: 0; border-radius: 50%;
+        background: radial-gradient(circle at 32% 26%, hsl(var(--hue) 85% 76%), hsl(var(--hue) 70% 52%));
+        box-shadow: inset 0 -7px 14px rgba(0, 0, 0, 0.26), 0 4px 12px hsl(var(--hue) 70% 40% / 0.32);
+      }
+      .avatar[data-glyph="hex"] .shape { clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%); }
+      /* A rounded box read the same as "square" at roster size; the shield
+         needs its own silhouette. */
+      .avatar[data-glyph="shield"] .shape {
+        border-radius: 16% 16% 22% 22% / 12% 12% 26% 26%;
+        clip-path: polygon(50% 0, 100% 16%, 94% 58%, 50% 100%, 6% 58%, 0 16%);
+      }
+      .avatar[data-glyph="drop"] .shape { border-radius: 50% 50% 50% 10%; }
+      .avatar[data-glyph="star"] .shape { clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
+      .avatar[data-glyph="square"] .shape { border-radius: 26%; }
+      .avatar .eyes { position: relative; display: flex; gap: 6px; z-index: 1; }
+      .avatar .eye { width: 5px; height: 6px; border-radius: 50%; background: rgba(6, 10, 18, 0.82); }
+      .avatar[data-state="working"] .eyes { animation: marble-blink 1.5s ease-in-out infinite; }
+      .avatar[data-state="working"]::after {
+        content: ""; position: absolute; inset: -4px; border-radius: inherit;
+        border: 2px solid hsl(var(--hue) 80% 66% / 0.6); animation: marble-breathe 1.4s ease-in-out infinite;
+      }
+      .avatar[data-state="blocked"]::after {
+        content: ""; position: absolute; inset: -3px; border-radius: inherit;
+        border: 2px dashed var(--danger);
+      }
+      .avatar[data-state="blocked"] .shape { filter: saturate(0.35) brightness(0.8); }
+      .avatar[data-state="done"]::after {
+        content: ""; position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px;
+        border-radius: 50%; background: var(--ok); border: 2px solid var(--bg);
+      }
+      /* Three roster actions plus a name cannot share one phone-width row. */
+      @media (max-width: 520px) {
+        .roster-row { flex-wrap: wrap; }
+        .roster-actions { flex: 1 1 100%; }
+      }
+      @keyframes marble-blink { 0%, 92%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.2); } }
+      @keyframes marble-breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+      .records .tag.core { color: var(--muted); }
       .control-actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .records, .rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
       .records li, .rules li {
@@ -178,6 +265,12 @@
         font-size: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px;
       }
       .records .grow { flex: 1; min-width: 0; word-break: break-word; }
+      /* A description belongs on its own line: squeezed into the row it either
+         truncates the tool name or runs off the edge on a phone. */
+      .records .detail {
+        flex: 1 1 100%; color: var(--muted); font-size: 11px; line-height: 1.45;
+        word-break: break-word;
+      }
       .records .tag, .rules .tag {
         font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
         border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted);
@@ -188,18 +281,29 @@
       .records .tag.routine { color: var(--accent); border-color: rgba(110, 168, 255, 0.45); }
       .records .tag.typed { color: var(--muted); }
       .records .muted, .rules .muted { color: var(--muted); }
-      .records button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+      .records button { min-height: 36px; padding: 6px 12px; font-size: 12px; }
+      /* A finger needs 44px; a mouse does not. */
+      @media (pointer: coarse) {
+        .records button, .ghost, .primary, .danger { min-height: 44px; }
+        .conv { padding: 11px 12px; }
+      }
       .empty-row { color: var(--muted); font-size: 12px; }
       .routine-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-      .routine-form input, dialog.control input, #memory-text {
+      .routine-form input, .memory-form input, dialog.control input, #memory-text,
+      #conversation-search {
         width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px;
-        background: rgba(0, 0, 0, 0.16);
+        background: var(--field);
+      }
+      #conversation-search { margin-bottom: 8px; border-radius: 14px; font-size: 13px; }
+      input[type="checkbox"] {
+        width: auto; min-width: 18px; height: 18px; padding: 0; margin: 0 2px 0 0;
+        border-radius: 4px; accent-color: var(--accent); vertical-align: -2px;
       }
       .memory-form { display: flex; gap: 8px; margin-bottom: 10px; }
       .memory-form input { flex: 1; }
       .presence-line { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; margin-bottom: 6px; }
       .presence-line .muted { color: var(--muted); font-size: 12px; }
-      .suggest { border-color: rgba(110, 168, 255, 0.45); background: rgba(110, 168, 255, 0.1); }
+      .suggest { border-color: var(--accent-line); background: var(--accent-soft); }
       .approvals { margin: 0 16px 8px; display: flex; flex-direction: column; gap: 10px; }
       .approval { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
       .approval code { font-size: 11px; color: var(--muted); word-break: break-all; }
@@ -217,7 +321,7 @@
       .hint { color: var(--muted); font-size: 11px; margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
       .banner {
         margin: 16px; padding: 12px 14px; border-radius: 14px; font-size: 13px;
-        border: 1px solid rgba(110, 168, 255, 0.35); background: rgba(110, 168, 255, 0.12);
+        border: 1px solid var(--accent-line); background: var(--accent-soft);
       }
       dialog {
         border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
@@ -229,7 +333,7 @@
       dialog p { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
       dialog input {
         width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
-        background: rgba(0, 0, 0, 0.16); margin-bottom: 12px;
+        background: var(--field); margin-bottom: 12px;
       }
       dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
       .sr-only {
@@ -243,9 +347,25 @@
         .transcript, .composer { padding-left: 22px; padding-right: 22px; }
       }
       @media (max-width: 899px) {
+        /* The panel covers the chat beneath the header, so it never needs to
+           guess how tall the header is. */
         .sidebar.open {
-          position: fixed; inset: 64px 12px auto 12px; max-height: 60dvh; z-index: 20;
+          position: absolute; inset: 0 0 auto 0; max-height: 70%; z-index: 20;
           border-radius: var(--radius); box-shadow: var(--shadow);
+        }
+      }
+      @media (max-width: 640px) {
+        header { flex-wrap: wrap; row-gap: 8px; }
+        .title-block { flex: 1 1 auto; }
+        /* A grid keeps five header buttons on one measure; flex used to leave a
+           ragged final row with a half-width "New". */
+        .header-actions {
+          flex: 1 1 100%;
+          display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+        }
+        .header-actions .ghost, .header-actions .primary {
+          min-width: 0; padding: 8px 6px; font-size: 12px; white-space: nowrap;
+          overflow: hidden; text-overflow: ellipsis;
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -257,16 +377,21 @@
     <div class="app">
       <header>
         <div class="mark" aria-hidden="true"></div>
-        <div>
+        <div class="title-block">
           <h1>Glass Marble</h1>
           <div class="sub" id="workspace-label">durable collaborator</div>
         </div>
+        <span class="pill" role="status" aria-live="polite">
+          <span class="dot" id="status-dot" aria-hidden="true"></span><span id="status-text">idle</span>
+        </span>
         <div class="spacer"></div>
-        <span class="pill"><span class="dot" id="status-dot"></span><span id="status-text">idle</span></span>
-        <button class="ghost" id="assistant-open" aria-haspopup="dialog">Assistant</button>
-        <button class="ghost" id="control-open" aria-haspopup="dialog">Control</button>
-        <button class="ghost" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="false">Chats</button>
-        <button class="ghost" id="new-chat">New</button>
+        <div class="header-actions">
+          <button class="ghost" id="prism-open" aria-haspopup="dialog">Prism</button>
+          <button class="ghost" id="assistant-open" aria-haspopup="dialog">Assistant</button>
+          <button class="ghost" id="control-open" aria-haspopup="dialog">Control</button>
+          <button class="ghost" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="false">Chats</button>
+          <button class="ghost" id="new-chat">New</button>
+        </div>
       </header>
       <div class="shell">
         <aside class="sidebar glass" id="sidebar">
@@ -306,8 +431,8 @@
         </main>
       </div>
     </div>
-    <dialog id="control" class="control">
-      <h2>Marble control</h2>
+    <dialog id="control" class="control" aria-labelledby="control-title">
+      <h2 id="control-title">Marble control</h2>
       <p id="control-summary">
         Marble decides which governed tools may run before Core ever gets an answer. Nothing here is
         inherited from the engine, and every decision is journalled below.
@@ -324,14 +449,18 @@
       <ul class="records" id="control-grants"></ul>
       <h3>Denied paths</h3>
       <ul class="rules" id="control-denied"></ul>
+      <h3>Tooling</h3>
+      <p class="empty-row" id="tools-note">Core owns the coding tools inside the session; Marble governs the integrations. Both are listed here.</p>
+      <ul class="records" id="tools-core"></ul>
+      <ul class="records" id="tools-governed"></ul>
       <h3>Recent decisions</h3>
       <ul class="records" id="control-ledger"></ul>
       <div class="row" style="margin-top: 16px">
         <button class="ghost" id="control-close" type="button">Close</button>
       </div>
     </dialog>
-    <dialog id="assistant" class="control">
-      <h2>Your assistant</h2>
+    <dialog id="assistant" class="control" aria-labelledby="assistant-title">
+      <h2 id="assistant-title">Your assistant</h2>
       <div class="presence-line">
         <span class="pill"><span class="dot" id="assistant-dot"></span><span id="assistant-status">idle</span></span>
         <span class="muted" id="assistant-uptime"></span>
@@ -417,9 +546,49 @@
         <button class="ghost" id="assistant-close" type="button">Close</button>
       </div>
     </dialog>
-    <dialog id="login">
+    <dialog id="prism" class="control" aria-labelledby="prism-title">
+      <h2 id="prism-title">Prism protocol</h2>
+      <p class="empty-row" id="prism-count">One marble answers. Several marbles work.</p>
+      <p class="empty-row" id="prism-note" role="status" aria-live="polite"></p>
+      <p class="empty-row">
+        Every marble keeps its own name, workspace, conversation, and engine, so a swarm really runs
+        side by side instead of queueing behind one turn. A marble takes one turn at a time; asking a
+        busy one is refused rather than parked out of sight.
+      </p>
+      <h3>Roster</h3>
+      <ul class="records" id="prism-roster"></ul>
+      <h3>Dispatch</h3>
+      <div class="memory-form">
+        <label class="sr-only" for="prism-prompt">Prompt for the swarm</label>
+        <input id="prism-prompt" placeholder="Hand the same question to every marble…" />
+        <button class="primary" id="prism-dispatch" type="button">Swarm all</button>
+      </div>
+      <h3>Add a marble</h3>
+      <div class="routine-form">
+        <input id="marble-name" placeholder="Name (Scout)" aria-label="Marble name" />
+        <input id="marble-role" placeholder="Role (reads the repo)" aria-label="Marble role" />
+        <input id="marble-workspace" placeholder="Workspace subfolder (optional)" aria-label="Marble workspace" />
+        <select id="marble-glyph" aria-label="Marble shape">
+          <option value="circle">circle</option>
+          <option value="hex">hex</option>
+          <option value="shield">shield</option>
+          <option value="drop">drop</option>
+          <option value="star">star</option>
+          <option value="square">square</option>
+        </select>
+      </div>
+      <div class="memory-form">
+        <label class="sr-only" for="marble-hue">Hue</label>
+        <input id="marble-hue" type="range" min="0" max="359" value="210" aria-label="Marble colour" />
+        <button class="primary" id="marble-add" type="button">Add marble</button>
+      </div>
+      <div class="row" style="margin-top: 16px">
+        <button class="ghost" id="prism-close" type="button">Close</button>
+      </div>
+    </dialog>
+    <dialog id="login" aria-labelledby="login-title">
       <form method="dialog" id="login-form">
-        <h2>Access token</h2>
+        <h2 id="login-title">Access token</h2>
         <p>This Marble instance is shared over your private network. Paste the token configured on the host.</p>
         <label class="sr-only" for="token">Token</label>
         <input id="token" type="password" autocomplete="current-password" required />
@@ -434,7 +603,7 @@
         "tool_cancel", "usage", "compacted", "steered", "queued", "notice", "error", "settled",
         "cancel_requested", "approval_pending", "approval_resolved", "state",
         "control_denied", "control", "memory", "memory_suggestion", "routine", "retention",
-        "steer_queued", "steer_rejected", "conversation",
+        "steer_queued", "steer_rejected", "conversation", "prism",
       ];
       const app = {
         state: null,
@@ -521,6 +690,23 @@
         apnsKeyId: document.getElementById("apns-keyid"),
         apnsTopic: document.getElementById("apns-topic"),
         voiceToggle: document.getElementById("voice-toggle"),
+        prism: document.getElementById("prism"),
+        prismOpen: document.getElementById("prism-open"),
+        prismClose: document.getElementById("prism-close"),
+        prismCount: document.getElementById("prism-count"),
+        prismNote: document.getElementById("prism-note"),
+        prismRoster: document.getElementById("prism-roster"),
+        prismPrompt: document.getElementById("prism-prompt"),
+        prismDispatch: document.getElementById("prism-dispatch"),
+        marbleName: document.getElementById("marble-name"),
+        marbleRole: document.getElementById("marble-role"),
+        marbleWorkspace: document.getElementById("marble-workspace"),
+        marbleGlyph: document.getElementById("marble-glyph"),
+        marbleHue: document.getElementById("marble-hue"),
+        marbleAdd: document.getElementById("marble-add"),
+        toolsNote: document.getElementById("tools-note"),
+        toolsCore: document.getElementById("tools-core"),
+        toolsGoverned: document.getElementById("tools-governed"),
       };
 
       function node(tag, className, text) {
@@ -629,7 +815,7 @@
             node(
               "p",
               "empty",
-              "Marble runs on your machine. Ask it to read, change, or explain something in this workspace — every turn is journaled, so you can stop, resume, and audit it later."
+              "Marble runs on your machine. Ask it to read, change, or explain something in this workspace — every turn is journalled, so you can stop, resume, and audit it later."
             )
           );
         }
@@ -775,6 +961,202 @@
           item.append(node("span", "muted", entry.reason));
           el.controlLedger.append(item);
         });
+      }
+
+      function prismState() {
+        return (app.state && app.state.prism) || { marbles: [], limit: 8 };
+      }
+
+      /// One marble: a shape, two eyes, and state carried by motion.
+      function marbleAvatar(marble) {
+        const avatar = node("span", "avatar");
+        avatar.dataset.glyph = marble.glyph || "circle";
+        avatar.dataset.state = marble.state || "idle";
+        // Hue 0 is a real hue (red), so it must not fall through a falsy check
+        // into the default blue.
+        const hue = Number(marble.hue);
+        avatar.style.setProperty("--hue", String(Number.isFinite(hue) ? ((hue % 360) + 360) % 360 : 210));
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.append(node("span", "shape"));
+        const eyes = node("span", "eyes");
+        eyes.append(node("span", "eye"), node("span", "eye"));
+        avatar.append(eyes);
+        return avatar;
+      }
+
+      function renderPrism() {
+        const prism = prismState();
+        const marbles = prism.marbles || [];
+        const swarms = Number(prism.swarms || 0);
+        el.prismCount.textContent = prism.engine === false
+          ? "This host did not start a Prism pool, so the roster is read-only."
+          : marbles.length + " / " + (prism.limit || 8) + " marbles · " + swarms +
+            " swarm" + (swarms === 1 ? "" : "s") + " · protocol prism";
+        el.prismRoster.textContent = "";
+        if (!marbles.length) {
+          emptyRow(el.prismRoster, "No marbles yet. Add one with a name and a job, then hand work to several at once.");
+        }
+        marbles.forEach((marble) => {
+          const item = node("li", "roster-row");
+          item.append(marbleAvatar(marble));
+          const info = node("div", "roster-info");
+          info.append(node("span", "roster-name", marble.name));
+          info.append(node("span", "roster-role", marble.role || "no role yet"));
+          if (marble.lastError) info.append(node("span", "roster-error", marble.lastError));
+          const turns = Number(marble.runs || 0);
+          info.append(node("span", "roster-meta",
+            (marble.state || "idle") + " · " + turns + " turn" + (turns === 1 ? "" : "s") +
+            (marble.conversationId ? " · keeps its conversation" : "")));
+          item.append(info);
+          const actions = node("div", "roster-actions");
+          const ask = node("button", "ghost roster-ask", "Ask");
+          ask.type = "button";
+          ask.dataset.busy = marble.state === "working" ? "1" : "";
+          ask.title = marble.state === "working"
+            ? marble.name + " is already working"
+            : "Send the dispatch text above to " + marble.name;
+          ask.addEventListener("click", () => dispatchSwarm([marble.id]));
+          const open = node("button", "ghost", "Open");
+          open.type = "button";
+          open.disabled = !marble.conversationId;
+          open.addEventListener("click", () => {
+            if (!marble.conversationId) return;
+            el.prism.close();
+            openConversation(marble.conversationId);
+          });
+          const remove = node("button", "ghost", "Remove");
+          remove.type = "button";
+          remove.addEventListener("click", async () => {
+            if (!window.confirm("Remove " + marble.name + " from the roster? Its conversation stays.")) return;
+            try {
+              await api("/api/prism/marbles/" + encodeURIComponent(marble.id) + "/remove", {
+                method: "POST",
+              });
+              setPrismNote(marble.name + " left the roster. Its conversation stays.");
+            } catch (error) {
+              setPrismNote(error.message, "error");
+            }
+            await refresh();
+            renderPrism();
+          });
+          actions.append(ask, open, remove);
+          item.append(actions);
+          el.prismRoster.append(item);
+        });
+        // The row actions read the dispatch text, so their availability follows
+        // it: an empty prompt makes "Ask" and "Swarm all" do nothing.
+        syncPrismActions();
+      }
+
+      /// Report Prism results where the person is looking: the dialog itself,
+      /// not the header behind it.
+      function setPrismNote(text, tone) {
+        el.prismNote.textContent = text || "";
+        el.prismNote.classList.toggle("roster-error", tone === "error");
+      }
+
+      function syncPrismActions() {
+        const ready = el.prismPrompt.value.trim().length > 0;
+        el.prismDispatch.disabled = !ready;
+        el.prismRoster.querySelectorAll(".roster-ask").forEach((button) => {
+          button.disabled = !ready || button.dataset.busy === "1";
+        });
+      }
+
+      async function addMarble() {
+        const name = el.marbleName.value.trim();
+        if (!name) {
+          setPrismNote("A marble needs a name.", "error");
+          el.marbleName.focus();
+          return;
+        }
+        try {
+          await api("/api/prism/marbles", {
+            method: "POST",
+            body: JSON.stringify({
+              name,
+              role: el.marbleRole.value.trim(),
+              glyph: el.marbleGlyph.value || "circle",
+              hue: Number(el.marbleHue.value || 0),
+              workspace: el.marbleWorkspace.value.trim(),
+            }),
+          });
+          el.marbleName.value = "";
+          el.marbleRole.value = "";
+          el.marbleWorkspace.value = "";
+          setPrismNote(name + " joined the roster.");
+        } catch (error) {
+          setPrismNote(error.message, "error");
+          return;
+        }
+        await refresh();
+        renderPrism();
+      }
+
+      async function dispatchSwarm(ids) {
+        const text = el.prismPrompt.value.trim();
+        if (!text) {
+          setPrismNote("Type the question you want the marble to take.", "error");
+          el.prismPrompt.focus();
+          return;
+        }
+        try {
+          const result = await api("/api/prism/dispatch", {
+            method: "POST",
+            body: JSON.stringify(ids ? { text, marbles: ids } : { text }),
+          });
+          const names = (result.marbles || []).join(", ");
+          el.prismPrompt.value = "";
+          setPrismNote((result.swarm ? "Swarm sent to " : "Sent to ") + names + ".");
+          setStatus((result.swarm ? "swarm sent to " : "sent to ") + names, "busy");
+        } catch (error) {
+          setPrismNote(error.message, "error");
+        }
+        await refresh();
+        renderPrism();
+      }
+
+      /// The full tool inventory: what Core owns beyond Marble's reach, and
+      /// every integration Marble approves itself.
+      async function loadTools() {
+        try {
+          const tools = await api("/api/tools");
+          const observed = ((tools.core && tools.core.observed) || []).slice()
+            .sort((left, right) => (right.lastAt || 0) - (left.lastAt || 0));
+          el.toolsNote.textContent =
+            "Core owns the coding tools and has used " + observed.length +
+            " of them on this host; Marble governs " + ((tools.governed || []).length) +
+            " integration(s) under the " + (tools.profile || "workspace") +
+            " posture. Core runs inside the session, so those appear here after the fact; only the governed ones ask you first.";
+          el.toolsCore.textContent = "";
+          if (!observed.length) {
+            emptyRow(el.toolsCore, "No Core tool has run on this host yet.");
+          }
+          observed.forEach((tool) => {
+            const item = node("li");
+            item.append(node("span", "tag core", "core"));
+            item.append(node("span", "grow", tool.name));
+            const runs = Number(tool.runs || 0);
+            item.append(node("span", "muted",
+              runs + " run" + (runs === 1 ? "" : "s") +
+              (tool.errors ? " · " + tool.errors + " failed" : "")));
+            el.toolsCore.append(item);
+          });
+          el.toolsGoverned.textContent = "";
+          const governed = tools.governed || [];
+          if (!governed.length) {
+            emptyRow(el.toolsGoverned, "No governed integrations are registered.");
+          }
+          governed.forEach((tool) => {
+            const item = node("li");
+            item.append(node("span", "tag " + (tool.effect === "write" ? "denied" : "allowed"), tool.effect));
+            item.append(node("span", "grow", tool.name));
+            item.append(node("span", "detail", tool.description));
+            el.toolsGoverned.append(item);
+          });
+        } catch (error) {
+          el.toolsNote.textContent = error.message;
+        }
       }
 
       function memoryState() {
@@ -1171,7 +1553,7 @@
           const deny = node("button", "danger", "Deny");
           deny.type = "button";
           deny.addEventListener("click", () => decideApproval(approval.requestId, "deny"));
-          const always = node("button", "ghost", "Always here");
+          const always = node("button", "ghost", "Always allow");
           always.type = "button";
           always.title = "Allow this tool in this directory from now on, until you revoke it";
           always.addEventListener("click", () => decideApproval(approval.requestId, "allow", true));
@@ -1186,15 +1568,14 @@
         renderTranscript();
         renderApprovals();
         renderControl();
+        renderPrism();
         const running = app.live.taskId;
         const control = controlState();
         el.cancel.hidden = !running;
         el.steerRow.hidden = !running;
         el.send.disabled = Boolean(running);
         el.taskHint.textContent = running ? "task " + running : "";
-        el.controlOpen.textContent = control.paused
-          ? "Control · paused"
-          : "Control · " + (control.profile || "workspace");
+        el.controlOpen.textContent = control.paused ? "Control · paused" : "Control";
         const presence = presenceState();
         const status = presence.status || (control.paused ? "paused" : running ? "working" : "idle");
         el.workspace.textContent = presence.summary || "durable collaborator";
@@ -1397,6 +1778,7 @@
           case "routine":
           case "retention":
           case "conversation":
+          case "prism":
             refresh();
             break;
           case "settled": {
@@ -1497,7 +1879,23 @@
       });
       el.controlOpen.addEventListener("click", () => {
         renderControl();
+        loadTools();
         el.control.showModal();
+      });
+      el.prismOpen.addEventListener("click", () => {
+        setPrismNote("");
+        renderPrism();
+        el.prism.showModal();
+      });
+      el.prismClose.addEventListener("click", () => el.prism.close());
+      el.prismDispatch.addEventListener("click", () => dispatchSwarm(null));
+      el.marbleAdd.addEventListener("click", addMarble);
+      el.prismPrompt.addEventListener("input", syncPrismActions);
+      el.prismPrompt.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          dispatchSwarm(null);
+        }
       });
       el.controlClose.addEventListener("click", () => el.control.close());
       el.controlPause.addEventListener("click", () =>

@@ -5,6 +5,7 @@
 //! against one workspace root, so an approved tool cannot reach outside it.
 
 use crate::MarbleError;
+use crate::crates::{CRATES_TOOL, CrateMap};
 use glass_runtime_client::ToolDefinition;
 use serde_json::{Value, json};
 use std::fs;
@@ -18,6 +19,28 @@ pub const WORKSPACE_SEARCH: &str = "glass.workspace.search";
 /// Whether one governed tool changes the workspace.
 pub fn is_write_tool(name: &str) -> bool {
     name == WORKSPACE_WRITE
+}
+
+/// The governed catalog as a surface document.
+///
+/// Core owns its native coding tools; these are the integrations Marble executes
+/// itself, so they are the ones a person approves. Each entry says what it
+/// touches, because "list" and "write" deserve different scrutiny.
+pub fn document() -> Value {
+    Value::Array(
+        ToolRouter::catalog()
+            .into_iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "owner": "marble",
+                    "effect": if is_write_tool(&tool.name) { "write" } else { "read" },
+                    "schema": tool.input_schema,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Largest file the read tool returns in one call.
@@ -152,6 +175,20 @@ impl ToolRouter {
                     "additionalProperties": false
                 }),
             },
+            ToolDefinition {
+                name: CRATES_TOOL.into(),
+                description: "List the Rust crates in this workspace with their packages, the \
+                     binaries they ship, the siblings they depend on, and how this host can reach \
+                     them. Pass `name` for one crate and what depends on it."
+                    .into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Crate or binary name; omit for the whole workspace."}
+                    },
+                    "additionalProperties": false
+                }),
+            },
         ]
     }
 
@@ -162,7 +199,36 @@ impl ToolRouter {
             WORKSPACE_READ => self.read(arguments),
             WORKSPACE_SEARCH => self.search(arguments),
             WORKSPACE_WRITE => self.write(arguments),
+            CRATES_TOOL => self.crates(arguments),
             other => ToolOutcome::error(format!("host has no tool named {other}")),
+        }
+    }
+
+    /// Report the workspace's crates and how this host can reach each one.
+    ///
+    /// The manifests are read on every call so a crate added in the middle of a
+    /// conversation shows up without a restart; the map is small and read-only.
+    fn crates(&self, arguments: &Value) -> ToolOutcome {
+        let map = CrateMap::load(&self.root);
+        if map.is_empty() {
+            return ToolOutcome::ok(format!(
+                "{} has no Cargo.toml workspace, so there are no crates to report",
+                self.display(&self.root)
+            ));
+        }
+        match arguments
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            None => ToolOutcome::ok(map.document().to_string()),
+            Some(name) => match map.find(name) {
+                Some(entry) => ToolOutcome::ok(map.crate_document(entry).to_string()),
+                None => {
+                    ToolOutcome::error(format!("no crate or binary named {name} in this workspace"))
+                }
+            },
         }
     }
 
@@ -553,6 +619,36 @@ mod tests {
         let outcome = router.execute("glass.not.real", &json!({}));
         assert!(outcome.is_error);
         assert!(outcome.text.contains("no tool named"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_crate_tool_reads_the_workspace_and_refuses_unknown_names() {
+        let root = workspace("crates");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/one\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("crates/one")).unwrap();
+        fs::write(
+            root.join("crates/one/Cargo.toml"),
+            "[package]\nname = \"one\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let router = ToolRouter::new(&root).unwrap();
+
+        let outcome = router.execute(CRATES_TOOL, &json!({}));
+        assert!(!outcome.is_error, "{}", outcome.text);
+        assert!(outcome.text.contains("\"one\""), "{}", outcome.text);
+
+        let one = router.execute(CRATES_TOOL, &json!({"name": "one"}));
+        assert!(!one.is_error, "{}", one.text);
+        assert!(one.text.contains("dependedOnBy"), "{}", one.text);
+
+        let missing = router.execute(CRATES_TOOL, &json!({"name": "nope"}));
+        assert!(missing.is_error, "{}", missing.text);
+
         let _ = fs::remove_dir_all(&root);
     }
 

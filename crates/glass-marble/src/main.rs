@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use glass_marble::{
     AccessPolicy, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, DataDirLock,
     EventBus, HostPolicy, InboundMessage, MarbleError, MarbleServer, MarbleServerParts, MarbleTurn,
-    ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions, default_data_dir,
-    run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
+    PrismPool, ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions,
+    default_data_dir, run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
 };
 use glass_marble::{notify, service};
 use std::net::TcpListener;
@@ -348,6 +348,24 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         TICK,
     );
     notify::spawn_event_watcher(events.clone(), Arc::clone(&state));
+    // The Prism roster gets its own engine per marble, started on first use: a
+    // host that never swarms pays nothing for it, and each marble keeps a
+    // workspace and session of its own.
+    let prism_factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(runtime_factory(cli));
+    let prism = Arc::new(PrismPool::new(glass_marble::prism::PrismPoolParts {
+        factory: prism_factory,
+        cwd: cwd.to_path_buf(),
+        sessions: sessions_dir(data_dir).join("prism"),
+        state: Arc::clone(&state),
+        store: Some(Arc::clone(&store)),
+        events: events.clone(),
+        cancels: cancels.clone(),
+        approvals: approvals.clone(),
+        timeout,
+    }));
+    // The workspace's own crates, read once at startup: which crate owns a
+    // behaviour is a question about the manifest, not about a file path.
+    let crate_map = glass_marble::CrateMap::load(cwd);
     let listener = TcpListener::bind((host, port)).map_err(MarbleError::Io)?;
     let server = MarbleServer::new(MarbleServerParts {
         listener,
@@ -359,7 +377,9 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         steer_tx,
         policy: AccessPolicy::new(token),
         cancels,
-    });
+    })
+    .with_prism(Arc::clone(&prism))
+    .with_crates(crate_map);
     let address = server.local_addr();
     println!("glass-marble listening on http://{address}");
     println!("pid: {}", std::process::id());
@@ -369,10 +389,11 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     {
         let state = state.lock().unwrap_or_else(|error| error.into_inner());
         println!(
-            "presence: {} · {} routines · {} memories",
+            "presence: {} · {} routines · {} memories · {} marble(s) on the prism roster",
             state.presence.status(&state),
             state.routines.routines.len(),
-            state.memory.facts.len()
+            state.memory.facts.len(),
+            state.prism.marbles.len()
         );
         if recovered > 0 {
             println!("recovery: {recovered} interrupted turn(s) marked");

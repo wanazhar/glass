@@ -236,6 +236,7 @@ impl PresenceState {
             "memories": state.memory.facts.len(),
             "notifications": state.notifications.summary(),
             "retention": state.retention.document(),
+            "prism": state.prism.summary(),
             "runtime": self.runtime.document(),
         })
     }

@@ -39,14 +39,14 @@ struct RoutinesView: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionTitle("New routine")
             TextField("Title (optional)", text: $title)
-                .textFieldStyle(.roundedBorder)
+                .marbleField()
             TextField("What should Marble do each time?", text: $prompt, axis: .vertical)
                 .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
+                .marbleField()
             TextField("every:1h · every:30m · daily:09:30", text: $schedule)
-                .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .marbleField()
             Button {
                 let newTitle = title
                 let newPrompt = prompt
@@ -120,6 +120,7 @@ struct RoutinesView: View {
                         Button("Remove", role: .destructive) {
                             Task { await store.remove(routine) }
                         }
+                        .foregroundStyle(MarblePalette.danger)
                     }
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.plain)

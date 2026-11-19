@@ -7,9 +7,11 @@
 use crate::Approval;
 use crate::control::ControlProfile;
 use crate::conversation::{ApprovalInbox, SteerRequest};
+use crate::crates::CrateMap;
 use crate::events::{EventBus, TurnEvent};
 use crate::memory::{self, MemoryCommand};
 use crate::notify::{self, ApnsSettings, Notification};
+use crate::prism::PrismPool;
 use crate::state::{PendingApproval, ProductState, TaskRecord};
 use crate::store::StateStore;
 use crate::voice;
@@ -378,6 +380,10 @@ pub struct MarbleServer {
     policy: AccessPolicy,
     cancels: CancelRegistry,
     login: LoginThrottle,
+    /// The Prism roster and its engines, when the host serves one.
+    prism: Option<Arc<PrismPool>>,
+    /// The workspace crate map, when the host was started inside one.
+    crates: Option<CrateMap>,
 }
 
 impl MarbleServer {
@@ -393,7 +399,21 @@ impl MarbleServer {
             policy: parts.policy,
             cancels: parts.cancels,
             login: LoginThrottle::default(),
+            prism: None,
+            crates: None,
         }
+    }
+
+    /// Attach the Prism pool. Sessions that never swarm keep the roster read-only.
+    pub fn with_prism(mut self, prism: Arc<PrismPool>) -> Self {
+        self.prism = Some(prism);
+        self
+    }
+
+    /// Attach the workspace crate map served at `/api/crates`.
+    pub fn with_crates(mut self, crates: CrateMap) -> Self {
+        self.crates = Some(crates);
+        self
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -562,6 +582,31 @@ impl MarbleServer {
         if head.method == "GET" && path == "/api/presence" {
             return self.presence_response();
         }
+        if head.method == "GET" && path == "/api/tools" {
+            return self.tools_response();
+        }
+        if head.method == "GET" && path == "/api/crates" {
+            return self.crates_response();
+        }
+        if head.method == "GET" && path == "/api/prism" {
+            return self.prism_response();
+        }
+        if head.method == "POST" && path == "/api/prism/marbles" {
+            return self.add_marble(body);
+        }
+        if head.method == "POST" && path == "/api/prism/dispatch" {
+            return self.dispatch_swarm(body);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/prism/marbles/")
+        {
+            if let Some(id) = rest.strip_suffix("/update") {
+                return self.update_marble(id, body);
+            }
+            if let Some(id) = rest.strip_suffix("/remove") {
+                return self.remove_marble(id);
+            }
+        }
         if head.method == "GET" && path == "/api/memory" {
             return self.memory_response();
         }
@@ -703,6 +748,232 @@ impl MarbleServer {
         )
     }
 
+    /// `GET /api/tools` — everything this marble can reach for.
+    ///
+    /// Two owners, one document. Core executes its own coding tools inside the
+    /// session; Marble executes the `glass.*` integrations and classifies each
+    /// one through the control layer. A surface that shows what an assistant can
+    /// do has to show both, and say which one asked permission first.
+    fn tools_response(&self) -> Response {
+        let (profile, observed) = {
+            let guard = self.lock_state();
+            (guard.control.profile, guard.engine_tools.clone())
+        };
+        let governed = crate::tools::document();
+        let governed_count = governed.as_array().map(Vec::len).unwrap_or_default();
+        Response::json(
+            200,
+            json!({
+                "protocol": "mixed",
+                "profile": profile.as_str(),
+                "core": {
+                    "owner": "core",
+                    "nativeTools": true,
+                    "observed": observed,
+                    "note": "Core runs these inside the session; Marble shows them but does not approve them.",
+                },
+                "governed": governed,
+                "counts": {
+                    "governed": governed_count,
+                    "observed": observed.len(),
+                },
+            }),
+        )
+    }
+
+    /// `GET /api/crates` — the workspace's crates and how this host reaches them.
+    fn crates_response(&self) -> Response {
+        match &self.crates {
+            Some(crates) => Response::json(200, crates.document()),
+            // A host started outside a Rust workspace has no map to serve, and
+            // saying so beats pretending every workspace has one.
+            None => Response::json(
+                503,
+                json!({
+                    "error": "crate_map_unavailable",
+                    "message": "this host was not started with a workspace crate map",
+                }),
+            ),
+        }
+    }
+
+    /// `GET /api/prism` — the marble roster and what it has done.
+    fn prism_response(&self) -> Response {
+        let mut document = { self.lock_state().prism.document() };
+        if let Value::Object(map) = &mut document {
+            map.insert("engine".into(), json!(self.prism.is_some()));
+        }
+        Response::json(200, document)
+    }
+
+    /// `POST /api/prism/marbles` — add one named marble to the roster.
+    fn add_marble(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let field = |key: &str| {
+            parsed
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let hue = parsed.get("hue").and_then(Value::as_u64).unwrap_or(0) as u16;
+        let marble = {
+            let mut guard = self.lock_state();
+            let added = match guard.prism.add(
+                &field("name"),
+                &field("role"),
+                &field("glyph"),
+                hue,
+                &field("workspace"),
+            ) {
+                Ok(marble) => marble.clone(),
+                Err(message) => {
+                    return Response::json(
+                        400,
+                        json!({"error": "invalid_marble", "message": message}),
+                    );
+                }
+            };
+            guard.bump();
+            added
+        };
+        self.save_state();
+        self.events
+            .publish("", "", "prism", json!({"marble": marble.id, "added": true}));
+        let roster = { self.lock_state().prism.document() };
+        Response::json(202, json!({"ok": true, "marble": marble, "prism": roster}))
+    }
+
+    /// `POST /api/prism/marbles/{id}/update` — rename, re-role, or move a marble.
+    fn update_marble(&self, id: &str, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = |key: &str| parsed.get(key).and_then(Value::as_str);
+        let hue = parsed
+            .get("hue")
+            .and_then(Value::as_u64)
+            .map(|hue| hue as u16);
+        let outcome = {
+            let mut guard = self.lock_state();
+            match guard.prism.update(
+                id,
+                text("name"),
+                text("role"),
+                text("glyph"),
+                hue,
+                text("workspace"),
+            ) {
+                Ok(()) => {
+                    guard.bump();
+                    Ok(guard.prism.get(id).cloned())
+                }
+                Err(message) => Err(message),
+            }
+        };
+        match outcome {
+            Ok(marble) => {
+                self.save_state();
+                let roster = { self.lock_state().prism.document() };
+                Response::json(200, json!({"ok": true, "marble": marble, "prism": roster}))
+            }
+            Err(message) => Response::json(
+                if message == "unknown marble" {
+                    404
+                } else {
+                    400
+                },
+                json!({ "error": "invalid_marble", "message": message }),
+            ),
+        }
+    }
+
+    /// `POST /api/prism/marbles/{id}/remove` — take a marble off the roster.
+    ///
+    /// Its conversation stays in the document: leaving a roster is a change of
+    /// who works, not permission to delete what was already said.
+    fn remove_marble(&self, id: &str) -> Response {
+        let removed = {
+            let mut guard = self.lock_state();
+            match guard.prism.remove(id) {
+                Ok(conversation) => {
+                    guard.bump();
+                    Ok(conversation)
+                }
+                Err(message) => Err(message),
+            }
+        };
+        match removed {
+            Ok(conversation) => {
+                if let Some(pool) = &self.prism {
+                    pool.shutdown_marble(id);
+                }
+                self.save_state();
+                self.events.publish(
+                    "",
+                    "",
+                    "prism",
+                    json!({"marble": id, "removed": true, "conversationId": conversation}),
+                );
+                Response::json(200, json!({"ok": true, "removed": id}))
+            }
+            Err(message) => {
+                Response::json(404, json!({"error": "unknown_marble", "message": message}))
+            }
+        }
+    }
+
+    /// `POST /api/prism/dispatch` — hand one prompt to several marbles at once.
+    fn dispatch_swarm(&self, body: &str) -> Response {
+        let Some(pool) = self.prism.as_ref() else {
+            return Response::json(
+                503,
+                json!({
+                    "error": "prism_unavailable",
+                    "message": "this host did not start a Prism pool",
+                }),
+            );
+        };
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let ids: Option<Vec<String>> =
+            parsed
+                .get("marbles")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                });
+        match pool.dispatch(&text, ids.as_deref()) {
+            Ok(dispatch) => {
+                let mut document = dispatch.document();
+                if let Value::Object(map) = &mut document {
+                    map.insert("ok".into(), json!(true));
+                    map.insert("prism".into(), self.lock_state().prism.document());
+                }
+                Response::json(202, document)
+            }
+            Err(refusal) => Response::json(
+                refusal.status,
+                json!({"error": refusal.code, "message": refusal.message}),
+            ),
+        }
+    }
+
     fn login(&self, body: &str, peer: &str) -> Response {
         if !self.policy.requires_token() {
             return Response::json(200, json!({"ok": true, "required": false}));
@@ -767,6 +1038,7 @@ impl MarbleServer {
             }
             // Derived documents: the raw counters are not the whole story.
             map.insert("presence".into(), snapshot.presence.document(&snapshot));
+            map.insert("prism".into(), snapshot.prism.document());
             map.insert("memory".into(), snapshot.memory.document());
             map.insert("routines".into(), snapshot.routines.document());
             map.insert("notifications".into(), snapshot.notifications.document());

@@ -6,7 +6,12 @@
     <meta name="theme-color" content="#0b1016" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#eef2f8" media="(prefers-color-scheme: light)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Marble" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='m' cx='32%25' cy='26%25'%3E%3Cstop offset='0' stop-color='%23b49aff'/%3E%3Cstop offset='.55' stop-color='%237fb0ff'/%3E%3Cstop offset='1' stop-color='%237ff0d4'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='15' fill='url(%23m)'/%3E%3C/svg%3E"
+    />
     <title>Glass Marble</title>
     <style>
       :root {
@@ -24,6 +29,7 @@
         --accent-soft: rgba(110, 168, 255, 0.16);
         --accent-line: rgba(110, 168, 255, 0.42);
         --danger: #ff7a7a;
+        --warn: #ffb95f;
         --ok: #5fd6a2;
         --radius: 20px;
         --field: rgba(4, 9, 16, 0.55);
@@ -45,6 +51,7 @@
           --accent-soft: rgba(31, 111, 235, 0.12);
           --accent-line: rgba(31, 111, 235, 0.38);
           --danger: #b42318;
+          --warn: #8a5a00;
           --ok: #0f7a54;
           --field: rgba(255, 255, 255, 0.9);
           --field-soft: rgba(24, 44, 74, 0.05);
@@ -52,6 +59,9 @@
         }
       }
       * { box-sizing: border-box; }
+      /* A rule such as `.memory-form { display: flex }` outranks the browser's
+         `[hidden]` rule, so a hidden row still took up space. */
+      [hidden] { display: none !important; }
       html, body { height: 100%; }
       body {
         margin: 0;
@@ -104,6 +114,9 @@
       header .sub { color: var(--muted); font-size: 12px; }
       .title-block { min-width: 0; }
       .title-block .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* A line that has nothing to say takes no room. */
+      .title-block .sub:empty, #control-summary:empty, #prism-count:empty,
+      #crates-note:empty, #tools-note:empty { display: none; }
       .header-actions { display: flex; align-items: center; gap: 8px; }
       .spacer { flex: 1; }
       .pill {
@@ -117,7 +130,7 @@
       .dot.live { background: var(--ok); box-shadow: 0 0 0 4px rgba(95, 214, 162, 0.16); }
       .dot.busy { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
       .dot.offline { background: var(--danger); }
-      .dot.paused { background: #ffb95f; }
+      .dot.paused { background: var(--warn); }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
       .ghost, .primary, .danger {
         border-radius: 999px; padding: 8px 14px; font-size: 13px;
@@ -156,10 +169,16 @@
       .conv[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent-line); }
       .conv .title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .conv .meta { font-size: 11px; color: var(--muted); }
-      .chat { display: grid; grid-template-rows: 1fr auto; min-height: 0; overflow: hidden; }
+      /* Approvals are their own shelf between the transcript and the composer;
+         without a row for them the composer landed in an implicit row and the
+         cards covered the last reply. */
+      .chat {
+        display: grid; grid-template-rows: minmax(0, 1fr) auto auto;
+        min-height: 0; overflow: hidden;
+      }
       .transcript {
         overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px;
-        scroll-behavior: smooth;
+        scroll-behavior: smooth; scrollbar-width: thin;
       }
       .empty { color: var(--muted); font-size: 13px; max-width: 46ch; }
       .msg { display: flex; flex-direction: column; gap: 4px; max-width: 78ch; }
@@ -179,10 +198,12 @@
       .tool .name { color: var(--text); font-weight: 600; }
       .tool.failed .name { color: var(--danger); }
       .card { padding: 12px 14px; }
+      .card.tight { padding: 0; }
       .segments { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
       .segment {
-        flex: 1 1 30%; min-height: 40px; border-radius: 12px; padding: 8px 10px;
+        flex: 1 1 30%; min-height: 44px; border-radius: 12px; padding: 8px 10px;
         border: 1px solid var(--line); background: transparent; font-size: 13px;
+        display: flex; flex-direction: column; justify-content: center; text-align: left;
       }
       .segment.active {
         background: var(--accent-soft); border-color: var(--accent-line);
@@ -196,10 +217,15 @@
         max-height: 86dvh; overflow: auto;
       }
       #prism-note:empty { display: none; }
+      #prism-count { margin: 0 0 6px; }
       dialog.control h3 {
         font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
         color: var(--muted); margin: 18px 0 8px; font-weight: 600;
       }
+      /* The first heading follows the dialog's own title, so it needs the row
+         spacing rather than a second gap stacked on top of it. */
+      dialog.control > h3:first-of-type { margin-top: 10px; }
+      dialog.control > :last-child { margin-bottom: 0; }
       dialog select {
         width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px;
         background: var(--field); color: var(--text);
@@ -253,7 +279,9 @@
       /* Three roster actions plus a name cannot share one phone-width row. */
       @media (max-width: 520px) {
         .roster-row { flex-wrap: wrap; }
-        .roster-actions { flex: 1 1 100%; }
+        /* Wrapped actions line up under the marble's text, not under its
+           avatar, so the row still reads as one column. */
+        .roster-actions { flex: 1 1 100%; margin-left: 46px; }
       }
       @keyframes marble-blink { 0%, 92%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.2); } }
       @keyframes marble-breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
@@ -264,7 +292,15 @@
         display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
         font-size: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px;
       }
-      .records .grow { flex: 1; min-width: 0; word-break: break-word; }
+      /* A zero basis let the meta column keep its full width and squeeze the
+         title down to two characters a line. A real basis makes the row wrap
+         instead: title across the line, meta underneath. */
+      .records .grow { flex: 1 1 18ch; min-width: 0; word-break: break-word; }
+      /* Row actions wrap as one group, so "Edit" never orphans "Forget". */
+      .records .actions {
+        display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px;
+        flex: 0 0 auto; margin-left: auto;
+      }
       /* A description belongs on its own line: squeezed into the row it either
          truncates the tool name or runs off the edge on a phone. */
       .records .detail {
@@ -280,6 +316,7 @@
       .records .tag.denied { color: var(--danger); border-color: rgba(180, 35, 24, 0.4); }
       .records .tag.routine { color: var(--accent); border-color: rgba(110, 168, 255, 0.45); }
       .records .tag.typed { color: var(--muted); }
+      .records .tag.held { color: var(--warn); border-color: rgba(255, 185, 95, 0.4); }
       .records .muted, .rules .muted { color: var(--muted); }
       .records button { min-height: 36px; padding: 6px 12px; font-size: 12px; }
       /* A finger needs 44px; a mouse does not. */
@@ -287,13 +324,23 @@
         .records button, .ghost, .primary, .danger { min-height: 44px; }
         .conv { padding: 11px 12px; }
       }
-      .empty-row { color: var(--muted); font-size: 12px; }
-      .routine-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+      .empty-row { color: var(--muted); font-size: 12px; margin: 0; }
+      /* Loading rows keep a list's rhythm: the section does not jump when the
+         real rows replace them. */
+      .records .skeleton.row, .rules .skeleton.row { border: 0; }
+      /* Two fixed columns forced a time picker and its label into one narrow
+         measure; auto-fit keeps every field the same height and lets a long
+         row wrap instead of crushing its last input. */
+      .routine-form {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 8px; margin-bottom: 10px; align-items: center;
+      }
       .routine-form input, .memory-form input, dialog.control input, #memory-text,
       #conversation-search {
-        width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px;
-        background: var(--field);
+        width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 12px;
+        padding: 9px 11px; background: var(--field);
       }
+      .routine-form select { min-height: 40px; }
       #conversation-search { margin-bottom: 8px; border-radius: 14px; font-size: 13px; }
       input[type="checkbox"] {
         width: auto; min-width: 18px; height: 18px; padding: 0; margin: 0 2px 0 0;
@@ -304,7 +351,18 @@
       .presence-line { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; margin-bottom: 6px; }
       .presence-line .muted { color: var(--muted); font-size: 12px; }
       .suggest { border-color: var(--accent-line); background: var(--accent-soft); }
-      .approvals { margin: 0 16px 8px; display: flex; flex-direction: column; gap: 10px; }
+      /* The transcript scrolls under this shelf, so it needs its own surface:
+         without one the last reply showed through the margin and looked cut in
+         half by a floating card. */
+      .approvals {
+        margin: 0; padding: 10px 16px;
+        border-top: 1px solid var(--line);
+        background: var(--surface-strong);
+        display: flex; flex-direction: column; gap: 10px;
+        max-height: 40dvh; overflow-y: auto; scrollbar-width: thin;
+      }
+      .approvals:empty { display: none; }
+      .approvals .card { box-shadow: none; }
       .approval { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
       .approval code { font-size: 11px; color: var(--muted); word-break: break-all; }
       .approval .actions { display: flex; gap: 8px; }
@@ -318,7 +376,14 @@
         flex: 1; resize: none; border: 0; background: transparent; outline: none;
         max-height: 40dvh; min-height: 24px; padding: 7px 0; line-height: 1.45;
       }
-      .hint { color: var(--muted); font-size: 11px; margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+      .hint {
+        color: var(--muted); font-size: 11px; margin-top: 6px; display: flex; gap: 10px;
+        flex-wrap: wrap; align-items: center;
+      }
+      /* Stop belongs to the composer, not to a second row of its own. */
+      .hint .danger {
+        min-height: 30px; padding: 4px 12px; font-size: 12px; margin-left: auto;
+      }
       .banner {
         margin: 16px; padding: 12px 14px; border-radius: 14px; font-size: 13px;
         border: 1px solid var(--accent-line); background: var(--accent-soft);
@@ -336,6 +401,7 @@
         background: var(--field); margin-bottom: 12px;
       }
       dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
+      dialog .row.footer { margin-top: 18px; }
       .sr-only {
         position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
         overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -359,14 +425,79 @@
         .title-block { flex: 1 1 auto; }
         /* A grid keeps five header buttons on one measure; flex used to leave a
            ragged final row with a half-width "New". */
+        /* Six tracks so the five buttons fill two even rows: the three sheets
+           across the first, Chats and New across the second. */
         .header-actions {
           flex: 1 1 100%;
-          display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+          display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px;
         }
+        .header-actions > :nth-child(-n + 3) { grid-column: span 2; }
+        .header-actions > :nth-child(n + 4) { grid-column: span 3; }
         .header-actions .ghost, .header-actions .primary {
           min-width: 0; padding: 8px 6px; font-size: 12px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;
         }
+      }
+      /* Motion is feedback, not decoration. A surface that is still loading
+         says so with a shaped placeholder, and a reply that arrives while the
+         transcript is on screen lifts into place once. */
+      .skeleton {
+        position: relative; overflow: hidden; border-radius: 14px;
+        background: var(--field-soft); border: 1px solid var(--line);
+      }
+      .skeleton::after {
+        content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+        background: linear-gradient(90deg, transparent, rgba(160, 190, 230, 0.16), transparent);
+        animation: shimmer 1.5s ease-in-out infinite;
+      }
+      @keyframes shimmer { 100% { transform: translateX(100%); } }
+      .skeleton-stack { display: flex; flex-direction: column; gap: 12px; width: min(78ch, 100%); }
+      .skeleton.bubble { height: 44px; border-radius: 16px; }
+      .skeleton.bubble.tall { height: 66px; }
+      .skeleton.bubble.you { height: 38px; align-self: flex-end; }
+      .skeleton.row { height: 34px; border-radius: 12px; }
+      .skeleton.w-70 { width: 70%; }
+      .skeleton.w-55 { width: 55%; }
+      .skeleton.w-45 { width: 45%; }
+      /* Three dots say a turn is running without a spinner covering the text. */
+      .working { display: flex; gap: 5px; align-items: center; padding: 3px 2px; }
+      .working i {
+        width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+        animation: working-dot 1.1s ease-in-out infinite;
+      }
+      .working i:nth-child(2) { animation-delay: 0.15s; }
+      .working i:nth-child(3) { animation-delay: 0.3s; }
+      @keyframes working-dot {
+        0%, 100% { opacity: 0.25; transform: translateY(0); }
+        50% { opacity: 1; transform: translateY(-3px); }
+      }
+      .msg.live { animation: reply-in 0.22s ease-out both; }
+      @keyframes reply-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: none; }
+      }
+      .conv, .records li, .rules li {
+        transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+      }
+      .conv:hover { transform: translateX(1px); }
+      .ghost, .primary, .danger, .segment {
+        transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease,
+          filter 0.16s ease;
+      }
+      .records li:hover, .rules li:hover { border-color: var(--accent-line); }
+      dialog[open] { animation: sheet-in 0.2s cubic-bezier(0.2, 0.8, 0.3, 1); }
+      dialog::backdrop { animation: veil-in 0.2s ease-out; }
+      @keyframes sheet-in {
+        from { opacity: 0; transform: translateY(10px) scale(0.995); }
+        to { opacity: 1; transform: none; }
+      }
+      @keyframes veil-in { from { opacity: 0; } }
+      /* A poll must not scroll a reader away mid-sentence, so the transcript
+         keeps its own momentum and only follows the reply when it was at the
+         end. */
+      .transcript {
+        overscroll-behavior: contain; scroll-padding-block: 14px;
+        -webkit-overflow-scrolling: touch;
       }
       @media (prefers-reduced-motion: reduce) {
         * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
@@ -379,7 +510,7 @@
         <div class="mark" aria-hidden="true"></div>
         <div class="title-block">
           <h1>Glass Marble</h1>
-          <div class="sub" id="workspace-label">durable collaborator</div>
+          <div class="sub" id="workspace-label"></div>
         </div>
         <span class="pill" role="status" aria-live="polite">
           <span class="dot" id="status-dot" aria-hidden="true"></span><span id="status-text">idle</span>
@@ -403,13 +534,19 @@
             <ul class="conv-list" id="conversations"></ul>
           </div>
           <div class="spacer"></div>
-          <div class="card" style="padding: 0">
+          <div class="card tight">
             <h2>Tasks</h2>
             <ul class="conv-list" id="tasks"></ul>
           </div>
         </aside>
         <main class="chat glass">
-          <div class="transcript" id="transcript" aria-live="polite"></div>
+          <div class="transcript" id="transcript" aria-live="polite" aria-busy="true">
+            <div class="skeleton-stack" aria-hidden="true">
+              <div class="skeleton bubble you w-45"></div>
+              <div class="skeleton bubble tall w-70"></div>
+              <div class="skeleton bubble w-55"></div>
+            </div>
+          </div>
           <div class="approvals" id="approvals"></div>
           <div class="composer">
             <div class="composer-row">
@@ -417,13 +554,8 @@
               <textarea id="composer" rows="1" placeholder="Ask Marble to work in this workspace…"></textarea>
               <button class="primary" id="send">Send</button>
             </div>
-            <div class="memory-form" id="steer-row" hidden>
-              <label class="sr-only" for="steer">Correct the running turn</label>
-              <input id="steer" placeholder="Correct Marble while it works…" />
-              <button class="ghost" id="steer-send" type="button">Steer</button>
-            </div>
             <div class="hint">
-              <span>Enter sends · Shift+Enter adds a line</span>
+              <span id="hint-keys">Enter sends · Shift+Enter adds a line</span>
               <span id="task-hint"></span>
               <button class="danger" id="cancel" hidden>Stop</button>
             </div>
@@ -433,29 +565,28 @@
     </div>
     <dialog id="control" class="control" aria-labelledby="control-title">
       <h2 id="control-title">Marble control</h2>
-      <p id="control-summary">
-        Marble decides which governed tools may run before Core ever gets an answer. Nothing here is
-        inherited from the engine, and every decision is journalled below.
-      </p>
+      <p id="control-summary"></p>
       <div class="segments" id="control-profiles" role="group" aria-label="Control profile"></div>
       <div class="control-actions">
         <button class="ghost" id="control-pause" type="button">Pause queue</button>
         <button class="danger" id="control-stop" type="button">Stop everything</button>
       </div>
       <h3>Waiting to run</h3>
-      <p class="empty-row" id="control-queue-note" hidden></p>
       <ul class="records" id="control-queue"></ul>
       <h3>Standing grants</h3>
       <ul class="records" id="control-grants"></ul>
       <h3>Denied paths</h3>
       <ul class="rules" id="control-denied"></ul>
+      <h3>Workspace crates</h3>
+      <p class="empty-row" id="crates-note"></p>
+      <ul class="records" id="crates-list"></ul>
       <h3>Tooling</h3>
-      <p class="empty-row" id="tools-note">Core owns the coding tools inside the session; Marble governs the integrations. Both are listed here.</p>
+      <p class="empty-row" id="tools-note"></p>
       <ul class="records" id="tools-core"></ul>
       <ul class="records" id="tools-governed"></ul>
       <h3>Recent decisions</h3>
       <ul class="records" id="control-ledger"></ul>
-      <div class="row" style="margin-top: 16px">
+      <div class="row footer">
         <button class="ghost" id="control-close" type="button">Close</button>
       </div>
     </dialog>
@@ -465,7 +596,6 @@
         <span class="pill"><span class="dot" id="assistant-dot"></span><span id="assistant-status">idle</span></span>
         <span class="muted" id="assistant-uptime"></span>
       </div>
-      <p id="assistant-summary">Marble keeps running on this host.</p>
 
       <h3>Remembered</h3>
       <div class="memory-form">
@@ -501,7 +631,7 @@
         <input id="model-name" placeholder="Engine default" />
         <button class="ghost" id="model-save" type="button">Save</button>
       </div>
-      <p class="empty-row">Applies to new conversations. A turn already running keeps its model.</p>
+      <p class="empty-row">Applies to new conversations.</p>
 
       <h3>Notifications</h3>
       <div class="memory-form">
@@ -516,7 +646,7 @@
         <input id="quiet-start" type="time" aria-label="Quiet hours start" />
         <input id="quiet-end" type="time" aria-label="Quiet hours end" />
       </div>
-      <p class="empty-row">Approvals and failures always reach you. Routine news waits until quiet hours end.</p>
+      <p class="empty-row">Approvals and failures ignore quiet hours.</p>
       <div class="routine-form">
         <input id="apns-key" placeholder="AuthKey.p8 path" aria-label="APNs key file" />
         <input id="apns-team" placeholder="Team ID" aria-label="APNs team id" />
@@ -535,26 +665,21 @@
       <div class="control-actions">
         <button class="ghost" id="export-all" type="button">Export everything</button>
       </div>
-      <p class="empty-row">A JSON copy of conversations, memory, routines, and settings. The host also writes one backup a day beside its state file and keeps a week.</p>
+      <p class="empty-row">A JSON copy of conversations, memory, routines, and settings.</p>
 
       <h3>Voice</h3>
-      <p class="empty-row" id="voice-note">Speech stays on this device. Marble shapes the reply; the browser speaks it.</p>
+      <p class="empty-row" id="voice-note">Speech stays on this device.</p>
       <div class="control-actions">
         <button class="ghost" id="voice-toggle" type="button">Read replies aloud</button>
       </div>
-      <div class="row" style="margin-top: 16px">
+      <div class="row footer">
         <button class="ghost" id="assistant-close" type="button">Close</button>
       </div>
     </dialog>
     <dialog id="prism" class="control" aria-labelledby="prism-title">
       <h2 id="prism-title">Prism protocol</h2>
-      <p class="empty-row" id="prism-count">One marble answers. Several marbles work.</p>
+      <p class="empty-row" id="prism-count"></p>
       <p class="empty-row" id="prism-note" role="status" aria-live="polite"></p>
-      <p class="empty-row">
-        Every marble keeps its own name, workspace, conversation, and engine, so a swarm really runs
-        side by side instead of queueing behind one turn. A marble takes one turn at a time; asking a
-        busy one is refused rather than parked out of sight.
-      </p>
       <h3>Roster</h3>
       <ul class="records" id="prism-roster"></ul>
       <h3>Dispatch</h3>
@@ -582,14 +707,21 @@
         <input id="marble-hue" type="range" min="0" max="359" value="210" aria-label="Marble colour" />
         <button class="primary" id="marble-add" type="button">Add marble</button>
       </div>
-      <div class="row" style="margin-top: 16px">
+      <div class="row footer">
         <button class="ghost" id="prism-close" type="button">Close</button>
       </div>
     </dialog>
     <dialog id="login" aria-labelledby="login-title">
       <form method="dialog" id="login-form">
         <h2 id="login-title">Access token</h2>
-        <p>This Marble instance is shared over your private network. Paste the token configured on the host.</p>
+        <p>Paste the access token configured on the host.</p>
+        <input
+          type="text"
+          name="username"
+          autocomplete="username"
+          value="marble"
+          hidden
+        />
         <label class="sr-only" for="token">Token</label>
         <input id="token" type="password" autocomplete="current-password" required />
         <div class="row">
@@ -610,12 +742,19 @@
         conversationId: null,
         sequence: 0,
         outbox: [],
-        live: { taskId: null, text: "", reasoning: "", tools: [] },
+        // Live text belongs to one conversation. Several chats can run at once,
+        // so an event for another chat must not type itself into this one.
+        live: { conversationId: null, taskId: null, text: "", reasoning: "", tools: [] },
+        loading: true,
+        crates: null,
+        cratesLoaded: false,
+        cratesError: null,
         transcript: [],
         transcriptConversation: null,
         transcriptCursor: 0,
         stream: null,
         offline: false,
+        revision: null,
         frame: 0,
         notifyDraft: null,
         searchTimer: null,
@@ -629,10 +768,8 @@
         tasks: document.getElementById("tasks"),
         approvals: document.getElementById("approvals"),
         composer: document.getElementById("composer"),
-        steerRow: document.getElementById("steer-row"),
-        steer: document.getElementById("steer"),
-        steerSend: document.getElementById("steer-send"),
         send: document.getElementById("send"),
+        hintKeys: document.getElementById("hint-keys"),
         cancel: document.getElementById("cancel"),
         statusDot: document.getElementById("status-dot"),
         statusText: document.getElementById("status-text"),
@@ -651,7 +788,6 @@
         controlPause: document.getElementById("control-pause"),
         controlStop: document.getElementById("control-stop"),
         controlQueue: document.getElementById("control-queue"),
-        controlQueueNote: document.getElementById("control-queue-note"),
         controlGrants: document.getElementById("control-grants"),
         controlDenied: document.getElementById("control-denied"),
         controlLedger: document.getElementById("control-ledger"),
@@ -661,7 +797,6 @@
         assistantStatus: document.getElementById("assistant-status"),
         assistantDot: document.getElementById("assistant-dot"),
         assistantUptime: document.getElementById("assistant-uptime"),
-        assistantSummary: document.getElementById("assistant-summary"),
         modelName: document.getElementById("model-name"),
         modelSave: document.getElementById("model-save"),
         memoryText: document.getElementById("memory-text"),
@@ -707,6 +842,8 @@
         toolsNote: document.getElementById("tools-note"),
         toolsCore: document.getElementById("tools-core"),
         toolsGoverned: document.getElementById("tools-governed"),
+        cratesNote: document.getElementById("crates-note"),
+        cratesList: document.getElementById("crates-list"),
       };
 
       function node(tag, className, text) {
@@ -802,20 +939,48 @@
         return wrapper;
       }
 
+      /// The live buffer for the conversation on screen, or null. A turn in
+      /// another chat keeps running; this surface just does not pretend it is
+      /// happening here.
+      function activeLive() {
+        const conversationId = activeConversation() || "";
+        if (app.live.conversationId !== conversationId) return null;
+        return app.live;
+      }
+
+      function skeletonTranscript() {
+        const stack = node("div", "skeleton-stack");
+        ["you w-45", "tall w-70", "w-55"].forEach((shape) => {
+          stack.append(node("div", "skeleton bubble " + shape));
+        });
+        el.transcript.append(stack);
+      }
+
       function renderTranscript() {
+        // A poll must not yank the transcript down while someone is reading
+        // history; it only follows the reply when it was already at the end.
+        const nearBottom =
+          el.transcript.scrollHeight - el.transcript.scrollTop - el.transcript.clientHeight < 80;
         el.transcript.textContent = "";
+        if (app.loading) {
+          el.transcript.setAttribute("aria-busy", "true");
+          skeletonTranscript();
+          return;
+        }
+        el.transcript.removeAttribute("aria-busy");
         const conversationId = activeConversation();
         const entries = (app.transcript || []).filter(
           (entry) => !conversationId || entry.conversationId === conversationId
         );
         const known = new Set(entries.map((entry) => entry.taskId).filter(Boolean));
+        const live = activeLive();
 
-        if (!entries.length && !app.outbox.length && !app.live.text && !app.live.tools.length) {
+        if (!entries.length && !app.outbox.length && !live?.text && !live?.tools.length) {
           el.transcript.append(
             node(
               "p",
               "empty",
-              "Marble runs on your machine. Ask it to read, change, or explain something in this workspace — every turn is journalled, so you can stop, resume, and audit it later."
+              "Ask Marble to read, change, or explain something in this workspace."
             )
           );
         }
@@ -835,24 +1000,39 @@
           .filter((item) => !item.taskId || !known.has(item.taskId))
           .forEach((item) => el.transcript.append(messageBlock("user", item.text, "pending")));
 
-        app.live.tools.forEach((tool) => {
-          const row = node("div", "tool" + (tool.isError ? " failed" : ""));
-          row.append(node("span", "name", tool.tool));
-          row.append(node("span", null, tool.summary));
-          el.transcript.append(row);
-        });
+        if (live) {
+          live.tools.forEach((tool) => {
+            const row = node("div", "tool" + (tool.isError ? " failed" : ""));
+            row.append(node("span", "name", tool.tool));
+            row.append(node("span", null, tool.summary));
+            el.transcript.append(row);
+          });
 
-        if (app.live.reasoning) {
-          el.transcript.append(messageBlock("reasoning", app.live.reasoning));
+          if (live.reasoning) {
+            el.transcript.append(messageBlock("reasoning", live.reasoning, "live"));
+          }
+          if (live.text) {
+            el.transcript.append(messageBlock("assistant", live.text, "live"));
+          } else if (live.taskId && !live.reasoning && !live.tools.length) {
+            // A turn that has not said anything yet is still visibly running.
+            const working = node("div", "working");
+            working.setAttribute("role", "status");
+            working.setAttribute("aria-label", "Marble is working");
+            working.append(node("i"), node("i"), node("i"));
+            el.transcript.append(working);
+          }
         }
-        if (app.live.text) {
-          el.transcript.append(messageBlock("assistant", app.live.text));
-        }
-        el.transcript.scrollTop = el.transcript.scrollHeight;
+        if (nearBottom) el.transcript.scrollTop = el.transcript.scrollHeight;
       }
 
       function controlState() {
         return (app.state && app.state.control) || {};
+      }
+
+      function recordActions(...buttons) {
+        const group = node("div", "actions");
+        buttons.forEach((button) => group.append(button));
+        return group;
       }
 
       function emptyRow(list, text) {
@@ -874,8 +1054,8 @@
           el.controlProfiles.append(button);
         });
         el.controlSummary.textContent = control.paused
-          ? "Admission is paused. New messages wait in the queue below until you resume."
-          : "Marble decides which governed tools may run before Core gets an answer. Nothing here is inherited from the engine.";
+          ? "Paused. New messages wait below until you resume."
+          : "";
         el.controlPause.textContent = control.paused ? "Resume queue" : "Pause queue";
 
         el.controlQueue.textContent = "";
@@ -911,9 +1091,6 @@
           .sort((left, right) =>
             Number(Boolean(left.routineId)) - Number(Boolean(right.routineId))
           );
-        const note = waiting.note || "";
-        el.controlQueueNote.textContent = note;
-        el.controlQueueNote.hidden = !note;
         if (!rows.length) {
           emptyRow(el.controlQueue, control.paused ? "Nothing waiting. Admission is paused." : "Nothing waiting.");
         }
@@ -927,7 +1104,7 @@
 
         el.controlGrants.textContent = "";
         const grants = control.grants || [];
-        if (!grants.length) emptyRow(el.controlGrants, "No standing grants. Approvals ask every time.");
+        if (!grants.length) emptyRow(el.controlGrants, "No standing grants. Every call asks first.");
         grants.forEach((grant) => {
           const item = node("li");
           item.append(node("span", "grow", grant.tool + " · " + (grant.pathPrefix || "whole workspace")));
@@ -937,7 +1114,7 @@
           revoke.addEventListener("click", () =>
             controlAction("/api/control/grants/" + encodeURIComponent(grant.id) + "/revoke")
           );
-          item.append(revoke);
+          item.append(recordActions(revoke));
           el.controlGrants.append(item);
         });
 
@@ -960,6 +1137,57 @@
           item.append(node("span", "grow", (entry.tool || "control") + (entry.path ? " · " + entry.path : "")));
           item.append(node("span", "muted", entry.reason));
           el.controlLedger.append(item);
+        });
+      }
+
+      /// The crate map is a workspace scan, so it is fetched when the sheet that
+      /// shows it opens rather than riding on every state poll.
+      async function loadCrates() {
+        el.cratesList.textContent = "";
+        el.cratesNote.textContent = "";
+        el.cratesList.setAttribute("aria-busy", "true");
+        for (let index = 0; index < 3; index += 1) {
+          el.cratesList.append(node("li", "skeleton row"));
+        }
+        try {
+          app.crates = await api("/api/crates");
+          app.cratesError = null;
+        } catch (error) {
+          app.crates = null;
+          app.cratesError = error.message;
+        }
+        app.cratesLoaded = true;
+        el.cratesList.removeAttribute("aria-busy");
+        renderCrates();
+      }
+
+      function renderCrates() {
+        el.cratesList.textContent = "";
+        const crates = app.crates;
+        if (!crates) {
+          el.cratesNote.textContent = app.cratesError || "No crate map on this host.";
+          emptyRow(el.cratesList, "No workspace crates to show.");
+          return;
+        }
+        const members = Number((crates.workspace || {}).members || 0);
+        const marble = (crates.workspace || {}).marble;
+        el.cratesNote.textContent =
+          members + " crate" + (members === 1 ? "" : "s") +
+          (marble ? " · " + marble : "") +
+          (crates.truncated ? " · truncated" : "");
+        const entries = crates.crates || [];
+        if (!entries.length) emptyRow(el.cratesList, "No crates in the map.");
+        entries.forEach((entry) => {
+          const item = node("li");
+          (entry.reach || []).forEach((reach) => {
+            item.append(node("span", "tag " + (reach === "library" ? "core" : "allowed"), reach));
+          });
+          item.append(node("span", "grow", entry.name + (entry.version ? " " + entry.version : "")));
+          // Path and description take their own lines, so every crate row has
+          // the same shape whether its name is short or long.
+          if (entry.path) item.append(node("span", "detail", entry.path));
+          if (entry.description) item.append(node("span", "detail", entry.description));
+          el.cratesList.append(item);
         });
       }
 
@@ -989,12 +1217,12 @@
         const marbles = prism.marbles || [];
         const swarms = Number(prism.swarms || 0);
         el.prismCount.textContent = prism.engine === false
-          ? "This host did not start a Prism pool, so the roster is read-only."
-          : marbles.length + " / " + (prism.limit || 8) + " marbles · " + swarms +
-            " swarm" + (swarms === 1 ? "" : "s") + " · protocol prism";
+          ? "No Prism pool on this host. The roster is read-only."
+          : marbles.length + " of " + (prism.limit || 8) + " marbles · " + swarms +
+            " swarm" + (swarms === 1 ? "" : "s");
         el.prismRoster.textContent = "";
         if (!marbles.length) {
-          emptyRow(el.prismRoster, "No marbles yet. Add one with a name and a job, then hand work to several at once.");
+          emptyRow(el.prismRoster, "No marbles yet.");
         }
         marbles.forEach((marble) => {
           const item = node("li", "roster-row");
@@ -1005,8 +1233,7 @@
           if (marble.lastError) info.append(node("span", "roster-error", marble.lastError));
           const turns = Number(marble.runs || 0);
           info.append(node("span", "roster-meta",
-            (marble.state || "idle") + " · " + turns + " turn" + (turns === 1 ? "" : "s") +
-            (marble.conversationId ? " · keeps its conversation" : "")));
+            (marble.state || "idle") + " · " + turns + " turn" + (turns === 1 ? "" : "s")));
           item.append(info);
           const actions = node("div", "roster-actions");
           const ask = node("button", "ghost roster-ask", "Ask");
@@ -1055,11 +1282,12 @@
         el.prismNote.classList.toggle("roster-error", tone === "error");
       }
 
+      // Dispatch asks for the question when it is missing, so an empty prompt
+      // is not a dead button with no explanation. A working marble still is:
+      // it takes one turn at a time and says so in its title.
       function syncPrismActions() {
-        const ready = el.prismPrompt.value.trim().length > 0;
-        el.prismDispatch.disabled = !ready;
         el.prismRoster.querySelectorAll(".roster-ask").forEach((button) => {
-          button.disabled = !ready || button.dataset.busy === "1";
+          button.disabled = button.dataset.busy === "1";
         });
       }
 
@@ -1119,15 +1347,22 @@
       /// The full tool inventory: what Core owns beyond Marble's reach, and
       /// every integration Marble approves itself.
       async function loadTools() {
+        el.toolsCore.textContent = "";
+        el.toolsNote.textContent = "";
+        for (let index = 0; index < 2; index += 1) {
+          el.toolsCore.append(node("li", "skeleton row"));
+        }
+        el.toolsCore.setAttribute("aria-busy", "true");
+        el.toolsGoverned.textContent = "";
         try {
           const tools = await api("/api/tools");
+          el.toolsCore.removeAttribute("aria-busy");
           const observed = ((tools.core && tools.core.observed) || []).slice()
             .sort((left, right) => (right.lastAt || 0) - (left.lastAt || 0));
           el.toolsNote.textContent =
-            "Core owns the coding tools and has used " + observed.length +
-            " of them on this host; Marble governs " + ((tools.governed || []).length) +
-            " integration(s) under the " + (tools.profile || "workspace") +
-            " posture. Core runs inside the session, so those appear here after the fact; only the governed ones ask you first.";
+            "Core has used " + observed.length + " tools. Marble governs " +
+            (tools.governed || []).length + " integrations under the " +
+            (tools.profile || "workspace") + " posture.";
           el.toolsCore.textContent = "";
           if (!observed.length) {
             emptyRow(el.toolsCore, "No Core tool has run on this host yet.");
@@ -1155,6 +1390,8 @@
             el.toolsGoverned.append(item);
           });
         } catch (error) {
+          el.toolsCore.removeAttribute("aria-busy");
+          el.toolsCore.textContent = "";
           el.toolsNote.textContent = error.message;
         }
       }
@@ -1199,12 +1436,11 @@
         el.assistantUptime.textContent = uptime > 0
           ? "up " + formatUptime(uptime) + (presence.instance ? " · " + presence.instance : "")
           : "";
-        el.assistantSummary.textContent = presence.summary || "Marble keeps running on this host.";
 
         el.memoryFacts.textContent = "";
         const facts = memoryState().facts || [];
         if (!facts.length) {
-          emptyRow(el.memoryFacts, "Nothing remembered yet. Type \u201cremember this: \u2026\u201d in a message, or add one below.");
+          emptyRow(el.memoryFacts, "Nothing remembered yet.");
         }
         facts.forEach((fact) => {
           const item = node("li");
@@ -1218,7 +1454,7 @@
           forget.addEventListener("click", () =>
             controlAction("/api/memory/" + encodeURIComponent(fact.id) + "/forget")
           );
-          item.append(edit, forget);
+          item.append(recordActions(edit, forget));
           el.memoryFacts.append(item);
         });
 
@@ -1238,13 +1474,13 @@
           dismiss.addEventListener("click", () =>
             controlAction("/api/memory/" + encodeURIComponent(suggestion.id) + "/dismiss")
           );
-          item.append(save, dismiss);
+          item.append(recordActions(save, dismiss));
           el.memorySuggestions.append(item);
         });
 
         el.routines.textContent = "";
         const routines = routineState().routines || [];
-        if (!routines.length) emptyRow(el.routines, "No routines yet. Add one so Marble works without being asked.");
+        if (!routines.length) emptyRow(el.routines, "No routines yet.");
         routines.forEach((routine) => {
           const item = node("li");
           const state = routine.lastStatus || (routine.enabled ? "scheduled" : "paused");
@@ -1270,7 +1506,7 @@
           remove.addEventListener("click", () =>
             controlAction("/api/routines/" + encodeURIComponent(routine.id) + "/remove")
           );
-          item.append(run, toggle, remove);
+          item.append(recordActions(run, toggle, remove));
           el.routines.append(item);
         });
 
@@ -1292,7 +1528,7 @@
 
         el.notifyDevices.textContent = "";
         const devices = (app.state && app.state.devices) || [];
-        if (!devices.length) emptyRow(el.notifyDevices, "No push devices yet. The iOS app registers itself when it connects.");
+        if (!devices.length) emptyRow(el.notifyDevices, "No push devices yet.");
         devices.forEach((device) => {
           const item = node("li");
           item.append(node("span", "grow", (device.platform || "ios") + " · " + (device.tokenPrefix || "") + "…"));
@@ -1324,7 +1560,7 @@
           const remove = node("button", "ghost", "Delete");
           remove.type = "button";
           remove.addEventListener("click", () => deleteConversation(conversation));
-          item.append(rename, remove);
+          item.append(recordActions(rename, remove));
           el.conversationsManage.append(item);
         });
 
@@ -1372,6 +1608,7 @@
         app.transcript = [];
         app.transcriptConversation = null;
         app.transcriptCursor = 0;
+        resetLive(id);
         el.searchResults.hidden = true;
         el.conversationSearch.value = "";
         render();
@@ -1572,13 +1809,21 @@
         const running = app.live.taskId;
         const control = controlState();
         el.cancel.hidden = !running;
-        el.steerRow.hidden = !running;
-        el.send.disabled = Boolean(running);
+        // While a turn runs, the one composer box corrects it instead of a
+        // second input asking for the same thing.
+        el.send.textContent = running ? "Steer" : "Send";
+        el.composer.placeholder = running
+          ? "Correct Marble while it works…"
+          : "Ask Marble to work in this workspace…";
+        el.hintKeys.textContent = running
+          ? "Enter steers · Shift+Enter adds a line"
+          : "Enter sends · Shift+Enter adds a line";
         el.taskHint.textContent = running ? "task " + running : "";
         el.controlOpen.textContent = control.paused ? "Control · paused" : "Control";
         const presence = presenceState();
         const status = presence.status || (control.paused ? "paused" : running ? "working" : "idle");
-        el.workspace.textContent = presence.summary || "durable collaborator";
+        el.workspace.textContent =
+          presence.summary || (app.revision ? "revision " + app.revision : "");
         renderAssistant();
         if (app.offline) setStatus("offline", "offline");
         else if (status === "working") setStatus("working", "busy");
@@ -1620,18 +1865,43 @@
         app.transcriptCursor = Math.max(app.transcriptCursor || 0, Number(page.cursor) || 0);
       }
 
+      function resetLive(conversationId) {
+        app.live = {
+          conversationId: conversationId || "",
+          taskId: null,
+          text: "",
+          reasoning: "",
+          tools: [],
+        };
+      }
+
       async function refresh() {
         try {
           const state = await api("/api/state?lean=1");
           app.state = state;
           app.offline = false;
+          app.loading = false;
           if (!app.conversationId && state.conversations.length) {
             const newest = state.conversations
               .slice()
               .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
             app.conversationId = newest.id;
           }
-          const running = (state.tasks || []).find((task) => task.status === "running");
+          // A live buffer describes one conversation. Switching chats drops the
+          // old stream instead of showing another chat's words here.
+          if ((app.live.conversationId || "") !== (app.conversationId || "")) {
+            resetLive(app.conversationId);
+          }
+          // Several turns can run at once, one per chat. Only this
+          // conversation's running task makes this chat look busy.
+          // A new chat has no task yet: another conversation's running turn
+          // must not turn its composer into a steer box.
+          const running = app.conversationId
+            ? (state.tasks || []).find(
+                (task) =>
+                  task.status === "running" && task.conversationId === app.conversationId
+              )
+            : null;
           app.live.taskId = running ? running.id : null;
           if (!running) {
             app.live.text = "";
@@ -1646,6 +1916,7 @@
           render();
         } catch (error) {
           app.offline = true;
+          app.loading = false;
           render();
         }
       }
@@ -1665,6 +1936,10 @@
       async function send() {
         const text = el.composer.value.trim();
         if (!text) return;
+        if (app.live.taskId) {
+          await steer(text);
+          return;
+        }
         el.composer.value = "";
         autosize();
         app.outbox.push({ text });
@@ -1691,6 +1966,7 @@
           }
           app.conversationId = accepted.conversationId || app.conversationId;
           app.outbox[app.outbox.length - 1].taskId = accepted.taskId;
+          app.live.conversationId = app.conversationId || "";
           app.live.taskId = accepted.taskId;
           render();
         } catch (error) {
@@ -1701,10 +1977,10 @@
       }
 
       /// Correct the turn that is already running, without restarting it.
-      async function steer() {
-        const text = el.steer.value.trim();
+      async function steer(text) {
         if (!text || !app.live.taskId) return;
-        el.steer.value = "";
+        el.composer.value = "";
+        autosize();
         try {
           await api("/api/turns/steer", {
             method: "POST",
@@ -1748,20 +2024,29 @@
       function handleEvent(kind, payload) {
         if (payload && typeof payload.sequence === "number") app.sequence = payload.sequence;
         const data = (payload && payload.data) || {};
+        const eventConversation = (payload && payload.conversationId) || "";
+        // Only the conversation on screen owns the live buffer. Another chat's
+        // turn still runs; its reply arrives through the transcript when this
+        // surface opens it.
+        const forActive = !eventConversation || eventConversation === (app.conversationId || "");
         switch (kind) {
           case "text":
+            if (!forActive) break;
             app.live.text += data.text || "";
             scheduleRender();
             break;
           case "reasoning":
+            if (!forActive) break;
             app.live.reasoning += data.text || "";
             scheduleRender();
             break;
           case "tool_start":
+            if (!forActive) break;
             app.live.tools.push({ tool: data.tool || "tool", summary: "running…", isError: false });
             scheduleRender();
             break;
           case "tool_end": {
+            if (!forActive) break;
             const tool = app.live.tools.find((item) => item.tool === data.tool && item.summary === "running…");
             if (tool) {
               tool.summary = (data.isError ? "failed · " : "done · ") + String(data.text || "").slice(0, 160);
@@ -1791,13 +2076,15 @@
             refresh();
             break;
           case "settled": {
-            const reply = app.live.text;
-            app.live.taskId = null;
-            app.live.text = "";
-            app.live.reasoning = "";
-            app.live.tools = [];
+            if (forActive) {
+              const reply = app.live.text;
+              app.live.taskId = null;
+              app.live.text = "";
+              app.live.reasoning = "";
+              app.live.tools = [];
+              speakReply(reply);
+            }
             refresh();
-            speakReply(reply);
             break;
           }
           case "error":
@@ -1860,13 +2147,6 @@
           searchConversations(el.conversationSearch.value).catch(() => {});
         }, 250);
       });
-      el.steerSend.addEventListener("click", steer);
-      el.steer.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          steer();
-        }
-      });
       el.composer.addEventListener("input", autosize);
       el.composer.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && !event.shiftKey) {
@@ -1879,6 +2159,7 @@
         app.transcript = [];
         app.transcriptConversation = null;
         app.transcriptCursor = 0;
+        resetLive(null);
         render();
         el.composer.focus();
       });
@@ -1888,6 +2169,8 @@
       });
       el.controlOpen.addEventListener("click", () => {
         renderControl();
+        // Both of these are slower than the document and are only read here.
+        loadCrates();
         loadTools();
         el.control.showModal();
       });
@@ -2013,7 +2296,7 @@
           const health = await fetch("/healthz", { credentials: "same-origin" });
           if (health.ok) {
             const body = await health.json();
-            el.workspace.textContent = "durable collaborator · revision " + body.revision;
+            app.revision = body.revision;
             app.sequence = body.sequence || 0;
           }
         } catch {

@@ -14,12 +14,6 @@ struct ToolsView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text(
-                        "Core owns the coding tools and runs them inside the session, so they appear here after the fact. Marble governs the integrations below under the \(store.toolInventory.profile ?? store.control.profile) posture, and only those ask you first."
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(MarblePalette.muted)
-
                     // A sheet covers the chat's error strip, so a failed load
                     // has to say so here.
                     if let error = store.errorMessage {
@@ -84,15 +78,9 @@ struct ToolsView: View {
 
     private func section(_ title: String, empty: String, rows: [Row]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .textCase(.uppercase)
-                .tracking(0.9)
-                .foregroundStyle(MarblePalette.muted)
+            SectionTitle(title)
             if rows.isEmpty {
-                Text(empty)
-                    .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                EmptyNote(empty)
             }
             // Two tools can share a name across owners, so the row's position
             // is the stable identity rather than its text.

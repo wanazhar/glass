@@ -113,6 +113,13 @@ final class MarbleStore: ObservableObject {
 
     /// The full tool inventory, fetched on demand because it changes slowly.
     @Published private(set) var toolInventory: MarbleToolInventory = .empty
+    /// The workspace crate map, fetched when the control sheet opens.
+    @Published private(set) var crates: MarbleCrateMap?
+    @Published private(set) var cratesLoading = false
+    @Published private(set) var cratesError: String?
+    /// False until the first state arrives, so the transcript can show shaped
+    /// placeholders instead of an empty conversation that looks settled.
+    @Published private(set) var loaded = false
 
     var statusLabel: String {
         if isWorking { return "working" }
@@ -185,7 +192,10 @@ final class MarbleStore: ObservableObject {
                     selectedConversationId = newest
                 }
             }
-            activeTaskId = snapshot.runningTask?.id
+            // Several chats run at once, one engine lane each. This surface is
+            // looking at one of them, so only that chat's turn makes it busy.
+            activeTaskId = snapshot.runningTask(for: selectedConversationId)?.id
+            loaded = true
             if activeTaskId == nil {
                 liveText = ""
                 liveReasoning = ""
@@ -195,8 +205,10 @@ final class MarbleStore: ObservableObject {
         } catch MarbleClientError.unauthorized {
             needsToken = true
             connection = .offline
+            loaded = true
         } catch {
             connection = .offline
+            loaded = true
             errorMessage = error.localizedDescription
         }
     }
@@ -333,6 +345,20 @@ final class MarbleStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Read the workspace crate map. A host outside a workspace has none, which
+    /// is a plain answer rather than a failure of the sheet.
+    func loadCrates() async {
+        cratesLoading = true
+        do {
+            crates = try await client.crates()
+            cratesError = nil
+        } catch {
+            crates = nil
+            cratesError = error.localizedDescription
+        }
+        cratesLoading = false
     }
 
     func cancelActiveTask() async {
@@ -566,16 +592,25 @@ final class MarbleStore: ObservableObject {
     private func handle(_ event: MarbleEvent) {
         sequence = max(sequence, event.sequence)
         if connection != .live { connection = .live }
+        // Live text belongs to one conversation. Another chat's turn keeps
+        // running on the host; its words reach this surface through the
+        // transcript when that chat is opened.
+        let forActive = event.conversationId.isEmpty
+            || event.conversationId == (selectedConversationId ?? "")
         switch event.kind {
         case "text":
+            guard forActive else { break }
             liveText += event.data.text ?? ""
         case "reasoning":
+            guard forActive else { break }
             liveReasoning += event.data.text ?? ""
         case "tool_start":
+            guard forActive else { break }
             liveTools.append(
                 LiveTool(name: event.data.tool ?? "tool", summary: "running…", isError: false)
             )
         case "tool_end":
+            guard forActive else { break }
             let name = event.data.tool ?? "tool"
             let summary = (event.data.isError == true ? "failed · " : "done · ")
                 + String((event.data.text ?? "").prefix(160))
@@ -590,14 +625,16 @@ final class MarbleStore: ObservableObject {
         case "approval_pending", "approval_resolved", "state":
             Task { await refresh() }
         case "settled":
-            let reply = liveText
-            activeTaskId = nil
-            liveText = ""
-            liveReasoning = ""
-            liveTools = []
+            let reply = forActive ? liveText : ""
+            if forActive {
+                activeTaskId = nil
+                liveText = ""
+                liveReasoning = ""
+                liveTools = []
+            }
             Task {
                 await refresh()
-                await speak(reply)
+                if !reply.isEmpty { await speak(reply) }
             }
         case "error":
             if let message = event.data.message { errorMessage = message }

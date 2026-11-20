@@ -16,9 +16,9 @@ final class ConnectIntroductionController: UIViewController {
         titleLabel.textColor = UIColor(red: 0.93, green: 0.95, blue: 0.99, alpha: 1)
         bodyLabel.textColor = UIColor(red: 0.62, green: 0.68, blue: 0.78, alpha: 1)
         bodyLabel.text = """
-        Marble runs on your own machine and keeps every turn in a durable journal.
+        Marble runs on your own machine.
 
-        Point this app at your host's Tailscale address, unlock it with the token you configured, and you can read, steer, and audit the conversation from any device.
+        Point this app at your host's Tailscale address, then unlock it with the token you configured.
         """
         continueButton.backgroundColor = UIColor(red: 0.43, green: 0.66, blue: 0.95, alpha: 1)
         continueButton.layer.cornerRadius = 25

@@ -23,12 +23,6 @@ struct PrismView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text(
-                        "One marble answers. Several marbles work. Each keeps its own name, workspace, conversation, and engine, so a swarm runs side by side instead of queueing behind one turn."
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(MarblePalette.muted)
-
                     Text(store.prism.summary)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(MarblePalette.muted)
@@ -68,7 +62,7 @@ struct PrismView: View {
 
     private var dispatch: some View {
         VStack(alignment: .leading, spacing: 8) {
-            heading("Dispatch")
+            SectionTitle("Dispatch")
             TextField("Hand the same question to every marble…", text: $prompt, axis: .vertical)
                 .lineLimit(1...4)
                 .marbleField()
@@ -90,11 +84,9 @@ struct PrismView: View {
 
     private var roster: some View {
         VStack(alignment: .leading, spacing: 10) {
-            heading("Roster")
+            SectionTitle("Roster")
             if store.prism.marbles.isEmpty {
-                Text("No marbles yet. Give one a name and a job, then hand the same question to several.")
-                    .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                EmptyNote("No marbles yet.")
             }
             ForEach(store.prism.marbles) { marble in
                 HStack(alignment: .top, spacing: 12) {
@@ -149,7 +141,7 @@ struct PrismView: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            heading("Add a marble")
+            SectionTitle("Add a marble")
             TextField("Name (Scout)", text: $name)
                 .marbleField()
             TextField("Role (reads the repo)", text: $role)
@@ -225,19 +217,9 @@ struct PrismView: View {
     }
 
     private func meta(_ marble: MarblePrismMarble) -> String {
-        var parts = [marble.stateLabel]
-        parts.append("\(marble.runs) turn\(marble.runs == 1 ? "" : "s")")
-        if !marble.conversationId.isEmpty { parts.append("keeps its conversation") }
-        return parts.joined(separator: " · ")
+        "\(marble.stateLabel) · \(marble.runs) turn\(marble.runs == 1 ? "" : "s")"
     }
 
-    private func heading(_ text: String) -> some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .textCase(.uppercase)
-            .tracking(0.9)
-            .foregroundStyle(MarblePalette.muted)
-    }
 }
 
 /// One marble's identity on its own: a shape, a hue, and two eyes. The roster

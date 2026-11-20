@@ -381,6 +381,11 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(path: "/api/tools"))
     }
 
+    /// The workspace crate map, read when the sheet that shows it opens.
+    func crates() async throws -> MarbleCrateMap {
+        try await fetch(try makeRequest(path: "/api/crates"))
+    }
+
     // MARK: - Notifications and voice
 
     struct NotificationUpdate: Encodable {

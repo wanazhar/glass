@@ -11,13 +11,7 @@ struct MemoryView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    Text(
-                        "Marble carries these into every conversation. Anything here can be forgotten immediately, and nothing is kept without you asking or confirming."
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(MarblePalette.muted)
-
+                VStack(alignment: .leading, spacing: 20) {
                     composer
                     memories
                     suggestions
@@ -43,8 +37,6 @@ struct MemoryView: View {
                     editing = nil
                     Task { await store.update(fact, text: text) }
                 }
-            } message: {
-                Text("Marble carries this into every conversation as soon as you save.")
             }
         }
     }
@@ -72,16 +64,14 @@ struct MemoryView: View {
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(12)
-        .marbleGlass(cornerRadius: 18)
+        .marbleGlass(cornerRadius: 20)
     }
 
     private var memories: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionTitle("Remembered")
             if store.memory.facts.isEmpty {
-                Text("Nothing remembered yet. Say “remember this: …” in a message, or add one above.")
-                    .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                EmptyNote("Nothing remembered yet.")
             }
             ForEach(store.memory.facts) { fact in
                 HStack(alignment: .top, spacing: 10) {
@@ -96,21 +86,23 @@ struct MemoryView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
-                    Button("Edit") {
-                        editing = fact
-                        editDraft = fact.text
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Button("Edit") {
+                            editing = fact
+                            editDraft = fact.text
+                        }
+                        .foregroundStyle(MarblePalette.accent)
+                        Button("Forget") {
+                            Task { await store.forget(fact) }
+                        }
+                        .foregroundStyle(MarblePalette.danger)
                     }
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(MarblePalette.accent)
-                    Button("Forget") {
-                        Task { await store.forget(fact) }
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(MarblePalette.danger)
+                    .buttonStyle(.plain)
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .marbleGlass(cornerRadius: 18)
+                .marbleGlass(cornerRadius: 20)
             }
         }
     }
@@ -119,9 +111,7 @@ struct MemoryView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionTitle("Suggested")
             if store.memory.suggestions.isEmpty {
-                Text("Marble offers a memory when it notices a durable detail, and waits for you.")
-                    .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                EmptyNote("No suggestions waiting.")
             }
             ForEach(store.memory.suggestions) { suggestion in
                 SuggestionCard(suggestion: suggestion) { keep in
@@ -153,7 +143,7 @@ struct MemoryView: View {
             .marbleGlass(cornerRadius: 18)
             .buttonStyle(.plain)
 
-            Text("Speech recognition and synthesis stay on this device. Marble only shapes the text it speaks.")
+            Text("Speech stays on this device.")
                 .font(.caption2)
                 .foregroundStyle(MarblePalette.muted)
 
@@ -167,8 +157,8 @@ struct MemoryView: View {
                 .foregroundStyle(MarblePalette.muted)
                 Text(
                     store.notificationState.apnsConfigured
-                        ? "Push is configured on the host. This phone registered itself when it connected."
-                        : "Push is not configured yet. Add your APNs key on the host in the web Control panel."
+                        ? "Push is configured. This phone registered when it connected."
+                        : "No push yet. Add an APNs key in the host's Control panel."
                 )
                 .font(.caption2)
                 .foregroundStyle(MarblePalette.muted)
@@ -208,6 +198,6 @@ struct SuggestionCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .marbleGlass(cornerRadius: 22)
+        .marbleGlass(cornerRadius: 20)
     }
 }

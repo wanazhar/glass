@@ -8,8 +8,12 @@ use crate::MarbleError;
 use crate::crates::{CRATES_TOOL, CrateMap};
 use glass_runtime_client::ToolDefinition;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const WORKSPACE_LIST: &str = "glass.workspace.list";
 pub const WORKSPACE_READ: &str = "glass.workspace.read";
@@ -19,6 +23,272 @@ pub const WORKSPACE_SEARCH: &str = "glass.workspace.search";
 /// Whether one governed tool changes the workspace.
 pub fn is_write_tool(name: &str) -> bool {
     name == WORKSPACE_WRITE
+}
+
+/// Who is asking for one governed call: the chat and the turn it belongs to.
+///
+/// Coordination is per conversation, because that is the unit that read a file
+/// and later wants to write it. An empty scope is a one-shot call outside a
+/// chat, and it takes no part in coordination.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolScope {
+    pub conversation_id: String,
+    pub task_id: String,
+}
+
+impl ToolScope {
+    pub fn new(conversation_id: impl Into<String>, task_id: impl Into<String>) -> Self {
+        Self {
+            conversation_id: conversation_id.into(),
+            task_id: task_id.into(),
+        }
+    }
+
+    pub fn is_bound(&self) -> bool {
+        !self.conversation_id.is_empty()
+    }
+}
+
+/// Another chat's work that a write is about to replace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathTension {
+    /// The chat whose version would be lost, when the host knows it.
+    pub conversation_id: String,
+    /// True when this chat read an older version of the same file.
+    pub stale: bool,
+}
+
+/// Another chat's work that an approval card or a refused write must mention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathConflict {
+    /// Workspace-relative path both chats are working in.
+    pub path: String,
+    /// What the person should know before approving.
+    pub note: String,
+    /// True when the write itself is refused so the other change is not lost.
+    pub stale: bool,
+}
+
+/// A write that could not run because another chat's version is in the way.
+#[derive(Debug)]
+pub enum PathWriteError {
+    Tension(PathTension),
+    Io(std::io::Error),
+}
+
+/// How long one chat's write keeps a path flagged for the other chats.
+const PATH_CONFLICT_WINDOW_MS: u64 = 10 * 60 * 1000;
+/// Bounds the remembered paths a long-running host keeps.
+const PATH_LEASE_LIMIT: usize = 4_096;
+
+static PATH_LEASES: OnceLock<PathLeases> = OnceLock::new();
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn disk_fingerprint(path: &Path) -> Option<u64> {
+    fs::read(path).ok().map(|bytes| fingerprint(&bytes))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SeenPath {
+    digest: u64,
+    at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct LastWrite {
+    conversation_id: String,
+    at: u64,
+}
+
+#[derive(Debug, Default)]
+struct PathRegistry {
+    /// What each chat last read at a path, so a stale base is recognisable.
+    seen: HashMap<(PathBuf, String), SeenPath>,
+    /// The chat that last wrote a path through this host.
+    last_write: HashMap<PathBuf, LastWrite>,
+    /// One lock per path, so two lanes cannot write one file at the same time.
+    gates: HashMap<PathBuf, Arc<Mutex<()>>>,
+}
+
+impl PathRegistry {
+    /// Keep the table bounded on a host that runs for months.
+    fn prune(&mut self) {
+        let total = self.seen.len() + self.last_write.len() + self.gates.len();
+        if total <= PATH_LEASE_LIMIT {
+            return;
+        }
+        let ceiling = PATH_LEASE_LIMIT / 2;
+        let mut seen: Vec<((PathBuf, String), u64)> = self
+            .seen
+            .iter()
+            .map(|(key, seen)| (key.clone(), seen.at))
+            .collect();
+        seen.sort_by_key(|(_, at)| *at);
+        for (key, _) in seen
+            .into_iter()
+            .take(self.seen.len().saturating_sub(ceiling))
+        {
+            self.seen.remove(&key);
+        }
+        let mut writes: Vec<(PathBuf, u64)> = self
+            .last_write
+            .iter()
+            .map(|(path, last)| (path.clone(), last.at))
+            .collect();
+        writes.sort_by_key(|(_, at)| *at);
+        for (path, _) in writes
+            .into_iter()
+            .take(self.last_write.len().saturating_sub(ceiling))
+        {
+            self.last_write.remove(&path);
+        }
+        let mut gates: Vec<PathBuf> = self.gates.keys().cloned().collect();
+        gates.sort();
+        for path in gates
+            .into_iter()
+            .take(self.gates.len().saturating_sub(ceiling))
+        {
+            self.gates.remove(&path);
+        }
+    }
+}
+
+/// One process-wide table of which chat is working in which workspace path.
+///
+/// Each lane builds its own [`ToolRouter`], so this cannot live on a router:
+/// two chats only see each other because every router shares this table.
+#[derive(Debug, Clone, Default)]
+pub struct PathLeases {
+    inner: Arc<Mutex<PathRegistry>>,
+}
+
+impl PathLeases {
+    /// The table every router in this process shares.
+    pub fn shared() -> Self {
+        PATH_LEASES.get_or_init(Self::default).clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PathRegistry> {
+        self.inner.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn gate(&self, path: &Path) -> Arc<Mutex<()>> {
+        self.lock()
+            .gates
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Remember what one chat last saw at a path.
+    pub fn note_read(&self, path: &Path, conversation_id: &str, bytes: &[u8]) {
+        let mut registry = self.lock();
+        registry.seen.insert(
+            (path.to_path_buf(), conversation_id.to_string()),
+            SeenPath {
+                digest: fingerprint(bytes),
+                at: unix_millis(),
+            },
+        );
+        registry.prune();
+    }
+
+    /// Another chat whose work this write would replace, if any.
+    pub fn tension(&self, path: &Path, conversation_id: &str) -> Option<PathTension> {
+        let registry = self.lock();
+        tension(&registry, path, conversation_id, disk_fingerprint(path))
+    }
+
+    /// Write one path for one chat, refusing to replace a version that chat has
+    /// not seen. The check, the write, and the record all hold the path's lock,
+    /// so two lanes cannot interleave inside one file.
+    pub fn write(
+        &self,
+        path: &Path,
+        conversation_id: &str,
+        content: &[u8],
+    ) -> Result<(), PathWriteError> {
+        let gate = self.gate(path);
+        let _held = gate.lock().unwrap_or_else(|error| error.into_inner());
+        {
+            let registry = self.lock();
+            if let Some(tension) = tension(&registry, path, conversation_id, disk_fingerprint(path))
+            {
+                return Err(PathWriteError::Tension(tension));
+            }
+        }
+        fs::write(path, content).map_err(PathWriteError::Io)?;
+        let mut registry = self.lock();
+        let at = unix_millis();
+        registry.seen.insert(
+            (path.to_path_buf(), conversation_id.to_string()),
+            SeenPath {
+                digest: fingerprint(content),
+                at,
+            },
+        );
+        registry.last_write.insert(
+            path.to_path_buf(),
+            LastWrite {
+                conversation_id: conversation_id.to_string(),
+                at,
+            },
+        );
+        registry.prune();
+        Ok(())
+    }
+}
+
+/// Whether writing `path` now would drop work another chat did.
+///
+/// Two cases matter. A chat that read an older version has a stale base and must
+/// re-read. A chat that never read the file may still be about to replace a
+/// write another chat just made, so it has to read first as well.
+fn tension(
+    registry: &PathRegistry,
+    path: &Path,
+    conversation_id: &str,
+    current: Option<u64>,
+) -> Option<PathTension> {
+    let seen = registry
+        .seen
+        .get(&(path.to_path_buf(), conversation_id.to_string()))
+        .map(|seen| seen.digest);
+    if seen == current {
+        return None;
+    }
+    let other = registry
+        .last_write
+        .get(path)
+        .filter(|last| last.conversation_id != conversation_id);
+    if seen.is_some() {
+        return Some(PathTension {
+            conversation_id: other
+                .map(|last| last.conversation_id.clone())
+                .unwrap_or_default(),
+            stale: true,
+        });
+    }
+    let last = other?;
+    if unix_millis().saturating_sub(last.at) > PATH_CONFLICT_WINDOW_MS {
+        return None;
+    }
+    Some(PathTension {
+        conversation_id: last.conversation_id.clone(),
+        stale: false,
+    })
 }
 
 /// The governed catalog as a surface document.
@@ -101,6 +371,8 @@ impl ToolOutcome {
 #[derive(Debug, Clone)]
 pub struct ToolRouter {
     root: PathBuf,
+    /// Paths other chats are working in, shared by every lane in this process.
+    leases: PathLeases,
 }
 
 impl ToolRouter {
@@ -108,7 +380,10 @@ impl ToolRouter {
     /// with like.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, MarbleError> {
         let root = root.as_ref().canonicalize().map_err(MarbleError::Io)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            leases: PathLeases::shared(),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -192,15 +467,68 @@ impl ToolRouter {
         ]
     }
 
-    /// Execute one tool call. Unknown tools fail instead of silently succeeding.
+    /// Execute one tool call outside a chat. Unknown tools fail instead of
+    /// silently succeeding.
     pub fn execute(&self, name: &str, arguments: &Value) -> ToolOutcome {
+        self.execute_scoped(&ToolScope::default(), name, arguments)
+    }
+
+    /// Execute one tool call for a chat, so a write knows whose version of a
+    /// path it is based on.
+    pub fn execute_scoped(&self, scope: &ToolScope, name: &str, arguments: &Value) -> ToolOutcome {
         match name {
             WORKSPACE_LIST => self.list(arguments),
-            WORKSPACE_READ => self.read(arguments),
+            WORKSPACE_READ => self.read(scope, arguments),
             WORKSPACE_SEARCH => self.search(arguments),
-            WORKSPACE_WRITE => self.write(arguments),
+            WORKSPACE_WRITE => self.write(scope, arguments),
             CRATES_TOOL => self.crates(arguments),
             other => ToolOutcome::error(format!("host has no tool named {other}")),
+        }
+    }
+
+    /// Another chat's work in the path this call names, for an approval card.
+    ///
+    /// Reads name what this chat has seen; only a write can disturb another
+    /// chat, so every other tool reports no conflict.
+    pub fn conflict(
+        &self,
+        scope: &ToolScope,
+        name: &str,
+        arguments: &Value,
+    ) -> Option<PathConflict> {
+        if !scope.is_bound() || !is_write_tool(name) {
+            return None;
+        }
+        let path = self.resolve(arguments).ok()?;
+        let tension = self.leases.tension(&path, &scope.conversation_id)?;
+        let display = self.display(&path);
+        let note = if tension.stale {
+            format!(
+                "Another chat or an editor changed {display} after this conversation read it. \
+                 Approving will not overwrite it: Marble is asked to re-read and redo the change."
+            )
+        } else {
+            format!(
+                "Another chat wrote {display} recently. Marble must re-read it before replacing it."
+            )
+        };
+        Some(PathConflict {
+            path: display,
+            note,
+            stale: tension.stale,
+        })
+    }
+
+    /// What the model is told when its write would drop another chat's change.
+    fn tension_note(&self, path: &Path, tension: &PathTension) -> String {
+        let display = self.display(path);
+        if tension.stale {
+            format!(
+                "{display} changed since this conversation last read it (another chat or an \
+                 editor); re-read the file and redo the change"
+            )
+        } else {
+            format!("another chat wrote {display} recently; re-read the file before replacing it")
         }
     }
 
@@ -327,7 +655,7 @@ impl ToolRouter {
         ToolOutcome::ok(text)
     }
 
-    fn read(&self, arguments: &Value) -> ToolOutcome {
+    fn read(&self, scope: &ToolScope, arguments: &Value) -> ToolOutcome {
         let path = match self.resolve(arguments) {
             Ok(path) => path,
             Err(outcome) => return outcome,
@@ -350,6 +678,9 @@ impl ToolRouter {
                 return ToolOutcome::error(format!("cannot read {}: {error}", self.display(&path)));
             }
         };
+        if scope.is_bound() {
+            self.leases.note_read(&path, &scope.conversation_id, &bytes);
+        }
         let truncated = bytes.len() > MAX_READ_BYTES;
         let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
         let slice = match std::str::from_utf8(slice) {
@@ -469,7 +800,7 @@ impl ToolRouter {
         ToolOutcome::ok(text)
     }
 
-    fn write(&self, arguments: &Value) -> ToolOutcome {
+    fn write(&self, scope: &ToolScope, arguments: &Value) -> ToolOutcome {
         let Some(content) = arguments.get("content").and_then(Value::as_str) else {
             return ToolOutcome::error("content must be a string");
         };
@@ -493,13 +824,22 @@ impl ToolRouter {
         if !path.starts_with(&self.root) {
             return ToolOutcome::error("refusing to write outside the workspace");
         }
-        match fs::write(&path, content) {
+        let written = if scope.is_bound() {
+            self.leases
+                .write(&path, &scope.conversation_id, content.as_bytes())
+        } else {
+            fs::write(&path, content).map_err(PathWriteError::Io)
+        };
+        match written {
             Ok(()) => ToolOutcome::ok(format!(
                 "wrote {} bytes to {}",
                 content.len(),
                 self.display(&path)
             )),
-            Err(error) => {
+            Err(PathWriteError::Tension(tension)) => {
+                ToolOutcome::error(self.tension_note(&path, &tension))
+            }
+            Err(PathWriteError::Io(error)) => {
                 ToolOutcome::error(format!("cannot write {}: {error}", self.display(&path)))
             }
         }
@@ -609,6 +949,111 @@ mod tests {
                 .execute(WORKSPACE_SEARCH, &json!({"query": "x", "path": "../"}))
                 .is_error
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_chat_cannot_replace_a_version_it_has_not_seen() {
+        let root = workspace("lost-write");
+        fs::write(root.join("notes.md"), "first").unwrap();
+        let lane_a = ToolRouter::new(&root).unwrap();
+        let lane_b = ToolRouter::new(&root).unwrap();
+        let chat_a = ToolScope::new("chat-a", "task-a");
+        let chat_b = ToolScope::new("chat-b", "task-b");
+
+        assert!(
+            !lane_a
+                .execute_scoped(&chat_a, WORKSPACE_READ, &json!({"path": "notes.md"}))
+                .is_error
+        );
+        assert!(
+            !lane_b
+                .execute_scoped(
+                    &chat_b,
+                    WORKSPACE_WRITE,
+                    &json!({"path": "notes.md", "content": "second"})
+                )
+                .is_error
+        );
+
+        // The first chat read the old version; writing now would drop the
+        // second chat's change, so the router refuses instead of losing it.
+        let refused = lane_a.execute_scoped(
+            &chat_a,
+            WORKSPACE_WRITE,
+            &json!({"path": "notes.md", "content": "third"}),
+        );
+        assert!(refused.is_error, "{}", refused.text);
+        assert!(refused.text.contains("re-read"), "{}", refused.text);
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "second");
+
+        // Re-reading makes the same write safe.
+        assert!(
+            !lane_a
+                .execute_scoped(&chat_a, WORKSPACE_READ, &json!({"path": "notes.md"}))
+                .is_error
+        );
+        assert!(
+            !lane_a
+                .execute_scoped(
+                    &chat_a,
+                    WORKSPACE_WRITE,
+                    &json!({"path": "notes.md", "content": "third"})
+                )
+                .is_error
+        );
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "third");
+
+        // A chat that never read the file cannot replace the latest write
+        // either: it has to read first.
+        let blind = lane_b.execute_scoped(
+            &chat_b,
+            WORKSPACE_WRITE,
+            &json!({"path": "notes.md", "content": "blind"}),
+        );
+        assert!(blind.is_error, "{blind:?}");
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "third");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_approval_reports_the_other_chat_before_the_write_runs() {
+        let root = workspace("conflict-note");
+        let lane_a = ToolRouter::new(&root).unwrap();
+        let lane_b = ToolRouter::new(&root).unwrap();
+        let chat_a = ToolScope::new("chat-a", "task-a");
+        let chat_b = ToolScope::new("chat-b", "task-b");
+        let write = json!({"path": "docs/notes.md", "content": "from a"});
+
+        assert!(
+            !lane_a
+                .execute_scoped(&chat_a, WORKSPACE_WRITE, &write)
+                .is_error
+        );
+        let conflict = lane_b
+            .conflict(&chat_b, WORKSPACE_WRITE, &write)
+            .expect("the second chat sees the first chat's write");
+        assert_eq!(conflict.path, "docs/notes.md");
+        assert!(
+            conflict.note.contains("Another chat wrote") && conflict.note.contains("re-read"),
+            "{}",
+            conflict.note
+        );
+        assert!(!conflict.stale);
+
+        // Reads never show a conflict, and neither does a one-shot call.
+        assert!(
+            lane_b
+                .conflict(&chat_b, WORKSPACE_READ, &json!({"path": "docs/notes.md"}))
+                .is_none()
+        );
+        assert!(
+            lane_b
+                .conflict(&ToolScope::default(), WORKSPACE_WRITE, &write)
+                .is_none()
+        );
+
         let _ = fs::remove_dir_all(&root);
     }
 

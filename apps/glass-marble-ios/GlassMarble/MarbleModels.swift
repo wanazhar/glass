@@ -75,6 +75,8 @@ struct MarbleApproval: Decodable, Identifiable, Equatable {
     var callId: String
     var tool: String
     var arguments: MarbleJSON
+    /// Set when another chat also has work in this call's path.
+    var conflict: String?
 
     var id: String { requestId }
 

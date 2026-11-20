@@ -69,6 +69,7 @@ fn test_state() -> ProductState {
         call_id: "call-1".into(),
         tool: "glass.workspace.list".into(),
         arguments: serde_json::json!({}),
+        conflict: None,
     });
     state.transcript.push(TranscriptEntry {
         conversation_id: "durable-fixture-1".into(),
@@ -263,6 +264,7 @@ fn allowing_an_approval_with_remember_leaves_a_revocable_grant() {
         "call-1",
         "glass.workspace.read",
         serde_json::json!({"path": "docs/notes.md"}),
+        None,
     );
     let (status, body) = server.handle(
         "POST",
@@ -312,12 +314,14 @@ fn server_approval_inbox_routes_allow_and_deny() {
         "call-1",
         "glass.workspace.list",
         serde_json::json!({}),
+        None,
     );
     approvals.register(
         "host:fixture-session:generation-fixture-1:call-2",
         "call-2",
         "glass.workspace.list",
         serde_json::json!({}),
+        None,
     );
     let (status, _) = server.handle(
         "POST",
@@ -354,6 +358,7 @@ fn server_state_route_serves_live_pending_approvals() {
         "call-1",
         "glass.workspace.list",
         serde_json::json!({}),
+        None,
     );
     let (status, body) = server.handle("GET", "/api/state", "");
     assert_eq!(status, 200);

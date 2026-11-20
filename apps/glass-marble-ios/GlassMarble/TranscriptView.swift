@@ -247,6 +247,16 @@ struct ApprovalCard: View {
                 .font(.caption.monospaced())
                 .foregroundStyle(MarblePalette.ink)
                 .lineLimit(3)
+            if let conflict = approval.conflict, !conflict.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                    Text(conflict)
+                        .font(.caption2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(MarblePalette.warn)
+            }
             HStack(spacing: 8) {
                 decisionButton("Deny", tint: MarblePalette.danger, allow: false, remember: false)
                 decisionButton("Always allow", tint: MarblePalette.muted, allow: true, remember: true)

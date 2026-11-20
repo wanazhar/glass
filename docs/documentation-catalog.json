@@ -5696,7 +5696,7 @@
     {
       "path": "docs/marble.md",
       "class": "current",
-      "topic": "reference",
+      "topic": "products",
       "audience": "glass-user",
       "status": "current-source-guidance",
       "recommendation": "KEEP_PUBLIC",
@@ -5711,7 +5711,7 @@
         "docs/glass-core-harness.md",
         "products/glass-core/docs/reference/runtime.md"
       ],
-      "topicRoute": "docs/INDEX.md#glass-documentation",
+      "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
       "route": "docs/marble.md#glass-marble",
       "sections": [
         {

@@ -288,13 +288,15 @@ that resolves on `PATH` right now. An empty `reach` means Marble has no direct
 route and the map is telling it to go through the crate that does, instead of
 inventing an import.
 
-Three surfaces, one document:
+Four surfaces, one document:
 
 - every conversation is briefed with the crate names and told to ask
   `glass.crates.list` rather than infer ownership from a path;
 - `glass.crates.list` answers mid-turn, with `name` for one crate and what
 depends on it, so a change can be scoped before it is written;
-- `GET /api/crates` serves the same map to a surface.
+- `GET /api/crates` serves the same map to a surface, fetched when someone
+  opens the sheet that shows crates rather than on every state poll: the map is
+  a workspace scan, and a poll should not pay for a document nobody is reading.
 
 The manifests stay the source, so a crate added to the workspace appears without
 a code change, and a member that cannot be read is simply absent rather than
@@ -366,6 +368,28 @@ Admission is Marble's decision too:
   `routine`, with the reason it has not started: behind how many typed messages,
   next in the routine lane, or held because admission is paused. A routine held
   by pause names the routine that fired it, so queued work is never anonymous.
+
+### Several chats at once
+
+A conversation belongs to the engine that created its session, so Marble keeps a
+small pool of lanes instead of one serial worker. Each lane is its own runtime
+process with its own durable store, and the lane a conversation was admitted on
+is recorded on the conversation record, so a later turn or a correction returns
+to the same engine. Three lanes are available: a person working a question, a
+fix, and a review does not have to wait for the first answer to finish. Within
+one conversation turns stay serial and in arrival order, and a busy lane keeps
+its queue, so two messages to the same chat never interleave.
+
+- Lane zero keeps the existing `sessions` directory, so conversations written
+  before lanes existed still open. Later lanes keep their store under
+  `sessions/lanes/<n>`.
+- A new chat goes to the lane with the fewest turns ahead, and ties rotate, so
+  two fresh chats do not land on the same engine.
+- Corrections are routed to the lane that admitted the conversation, never
+  broadcast: a steer aimed at one chat cannot reach another chat's engine.
+- A poll that finds a running turn in a different conversation does not make the
+  chat on screen look busy, and live text from another lane is never typed into
+  the transcript being read.
 
 ### Audit ledger
 
@@ -549,7 +573,7 @@ recognition rather than falling back to a network service.
 | `/api/turns/retry` | POST | Repeat the newest failed, cancelled, or interrupted turn (`taskId` or `conversationId` to choose one) |
 | `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task, including one a routine fired or a resume dispatched |
 | `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
-| `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue |
+| `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue, and the workspace crate map (`null` outside a Rust workspace) |
 | `/api/control/profile` | POST | Select `observe`, `workspace`, or `unattended` |
 | `/api/control/pause` and `/resume` | POST | Hold new messages, or dispatch the queue in order |
 | `/api/control/stop` | POST | Pause admission and cancel every running task |
@@ -611,7 +635,9 @@ after five failures in five minutes so a token cannot be guessed at wire speed.
 Persisting a change writes the borrowed document directly; the full clone that
 used to happen before each write is gone. A lean poll also drops the transcript
 before cloning the document, so the common refresh copies control, presence, and
-counts rather than thousands of transcript entries it is about to omit.
+counts rather than thousands of transcript entries it is about to omit. The
+workspace crate map is not part of a poll at all: both surfaces fetch `/api/crates`
+when the sheet that shows crates opens, so a poll never pays for a workspace scan.
 
 ## Reading history without moving it all
 
@@ -860,8 +886,15 @@ work instead of interleaving it, so a routine that came due at 09:00 can wait
 until the conversation ends; the alternative hides that trade-off rather than
 making it visible.
 
-The remaining choice is whether to add a session pool, and that stays a product
-decision rather than an optimisation. The queue already records who admitted a
-turn (owner, routine id), and priority lanes are in place. A session pool changes
-the shape of the cancel table, presence, and approvals, and should be designed
-with the surfaces that display them, not added underneath them.
+The pool is now built, deliberately small and keyed rather than free-floating.
+Three lanes are enough for a personal host to work a question, a fix, and a
+review at once without letting one process spawn engines without bound. The
+mapping stays explicit: the conversation record names the lane that owns it, so
+history, corrections, and later turns never land on an engine that has not heard
+of the chat. Approvals, the cancel table, presence, and the ledger were already
+keyed by conversation and task, so no surface has to guess which engine it is
+talking about: the cancel registry holds every lane's running turns, presence
+counts them together, and a lean poll reports each conversation's own running
+turn. Human priority is unchanged inside a lane — typed messages still drain
+before routine firings — so parallelism adds capacity without weakening the
+queue's promise that a person's message runs before scheduled work.

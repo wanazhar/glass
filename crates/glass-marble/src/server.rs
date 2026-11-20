@@ -15,7 +15,7 @@ use crate::prism::{DispatchRefusal, PrismMarble, PrismPool};
 use crate::state::{PendingApproval, ProductState, TaskRecord};
 use crate::store::StateStore;
 use crate::voice;
-use crate::worker::{CancelRegistry, TurnCommand, TurnRequest, TurnSender, now_millis};
+use crate::worker::{CancelRegistry, SteerSink, TurnCommand, TurnRequest, TurnSender, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -376,7 +376,8 @@ pub struct MarbleServer {
     approvals: ApprovalInbox,
     events: EventBus,
     turn_tx: TurnSender,
-    steer_tx: mpsc::Sender<SteerRequest>,
+    /// Corrections routed to the engine lane that owns each conversation.
+    steer: SteerSink,
     policy: AccessPolicy,
     cancels: CancelRegistry,
     login: LoginThrottle,
@@ -395,7 +396,7 @@ impl MarbleServer {
             approvals: parts.approvals,
             events: parts.events,
             turn_tx: parts.turn_tx,
-            steer_tx: parts.steer_tx,
+            steer: SteerSink::single(parts.steer_tx),
             policy: parts.policy,
             cancels: parts.cancels,
             login: LoginThrottle::default(),
@@ -413,6 +414,12 @@ impl MarbleServer {
     /// Attach the workspace crate map served at `/api/crates`.
     pub fn with_crates(mut self, crates: CrateMap) -> Self {
         self.crates = Some(crates);
+        self
+    }
+
+    /// Route corrections through the engine lanes instead of one channel.
+    pub fn with_steer_sink(mut self, steer: SteerSink) -> Self {
+        self.steer = steer;
         self
     }
 
@@ -2018,8 +2025,10 @@ impl MarbleServer {
     }
 
     fn control_document(&self) -> Value {
-        let control = self.lock_state().control.clone();
-        control.document()
+        // The crate map is a workspace scan, not a control fact, so it is served
+        // at `/api/crates` and fetched when a surface shows it. Padding every
+        // state poll with it made each poll pay for a document nobody read.
+        self.lock_state().control.document()
     }
 
     fn set_profile(&self, body: &str) -> Response {
@@ -2679,7 +2688,16 @@ impl MarbleServer {
             task_id: task_id.clone(),
             text: text.clone(),
         };
-        if self.steer_tx.send(request).is_err() {
+        // Each engine lane drains only its own corrections, so the request goes
+        // to the lane that admitted this conversation.
+        let lane = self
+            .lock_state()
+            .conversations
+            .iter()
+            .find(|record| record.id == conversation_id)
+            .map(|record| record.lane)
+            .unwrap_or(0);
+        if !self.steer.send(lane, request) {
             return Response::error(503, "turn_worker_unavailable");
         }
         self.events.publish(

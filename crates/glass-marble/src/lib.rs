@@ -62,8 +62,8 @@ pub use tools::{ToolOutcome, ToolRouter};
 pub use turn::{DEFAULT_TURN_TIMEOUT, MarbleReply, MarbleTurn, TurnOptions, run_turn};
 pub use voice::{VoiceSettings, spoken_form};
 pub use worker::{
-    AcceptedTurn, CancelRegistry, TurnCommand, TurnInbox, TurnLane, TurnRequest, TurnSender,
-    TurnWorkerGone, spawn_turn_worker,
+    AcceptedTurn, CancelRegistry, LaneFactory, SteerSink, TurnCommand, TurnInbox, TurnLane,
+    TurnPool, TurnRequest, TurnSender, TurnWorkerGone, spawn_turn_pool,
 };
 
 use std::error::Error;

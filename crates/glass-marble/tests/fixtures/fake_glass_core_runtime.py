@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import time
 
 def argument(flag, default=None):
     if flag in sys.argv:
@@ -18,6 +19,11 @@ if argument("--path") is not None:
     TOOL_ARGUMENTS["path"] = argument("--path")
 if argument("--content") is not None:
     TOOL_ARGUMENTS["content"] = argument("--content")
+
+# Tests can slow one turn so two lanes can be observed running together.
+DELAY_MS = int(argument("--delay-ms", "0") or "0")
+# Each engine is its own process, so a test can tell their ids apart.
+ID_PREFIX = argument("--id-prefix", "") or ""
 
 # A cancelled turn leaves replies in flight. In this mode the fixture parks the
 # first durable run until an abort arrives, then answers the run before the
@@ -59,7 +65,7 @@ def task_id_for(conversation, request):
     if task is not None:
         return task
     TASK_COUNTER[0] += 1
-    task = "generation-fixture-" + str(TASK_COUNTER[0])
+    task = ID_PREFIX + "generation-fixture-" + str(TASK_COUNTER[0])
     TASK_SEQ[key] = task
     return task
 
@@ -88,6 +94,8 @@ def save_submissions():
 def run_turn(identifier, task, text, conversation, request):
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if DELAY_MS > 0:
+        time.sleep(DELAY_MS / 1000)
     frame_id = "host:" + SESSION_ID + ":" + task + ":call-1"
     send(
         {
@@ -196,7 +204,7 @@ def main():
                     break
             else:
                 CONVERSATION_SEQ += 1
-                conversation_id = "durable-fixture-" + str(CONVERSATION_SEQ)
+                conversation_id = ID_PREFIX + "durable-fixture-" + str(CONVERSATION_SEQ)
                 reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
         elif method == "durable/submit":
             conversation_id = params.get("conversationId")

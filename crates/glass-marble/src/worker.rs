@@ -1,8 +1,11 @@
-//! The single durable turn worker.
+//! The durable turn worker.
 //!
-//! One runtime subprocess serves every conversation, so turns are serialized
-//! through one queue with two lanes: a message a person typed outranks a
+//! Work waits in one queue with two lanes: a message a person typed outranks a
 //! routine firing, and a firing that is held back says so through presence.
+//! A dispatcher hands each command to a lane, and each lane is a runtime
+//! subprocess with one durable conversation of its own, so two chats make
+//! progress at the same time instead of queueing behind the first. Within one
+//! chat turns stay serial, in arrival order.
 //! Each command is accepted with its durable task id as soon as the runtime
 //! admits it, which lets the HTTP surface answer at once and stream the rest.
 //!
@@ -18,13 +21,14 @@ use crate::notify::{self, Notification};
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::{
-    InboundMessage, MarbleError, MarbleTurn, TurnOptions, conversation::Conversation, to_turn_input,
+    InboundMessage, MarbleError, MarbleTurn, TurnOptions, conversation::Conversation,
+    conversation::SteerRequest, to_turn_input,
 };
 use glass_runtime_client::{TurnInput, protocol::ContextBlock};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -111,9 +115,46 @@ impl CancelRegistry {
     }
 }
 
+/// Where a correction goes: one channel per engine lane.
+///
+/// A correction must reach the engine that owns the running turn, and each lane
+/// drains only its own channel. The HTTP surface resolves the conversation's
+/// lane from the durable document and sends there.
+#[derive(Debug, Clone, Default)]
+pub struct SteerSink {
+    lanes: Arc<Mutex<HashMap<u8, mpsc::Sender<SteerRequest>>>>,
+}
+
+impl SteerSink {
+    /// One lane, for a host that runs a single engine.
+    pub fn single(sender: mpsc::Sender<SteerRequest>) -> Self {
+        let sink = Self::default();
+        sink.add(0, sender);
+        sink
+    }
+
+    /// Register the channel one engine drains.
+    pub fn add(&self, lane: u8, sender: mpsc::Sender<SteerRequest>) {
+        self.lanes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(lane, sender);
+    }
+
+    /// Hand one correction to a lane; false when that lane is not serving.
+    pub fn send(&self, lane: u8, request: SteerRequest) -> bool {
+        self.lanes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&lane)
+            .map(|sender| sender.send(request).is_ok())
+            .unwrap_or(false)
+    }
+}
+
 /// Which lane a waiting command belongs to.
 ///
-/// One worker runs one turn at a time, so work submitted now waits for the
+/// One engine lane runs one turn at a time, so work submitted now waits for the
 /// running turn to settle. What it must not do is wait behind scheduled work: a
 /// routine firing can run later, while a person is standing in front of the
 /// assistant. Typed messages therefore drain first, and routine firings wait.
@@ -375,38 +416,188 @@ fn lock(state: &Mutex<ProductState>) -> std::sync::MutexGuard<'_, ProductState> 
     state.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// Start the durable turn worker and return its command channel.
-pub fn spawn_turn_worker(
-    mut conversation: Conversation,
+/// Builds the engine session one lane runs on.
+pub type LaneFactory = Arc<dyn Fn(u8) -> Result<Conversation, MarbleError> + Send + Sync>;
+
+/// A pool of engine lanes and the channel that feeds them.
+pub struct TurnPool {
+    pub sender: TurnSender,
+    pub steer: SteerSink,
+}
+
+/// One lane's runtime handle, as the dispatcher sees it.
+struct LaneRuntime {
+    sender: mpsc::Sender<TurnCommand>,
+    /// Commands handed to this lane that have not settled yet, including the
+    /// one it is running. The dispatcher sends new chats to the lightest lane.
+    in_flight: Arc<AtomicUsize>,
+}
+
+/// Start a pool of durable turn lanes.
+///
+/// This is the only turn loop: a host with one engine passes one lane, and the
+/// dispatcher simply sends every command to it. Lane zero starts immediately, so
+/// an engine that cannot launch still fails at startup. Other lanes start on
+/// first use: a host that never opens a second chat pays nothing for the
+/// capacity.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_turn_pool(
+    lanes: usize,
+    factory: LaneFactory,
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
     live: LiveStore,
     events: EventBus,
     timeout: Duration,
     cancels: CancelRegistry,
-) -> TurnSender {
+) -> Result<TurnPool, MarbleError> {
+    let lanes = lanes.max(1);
     let (sender, inbox) = TurnInbox::channel();
+    let steer = SteerSink::default();
+    let wiring = LaneWiring {
+        factory,
+        state: Arc::clone(&state),
+        store,
+        live,
+        events,
+        timeout,
+        cancels,
+        steer: steer.clone(),
+    };
+    let mut runtimes: Vec<Option<LaneRuntime>> = (0..lanes).map(|_| None).collect();
+    runtimes[0] = Some(wiring.start(0)?);
     let spawned = std::thread::Builder::new()
         .name("glass-marble-turns".into())
         .spawn(move || {
+            let mut next = 1;
             while let Some(command) = inbox.recv() {
-                run_command(
-                    command,
-                    &mut conversation,
-                    &state,
-                    store.as_deref(),
-                    &live,
-                    &events,
-                    timeout,
-                    &cancels,
+                let lane = choose_lane(
+                    &wiring.state,
+                    command.request.conversation_id.as_deref(),
+                    &runtimes,
+                    &mut next,
                 );
+                if runtimes[lane].is_none() {
+                    match wiring.start(lane as u8) {
+                        Ok(runtime) => runtimes[lane] = Some(runtime),
+                        Err(error) => {
+                            let _ = command.accepted.send(Err(error));
+                            continue;
+                        }
+                    }
+                }
+                let Some(runtime) = runtimes[lane].as_ref() else {
+                    continue;
+                };
+                runtime.in_flight.fetch_add(1, Ordering::Relaxed);
+                if runtime.sender.send(command).is_err() {
+                    runtime.in_flight.fetch_sub(1, Ordering::Relaxed);
+                }
             }
-            let _ = conversation.shutdown();
+            // Dropping the lane senders ends every lane loop, which shuts its
+            // engine down once the current turn has settled.
+            drop(runtimes);
         });
     if let Err(error) = spawned {
-        tracing::error!(%error, "could not start the marble turn worker");
+        tracing::error!(%error, "could not start the marble turn dispatcher");
+        return Err(MarbleError::Io(error));
     }
-    sender
+    Ok(TurnPool { sender, steer })
+}
+
+/// What every lane thread needs besides its own engine session.
+struct LaneWiring {
+    factory: LaneFactory,
+    state: Arc<Mutex<ProductState>>,
+    store: Option<Arc<StateStore>>,
+    live: LiveStore,
+    events: EventBus,
+    timeout: Duration,
+    cancels: CancelRegistry,
+    steer: SteerSink,
+}
+
+impl LaneWiring {
+    /// Start one lane's engine and the thread that drains its queue.
+    fn start(&self, index: u8) -> Result<LaneRuntime, MarbleError> {
+        let (steer_tx, steer_rx) = mpsc::channel();
+        self.steer.add(index, steer_tx);
+        let mut conversation = (self.factory)(index)?.with_steering(steer_rx);
+        let (sender, receiver) = mpsc::channel();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&in_flight);
+        let state = Arc::clone(&self.state);
+        let store = self.store.clone();
+        let live = self.live.clone();
+        let events = self.events.clone();
+        let timeout = self.timeout;
+        let cancels = self.cancels.clone();
+        std::thread::Builder::new()
+            .name(format!("glass-marble-turn-{index}"))
+            .spawn(move || {
+                while let Ok(command) = receiver.recv() {
+                    run_command(
+                        command,
+                        index,
+                        &mut conversation,
+                        &state,
+                        store.as_deref(),
+                        &live,
+                        &events,
+                        timeout,
+                        &cancels,
+                    );
+                    counter.fetch_sub(1, Ordering::Relaxed);
+                }
+                let _ = conversation.shutdown();
+            })
+            .map_err(MarbleError::Io)?;
+        Ok(LaneRuntime { sender, in_flight })
+    }
+}
+
+/// Which lane takes the next command.
+///
+/// A conversation belongs to the engine that created its session, so its lane
+/// is recorded on the conversation and reused. New chats go to the lane with
+/// the fewest turns ahead, and ties rotate so two fresh chats do not land on
+/// the same engine.
+fn choose_lane(
+    state: &Mutex<ProductState>,
+    conversation_id: Option<&str>,
+    runtimes: &[Option<LaneRuntime>],
+    next: &mut usize,
+) -> usize {
+    if runtimes.is_empty() {
+        return 0;
+    }
+    if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
+        let bound = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .conversations
+            .iter()
+            .find(|record| record.id == id)
+            .map(|record| usize::from(record.lane));
+        if let Some(lane) = bound {
+            return lane.min(runtimes.len() - 1);
+        }
+    }
+    let mut best = *next % runtimes.len();
+    let mut best_load = usize::MAX;
+    for offset in 0..runtimes.len() {
+        let index = (*next + offset) % runtimes.len();
+        let load = runtimes[index]
+            .as_ref()
+            .map(|runtime| runtime.in_flight.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        if load < best_load {
+            best = index;
+            best_load = load;
+        }
+    }
+    *next = (best + 1) % runtimes.len();
+    best
 }
 
 /// Whether a routine firing is still wanted at the moment it is admitted.
@@ -429,6 +620,7 @@ fn firing_still_wanted(
 #[allow(clippy::too_many_arguments)]
 fn run_command(
     command: TurnCommand,
+    lane: u8,
     conversation: &mut Conversation,
     state: &Arc<Mutex<ProductState>>,
     store: Option<&StateStore>,
@@ -557,6 +749,10 @@ fn run_command(
             let now = now_millis();
             let title = truncate(&prompt, 64);
             let record = guard.conversation_mut(conversation_id);
+            // The lane owns this session, so a later turn or a correction comes
+            // back to the same engine instead of a second one that has never
+            // heard of this conversation.
+            record.lane = lane;
             if record.title.is_empty() {
                 record.title = title;
             }
@@ -826,6 +1022,39 @@ impl TurnRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lane_with(load: usize) -> Option<LaneRuntime> {
+        let (sender, _receiver) = mpsc::channel();
+        Some(LaneRuntime {
+            sender,
+            in_flight: Arc::new(AtomicUsize::new(load)),
+        })
+    }
+
+    #[test]
+    fn a_bound_conversation_returns_to_its_lane_and_new_work_spreads() {
+        let state = Mutex::new(ProductState::default());
+        {
+            let mut guard = state.lock().unwrap();
+            guard.conversation_mut("c-2").lane = 2;
+            guard.bump();
+        }
+        let runtimes = vec![lane_with(0), lane_with(0), lane_with(0)];
+        let mut next = 0;
+        assert_eq!(choose_lane(&state, Some("c-2"), &runtimes, &mut next), 2);
+
+        // New chats take the lightest lane, and ties rotate so two fresh chats
+        // do not land on one engine.
+        let busy = vec![lane_with(1), lane_with(0), lane_with(0)];
+        let mut next = 0;
+        assert_eq!(choose_lane(&state, None, &busy, &mut next), 1);
+        assert_eq!(choose_lane(&state, None, &busy, &mut next), 2);
+
+        // An unknown id is not allowed to strand a message: it still lands on a
+        // real lane instead of failing the admission.
+        let mut next = 0;
+        assert_eq!(choose_lane(&state, Some("unknown"), &busy, &mut next), 1);
+    }
 
     #[test]
     fn a_firing_for_a_removed_or_disabled_routine_is_not_wanted() {

@@ -1,11 +1,14 @@
 use glass_marble::{
-    ApprovalInbox, ControlProfile, Conversation, EventBus, HostPolicy, InboundMessage, MarbleReply,
-    MarbleTurn, ProductState, ToolRouter, TurnOptions, run_turn, to_turn_input,
+    AcceptedTurn, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, EventBus,
+    HostPolicy, InboundMessage, LaneFactory, LiveStore, MarbleReply, MarbleTurn, ProductState,
+    StateStore, ToolRouter, TurnCommand, TurnOptions, TurnPool, TurnRequest, run_turn,
+    spawn_turn_pool, to_turn_input,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 const FAKE_RUNTIME_SOURCE: &str = include_str!("fixtures/fake_glass_core_runtime.py");
 
@@ -84,6 +87,256 @@ fn run_one(
     .unwrap();
     let _ = conversation.shutdown();
     reply
+}
+
+/// One engine per lane, each with its own session store and its own id
+/// namespace. The names are how a test tells which lane a turn reached.
+fn lane_factory(
+    root: &Path,
+    script: &Path,
+    delay_ms: u64,
+    started: Arc<Mutex<Vec<u8>>>,
+) -> LaneFactory {
+    let root = root.to_path_buf();
+    let script = script.to_path_buf();
+    Arc::new(move |lane: u8| {
+        started
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(lane);
+        let mut python = Command::new("python3");
+        python
+            .arg(&script)
+            .arg("runtime")
+            .arg("--delay-ms")
+            .arg(delay_ms.to_string())
+            .arg("--id-prefix")
+            .arg(format!("lane-{lane}-"));
+        Conversation::spawn_with_router(
+            python,
+            &root,
+            &root.join("sessions").join(format!("lane-{lane}")),
+            HostPolicy::approving(),
+            ApprovalInbox::default(),
+            ToolRouter::new(&root)?,
+            EventBus::default(),
+        )
+    })
+}
+
+fn started_lanes(started: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+    started
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn submit(pool: &TurnPool, text: &str, conversation_id: Option<String>) -> AcceptedTurn {
+    let (accepted, answer) = mpsc::channel();
+    pool.sender
+        .send(TurnCommand {
+            request: TurnRequest::new(conversation_id, text),
+            accepted,
+        })
+        .expect("the pool takes the command");
+    answer
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the engine admits the turn in time")
+        .expect("the turn is accepted")
+}
+
+fn task_status(state: &Mutex<ProductState>, task_id: &str) -> String {
+    state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .map(|task| task.status.clone())
+        .unwrap_or_default()
+}
+
+fn running_tasks(state: &Mutex<ProductState>) -> usize {
+    state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .tasks
+        .iter()
+        .filter(|task| task.status == "running")
+        .count()
+}
+
+fn wait_for_settled(state: &Mutex<ProductState>, task_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match task_status(state, task_id).as_str() {
+            "completed" => return,
+            "failed" | "cancelled" => {
+                panic!("turn {task_id} settled as {}", task_status(state, task_id))
+            }
+            _ => {}
+        }
+        assert!(Instant::now() < deadline, "turn {task_id} never settled");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn lane_of(state: &Mutex<ProductState>, conversation_id: &str) -> u8 {
+    state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .conversations
+        .iter()
+        .find(|record| record.id == conversation_id)
+        .map(|record| record.lane)
+        .unwrap_or(u8::MAX)
+}
+
+/// Two chats submitted back to back must be worked on by two engines at once.
+///
+/// The fake runtime holds each turn for a moment after admitting it, so both
+/// durable tasks are visibly running together: a single loop would show one
+/// running task and the other still waiting.
+#[test]
+fn two_chats_run_at_the_same_time_on_separate_lanes() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-concurrency");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let pool = spawn_turn_pool(
+        2,
+        lane_factory(&root, &script, 1_500, Arc::clone(&started)),
+        Arc::clone(&state),
+        None,
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .expect("two lanes");
+
+    let first = submit(&pool, "first chat", None);
+    let second = submit(&pool, "second chat", None);
+    assert_ne!(
+        first.conversation_id, second.conversation_id,
+        "each engine keeps its own conversation"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut together = false;
+    while Instant::now() < deadline {
+        if running_tasks(&state) == 2 {
+            together = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        together,
+        "two chats should be running on two engines at the same time"
+    );
+
+    wait_for_settled(&state, &first.task_id);
+    wait_for_settled(&state, &second.task_id);
+    assert_eq!(
+        started_lanes(&started),
+        vec![0, 1],
+        "each chat really got an engine of its own"
+    );
+    let first_lane = lane_of(&state, &first.conversation_id);
+    let second_lane = lane_of(&state, &second.conversation_id);
+    assert_ne!(
+        first_lane, second_lane,
+        "each chat is bound to an engine of its own"
+    );
+    let mut lanes = vec![first_lane, second_lane];
+    lanes.sort_unstable();
+    assert_eq!(lanes, vec![0, 1], "both lanes are in use");
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The lane a conversation was admitted on is durable, so a restarted process
+/// rebuilds that lane instead of opening the chat somewhere else.
+#[test]
+fn a_conversation_returns_to_its_lane_after_a_restart() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-restart");
+    let script = write_fake_runtime(&root);
+    let store = Arc::new(StateStore::in_data_dir(&root));
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(store.load().expect("an empty document")));
+    let pool = spawn_turn_pool(
+        2,
+        lane_factory(&root, &script, 0, Arc::clone(&started)),
+        Arc::clone(&state),
+        Some(Arc::clone(&store)),
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .expect("two lanes");
+
+    // The dispatcher rotates, so a fresh chat lands on a lane above zero.
+    // Only such a lane proves that a restart rebuilt it instead of reusing the
+    // engine lane zero starts on its own.
+    let first = submit(&pool, "first chat", None);
+    wait_for_settled(&state, &first.task_id);
+    let lane = lane_of(&state, &first.conversation_id);
+    assert_ne!(lane, 0, "a chat can be admitted on a lane above zero");
+
+    // A restart leaves only the document on disk behind.
+    drop(pool);
+    std::thread::sleep(Duration::from_millis(200));
+    let restored = store.load().expect("the document a restart would read");
+    let restored = Arc::new(Mutex::new(restored));
+    assert_eq!(
+        lane_of(&restored, &first.conversation_id),
+        lane,
+        "the lane is part of the durable conversation"
+    );
+
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let pool = spawn_turn_pool(
+        2,
+        lane_factory(&root, &script, 0, Arc::clone(&started)),
+        Arc::clone(&restored),
+        Some(Arc::clone(&store)),
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .expect("two lanes");
+    assert_eq!(
+        started_lanes(&started),
+        vec![0],
+        "only lane zero starts before it is needed"
+    );
+
+    let again = submit(&pool, "back again", Some(first.conversation_id.clone()));
+    wait_for_settled(&restored, &again.task_id);
+    assert_eq!(again.conversation_id, first.conversation_id);
+    assert_eq!(
+        started_lanes(&started),
+        vec![0, lane],
+        "the restarted pool rebuilt the lane this conversation owns"
+    );
+    assert_eq!(
+        lane_of(&restored, &first.conversation_id),
+        lane,
+        "the conversation stays on its own lane"
+    );
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 fn tool_outcome(root: &Path) -> serde_json::Value {

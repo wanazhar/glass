@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use glass_marble::{
     AccessPolicy, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, DataDirLock,
-    EventBus, HostPolicy, InboundMessage, LiveStore, MarbleError, MarbleServer, MarbleServerParts,
-    MarbleTurn, PrismPool, ServiceSpec, StateStore, SteerRequest, TICK, ToolRouter, TurnOptions,
-    default_data_dir, run_turn, sessions_dir, spawn_scheduler, spawn_turn_worker, to_turn_input,
+    EventBus, HostPolicy, InboundMessage, LaneFactory, LiveStore, MarbleError, MarbleServer,
+    MarbleServerParts, MarbleTurn, PrismPool, ServiceSpec, StateStore, TICK, ToolRouter,
+    TurnOptions, default_data_dir, run_turn, sessions_dir, spawn_scheduler, spawn_turn_pool,
+    to_turn_input,
 };
 use glass_marble::{notify, service};
 use std::net::TcpListener;
@@ -11,6 +12,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
+
+/// How many chats can be worked on at the same time. Each lane is an engine
+/// process, so the number is a product choice rather than a pool size: three
+/// chats in parallel covers a person working a question, a fix, and a review
+/// without letting one host spawn engines without bound.
+const CHAT_LANES: usize = 3;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -323,36 +330,61 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     }
     let events = EventBus::default();
     let approvals = ApprovalInbox::default();
-    let router = ToolRouter::new(cwd)?;
     let state = Arc::new(Mutex::new(loaded));
-    // Corrections are handed to the worker that owns the running turn, so the
-    // HTTP surface never has to guess which conversation is active.
-    let (steer_tx, steer_rx) = mpsc::channel::<SteerRequest>();
-    let conversation = Conversation::spawn_with_router(
-        runtime_command(cli),
-        cwd,
-        &sessions_dir(data_dir),
-        HostPolicy::asking(),
-        approvals.clone(),
-        router,
-        events.clone(),
-    )?
-    .with_model(cli.model.clone())
-    .with_product(Arc::clone(&state))
-    .with_steering(steer_rx)
-    .with_respawn(runtime_factory(cli))
-    .with_approval_timeout(Duration::from_secs(approval_wait_secs.max(30)));
     let timeout = Duration::from_secs(timeout_secs.max(30));
     let cancels = CancelRegistry::default();
-    let turn_tx = spawn_turn_worker(
-        conversation,
+    // Every chat lane owns an engine and the session of the conversation it
+    // admitted, so two chats work at the same time instead of queueing. Lane
+    // zero keeps the existing `sessions` directory, so a conversation written
+    // before lanes existed still opens; later lanes keep their own stores.
+    let binary = core_binary(cli);
+    let lane_model = cli.model.clone();
+    let lane_cwd = cwd.to_path_buf();
+    let lane_root = sessions_dir(data_dir).to_path_buf();
+    let lane_approvals = approvals.clone();
+    let lane_events = events.clone();
+    let lane_state = Arc::clone(&state);
+    let approval_wait = approval_wait_secs.max(30);
+    let lane_factory: LaneFactory = Arc::new(move |index| {
+        let sessions = if index == 0 {
+            lane_root.clone()
+        } else {
+            lane_root.join("lanes").join(index.to_string())
+        };
+        std::fs::create_dir_all(&sessions).map_err(MarbleError::Io)?;
+        let mut command = Command::new(&binary);
+        command.arg("runtime");
+        let respawn_binary = binary.clone();
+        let conversation = Conversation::spawn_with_router(
+            command,
+            &lane_cwd,
+            &sessions,
+            HostPolicy::asking(),
+            lane_approvals.clone(),
+            ToolRouter::new(&lane_cwd)?,
+            lane_events.clone(),
+        )?;
+        Ok(conversation
+            .with_model(lane_model.clone())
+            .with_product(Arc::clone(&lane_state))
+            .with_respawn(move || {
+                let mut command = Command::new(&respawn_binary);
+                command.arg("runtime");
+                command
+            })
+            .with_approval_timeout(Duration::from_secs(approval_wait)))
+    });
+    let pool = spawn_turn_pool(
+        CHAT_LANES,
+        lane_factory,
         Arc::clone(&state),
         Some(Arc::clone(&store)),
         live.clone(),
         events.clone(),
         timeout,
         cancels.clone(),
-    );
+    )?;
+    let turn_tx = pool.sender.clone();
     // Routines fire on their own clock, and approvals reach the person who is
     // not looking at a screen.
     spawn_scheduler(
@@ -390,10 +422,11 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         approvals,
         events,
         turn_tx,
-        steer_tx,
+        steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(token),
         cancels,
     })
+    .with_steer_sink(pool.steer)
     .with_prism(Arc::clone(&prism))
     .with_crates(crate_map);
     let address = server.local_addr();

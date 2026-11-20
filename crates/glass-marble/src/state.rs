@@ -88,6 +88,11 @@ pub struct ConversationRecord {
     /// Unix milliseconds of the last update; zero for records without one.
     #[serde(default)]
     pub updated_at: u64,
+    /// Engine lane that owns this conversation's session. Several chats run at
+    /// once, one per lane, and a conversation always returns to the engine that
+    /// admitted its first turn.
+    #[serde(default)]
+    pub lane: u8,
 }
 
 /// One durable generation task admitted for a conversation.

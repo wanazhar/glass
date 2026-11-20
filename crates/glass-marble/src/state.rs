@@ -123,6 +123,10 @@ pub struct PendingApproval {
     pub call_id: String,
     pub tool: String,
     pub arguments: Value,
+    /// Set when another chat also has work in this call's path, so the card can
+    /// say what approving would do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
 }
 
 /// One Core-native tool the engine has actually reached for.

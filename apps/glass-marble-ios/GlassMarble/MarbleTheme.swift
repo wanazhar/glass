@@ -5,6 +5,7 @@ enum MarblePalette {
     static let ink = Color(red: 0.93, green: 0.95, blue: 0.99)
     static let muted = Color(red: 0.62, green: 0.68, blue: 0.78)
     static let danger = Color(red: 1.0, green: 0.48, blue: 0.48)
+    static let warn = Color(red: 1.0, green: 0.73, blue: 0.37)
     static let success = Color(red: 0.37, green: 0.84, blue: 0.64)
 
     static let aura = LinearGradient(

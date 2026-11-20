@@ -24,6 +24,8 @@ if argument("--content") is not None:
 DELAY_MS = int(argument("--delay-ms", "0") or "0")
 # Each engine is its own process, so a test can tell their ids apart.
 ID_PREFIX = argument("--id-prefix", "") or ""
+# A lane that dies with a turn in flight, for the isolation tests.
+DIE_ON_RUN = "--die-on-run" in sys.argv
 
 # A cancelled turn leaves replies in flight. In this mode the fixture parks the
 # first durable run until an abort arrives, then answers the run before the
@@ -47,6 +49,18 @@ def send(message):
 
 def reply(identifier, result):
     send({"jsonrpc": "2.0", "id": identifier, "result": result})
+
+
+def note_steer(message):
+    """Record one correction in this engine's own store, so a test can tell
+    which lane the person's steer reached."""
+    if not STORAGE_DIR:
+        return
+    params = message.get("params") or {}
+    # `turn/steer` carries the turn input directly, beside the session id.
+    text = str(params.get("text") or "")
+    with open(os.path.join(STORAGE_DIR, "fixture-steer.json"), "w", encoding="utf-8") as handle:
+        json.dump({"sessionId": params.get("sessionId"), "text": text}, handle)
 
 
 def event(turn, kind, data):
@@ -120,6 +134,9 @@ def run_turn(identifier, task, text, conversation, request):
         if not line:
             continue
         message = json.loads(line)
+        if message.get("method") == "turn/steer":
+            note_steer(message)
+            continue
         if "method" not in message and message.get("id") == frame_id:
             result = message.get("result") or {}
             break
@@ -223,6 +240,10 @@ def main():
                 {"submission": {"id": task_id, "status": "pending"}, "duplicate": duplicate},
             )
         elif method == "durable/run":
+            if DIE_ON_RUN:
+                # The engine dies with this turn in flight; another lane must
+                # keep working.
+                sys.exit(0)
             if LATE_ABORT_ACK and not PARKED_RUN.get("used"):
                 PARKED_RUN["used"] = True
                 PARKED_RUN["id"] = identifier
@@ -233,6 +254,9 @@ def main():
             if PARKED_RUN.get("id"):
                 reply(PARKED_RUN.pop("id"), {"sessionId": SESSION_ID, "settled": True})
             reply(identifier, {"aborted": True, "taskId": params.get("taskId")})
+        elif method == "turn/steer":
+            note_steer(message)
+            reply(identifier, {"steered": True})
         elif method == "shutdown":
             reply(identifier, {})
             return

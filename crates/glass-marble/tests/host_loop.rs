@@ -1,8 +1,8 @@
 use glass_marble::{
-    AcceptedTurn, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, EventBus,
-    HostPolicy, InboundMessage, LaneFactory, LiveStore, MarbleReply, MarbleTurn, ProductState,
-    StateStore, ToolRouter, TurnCommand, TurnOptions, TurnPool, TurnRequest, run_turn,
-    spawn_turn_pool, to_turn_input,
+    AcceptedTurn, Approval, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, EventBus,
+    HostPolicy, InboundMessage, LaneFactory, LiveStore, MarbleError, MarbleReply, MarbleTurn,
+    PendingApproval, ProductState, StateStore, SteerRequest, ToolRouter, TurnCommand, TurnOptions,
+    TurnPool, TurnRequest, run_turn, spawn_turn_pool, to_turn_input,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,39 +89,116 @@ fn run_one(
     reply
 }
 
+/// How one lane's fake engine is built for a test.
+#[derive(Clone)]
+struct LaneSpec {
+    delay_ms: u64,
+    tool: &'static str,
+    path: Option<&'static str>,
+    content: Option<&'static str>,
+    /// Ask the person for each governed call instead of approving it.
+    prompt: bool,
+    /// Die as soon as a turn asks the engine to run.
+    die_on_run: bool,
+    /// Fail to build this engine at all.
+    fail: bool,
+}
+
+impl Default for LaneSpec {
+    fn default() -> Self {
+        Self {
+            delay_ms: 0,
+            tool: "glass.workspace.list",
+            path: None,
+            content: None,
+            prompt: false,
+            die_on_run: false,
+            fail: false,
+        }
+    }
+}
+
 /// One engine per lane, each with its own session store and its own id
 /// namespace. The names are how a test tells which lane a turn reached.
 fn lane_factory(
     root: &Path,
     script: &Path,
-    delay_ms: u64,
+    specs: Vec<LaneSpec>,
+    approvals: ApprovalInbox,
     started: Arc<Mutex<Vec<u8>>>,
 ) -> LaneFactory {
     let root = root.to_path_buf();
     let script = script.to_path_buf();
+    let specs = Arc::new(specs);
     Arc::new(move |lane: u8| {
         started
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(lane);
+        let spec = specs.get(usize::from(lane)).cloned().unwrap_or_default();
+        if spec.fail {
+            return Err(MarbleError::Protocol(
+                "this engine cannot start in the test".into(),
+            ));
+        }
         let mut python = Command::new("python3");
         python
             .arg(&script)
             .arg("runtime")
             .arg("--delay-ms")
-            .arg(delay_ms.to_string())
+            .arg(spec.delay_ms.to_string())
             .arg("--id-prefix")
-            .arg(format!("lane-{lane}-"));
+            .arg(format!("lane-{lane}-"))
+            .arg("--tool")
+            .arg(spec.tool);
+        if let Some(path) = spec.path {
+            python.arg("--path").arg(path);
+        }
+        if let Some(content) = spec.content {
+            python.arg("--content").arg(content);
+        }
+        if spec.die_on_run {
+            python.arg("--die-on-run");
+        }
+        let host = if spec.prompt {
+            HostPolicy::asking()
+        } else {
+            HostPolicy::approving()
+        };
         Conversation::spawn_with_router(
             python,
             &root,
             &root.join("sessions").join(format!("lane-{lane}")),
-            HostPolicy::approving(),
-            ApprovalInbox::default(),
+            host,
+            approvals.clone(),
             ToolRouter::new(&root)?,
             EventBus::default(),
         )
+        .map(|conversation| conversation.with_approval_timeout(Duration::from_secs(30)))
     })
+}
+
+/// A two-lane pool wired the way `main` wires the served product.
+fn lanes(
+    root: &Path,
+    script: &Path,
+    specs: Vec<LaneSpec>,
+    approvals: ApprovalInbox,
+    state: &Arc<Mutex<ProductState>>,
+    started: &Arc<Mutex<Vec<u8>>>,
+    cancels: CancelRegistry,
+) -> TurnPool {
+    spawn_turn_pool(
+        2,
+        lane_factory(root, script, specs, approvals, Arc::clone(started)),
+        Arc::clone(state),
+        None,
+        LiveStore::in_data_dir(root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        cancels,
+    )
+    .expect("two lanes")
 }
 
 fn started_lanes(started: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
@@ -166,17 +243,51 @@ fn running_tasks(state: &Mutex<ProductState>) -> usize {
         .count()
 }
 
-fn wait_for_settled(state: &Mutex<ProductState>, task_id: &str) {
+fn wait_for_settled_as(state: &Mutex<ProductState>, task_id: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        match task_status(state, task_id).as_str() {
-            "completed" => return,
-            "failed" | "cancelled" => {
-                panic!("turn {task_id} settled as {}", task_status(state, task_id))
-            }
-            _ => {}
+        let status = task_status(state, task_id);
+        if matches!(
+            status.as_str(),
+            "completed" | "cancelled" | "failed" | "interrupted"
+        ) {
+            return status;
         }
         assert!(Instant::now() < deadline, "turn {task_id} never settled");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_settled(state: &Mutex<ProductState>, task_id: &str) {
+    let status = wait_for_settled_as(state, task_id);
+    assert_eq!(status, "completed", "turn {task_id} settled as {status}");
+}
+
+fn wait_until(what: &str, ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !ready() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Wait for the approval card of one path and return it.
+fn wait_for_approval(approvals: &ApprovalInbox, path: &str) -> PendingApproval {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(pending) = approvals.pending().into_iter().find(|pending| {
+            pending
+                .arguments
+                .get("path")
+                .and_then(|value| value.as_str())
+                == Some(path)
+        }) {
+            return pending;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no approval for {path} reached the surface"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -208,7 +319,19 @@ fn two_chats_run_at_the_same_time_on_separate_lanes() {
     let state = Arc::new(Mutex::new(ProductState::default()));
     let pool = spawn_turn_pool(
         2,
-        lane_factory(&root, &script, 1_500, Arc::clone(&started)),
+        lane_factory(
+            &root,
+            &script,
+            vec![
+                LaneSpec {
+                    delay_ms: 1_500,
+                    ..LaneSpec::default()
+                };
+                2
+            ],
+            ApprovalInbox::default(),
+            Arc::clone(&started),
+        ),
         Arc::clone(&state),
         None,
         LiveStore::in_data_dir(&root),
@@ -274,7 +397,13 @@ fn a_conversation_returns_to_its_lane_after_a_restart() {
     let state = Arc::new(Mutex::new(store.load().expect("an empty document")));
     let pool = spawn_turn_pool(
         2,
-        lane_factory(&root, &script, 0, Arc::clone(&started)),
+        lane_factory(
+            &root,
+            &script,
+            vec![LaneSpec::default(); 2],
+            ApprovalInbox::default(),
+            Arc::clone(&started),
+        ),
         Arc::clone(&state),
         Some(Arc::clone(&store)),
         LiveStore::in_data_dir(&root),
@@ -306,7 +435,13 @@ fn a_conversation_returns_to_its_lane_after_a_restart() {
     let started = Arc::new(Mutex::new(Vec::new()));
     let pool = spawn_turn_pool(
         2,
-        lane_factory(&root, &script, 0, Arc::clone(&started)),
+        lane_factory(
+            &root,
+            &script,
+            vec![LaneSpec::default(); 2],
+            ApprovalInbox::default(),
+            Arc::clone(&started),
+        ),
         Arc::clone(&restored),
         Some(Arc::clone(&store)),
         LiveStore::in_data_dir(&root),
@@ -334,6 +469,342 @@ fn a_conversation_returns_to_its_lane_after_a_restart() {
         lane,
         "the conversation stays on its own lane"
     );
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A lane whose engine cannot start fails only the chat it was chosen for.
+#[test]
+fn a_lane_that_cannot_start_does_not_disturb_another_chat() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-fails");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let specs = vec![
+        LaneSpec::default(),
+        LaneSpec {
+            fail: true,
+            ..LaneSpec::default()
+        },
+    ];
+    let pool = lanes(
+        &root,
+        &script,
+        specs,
+        ApprovalInbox::default(),
+        &state,
+        &started,
+        CancelRegistry::default(),
+    );
+
+    // The dispatcher rotates, so the first fresh chat needs the broken lane.
+    let (accepted, answer) = mpsc::channel();
+    pool.sender
+        .send(TurnCommand {
+            request: TurnRequest::new(None, "doomed chat"),
+            accepted,
+        })
+        .expect("the pool takes the command");
+    let refused = answer
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the dispatcher answers every command")
+        .expect_err("the broken lane must refuse the turn");
+    assert!(refused.to_string().contains("cannot start"), "{refused}");
+
+    let healthy = submit(&pool, "healthy chat", None);
+    wait_for_settled(&state, &healthy.task_id);
+    assert_eq!(
+        lane_of(&state, &healthy.conversation_id),
+        0,
+        "the healthy chat still has its own engine"
+    );
+    assert!(
+        started_lanes(&started).contains(&1),
+        "the failing lane was tried before it refused"
+    );
+    assert_eq!(
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .conversations
+            .len(),
+        1,
+        "the refused chat left no conversation behind"
+    );
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An engine that dies mid-turn fails only its own chat; the other engine keeps
+/// working, including on the turn after the death.
+#[test]
+fn a_lane_that_dies_mid_turn_does_not_disturb_another_chat() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-dies");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let specs = vec![
+        LaneSpec::default(),
+        LaneSpec {
+            die_on_run: true,
+            ..LaneSpec::default()
+        },
+    ];
+    let pool = lanes(
+        &root,
+        &script,
+        specs,
+        ApprovalInbox::default(),
+        &state,
+        &started,
+        CancelRegistry::default(),
+    );
+
+    let doomed = submit(&pool, "doomed chat", None);
+    let healthy = submit(&pool, "healthy chat", None);
+    assert_eq!(
+        wait_for_settled_as(&state, &doomed.task_id),
+        "failed",
+        "the dying engine fails its own turn"
+    );
+    wait_for_settled(&state, &healthy.task_id);
+    assert_eq!(lane_of(&state, &healthy.conversation_id), 0);
+
+    // The surviving chat keeps working after the other engine died.
+    let again = submit(
+        &pool,
+        "healthy chat again",
+        Some(healthy.conversation_id.clone()),
+    );
+    wait_for_settled(&state, &again.task_id);
+    assert_eq!(again.conversation_id, healthy.conversation_id);
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A stop ends one chat's turn and leaves the other chat's turn running to a
+/// normal completion.
+#[test]
+fn a_stop_in_one_chat_does_not_disturb_another_chat() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-stop");
+    let fifo = root.join("slow.txt");
+    let made = Command::new("python3")
+        .arg("-c")
+        .arg("import os,sys; os.mkfifo(sys.argv[1])")
+        .arg(&fifo)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !made {
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let cancels = CancelRegistry::default();
+    let specs = vec![
+        LaneSpec {
+            tool: "glass.workspace.read",
+            path: Some("slow.txt"),
+            ..LaneSpec::default()
+        },
+        LaneSpec {
+            delay_ms: 500,
+            ..LaneSpec::default()
+        },
+    ];
+    let pool = lanes(
+        &root,
+        &script,
+        specs,
+        ApprovalInbox::default(),
+        &state,
+        &started,
+        cancels.clone(),
+    );
+
+    let healthy = submit(&pool, "healthy chat", None);
+    let blocked = submit(&pool, "blocked chat", None);
+    wait_until("both chats to run", || running_tasks(&state) == 2);
+    assert!(
+        cancels.request(&blocked.task_id),
+        "the running turn is cancellable"
+    );
+    assert_eq!(
+        wait_for_settled_as(&state, &blocked.task_id),
+        "cancelled",
+        "a stop settles only its own turn"
+    );
+    wait_for_settled(&state, &healthy.task_id);
+    assert_eq!(lane_of(&state, &healthy.conversation_id), 1);
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A correction is delivered to the engine that owns the chat, and the other
+/// chat's engine never sees it.
+#[test]
+fn a_steer_reaches_only_the_chat_it_names() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-steer");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let specs = vec![
+        LaneSpec {
+            delay_ms: 1_500,
+            ..LaneSpec::default()
+        };
+        2
+    ];
+    let pool = lanes(
+        &root,
+        &script,
+        specs,
+        ApprovalInbox::default(),
+        &state,
+        &started,
+        CancelRegistry::default(),
+    );
+
+    let first = submit(&pool, "first chat", None);
+    let second = submit(&pool, "second chat", None);
+    wait_until("both chats to run", || running_tasks(&state) == 2);
+
+    let target_lane = lane_of(&state, &first.conversation_id);
+    let other_lane = lane_of(&state, &second.conversation_id);
+    assert_ne!(target_lane, other_lane, "the chats sit on different lanes");
+    assert!(
+        pool.steer.send(
+            target_lane,
+            SteerRequest {
+                conversation_id: first.conversation_id.clone(),
+                task_id: String::new(),
+                text: "use the other file".into(),
+            }
+        ),
+        "the lane serving the chat takes the correction"
+    );
+
+    wait_for_settled(&state, &first.task_id);
+    wait_for_settled(&state, &second.task_id);
+
+    let steer_file = |lane: u8| {
+        root.join("sessions")
+            .join(format!("lane-{lane}"))
+            .join("fixture-steer.json")
+    };
+    wait_until("the correction to reach its engine", || {
+        steer_file(target_lane).exists()
+    });
+    let recorded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(steer_file(target_lane)).unwrap()).unwrap();
+    assert_eq!(
+        recorded["text"],
+        serde_json::json!("use the other file"),
+        "the owning engine received the correction"
+    );
+    assert!(
+        !steer_file(other_lane).exists(),
+        "the other chat's engine never saw the correction"
+    );
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A write that would replace another chat's file is flagged on the approval
+/// card and refused at execution, so the other chat's content survives.
+#[test]
+fn a_second_chat_is_warned_before_replacing_another_chats_write() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-conflict");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let approvals = ApprovalInbox::default();
+    let specs = vec![
+        LaneSpec {
+            prompt: true,
+            tool: "glass.workspace.write",
+            path: Some("notes.md"),
+            content: Some("from lane zero"),
+            ..LaneSpec::default()
+        },
+        LaneSpec {
+            prompt: true,
+            tool: "glass.workspace.write",
+            path: Some("notes.md"),
+            content: Some("from lane one"),
+            ..LaneSpec::default()
+        },
+    ];
+    let pool = lanes(
+        &root,
+        &script,
+        specs,
+        approvals.clone(),
+        &state,
+        &started,
+        CancelRegistry::default(),
+    );
+
+    let first = submit(&pool, "first chat", None);
+    let first_card = wait_for_approval(&approvals, "notes.md");
+    assert!(
+        first_card.conflict.is_none(),
+        "the first write has nothing to conflict with"
+    );
+    assert!(approvals.resolve(&first_card.request_id, Approval::Approve));
+    wait_for_settled(&state, &first.task_id);
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.md")).unwrap(),
+        "from lane one"
+    );
+
+    let second = submit(&pool, "second chat", None);
+    let second_card = wait_for_approval(&approvals, "notes.md");
+    let conflict = second_card
+        .conflict
+        .expect("the second card names the other chat's write");
+    assert!(
+        conflict.contains("Another chat") && conflict.contains("notes.md"),
+        "{conflict}"
+    );
+    assert!(approvals.resolve(&second_card.request_id, Approval::Approve));
+    wait_for_settled(&state, &second.task_id);
+
+    // Approving did not let the write lose the first chat's change.
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.md")).unwrap(),
+        "from lane one",
+        "the first chat's write is still on disk"
+    );
+    let outcome: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("sessions/lane-0/fixture-tool-outcome.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(outcome["isError"], serde_json::json!(true));
+    let text = outcome["text"].as_str().unwrap();
+    assert!(text.contains("re-read"), "{text}");
 
     drop(pool);
     let _ = std::fs::remove_dir_all(&root);

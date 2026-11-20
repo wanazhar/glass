@@ -2,7 +2,7 @@
 
 use crate::{
     Approval, MarbleError, TURN_TIMEOUT, control::Verdict, events::EventBus, host::HostPolicy,
-    state::PendingApproval, state::ProductState, tools::ToolRouter,
+    state::PendingApproval, state::ProductState, tools::ToolRouter, tools::ToolScope,
 };
 use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
@@ -99,6 +99,7 @@ impl ApprovalInbox {
         call_id: &str,
         tool: &str,
         arguments: Value,
+        conflict: Option<String>,
     ) -> Receiver<Approval> {
         let (sender, receiver) = mpsc::channel();
         self.pending_map().insert(
@@ -108,6 +109,7 @@ impl ApprovalInbox {
                 call_id: call_id.to_string(),
                 tool: tool.to_string(),
                 arguments,
+                conflict,
             },
         );
         self.senders_map().insert(request_id.to_string(), sender);
@@ -733,13 +735,15 @@ impl Conversation {
                 "arguments": call.arguments,
             }),
         );
-        let (approval, reason) = self.decide(&key, call, cancel);
+        let scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
+        let (approval, reason) = self.decide(&key, call, &scope, cancel);
         let answer = crate::host::answer_tool(
             &mut self.client,
             request_id,
             call,
             approval,
             &self.router,
+            &scope,
             (!reason.is_empty()).then_some(reason.as_str()),
             cancel,
         )?;
@@ -777,6 +781,7 @@ impl Conversation {
         &mut self,
         key: &str,
         call: &ToolRequest,
+        scope: &ToolScope,
         cancel: Option<CancelToken<'_>>,
     ) -> (Approval, String) {
         let path = call_path(call);
@@ -809,6 +814,12 @@ impl Conversation {
                     self.record(&call.name, &path, decision_label, reason);
                     (decision, decision_label, reason.to_string())
                 } else {
+                    // Another chat may have read or written this path while
+                    // this turn was getting here. The card says so before the
+                    // person decides, and the write itself refuses a stale
+                    // base, so one chat's change is never silently lost.
+                    let conflict = self.router.conflict(scope, &call.name, &call.arguments);
+                    let conflict_note = conflict.as_ref().map(|conflict| conflict.note.clone());
                     self.publish(
                         "approval_pending",
                         value!({
@@ -816,6 +827,7 @@ impl Conversation {
                             "callId": call.call_id,
                             "tool": call.name,
                             "arguments": call.arguments,
+                            "conflict": conflict_note.clone(),
                         }),
                     );
                     let receiver = self.approvals.register(
@@ -823,6 +835,7 @@ impl Conversation {
                         &call.call_id,
                         &call.name,
                         call.arguments.clone(),
+                        conflict_note,
                     );
                     let decision = match wait_for_approval(&receiver, self.approval_timeout, cancel)
                     {
@@ -1029,7 +1042,13 @@ mod tests {
     #[test]
     fn a_decided_approval_is_resolved_exactly_once() {
         let inbox = ApprovalInbox::default();
-        let receiver = inbox.register("host:1", "call-1", "glass.workspace.list", Value::Null);
+        let receiver = inbox.register(
+            "host:1",
+            "call-1",
+            "glass.workspace.list",
+            Value::Null,
+            None,
+        );
         assert_eq!(inbox.pending().len(), 1);
         assert!(inbox.resolve("host:1", Approval::Approve));
         assert_eq!(receiver.recv().unwrap(), Approval::Approve);

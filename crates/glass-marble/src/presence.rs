@@ -348,6 +348,7 @@ mod tests {
             call_id: "c".into(),
             tool: "glass.workspace.read".into(),
             arguments: Value::Null,
+            conflict: None,
         });
         assert_eq!(presence.status(&state), "waiting");
     }

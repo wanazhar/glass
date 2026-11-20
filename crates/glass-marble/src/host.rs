@@ -3,7 +3,7 @@
 use crate::{
     MarbleError,
     conversation::{CancelToken, PUMP_INTERVAL},
-    tools::{ToolOutcome, ToolRouter},
+    tools::{ToolOutcome, ToolRouter, ToolScope},
 };
 use glass_runtime_client::{RuntimeClient, protocol::ToolRequest};
 use serde_json::Value;
@@ -123,7 +123,16 @@ pub fn answer_tool_request_with_note(
     router: &ToolRouter,
     note: Option<&str>,
 ) -> Result<ToolOutcome, MarbleError> {
-    let answer = answer_tool(client, request_id, call, approval, router, note, None)?;
+    let answer = answer_tool(
+        client,
+        request_id,
+        call,
+        approval,
+        router,
+        &ToolScope::default(),
+        note,
+        None,
+    )?;
     Ok(match answer {
         ToolAnswer::Answered(outcome) => outcome,
         // Without a cancel token there is nothing that can stop a call.
@@ -133,12 +142,14 @@ pub fn answer_tool_request_with_note(
 
 /// Answer one inbound tool request, interrupting an approved call that is
 /// already executing when the turn is cancelled.
+#[allow(clippy::too_many_arguments)]
 pub fn answer_tool(
     client: &mut RuntimeClient,
     request_id: Value,
     call: &ToolRequest,
     approval: Approval,
     router: &ToolRouter,
+    scope: &ToolScope,
     note: Option<&str>,
     cancel: Option<CancelToken<'_>>,
 ) -> Result<ToolAnswer, MarbleError> {
@@ -147,7 +158,7 @@ pub fn answer_tool(
         answer(client, request_id, &outcome)?;
         return Ok(ToolAnswer::Answered(outcome));
     }
-    match execute_interruptibly(router, call, cancel) {
+    match execute_interruptibly(router, call, cancel, scope) {
         Some(outcome) => {
             answer(client, request_id, &outcome)?;
             Ok(ToolAnswer::Answered(outcome))
@@ -189,11 +200,15 @@ pub fn execute_interruptibly(
     router: &ToolRouter,
     call: &ToolRequest,
     cancel: Option<CancelToken<'_>>,
+    scope: &ToolScope,
 ) -> Option<ToolOutcome> {
     let router = router.clone();
     let name = call.name.clone();
     let arguments = call.arguments.clone();
-    run_interruptibly(cancel, move || router.execute(&name, &arguments))
+    let scope = scope.clone();
+    run_interruptibly(cancel, move || {
+        router.execute_scoped(&scope, &name, &arguments)
+    })
 }
 
 /// Run one tool body, but stop waiting for it as soon as the turn is cancelled.

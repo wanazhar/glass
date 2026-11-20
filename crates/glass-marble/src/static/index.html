@@ -365,6 +365,9 @@
       .approvals .card { box-shadow: none; }
       .approval { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
       .approval code { font-size: 11px; color: var(--muted); word-break: break-all; }
+      .approval .conflict {
+        margin: 4px 0 0; color: var(--warn); font-size: 12px; line-height: 1.45;
+      }
       .approval .actions { display: flex; gap: 8px; }
       .composer { border-top: 1px solid var(--line); background: var(--surface); padding: 10px 12px; }
       .composer-row {
@@ -1782,6 +1785,7 @@
           const info = node("div");
           info.append(node("h2", null, "Approval · " + approval.tool));
           info.append(node("code", null, JSON.stringify(approval.arguments)));
+          if (approval.conflict) info.append(node("p", "conflict", approval.conflict));
           card.append(info);
           const actions = node("div", "actions");
           const allow = node("button", "primary", "Allow");

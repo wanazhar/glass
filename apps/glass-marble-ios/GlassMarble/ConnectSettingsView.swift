@@ -28,7 +28,7 @@ struct ConnectSettingsView: View {
                             .foregroundStyle(MarblePalette.muted)
                     }
                 } footer: {
-                    Text("On the host run `glass-marble serve --host <tailscale-ip> --token-file ~/.marble-token`, then use the address printed at startup. The token is stored in the iOS keychain.")
+                    Text("On the host run `glass-marble serve --host <tailscale-ip> --token-file ~/.marble-token`, then enter the address it prints. The token is kept in the iOS keychain.")
                 }
 
                 Section("This device") {

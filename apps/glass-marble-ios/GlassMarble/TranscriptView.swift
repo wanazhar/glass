@@ -7,7 +7,16 @@ struct TranscriptView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if store.transcript.isEmpty
+                    if !store.loaded {
+                        // First state still on its way: shaped rows keep the
+                        // chat from looking like an empty conversation.
+                        VStack(alignment: .leading, spacing: 12) {
+                            MarbleSkeleton(height: 40, width: 200, cornerRadius: 16)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                            MarbleSkeleton(height: 64, cornerRadius: 16)
+                            MarbleSkeleton(height: 40, width: 260, cornerRadius: 16)
+                        }
+                    } else if store.transcript.isEmpty
                         && store.liveText.isEmpty
                         && store.liveReasoning.isEmpty
                         && store.liveTools.isEmpty {
@@ -15,12 +24,20 @@ struct TranscriptView: View {
                     }
                     ForEach(store.transcript) { entry in
                         MarbleBubble(entry: entry)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                     if !store.liveReasoning.isEmpty {
                         MarbleBubble(entry: .preview(kind: "reasoning", text: store.liveReasoning))
                     }
                     ForEach(store.liveTools) { tool in
                         MarbleToolRow(tool: tool)
+                    }
+                    if store.isWorking
+                        && store.liveText.isEmpty
+                        && store.liveReasoning.isEmpty
+                        && store.liveTools.isEmpty {
+                        MarbleWorkingDots()
+                            .padding(.leading, 2)
                     }
                     if !store.liveText.isEmpty {
                         MarbleBubble(entry: .preview(kind: "assistant", text: store.liveText))
@@ -40,6 +57,9 @@ struct TranscriptView: View {
             .onChange(of: store.transcript.count) { _, _ in scroll(proxy) }
             .onChange(of: store.liveText) { _, _ in scroll(proxy) }
             .onChange(of: store.liveTools.count) { _, _ in scroll(proxy) }
+            .onChange(of: store.loaded) { _, _ in scroll(proxy) }
+            .animation(.snappy(duration: 0.24), value: store.transcript.count)
+            .animation(.snappy(duration: 0.2), value: store.isWorking)
         }
     }
 
@@ -124,17 +144,14 @@ struct MarbleEmptyState: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             MarbleMarbleMark()
-            Text("A durable collaborator on your own machine")
-                .font(.headline)
-                .foregroundStyle(MarblePalette.ink)
-            Text("Ask Marble to read, change, or explain something in this workspace. Every turn is journaled on the host, so you can stop it, resume it later, and audit exactly what changed.")
+            Text("Ask Marble to read, change, or explain something in this workspace.")
                 .font(.callout)
                 .foregroundStyle(MarblePalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .marbleGlass(cornerRadius: 24)
+        .marbleGlass(cornerRadius: 22)
     }
 }
 
@@ -238,7 +255,7 @@ struct ApprovalCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .marbleGlass(cornerRadius: 22)
+        .marbleGlass(cornerRadius: 20)
     }
 
     private func decisionButton(

@@ -11,13 +11,7 @@ struct RoutinesView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    Text(
-                        "A routine is a saved prompt plus a schedule. Marble fires it even when the phone is closed, and it goes through the same control layer and queue as anything you type."
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(MarblePalette.muted)
-
+                VStack(alignment: .leading, spacing: 20) {
                     editor
                     list
                 }
@@ -81,9 +75,7 @@ struct RoutinesView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionTitle("Scheduled")
             if store.routines.routines.isEmpty {
-                Text("No routines yet. Marble is patient, but it works better with a few standing jobs.")
-                    .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                EmptyNote("No routines yet.")
             }
             ForEach(store.routines.routines) { routine in
                 VStack(alignment: .leading, spacing: 8) {
@@ -110,13 +102,16 @@ struct RoutinesView: View {
                             .font(.caption2)
                             .foregroundStyle(MarblePalette.muted)
                     }
-                    HStack(spacing: 8) {
+                    HStack(spacing: 12) {
                         Button("Run now") {
                             Task { await store.run(routine) }
                         }
+                        .foregroundStyle(MarblePalette.accent)
                         Button(routine.enabled ? "Pause" : "Resume") {
                             Task { await store.setRoutine(routine, enabled: !routine.enabled) }
                         }
+                        .foregroundStyle(MarblePalette.accent)
+                        Spacer(minLength: 0)
                         Button("Remove", role: .destructive) {
                             Task { await store.remove(routine) }
                         }
@@ -124,7 +119,6 @@ struct RoutinesView: View {
                     }
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.plain)
-                    .foregroundStyle(MarblePalette.accent)
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)

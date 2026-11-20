@@ -107,6 +107,69 @@ struct MarbleIconButton: View {
     }
 }
 
+/// A shaped placeholder for content that is still on its way. It uses the same
+/// corner radius as the rows it stands in for, so a sheet does not jump when
+/// the real content replaces it.
+struct MarbleSkeleton: View {
+    var height: CGFloat = 16
+    var width: CGFloat?
+    var cornerRadius: CGFloat = 8
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: CGFloat = -0.7
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(Color.white.opacity(0.08))
+            .overlay {
+                GeometryReader { geometry in
+                    LinearGradient(
+                        colors: [.clear, Color.white.opacity(0.16), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: geometry.size.width * 0.6)
+                    .offset(x: geometry.size.width * phase)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+            .frame(width: width, height: height)
+            .onAppear(perform: shimmer)
+            .accessibilityHidden(true)
+    }
+
+    private func shimmer() {
+        guard !reduceMotion else { return }
+        withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+            phase = 1.3
+        }
+    }
+}
+
+/// Three dots: a turn is running, without covering the text that is arriving.
+struct MarbleWorkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lit = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(MarblePalette.accent)
+                    .frame(width: 6, height: 6)
+                    .opacity(lit ? 1 : 0.3)
+                    .animation(
+                        .easeInOut(duration: 0.6)
+                            .repeatForever()
+                            .delay(Double(index) * 0.15),
+                        value: lit
+                    )
+            }
+        }
+        .onAppear { lit = !reduceMotion }
+        .accessibilityLabel("Marble is working")
+    }
+}
+
 struct MarbleMarbleMark: View {
     var body: some View {
         Circle()

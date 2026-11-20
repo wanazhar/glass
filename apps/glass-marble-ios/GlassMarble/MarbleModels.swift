@@ -137,6 +137,53 @@ struct MarbleQueuedTurn: Decodable, Identifiable, Equatable {
     var at: UInt64
 }
 
+/// One executable a crate ships, and whether the host can run it.
+struct MarbleCrateBinary: Decodable, Identifiable, Equatable {
+    var name: String
+    var onPath: String?
+
+    var id: String { name }
+}
+
+/// One crate in the workspace the host was started inside.
+struct MarbleWorkspaceCrate: Decodable, Identifiable, Equatable {
+    var name: String
+    var crateName: String
+    var version: String
+    var description: String
+    var path: String
+    var binaries: [MarbleCrateBinary]
+    var dependsOn: [String]
+    /// `library` when the host links the crate, `binary` when it ships an
+    /// executable on `PATH`. Empty means another crate owns the route.
+    var reach: [String]
+
+    var id: String { name }
+
+    var reachLabel: String {
+        reach.isEmpty ? "no direct reach" : reach.joined(separator: " · ")
+    }
+}
+
+/// The workspace crate map, served with the control document.
+struct MarbleCrateMap: Decodable, Equatable {
+    struct Workspace: Decodable, Equatable {
+        var version: String
+        var members: Int
+        var marble: String?
+    }
+
+    var workspace: Workspace
+    var crates: [MarbleWorkspaceCrate]
+    var truncated: Bool
+
+    static let empty = MarbleCrateMap(
+        workspace: Workspace(version: "", members: 0, marble: nil),
+        crates: [],
+        truncated: false
+    )
+}
+
 /// Marble's own layer of control as served by the host.
 struct MarbleControl: Decodable, Equatable {
     var profile: String
@@ -146,6 +193,8 @@ struct MarbleControl: Decodable, Equatable {
     var ledger: [MarbleControlEntry]
     var queue: [MarbleQueuedTurn]
     var profiles: [MarbleProfileOption]
+    // The crate map is fetched from `/api/crates` when the sheet that shows it
+    // opens: it is a workspace scan, not a fact every state poll should carry.
 
     static let empty = MarbleControl(
         profile: "workspace",
@@ -154,7 +203,8 @@ struct MarbleControl: Decodable, Equatable {
         deniedPaths: [],
         ledger: [],
         queue: [],
-        profiles: []
+        profiles: [],
+        crates: nil
     )
 
     func label(for profile: String) -> String {
@@ -303,6 +353,13 @@ struct MarbleState: Decodable, Equatable {
     }
 
     var runningTask: MarbleTask? { tasks.first(where: \.isRunning) }
+
+    /// The running turn in one conversation. Several chats run at once, so a
+    /// surface showing one chat asks about that chat rather than about the host.
+    func runningTask(for conversationId: String?) -> MarbleTask? {
+        guard let conversationId else { return runningTask }
+        return tasks.first { $0.isRunning && $0.conversationId == conversationId }
+    }
 }
 
 struct MarbleEvent: Decodable, Equatable {

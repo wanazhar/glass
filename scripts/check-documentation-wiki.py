@@ -56,7 +56,7 @@ def topic_for(path: str) -> str:
         return "credits"
     if classify(path) in {"historical", "record", "generated"}:
         return "history"
-    if path.startswith(("products/", "crates/glass-core/")) or path == "docs/glass-core-product.md":
+    if path.startswith(("products/", "crates/glass-core/")) or path in {"docs/glass-core-product.md", "docs/marble.md"}:
         return "products"
     if any(token in path.lower() for token in ("getting-started", "install", "provider", "auth", "model")):
         return "setup"

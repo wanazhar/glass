@@ -205,8 +205,7 @@ struct MarbleControl: Decodable, Equatable {
         deniedPaths: [],
         ledger: [],
         queue: [],
-        profiles: [],
-        crates: nil
+        profiles: []
     )
 
     func label(for profile: String) -> String {

@@ -1,7 +1,8 @@
 use glass_marble::{
-    AccessPolicy, ApprovalInbox, CancelRegistry, Conversation, EventBus, HostPolicy, LiveStore,
-    MarbleServer, MarbleServerParts, PendingApproval, ProductState, RequestHead, SteerRequest,
-    TaskRecord, ToolRouter, TranscriptEntry, TurnInbox, TurnLane, TurnSender, spawn_turn_worker,
+    AccessPolicy, ApprovalInbox, CancelRegistry, Conversation, EventBus, HostPolicy, LaneFactory,
+    LiveStore, MarbleError, MarbleServer, MarbleServerParts, PendingApproval, ProductState,
+    RequestHead, StateStore, SteerRequest, TaskRecord, ToolRouter, TranscriptEntry, TurnInbox,
+    TurnLane, TurnSender, spawn_turn_pool,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -9,6 +10,32 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
+
+/// A pool of one lane around an engine the test already spawned.
+///
+/// The pool is the only turn loop, so a single-engine host runs the same
+/// dispatcher and lane code as a host that opens several chats.
+fn spawn_single_lane(
+    conversation: Conversation,
+    state: Arc<Mutex<ProductState>>,
+    store: Option<Arc<StateStore>>,
+    live: LiveStore,
+    events: EventBus,
+    timeout: Duration,
+    cancels: CancelRegistry,
+) -> TurnSender {
+    let conversation = Mutex::new(Some(conversation));
+    let factory: LaneFactory = Arc::new(move |_lane| {
+        conversation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or_else(|| MarbleError::Protocol("this test lane was already started".into()))
+    });
+    spawn_turn_pool(1, factory, state, store, live, events, timeout, cancels)
+        .expect("a one lane pool")
+        .sender
+}
 
 fn python3_available() -> bool {
     Command::new("python3")
@@ -26,6 +53,7 @@ fn test_state() -> ProductState {
         title: "list the workspace".into(),
         task_ids: vec!["generation-fixture-1".into()],
         updated_at: 1,
+        lane: 0,
     });
     state.tasks.push(TaskRecord {
         id: "generation-fixture-1".into(),
@@ -538,7 +566,7 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
         events.clone(),
     )
     .unwrap();
-    let turn_tx = spawn_turn_worker(
+    let turn_tx = spawn_single_lane(
         conversation,
         Arc::clone(&state),
         None,
@@ -1672,6 +1700,9 @@ fn the_workspace_crate_map_is_served_when_the_host_has_one() {
     );
     let (status, body) = server.handle("GET", "/api/crates", "");
     assert_eq!(status, 503, "{body}");
+    // Control still answers, and carries no map of its own.
+    let control = control_of(&server);
+    assert_eq!(control["crates"], Value::Null);
 
     let server = server.with_crates(glass_marble::CrateMap::load(&root));
     let (status, body) = server.handle("GET", "/api/crates", "");
@@ -1684,6 +1715,15 @@ fn the_workspace_crate_map_is_served_when_the_host_has_one() {
         json!("alpha-cli")
     );
     assert_eq!(document["crates"][0]["path"], json!("crates/alpha"));
+
+    // The map is a workspace scan, so the state poll does not carry it: a
+    // surface fetches it when it opens the sheet that shows crates.
+    let control = control_of(&server);
+    assert_eq!(control["crates"], Value::Null);
+    let (status, body) = server.handle("GET", "/api/state?lean=1", "");
+    assert_eq!(status, 200, "{body}");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["control"]["crates"], Value::Null);
 
     let _ = std::fs::remove_dir_all(&root);
 }

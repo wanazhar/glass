@@ -5746,6 +5746,11 @@
         },
         {
           "level": "3",
+          "title": "Switching surface",
+          "anchor": "switching-surface"
+        },
+        {
+          "level": "3",
           "title": "Retention",
           "anchor": "retention"
         },
@@ -5753,6 +5758,21 @@
           "level": "2",
           "title": "Ownership boundary",
           "anchor": "ownership-boundary"
+        },
+        {
+          "level": "2",
+          "title": "Prism protocol: several marbles at once",
+          "anchor": "prism-protocol-several-marbles-at-once"
+        },
+        {
+          "level": "2",
+          "title": "Tooling",
+          "anchor": "tooling"
+        },
+        {
+          "level": "3",
+          "title": "Working across Glass crates",
+          "anchor": "working-across-glass-crates"
         },
         {
           "level": "2",
@@ -5778,6 +5798,11 @@
           "level": "3",
           "title": "Queue, pause, and stop",
           "anchor": "queue-pause-and-stop"
+        },
+        {
+          "level": "3",
+          "title": "Several chats at once",
+          "anchor": "several-chats-at-once"
         },
         {
           "level": "3",

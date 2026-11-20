@@ -390,6 +390,12 @@ its queue, so two messages to the same chat never interleave.
 - A poll that finds a running turn in a different conversation does not make the
   chat on screen look busy, and live text from another lane is never typed into
   the transcript being read.
+- Workspace writes are coordinated per path. A chat that read a file is refused
+  a write once another chat (or an editor) changed it, and a chat that never
+  read a file cannot replace one another chat just wrote; the refusal tells the
+  model to re-read. The approval card names the other chat before the person
+  decides, and writes to one path are serialised, so two lanes never interleave
+  inside a file.
 
 ### Audit ledger
 

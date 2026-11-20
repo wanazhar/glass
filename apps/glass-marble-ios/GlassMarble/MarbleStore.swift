@@ -109,6 +109,7 @@ final class MarbleStore: ObservableObject {
     var memory: MarbleMemory { state.memoryState }
     var routines: MarbleRoutines { state.routineState }
     var voice: MarbleVoice { state.voiceSettings }
+    var notificationState: MarbleNotificationSettings { state.notificationState }
     var prism: MarblePrism { state.prismState }
 
     /// The full tool inventory, fetched on demand because it changes slowly.

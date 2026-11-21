@@ -47,6 +47,26 @@
   function messagePart(part, fallback) {
     return typeof part === 'string' ? part : typeof fallback === 'string' ? fallback : '';
   }
+  function handoffSummary(reply) {
+    const line = typeof reply === 'string' ? reply.split(/\r?\n/).find(line => line.trim()) || '' : '';
+    const plain = inline(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').trim()).map(part => part.text).join('');
+    const sentence = plain.match(/^.*?[.!?](?=\s|$)/u)?.[0] || plain;
+    const characters = Array.from(sentence);
+    return characters.length > 120 ? characters.slice(0, 119).join('').trimEnd() + '…' : sentence;
+  }
+  function handoffLine(entry) {
+    const handoff = entry?.handoff;
+    if (handoff?.status === 'asked') {
+      const instruction = handoff.instruction?.trim() || '';
+      const text = handoff.fromName + ' asked ' + handoff.toName + (instruction ? ' to ' + instruction : '');
+      return /[.!?]$/.test(text) ? text : text + '.';
+    }
+    if (handoff?.status === 'finished') {
+      const summary = handoffSummary(handoff.summary);
+      return handoff.toName + ' finished' + (summary ? ': ' + summary : '.');
+    }
+    return entry?.text || '';
+  }
   function markdown(text) {
     const blocks = []; let paragraph = []; let code = null; let list = null;
     const flush = () => { if (paragraph.length) blocks.push({ tag: 'p', content: inline(paragraph.join('\n')) }); paragraph = []; list = null; };
@@ -96,7 +116,7 @@
     const label = distance === 0 ? 'Today' : distance === 1 ? 'Tomorrow' : date.toLocaleDateString(locale, { month: 'short', day: 'numeric', ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
     return label + ', ' + date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
   }
-  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, messagePart, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines, scheduleLabel, relativeRun };
+  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, messagePart, handoffSummary, handoffLine, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines, scheduleLabel, relativeRun };
   if (typeof module !== 'undefined') module.exports = api;
   else root.MarbleLogic = api;
 })(typeof window === 'undefined' ? globalThis : window);

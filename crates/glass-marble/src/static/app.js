@@ -341,8 +341,8 @@
     if (s.busy) return;
     const input = $('message'); const text = input?.value.trim(); if (!text) return;
     const shared = s.route.screen === 'everyone'; const active = !shared && running(); const p = current(); const generation = s.generation;
-    const path = shared ? '/api/everyone' : active ? '/api/turns/steer' : p.isDefault ? '/api/turns' : '/api/prism/dispatch';
-    const body = shared ? { text } : active ? { text, taskId: active.id, conversationId: active.conversationId } : p.isDefault ? { text, ...(conversation() ? { conversationId: conversation() } : {}) } : { text, marbles: [p.id] };
+    const path = shared ? '/api/everyone' : active ? '/api/turns/steer' : '/api/turns';
+    const body = shared ? { text } : active ? { text, taskId: active.id, conversationId: active.conversationId } : { text, ...(conversation() ? { conversationId: conversation() } : {}), ...(!p.isDefault ? { marbleId: p.id } : {}) };
     const newDefault = !shared && !active && p.isDefault && !conversation();
     const knownChats = new Set(defaultChats().map(chat => chat.id));
     s.busy = true; updateComposer();
@@ -472,7 +472,7 @@
     const active = tasks().filter(task => ['running', 'queued'].includes(task.status));
     if (!active.length && !s.data.control.queue?.length) runningNow.append(el('p', 'muted', t('No turns are running. Send a message to a Marble to start.')));
     for (const task of active) runningNow.append(el('div', 'record', el('strong', '', (personForChat(task.conversationId)?.name || t('Marble')) + ' · ' + (task.status === 'queued' ? t('Queued') : t('Working'))), el('p', '', task.prompt), button(task.status === 'queued' ? t('Cancel') : t('Stop'), () => action(key, '/api/tasks/' + enc(task.id) + '/cancel'))));
-    for (const item of s.data.control.queue || []) if (!active.some(task => task.id === item.id)) runningNow.append(el('div', 'record', el('strong', '', (personForChat(item.conversationId)?.name || t('Marble')) + t(' · Waiting for resume')), el('p', '', item.text), button(t('Cancel'), () => action(key, '/api/tasks/' + enc(item.id) + '/cancel')))); page.append(runningNow);
+    for (const item of s.data.control.queue || []) if (!active.some(task => task.id === item.id)) runningNow.append(el('div', 'record', el('strong', '', (person(item.marbleId)?.name || personForChat(item.conversationId)?.name || t('Marble')) + t(s.data.control.paused ? ' · Waiting for resume' : ' · Queued')), el('p', '', item.text), button(t('Cancel'), () => action(key, '/api/tasks/' + enc(item.id) + '/cancel')))); page.append(runningNow);
     const scheduled = section(t('Scheduled'));
     if (!s.data.routines?.routines?.length) scheduled.append(el('p', 'muted', t('No routines yet. Choose Add routine to schedule a message.')));
     for (const item of s.data.routines?.routines || []) {

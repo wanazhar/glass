@@ -443,7 +443,8 @@ current user instructions.
 - [Release notes](releases/0.3.14.md) and
   [release evidence](release-evidence.md) — source records and publication
   evidence with version boundaries intact.
-- [Changelog](../CHANGELOG.md) — unreleased changes and historical release
+- [Changelog](../CHANGELOG.md) — unreleased changes, including the Marble web
+  redesign, and historical release
   entries.
 - Generated and fixture Markdown is classified as `generated` in the catalog;
   those files are consumed by tools, tests, or product builds, not user guides.

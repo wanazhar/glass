@@ -412,7 +412,7 @@ struct MarbleChatScreen: View {
                 draft: $draft,
                 isWorking: marble.isWorking,
                 onSend: { send(marble) },
-                onStop: {}
+                onStop: { Task { await store.stop(marble) } }
             )
         }
     }

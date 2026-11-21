@@ -610,6 +610,17 @@ final class MarbleStore: ObservableObject {
         marbleTranscripts[marble.conversationId] ?? state.transcript(for: marble.conversationId)
     }
 
+    /// Stop the turn a marble is working on in its own chat.
+    func stop(_ marble: MarblePrismMarble) async {
+        guard let client, !marble.taskId.isEmpty else { return }
+        do {
+            try await client.cancel(taskId: marble.taskId)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
     func removeMarble(_ marble: MarblePrismMarble) async {
         guard let client else { return }
         do {

@@ -26,7 +26,7 @@ use crate::worker::{CancelRegistry, now_millis};
 use crate::{ApprovalInbox, Conversation, HostPolicy, MarbleError, TurnOptions, run_turn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
@@ -691,6 +691,32 @@ impl PrismPool {
         text: &str,
         requested: Option<&[String]>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
+        self.dispatch_inner(text, requested, None)
+    }
+
+    pub fn resume_held(self: &Arc<Self>) -> usize {
+        let queued = self.lock_state().control.queue.clone();
+        let mut seen = HashSet::new();
+        let mut dispatched = 0;
+        for entry in queued {
+            let Some(id) = entry.marble_id else { continue };
+            if seen.insert(id.clone())
+                && self
+                    .dispatch_inner(&entry.text, Some(&[id]), Some(&entry.id))
+                    .is_ok()
+            {
+                dispatched += 1;
+            }
+        }
+        dispatched
+    }
+
+    fn dispatch_inner(
+        self: &Arc<Self>,
+        text: &str,
+        requested: Option<&[String]>,
+        queue_id: Option<&str>,
+    ) -> Result<PrismDispatch, DispatchRefusal> {
         let targets = {
             let state = self.lock_state();
             plan_dispatch(&state, text, requested)?
@@ -710,6 +736,18 @@ impl PrismPool {
         let mut names = Vec::with_capacity(planned.len());
         let snapshot = {
             let mut state = self.lock_state();
+            if let Some(id) = queue_id {
+                if state.control.paused {
+                    return Err(refuse(409, "admission_paused", "admission is paused"));
+                }
+                if !state.control.queue.iter().any(|entry| entry.id == id) {
+                    return Err(refuse(
+                        404,
+                        "unknown_queue_entry",
+                        "that message is no longer queued",
+                    ));
+                }
+            }
             // Checked again under the same lock that marks the roster, so two
             // dispatches arriving together cannot both claim one marble.
             for (marble, _) in &planned {
@@ -734,6 +772,9 @@ impl PrismPool {
             }
             if swarm {
                 state.prism.swarms = state.prism.swarms.saturating_add(1);
+            }
+            if let Some(id) = queue_id {
+                state.control.queue.retain(|entry| entry.id != id);
             }
             state.bump();
             state.clone()
@@ -1075,6 +1116,7 @@ impl PrismPool {
             Ok(engine) => engine,
             Err(error) => {
                 self.block(&marble.id, &error);
+                self.resume_held();
                 return;
             }
         };
@@ -1292,6 +1334,8 @@ impl PrismPool {
                 );
             }
         }
+        drop(guard);
+        self.resume_held();
     }
 
     /// Leave a marble visibly blocked, with the reason it could not work.

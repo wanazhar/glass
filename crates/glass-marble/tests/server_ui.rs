@@ -2884,6 +2884,147 @@ fn everyone_entries(state: &Arc<Mutex<ProductState>>) -> Vec<TranscriptEntry> {
 }
 
 #[test]
+fn named_turn_intake_handles_memory_and_resumes_held_messages_in_order() {
+    if !python3_available() {
+        return;
+    }
+    let root =
+        std::env::temp_dir().join(format!("glass-marble-named-intake-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let events = EventBus::default();
+    let mut initial = ProductState::default();
+    initial.control.profile = glass_marble::ControlProfile::Unattended;
+    let ada = initial
+        .prism
+        .add("Ada", "writer", "star", 35, "", "")
+        .unwrap()
+        .clone();
+    let state = Arc::new(Mutex::new(initial));
+    let pool = fixture_prism_pool(&script, &root, &state, &events, Vec::new());
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(Arc::clone(&pool));
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    let remember =
+        json!({"text": "Remember this: prefer concise notes", "marbleId": ada.id}).to_string();
+    let (status, body) = server.handle("POST", "/api/turns", &remember);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["remembered"]["owner"],
+        ada.id
+    );
+    assert!(state.lock().unwrap().tasks.is_empty());
+    let forget = json!({"text": "forget: concise notes", "marbleId": ada.id}).to_string();
+    assert_eq!(server.handle("POST", "/api/turns", &forget).0, 200);
+    assert!(state.lock().unwrap().memory.facts.is_empty());
+    let message = json!({"text": "write an outline", "marbleId": ada.id}).to_string();
+    let (status, body) = server.handle("POST", "/api/turns", &message);
+    assert_eq!(status, 202, "{body}");
+    assert!(state.lock().unwrap().tasks.is_empty());
+    let queue = control_of(&server)["queue"].clone();
+    assert_eq!(queue[0]["marbleId"], ada.id);
+    let cancel = format!("/api/tasks/{}/cancel", queue[0]["id"].as_str().unwrap());
+    assert_eq!(server.handle("POST", &cancel, "").0, 200);
+    assert_eq!(server.handle("POST", "/api/turns", &message).0, 202);
+    let second = json!({"text": "check the outline", "marbleId": ada.id}).to_string();
+    assert_eq!(server.handle("POST", "/api/turns", &second).0, 202);
+    assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if state
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .filter(|task| task.status == "completed")
+            .count()
+            == 2
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "named queued message did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let conversation = state
+        .lock()
+        .unwrap()
+        .prism
+        .get(&ada.id)
+        .unwrap()
+        .conversation_id
+        .clone();
+    assert!(!conversation.is_empty());
+    {
+        let state = state.lock().unwrap();
+        let messages: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|entry| entry.conversation_id == conversation && entry.kind == "user")
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(messages, ["write an outline", "check the outline"]);
+        let settled: Vec<_> = state
+            .tasks
+            .iter()
+            .filter(|task| task.status == "completed")
+            .collect();
+        assert_eq!(settled.len(), 2);
+        assert!(
+            settled
+                .iter()
+                .all(|task| task.conversation_id == conversation)
+        );
+        assert!(state.control.queue.is_empty());
+    }
+    let remember = json!({"text": "Remember this: check the sources", "marbleId": ada.id, "conversationId": conversation}).to_string();
+    assert_eq!(server.handle("POST", "/api/turns", &remember).0, 200);
+    assert_eq!(state.lock().unwrap().memory.facts[0].owner, ada.id);
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/turns",
+                r#"{"text":"hello","marbleId":"missing"}"#
+            )
+            .0,
+        404
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/turns", r#"{"text":"hello","marbleId":1}"#)
+            .0,
+        400
+    );
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/turns",
+                &json!({"text":"hello","marbleId":ada.id,"conversationId":"wrong-chat"})
+                    .to_string()
+            )
+            .0,
+        400
+    );
+    pool.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn retiring_failed_prism_engines_restores_health() {
     if !python3_available() {
         return;

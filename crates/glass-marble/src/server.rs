@@ -2509,7 +2509,13 @@ impl MarbleServer {
             if paused {
                 Vec::new()
             } else {
-                guard.control.take_queue()
+                let (held, queued) = guard
+                    .control
+                    .take_queue()
+                    .into_iter()
+                    .partition(|entry| entry.marble_id.is_some());
+                guard.control.queue = held;
+                queued
             }
         };
         self.save_state();
@@ -2519,6 +2525,7 @@ impl MarbleServer {
         let mut queued = queued;
         queued.sort_by_key(|entry| entry.routine_id.is_some());
         let mut requests = Vec::with_capacity(queued.len());
+        let mut dispatched = 0usize;
         for entry in queued {
             let mut request = TurnRequest::new(entry.conversation_id, entry.text);
             if let Some(routine_id) = entry.routine_id {
@@ -2556,7 +2563,6 @@ impl MarbleServer {
             drop(guard);
             self.save_state();
         }
-        let mut dispatched = 0usize;
         for request in requests {
             let queued_id = format!("queued-{}", request.request_id);
             // A held message for a marble's conversation resumes into that
@@ -2586,6 +2592,9 @@ impl MarbleServer {
                     self.forget_queued(&queued_id);
                 }
             }
+        }
+        if !paused && let Some(pool) = &self.prism {
+            dispatched += pool.resume_held();
         }
         self.events.publish(
             "",
@@ -2772,6 +2781,25 @@ impl MarbleServer {
             Some(Value::String(id)) if valid_conversation_id(id) => Some(id.clone()),
             Some(_) => return Response::error(400, "invalid_conversation_id"),
         };
+        let marble = match parsed.get("marbleId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => match self.lock_state().prism.get(id).cloned() {
+                Some(marble) => Some(marble),
+                None => return Response::error(404, "unknown_marble"),
+            },
+            Some(_) => return Response::error(400, "invalid_marble_id"),
+        };
+        if let (Some(marble), Some(conversation)) = (&marble, &conversation_id)
+            && &marble.conversation_id != conversation
+        {
+            return Response::error(400, "conversation_owner_mismatch");
+        }
+        let conversation_id = conversation_id.or_else(|| {
+            marble
+                .as_ref()
+                .map(|marble| marble.conversation_id.clone())
+                .filter(|id| !id.is_empty())
+        });
         // Explicit memory instructions are answered by the product itself: a
         // remembered fact is a durable write, not a model turn.
         match memory::parse_command(&text) {
@@ -2781,23 +2809,43 @@ impl MarbleServer {
                     &kind,
                     conversation_id.as_deref().unwrap_or_default(),
                     true,
-                    None,
+                    marble.as_ref().map(|marble| marble.id.as_str()),
                 );
             }
             Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),
             None => {}
         }
-        self.submit_text(conversation_id, text)
+        self.submit_text_for(conversation_id, text, marble.map(|marble| marble.id))
     }
 
     /// Hold a message while admission is paused, or hand it to the worker.
     fn submit_text(&self, conversation_id: Option<String>, text: String) -> Response {
+        self.submit_text_for(conversation_id, text, None)
+    }
+
+    fn submit_text_for(
+        &self,
+        conversation_id: Option<String>,
+        text: String,
+        marble_id: Option<String>,
+    ) -> Response {
+        let marble_id = marble_id.or_else(|| {
+            let state = self.lock_state();
+            conversation_id
+                .as_deref()
+                .and_then(|id| state.prism.owner_of(id))
+                .map(|marble| marble.id.clone())
+        });
         if self.lock_state().control.paused {
             // Paused admission is a queue, not a rejection: the message keeps its
             // place, and resuming dispatches it in arrival order.
             let queued = {
                 let mut guard = self.lock_state();
-                match guard.control.enqueue(conversation_id, text) {
+                let result = match marble_id {
+                    Some(id) => guard.control.enqueue_marble(id, conversation_id, text),
+                    None => guard.control.enqueue(conversation_id, text),
+                };
+                match result {
                     Ok(entry) => {
                         let position = guard.control.queue.len();
                         guard.bump();
@@ -2829,6 +2877,9 @@ impl MarbleServer {
                     Response::json(409, json!({ "error": "queue_full", "message": reason }))
                 }
             };
+        }
+        if let Some(id) = marble_id {
+            return self.dispatch_swarm(&json!({"text": text, "marbles": [id]}).to_string());
         }
         // A conversation belongs to the engine that created its session. A
         // marble's chat therefore goes back to that marble, so the same chat is

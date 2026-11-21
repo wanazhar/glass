@@ -211,3 +211,17 @@ test('a dirty info panel belongs only to the routed Marble', () => {
   render();
   assert.equal(panel.marble, 'ben', 'dirty Ada fields must not be saved from Ben’s panel');
 });
+
+test('named chat messages use the shared turn intake, including the first memory command', async () => {
+  for (const conversationId of ['', 'ada-chat']) {
+    const requests = [];
+    const context = { s: { route: { screen: 'chat' }, generation: 1 }, $: () => ({ value: 'Remember this: prefer concise notes' }),
+      current: () => ({ id: 'ada', isDefault: false }), conversation: () => conversationId,
+      running: () => null, defaultChats: () => [], updateComposer() {}, action: async (...args) => requests.push(args) };
+    const send = appFunction('async function send()', 'function section(', context, 'send');
+    await send();
+    assert.equal(requests[0][1], '/api/turns');
+    assert.equal(requests[0][2].marbleId, 'ada');
+    assert.equal(requests[0][2].conversationId || '', conversationId);
+  }
+});

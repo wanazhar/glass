@@ -582,7 +582,7 @@ recognition rather than falling back to a network service.
 | `/api/everyone` | GET / POST | Read the shared timeline (`after` timestamp), or send a message (`text`); mentions select who answers |
 | `/api/everyone/clear` | POST | Clear the shared timeline without deleting individual chats |
 | `/api/events?since=N` | GET | Server-sent events with an immediate `: connected` comment, bounded replay from a cursor, and a keepalive comment every 15 seconds |
-| `/api/turns` | POST | Admit a durable turn (`202` accepted, or `202` queued with its place in line while the worker is busy), queue it while paused, or apply an explicit memory command |
+| `/api/turns` | POST | Admit a durable turn (`202` accepted or queued), hold it while paused, or apply an explicit memory command. Optional `marbleId` selects a named Marble, including before its first chat; memory belongs to that Marble and held messages retain the target |
 | `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
 | `/api/turns/retry` | POST | Repeat the newest failed, cancelled, or interrupted turn (`taskId` or `conversationId` to choose one) |
 | `/api/tasks/{id}/cancel` | POST | Remove a queued task before execution (`200`, cancelled), or request cancellation of a running task (`202`); settled tasks return `409`, unknown tasks `404` |

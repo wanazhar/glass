@@ -424,9 +424,79 @@ fn static_page_and_health_are_served() {
     let page = server.handle_request(&RequestHead::new("GET", "/"), "");
     assert_eq!(page.status, 200);
     assert!(page.body.contains("Glass Marble"));
+    assert!(page.body.contains("href=\"/app.css\""));
+    assert!(page.body.contains("src=\"/app.js\""));
+    assert!(page.body.contains("src=\"/logic.js\""));
+    assert!(!page.body.contains("<style>"));
+    assert!(!page.body.contains("<script>"));
     let health = server.handle_request(&RequestHead::new("GET", "/healthz"), "");
     assert_eq!(health.status, 200);
     assert!(health.body.contains("\"ok\":true"));
+}
+
+#[test]
+fn static_assets_have_types_cache_policy_and_do_not_require_unlocking() {
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::new(Mutex::new(ProductState::default())),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(Some("secret".into())),
+        cancels: CancelRegistry::default(),
+    });
+    for (path, kind, marker) in [
+        (
+            "/app.css",
+            "text/css; charset=utf-8",
+            "prefers-color-scheme",
+        ),
+        ("/app.js", "text/javascript; charset=utf-8", "EventSource"),
+        ("/logic.js", "text/javascript; charset=utf-8", "whoAnswers"),
+    ] {
+        let response = server.handle_request(&RequestHead::new("GET", path), "");
+        assert_eq!(response.status, 200, "{path}");
+        assert!(response.body.contains(marker));
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(key, value)| key == "Content-Type" && value == kind)
+        );
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(key, value)| key == "Cache-Control" && value == "no-cache")
+        );
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(key, value)| key == "X-Content-Type-Options" && value == "nosniff")
+        );
+    }
+    assert_eq!(server.handle("GET", "/api/state", "").0, 401);
+    let logout = server.handle_request(&RequestHead::new("POST", "/api/logout"), "{}");
+    assert_eq!(logout.status, 200);
+    assert!(
+        logout
+            .headers
+            .iter()
+            .any(|(key, value)| key == "Set-Cookie" && value.contains("Max-Age=0"))
+    );
+    let cross_origin = RequestHead::new("POST", "/api/logout")
+        .with_header("Origin", "https://other.example")
+        .with_header("Host", "localhost");
+    assert_eq!(server.handle_request(&cross_origin, "{}").status, 403);
+    assert_eq!(
+        free_server(ProductState::default())
+            .handle("GET", "/missing.js", "")
+            .0,
+        404
+    );
 }
 
 #[test]

@@ -1,0 +1,554 @@
+/* global MarbleLogic */
+(() => {
+  'use strict';
+  const L = MarbleLogic;
+  const t = text => text;
+  const $ = id => document.getElementById(id);
+  const enc = encodeURIComponent;
+  const s = {
+    data: { tasks: [], conversations: [], approvals: [], memory: {}, routines: {}, control: {} },
+    people: [], shared: [], entries: [], status: { stream: false, requestFailed: false, engine: false },
+    health: {}, route: L.route(location.hash), generation: 0, refreshId: 0, sequence: 0,
+    defaultChat: undefined, missing: false, transcriptError: '', live: new Map(), drafts: new Map(),
+    errors: new Map(), open: new Set(), loaded: false, busy: false, tools: null, crates: null,
+  };
+  const events = ['turn_start', 'waiting', 'text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress',
+    'tool_cancel', 'usage', 'compacted', 'steered', 'queued', 'notice', 'error', 'settled', 'cancel_requested',
+    'approval', 'approval_pending', 'approval_resolved', 'state', 'control_denied', 'control', 'memory',
+    'memory_suggestion', 'routine', 'retention', 'steer_queued', 'steer_rejected', 'conversation', 'prism', 'everyone', 'handoff', 'runtime'];
+  function el(tag, cls, ...children) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    node.append(...children.filter(x => x !== null && x !== undefined));
+    return node;
+  }
+  function button(label, action, cls = '') {
+    const b = el('button', cls, label); b.type = 'button'; b.addEventListener('click', action); return b;
+  }
+  function link(label, href, cls = '') { const a = el('a', cls, label); a.href = href; return a; }
+  function svgNode(tag, attrs) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    return node;
+  }
+  function icon(name) {
+    const paths = { everyone: 'M3 16v-2a4 4 0 0 1 4-4h3a4 4 0 0 1 4 4v2M15 4a3 3 0 0 1 0 6m1 1a4 4 0 0 1 3 4M11 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z', marbles: 'M8 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm12 0a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM8 16a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm12 0a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z', activity: 'M1 11h4l3-8 5 15 3-7h5', settings: 'M4 5h16M4 11h16M4 17h16M8 2v6m8 0v6m-6 0v6', arrow: 'm8 4-6 6 6 6m-6-6h17', chevron: 'm8 5 5 5-5 5', tool: 'm5 2 5 5-3 3-5-5v5l4 4 4-1 7 7 3-3-7-7 1-4-4-4Z', more: 'M4 10h1m5 0h1m5 0h1' };
+    const svg = svgNode('svg', { viewBox: '0 0 22 22', class: 'icon', 'aria-hidden': 'true' });
+    svg.append(svgNode('path', { d: paths[name] || paths.tool })); return svg;
+  }
+  function glyph(person = {}) {
+    const svg = svgNode('svg', { viewBox: '0 0 28 28', class: 'glyph', 'aria-hidden': 'true' });
+    const shapes = { circle: ['circle', { cx: 14, cy: 14, r: 12 }], hex: ['polygon', { points: '7,2 21,2 28,14 21,26 7,26 0,14' }], shield: ['path', { d: 'M2 3h24v10c0 8-12 13-12 13S2 21 2 13Z' }], drop: ['path', { d: 'M14 1C11 7 3 12 3 18a11 9 0 0 0 22 0C25 12 17 7 14 1Z' }], star: ['polygon', { points: '14,1 18,9 27,11 21,18 22,27 14,23 6,27 7,18 1,11 10,9' }], square: ['rect', { x: 2, y: 2, width: 24, height: 24, rx: 6 }] };
+    const [tag, attrs] = shapes[person.glyph] || shapes.circle;
+    const hue = Number.isFinite(Number(person.hue)) ? Number(person.hue) : 210;
+    svg.append(svgNode(tag, { ...attrs, fill: `hsl(${hue} 38% 69%)` }));
+    for (const cx of [10, 18]) svg.append(svgNode('circle', { cx, cy: 14, r: 1.35, fill: '#252a33' }));
+    return svg;
+  }
+  const person = id => s.people.find(p => p.id === id);
+  const personality = p => p.role && !p.isDefault ? p.role : p.persona?.split('\n')[0] || t('Your everyday Marble');
+  const current = () => person(s.route.id || 'marble');
+  const chatRoute = id => '#/m/' + enc(id);
+  const tasks = () => s.data.tasks || [];
+  const approvals = () => s.data.approvals || [];
+  const suggestions = () => s.data.memory?.suggestions || [];
+  const personForChat = id => s.people.find(p => !p.isDefault && p.conversationId === id) || person('marble');
+  function defaultChats() {
+    const owned = new Set(s.people.filter(p => !p.isDefault).map(p => p.conversationId));
+    return (s.data.conversations || []).filter(c => c.id !== 'everyone' && !owned.has(c.id)).sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  function conversation() { return current()?.isDefault ? s.defaultChat : current()?.conversationId; }
+  function running() { const id = conversation(); return tasks().find(task => id && task.conversationId === id && task.status === 'running'); }
+  function humanError(error) {
+    return String(error.message || error).replace(/\bprism\b/ig, t('Marble')).replace(/\bdispatch\b/ig, t('send')).replace(/\bswarm\b/ig, t('group')).replace(/\blane\b/ig, t('chat')).replace(/\broster\b/ig, t('Marbles'));
+  }
+  async function api(path, body, options = {}) {
+    let response;
+    try { response = await fetch(path, { credentials: 'same-origin', ...options, ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }); }
+    catch (error) { s.status = L.reduceStatus(s.status, { type: 'request', ok: false }); renderStatus(); throw error; }
+    s.status = L.reduceStatus(s.status, { type: 'request', ok: true }); renderStatus();
+    if (response.status === 401) {
+      if (!$('unlock').open) $('unlock').showModal();
+      throw Object.assign(new Error(t('Unlock this host to continue.')), { status: 401 });
+    }
+    const value = await response.json();
+    if (path === '/healthz') { s.health = value; s.status = L.reduceStatus(s.status, { type: 'health', health: value }); renderStatus(); return value; }
+    if (!response.ok) throw Object.assign(new Error(value.message || value.error || t('Request failed')), { status: response.status });
+    return value;
+  }
+  async function action(key, path, body = {}, after) {
+    s.errors.delete(key); showError(key, '');
+    try { const result = await api(path, body); if (after) after(result); await refresh(); return true; }
+    catch (error) { s.errors.set(key, humanError(error)); showError(key, humanError(error)); return false; }
+  }
+  function errorNode(key) { const n = el('p', 'error', s.errors.get(key) || ''); n.dataset.error = key; n.setAttribute('role', 'alert'); return n; }
+  function showError(key, message) { document.querySelectorAll('[data-error]').forEach(n => { if (n.dataset.error === key) n.textContent = message; }); }
+  function statusText(p) {
+    const relevant = tasks().filter(task => p.isDefault ? !s.people.some(m => !m.isDefault && m.conversationId === task.conversationId) : task.conversationId === p.conversationId);
+    const waiting = approvals().map(approval => ({ ...approval, owner: approvalOwner(approval)?.id }));
+    return L.marbleStatus(p, relevant, waiting);
+  }
+  function renderStatus() { document.querySelectorAll('[data-connection]').forEach(n => n.textContent = L.statusLabel(s.status)); }
+  function connection(cls = '') {
+    const text = el('span'); text.dataset.connection = ''; text.textContent = L.statusLabel(s.status);
+    const n = el('div', 'connection ' + cls, el('span', 'dot'), text); n.setAttribute('role', 'status'); return n;
+  }
+  function nav(label, screen, count) {
+    const active = screen === 'marbles' ? ['marbles', 'chat', 'info', 'new'].includes(s.route.screen) : screen === s.route.screen;
+    const a = link(null, '#/' + screen, 'nav-item' + (active ? ' active' : ''));
+    if (active) a.setAttribute('aria-current', 'page');
+    a.append(icon(screen), el('span', '', label)); if (count) a.append(el('span', 'badge', String(count))); return a;
+  }
+  function renderRail() {
+    const count = approvals().length + suggestions().length;
+    $('rail').replaceChildren(el('div', 'brand', glyph(), t('Marble')), nav(t('Everyone'), 'everyone'));
+    $('rail').append(el('div', 'rail-heading', link(t('Marbles'), '#/marbles'), link(t('New Marble'), '#/new', 'button')));
+    for (const p of s.people) {
+      const a = link(null, chatRoute(p.id), 'nav-item' + (s.route.id === p.id ? ' active' : ''));
+      a.append(glyph(p), el('div', 'row-copy', el('strong', '', p.name), el('span', '', personality(p)), el('span', '', statusText(p))));
+      if (s.route.id === p.id) a.setAttribute('aria-current', 'page'); $('rail').append(a);
+    }
+    $('rail').append(el('div', 'rail-bottom', nav(t('Activity'), 'activity', count), nav(t('Settings'), 'settings'), connection()));
+    $('tabs').replaceChildren(nav(t('Everyone'), 'everyone'), nav(t('Marbles'), 'marbles'), nav(t('Activity'), 'activity', count), nav(t('Settings'), 'settings'));
+  }
+  function overflow() {
+    const details = el('details', 'menu'); const summary = el('summary', '', icon('more')); summary.setAttribute('aria-label', t('Everyone options'));
+    details.append(summary, el('div', 'menu-content', button(t('Clear'), () => {
+      details.open = false;
+      if (confirm(t('Clear Everyone? This deletes the shared timeline, not the individual chats.'))) action('conversation', '/api/everyone/clear');
+    }, 'danger'))); return details;
+  }
+  function earlierChats() {
+    const details = el('details', 'menu', el('summary', '', t('Earlier chats')));
+    const items = el('div', 'menu-content');
+    const search = el('input'); search.type = 'search'; search.placeholder = t('Search chats'); search.setAttribute('aria-label', t('Search chats'));
+    const results = el('div'); let searchId = 0;
+    const choose = id => { s.defaultChat = id; s.missing = false; s.transcriptError = ''; s.entries = []; s.generation++; details.open = false; render(); refresh(); };
+    const rows = (chats) => { results.replaceChildren(); for (const chat of chats) {
+      const row = el('div', 'record', button(chat.title || t('Untitled chat'), () => choose(chat.id), 'quiet'));
+      row.append(el('div', 'actions', button(t('Rename'), () => { const title = prompt(t('Chat name'), chat.title); if (title?.trim()) action('conversation', '/api/conversations/' + enc(chat.id) + '/rename', { title: title.trim() }); }), button(t('Delete'), () => {
+        if (confirm(t('Delete this chat and its history?'))) action('conversation', '/api/conversations/' + enc(chat.id) + '/delete', {}, () => { if (s.defaultChat === chat.id) choose(null); });
+      }, 'danger'))); results.append(row);
+    } };
+    rows(defaultChats());
+    search.addEventListener('input', async () => {
+      const request = ++searchId;
+      try { const result = await api('/api/transcript/search?q=' + enc(search.value)); if (request !== searchId) return;
+        const ids = new Set((result.hits || []).map(e => e.conversationId));
+        rows(defaultChats().filter(c => c.title.toLowerCase().includes(search.value.toLowerCase()) || ids.has(c.id)));
+      } catch (error) { if (request === searchId) results.replaceChildren(el('p', 'error', humanError(error))); }
+    });
+    items.append(search, results, link(t('Export this chat'), '/api/export?conversationId=' + enc(conversation() || ''), 'button'));
+    details.append(items); return details;
+  }
+  function header() {
+    const screen = s.route.screen; const p = current();
+    const chat = screen === 'chat' || screen === 'info';
+    const title = chat ? p?.name || t('Missing Marble') : ({ everyone: t('Everyone'), marbles: t('Marbles'), activity: t('Activity'), settings: t('Settings'), new: t('New Marble') }[screen] || t('Not found'));
+    const titleBlock = el('div', 'heading', el('h1', '', title));
+    if (chat && p) titleBlock.append(el('p', 'muted', statusText(p)));
+    else if (screen === 'everyone') titleBlock.append(el('p', 'muted', t('A shared conversation')));
+    if (screen !== 'everyone') titleBlock.append(connection('mobile-status'));
+    const actions = el('div', 'header-actions');
+    if (screen === 'everyone') actions.append(connection('mobile-status'), overflow());
+    if (chat && p) {
+      if (p.isDefault) actions.append(earlierChats(), button(t('New chat'), () => { s.defaultChat = null; s.generation++; s.entries = []; s.missing = false; s.transcriptError = ''; s.errors.delete('conversation'); render(); }));
+      actions.append(link(screen === 'info' ? t('Close info') : t('Info'), chatRoute(p.id) + (screen === 'info' ? '' : '/info'), 'button'));
+    }
+    if (screen === 'marbles') actions.append(link(t('New Marble'), '#/new', 'button'));
+    $('topbar').replaceChildren();
+    if (chat || screen === 'new') {
+      const back = link(icon('arrow'), screen === 'info' ? chatRoute(p?.id || 'marble') : '#/marbles', 'button quiet back'); back.setAttribute('aria-label', t('Back')); $('topbar').append(back);
+    }
+    if (chat && p) $('topbar').append(glyph(p));
+    $('topbar').append(titleBlock, actions);
+  }
+  function prose(text) {
+    const container = el('div', 'prose');
+    const appendInline = (parent, content) => content.forEach(part => parent.append(part.tag === 'text' ? document.createTextNode(part.text) : el(part.tag, '', part.text)));
+    for (const block of L.markdown(text)) {
+      const node = el(block.tag);
+      if (block.tag === 'pre') node.append(el('code', '', block.text));
+      else if (block.items) for (const item of block.items) { const li = el('li'); appendInline(li, item); node.append(li); }
+      else appendInline(node, block.content);
+      container.append(node);
+    }
+    return container;
+  }
+  function disclosure(label, child, key) {
+    const d = el('details', 'thought', el('summary', '', label), child); d.open = s.open.has(key);
+    d.addEventListener('toggle', () => d.open ? s.open.add(key) : s.open.delete(key)); return d;
+  }
+  function toolStep(tool) {
+    const name = tool.tool || tool.name || t('Tool');
+    const label = name === 'bash' ? t('Running command') : t('Using ') + name;
+    return el('div', 'tool-step', icon('tool'), el('span', '', label, tool.text || tool.summary ? ' · ' + String(tool.text || tool.summary).slice(0, 240) : ''));
+  }
+  function entryNode(entry, fallback, key) {
+    if (entry.kind === 'handoff') return el('p', 'handoff', entry.text);
+    if (entry.kind === 'system') return el('div', 'system-line', entry.text);
+    if (entry.kind === 'reasoning') return disclosure(t('Thought'), prose(entry.text), key);
+    if (entry.kind === 'tool') return toolStep({ tool: entry.text });
+    const own = entry.kind === 'user';
+    const p = person(entry.speaker) || fallback || person('marble');
+    const body = el('div', 'message-body');
+    if (!own) {
+      const name = el('span', '', entry.speakerName || p?.name || t('Marble'));
+      name.style.color = `hsl(${Number(p?.hue || 210)} 38% 52%)`;
+      const time = el('time', '', entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '');
+      body.append(el('div', 'speaker', name, time));
+    }
+    body.append(prose(entry.text));
+    if (!own && s.data.voice?.enabled && entry.text) body.append(button(t('Read aloud'), () => readAloud(entry.text), 'quiet small'));
+    return own ? el('article', 'message user', body) : el('article', 'message', glyph(p), body);
+  }
+  function retry(task) { return button(t('Retry'), () => action(s.route.screen === 'activity' ? 'activity' : 'conversation', '/api/turns/retry', { taskId: task.id }, result => { if (current()?.isDefault && result.conversationId) s.defaultChat = result.conversationId; })); }
+  function readAloud(text) {
+    if (!('speechSynthesis' in window)) { s.errors.set('conversation', t('Read aloud is not available in this browser.')); showError('conversation', s.errors.get('conversation')); return; }
+    const utterance = new SpeechSynthesisUtterance(text); utterance.rate = Math.min(1, Math.max(0.1, Number(s.data.voice?.rate) || 0.5));
+    speechSynthesis.cancel(); speechSynthesis.speak(utterance);
+  }
+  function approvalOwner(approval) {
+    for (const live of s.live.values()) if (live.tools.some(tool => tool.callId === approval.callId)) return personForChat(live.conversationId);
+    const busy = tasks().filter(task => task.status === 'running');
+    return busy.length === 1 ? personForChat(busy[0].conversationId) : null;
+  }
+  function approvalCard(approval) {
+    const owner = approvalOwner(approval);
+    const args = approval.arguments || {};
+    const effect = /write|edit|apply|delete|mkdir|create/.test(approval.tool) ? t('change') : /shell|bash|exec/.test(approval.tool) ? t('run') : t('use');
+    const target = args.path || args.command || args.url || approval.tool;
+    const key = 'approval-' + approval.requestId;
+    const card = el('div', 'request-card', el('h3', '', (owner?.name || t('A Marble')) + t(' wants to ') + effect + ' ' + target));
+    card.append(el('p', 'muted small', approval.tool), prose(JSON.stringify(args, null, 2)));
+    if (approval.conflict) card.append(el('p', 'muted', approval.conflict));
+    card.append(el('div', 'actions', ...[[t('Allow'), 'allow', false], [t('Always allow here'), 'allow', true], [t('Deny'), 'deny', false]].map(([label, answer, remember]) => button(label, () => action(key, '/api/approvals/' + enc(approval.requestId) + '/' + answer, { remember })))), errorNode(key));
+    return card;
+  }
+  function suggestionCard(item) {
+    const owner = personForChat(item.conversationId); const key = 'suggestion-' + item.id;
+    return el('div', 'request-card', el('h3', '', t('Save to ') + (owner?.name || t('Marble')) + t("'s memory?")), prose(item.text),
+      el('div', 'actions', button(t('Save'), () => action(key, '/api/memory/' + enc(item.id) + '/accept')), button(t('Dismiss'), () => action(key, '/api/memory/' + enc(item.id) + '/dismiss'))), errorNode(key));
+  }
+  function requestCards(all = false) {
+    const id = conversation(); const fragment = document.createDocumentFragment();
+    for (const approval of approvals()) {
+      const owner = approvalOwner(approval);
+      if (all || (owner && owner.id === current()?.id) || (!owner && !!running())) fragment.append(approvalCard(approval));
+    }
+    for (const item of suggestions()) if (all || item.conversationId === id) fragment.append(suggestionCard(item));
+    return fragment;
+  }
+  function renderTimeline(shared = false) {
+    const previous = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+    const timeline = el('div', 'timeline');
+    if (!shared && (s.missing || s.transcriptError)) {
+      const n = el('div', 'empty', el('h2', '', s.missing ? t('This chat no longer exists') : t('Could not load this chat')), el('p', '', s.transcriptError), el('div', 'actions', link(t('Back to Marbles'), '#/marbles', 'button')));
+      if (!s.missing) n.append(button(t('Try again'), refresh)); $('main').replaceChildren(n); return;
+    }
+    const entries = shared ? s.shared : s.entries;
+    if (entries.length) timeline.append(el('p', 'day', new Date(entries[0].at).toLocaleDateString([], { month: 'long', day: 'numeric' })));
+    entries.forEach((entry, i) => {
+      if (!shared && entry.kind === 'assistant') s.live.get(entry.taskId)?.tools.forEach(tool => timeline.append(toolStep(tool)));
+      timeline.append(entryNode(entry, shared ? null : current(), `${entry.taskId}-${entry.kind}-${i}`));
+    });
+    if (!shared) {
+      const settled = new Set(entries.filter(e => e.kind === 'assistant').map(e => e.taskId));
+      for (const [id, live] of s.live) {
+        if (live.conversationId !== conversation() || settled.has(id)) continue;
+        if (live.reasoning) timeline.append(disclosure(t('Thought'), prose(live.reasoning), id + '-live'));
+        live.tools.forEach(tool => timeline.append(toolStep(tool)));
+        if (live.text) timeline.append(entryNode({ kind: 'assistant', text: live.text }, current(), id));
+      }
+      for (const task of tasks().filter(task => task.conversationId === conversation() && ['failed', 'cancelled', 'interrupted'].includes(task.status))) {
+        timeline.append(el('div', 'system-line', task.status === 'cancelled' ? t('Cancelled') : task.status === 'interrupted' ? t('Interrupted') : t("Couldn't finish"), el('div', 'actions', retry(task))));
+      }
+      timeline.append(requestCards());
+    }
+    if (!entries.length && !timeline.children.length) {
+      timeline.append(el('div', 'empty', shared ? icon('everyone') : glyph(current()), el('h2', '', shared ? t('Everyone') : t('Start a chat')), el('p', '', shared ? t('Your messages and the Marbles’ replies appear here.') : t('Send a message to ') + (current()?.name || t('Marble')) + '.')));
+    }
+    timeline.append(errorNode('conversation'));
+    $('main').replaceChildren(timeline);
+    if (previous < 140) requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  }
+  function renderPeople() {
+    const page = el('div', 'page', el('div', 'people-list'));
+    for (const p of s.people) {
+      const row = link(null, chatRoute(p.id), 'person-row');
+      row.append(glyph(p), el('div', 'row-copy', el('strong', '', p.name), el('span', 'muted', personality(p))), el('span', 'status-text', statusText(p)), icon('chevron')); page.firstChild.append(row);
+    }
+    $('main').replaceChildren(page);
+  }
+  function composer() {
+    const shared = s.route.screen === 'everyone';
+    if (!(shared || ['chat', 'info'].includes(s.route.screen)) || !current() && !shared || s.missing || s.transcriptError || s.route.screen === 'info' && innerWidth < 1200) { $('composer-area').replaceChildren(); return; }
+    const key = shared ? 'everyone' : 'chat-' + s.route.id;
+    if ($('composer-area').dataset.key === key && $('message')) { updateComposer(); return; }
+    $('composer-area').dataset.key = key;
+    const input = el('textarea'); input.id = 'message'; input.rows = 1; input.value = s.drafts.get(key) || '';
+    input.setAttribute('aria-label', shared ? t('Message everyone') : t('Message ') + current().name);
+    const hint = el('p', 'compose-hint'); hint.id = 'compose-hint';
+    const mentions = el('div', 'mentions'); mentions.id = 'mentions'; mentions.hidden = true; mentions.setAttribute('role', 'listbox');
+    let choices = []; let selected = 0; let match = null;
+    const choose = p => {
+      if (!match) return;
+      const before = input.value.slice(0, input.selectionStart); const rest = input.value.slice(input.selectionStart);
+      input.value = before.slice(0, match.index) + '@' + p.name + ' ' + rest;
+      const cursor = match.index + p.name.length + 2; input.focus(); input.setSelectionRange(cursor, cursor); mentions.hidden = true; changed(false);
+    };
+    const drawChoices = () => {
+      mentions.replaceChildren(); choices.forEach((p, i) => {
+        const option = button(p.name, () => choose(p), 'quiet'); option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(i === selected)); option.id = 'mention-' + i; mentions.append(option);
+      }); input.setAttribute('aria-expanded', String(!mentions.hidden)); if (choices.length) input.setAttribute('aria-activedescendant', 'mention-' + selected);
+    };
+    function changed(complete = true) {
+      s.drafts.set(key, input.value); input.style.height = '36px'; input.style.height = Math.min(154, input.scrollHeight) + 'px'; input.style.overflowY = input.scrollHeight > 154 ? 'auto' : 'hidden'; updateComposer();
+      if (!shared || !complete) return;
+      match = /@[\p{L}\p{N}_-]*$/u.exec(input.value.slice(0, input.selectionStart));
+      choices = match ? [...s.people.filter(p => !p.isDefault), { name: 'everyone' }].filter(p => p.name.toLowerCase().startsWith(match[0].slice(1).toLowerCase())) : [];
+      selected = 0; mentions.hidden = !choices.length; drawChoices();
+    }
+    input.addEventListener('input', () => changed());
+    input.addEventListener('keydown', event => {
+      if (event.isComposing) return;
+      if (!mentions.hidden && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+        event.preventDefault(); if (event.key === 'Escape') mentions.hidden = true;
+        else if (event.key === 'Enter' || event.key === 'Tab') choose(choices[selected]);
+        else { selected = (selected + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length; drawChoices(); } return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
+    });
+    const sendButton = button(t('Send'), () => { if (running() && !shared && !input.value.trim()) stop(running()); else send(); }, 'primary'); sendButton.id = 'send';
+    $('composer-area').replaceChildren(el('div', 'compose-wrap', mentions, hint, el('div', 'composer', input, sendButton), errorNode('send')));
+    if (shared) { input.setAttribute('role', 'combobox'); input.setAttribute('aria-controls', 'mentions'); input.setAttribute('aria-autocomplete', 'list'); }
+    updateComposer();
+  }
+  function updateComposer() {
+    if (!$('message')) return;
+    const shared = s.route.screen === 'everyone'; const active = !shared && running();
+    $('message').placeholder = shared ? t('Message everyone. Use @name to ask one Marble.') : active ? t('Add to the current reply…') : t('Message ') + (current()?.name || t('Marble')) + '…';
+    $('compose-hint').textContent = shared ? L.answerHint($('message').value, s.people) : active ? t('Adds to the current reply.') : t('Chat with ') + (current()?.name || t('Marble')) + '.';
+    $('send').textContent = active ? $('message').value.trim() ? t('Add') : t('Stop') : t('Send'); $('send').disabled = s.busy;
+  }
+  function stop(task) { if (task) action('conversation', '/api/tasks/' + enc(task.id) + '/cancel'); }
+  async function send() {
+    if (s.busy) return;
+    const input = $('message'); const text = input?.value.trim(); if (!text) return;
+    const shared = s.route.screen === 'everyone'; const active = !shared && running(); const p = current(); const generation = s.generation;
+    const path = shared ? '/api/everyone' : active ? '/api/turns/steer' : p.isDefault ? '/api/turns' : '/api/prism/dispatch';
+    const body = shared ? { text } : active ? { text, taskId: active.id, conversationId: active.conversationId } : p.isDefault ? { text, ...(conversation() ? { conversationId: conversation() } : {}) } : { text, marbles: [p.id] };
+    const newDefault = !shared && !active && p.isDefault && !conversation();
+    const knownChats = new Set(defaultChats().map(chat => chat.id));
+    s.busy = true; updateComposer();
+    await action('send', path, body, result => {
+      s.drafts.delete(shared ? 'everyone' : 'chat-' + p.id);
+      if (generation !== s.generation) return;
+      input.value = ''; input.style.height = '36px'; if (!shared && p.isDefault && result.conversationId) s.defaultChat = result.conversationId;
+      if (newDefault && !result.conversationId) s.pendingDefault = { knownChats, text };
+    });
+    s.busy = false; updateComposer();
+  }
+  function section(title, ...nodes) { return el('section', '', el('h2', '', title), ...nodes); }
+  function field(label, value = '', type = 'text') {
+    const input = el(type === 'textarea' ? 'textarea' : 'input'); if (type !== 'textarea') input.type = type;
+    if (type === 'checkbox') input.checked = !!value; else input.value = value ?? '';
+    const wrapper = el('label', 'field' + (type === 'checkbox' ? ' check-field' : ''), el('span', '', label), input); return { node: wrapper, input };
+  }
+  function selectField(label, options, value) {
+    const select = el('select'); for (const [key, title] of options) { const option = el('option', '', title); option.value = key; select.append(option); } select.value = value || options[0]?.[0];
+    return { node: el('label', 'field', el('span', '', label), select), input: select };
+  }
+  function form(key, fields, save) {
+    const f = el('form', '', ...fields.map(x => x.node), button(t('Save'), () => f.requestSubmit(), 'primary'), errorNode(key));
+    f.addEventListener('submit', event => { event.preventDefault(); save(); }); return f;
+  }
+  function placeholderNote() { return el('p', 'stage-note', t('This screen is still being built. The available actions work here.')); }
+  function infoPage(p) {
+    const key = 'info'; const page = el('div', 'page', placeholderNote()); if (!p) return page;
+    const name = field(t('Name'), p.name); const role = field(t('Role'), p.role); const persona = field(t('Personality'), p.persona, 'textarea'); persona.input.maxLength = 2000;
+    const counter = el('small', 'muted', persona.input.value.length + t(' / 2000')); persona.node.append(counter); persona.input.addEventListener('input', () => counter.textContent = persona.input.value.length + t(' / 2000'));
+    const shape = selectField(t('Shape'), (s.shapes || ['circle', 'hex', 'shield', 'drop', 'star', 'square']).map(x => [x, x]), p.glyph);
+    const hue = field(t('Hue'), p.hue, 'number'); hue.input.min = 0; hue.input.max = 359;
+    const folder = field(t('Workspace folder'), p.workspace);
+    const fields = p.isDefault ? [persona] : [name, role, persona, shape, hue, folder];
+    page.append(section(t('About ') + p.name, form(key, fields, () => action(key, '/api/prism/marbles/' + enc(p.id) + '/update', p.isDefault ? { persona: persona.input.value } : { name: name.input.value, role: role.input.value, persona: persona.input.value, glyph: shape.input.value, hue: Number(hue.input.value), workspace: folder.input.value }))));
+    const memory = section(t('Memory'));
+    for (const fact of s.data.memory?.facts || []) if (!fact.owner || fact.owner === p.id) {
+      memory.append(el('div', 'record', el('small', 'muted', fact.owner ? t('Only ') + p.name : t('Shared')), prose(fact.text), el('div', 'actions', button(t('Edit'), () => { const text = prompt(t('Memory'), fact.text); if (text?.trim()) action(key, '/api/memory/' + enc(fact.id) + '/update', { text: text.trim() }); }), button(t('Forget'), () => action(key, '/api/memory/' + enc(fact.id) + '/forget')))));
+    }
+    const fact = field(t('Add a fact'), '', 'textarea'); const shared = field(t('Shared with all Marbles'), false, 'checkbox');
+    memory.append(form(key, [fact, shared], () => action(key, '/api/memory', { text: fact.input.value, owner: shared.input.checked ? '' : p.id }))); page.append(memory);
+    const capabilities = section(t('What ') + p.name + t(' can do'), el('p', 'muted', t('Workspace: ') + (p.workspace || t('Host workspace'))), el('p', '', t('Model: ') + (s.data.model || t('Engine default'))), el('p', 'muted small', t('Per-Marble models are coming')));
+    capabilities.append(button(t('Show available tools'), async () => {
+      try { s.tools = await api('/api/tools'); const display = el('div');
+        for (const [title, items] of [[t('Coding tools'), s.tools.core?.observed || []], [t('Workspace tools'), s.tools.governed || []]]) {
+          const groupNode = section(title);
+          if (!items.length) groupNode.append(el('p', 'small muted', t('No tools observed yet.')));
+          for (const tool of items) groupNode.append(el('p', 'small', tool.name || String(tool), tool.description ? ' — ' + tool.description : ''));
+          display.append(groupNode);
+        }
+        capabilities.append(display);
+      } catch (error) { showError(key, humanError(error)); }
+    })); page.append(capabilities);
+    if (!p.isDefault) page.append(section(t('Remove Marble'), button(t('Remove ') + p.name, () => {
+      if (confirm(t('Remove ') + p.name + t('? Its chat is deleted too.'))) action(key, '/api/prism/marbles/' + enc(p.id) + '/remove', {}, () => { location.hash = '#/marbles'; });
+    }, 'danger'), errorNode(key)));
+    return page;
+  }
+  function newPage() {
+    const key = 'new'; const page = el('div', 'page', placeholderNote());
+    const name = field(t('Name')); name.input.required = true;
+    const persona = field(t('Personality'), '', 'textarea'); persona.input.maxLength = 2000;
+    const shape = selectField(t('Shape'), (s.shapes || ['circle', 'hex', 'shield', 'drop', 'star', 'square']).map(x => [x, x]));
+    const unused = [210, 35, 150, 280, 340, 85, 185, 245].find(h => !s.people.some(p => p.hue === h)) || 210;
+    const hue = field(t('Hue'), unused, 'number'); hue.input.min = 0; hue.input.max = 359;
+    const workspace = field(t('Workspace folder'));
+    page.append(el('p', 'muted small', s.people.filter(p => !p.isDefault).length + t(' of ') + (s.limit || 8) + t(' Marbles')),
+      form(key, [name, persona, shape, hue, workspace], () => action(key, '/api/prism/marbles', { name: name.input.value, persona: persona.input.value, glyph: shape.input.value, hue: Number(hue.input.value), workspace: workspace.input.value }, result => { location.hash = chatRoute(result.marble.id); })));
+    return page;
+  }
+  function activityPage() {
+    const key = 'activity'; const page = el('div', 'page', placeholderNote(), errorNode(key));
+    const attention = section(t('Needs you'), requestCards(true)); if (!approvals().length && !suggestions().length) attention.append(el('p', 'muted', t('Nothing needs your attention.'))); page.append(attention);
+    const runningNow = section(t('Running now'), el('div', 'actions', button(s.data.control.paused ? t('Resume') : t('Pause new messages'), () => action(key, '/api/control/' + (s.data.control.paused ? 'resume' : 'pause'))), button(t('Stop everything'), () => action(key, '/api/control/stop'), 'danger')));
+    if (s.data.control.paused) runningNow.append(el('p', 'muted', t('New messages are paused. Resume to continue.')));
+    for (const task of tasks().filter(task => ['running', 'queued'].includes(task.status))) runningNow.append(el('div', 'record', el('strong', '', (personForChat(task.conversationId)?.name || t('Marble')) + ' · ' + task.status), el('p', '', task.prompt), button(t('Stop'), () => action(key, '/api/tasks/' + enc(task.id) + '/cancel'))));
+    for (const item of s.data.control.queue || []) runningNow.append(el('div', 'record', t('Waiting for resume: ') + item.text)); page.append(runningNow);
+    const scheduled = section(t('Scheduled'));
+    for (const item of s.data.routines?.routines || []) {
+      scheduled.append(el('div', 'record', el('h3', '', item.title || item.prompt), el('p', 'small muted', item.schedule + ' · ' + (item.nextRunAt ? new Date(item.nextRunAt).toLocaleString() : t('Not scheduled'))), el('p', 'small muted', t('Missed runs: ') + (item.missedRuns || 0)), el('div', 'actions', ...[[t('Run now'), 'run'], [item.enabled ? t('Pause') : t('Resume'), item.enabled ? 'disable' : 'enable'], [t('Remove'), 'remove']].map(([label, suffix]) => button(label, () => action(key, '/api/routines/' + enc(item.id) + '/' + suffix))), button(item.catchUp ? t('Turn catch-up off') : t('Turn catch-up on'), () => action(key, '/api/routines/' + enc(item.id) + '/catch-up', { enabled: !item.catchUp })))));
+    }
+    const title = field(t('Routine name')); const prompt = field(t('Message'), '', 'textarea'); const schedule = field(t('Schedule'), 'every:1h');
+    scheduled.append(form(key, [title, prompt, schedule], () => action(key, '/api/routines', { title: title.input.value, prompt: prompt.input.value, schedule: schedule.input.value })));
+    scheduled.append(button(t('Use this device’s timezone'), () => action(key, '/api/routines/offset', { offsetMinutes: -new Date().getTimezoneOffset() })));
+    const quiet = s.data.routines.quietHours || {}; const qEnabled = field(t('Quiet hours for scheduled messages'), quiet.enabled, 'checkbox'); const qStart = field(t('Start minute (0–1439)'), quiet.startMinute ?? 1320, 'number'); const qEnd = field(t('End minute (0–1439)'), quiet.endMinute ?? 420, 'number');
+    scheduled.append(form(key, [qEnabled, qStart, qEnd], () => action(key, '/api/routines/quiet', { enabled: qEnabled.input.checked, startMinute: Number(qStart.input.value), endMinute: Number(qEnd.input.value), offsetMinutes: -new Date().getTimezoneOffset() }))); page.append(scheduled);
+    const recent = section(t('Recent'));
+    for (const task of tasks().filter(task => !['running', 'queued'].includes(task.status)).slice(-20).reverse()) recent.append(el('div', 'record', el('strong', '', personForChat(task.conversationId)?.name || t('Marble')), el('p', '', task.prompt), el('p', 'small muted', task.status), el('div', 'actions', link(t('Open chat'), chatRoute(personForChat(task.conversationId)?.id || 'marble'), 'button'), ...(['failed', 'cancelled', 'interrupted'].includes(task.status) ? [retry(task)] : []))));
+    page.append(recent); return page;
+  }
+  function settingsPage() {
+    const key = 'settings'; const page = el('div', 'page', placeholderNote(), errorNode(key));
+    const connectionSection = section(t('Connection'), el('p', '', t('Host version: ') + (s.health.version || '—')), el('p', '', L.statusLabel(s.status)), el('p', 'muted', t('Engine: ') + (s.health.runtime?.health || t('Unknown'))), el('p', 'muted', s.health.lastPersistError || ''));
+    if (s.health.authRequired) connectionSection.append(button(t('Sign out'), async () => { await action(key, '/api/logout'); $('unlock').showModal(); s.stream?.close(); })); page.append(connectionSection);
+    const profile = selectField(t('Permissions'), [['observe', t('Read only')], ['workspace', t('Work in workspace')], ['unattended', t('Work unattended')]], s.data.control.profile);
+    const permissions = section(t('Permissions'), el('p', 'muted small', t('Read only never changes files. Work in workspace asks before governed changes unless a standing grant applies. Work unattended approves governed calls. Denied paths apply to every choice.')), form(key, [profile], () => action(key, '/api/control/profile', { profile: profile.input.value })));
+    for (const grant of s.data.control.grants || []) permissions.append(el('div', 'record', el('p', '', grant.tool + ' · ' + (grant.pathPrefix || t('Workspace'))), button(t('Revoke'), () => action(key, '/api/control/grants/' + enc(grant.id) + '/revoke'))));
+    const denied = s.data.control.deniedPaths || []; permissions.append(el('p', 'muted small', t('Denied paths: ') + denied.join(', ')));
+    const history = el('details', '', el('summary', '', t('Decision history'))); for (const decision of (s.data.control.ledger || []).slice(-30).reverse()) history.append(el('p', 'small muted', [decision.tool, decision.decision, decision.reason].filter(Boolean).join(' · '))); permissions.append(history); page.append(permissions);
+    const model = field(t('Model for new chats'), s.data.model); page.append(section(t('Model'), form(key, [model], () => action(key, '/api/model', { model: model.input.value }))));
+    const notify = s.data.notifications || {}; const webhook = field(t('Webhook URL'), notify.webhookUrl, 'url'); const token = field(t('Webhook token'), '', 'password');
+    const eventField = field(t('Events (comma separated)'), (notify.events || []).join(', '));
+    const q = notify.quietHours || {}; const enabled = field(t('Quiet hours'), q.enabled, 'checkbox'); const start = field(t('Start minute (0–1439)'), q.startMinute ?? 1320, 'number'); const end = field(t('End minute (0–1439)'), q.endMinute ?? 420, 'number');
+    const apns = notify.apns || {}; const keyFile = field(t('Apple push key file'), apns.keyFile); const team = field(t('Apple team ID'), apns.teamId); const keyId = field(t('Apple key ID'), apns.keyId); const topic = field(t('Apple topic'), apns.topic);
+    const notificationSection = section(t('Notifications'), form(key, [webhook, token, eventField, enabled, start, end, keyFile, team, keyId, topic], () => action(key, '/api/notifications', { webhookUrl: webhook.input.value, webhookToken: token.input.value, events: eventField.input.value.split(',').map(x => x.trim()).filter(Boolean), quietHours: { enabled: enabled.input.checked, startMinute: Number(start.input.value), endMinute: Number(end.input.value), offsetMinutes: -new Date().getTimezoneOffset() }, apns: keyFile.input.value ? { keyFile: keyFile.input.value, teamId: team.input.value, keyId: keyId.input.value, topic: topic.input.value } : null }, () => { token.input.value = ''; })));
+    notificationSection.append(button(t('Test notifications'), async () => {
+      try { const result = await api('/api/notifications/test', {}); notificationSection.append(el('p', 'small', result.ok ? t('Notification delivered') : t('No notification was delivered. Check the connection settings.'))); } catch (error) { showError(key, humanError(error)); }
+    }));
+    notificationSection.append(button(t('Recent deliveries'), async () => { try { const report = await api('/api/notifications'); for (const item of report.recent || []) notificationSection.append(el('p', 'small muted', [item.channel, item.ok ? t('Delivered') : t('Not delivered'), item.error].filter(Boolean).join(' · '))); } catch (error) { showError(key, humanError(error)); } }));
+    for (const device of s.data.devices || []) notificationSection.append(el('p', 'small muted', device.platform + ' · ' + device.tokenPrefix)); page.append(notificationSection);
+    const voice = field(t('Read replies aloud'), s.data.voice?.enabled, 'checkbox');
+    const rate = field(t('Speaking rate (0.1–1)'), s.data.voice?.rate ?? 0.5, 'number'); rate.input.min = 0.1; rate.input.max = 1; rate.input.step = 0.05;
+    page.append(section(t('Voice'), form(key, [voice, rate], () => action(key, '/api/voice', { enabled: voice.input.checked, rate: Number(rate.input.value) }))));
+    const exportSection = section(t('Export'), link(t('Export everything'), '/api/export', 'button'), button(t('Show workspace map'), async () => { try { const map = await api('/api/crates'); exportSection.append(prose(JSON.stringify(map, null, 2))); } catch (error) { showError(key, humanError(error)); } })); page.append(exportSection);
+    page.append(section(t('Everyone'), button(t('Clear Everyone'), () => { if (confirm(t('Clear Everyone? Individual chats are kept.'))) action(key, '/api/everyone/clear'); }, 'danger'))); return page;
+  }
+  function render() {
+    renderRail();
+    if (!$('topbar').querySelector('input:focus') && !$('topbar').querySelector('details[open]')) header();
+    const info = s.route.screen === 'info'; const wideInfo = info && innerWidth >= 1200; const sheetInfo = info && innerWidth >= 900 && innerWidth < 1200;
+    document.body.classList.toggle('info-layout', wideInfo); document.body.classList.toggle('info-sheet', sheetInfo); $('info-panel').hidden = !(wideInfo || sheetInfo);
+    const editing = $('main').contains(document.activeElement) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+    if (!editing) {
+      if (s.route.screen === 'everyone') renderTimeline(true);
+      else if (s.route.screen === 'chat' || wideInfo || sheetInfo) { if (current()) renderTimeline(); else $('main').replaceChildren(el('div', 'empty', t('This Marble no longer exists'), link(t('Back to Marbles'), '#/marbles', 'button'))); }
+      else if (s.route.screen === 'marbles') renderPeople();
+      else if (info) $('main').replaceChildren(infoPage(current()));
+      else if (s.route.screen === 'new') $('main').replaceChildren(newPage());
+      else if (s.route.screen === 'activity') $('main').replaceChildren(activityPage());
+      else if (s.route.screen === 'settings') $('main').replaceChildren(settingsPage());
+      else $('main').replaceChildren(el('div', 'empty', t('Page not found')));
+    }
+    if ((wideInfo || sheetInfo) && !$('info-panel').contains(document.activeElement)) $('info-panel').replaceChildren(link(t('Close info'), chatRoute(s.route.id), 'button'), infoPage(current()));
+    composer();
+  }
+  async function refresh() {
+    const generation = s.generation; const request = ++s.refreshId;
+    try {
+      const [data, people, shared] = await Promise.all([api('/api/state?lean=1'), api('/api/prism'), api('/api/everyone'), api('/healthz')]);
+      if (generation !== s.generation || request !== s.refreshId) return;
+      s.data = data; s.people = people.marbles || []; s.limit = people.limit; s.shapes = people.glyphs; s.shared = shared.entries || []; s.loaded = true;
+      if (s.pendingDefault) {
+        const task = tasks().find(task => task.prompt === s.pendingDefault.text && task.conversationId && !s.pendingDefault.knownChats.has(task.conversationId));
+        if (task) { s.defaultChat = task.conversationId; s.pendingDefault = null; }
+      }
+      if (s.defaultChat === undefined) s.defaultChat = defaultChats()[0]?.id || null;
+      if (s.live.size > 128) s.live.delete(s.live.keys().next().value);
+      if (['chat', 'info'].includes(s.route.screen) && conversation()) {
+        const id = conversation();
+        try {
+          const page = await api('/api/transcript?conversationId=' + enc(id));
+          if (generation !== s.generation || request !== s.refreshId || id !== conversation()) return;
+          const prior = new Set(s.entries.filter(entry => entry.kind === 'assistant').map(entry => entry.taskId));
+          if (s.entries.length && s.data.voice?.enabled) {
+            const newest = (page.entries || []).filter(entry => entry.kind === 'assistant' && !prior.has(entry.taskId)).at(-1);
+            if (newest) readAloud(newest.text);
+          }
+          s.entries = page.entries || []; s.missing = false; s.transcriptError = '';
+        } catch (error) {
+          if (generation !== s.generation || request !== s.refreshId || id !== conversation()) return;
+          s.missing = error.status === 404; s.transcriptError = s.missing ? '' : humanError(error);
+          if (s.missing) { s.data.conversations = s.data.conversations.filter(chat => chat.id !== id); }
+        }
+      }
+      render();
+    } catch (error) { if (generation !== s.generation) return; if (error.status !== 401) { s.errors.set('conversation', humanError(error)); render(); } }
+  }
+  let refreshTimer;
+  const refreshSoon = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 90); };
+  let frame;
+  const drawSoon = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); };
+  function onEvent(event) {
+    let payload; try { payload = JSON.parse(event.data); } catch (_) { return; }
+    const sequence = Number(payload.sequence || event.lastEventId);
+    if (sequence && sequence <= s.sequence) return;
+    s.sequence = Math.max(s.sequence, sequence || 0);
+    const kind = payload.kind || event.type; const data = payload.data || {}; const taskId = payload.taskId;
+    if (taskId && ['text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress', 'tool_cancel'].includes(kind)) {
+      const live = s.live.get(taskId) || { conversationId: payload.conversationId, text: '', reasoning: '', tools: [] };
+      if (kind === 'text' || kind === 'reasoning') live[kind] += data.text || data.delta || '';
+      else {
+        const id = data.callId || data.call_id;
+        const existing = live.tools.find(tool => id && tool.callId === id);
+        const tool = { ...existing, ...data, text: String(data.text || existing?.text || '').slice(0, 4000), callId: id }; if (existing) Object.assign(existing, tool); else live.tools.push(tool);
+      }
+      s.live.set(taskId, live); drawSoon();
+    } else if (kind === 'steer_rejected' || kind === 'error') {
+      if (payload.conversationId === conversation()) { s.errors.set('conversation', humanError({ message: data.reason || data.message || t('Could not complete the request') })); drawSoon(); } refreshSoon();
+    } else refreshSoon();
+  }
+  function connect() {
+    s.stream?.close(); const stream = new EventSource('/api/events?since=' + s.sequence); s.stream = stream;
+    stream.addEventListener('open', () => { s.status = L.reduceStatus(s.status, { type: 'open' }); renderStatus(); });
+    stream.addEventListener('error', event => {
+      if (event.data) return;
+      s.status = L.reduceStatus(s.status, { type: 'close' }); renderStatus();
+      if (stream.readyState === EventSource.CLOSED && !$('unlock').open) setTimeout(connect, 2000);
+    });
+    events.forEach(kind => stream.addEventListener(kind, onEvent));
+  }
+  window.addEventListener('hashchange', () => {
+    s.route = L.route(location.hash); s.generation++; s.entries = []; s.missing = false; s.transcriptError = ''; s.errors.delete('conversation');
+    $('main').replaceChildren(); $('composer-area').replaceChildren(); render(); refresh(); window.scrollTo(0, 0); $('main').focus();
+  });
+  window.addEventListener('resize', () => { if (s.route.screen === 'info') render(); });
+  $('unlock').addEventListener('cancel', event => event.preventDefault());
+  $('unlock-form').addEventListener('submit', async event => {
+    event.preventDefault(); $('unlock-error').textContent = '';
+    try { await api('/api/login', { token: $('token').value }); $('token').value = ''; $('unlock').close(); connect(); await refresh(); }
+    catch (error) { $('unlock-error').textContent = humanError(error); }
+  });
+  if (!location.hash) history.replaceState(null, '', '#/everyone');
+  render(); refresh(); connect(); setInterval(refresh, 5000);
+})();

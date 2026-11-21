@@ -62,8 +62,12 @@ final class ScreenshotTourUITests: XCTestCase {
             composer.tap()
             composer.typeText("ask question")
             app.buttons["composer.send"].tap()
-            if app.descendants(matching: .any)["interaction"].waitForExistence(timeout: 30) {
+            let interaction = app.descendants(matching: .any)["interaction"]
+            if interaction.waitForExistence(timeout: 30) {
                 try save(app, "interaction-question")
+                // Leave the shared thread idle for the next variant.
+                app.buttons["interaction.decline"].tap()
+                XCTAssertTrue(interaction.waitForNonExistence(timeout: 30))
             }
         }
     }

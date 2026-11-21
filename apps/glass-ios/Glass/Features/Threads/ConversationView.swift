@@ -6,6 +6,7 @@ struct ConversationView: View {
     var threads: ThreadsModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var following = true
+    @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
     @Environment(AppModel.self) private var app
@@ -30,11 +31,6 @@ struct ConversationView: View {
                     ForEach(conversation.timeline.entries) { entry in
                         TimelineRow(entry: entry).id(entry.id)
                     }
-                    if let interaction = conversation.timeline.interaction {
-                        InteractionView(interaction: interaction, composer: conversation.composer,
-                                        canWrite: conversation.canWrite, secretsAllowed: secretsBlocked)
-                            .id(interaction.id)
-                    }
                     Color.clear.frame(height: 1).id(Self.bottom)
                 }
                 .padding(.horizontal, 16)
@@ -43,22 +39,31 @@ struct ConversationView: View {
                 .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height <= geometry.containerSize.height
                     || geometry.visibleRect.maxY >= geometry.contentSize.height - 80
             } action: { _, atBottom in
                 following = atBottom
             }
-            .onChange(of: conversation.timeline.interaction) {
-                guard following else { return }
-                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            .onChange(of: conversation.timeline.interaction?.id) { _, id in
+                guard id != nil else { return }
+                following = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    proxy.scrollTo(Self.bottom, anchor: .bottom)
+                }
             }
             .onChange(of: conversation.timeline.entries) {
                 guard following else { return }
                 proxy.scrollTo(Self.bottom, anchor: .bottom)
             }
-            .safeAreaInset(edge: .bottom) {
+            .composerBar {
                 bottomBar(proxy)
+                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { _, _ in
+                        guard following else { return }
+                        proxy.scrollTo(Self.bottom, anchor: .bottom)
+                    }
             }
         }
         .accessibilityElement(children: .contain)
@@ -129,6 +134,18 @@ struct ConversationView: View {
     private func bottomBar(_ proxy: ScrollViewProxy) -> some View {
         GlassGroup(spacing: 8) {
             VStack(spacing: 8) {
+                if let interaction = conversation.timeline.interaction {
+                    // The decision is docked above the composer so it stays in view,
+                    // scrolling on its own when it is taller than the space allows.
+                    ScrollView {
+                        InteractionView(interaction: interaction, composer: conversation.composer,
+                                        canWrite: conversation.canWrite, secretsAllowed: secretsBlocked)
+                            .id(interaction.id)
+                            .onGeometryChange(for: CGFloat.self, of: \.size.height) { interactionHeight = $1 }
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(height: min(max(interactionHeight, 44), 340))
+                }
                 if let notice = conversation.timeline.notice
                     ?? (conversation.error ?? conversation.composer.error).map({ Timeline.Notice(text: $0, isError: true) })
                     ?? conversation.composer.confirmation.map({ Timeline.Notice(text: $0, isError: false) }) {
@@ -208,5 +225,18 @@ struct ConversationView: View {
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("conversation.connection")
             .accessibilityValue("\(title), \(conversation.resets) resets")
+    }
+}
+
+private extension View {
+    /// On iOS 26 the composer sits in a safe-area bar, so content scrolling
+    /// beneath it gets the system scroll-edge effect instead of showing through.
+    @ViewBuilder
+    func composerBar(@ViewBuilder _ bar: () -> some View) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: .bottom, content: bar)
+        } else {
+            safeAreaInset(edge: .bottom, content: bar)
+        }
     }
 }

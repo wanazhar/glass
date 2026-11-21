@@ -75,7 +75,8 @@ struct ComposerView: View {
 
     private var field: some View {
         ComposerTextField(placeholder: canWrite ? (active ? (composer.mode == .steer ? "Steer this turn" : "Queue a message") : "Message") : "Read-only",
-                          text: Bindable(composer).text, isEnabled: canWrite) {
+                          text: Bindable(composer).text, isEnabled: canWrite,
+                          dismissFor: conversation.timeline.interaction?.id) {
             Task { await composer.send(active: active, canWrite: canWrite) }
         }
         .padding(.horizontal, 14)

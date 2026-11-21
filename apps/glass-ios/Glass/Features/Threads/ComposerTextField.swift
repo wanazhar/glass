@@ -8,6 +8,8 @@ struct ComposerTextField: UIViewRepresentable {
     @Binding var text: String
     var isEnabled: Bool
     var maxLines = 6
+    /// A new pending decision puts the keyboard away so the request is visible.
+    var dismissFor: String?
     var onReturn: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
@@ -30,6 +32,10 @@ struct ComposerTextField: UIViewRepresentable {
         view.textColor = isEnabled ? .label : .secondaryLabel
         view.onReturn = onReturn
         view.placeholder = placeholder
+        if context.coordinator.dismissedFor != dismissFor {
+            context.coordinator.dismissedFor = dismissFor
+            if dismissFor != nil { view.resignFirstResponder() }
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: ComposerTextView, context: Context) -> CGSize? {
@@ -42,6 +48,7 @@ struct ComposerTextField: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var text: Binding<String>
+        var dismissedFor: String?
         init(text: Binding<String>) { self.text = text }
 
         func textViewDidChange(_ textView: UITextView) {

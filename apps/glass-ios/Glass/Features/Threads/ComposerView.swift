@@ -107,6 +107,7 @@ struct ComposerView: View {
                 }
                 if active, composer.trimmed.isEmpty {
                     Button("Stop", systemImage: "stop.fill") { Task { await composer.stop() } }
+                        .keyboardShortcut(".", modifiers: .command)
                         .labelStyle(.iconOnly)
                         .glassButtonStyle(prominent: true)
                         .disabled(!canWrite)

@@ -28,5 +28,11 @@ struct HostTabView: View {
             }
             .accessibilityIdentifier("tab.settings")
         }
+        .background {
+            Button("Settings") { model.selectedTab = .settings }
+                .keyboardShortcut(",", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
     }
 }

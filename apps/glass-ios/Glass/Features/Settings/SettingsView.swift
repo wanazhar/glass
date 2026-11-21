@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage(ThemePreference.key) private var theme: ThemePreference = .system
     @AppStorage(ActivityAnimation.key) private var animation: ActivityAnimation = .dots
     @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
+    @AppStorage(Attention.key) private var notifications = false
 
     var body: some View {
         @Bindable var model = model
@@ -14,7 +15,7 @@ struct SettingsView: View {
             if let endpoint = model.endpoint {
                 Section {
                     LabeledContent("Host", value: endpoint.origin)
-                    LabeledContent("Transport", value: endpoint.transportLabel)
+                    LabeledContent("Connection", value: endpoint.transportLabel)
                     Button("Forget This Host", role: .destructive) { confirmingForget = true }
                         .accessibilityIdentifier("settings.forget")
                 } header: {
@@ -58,6 +59,14 @@ struct SettingsView: View {
                 Text("Saved on this iPhone. Reduce Motion always keeps the activity indicator still.")
             }
             Section {
+                Toggle("Notifications", isOn: Binding(get: { notifications }, set: { on in
+                    Task { notifications = await Attention.set(on) }
+                }))
+                .accessibilityIdentifier("settings.notifications")
+            } footer: {
+                Text("Alerts you when a reply is ready or Glass needs an answer while the app is in the background. iPhone pauses the connection soon after you leave the app, so alerts stop then.")
+            }
+            Section {
                 Toggle("Allow HTTP on local network", isOn: $model.allowLANHTTP)
                     .accessibilityIdentifier("settings.allowHTTP")
             } footer: {
@@ -65,7 +74,6 @@ struct SettingsView: View {
             }
             Section("About") {
                 LabeledContent("Version", value: model.info.versionLabel)
-                LabeledContent("Bundle", value: model.info.bundleIdentifier)
             }
         }
         .navigationTitle("Settings")

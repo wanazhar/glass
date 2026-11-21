@@ -139,7 +139,10 @@ final class ConversationModel {
                         self?.drawPendingFrames()
                     }
                 }
-                for event in frame.live + frame.events { composer.observe(event) }
+                for event in frame.live + frame.events {
+                    composer.observe(event)
+                    alert(for: event)
+                }
                 return
             }
             drawPendingFrames()
@@ -163,6 +166,16 @@ final class ConversationModel {
             liveTask = nil
             app.handle(.unauthorized(message))
         }
+    }
+
+    private func alert(for event: GlassEvent) {
+        let title: String? = switch event {
+        case .done: "Reply ready"
+        case .interaction: "Glass needs your answer"
+        case .error(_, let settled, _, _) where settled: "Glass stopped with a problem"
+        default: nil
+        }
+        if let title { Attention.notify(title, conversation: thread.displayTitle, id: thread.id) }
     }
 
     private func fail(_ error: GlassError) {

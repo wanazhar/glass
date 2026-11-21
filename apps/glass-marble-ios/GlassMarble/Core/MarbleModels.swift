@@ -504,6 +504,8 @@ struct MarbleEventData: Decodable, Equatable {
     var cancelled: Bool?
     var requestId: String?
     var approved: Bool?
+    /// On an `everyone` event, how many entries a clear removed.
+    var cleared: Int? = nil
 }
 
 /// One marble-to-marble ask, kept on the transcript row that tells it.

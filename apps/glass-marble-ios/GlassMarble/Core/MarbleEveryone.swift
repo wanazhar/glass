@@ -139,3 +139,18 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
         )
     }
 }
+
+/// How a host `everyone` event changes a fetched Everyone timeline.
+enum MarbleEveryoneTimeline {
+    /// Whether the event says the shared timeline changed, so a fetched copy
+    /// is stale and should be fetched again.
+    static func isChange(_ event: MarbleEvent) -> Bool {
+        event.kind == "everyone"
+    }
+
+    /// A clear empties the timeline at once; any other change keeps it until
+    /// the refetch replaces it.
+    static func applying(_ event: MarbleEvent, to timeline: [MarbleEntry]) -> [MarbleEntry] {
+        isChange(event) && event.data.cleared != nil ? [] : timeline
+    }
+}

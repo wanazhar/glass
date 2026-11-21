@@ -1117,6 +1117,10 @@ final class MarbleStore: ObservableObject {
             Task { await refresh() }
         case "approval_resolved", "state":
             Task { await refresh() }
+        case "everyone":
+            everyoneTimeline = MarbleEveryoneTimeline.applying(event, to: everyoneTimeline)
+            chatsRevision = -1
+            Task { await refresh() }
         case "settled":
             let reply = forActive ? buffers.text : ""
             buffers = LiveBuffers()

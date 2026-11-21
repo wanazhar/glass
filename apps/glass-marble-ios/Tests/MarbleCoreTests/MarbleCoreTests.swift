@@ -1350,3 +1350,41 @@ final class MarbleConnectionGenerationTests: XCTestCase {
         XCTAssertFalse(connection.isCurrent(signedIn))
     }
 }
+
+final class MarbleEveryoneTimelineTests: XCTestCase {
+    private let timeline = [
+        MarbleEntry(
+            conversationId: "everyone", kind: "user", text: "hi",
+            taskId: "", at: 1, speaker: "", speakerName: ""
+        )
+    ]
+
+    private func event(_ json: String) throws -> MarbleEvent {
+        try JSONDecoder().decode(MarbleEvent.self, from: Data(json.utf8))
+    }
+
+    func testHostClearEmptiesTheTimeline() throws {
+        let cleared = try event(
+            #"{"sequence":9,"conversationId":"everyone","taskId":"","kind":"everyone","data":{"cleared":2}}"#
+        )
+        XCTAssertTrue(MarbleEveryoneTimeline.isChange(cleared))
+        XCTAssertEqual(cleared.data.cleared, 2)
+        XCTAssertTrue(MarbleEveryoneTimeline.applying(cleared, to: timeline).isEmpty)
+    }
+
+    func testNewPostKeepsTheTimelineUntilRefetched() throws {
+        let posted = try event(
+            #"{"sequence":10,"conversationId":"everyone","taskId":"","kind":"everyone","data":{"kind":"user"}}"#
+        )
+        XCTAssertTrue(MarbleEveryoneTimeline.isChange(posted))
+        XCTAssertEqual(MarbleEveryoneTimeline.applying(posted, to: timeline), timeline)
+    }
+
+    func testOtherEventsAreNotEveryoneChanges() throws {
+        let text = try event(
+            #"{"sequence":11,"conversationId":"everyone","taskId":"t","kind":"text","data":{"text":"x"}}"#
+        )
+        XCTAssertFalse(MarbleEveryoneTimeline.isChange(text))
+        XCTAssertEqual(MarbleEveryoneTimeline.applying(text, to: timeline), timeline)
+    }
+}

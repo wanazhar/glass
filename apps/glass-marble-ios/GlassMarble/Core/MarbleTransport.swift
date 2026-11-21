@@ -76,9 +76,14 @@ struct MarbleEndpoint: Equatable {
             url: baseURL,
             resolvingAgainstBaseURL: false
         ) else { return nil }
-        let base = components.path
+        // Callers percent-encode identifiers before building a route, so the
+        // path is joined as already encoded; setting `path` would encode the
+        // `%` again and the host would see `%253A` instead of `:`.
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.insert("%")
         let leaf = path.hasPrefix("/") ? path : "/" + path
-        components.path = base + leaf
+        let encodedLeaf = leaf.addingPercentEncoding(withAllowedCharacters: allowed) ?? leaf
+        components.percentEncodedPath = components.percentEncodedPath + encodedLeaf
         if !query.isEmpty {
             components.queryItems = query
         }

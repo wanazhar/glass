@@ -50,6 +50,16 @@ final class EndpointTests: XCTestCase {
         )
     }
 
+    func testEncodedSegmentIsNotEncodedTwice() throws {
+        let e = try MarbleEndpoint.parse("http://h").get()
+        let id = "host:session:task:call-1"
+            .addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        XCTAssertEqual(
+            e.url(path: "/api/approvals/\(id)/allow")?.absoluteString,
+            "http://h/api/approvals/host%3Asession%3Atask%3Acall%2D1/allow"
+        )
+    }
+
     func testQueryEncoding() throws {
         let e = try MarbleEndpoint.parse("http://h").get()
         let url = e.url(path: "/api/transcript/search", query: [

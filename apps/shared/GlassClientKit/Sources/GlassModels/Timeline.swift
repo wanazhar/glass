@@ -159,7 +159,7 @@ public struct Timeline: Sendable, Hashable {
         case .interactionDone:
             interaction = nil
             if activity == "Waiting for your decision" { activity = isActive ? "Working" : nil }
-        case .commandResult, .commandCatalogue, .unknown:
+        case .commandResult, .commandCatalogue, .commandQueued, .unknown:
             break
         }
     }

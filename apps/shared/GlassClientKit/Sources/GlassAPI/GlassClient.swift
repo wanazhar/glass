@@ -202,6 +202,24 @@ public actor GlassClient {
         return try await decode(JSONValue.self, from: try Self.post("/api/command", body))
     }
 
+    /// `GET /api/commands`: the host's command catalogue.
+    public func commands() async throws(GlassError) -> [CommandDescriptor] {
+        CommandCatalogue.decode(try await decode(JSONValue.self, from: .get("/api/commands")))
+    }
+
+    /// `GET /api/settings`: global defaults for new conversations.
+    public func settings() async throws(GlassError) -> SettingsSnapshot {
+        try await decode(SettingsSnapshot.self, from: .get("/api/settings"))
+    }
+
+    /// `POST /api/settings`: applies one change on top of `revision` and returns the new snapshot.
+    /// Changes that carry a credential are refused on plain HTTP.
+    public func updateSettings(_ change: SettingsChange, revision: String) async throws(GlassError) -> SettingsSnapshot {
+        if change.carriesSecret, !endpoint.isSecure { throw .insecureTransport }
+        let request = try GlassRequest.post("/api/settings", json: change.body(revision: revision))
+        return try await decode(SettingsSnapshot.self, from: request)
+    }
+
     private func credential() throws(GlassError) -> GlassCredential {
         let credential: GlassCredential
         do { credential = try store.credential(for: endpoint) } catch {

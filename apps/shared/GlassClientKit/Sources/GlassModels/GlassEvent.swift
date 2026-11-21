@@ -48,6 +48,8 @@ public enum GlassEvent: Sendable, Hashable, Decodable {
     case interactionDone
     case commandStart(name: String?)
     case commandDone
+    /// A `command` waits for the running turn; it will run once.
+    case commandQueued(requestID: String?)
     /// Reply to a `command` message: `result` or `error`, matched by request ID.
     case commandResult(requestID: String?, result: JSONValue?, error: String?)
     case commandCatalogue(JSONValue)
@@ -81,6 +83,7 @@ public enum GlassEvent: Sendable, Hashable, Decodable {
         case "interaction_done": self = .interactionDone
         case "command_start": self = .commandStart(name: s("name"))
         case "command_done": self = .commandDone
+        case "command_queued": self = .commandQueued(requestID: s("request_id"))
         case "command_result": self = .commandResult(requestID: s("request_id"), result: v["result"], error: s("error"))
         case "command_catalogue": self = .commandCatalogue(v["commands"] ?? .null)
         case "meta": self = .meta(v)

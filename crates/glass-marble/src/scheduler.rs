@@ -150,6 +150,7 @@ pub fn run_tick(
             // the real task when the engine admits the turn.
             let queued_id = format!("queued-{}", request.request_id);
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: queued_id.clone(),
                 conversation_id: routine.conversation_id.clone().unwrap_or_default(),
                 status: "queued".into(),

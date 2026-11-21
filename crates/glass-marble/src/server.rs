@@ -2056,6 +2056,7 @@ impl MarbleServer {
         {
             let mut guard = self.lock_state();
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: queued_id.clone(),
                 conversation_id: routine.conversation_id.clone().unwrap_or_default(),
                 status: "queued".into(),
@@ -2550,6 +2551,7 @@ impl MarbleServer {
                     guard.routines.note_status(routine_id, "queued");
                 }
                 guard.upsert_task(TaskRecord {
+                    marble_id: String::new(),
                     id: queued_id,
                     conversation_id: request.conversation_id.clone().unwrap_or_default(),
                     status: "queued".into(),
@@ -2818,11 +2820,6 @@ impl MarbleServer {
         self.submit_text_for(conversation_id, text, marble.map(|marble| marble.id))
     }
 
-    /// Hold a message while admission is paused, or hand it to the worker.
-    fn submit_text(&self, conversation_id: Option<String>, text: String) -> Response {
-        self.submit_text_for(conversation_id, text, None)
-    }
-
     fn submit_text_for(
         &self,
         conversation_id: Option<String>,
@@ -2939,6 +2936,7 @@ impl MarbleServer {
         {
             let mut guard = self.lock_state();
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: queued_id.clone(),
                 conversation_id: conversation_id.clone(),
                 status: "queued".into(),
@@ -3085,7 +3083,8 @@ impl MarbleServer {
         // engine never created, so repeating it starts a fresh conversation.
         let conversation =
             (!task.conversation_id.starts_with("recovered-")).then_some(task.conversation_id);
-        let mut response = self.submit_text(conversation, task.prompt);
+        let marble_id = (!task.marble_id.is_empty()).then_some(task.marble_id);
+        let mut response = self.submit_text_for(conversation, task.prompt, marble_id);
         // Name the turn being repeated, so a surface can say what it restarted.
         if let Ok(mut body) = serde_json::from_str::<Value>(&response.body)
             && let Value::Object(ref mut map) = body
@@ -3215,6 +3214,7 @@ impl MarbleServer {
                     guard.routines.note_admitted(routine_id, task_id);
                 }
                 guard.upsert_task(TaskRecord {
+                    marble_id: String::new(),
                     id: entry.id,
                     conversation_id: entry.conversation_id.unwrap_or_default(),
                     status: "queued".into(),

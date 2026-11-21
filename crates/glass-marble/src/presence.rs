@@ -337,6 +337,7 @@ mod tests {
 
     fn task(status: &str) -> TaskRecord {
         TaskRecord {
+            marble_id: String::new(),
             id: "t1".into(),
             conversation_id: "c1".into(),
             status: status.into(),

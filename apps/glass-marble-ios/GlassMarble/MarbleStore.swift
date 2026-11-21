@@ -89,6 +89,9 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var everyoneTimeline: [MarbleEntry] = []
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
     private var chatsRevision: Int = -1
+    /// Advanced on every host change or sign-out so late replies from the
+    /// previous host are dropped rather than shown.
+    private var hostGeneration = MarbleConnectionGeneration()
     @Published private(set) var liveText = ""
     @Published private(set) var liveReasoning = ""
     @Published private(set) var liveTools: [LiveTool] = []
@@ -242,6 +245,7 @@ final class MarbleStore: ObservableObject {
         transcriptConversationId = nil
         transcriptCursor = 0
         transcriptRevision = -1
+        hostGeneration.advance()
         resetChats()
         live = [:]
         syncLive()
@@ -269,6 +273,7 @@ final class MarbleStore: ObservableObject {
         transcriptConversationId = nil
         transcriptCursor = 0
         transcriptRevision = -1
+        hostGeneration.advance()
         resetChats()
         live = [:]
         syncLive()
@@ -336,9 +341,11 @@ final class MarbleStore: ObservableObject {
 
     func refresh() async {
         guard let client else { return }
+        let generation = hostGeneration.current
         do {
             async let healthFetch = client.health()
             let snapshot = try await client.state()
+            guard hostGeneration.isCurrent(generation) else { return }
             state = snapshot
             needsToken = false
             errorMessage = nil
@@ -374,10 +381,12 @@ final class MarbleStore: ObservableObject {
             await loadTranscript()
             await loadChats()
         } catch MarbleClientError.unauthorized {
+            guard hostGeneration.isCurrent(generation) else { return }
             needsToken = true
             status.refreshFailed("The token was rejected")
             loaded = true
         } catch {
+            guard hostGeneration.isCurrent(generation) else { return }
             status.refreshFailed(error.localizedDescription)
             loaded = true
             errorMessage = error.localizedDescription
@@ -395,8 +404,9 @@ final class MarbleStore: ObservableObject {
     private func loadChats() async {
         guard let client, chatsRevision != state.revision else { return }
         let revision = state.revision
+        let generation = hostGeneration.current
         do {
-            everyoneTimeline = try await client.everyone()
+            let timeline = try await client.everyone()
             var transcripts: [String: [MarbleEntry]] = [:]
             for marble in prism.marbles where !marble.conversationId.isEmpty {
                 do {
@@ -408,9 +418,12 @@ final class MarbleStore: ObservableObject {
                     transcripts[marble.conversationId] = []
                 }
             }
+            guard hostGeneration.isCurrent(generation) else { return }
+            everyoneTimeline = timeline
             marbleTranscripts = transcripts
             chatsRevision = revision
         } catch {
+            guard hostGeneration.isCurrent(generation) else { return }
             errorMessage = error.localizedDescription
         }
     }

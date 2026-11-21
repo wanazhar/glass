@@ -1331,3 +1331,22 @@ final class MarbleVisionNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .everyone)
     }
 }
+
+final class MarbleConnectionGenerationTests: XCTestCase {
+    func testReplyFromAnEarlierHostIsNotCurrent() {
+        var connection = MarbleConnectionGeneration()
+        let before = connection.current
+        connection.advance()
+        XCTAssertFalse(connection.isCurrent(before))
+        XCTAssertTrue(connection.isCurrent(connection.current))
+    }
+
+    func testEverySwitchRetiresTheLastToken() {
+        var connection = MarbleConnectionGeneration()
+        connection.advance()
+        let signedIn = connection.current
+        connection.advance()
+        connection.advance()
+        XCTAssertFalse(connection.isCurrent(signedIn))
+    }
+}

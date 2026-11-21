@@ -156,3 +156,20 @@ public struct MarbleConnectionStatus: Equatable, Sendable {
         probing = false
     }
 }
+
+/// Numbers each host connection so a response that started under an earlier
+/// host or session is recognised and dropped instead of published.
+public struct MarbleConnectionGeneration: Equatable, Sendable {
+    public private(set) var current: UInt64 = 0
+
+    public init() {}
+
+    /// Start a new connection; every earlier token stops being current.
+    public mutating func advance() {
+        current &+= 1
+    }
+
+    public func isCurrent(_ token: UInt64) -> Bool {
+        token == current
+    }
+}

@@ -2,6 +2,15 @@ import Foundation
 
 public protocol GlassHTTPTransport: Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
+    /// Opens a streaming response (SSE). Chunks arrive as the server flushes them.
+    func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, any Error>, HTTPURLResponse)
+}
+
+extension GlassHTTPTransport {
+    /// Request/response transports that never stream (test doubles, simple tools).
+    public func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, any Error>, HTTPURLResponse) {
+        throw GlassError.invalidResponse("streaming is not supported by this transport")
+    }
 }
 
 /// Ephemeral, cookie-less, cache-less session that never follows redirects
@@ -24,6 +33,34 @@ public final class URLSessionTransport: NSObject, GlassHTTPTransport, URLSession
         let (data, response) = try await session.data(for: request, delegate: self)
         guard let http = response as? HTTPURLResponse else { throw GlassError.invalidResponse("not HTTP") }
         return (data, http)
+    }
+
+    public func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, any Error>, HTTPURLResponse) {
+        var request = request
+        request.timeoutInterval = 60
+        let (bytes, response) = try await session.bytes(for: request, delegate: self)
+        guard let http = response as? HTTPURLResponse else { throw GlassError.invalidResponse("not HTTP") }
+        let chunks = AsyncThrowingStream<Data, any Error> { continuation in
+            let task = Task {
+                var chunk = Data()
+                do {
+                    for try await byte in bytes {
+                        chunk.append(byte)
+                        // Flush at frame boundaries so events are delivered promptly.
+                        if byte == 0x0A, chunk.count >= 2, chunk[chunk.count - 2] == 0x0A || chunk.count >= 16 * 1024 {
+                            continuation.yield(chunk)
+                            chunk.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    if !chunk.isEmpty { continuation.yield(chunk) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        return (chunks, http)
     }
 
     public func urlSession(

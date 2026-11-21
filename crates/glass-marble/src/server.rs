@@ -2507,8 +2507,13 @@ impl MarbleServer {
         if !requests.is_empty() {
             let mut guard = self.lock_state();
             for request in &requests {
+                let queued_id = format!("queued-{}", request.request_id);
+                if let Some(routine_id) = &request.routine_id {
+                    guard.routines.note_admitted(routine_id, &queued_id);
+                    guard.routines.note_status(routine_id, "queued");
+                }
                 guard.upsert_task(TaskRecord {
-                    id: format!("queued-{}", request.request_id),
+                    id: queued_id,
                     conversation_id: request.conversation_id.clone().unwrap_or_default(),
                     status: "queued".into(),
                     owner: "agent".into(),

@@ -1236,6 +1236,19 @@ fn resuming_admits_typed_messages_before_held_firings() {
         .expect("the resumed firing keeps a durable row while it waits");
     assert_eq!(waiting["prompt"], json!("sweep the notes"));
     assert_eq!(state["presence"]["waiting"]["routine"], json!(1));
+    let task_id = waiting["id"].as_str().unwrap();
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/tasks/{task_id}/cancel"), "")
+            .0,
+        200
+    );
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    let routine = &state["routines"]["routines"][0];
+    assert_eq!(routine["lastTaskId"], task_id);
+    assert_eq!(routine["lastStatus"], "cancelled");
+    assert_eq!(routine["runs"], 1);
 }
 
 #[test]

@@ -12,83 +12,8 @@ struct ConversationListView: View {
 
     var body: some View {
         List {
-            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Section(header: Text("Transcript matches")) {
-                    if hits.isEmpty {
-                        Text("No matches")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(hits) { hit in
-                        Button {
-                            navigation.openConversation(hit.conversationId)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(hit.title.isEmpty ? hit.conversationId : hit.title)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Text(hit.text)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    }
-                }
-            }
-            Section(header: Text("Conversations")) {
-                if store.state.conversations.isEmpty {
-                    Text("No conversations yet")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(filteredConversations) { conversation in
-                    NavigationLink(value: ChatRoute.conversation(conversation.id)) {
-                        ConversationRow(conversation: conversation)
-                    }
-                        .contextMenu {
-                            Button("Rename") {
-                                renaming = conversation
-                                renameDraft = conversation.title
-                            }
-                            Button("Delete", role: .destructive) {
-                                deleting = conversation
-                            }
-                        }
-                }
-            }
-
-            Section(header: Text("Recent turns")) {
-                if store.state.tasks.isEmpty {
-                    Text("No turns yet")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(recentTasks) { task in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(task.prompt.isEmpty ? task.id : task.prompt)
-                            .font(.footnote)
-                            .lineLimit(2)
-                        HStack(spacing: 8) {
-                            Text("\(task.status) · \(task.owner)")
-                                .font(.caption2)
-                                .foregroundStyle(statusTone(task.status))
-                            Spacer(minLength: 0)
-                            if retryable(task) {
-                                Button("Retry") {
-                                    Task { await store.retry(task) }
-                                }
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(MarbleTheme.tint)
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
+            searchSection
+            conversationSection
         }
         .navigationTitle("Glass Marble")
         .navigationBarTitleDisplayMode(.inline)
@@ -166,8 +91,89 @@ struct ConversationListView: View {
         )
     }
 
+    @ViewBuilder
+    private var searchSection: some View {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Section(header: Text("Transcript matches")) {
+                if hits.isEmpty {
+                    Text("No matches")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(hits) { hit in
+                    searchHitRow(hit)
+                }
+            }
+        }
+    }
+
+    private var conversationSection: some View {
+        Section {
+            ForEach(filteredConversations) { conversation in
+                conversationRow(conversation)
+            }
+            if filteredConversations.isEmpty {
+                VStack(spacing: 8) {
+                    Text("No chats yet")
+                        .font(.callout)
+                    Text("Start one with the compose button.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("New chat") { navigation.newChat() }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            }
+        }
+    }
+
+    private func searchHitRow(_ hit: MarbleSearchHit) -> some View {
+        Button {
+            navigation.openConversation(hit.conversationId)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(hit.title.isEmpty ? hit.conversationId : hit.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(hit.text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private func conversationRow(_ conversation: MarbleConversation) -> some View {
+        NavigationLink(value: ChatRoute.conversation(conversation.id)) {
+            ConversationRow(
+                conversation: conversation,
+                line: store.stateLine(for: conversation)
+            )
+        }
+        .contextMenu {
+            Button("Rename") {
+                renaming = conversation
+                renameDraft = conversation.title
+            }
+            Button("Delete", role: .destructive) {
+                deleting = conversation
+            }
+        }
+    }
+
     private var sortedConversations: [MarbleConversation] {
-        store.state.conversations.sorted { $0.updatedAt > $1.updatedAt }
+        // Everyone and each marble's own chat have their own tabs; this list
+        // is the default assistant's conversations.
+        store.state.conversations
+            .filter { conversation in
+                conversation.id != everyoneConversationId
+                    && !store.prism.marbles.contains {
+                        !$0.isDefault && $0.conversationId == conversation.id
+                    }
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private var filteredConversations: [MarbleConversation] {
@@ -181,14 +187,6 @@ struct ConversationListView: View {
                 task.conversationId == conversation.id && task.prompt.lowercased().contains(needle)
             }
         }
-    }
-
-    private var recentTasks: [MarbleTask] {
-        Array(store.state.tasks.sorted { $0.at > $1.at }.prefix(8))
-    }
-
-    private func retryable(_ task: MarbleTask) -> Bool {
-        ["failed", "cancelled", "interrupted"].contains(task.status) && !task.prompt.isEmpty
     }
 
     /// Debounced server-side transcript search while the field has text.
@@ -206,22 +204,23 @@ struct ConversationListView: View {
         }
     }
 
-    private func statusTone(_ status: String) -> Color {
-        MarbleTheme.status(status)
-    }
 }
 
 private struct ConversationRow: View {
     var conversation: MarbleConversation
+    var line: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(conversation.title.isEmpty ? conversation.id : conversation.title)
                 .font(.callout)
                 .lineLimit(1)
-            Text(conversation.taskIds.count == 1 ? "1 turn" : "\(conversation.taskIds.count) turns")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if let line {
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .padding(.vertical, 2)
     }

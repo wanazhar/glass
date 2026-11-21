@@ -799,7 +799,7 @@ final class MarbleNavigationTests: XCTestCase {
         nav.openConversation("a")
         nav.selectTab(.settings)
         nav.launch()
-        XCTAssertEqual(nav.tab, .chats)
+        XCTAssertEqual(nav.tab, .everyone)
         XCTAssertTrue(nav.chatPath.isEmpty)
         XCTAssertNil(nav.viewingConversationId)
     }
@@ -834,8 +834,8 @@ final class MarbleNavigationTests: XCTestCase {
         nav.openConversation("a")
         nav.selectTab(.activity)
         nav.notificationTapped("b")
-        XCTAssertEqual(nav.tab, .chats)
-        XCTAssertEqual(nav.chatPath, [.conversation("b")])
+        XCTAssertEqual(nav.tab, .marbles)
+        XCTAssertEqual(nav.chatPath, [.marbleChats, .conversation("b")])
     }
 
     func testPendingOpenDrainsOnce() {
@@ -918,5 +918,406 @@ final class MarbleTurnBodyTests: XCTestCase {
         let doc = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         XCTAssertEqual(doc["text"] as? String, "hi")
         XCTAssertNil(doc["conversationId"])
+    }
+}
+
+final class MarbleSSELineSplitterTests: XCTestCase {
+    private func split(_ chunks: [[UInt8]]) -> [String] {
+        var splitter = MarbleSSELineSplitter()
+        var lines: [String] = []
+        for chunk in chunks { lines.append(contentsOf: splitter.feed(chunk)) }
+        if let last = splitter.finish() { lines.append(last) }
+        return lines
+    }
+
+    func testBlankLinesAreDelivered() {
+        let text = "data: a\n\ndata: b\n\n: keepalive\n\n"
+        XCTAssertEqual(
+            split([Array(text.utf8)]),
+            ["data: a", "", "data: b", "", ": keepalive", ""]
+        )
+    }
+
+    func testCRLFAndBareCR() {
+        let text = "data: a\r\n\r\ndata: b\r\rdata: c"
+        XCTAssertEqual(
+            split([Array(text.utf8)]),
+            ["data: a", "", "data: b", "", "data: c"]
+        )
+    }
+
+    /// A realistic capture with keepalive framing, replayed at every possible
+    /// chunk boundary — the splitter must produce identical lines each time.
+    func testEveryChunkBoundaryProducesTheSameLines() {
+        let capture = ": keepalive\n\nevent: state\nid: 41\ndata: {\"kind\":\"state\"}\n\n"
+        let bytes = Array(capture.utf8)
+        let expected = [
+            ": keepalive", "", "event: state", "id: 41",
+            "data: {\"kind\":\"state\"}", "",
+        ]
+        XCTAssertEqual(split([bytes]), expected)
+        for boundary in 0..<bytes.count {
+            XCTAssertEqual(
+                split([Array(bytes[0..<boundary]), Array(bytes[boundary...])]),
+                expected,
+                "split at byte \(boundary) changed the lines"
+            )
+        }
+        // One byte at a time too.
+        for byte in bytes.enumerated() { _ = byte }
+        XCTAssertEqual(split(bytes.map { [$0] }), expected)
+    }
+
+    func testFinishReturnsTrailingPartialLine() {
+        var splitter = MarbleSSELineSplitter()
+        XCTAssertEqual(splitter.feed(Array("data: x".utf8)), [])
+        XCTAssertEqual(splitter.finish(), "data: x")
+        XCTAssertNil(splitter.finish())
+    }
+
+    /// Parser fed by the splitter: a keepalive, then a real frame, is exactly
+    /// what the host sends — and what `bytes.lines` used to swallow.
+    func testSplitterFeedsParserEndToEnd() {
+        var splitter = MarbleSSELineSplitter()
+        var parser = MarbleSSEParser()
+        var frames: [MarbleSSEFrame] = []
+        for byte in Array("data: {\"a\":1}\r\n\r\n: keepalive\n\ndata: {\"b\":2}\n\n".utf8) {
+            for line in splitter.feed(byte) {
+                if let frame = parser.feed(line) { frames.append(frame) }
+            }
+        }
+        XCTAssertEqual(frames.map(\.data), ["{\"a\":1}", "{\"b\":2}"])
+    }
+}
+
+final class MarbleConnectionStatusTests: XCTestCase {
+    func testRefreshSuccessConnects() {
+        var status = MarbleConnectionStatus()
+        XCTAssertEqual(status.label, "Connecting")
+        status.refreshSucceeded()
+        XCTAssertEqual(status.label, "Connected")
+        XCTAssertTrue(status.isConnected)
+    }
+
+    func testRefreshFailureGoesOffline() {
+        var status = MarbleConnectionStatus()
+        status.refreshFailed("timed out")
+        XCTAssertEqual(status.label, "Offline")
+        XCTAssertEqual(status.offlineReason, "timed out")
+    }
+
+    /// The 200 on /api/events alone means connected — even with nothing but
+    /// keepalives on the wire.
+    func testStreamOpenAloneIsConnected() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        XCTAssertEqual(status.label, "Connected")
+        // And it stays connected across quiet periods: nothing moves it.
+        XCTAssertEqual(status.label, "Connected")
+    }
+
+    /// A drop right after a working connection stays Connected while one
+    /// immediate reconnect runs; only a second failure shows Offline.
+    func testDropAfterSuccessKeepsConnectedForOneReconnect() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        status.streamEnded("stream closed")
+        XCTAssertEqual(status.label, "Connected")
+        status.reconnectStarted()
+        XCTAssertEqual(status.label, "Connected")
+        status.streamEnded("still broken")
+        XCTAssertEqual(status.label, "Offline")
+        XCTAssertEqual(status.offlineReason, "still broken")
+    }
+
+    /// A successful reconnect after a drop returns to Connected cleanly.
+    func testReconnectSucceedsBackToConnected() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        status.streamEnded(nil)
+        status.reconnectStarted()
+        status.streamOpened()
+        XCTAssertEqual(status.label, "Connected")
+        // A later quiet drop starts the one-reconnect grace again.
+        status.streamEnded(nil)
+        XCTAssertEqual(status.label, "Connected")
+    }
+
+    /// A stream that never opened going straight down is Offline, not grace.
+    func testDropWithoutOpenIsOffline() {
+        var status = MarbleConnectionStatus()
+        status.streamEnded("connection refused")
+        XCTAssertEqual(status.label, "Offline")
+    }
+
+    func testEventsKeepItConnected() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        status.streamEvent()
+        XCTAssertEqual(status.label, "Connected")
+    }
+
+    func testSignOutThenSignIn() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        status.signedOut()
+        XCTAssertEqual(status.label, "Signed out")
+        status.refreshSucceeded()
+        XCTAssertEqual(status.label, "Connected")
+    }
+}
+
+final class MarbleChatRowNavigationTests: XCTestCase {
+    /// The value a conversation row pushes must be that conversation's route —
+    /// anything else lands the wrong chat on screen.
+    func testRowValueIsTheConversationRoute() {
+        XCTAssertEqual(
+            ChatRoute.conversation("conv-42"),
+            .conversation("conv-42")
+        )
+        XCTAssertNotEqual(ChatRoute.conversation("conv-42"), .draft)
+    }
+
+    func testOpenConversationPushesTheRightChat() {
+        var navigation = MarbleNavigation()
+        navigation.launch()
+        navigation.openConversation("conv-3")
+        XCTAssertEqual(navigation.tab, .marbles)
+        XCTAssertEqual(navigation.chatPath, [.conversation("conv-3")])
+        XCTAssertEqual(navigation.viewingConversationId, "conv-3")
+        // Back returns to the list, and a refresh cannot undo that.
+        navigation.back()
+        XCTAssertTrue(navigation.chatPath.isEmpty)
+        navigation.refreshed()
+        XCTAssertTrue(navigation.chatPath.isEmpty)
+    }
+
+    /// A search hit opens the hit's chat even from another tab or over a draft.
+    func testSearchHitOpensItsConversation() {
+        var navigation = MarbleNavigation()
+        navigation.launch()
+        navigation.selectTab(.settings)
+        navigation.openConversation("hit-9")
+        XCTAssertEqual(navigation.chatPath, [.conversation("hit-9")])
+        // Over a draft, the hit replaces it — the person lands in that chat.
+        navigation.newChat()
+        navigation.openConversation("hit-7")
+        XCTAssertEqual(navigation.chatPath, [.conversation("hit-9"), .conversation("hit-7")])
+    }
+}
+
+// MARK: - Everyone plane
+
+final class MarbleMentionTests: XCTestCase {
+    private let names = ["Ada", "Ben", "Marble"]
+
+    func testTokenOnlyAtWordStart() {
+        XCTAssertNil(MarbleMentions.token(in: "email a@b"))
+        XCTAssertEqual(MarbleMentions.token(in: "hi @ad"), "ad")
+        XCTAssertEqual(MarbleMentions.token(in: "@"), "")
+        XCTAssertNil(MarbleMentions.token(in: "@ada done"))
+    }
+
+    func testCompletionsArePrefixAndCaseInsensitive() {
+        XCTAssertEqual(
+            MarbleMentions.completions(in: "ask @a", names: names),
+            ["Ada"]
+        )
+        XCTAssertEqual(
+            MarbleMentions.completions(in: "@EV", names: names),
+            ["everyone"]
+        )
+        XCTAssertEqual(
+            MarbleMentions.completions(in: "@", names: names),
+            ["Ada", "Ben", "Marble", "everyone"]
+        )
+        XCTAssertTrue(MarbleMentions.completions(in: "no at", names: names).isEmpty)
+    }
+
+    func testApplyingACompletionReplacesTheToken() {
+        XCTAssertEqual(
+            MarbleMentions.applying("Ben", to: "hey @b"),
+            "hey @Ben "
+        )
+        XCTAssertEqual(MarbleMentions.applying("Ada", to: "plain"), "plain")
+    }
+
+    func testMentionsAreWholeWord() {
+        XCTAssertEqual(MarbleMentions.mentions(in: "@ada hi", names: names), ["Ada"])
+        XCTAssertEqual(MarbleMentions.mentions(in: "radar @adaptive", names: names), [])
+        XCTAssertEqual(
+            MarbleMentions.mentions(in: "@everyone look", names: names),
+            names
+        )
+        XCTAssertEqual(
+            Set(MarbleMentions.mentions(in: "@Ada and @ben", names: names)),
+            Set(["Ada", "Ben"])
+        )
+    }
+
+    func testNextHueFillsTheLargestGap() {
+        XCTAssertEqual(MarbleMentions.nextHue(used: []), 40)
+        XCTAssertEqual(MarbleMentions.nextHue(used: [0, 180]), 90)
+        let hue = MarbleMentions.nextHue(used: [10, 20, 30])
+        XCTAssertFalse([10, 20, 30].contains(hue))
+    }
+}
+
+final class MarbleHandoffLineTests: XCTestCase {
+    private func handoff(_ status: String, summary: String = "") -> MarbleHandoff {
+        MarbleHandoff(
+            from: "m-ada", fromName: "Ada", to: "m-ben", toName: "Ben",
+            instruction: "check the failing tests", status: status, summary: summary
+        )
+    }
+
+    func testAskedReadsPlainly() {
+        XCTAssertEqual(
+            MarbleHandoffLine.render(handoff("asked")),
+            "Ada asked Ben to check the failing tests."
+        )
+    }
+
+    func testFinishedCarriesTheReply() {
+        XCTAssertEqual(
+            MarbleHandoffLine.render(handoff("finished", summary: "three tests were flaky")),
+            "Ben finished: three tests were flaky"
+        )
+        XCTAssertTrue(MarbleHandoffLine.isExpandable(handoff("finished", summary: "x")))
+    }
+
+    func testRefusedAndFailed() {
+        XCTAssertEqual(
+            MarbleHandoffLine.render(handoff("refused", summary: "busy with another task")),
+            "Ben couldn't take it: busy with another task"
+        )
+        XCTAssertEqual(
+            MarbleHandoffLine.render(handoff("failed", summary: "engine stopped")),
+            "Ben couldn't finish: engine stopped"
+        )
+    }
+}
+
+final class MarbleSpeakerStyleTests: XCTestCase {
+    private func marble(_ id: String, _ name: String, _ hue: Int) -> MarblePrismMarble {
+        MarblePrismMarble(
+            id: id, name: name, role: "", glyph: "circle", hue: hue,
+            workspace: "", state: "idle", conversationId: "", taskId: "",
+            lastAt: 0, runs: 0, lastError: ""
+        )
+    }
+
+    func testAssistantRowsTakeTheMarblesColour() {
+        let marbles = [marble("m-ada", "Ada", 45)]
+        let entry = MarbleEntry(
+            conversationId: "everyone", kind: "assistant", text: "hi",
+            taskId: "t", at: 1, speaker: "m-ada", speakerName: "Ada"
+        )
+        let style = MarbleSpeakerStyle.for(entry: entry, marbles: marbles)
+        XCTAssertEqual(style?.name, "Ada")
+        XCTAssertEqual(style?.hue, 45)
+    }
+
+    func testTheDefaultAssistantGetsItsOwnDot() {
+        let entry = MarbleEntry(
+            conversationId: "everyone", kind: "assistant", text: "hi",
+            taskId: "t", at: 1, speaker: "marble", speakerName: "Marble"
+        )
+        let style = MarbleSpeakerStyle.for(entry: entry, marbles: [])
+        XCTAssertEqual(style?.hue, MarbleSpeakerStyle.defaultHue)
+    }
+
+    func testUserAndSystemRowsHaveNoLabel() {
+        let user = MarbleEntry(
+            conversationId: "everyone", kind: "user", text: "hi",
+            taskId: "", at: 1, speaker: "user", speakerName: "You"
+        )
+        XCTAssertNil(MarbleSpeakerStyle.for(entry: user, marbles: []))
+    }
+}
+
+final class EveryoneDecodingTests: XCTestCase {
+    func testEveryoneEntriesDecodeSpeakersAndHandoffs() throws {
+        let json = """
+        {"entries":[
+          {"conversationId":"everyone","kind":"user","text":"@Ada hi","taskId":"",
+           "at":100,"speaker":"user","speakerName":"You"},
+          {"conversationId":"everyone","kind":"assistant","text":"Hello!","taskId":"t-1",
+           "at":101,"speaker":"m-ada","speakerName":"Ada"},
+          {"conversationId":"everyone","kind":"handoff","text":"Ada asked Ben to check.",
+           "taskId":"t-1","at":102,"speaker":"m-ada","speakerName":"Ada",
+           "handoff":{"from":"m-ada","fromName":"Ada","to":"m-ben","toName":"Ben",
+             "instruction":"check","status":"asked","summary":""}}
+        ]}
+        """
+        struct Reply: Decodable { var entries: [MarbleEntry] }
+        let reply = try JSONDecoder().decode(Reply.self, from: Data(json.utf8))
+        XCTAssertEqual(reply.entries.count, 3)
+        XCTAssertEqual(reply.entries[1].speaker, "m-ada")
+        XCTAssertEqual(reply.entries[1].speakerName, "Ada")
+        XCTAssertEqual(reply.entries[2].handoff?.status, "asked")
+        XCTAssertEqual(reply.entries[2].handoff?.toName, "Ben")
+    }
+
+    func testRosterDecodesPersonaAndTheDefaultEntry() throws {
+        let json = """
+        {"marbles":[
+          {"id":"marble","name":"Marble","role":"the default assistant",
+           "glyph":"circle","hue":210,"workspace":"","state":"idle",
+           "conversationId":"","taskId":"","lastAt":0,"runs":0,"lastError":"",
+           "persona":"kind","isDefault":true},
+          {"id":"m-ada","name":"Ada","role":"","glyph":"star","hue":45,
+           "workspace":"","state":"working","conversationId":"c-1","taskId":"t",
+           "lastAt":1,"runs":2,"lastError":"","persona":"warm","isDefault":false}
+        ]}
+        """
+        let prism = try JSONDecoder().decode(MarblePrism.self, from: Data(json.utf8))
+        XCTAssertEqual(prism.marbles.count, 2)
+        XCTAssertTrue(prism.marbles[0].isDefault)
+        XCTAssertEqual(prism.marbles[0].persona, "kind")
+        XCTAssertEqual(prism.marbles[1].tagline, "warm")
+        XCTAssertEqual(prism.marbles[1].displayState, "Working…")
+    }
+
+    func testMemoryFactDecodesAnOwner() throws {
+        let json = """
+        {"id":"f-1","text":"Ada likes tea","kind":"fact","createdAt":1,"uses":0,
+         "owner":"m-ada"}
+        """
+        let fact = try JSONDecoder().decode(MarbleMemoryFact.self, from: Data(json.utf8))
+        XCTAssertEqual(fact.owner, "m-ada")
+        // An older host leaves owner off; the fact is shared.
+        let older = """
+        {"id":"f-2","text":"shared","kind":"fact","createdAt":1,"uses":0}
+        """
+        XCTAssertEqual(
+            try JSONDecoder().decode(MarbleMemoryFact.self, from: Data(older.utf8)).owner,
+            ""
+        )
+    }
+}
+
+final class MarbleVisionNavigationTests: XCTestCase {
+    func testLaunchLandsOnEveryone() {
+        var nav = MarbleNavigation()
+        nav.launch()
+        XCTAssertEqual(nav.tab, .everyone)
+    }
+
+    func testRosterRowOpensTheRightDestination() {
+        var nav = MarbleNavigation()
+        nav.openMarble("m-ada")
+        XCTAssertEqual(nav.tab, .marbles)
+        XCTAssertEqual(nav.chatPath, [.marbleChat("m-ada")])
+        nav.openMarble("marble")
+        XCTAssertEqual(nav.chatPath.last, .marbleChats)
+    }
+
+    func testMarbleInfoFromEveryoneUsesTheEveryoneStack() {
+        var nav = MarbleNavigation()
+        nav.openMarbleInfo("m-ben", fromEveryone: true)
+        XCTAssertEqual(nav.everyonePath, [.marbleInfo("m-ben")])
+        XCTAssertTrue(nav.chatPath.isEmpty)
+        XCTAssertEqual(nav.tab, .everyone)
     }
 }

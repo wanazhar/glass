@@ -60,6 +60,30 @@ def state_doc():
     return doc
 
 
+def snapshot_state():
+    """The durable pieces a run must give back: the shared timeline, chats,
+    tasks, roster, and memory — normalized so volatile fields don't count."""
+    _, doc = request("/api/state?lean=1")
+    _, everyone = request("/api/everyone")
+    return {
+        "conversations": sorted(
+            (c.get("id"), c.get("title")) for c in doc.get("conversations", [])
+        ),
+        "tasks": sorted(
+            (t.get("id"), t.get("status")) for t in doc.get("tasks", [])
+        ),
+        "everyone": [
+            (e.get("kind"), e.get("speaker"), e.get("text"))
+            for e in everyone.get("entries", [])
+        ],
+        "marbles": sorted(m.get("id") for m in doc.get("prism", {}).get("marbles", [])),
+        "memory": sorted(f.get("id") for f in doc.get("memory", {}).get("facts", [])),
+    }
+
+
+SNAPSHOT = None
+
+
 def busy():
     """Running tasks, admission queue, pending approvals."""
     doc = state_doc()
@@ -273,6 +297,16 @@ def start_isolated_host():
     import subprocess
     binary = os.environ.get("MARBLE_BINARY", os.path.expanduser("~/.local/lib/marble/glass-marble"))
     root = tempfile.mkdtemp(prefix="marble-e2e-")
+    # Hard guard: an isolated instance must never share the live host's data
+    # dir or workspace, no matter what TMPDIR or overrides say.
+    forbidden = (
+        os.path.expanduser("~/.local/share/glass-marble"),
+        os.path.expanduser("~/work/marble-workspace"),
+    )
+    resolved = os.path.realpath(root)
+    if any(resolved == os.path.realpath(f) or resolved.startswith(os.path.realpath(f) + os.sep)
+           for f in forbidden):
+        raise SystemExit(f"refusing isolated host inside the live dir: {resolved}")
     workspace = os.path.join(root, "workspace")
     os.makedirs(workspace)
     with open(os.path.join(workspace, "notes.txt"), "w") as fh:
@@ -345,6 +379,7 @@ def main():
             )
         HOST = args.host.rstrip("/")
         TOKEN = open(args.token_file).read().strip()
+        SNAPSHOT = snapshot_state()
     else:
         HOST, TOKEN, fixture_proc = start_isolated_host()
     SSL_CTX = (
@@ -569,6 +604,26 @@ def finish(stream):
             print(f"   delete {conv}: {status} {doc}", flush=True)
             break
     done(t, failed == 0, f"deleted {len(set(CREATED)) - failed}/{len(set(CREATED))}")
+
+    if SNAPSHOT is not None:
+        # The run also wipes the Everyone lines it wrote so the shared plane
+        # matches the snapshot too.
+        request("/api/everyone/clear", "POST", {})
+        after = snapshot_state()
+        diff = {
+            key: {"before": SNAPSHOT[key], "after": after[key]}
+            for key in SNAPSHOT
+            if SNAPSHOT[key] != after[key]
+        }
+        # The 'everyone' conversation record itself may appear once — only
+        # entry/task/roster/memory churn counts as leftover.
+        diff.pop("conversations", None) if all(
+            c[0] == "everyone"
+            for c in diff.get("conversations", {}).get("after", [])
+            + diff.get("conversations", {}).get("before", [])
+        ) else None
+        t = step("host state back to the pre-run snapshot")
+        done(t, not diff, "" if not diff else f"leftovers: {list(diff)}")
 
     global fixture_proc
     if fixture_proc is not None:

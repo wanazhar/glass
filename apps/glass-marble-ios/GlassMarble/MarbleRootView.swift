@@ -13,6 +13,11 @@ final class MarbleNavigationModel: ObservableObject {
 
     func selectTab(_ tab: MarbleTab) { state.selectTab(tab) }
     func openConversation(_ id: String) { state.openConversation(id) }
+    func openMarble(_ id: String) { state.openMarble(id) }
+    func openMarbleInfo(_ id: String, fromEveryone: Bool = false) {
+        state.openMarbleInfo(id, fromEveryone: fromEveryone)
+    }
+    func setEveryonePath(_ path: [ChatRoute]) { state.everyonePath = path }
     func newChat() { state.newChat() }
     func draftResolved(_ id: String) { state.draftResolved(id) }
     func deleted(_ id: String) { state.deleted(id) }
@@ -28,14 +33,17 @@ struct MarbleRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsIntroduction = false
     @AppStorage("marble.introduced") private var introduced = false
-    @SceneStorage("marble.tab") private var storedTab = MarbleTab.chats.rawValue
+    @SceneStorage("marble.tab") private var storedTab = MarbleTab.everyone.rawValue
 
     var body: some View {
         Group {
             if store.onboarded && !store.needsToken {
                 TabView(selection: tabBinding) {
-                    Tab("Chats", systemImage: "bubble.left.and.bubble.right", value: MarbleTab.chats) {
-                        ChatsTabView()
+                    Tab("Everyone", systemImage: "person.2", value: MarbleTab.everyone) {
+                        EveryoneTabView()
+                    }
+                    Tab("Marbles", systemImage: "circle.hexagongrid", value: MarbleTab.marbles) {
+                        MarblesTabView()
                     }
                     Tab("Activity", systemImage: "bell.badge", value: MarbleTab.activity) {
                         NavigationStack { ActivityView() }
@@ -95,17 +103,50 @@ struct MarbleRootView: View {
     }
 }
 
-/// The Chats tab: a conversation list with the chat pushed onto its own
-/// stack, so the list is always where the tab lands and Back returns to it.
-struct ChatsTabView: View {
+/// The Everyone tab: the shared chat; avatar taps push a marble's info.
+struct EveryoneTabView: View {
+    @EnvironmentObject private var navigation: MarbleNavigationModel
+
+    var body: some View {
+        NavigationStack(path: everyonePath) {
+            EveryoneView()
+                .navigationDestination(for: ChatRoute.self) { route in
+                    switch route {
+                    case .marbleInfo(let id): MarbleInfoView(marbleId: id)
+                    default: EveryoneView()
+                    }
+                }
+        }
+    }
+
+    private var everyonePath: Binding<[ChatRoute]> {
+        Binding(
+            get: { navigation.state.everyonePath },
+            set: { navigation.setEveryonePath($0) }
+        )
+    }
+}
+
+/// The Marbles tab: the roster on top; rows push a marble's chat — or, for
+/// the default Marble, the chats list that every conversation lives in.
+struct MarblesTabView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
 
     var body: some View {
         NavigationStack(path: chatPath) {
-            ConversationListView()
+            MarblesView()
                 .navigationDestination(for: ChatRoute.self) { route in
-                    MarbleChatView(route: route)
+                    switch route {
+                    case .marbleChats:
+                        ConversationListView()
+                    case .marbleChat(let id):
+                        MarbleChatScreen(marbleId: id)
+                    case .marbleInfo(let id):
+                        MarbleInfoView(marbleId: id)
+                    default:
+                        MarbleChatView(route: route)
+                    }
                 }
         }
         .onAppear {
@@ -146,17 +187,7 @@ struct MarbleChatView: View {
         conversationId.flatMap { store.state.conversation($0) }?.title ?? ""
     }
 
-    /// One word, never truncated: connected/working/waiting/offline.
-    private var statusText: String {
-        if store.isWorking { return "Working" }
-        if store.presence.status == "waiting" { return "Waiting" }
-        if store.presence.status == "paused" || store.control.paused { return "Paused" }
-        switch store.connection {
-        case .live: return "Connected"
-        case .offline: return "Offline"
-        default: return "Connecting"
-        }
-    }
+    private var statusText: String { store.statusLabel }
 
     private var statusTone: Color {
         store.connection == .live ? .green : (store.connection == .offline ? .red : .secondary)

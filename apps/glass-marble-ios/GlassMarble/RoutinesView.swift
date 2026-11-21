@@ -172,6 +172,8 @@ struct ScheduleEditor: View {
     @State private var dailyAt = Calendar.current.date(
         bySettingHour: 9, minute: 0, second: 0, of: Date()
     ) ?? Date()
+    /// Which Marble the scheduled turn belongs to; empty is the default.
+    @State private var marbleId = ""
 
     enum Kind: String, CaseIterable { case everyMinutes, hourly, daily }
 
@@ -198,6 +200,16 @@ struct ScheduleEditor: View {
             } footer: {
                 Text(schedule.summary)
             }
+            Section {
+                Picker("For", selection: $marbleId) {
+                    Text("Marble").tag("")
+                    ForEach(store.prism.marbles.filter { !$0.isDefault }) { marble in
+                        Text(marble.name).tag(marble.id)
+                    }
+                }
+            } footer: {
+                Text("The schedule runs in that Marble's chat once it has one.")
+            }
         }
         .navigationTitle(routine == nil ? "Add schedule" : "Edit schedule")
         .toolbar {
@@ -207,7 +219,12 @@ struct ScheduleEditor: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     Task {
-                        await store.addRoutine(title: title, prompt: prompt, schedule: schedule.spec)
+                        await store.addRoutine(
+                            title: title,
+                            prompt: prompt,
+                            schedule: schedule.spec,
+                            conversationId: marbleConversation
+                        )
                         dismiss()
                     }
                 }
@@ -227,6 +244,11 @@ struct ScheduleEditor: View {
             case nil: break
             }
         }
+    }
+
+    private var marbleConversation: String? {
+        guard !marbleId.isEmpty else { return nil }
+        return store.prism.marbles.first { $0.id == marbleId }?.conversationId
     }
 
     private var schedule: MarbleSchedule {

@@ -89,6 +89,43 @@ struct MarbleEntry: Decodable, Identifiable, Equatable {
     var text: String
     var taskId: String
     var at: UInt64
+    /// Who said it: a marble id, "marble" for the default assistant, "user",
+    /// or empty on hosts from before the shared plane.
+    var speaker: String
+    var speakerName: String
+    /// One marble asking another for help, when this row records an ask.
+    var handoff: MarbleHandoff?
+
+    enum CodingKeys: String, CodingKey {
+        case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        conversationId = try container.decode(String.self, forKey: .conversationId)
+        kind = try container.decode(String.self, forKey: .kind)
+        text = try container.decode(String.self, forKey: .text)
+        taskId = try container.decodeIfPresent(String.self, forKey: .taskId) ?? ""
+        at = try container.decode(UInt64.self, forKey: .at)
+        speaker = try container.decodeIfPresent(String.self, forKey: .speaker) ?? ""
+        speakerName = try container.decodeIfPresent(String.self, forKey: .speakerName) ?? ""
+        handoff = try container.decodeIfPresent(MarbleHandoff.self, forKey: .handoff)
+    }
+
+    init(
+        conversationId: String, kind: String, text: String, taskId: String,
+        at: UInt64, speaker: String = "", speakerName: String = "",
+        handoff: MarbleHandoff? = nil
+    ) {
+        self.conversationId = conversationId
+        self.kind = kind
+        self.text = text
+        self.taskId = taskId
+        self.at = at
+        self.speaker = speaker
+        self.speakerName = speakerName
+        self.handoff = handoff
+    }
 
     var id: String { "\(conversationId)|\(taskId)|\(kind)|\(at)|\(text.count)|\(text.hashValue)" }
 
@@ -241,9 +278,9 @@ struct MarbleControl: Decodable, Equatable {
     }
 }
 
-/// One named marble on the Prism roster.
+/// One named marble in the roster.
 ///
-/// Identity is a shape, a hue, and two eyes; state lives on the same object so a
+/// Identity is a shape, a hue, and a name; state lives on the same object so a
 /// roster can be read at a glance instead of by reading every name.
 struct MarblePrismMarble: Decodable, Identifiable, Equatable {
     var id: String
@@ -258,9 +295,69 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
     var lastAt: UInt64
     var runs: UInt64
     var lastError: String
+    /// Who the marble is, in its own words — editable from its info screen.
+    var persona: String
+    /// The built-in assistant: fixed shape, its chats are the chats list.
+    var isDefault: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, role, glyph, hue, workspace, state, conversationId
+        case taskId, lastAt, runs, lastError, persona, isDefault
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        role = try container.decodeIfPresent(String.self, forKey: .role) ?? ""
+        glyph = try container.decodeIfPresent(String.self, forKey: .glyph) ?? "circle"
+        hue = try container.decodeIfPresent(Int.self, forKey: .hue) ?? 0
+        workspace = try container.decodeIfPresent(String.self, forKey: .workspace) ?? ""
+        state = try container.decodeIfPresent(String.self, forKey: .state) ?? "idle"
+        conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId) ?? ""
+        taskId = try container.decodeIfPresent(String.self, forKey: .taskId) ?? ""
+        lastAt = try container.decodeIfPresent(UInt64.self, forKey: .lastAt) ?? 0
+        runs = try container.decodeIfPresent(UInt64.self, forKey: .runs) ?? 0
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError) ?? ""
+        persona = try container.decodeIfPresent(String.self, forKey: .persona) ?? ""
+        isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+    }
+
+    init(
+        id: String, name: String, role: String, glyph: String, hue: Int,
+        workspace: String, state: String, conversationId: String, taskId: String,
+        lastAt: UInt64, runs: UInt64, lastError: String,
+        persona: String = "", isDefault: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.role = role
+        self.glyph = glyph
+        self.hue = hue
+        self.workspace = workspace
+        self.state = state
+        self.conversationId = conversationId
+        self.taskId = taskId
+        self.lastAt = lastAt
+        self.runs = runs
+        self.lastError = lastError
+        self.persona = persona
+        self.isDefault = isDefault
+    }
 
     var isWorking: Bool { state == "working" }
-    var stateLabel: String { state.isEmpty ? "idle" : state }
+    /// A person-facing state word: what the row should say under the name.
+    var displayState: String {
+        switch state {
+        case "working": return "Working…"
+        case "blocked": return "Needs you"
+        case "done": return "Finished"
+        default: return "Idle"
+        }
+    }
+    /// The one-line personality shown under the name: its persona, else its
+    /// original role, else nothing.
+    var tagline: String { persona.isEmpty ? role : persona }
 }
 
 /// The Prism roster as the host serves it.
@@ -280,12 +377,6 @@ struct MarblePrism: Decodable, Equatable {
         working: nil,
         engine: nil
     )
-
-    var summary: String {
-        let count = marbles.count
-        let swarms = swarms ?? 0
-        return "\(count) / \(limit ?? 8) marbles · \(swarms) swarm\(swarms == 1 ? "" : "s")"
-    }
 }
 
 /// A Core-native tool the host has seen the engine use.
@@ -415,6 +506,53 @@ struct MarbleEventData: Decodable, Equatable {
     var approved: Bool?
 }
 
+/// One marble-to-marble ask, kept on the transcript row that tells it.
+struct MarbleHandoff: Decodable, Equatable {
+    var from: String
+    var fromName: String
+    var to: String
+    var toName: String
+    var instruction: String
+    /// `asked`, `finished`, `refused`, or `failed`.
+    var status: String
+    var summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case from, fromName, to, toName, instruction, status, summary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        from = try container.decodeIfPresent(String.self, forKey: .from) ?? ""
+        fromName = try container.decodeIfPresent(String.self, forKey: .fromName) ?? ""
+        to = try container.decodeIfPresent(String.self, forKey: .to) ?? ""
+        toName = try container.decodeIfPresent(String.self, forKey: .toName) ?? ""
+        instruction = try container.decodeIfPresent(String.self, forKey: .instruction) ?? ""
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+    }
+
+    init(
+        from: String, fromName: String, to: String, toName: String,
+        instruction: String, status: String, summary: String
+    ) {
+        self.from = from
+        self.fromName = fromName
+        self.to = to
+        self.toName = toName
+        self.instruction = instruction
+        self.status = status
+        self.summary = summary
+    }
+}
+
+/// What `POST /api/everyone` answers: who is answering and who is busy.
+struct MarbleEveryoneReply: Decodable, Equatable {
+    var ok: Bool
+    var answering: [String]
+    var busy: [String]
+}
+
 /// One transcript-search hit, newest first.
 struct MarbleSearchHit: Decodable, Identifiable, Equatable {
     var conversationId: String
@@ -513,6 +651,34 @@ struct MarbleMemoryFact: Decodable, Identifiable, Equatable {
     var kind: String
     var createdAt: UInt64
     var uses: UInt64
+    /// Empty means shared with every marble; otherwise the owning marble's id.
+    var owner: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, kind, createdAt, uses, owner
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        text = try container.decode(String.self, forKey: .text)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "fact"
+        createdAt = try container.decode(UInt64.self, forKey: .createdAt)
+        uses = try container.decodeIfPresent(UInt64.self, forKey: .uses) ?? 0
+        owner = try container.decodeIfPresent(String.self, forKey: .owner) ?? ""
+    }
+
+    init(
+        id: String, text: String, kind: String, createdAt: UInt64,
+        uses: UInt64, owner: String = ""
+    ) {
+        self.id = id
+        self.text = text
+        self.kind = kind
+        self.createdAt = createdAt
+        self.uses = uses
+        self.owner = owner
+    }
 }
 
 /// Something Marble noticed and wants permission to keep.

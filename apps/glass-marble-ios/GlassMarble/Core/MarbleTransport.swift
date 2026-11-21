@@ -129,6 +129,13 @@ struct MarbleRoute: Equatable {
     static let memory = MarbleRoute(path: "/api/memory")
     static let routines = MarbleRoute(path: "/api/routines")
     static let prism = MarbleRoute(path: "/api/prism")
+
+    /// The shared chat's timeline, paged by `after` like a transcript page.
+    static func everyone(after: UInt64?) -> MarbleRoute {
+        var query: [URLQueryItem] = []
+        if let after { query.append(URLQueryItem(name: "after", value: "\(after)")) }
+        return MarbleRoute(path: "/api/everyone", query: query)
+    }
     static let tools = MarbleRoute(path: "/api/tools")
     static let crates = MarbleRoute(path: "/api/crates")
     static let notifications = MarbleRoute(path: "/api/notifications")

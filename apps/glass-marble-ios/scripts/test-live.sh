@@ -13,8 +13,17 @@ PID=""
 cleanup() { [ -n "$PID" ] && kill "$PID" 2>/dev/null || true; [ -n "$ROOT" ] && rm -rf "$ROOT"; }
 trap cleanup EXIT
 
+# Hard guard: the isolated instance must never touch the real host's data or
+# workspace, even if a caller overrides the temp dir locations.
+realpath_of() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+case "$(realpath_of "${MARBLE_TEST_ROOT:-/tmp/marble-live-test.placeholder}")" in
+    "$HOME/.local/share/glass-marble"* | "$HOME/work/marble-workspace"*)
+        echo "refusing to run an isolated host inside the live data/workspace dir" >&2
+        exit 1 ;;
+esac
+
 if [ -z "${MARBLE_LIVE_HOST:-}" ]; then
-    ROOT="$(mktemp -d /tmp/marble-live-test.XXXXXX)"
+    ROOT="${MARBLE_TEST_ROOT:-$(mktemp -d /tmp/marble-live-test.XXXXXX)}"
     mkdir -p "$ROOT/workspace" "$ROOT/data"
     printf 'e2e fixture\n' > "$ROOT/workspace/notes.txt"
     printf 'live-test-token\n' > "$ROOT/token"
@@ -31,6 +40,8 @@ if [ -z "${MARBLE_LIVE_HOST:-}" ]; then
     done
     export MARBLE_LIVE_HOST="http://127.0.0.1:$PORT"
     export MARBLE_TOKEN_FILE="$ROOT/token"
+    # The fixture is disposable, so tests may cause state changes on it.
+    export MARBLE_LIVE_ISOLATED=1
 else
     # An explicitly provided host is taken as a real one.
     export MARBLE_TOKEN_FILE="${MARBLE_TOKEN_FILE:?MARBLE_TOKEN_FILE is required with MARBLE_LIVE_HOST}"

@@ -21,29 +21,23 @@ struct MemoryView: View {
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
-                Section(header: Text("Remembered")) {
-                    if store.memory.facts.isEmpty {
+                Section(header: Text("Shared with every Marble")) {
+                    if sharedFacts.isEmpty && ownedFacts.isEmpty {
                         Text("Nothing remembered yet.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(store.memory.facts) { fact in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(fact.text)
-                                .fixedSize(horizontal: false, vertical: true)
-                            HStack {
-                                Text(fact.kind)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Edit") {
-                                    editing = fact
-                                    editDraft = fact.text
+                    ForEach(sharedFacts) { fact in
+                        factRow(fact)
+                    }
+                }
+
+                if !ownedFacts.isEmpty {
+                    Section(header: Text("By Marble")) {
+                        ForEach(ownedGroups, id: \.owner) { group in
+                            Section(header: Text(group.name)) {
+                                ForEach(group.facts) { fact in
+                                    factRow(fact)
                                 }
-                                .buttonStyle(.borderless)
-                                Button("Forget", role: .destructive) {
-                                    Task { await store.forget(fact) }
-                                }
-                                .buttonStyle(.borderless)
                             }
                         }
                     }
@@ -109,6 +103,52 @@ struct MemoryView: View {
                     Task { await store.update(fact, text: text) }
                 }
             }
+    }
+
+    private var sharedFacts: [MarbleMemoryFact] {
+        store.memory.facts.filter { $0.owner.isEmpty }
+    }
+
+    private var ownedFacts: [MarbleMemoryFact] {
+        store.memory.facts.filter { !$0.owner.isEmpty }
+    }
+
+    /// Owner id → (name, facts), in roster order so groups read like the
+    /// Marbles tab.
+    private var ownedGroups: [(owner: String, name: String, facts: [MarbleMemoryFact])] {
+        var order: [String] = []
+        var grouped: [String: [MarbleMemoryFact]] = [:]
+        for fact in ownedFacts {
+            if grouped[fact.owner] == nil { order.append(fact.owner) }
+            grouped[fact.owner, default: []].append(fact)
+        }
+        return order.map { owner in
+            let name = store.prism.marbles.first { $0.id == owner }?.name ?? owner
+            return (owner, name, grouped[owner] ?? [])
+        }
+    }
+
+    @ViewBuilder
+    private func factRow(_ fact: MarbleMemoryFact) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(fact.text)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text(fact.kind)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Edit") {
+                    editing = fact
+                    editDraft = fact.text
+                }
+                .buttonStyle(.borderless)
+                Button("Forget", role: .destructive) {
+                    Task { await store.forget(fact) }
+                }
+                .buttonStyle(.borderless)
+            }
+        }
     }
 
     private var editingBinding: Binding<Bool> {

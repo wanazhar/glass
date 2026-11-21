@@ -26,18 +26,18 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testLaunchLandsOnChatsListWithNoChatPushed() {
-        XCTAssertTrue(app.tabBars.buttons["Chats"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Marbles"].exists)
         XCTAssertTrue(app.staticTexts["Fixture conversation 0"].waitForExistence(timeout: 5))
         shot("01-chats-list")
     }
 
     func testEveryTabIsReachable() {
-        for tab in ["Activity", "Scheduled", "Settings"] {
+        for tab in ["Marbles", "Activity", "Scheduled", "Settings"] {
             app.tabBars.buttons[tab].tap()
             XCTAssertTrue(app.tabBars.buttons[tab].isSelected, "\(tab) tab did not select")
             shot("02-tab-" + tab.lowercased())
         }
-        app.tabBars.buttons["Chats"].tap()
+        app.tabBars.buttons["Everyone"].tap()
         // And the detail screens under Settings.
         app.tabBars.buttons["Settings"].tap()
         app.buttons["Permissions"].tap()
@@ -64,6 +64,25 @@ final class GlassMarbleUITests: XCTestCase {
         app.buttons["Cancel"].tap()
     }
 
+    func testConversationRowOpensItsChat() {
+        app.tabBars.buttons["Marbles"].tap()
+        app.staticTexts["Fixture conversation 2"].tap()
+        XCTAssertTrue(app.navigationBars["Fixture conversation 2"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Fixture message 2"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.staticTexts["Fixture conversation 3"].waitForExistence(timeout: 5))
+    }
+
+    func testSearchHitOpensThatChat() {
+        app.tabBars.buttons["Marbles"].tap()
+        app.searchFields.element(boundBy: 0).tap()
+        app.searchFields.element(boundBy: 0).typeText("conversation 150")
+        let hit = app.staticTexts["Fixture conversation 150"]
+        XCTAssertTrue(hit.waitForExistence(timeout: 5))
+        hit.tap()
+        XCTAssertTrue(app.navigationBars["Fixture conversation 150"].waitForExistence(timeout: 5))
+    }
+
     func testOnboardingScreenshot() {
         let fresh = XCUIApplication()
         fresh.launch()
@@ -71,7 +90,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testBackFromChatStaysOnListWhileRefreshesFire() {
-        app.tabBars.buttons["Chats"].tap()
+        app.tabBars.buttons["Marbles"].tap()
         app.staticTexts["Fixture conversation 0"].tap()
         XCTAssertTrue(app.navigationBars.buttons.element(boundBy: 0).waitForExistence(timeout: 5))
         shot("07-chat-open")
@@ -82,7 +101,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testConversationListScrollsToLastRow() {
-        app.tabBars.buttons["Chats"].tap()
+        app.tabBars.buttons["Marbles"].tap()
         let last = app.staticTexts["Fixture conversation 199"]
         let deadline = Date().addingTimeInterval(30)
         while !last.exists && Date() < deadline {
@@ -92,7 +111,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testChatScrollComposerReasoningAndShots() {
-        app.tabBars.buttons["Chats"].tap()
+        app.tabBars.buttons["Marbles"].tap()
         app.staticTexts["Fixture conversation 0"].tap()
         XCTAssertTrue(app.staticTexts["Fixture message 299"].waitForExistence(timeout: 5))
         shot("08-composer-empty")

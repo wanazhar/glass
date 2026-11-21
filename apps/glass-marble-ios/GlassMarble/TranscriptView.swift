@@ -163,6 +163,9 @@ struct TranscriptView: View {
 /// the background; the person's own messages sit in a quiet bubble.
 struct MarbleEntryView: View {
     var entry: MarbleEntry
+    /// Who said it, when the row is on a shared timeline — a coloured dot and
+    /// the marble's name. Nil on one-to-one chats, which need no label.
+    var speaker: MarbleSpeakerStyle? = nil
 
     private var isUser: Bool { entry.kind == "user" }
     private var isMuted: Bool { entry.kind == "reasoning" || entry.kind == "system" }
@@ -179,6 +182,8 @@ struct MarbleEntryView: View {
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous)
                 )
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if entry.kind == "handoff", let handoff = entry.handoff {
+            HandoffLine(handoff: handoff)
         } else if entry.kind == "reasoning" {
             // Thinking stays tucked away — never inline with the reply.
             DisclosureGroup("Reasoning") {
@@ -192,7 +197,16 @@ struct MarbleEntryView: View {
             .foregroundStyle(.secondary)
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                if isMuted {
+                if let speaker {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(Color(hue: Double(speaker.hue ?? 210) / 360, saturation: 0.55, brightness: 0.75))
+                            .frame(width: 7, height: 7)
+                        Text(speaker.name)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else if isMuted {
                     Text(entry.kind)
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -17,20 +17,13 @@ enum MarbleFeatures {
 /// Observable product store shared by every iOS surface.
 @MainActor
 final class MarbleStore: ObservableObject {
+    /// Kept for the views' tone mapping; the label itself comes from the
+    /// Core reducer so every surface says the same word.
     enum Connection: String {
         case idle
         case connecting
         case live
         case offline
-
-        var label: String {
-            switch self {
-            case .idle: return "idle"
-            case .connecting: return "connecting"
-            case .live: return "connected"
-            case .offline: return "offline"
-            }
-        }
     }
 
     struct LiveTool: Identifiable, Equatable {
@@ -54,7 +47,19 @@ final class MarbleStore: ObservableObject {
     }
 
     @Published private(set) var state: MarbleState = .empty
+    private var status = MarbleConnectionStatus() {
+        didSet { connection = connectionFor(status.state) }
+    }
     @Published private(set) var connection: Connection = .idle
+
+    private func connectionFor(_ state: MarbleConnectionStatus.State) -> Connection {
+        switch state {
+        case .connected: return .live
+        case .connecting: return .connecting
+        case .offline: return .offline
+        case .signedOut: return .idle
+        }
+    }
     @Published private(set) var endpoint: MarbleEndpoint?
     /// False until a host has been chosen and validated; drives onboarding.
     @Published private(set) var onboarded: Bool
@@ -99,7 +104,12 @@ final class MarbleStore: ObservableObject {
     /// Per-conversation live buffers; `liveText` & friends mirror the selected one.
     private var live: [String: LiveBuffers] = [:]
     private var backoffSeconds: Double = 1
+    private var reconnectInFlight = false
+    private var lastReconnectAt: TimeInterval = 0
     private var pathMonitor: NWPathMonitor?
+    /// NWPathMonitor reports the current path on its first callback; only
+    /// real changes after that are worth a reconnect.
+    private var pathMonitorSeenFirst = false
     private var appActive = true
     /// Dedupe keys for local alerts (see MarbleAttention).
     private var notifiedKeys: Set<String> = []
@@ -152,6 +162,22 @@ final class MarbleStore: ObservableObject {
 
     var isWorking: Bool { activeTaskId != nil }
 
+    /// One plain line under a chat row: what that chat needs or is doing,
+    /// or nothing at all when it is just sitting there.
+    func stateLine(for conversation: MarbleConversation) -> String? {
+        let tasks = state.tasks.filter { $0.conversationId == conversation.id }
+        if tasks.contains(where: { $0.status == "running" }) { return "Working…" }
+        if let latest = tasks.sorted(by: { $0.at > $1.at }).first {
+            switch latest.status {
+            case "cancelled", "interrupted": return "Cancelled before replying"
+            case "failed": return "Failed before replying"
+            case "queued": return "Waiting"
+            default: break
+            }
+        }
+        return nil
+    }
+
     /// Marble's own control layer, as published by the host.
     var control: MarbleControl { state.controlState }
 
@@ -174,12 +200,15 @@ final class MarbleStore: ObservableObject {
     /// placeholders instead of an empty conversation that looks settled.
     @Published private(set) var loaded = false
 
+    /// The one status word every surface shows — the connection label with
+    /// work overlays on top, so Chats, the chat header, and Settings never
+    /// disagree about what Marble is doing.
     var statusLabel: String {
-        if isWorking { return "working" }
-        if presence.status == "waiting" { return "waiting for you" }
-        if presence.status == "paused" || control.paused { return "paused" }
-        if presence.status == "working" { return "working" }
-        return connection.label
+        if isWorking { return "Working" }
+        if presence.status == "waiting" { return "Waiting" }
+        if presence.status == "paused" || control.paused { return "Paused" }
+        if presence.status == "working" { return "Working" }
+        return status.label
     }
 
     // MARK: - Lifecycle
@@ -236,15 +265,23 @@ final class MarbleStore: ObservableObject {
         transcriptRevision = -1
         live = [:]
         syncLive()
-        connection = .idle
+        status.signedOut()
         loaded = false
     }
 
     /// Reconnect right now: scene became active or the network path changed.
+    /// Coalesced — a foregrounding, a path callback, and a retry can all land
+    /// within a second of each other, and only one attempt should run.
     func reconnect() {
-        guard onboarded else { return }
+        guard onboarded, !reconnectInFlight else { return }
+        let now = Date().timeIntervalSinceReferenceDate
+        guard now - lastReconnectAt >= 1 else { return }
+        lastReconnectAt = now
+        reconnectInFlight = true
+        status.reconnectStarted()
         backoffSeconds = 1
         Task {
+            defer { reconnectInFlight = false }
             await refresh()
             await loadTranscript()
             listen()
@@ -265,9 +302,14 @@ final class MarbleStore: ObservableObject {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
+                guard let self else { return }
+                if !self.pathMonitorSeenFirst {
+                    self.pathMonitorSeenFirst = true
+                    return
+                }
                 // Any path change is worth a reconnection attempt: the stream
                 // may be dead even when the path still reports satisfied.
-                self?.reconnect()
+                self.reconnect()
             }
         }
         monitor.start(queue: DispatchQueue(label: "marble.pathmonitor"))
@@ -293,7 +335,7 @@ final class MarbleStore: ObservableObject {
             state = snapshot
             needsToken = false
             errorMessage = nil
-            if connection != .live { connection = .live }
+            status.refreshSucceeded()
             if let health = try? await healthFetch {
                 hostVersion = health.version
                 engineHealth = health.runtime
@@ -325,10 +367,10 @@ final class MarbleStore: ObservableObject {
             await loadTranscript()
         } catch MarbleClientError.unauthorized {
             needsToken = true
-            connection = .offline
+            status.refreshFailed("The token was rejected")
             loaded = true
         } catch {
-            connection = .offline
+            status.refreshFailed(error.localizedDescription)
             loaded = true
             errorMessage = error.localizedDescription
         }
@@ -431,7 +473,10 @@ final class MarbleStore: ObservableObject {
         return try await client.search(query: query)
     }
 
-    func addMarble(name: String, role: String, glyph: String, hue: Int, workspace: String) async {
+    func addMarble(
+        name: String, role: String = "", glyph: String, hue: Int,
+        workspace: String = "", persona: String = ""
+    ) async {
         guard let client else { return }
         do {
             let draft = MarbleClient.MarbleDraft(
@@ -439,11 +484,12 @@ final class MarbleStore: ObservableObject {
                 role: role,
                 glyph: glyph,
                 hue: hue,
-                workspace: workspace
+                workspace: workspace,
+                persona: persona
             )
             _ = try await client.addMarble(draft)
             errorMessage = nil
-            prismNotice = "\(draft.name) joined the roster."
+            prismNotice = "\(draft.name) is here."
         } catch {
             prismNotice = nil
             errorMessage = error.localizedDescription
@@ -451,12 +497,78 @@ final class MarbleStore: ObservableObject {
         await refresh()
     }
 
+    /// Edit one marble: name, look, or its personality.
+    func updateMarble(_ id: String, update: MarbleClient.MarbleUpdate) async {
+        guard let client else { return }
+        do {
+            _ = try await client.updateMarble(id: id, update)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    /// Save a marble's personality; the host restarts its conversation so the
+    /// next turn actually speaks with the new voice.
+    func savePersona(_ marble: MarblePrismMarble, persona: String) async {
+        await updateMarble(marble.id, update: .init(persona: persona))
+    }
+
+    /// The shared plane's timeline, from the state document.
+    var everyoneEntries: [MarbleEntry] {
+        state.transcript(for: everyoneConversationId)
+    }
+
+    /// Settings → Data: wipe the shared plane's history on the host.
+    func clearEveryone() async {
+        do {
+            try await client.clearEveryone()
+            await refresh()
+        } catch {
+            prismNotice = "Couldn't clear Everyone: \(error.localizedDescription)"
+        }
+    }
+
+    /// One message to Everyone; marbles it names answer, Marble answers
+    /// otherwise. Returns the plain reply so the composer can say who's busy.
+    @discardableResult
+    func sendEveryone(_ text: String) async -> MarbleEveryoneReply? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let client, !trimmed.isEmpty else { return nil }
+        do {
+            let reply = try await client.sendEveryone(text: trimmed)
+            errorMessage = nil
+            Task { await refresh() }
+            return reply
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// A one-to-one message for one marble: it answers in its own chat, which
+    /// is its durable conversation once the first turn creates it.
+    func sendToMarble(_ marble: MarblePrismMarble, text: String) async {
+        await dispatchSwarm(text: text, marbles: [marble.id])
+    }
+
+    /// The marble a transcript row is speaking as, for its label and dot.
+    func speakerStyle(for entry: MarbleEntry) -> MarbleSpeakerStyle? {
+        MarbleSpeakerStyle.for(entry: entry, marbles: prism.marbles)
+    }
+
+    /// A marble's own chat transcript once it has a durable conversation.
+    func marbleTranscript(_ marble: MarblePrismMarble) -> [MarbleEntry] {
+        state.transcript(for: marble.conversationId)
+    }
+
     func removeMarble(_ marble: MarblePrismMarble) async {
         guard let client else { return }
         do {
             try await client.removeMarble(id: marble.id)
             errorMessage = nil
-            prismNotice = "\(marble.name) left the roster. Its conversation stays."
+            prismNotice = "\(marble.name) was removed. Its chat stays readable."
         } catch {
             prismNotice = nil
             errorMessage = error.localizedDescription
@@ -471,7 +583,7 @@ final class MarbleStore: ObservableObject {
         do {
             let reply = try await client.dispatchSwarm(text: trimmed, marbles: marbles)
             errorMessage = nil
-            prismNotice = (reply.swarm ? "Swarm sent to " : "Sent to ")
+            prismNotice = (reply.swarm ? "Sent to all Marbles: " : "Sent to ")
                 + reply.names.joined(separator: ", ") + "."
         } catch {
             prismNotice = nil
@@ -647,10 +759,15 @@ final class MarbleStore: ObservableObject {
 
     // MARK: - Remembering
 
-    func remember(_ text: String) async {
+    func remember(_ text: String, owner: String = "") async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !trimmed.isEmpty else { return }
-        await perform { _ = try await client.remember(text: trimmed) }
+        await perform { _ = try await client.remember(text: trimmed, owner: owner) }
+    }
+
+    /// The facts one marble keeps, plus the shared ones every marble gets.
+    func memories(for marbleId: String) -> [MarbleMemoryFact] {
+        memory.facts.filter { $0.owner.isEmpty || $0.owner == marbleId }
     }
 
     func rename(_ conversation: MarbleConversation, title: String) async {
@@ -699,7 +816,7 @@ final class MarbleStore: ObservableObject {
 
     // MARK: - Routines
 
-    func addRoutine(title: String, prompt: String, schedule: String) async {
+    func addRoutine(title: String, prompt: String, schedule: String, conversationId: String? = nil) async {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !trimmedPrompt.isEmpty else { return }
         let resolvedSchedule = schedule.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -708,7 +825,7 @@ final class MarbleStore: ObservableObject {
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 prompt: trimmedPrompt,
                 schedule: resolvedSchedule.isEmpty ? "every:1h" : resolvedSchedule,
-                conversationId: self.selectedConversationId
+                conversationId: conversationId ?? self.selectedConversationId
             )
         }
     }
@@ -853,14 +970,20 @@ final class MarbleStore: ObservableObject {
 
     private func listen() {
         streamTask?.cancel()
-        connection = .connecting
+        status.reconnectStarted()
         let client = self.client
         streamTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, let client else { return }
                 let since = self.sequence
+                var endedReason: String? = nil
                 do {
-                    for try await event in client.events(since: since) {
+                    let events = client.events(
+                        since: since,
+                        onOpen: { Task { @MainActor in self.status.streamOpened() } },
+                        onActivity: { Task { @MainActor in self.status.streamEvent() } }
+                    )
+                    for try await event in events {
                         self.backoffSeconds = 1
                         self.handle(event)
                     }
@@ -869,9 +992,12 @@ final class MarbleStore: ObservableObject {
                     return
                 } catch {
                     if Task.isCancelled { return }
+                    endedReason = error.localizedDescription
                     self.markOffline(error)
                 }
                 if Task.isCancelled { return }
+                self.status.streamEnded(endedReason)
+                status.reconnectStarted()
                 let delay = self.backoffSeconds
                 self.backoffSeconds = min(self.backoffSeconds * 2, 30)
                 try? await Task.sleep(for: .seconds(delay))
@@ -890,7 +1016,6 @@ final class MarbleStore: ObservableObject {
 
     private func handle(_ event: MarbleEvent) {
         sequence = max(sequence, event.sequence)
-        if connection != .live { connection = .live }
         var buffers = live[event.conversationId] ?? LiveBuffers()
         let forActive = event.conversationId.isEmpty
             || event.conversationId == (selectedConversationId ?? "")
@@ -945,11 +1070,9 @@ final class MarbleStore: ObservableObject {
 
     private func markUnauthorized() {
         needsToken = true
-        connection = .offline
     }
 
     private func markOffline(_ error: Error) {
-        connection = .offline
         if let clientError = error as? MarbleClientError, clientError == .unauthorized {
             needsToken = true
             return
@@ -968,7 +1091,7 @@ extension MarbleStore {
         let store = MarbleStore()
         store.onboarded = true
         store.loaded = true
-        store.connection = .live
+        store.status.streamOpened()
         var state = MarbleState.empty
         let now = UInt64(Date().timeIntervalSince1970)
         state.conversations = (0..<200).map { index in
@@ -987,6 +1110,14 @@ extension MarbleStore {
                 taskId: "task-0",
                 at: now - UInt64((300 - index) * 5)
             )
+        }
+        // A second chat carries a short transcript so row-navigation tests
+        // can assert its own messages appear, not conversation 0's.
+        for index in 0..<3 {
+            state.transcript.append(MarbleEntry(
+                conversationId: "fixture-2", kind: index == 0 ? "user" : "assistant",
+                text: "Fixture message \(index)", taskId: "task-2", at: now - 100 + UInt64(index)
+            ))
         }
         state.transcript.insert(
             MarbleEntry(conversationId: "fixture-0", kind: "reasoning",
@@ -1086,6 +1217,92 @@ extension MarbleStore {
             count: 2, limit: nil, enabled: 1,
             offsetMinutes: 0, quietHours: .off
         )
+        // Two named marbles plus the default: the roster, the Everyone
+        // timeline, and one ask between them, all without a network.
+        state.prism = MarblePrism(
+            marbles: [
+                MarblePrismMarble(
+                    id: "marble", name: "Marble", role: "the default assistant",
+                    glyph: "circle", hue: 210, workspace: "", state: "idle",
+                    conversationId: "", taskId: "", lastAt: 0, runs: 3,
+                    lastError: "", persona: "", isDefault: true
+                ),
+                MarblePrismMarble(
+                    id: "m-ada", name: "Ada", role: "",
+                    glyph: "star", hue: 45, workspace: "", state: "idle",
+                    conversationId: "fixture-ada", taskId: "", lastAt: 0, runs: 2,
+                    lastError: "",
+                    persona: "Warm and encouraging; celebrates progress and explains things simply.",
+                    isDefault: false
+                ),
+                MarblePrismMarble(
+                    id: "m-ben", name: "Ben", role: "",
+                    glyph: "hex", hue: 145, workspace: "", state: "working",
+                    conversationId: "fixture-ben", taskId: "task-ben-1", lastAt: 0,
+                    runs: 5, lastError: "",
+                    persona: "Careful and methodical; checks work twice and says what it verified.",
+                    isDefault: false
+                ),
+            ],
+            limit: 8, swarms: 0, dispatched: 4, working: 1, engine: true
+        )
+        state.tasks.append(MarbleTask(
+            id: "task-ben-1", conversationId: "fixture-ben", status: "running",
+            owner: "prism", prompt: "checking the fixture tests", at: now - 20
+        ))
+        state.conversations.append(MarbleConversation(
+            id: "everyone", title: "Everyone",
+            taskIds: [], updatedAt: now
+        ))
+        state.transcript.append(contentsOf: [
+            MarbleEntry(
+                conversationId: "everyone", kind: "user",
+                text: "@Ada can you look at the failing tests?",
+                taskId: "", at: now - 40, speaker: "user", speakerName: "You"
+            ),
+            MarbleEntry(
+                conversationId: "everyone", kind: "handoff",
+                text: "Ada asked Ben to check the failing tests.",
+                taskId: "task-ada-1", at: now - 35,
+                speaker: "m-ada", speakerName: "Ada",
+                handoff: MarbleHandoff(
+                    from: "m-ada", fromName: "Ada", to: "m-ben", toName: "Ben",
+                    instruction: "check the failing tests",
+                    status: "asked", summary: ""
+                )
+            ),
+            MarbleEntry(
+                conversationId: "everyone", kind: "handoff",
+                text: "Ben finished: three tests were flaky; I re-ran them.",
+                taskId: "task-ada-1", at: now - 30,
+                speaker: "m-ada", speakerName: "Ada",
+                handoff: MarbleHandoff(
+                    from: "m-ada", fromName: "Ada", to: "m-ben", toName: "Ben",
+                    instruction: "check the failing tests",
+                    status: "finished",
+                    summary: "three tests were flaky; I re-ran them"
+                )
+            ),
+            MarbleEntry(
+                conversationId: "everyone", kind: "assistant",
+                text: "Ben checked the fixture tests — three were flaky and are re-running now.",
+                taskId: "task-ada-1", at: now - 28,
+                speaker: "m-ada", speakerName: "Ada"
+            ),
+        ])
+        state.transcript.append(contentsOf: [
+            MarbleEntry(
+                conversationId: "fixture-ada", kind: "user",
+                text: "hello Ada", taskId: "task-ada-0", at: now - 50,
+                speaker: "user", speakerName: "You"
+            ),
+            MarbleEntry(
+                conversationId: "fixture-ada", kind: "assistant",
+                text: "Hello! Lovely to meet you — what shall we work on?",
+                taskId: "task-ada-0", at: now - 48,
+                speaker: "m-ada", speakerName: "Ada"
+            ),
+        ])
         store.state = state
         store.conversationTranscript = state.transcript
         store.transcriptConversationId = "fixture-0"

@@ -34,7 +34,7 @@ struct SettingsView: View {
                 Text("Alerts only arrive while Marble is open or recently used — remote push isn't available with this signing.")
             }
 
-            Section(header: Text("Data")) {
+            Section {
                 Button("Export all chats") {
                     Task { exportURL = await store.exportFile() }
                 }
@@ -43,6 +43,24 @@ struct SettingsView: View {
                         Label("Share \(exportURL.lastPathComponent)", systemImage: "square.and.arrow.up")
                     }
                 }
+                Button("Clear the Everyone chat", role: .destructive) {
+                    confirmClearEveryone = true
+                }
+            } header: {
+                Text("Data")
+            } footer: {
+                Text("Clearing Everyone erases what was said there, including Marbles' replies; one-to-one chats are untouched.")
+            }
+            .confirmationDialog(
+                "Clear the Everyone chat?",
+                isPresented: $confirmClearEveryone,
+                titleVisibility: .visible
+            ) {
+                Button("Clear Everyone", role: .destructive) {
+                    Task { await store.clearEveryone() }
+                }
+            } message: {
+                Text("Everything in the shared chat is erased. Other chats stay.")
             }
 
             Section(header: Text("About")) {
@@ -56,6 +74,7 @@ struct SettingsView: View {
         }
     }
 
+    @State private var confirmClearEveryone = false
     @State private var exportURL: URL?
 
     private var alertsBinding: Binding<Bool> {

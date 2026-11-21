@@ -5,21 +5,34 @@ import Foundation
 /// "refresh never navigates", "launch lands on the list", "deleting pops
 /// back" — is testable on Linux and impossible for a state refresh to violate.
 public enum MarbleTab: String, Sendable, CaseIterable {
-    case chats, activity, scheduled, settings
+    /// The shared chat where every marble can answer; launch lands here.
+    case everyone
+    /// The roster: every marble, its chat, and its info.
+    case marbles, activity, scheduled, settings
 }
 
-/// One destination inside the Chats tab's own NavigationStack.
+/// One destination inside a tab's own NavigationStack. The Marbles stack
+/// holds marble screens and the default assistant's chats; the Everyone
+/// stack only needs a marble's info card when an avatar is tapped.
 public enum ChatRoute: Hashable, Sendable {
     /// A not-yet-created conversation. It gains a real id on the first send.
     case draft
     case conversation(String)
+    /// One marble's dedicated chat (`marble:<id>` keeps its own engine chat).
+    case marbleChat(String)
+    /// The default assistant's chats list — its "chat" is every conversation.
+    case marbleChats
+    /// A marble's info screen: personality, look, memory, what it can do.
+    case marbleInfo(String)
 }
 
 public struct MarbleNavigation: Sendable, Equatable {
-    public private(set) var tab: MarbleTab = .chats
-    /// The Chats stack's path; empty means the conversation list is on top.
+    public private(set) var tab: MarbleTab = .everyone
+    /// The Marbles stack's path; empty means the roster is on top.
     public internal(set) var chatPath: [ChatRoute] = []
-    /// What the chat on screen should load; nil for a draft.
+    /// The Everyone stack's path; only avatar taps push onto it.
+    public internal(set) var everyonePath: [ChatRoute] = []
+    /// What the chat on screen should load; nil for a draft or marble screen.
     public var viewingConversationId: String? {
         chatPath.last.flatMap { route in
             if case let .conversation(id) = route { return id }
@@ -30,10 +43,11 @@ public struct MarbleNavigation: Sendable, Equatable {
     /// exists; the Chats tab drains it on first appearance.
     public private(set) var pendingOpen: String?
 
-    /// Cold start always lands on the chat list.
+    /// Cold start always lands on Everyone.
     public mutating func launch() {
-        tab = .chats
+        tab = .everyone
         chatPath = []
+        everyonePath = []
     }
 
     public mutating func selectTab(_ newTab: MarbleTab) {
@@ -42,7 +56,7 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     /// A list row or transcript-search hit; replaces any draft on top.
     public mutating func openConversation(_ id: String) {
-        tab = .chats
+        tab = .marbles
         if case .draft = chatPath.last {
             chatPath[chatPath.count - 1] = .conversation(id)
         } else {
@@ -52,9 +66,26 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     /// The toolbar's compose button pushes a draft chat.
     public mutating func newChat() {
-        tab = .chats
+        tab = .marbles
         if case .draft = chatPath.last { return }
         chatPath.append(.draft)
+    }
+
+    /// A roster row: the default assistant opens its chats list, a named
+    /// marble opens its own chat.
+    public mutating func openMarble(_ id: String) {
+        tab = .marbles
+        chatPath.append(id == "marble" ? .marbleChats : .marbleChat(id))
+    }
+
+    /// A marble's info screen, from the roster or an Everyone avatar.
+    public mutating func openMarbleInfo(_ id: String, fromEveryone: Bool = false) {
+        if fromEveryone {
+            everyonePath.append(.marbleInfo(id))
+        } else {
+            tab = .marbles
+            chatPath.append(.marbleInfo(id))
+        }
     }
 
     /// The first send resolved the draft into a real conversation.
@@ -77,8 +108,8 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     /// A notification tap takes the person straight to that chat.
     public mutating func notificationTapped(_ id: String) {
-        tab = .chats
-        chatPath = [.conversation(id)]
+        tab = .marbles
+        chatPath = [.marbleChats, .conversation(id)]
     }
 
     /// A launch-time notification target, queued until the view exists.
@@ -96,8 +127,9 @@ public struct MarbleNavigation: Sendable, Equatable {
     public mutating func refreshed() {}
 
     public mutating func signOut() {
-        tab = .chats
+        tab = .everyone
         chatPath = []
+        everyonePath = []
         pendingOpen = nil
     }
 }

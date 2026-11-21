@@ -275,9 +275,9 @@ final class MarbleClient: @unchecked Sendable {
         value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
     }
 
-    func remember(text: String) async throws -> MarbleMemory {
-        struct Body: Encodable { var text: String }
-        let reply: MemoryReply = try await postJSON("/api/memory", body: Body(text: text))
+    func remember(text: String, owner: String = "") async throws -> MarbleMemory {
+        struct Body: Encodable { var text: String; var owner: String }
+        let reply: MemoryReply = try await postJSON("/api/memory", body: Body(text: text, owner: owner))
         return reply.memory
     }
 
@@ -383,6 +383,17 @@ final class MarbleClient: @unchecked Sendable {
         var glyph: String
         var hue: Int
         var workspace: String
+        var persona: String
+    }
+
+    /// A marble edit; nil fields keep their current value on the host.
+    struct MarbleUpdate: Encodable {
+        var name: String?
+        var role: String?
+        var glyph: String?
+        var hue: Int?
+        var workspace: String?
+        var persona: String?
     }
 
     private struct PrismReply: Decodable { var prism: MarblePrism }
@@ -397,6 +408,36 @@ final class MarbleClient: @unchecked Sendable {
     func addMarble(_ draft: MarbleDraft) async throws -> MarblePrism {
         let reply: PrismReply = try await postJSON("/api/prism/marbles", body: draft)
         return reply.prism
+    }
+
+    /// Edit a marble — name, look, workspace, or its personality. A persona
+    /// change restarts the marble's conversation on the host.
+    @discardableResult
+    func updateMarble(id: String, _ update: MarbleUpdate) async throws -> MarblePrism {
+        let reply: PrismReply = try await postJSON(
+            "/api/prism/marbles/\(encoded(id))/update",
+            body: update
+        )
+        return reply.prism
+    }
+
+    /// The shared chat's timeline, newest entries after `after`.
+    func everyone(after: UInt64? = nil) async throws -> [MarbleEntry] {
+        struct Reply: Decodable { var entries: [MarbleEntry] }
+        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after)))
+        return reply.entries
+    }
+
+    /// Empty the shared Everyone timeline; other chats are untouched.
+    func clearEveryone() async throws {
+        let _: OkReply = try await postJSON("/api/everyone/clear", body: Optional<String>.none)
+    }
+
+    /// One message on the shared plane; the marbles it names answer.
+    @discardableResult
+    func sendEveryone(text: String) async throws -> MarbleEveryoneReply {
+        struct Body: Encodable { var text: String }
+        return try await postJSON("/api/everyone", body: Body(text: text))
     }
 
     func removeMarble(id: String) async throws {
@@ -512,7 +553,17 @@ final class MarbleClient: @unchecked Sendable {
 
     /// Long-lived server-sent events starting after `since`. The caller owns
     /// reconnection; the stream ends when the host closes it.
-    func events(since: UInt64) -> AsyncThrowingStream<MarbleEvent, Error> {
+    ///
+    /// Raw bytes — never `bytes.lines`: `AsyncLineSequence` silently drops the
+    /// empty lines that complete SSE frames, so keepalive-only streams and
+    /// every event would be invisible. `onOpen` fires as soon as the request
+    /// returns 200 (the stream is up before any frame); `onActivity` fires for
+    /// every completed line, including comments, so keepalives prove liveness.
+    func events(
+        since: UInt64,
+        onOpen: (@Sendable () -> Void)? = nil,
+        onActivity: (@Sendable () -> Void)? = nil
+    ) -> AsyncThrowingStream<MarbleEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -522,13 +573,21 @@ final class MarbleClient: @unchecked Sendable {
                     )
                     let (bytes, response) = try await session.bytes(for: request)
                     try marbleValidateStatus(response)
+                    onOpen?()
+                    var splitter = MarbleSSELineSplitter()
                     var parser = MarbleSSEParser()
-                    for try await line in bytes.lines {
-                        guard let frame = parser.feed(line),
-                              let data = frame.data.data(using: .utf8),
-                              let event = try? decoder.decode(MarbleEvent.self, from: data)
-                        else { continue }
-                        continuation.yield(event)
+                    for try await byte in bytes {
+                        for line in splitter.feed(byte) {
+                            onActivity?()
+                            guard let frame = parser.feed(line),
+                                  let data = frame.data.data(using: .utf8),
+                                  let event = try? decoder.decode(MarbleEvent.self, from: data)
+                            else { continue }
+                            continuation.yield(event)
+                        }
+                    }
+                    if let last = splitter.finish() {
+                        _ = parser.feed(last)
                     }
                     if let frame = parser.finish(),
                        let data = frame.data.data(using: .utf8),

@@ -3,6 +3,11 @@ import XCTest
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(Glibc)
+import Glibc
+#else
+import Darwin
+#endif
 @testable import MarbleCore
 
 /// Live checks against a real host, using the same Core request builder,
@@ -276,5 +281,283 @@ extension MarbleLiveTests {
                 observedCertSHA256: observed, proofHex: reply.proof
             )
         )
+    }
+
+    // MARK: - SSE status: the real stream through the app's real pipeline
+
+    /// Linux's URLSession has no streaming `bytes(for:)`, and a buffered
+    /// `data(for:)` never returns for SSE. A plain TCP socket gives the same
+    /// bytes the app's splitter consumes — http hosts only (an https host
+    /// skips: the pin check in the app covers trust, not framing).
+    private struct EventSocket {
+        var fd: Int32 = -1
+        var statusCode = 0
+        /// Leftover bytes after the response head.
+        var rest: [UInt8] = []
+
+        init(host: String, token: String) throws {
+            guard let url = URLComponents(string: host),
+                  url.scheme == "http",
+                  let name = url.host
+            else {
+                throw XCTSkip("socket streaming test needs an http host")
+            }
+            let port = UInt16(url.port ?? 80)
+            var hints = addrinfo()
+            hints.ai_family = AF_INET
+            hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+            var info: UnsafeMutablePointer<addrinfo>?
+            guard getaddrinfo(name, String(port), &hints, &info) == 0, let info else {
+                throw MarbleClientError.invalidURL
+            }
+            defer { freeaddrinfo(info) }
+            fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+            guard fd >= 0, connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0 else {
+                throw MarbleClientError.unreachable("could not open the event socket")
+            }
+            var timeout = timeval(tv_sec: 30, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            let request = "GET /api/events?since=0 HTTP/1.1\r\n"
+                + "Host: \(name):\(port)\r\n"
+                + "Authorization: Bearer \(token)\r\n"
+                + "Accept: text/event-stream\r\n"
+                + "Connection: close\r\n\r\n"
+            _ = request.utf8.withContiguousStorageIfAvailable { send(fd, $0.baseAddress, $0.count, 0) }
+            // Read until the response head is complete.
+            var head: [UInt8] = []
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            let marker = Array<UInt8>([13, 10, 13, 10])
+            var headEnd = 0
+            while headEnd == 0 {
+                let count = recv(fd, &buffer, buffer.count, 0)
+                guard count > 0 else { throw MarbleClientError.unreachable("socket closed") }
+                head.append(contentsOf: buffer[0..<count])
+                if head.count >= 4 {
+                    for index in 0...(head.count - 4) where headEnd == 0 {
+                        if Array(head[index..<(index + 4)]) == marker { headEnd = index + 4 }
+                    }
+                }
+            }
+            let cut = headEnd
+            let responseHead = String(decoding: head[0..<cut], as: UTF8.self)
+            let statusLine = responseHead.split(separator: "\r\n").first.map(String.init) ?? ""
+            statusCode = Int(statusLine.split(separator: " ").dropFirst().first ?? "") ?? 0
+            rest = Array(head[cut...])
+        }
+
+        /// Read one chunk of body bytes; nil on timeout or close.
+        mutating func read() -> [UInt8]? {
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            let count = recv(fd, &buffer, buffer.count, 0)
+            guard count > 0 else { return nil }
+            return Array(buffer[0..<count])
+        }
+
+        func close() { _ = Foundation.close(fd) }
+    }
+
+    /// Opens /api/events, feeds raw bytes through the line splitter → frame
+    /// parser → status reducer, and asserts Connected after the 200 and
+    /// still Connected after a keepalive. Runs against any configured host.
+    func testStreamStatusConnected() async throws {
+        var socket = try EventSocket(host: host, token: token)
+        defer { socket.close() }
+        XCTAssertEqual(socket.statusCode, 200)
+
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        XCTAssertEqual(status.label, "Connected")
+
+        var splitter = MarbleSSELineSplitter()
+        var parser = MarbleSSEParser()
+        var sawKeepalive = false
+        var sawAnyLine = false
+        var pending = socket.rest
+        let deadline = Date().addingTimeInterval(25)
+        while !sawKeepalive && Date() < deadline {
+            if pending.isEmpty {
+                guard let chunk = socket.read() else { break }
+                pending = chunk
+            }
+            for line in splitter.feed(pending) {
+                pending = []
+                sawAnyLine = true
+                status.streamEvent()
+                if line.hasPrefix(":") { sawKeepalive = true }
+                _ = parser.feed(line)
+            }
+        }
+        XCTAssertTrue(sawAnyLine, "no bytes arrived on the event stream")
+        XCTAssertTrue(sawKeepalive, "no keepalive arrived within 25 s")
+        XCTAssertEqual(status.label, "Connected")
+    }
+
+    /// A state change while the stream is open must surface as a decoded
+    /// frame — proof events are dispatched, not just that the socket is open.
+    /// Isolated fixture only: it writes to host config.
+    func testStreamDispatchesARealEvent() async throws {
+        guard ProcessInfo.processInfo.environment["MARBLE_LIVE_ISOLATED"] == "1" else {
+            throw XCTSkip("isolated fixture only (it writes host config)")
+        }
+        var socket = try EventSocket(host: host, token: token)
+        defer { socket.close() }
+        XCTAssertEqual(socket.statusCode, 200)
+
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        var splitter = MarbleSSELineSplitter()
+        var parser = MarbleSSEParser()
+        var kinds: [String] = []
+        var pending = socket.rest
+
+        // A model save emits a "control" event on the stream.
+        try await post("/api/model", body: ["model": ""])
+
+        let deadline = Date().addingTimeInterval(25)
+        while kinds.isEmpty && Date() < deadline {
+            if pending.isEmpty {
+                guard let chunk = socket.read() else { break }
+                pending = chunk
+            }
+            for line in splitter.feed(pending) {
+                pending = []
+                status.streamEvent()
+                if let frame = parser.feed(line),
+                   let data = frame.data.data(using: .utf8),
+                   let event = try? JSONDecoder().decode(MarbleEvent.self, from: data) {
+                    kinds.append(event.kind)
+                }
+            }
+        }
+        XCTAssertEqual(status.label, "Connected")
+        XCTAssertFalse(kinds.isEmpty, "no event frame was dispatched")
+    }
+
+    private func post(_ path: String, body: [String: Any]) async throws {
+        var request = try endpoint(token: token).request(path: path)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        try marbleValidate(response, data: data)
+    }
+}
+
+// MARK: - Everyone plane (isolated fixture host)
+
+extension MarbleLiveTests {
+    private struct MarbleCreated: Decodable {
+        var marble: MarblePrismMarble?
+    }
+    private struct EveryoneReply: Decodable { var entries: [MarbleEntry] }
+
+    private func post(_ path: String, _ body: [String: Any] = [:]) async throws -> Data {
+        let request = try endpoint(token: token).request(
+            path: path,
+            method: "POST",
+            body: JSONSerialization.data(withJSONObject: body)
+        )
+        let (data, response) = try await session.data(for: request)
+        try marbleValidate(response, data: data)
+        return data
+    }
+
+    private func makeMarble(name: String, persona: String = "") async throws -> MarblePrismMarble? {
+        let data = try await post("/api/prism/marbles", [
+            "name": name, "persona": persona, "glyph": "circle", "hue": 90,
+        ])
+        return try JSONDecoder().decode(MarbleCreated.self, from: data).marble
+    }
+
+    private func timeline() async throws -> [MarbleEntry] {
+        try await fetchJSON(EveryoneReply.self, .everyone(after: nil)).entries
+    }
+
+    /// Poll until `where` matches an Everyone entry or the deadline runs out.
+    private func waitForEntry(
+        timeout: TimeInterval = 60,
+        where match: (MarbleEntry) -> Bool
+    ) async throws -> MarbleEntry? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let entry = try await timeline().first(where: match) {
+                return entry
+            }
+            try await Task.sleep(nanoseconds: 700_000_000)
+        }
+        return nil
+    }
+
+    /// A named mention is answered by that Marble, mirrored onto the shared
+    /// plane with its id and display name.
+    func testEveryoneMentionMirrorsTheMarble() async throws {
+        // The fixture engine reaches for a tool every turn; unattended lets
+        // it run without an approval card stalling the mirror.
+        _ = try await post("/api/control/profile", ["profile": "unattended"])
+        let marble = try await makeMarble(name: "Livy", persona: "brief")
+        let marbleId = try XCTUnwrap(marble?.id)
+        addTeardownBlock { [self] in
+            _ = try? await post("/api/prism/marbles/\(marbleId)/remove")
+            _ = try? await post("/api/everyone/clear")
+            _ = try? await post("/api/control/profile", ["profile": "workspace"])
+        }
+
+        _ = try await post("/api/everyone", ["text": "@Livy say hi"])
+        let reply = try await waitForEntry {
+            $0.kind == "assistant" && $0.speaker == marbleId
+        }
+        let entry = try XCTUnwrap(reply, "no mirrored reply from Livy")
+        XCTAssertEqual(entry.speakerName, "Livy")
+        XCTAssertFalse(entry.text.isEmpty)
+        // The person's line sits in the same timeline, stamped with the task
+        // that answered it.
+        let userLine = try await timeline().first { $0.kind == "user" }
+        XCTAssertEqual(userLine?.speaker, "user")
+        XCTAssertEqual(userLine?.taskId.isEmpty, false)
+
+    }
+
+    /// A Marble asking another for help lands on Everyone as plain handoff
+    /// lines that decode and render through Core.
+    func testMarbleAskRendersHandoffLinesOnEveryone() async throws {
+        _ = try await post("/api/control/profile", ["profile": "unattended"])
+        let asker = try await makeMarble(name: "Askbot", persona: "")
+        let helper = try await makeMarble(name: "Helper", persona: "")
+        let askerId = try XCTUnwrap(asker?.id)
+        let helperId = try XCTUnwrap(helper?.id)
+        addTeardownBlock { [self] in
+            _ = try? await post("/api/prism/marbles/\(askerId)/remove")
+            _ = try? await post("/api/prism/marbles/\(helperId)/remove")
+            _ = try? await post("/api/everyone/clear")
+            _ = try? await post("/api/control/profile", ["profile": "workspace"])
+        }
+
+        _ = try await post("/api/everyone", ["text": "@Askbot ASK Helper: check the lights"])
+
+        // "Askbot asked Helper to check the lights."
+        let asked = try await waitForEntry {
+            $0.kind == "handoff" && $0.handoff?.status == "asked"
+        }
+        let askedEntry = try XCTUnwrap(asked, "no asked handoff on Everyone")
+        let askedHandoff = try XCTUnwrap(askedEntry.handoff)
+        XCTAssertEqual(askedHandoff.from, askerId)
+        XCTAssertEqual(askedHandoff.to, helperId)
+        XCTAssertEqual(
+            MarbleHandoffLine.render(askedHandoff),
+            "Askbot asked Helper to check the lights."
+        )
+
+        // "Helper finished: …" once the ask settles.
+        let finished = try await waitForEntry(timeout: 90) {
+            $0.kind == "handoff" && $0.handoff?.status == "finished"
+        }
+        let finishedHandoff = try XCTUnwrap(
+            finished?.handoff, "no finished handoff on Everyone")
+        XCTAssertTrue(MarbleHandoffLine.isExpandable(finishedHandoff))
+        XCTAssertTrue(
+            MarbleHandoffLine.render(finishedHandoff).hasPrefix("Helper finished:"),
+            MarbleHandoffLine.render(finishedHandoff)
+        )
+
     }
 }

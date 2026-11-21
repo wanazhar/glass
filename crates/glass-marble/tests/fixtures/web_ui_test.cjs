@@ -2,9 +2,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const root = path.join(__dirname, '../../src/static');
 const L = require(path.join(root, 'logic.js'));
 const people = [{ id: 'marble', name: 'Marble', isDefault: true }, { id: 'a', name: 'Ada' }, { id: 'b', name: 'Ben' }];
+
+function appFunction(start, end, context, name) {
+  const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  return vm.runInNewContext(source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))) + ';' + name, context);
+}
 
 test('who answers follows whole-name, case-insensitive host rules', () => {
   assert.deepEqual(L.whoAnswers('hello', people).map(p => p.id), ['marble']);
@@ -184,4 +190,24 @@ test('finished handoffs summarize the first line or sentence without changing th
   assert.ok(long.endsWith('…'));
   for (const empty of ['', '\n  \n', null, undefined, {}]) assert.equal(L.handoffSummary(empty), '');
   assert.equal(L.handoffLine({ handoff: { toName: 'Ben', status: 'finished', summary: '' } }), 'Ben finished.');
+});
+
+test('a dirty info panel belongs only to the routed Marble', () => {
+  let dirty = false;
+  const panel = { dataset: {}, contains: () => false, querySelector: () => dirty, replaceChildren: (...children) => { panel.marble = children.at(-1).id; } };
+  const main = { contains: () => false, querySelector: () => null };
+  const s = { route: { screen: 'info', id: 'ada' } };
+  const context = { s, innerWidth: 1440, document: { activeElement: {}, body: { classList: { toggle() {} } } },
+    $: id => id === 'info-panel' ? panel : main, current: () => ({ id: s.route.id }),
+    renderRail() {}, header() {}, renderTimeline() {}, composer() {}, icon() {}, t: value => value,
+    chatRoute: id => id, link: () => ({ setAttribute() {} }), infoPage: person => person };
+  const render = appFunction('function render()', 'async function refresh()', context, 'render');
+  render();
+  assert.equal(panel.marble, 'ada');
+  dirty = true;
+  render();
+  assert.equal(panel.marble, 'ada');
+  s.route.id = 'ben';
+  render();
+  assert.equal(panel.marble, 'ben', 'dirty Ada fields must not be saved from Ben’s panel');
 });

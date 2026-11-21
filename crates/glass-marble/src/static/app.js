@@ -596,9 +596,10 @@
       else if (s.route.screen === 'settings') replacePage(settingsPage());
       else $('main').replaceChildren(el('div', 'empty', t('Page not found')));
     }
-    if ((wideInfo || sheetInfo) && !$('info-panel').contains(document.activeElement) && !$('info-panel').querySelector('form[data-dirty="true"]')) {
+    if ((wideInfo || sheetInfo) && ($('info-panel').dataset.marbleId !== s.route.id || !$('info-panel').contains(document.activeElement) && !$('info-panel').querySelector('form[data-dirty="true"]'))) {
       const close = link(icon('close'), chatRoute(s.route.id), 'button info-close'); close.setAttribute('aria-label', t('Close info'));
       $('info-panel').replaceChildren(...(wideInfo ? [close] : []), infoPage(current()));
+      $('info-panel').dataset.marbleId = s.route.id;
     }
     composer();
   }

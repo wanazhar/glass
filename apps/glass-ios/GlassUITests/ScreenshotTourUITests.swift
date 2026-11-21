@@ -117,8 +117,12 @@ final class ScreenshotTourUITests: XCTestCase {
         for _ in 0..<6 where !(general.exists && general.isHittable) { app.swipeUp() }
         XCTAssertTrue(general.waitForExistence(timeout: 10))
         general.tap()
-        XCTAssertTrue(app.switches["settings.image_input"].firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.navigationBars["General"].waitForExistence(timeout: 20))
+        sleep(1)
         try save(app, "settings-general")
+        let imageInput = app.switches["settings.image_input"].firstMatch
+        for _ in 0..<8 where !imageInput.exists { app.swipeUp() }
+        XCTAssertTrue(imageInput.exists)
     }
 }
 

@@ -2262,6 +2262,8 @@
         }
       });
       document.getElementById("new-chat").addEventListener("click", () => {
+        app.transcriptRequest++;
+        app.transcriptError = null;
         app.conversationId = null;
         app.transcript = [];
         app.transcriptConversation = null;

@@ -59,3 +59,29 @@ test('operation errors do not use disconnected styling', () => {
   assert.ok(!html.includes('setStatus(error.message, "offline")'));
   assert.ok(!html.includes('setStatus(data.message || "error", "offline")'));
 });
+
+test('new chat clears transcript errors and invalidates pending responses', async () => {
+  let reject;
+  const { app, sync } = transcript(() => new Promise((_, fail) => { reject = fail; }));
+  app.transcriptError = 'Could not load this chat';
+  const pending = sync();
+  const request = app.transcriptRequest;
+  let click;
+  let rendered = false;
+  const context = vm.createContext({
+    app,
+    document: { getElementById: () => ({ addEventListener: (_, handler) => { click = handler; } }) },
+    resetLive: () => {}, render: () => { rendered = true; }, el: { composer: { focus: () => {} } },
+  });
+  const start = html.indexOf('document.getElementById("new-chat").addEventListener');
+  vm.runInContext(html.slice(start, html.indexOf('el.sidebarToggle.addEventListener', start)), context);
+  click();
+  assert.equal(app.conversationId, null);
+  assert.equal(app.transcriptError, null);
+  assert.ok(app.transcriptRequest > request);
+  assert.equal(rendered, true);
+  assert.equal(app.transcript.length, 0);
+  reject(new Error('late failure'));
+  await pending;
+  assert.equal(app.transcriptError, null);
+});

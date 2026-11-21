@@ -548,6 +548,146 @@ fn event_stream_replays_from_a_cursor() {
 }
 
 #[test]
+fn think_blocks_are_split_in_sse_journal_and_persisted_reply() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("marble-think-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let store = Arc::new(StateStore::in_data_dir(&root));
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let mut python = Command::new("python3");
+    python.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_glass_core_runtime.py"))
+        .arg("runtime").arg("--text-chunks")
+        .arg(r#"["visible ","<th","ink>secret"," thought</think>","answer","<think>unclosed", " hidden"]"#);
+    let conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &root.join("sessions"),
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        events.clone(),
+    )
+    .unwrap();
+    let turn_tx = spawn_single_lane(
+        conversation,
+        state.clone(),
+        Some(store.clone()),
+        LiveStore::in_data_dir(&root),
+        events.clone(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: state.clone(),
+        store: Some(store.clone()),
+        approvals: ApprovalInbox::default(),
+        events: events.clone(),
+        turn_tx,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"hello"}"#);
+    assert_eq!(status, 202, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut journal_checked = false;
+    loop {
+        for path in std::fs::read_dir(root.join("live")).unwrap() {
+            if let Ok(bytes) = std::fs::read(path.unwrap().path())
+                && let Ok(record) = serde_json::from_slice::<Value>(&bytes)
+                && record["reasoning"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("secret"))
+            {
+                assert!(!record["text"].as_str().unwrap().contains("secret"));
+                assert!(!record["text"].as_str().unwrap().contains("<think"));
+                journal_checked = true;
+            }
+        }
+        if state
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .any(|task| task.status == "completed")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(journal_checked);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let saved = loop {
+        let saved = store.load().unwrap();
+        if saved.transcript.iter().any(|e| e.kind == "assistant") {
+            break saved;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        saved
+            .transcript
+            .iter()
+            .find(|e| e.kind == "assistant")
+            .unwrap()
+            .text,
+        "visible answer"
+    );
+    assert_eq!(
+        saved
+            .transcript
+            .iter()
+            .find(|e| e.kind == "reasoning")
+            .unwrap()
+            .text,
+        "secret thoughtunclosed hidden"
+    );
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+    let mut stream = connect(port);
+    stream
+        .write_all(b"GET /api/events?since=0 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    let mut buffer = [0; 4096];
+    while !response.contains("\"status\":\"completed\"") {
+        let read = stream.read(&mut buffer).unwrap();
+        assert_ne!(read, 0);
+        response.push_str(&String::from_utf8_lossy(&buffer[..read]));
+    }
+    assert!(!response.contains("<think"), "{response}");
+    let frames: Vec<Value> = response
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let text: String = frames
+        .iter()
+        .filter(|f| f["kind"] == "text")
+        .map(|f| f["data"]["text"].as_str().unwrap())
+        .collect();
+    let reasoning: String = frames
+        .iter()
+        .filter(|f| f["kind"] == "reasoning")
+        .map(|f| f["data"]["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(text, "visible answer");
+    assert_eq!(reasoning, "secret thoughtunclosed hidden");
+}
+
+#[test]
 fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
     if !python3_available() {
         return;

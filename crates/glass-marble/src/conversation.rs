@@ -734,7 +734,9 @@ impl Conversation {
                 }
                 Incoming::Event(event) => {
                     self.note_engine_tool(&event);
-                    self.publish(&event.kind, event.data.clone());
+                    if event.kind != "text" {
+                        self.publish(&event.kind, event.data.clone());
+                    }
                     sink(&event);
                 }
                 Incoming::Tool { request_id, call } => {

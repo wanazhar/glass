@@ -158,7 +158,11 @@ def run_turn(identifier, task, text, conversation, request):
         except OSError:
             pass
     event(turn, "tool_end", {"callId": "call-1", "isError": bool(result.get("isError")), "text": str(result.get("text") or "")})
-    event(turn, "text", {"text": "handled " + str(text).strip()})
+    chunks = argument("--text-chunks")
+    for chunk in json.loads(chunks) if chunks else ["handled " + str(text).strip()]:
+        event(turn, "text", {"text": chunk})
+        if chunks:
+            time.sleep(0.3)
     event(turn, "usage", {"input": 1, "output": 1})
     event(turn, "settled", {"reason": "completed"})
     reply(identifier, {"sessionId": SESSION_ID, "settled": True})

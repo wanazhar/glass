@@ -230,6 +230,19 @@ pub fn run_turn(
     let mut reasoning = String::new();
     let mut splitter = ThinkSplitter::default();
     let mut usage: Option<Value> = None;
+    let events = conversation.events().clone();
+    let publish_split = |visible: &str, thought: &str| {
+        for (kind, delta) in [("text", visible), ("reasoning", thought)] {
+            if !delta.is_empty() {
+                events.publish(
+                    &conversation_id,
+                    &task_id,
+                    kind,
+                    serde_json::json!({"text": delta}),
+                );
+            }
+        }
+    };
     let cancel = options.cancel.map(|requested| CancelToken {
         requested,
         task_id: &task_id,
@@ -243,6 +256,7 @@ pub fn run_turn(
                 // Providers may inline `<think>` blocks inside ordinary text
                 // deltas; split them out so reasoning never lands in replies.
                 let (visible, thought) = splitter.feed(delta);
+                publish_split(&visible, &thought);
                 text.push_str(&visible);
                 reasoning.push_str(&thought);
                 if let Some(turn) = live.as_deref_mut() {
@@ -274,6 +288,7 @@ pub fn run_turn(
         turn.finish();
     }
     let (visible, thought) = splitter.flush();
+    publish_split(&visible, &thought);
     text.push_str(&visible);
     reasoning.push_str(&thought);
     let cancelled = options

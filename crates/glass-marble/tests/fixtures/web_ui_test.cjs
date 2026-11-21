@@ -225,3 +225,18 @@ test('named chat messages use the shared turn intake, including the first memory
     assert.equal(requests[0][2].conversationId || '', conversationId);
   }
 });
+
+test('a restarted stream resets stale cursors without duplicating normal reconnect text', () => {
+  const s = { sequence: 500, live: new Map([['old', {}]]), approvalChats: new Map() };
+  const onEvent = appFunction('function onEvent(event)', 'function connect()', { s, L, refreshSoon() {}, drawSoon() {} }, 'onEvent');
+  const emit = (type, payload) => onEvent({ type, data: JSON.stringify(payload) });
+  emit('hello', { cursor: 0 });
+  emit('text', { sequence: 1, conversationId: 'new-chat', taskId: 'new-task', data: { text: 'New host text' } });
+  assert.equal(s.live.get('new-task')?.text, 'New host text');
+  assert.equal(s.live.has('old'), false);
+  emit('hello', { cursor: 1 });
+  emit('text', { sequence: 1, taskId: 'new-task', data: { text: 'New host text' } });
+  assert.equal(s.live.get('new-task').text, 'New host text');
+  emit('hello', { cursor: 'invalid' });
+  assert.equal(s.sequence, 1);
+});

@@ -3607,6 +3607,14 @@ impl MarbleServer {
         stream.write_all(b": connected\n\n")?;
         stream.flush()?;
         let receiver = self.events.subscribe();
+        let cursor = self.events.sequence();
+        write!(
+            stream,
+            "event: hello\ndata: {}\n\n",
+            json!({"cursor": cursor})
+        )?;
+        stream.flush()?;
+        let since = if since > cursor { 0 } else { since };
         for event in self.events.since(since) {
             write_event(stream, &event)?;
         }

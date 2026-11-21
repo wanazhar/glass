@@ -694,29 +694,29 @@ fn event_stream_replays_from_a_cursor() {
         "text",
         serde_json::json!({"text": "streamed"}),
     );
-    let mut stream = connect(port);
-    stream
-        .write_all(
-            b"GET /api/events?since=0 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-        )
-        .unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut response = String::new();
-    let mut buffer = [0u8; 4096];
-    // The stream stays open by design, so read until the replayed frame has
-    // arrived or the read times out.
-    while !response.contains("streamed") {
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => response.push_str(&String::from_utf8_lossy(&buffer[..read])),
-            Err(_) => break,
+    for cursor in [0, 999] {
+        let mut stream = connect(port);
+        write!(stream, "GET /api/events?since={cursor} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut response = String::new();
+        let mut buffer = [0u8; 4096];
+        while !response.contains("streamed") {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => response.push_str(&String::from_utf8_lossy(&buffer[..read])),
+                Err(_) => break,
+            }
         }
+        assert!(response.contains("text/event-stream"), "{response}");
+        assert!(
+            response.contains("event: hello\ndata: {\"cursor\":1}"),
+            "{response}"
+        );
+        assert!(response.contains("event: text"), "{response}");
+        assert!(response.contains("streamed"), "{response}");
     }
-    assert!(response.contains("text/event-stream"), "{response}");
-    assert!(response.contains("event: text"), "{response}");
-    assert!(response.contains("streamed"), "{response}");
 }
 
 #[test]

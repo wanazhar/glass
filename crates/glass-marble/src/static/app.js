@@ -12,7 +12,7 @@
     defaultChat: undefined, missing: false, transcriptError: '', live: new Map(), drafts: new Map(),
     errors: new Map(), open: new Set(), loaded: false, busy: false, tools: null, crates: null, approvalChats: new Map(),
   };
-  const events = ['turn_start', 'waiting', 'text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress',
+  const events = ['hello', 'turn_start', 'waiting', 'text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress',
     'tool_cancel', 'usage', 'compacted', 'steered', 'queued', 'notice', 'error', 'settled', 'cancel_requested',
     'approval', 'approval_pending', 'approval_resolved', 'state', 'control_denied', 'control', 'memory',
     'memory_suggestion', 'routine', 'retention', 'steer_queued', 'steer_rejected', 'conversation', 'prism', 'everyone', 'handoff', 'runtime'];
@@ -645,6 +645,12 @@
   const drawSoon = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); };
   function onEvent(event) {
     let payload; try { payload = JSON.parse(event.data); } catch (_) { return; }
+    if (event.type === 'hello') {
+      if (Number.isSafeInteger(payload.cursor) && payload.cursor >= 0 && payload.cursor < s.sequence) {
+        s.sequence = 0; s.live.clear(); s.approvalChats.clear(); refreshSoon();
+      }
+      return;
+    }
     const sequence = Number(payload.sequence || event.lastEventId);
     if (sequence && sequence <= s.sequence) return;
     s.sequence = Math.max(s.sequence, sequence || 0);

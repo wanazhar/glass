@@ -174,11 +174,17 @@ impl MemoryState {
             ));
         }
         let candidate = text.to_ascii_lowercase();
-        if self
+        let owner = &self
             .facts
             .iter()
-            .any(|fact| fact.id != id && normalize(&fact.text).to_ascii_lowercase() == candidate)
-        {
+            .find(|fact| fact.id == id)
+            .ok_or_else(|| "unknown memory".to_string())?
+            .owner;
+        if self.facts.iter().any(|fact| {
+            fact.id != id
+                && &fact.owner == owner
+                && normalize(&fact.text).to_ascii_lowercase() == candidate
+        }) {
             return Err("an equivalent memory is already kept".into());
         }
         let fact = self
@@ -610,6 +616,36 @@ mod tests {
                 .is_none()
         );
         assert!(!memory.dismiss(&suggestion.id));
+    }
+
+    #[test]
+    fn editing_memory_checks_duplicates_only_within_its_owner() {
+        let mut memory = MemoryState::default();
+        let ada = memory
+            .remember("prefer short replies", "fact", "", true, "ada")
+            .unwrap();
+        memory
+            .remember("prefer short replies", "fact", "", true, "ben")
+            .unwrap();
+        let updated = memory
+            .update(&ada.id, "prefer short replies", "preference")
+            .unwrap();
+        assert_eq!(updated.kind, "preference");
+        assert_eq!(updated.owner, "ada");
+        memory
+            .remember("check the sources", "fact", "", true, "ben")
+            .unwrap();
+        assert!(memory.update(&ada.id, "check the sources", "fact").is_ok());
+        memory
+            .remember("keep a changelog", "fact", "", true, "ada")
+            .unwrap();
+        assert!(memory.update(&ada.id, "keep a changelog", "fact").is_err());
+        assert_eq!(
+            memory
+                .update("missing", "check the sources", "fact")
+                .unwrap_err(),
+            "unknown memory"
+        );
     }
 
     #[test]

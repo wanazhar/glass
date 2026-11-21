@@ -23,11 +23,7 @@ use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::tools::{ToolOutcome, ToolRouter};
 use crate::worker::{CancelRegistry, now_millis};
-use crate::{
-    ApprovalInbox, Conversation, HostPolicy, InboundMessage, MarbleError, TurnOptions, run_turn,
-    to_turn_input,
-};
-use glass_runtime_client::protocol::ContextBlock;
+use crate::{ApprovalInbox, Conversation, HostPolicy, MarbleError, TurnOptions, run_turn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -1084,7 +1080,12 @@ impl PrismPool {
         let mut live_turn = self
             .live
             .begin(text, &marble.name, &conversation_id, &request_id);
-        let input = self.turn_input(&marble.id, text);
+        let input = crate::normalize::engine_input(
+            &self.lock_state(),
+            Some(&conversation_id),
+            &marble.id,
+            text,
+        );
         let turn = crate::MarbleTurn {
             conversation_id: (!conversation_id.is_empty()).then_some(conversation_id),
             request_id,
@@ -1319,19 +1320,6 @@ impl PrismPool {
                 tracing::warn!(marble = %id, %error, "could not stop a prism engine");
             }
         }
-    }
-
-    /// Carried into every prism turn, so a marble uses what was remembered.
-    fn turn_input(&self, owner: &str, text: &str) -> glass_runtime_client::TurnInput {
-        let mut input = to_turn_input(&InboundMessage::new(text));
-        let block = {
-            let state = self.lock_state();
-            state.memory.context_block_for(owner)
-        };
-        if let Some(block) = block {
-            input.context.push(ContextBlock::Text { text: block });
-        }
-        input
     }
 }
 

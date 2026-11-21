@@ -249,6 +249,9 @@ def main():
                 save_submissions()
             if isinstance(params.get("input"), dict):
                 INPUT_TEXT["value"] = str(params["input"].get("text") or "")
+                if STORAGE_DIR:
+                    with open(os.path.join(STORAGE_DIR, "fixture-input.json"), "w", encoding="utf-8") as handle:
+                        json.dump(params, handle)
             reply(
                 identifier,
                 {"submission": {"id": task_id, "status": "pending"}, "duplicate": duplicate},

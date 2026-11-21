@@ -21,10 +21,10 @@ use crate::notify::{self, Notification};
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::{
-    InboundMessage, MarbleError, MarbleTurn, TurnOptions, conversation::Conversation,
-    conversation::SteerRequest, to_turn_input,
+    MarbleError, MarbleTurn, TurnOptions, conversation::Conversation, conversation::SteerRequest,
 };
-use glass_runtime_client::{TurnInput, protocol::ContextBlock};
+#[cfg(test)]
+use glass_runtime_client::TurnInput;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -914,7 +914,12 @@ fn run_command(
     let turn = MarbleTurn {
         conversation_id: request.conversation_id.clone(),
         request_id: request.request_id.clone(),
-        input: turn_input(state, &prompt),
+        input: crate::normalize::engine_input(
+            &lock(state),
+            request.conversation_id.as_deref(),
+            "marble",
+            &prompt,
+        ),
     };
     let mut accepted_turn: Option<AcceptedTurn> = None;
     let routine_id = request.routine_id.clone();
@@ -1172,16 +1177,9 @@ fn run_command(
 
 /// Carry remembered facts into the turn as context, so memory is used rather
 /// than merely stored.
+#[cfg(test)]
 fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
-    let mut input = to_turn_input(&InboundMessage::new(text));
-    let block = {
-        let guard = lock(state);
-        guard.memory.context_block_for("marble")
-    };
-    if let Some(block) = block {
-        input.context.push(ContextBlock::Text { text: block });
-    }
-    input
+    crate::normalize::engine_input(&lock(state), None, "marble", text)
 }
 
 /// Convenience constructor for one inbound message.
@@ -1383,6 +1381,7 @@ mod tests {
 
     #[test]
     fn remembered_facts_are_carried_into_the_turn() {
+        use glass_runtime_client::protocol::ContextBlock;
         let mut product = ProductState::default();
         let plain = turn_input(&Arc::new(Mutex::new(product.clone())), "hello");
         assert!(plain.context.is_empty());

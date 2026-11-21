@@ -658,18 +658,13 @@ fn cancelled_turn_does_not_steal_the_next_turns_reply() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let script = root.join("fake_glass_core_runtime.py");
-    // The turn sleeps before its tool call, leaving a window to cancel it.
     std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
     let storage_dir = root.join("sessions");
 
     let events = EventBus::default();
     let state = Arc::new(Mutex::new(ProductState::default()));
     let mut python = Command::new("python3");
-    python
-        .arg(&script)
-        .arg("runtime")
-        .arg("--delay-ms")
-        .arg("1500");
+    python.arg(&script).arg("runtime").arg("--late-abort-ack");
     let conversation = Conversation::spawn_with_router(
         python,
         &root,
@@ -706,6 +701,10 @@ fn cancelled_turn_does_not_steal_the_next_turns_reply() {
     let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"first"}"#);
     assert_eq!(status, 202, "{body}");
     let first_task = serde_json::from_str::<Value>(&body).unwrap()["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let conversation_id = serde_json::from_str::<Value>(&body).unwrap()["conversationId"]
         .as_str()
         .unwrap()
         .to_string();
@@ -766,7 +765,11 @@ fn cancelled_turn_does_not_steal_the_next_turns_reply() {
     assert!(first_settled, "cancelled turn never settled");
 
     // The follow-up is what the engine must see next — not the stale prompt.
-    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"hello"}"#);
+    let (status, body) = server.handle(
+        "POST",
+        "/api/turns",
+        &json!({"text":"hello", "conversationId": conversation_id}).to_string(),
+    );
     assert_eq!(status, 202, "{body}");
     let hello_task = serde_json::from_str::<Value>(&body).unwrap()["taskId"]
         .as_str()
@@ -789,6 +792,18 @@ fn cancelled_turn_does_not_steal_the_next_turns_reply() {
             .iter()
             .any(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "assistant");
         if done {
+            let submitted: Value = serde_json::from_slice(
+                &std::fs::read(storage_dir.join("fixture-input.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(submitted["conversationId"], conversation_id);
+            assert_eq!(submitted["input"]["text"], "hello");
+            assert!(
+                submitted["input"]["context"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("withdrawn")
+            );
             let user_for_hello = entries
                 .iter()
                 .find(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "user");

@@ -66,7 +66,7 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitForHost(app))
         XCTAssertTrue(text(app, containing: "Workspace, ws").exists)
         XCTAssertTrue(text(app, containing: "Tailscale HTTPS").exists)
-        XCTAssertTrue(app.descendants(matching: .any)["host.protocol"].label.contains("v1"))
+        XCTAssertTrue(app.descendants(matching: .any)["host.protocol"].label.contains("Up to date"))
         attach(app, "e2e-connected")
 
         app.tabBars.buttons["Diagnostics"].tap()

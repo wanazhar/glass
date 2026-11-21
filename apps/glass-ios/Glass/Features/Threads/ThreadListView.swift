@@ -142,7 +142,7 @@ private struct ThreadRow: View {
                 if let date = thread.modifiedDate {
                     Text(date, format: .relative(presentation: .named))
                 }
-                if let origin = thread.originLabel { Text(origin) }
+                if let origin = thread.originNote { Text(origin) }
             }
             .font(.caption)
             .foregroundStyle(.secondary)

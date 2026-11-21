@@ -33,11 +33,11 @@ final class CommandRun {
     var queued: Bool { requestID.map(composer.queuedCommands.contains) ?? false }
 
     var status: String {
-        if cancelling { return "Cancellation requested…" }
+        if cancelling { return "Stopping…" }
         if queued { return "Waiting for the current turn to finish. This command will run once." }
         if inspecting { return "Loading…" }
-        if running { return command.form.modelRequest ? "Working · uses model tokens" : "Working…" }
-        return command.form.modelRequest ? "Uses model tokens when run." : "Changes run on your host. They are not sent to the model."
+        if running { return command.form.modelRequest ? "Working. This uses the model." : "Working…" }
+        return command.form.modelRequest ? "This uses the model when it runs." : "Runs on your host. Nothing is sent to the model."
     }
 
     var canCancel: Bool { running && !inspecting && command.cancellable && requestID != nil }

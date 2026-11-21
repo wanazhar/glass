@@ -39,7 +39,7 @@ struct OverviewView: View {
         if case .appUpdateRequired(let version) = status.compatibility {
             Section {
                 Label {
-                    Text("This host speaks protocol \(version). Update Glass to use every feature.")
+                    Text("This host is newer than this app. Update Glass to use every feature.")
                 } icon: {
                     Image(systemName: "arrow.down.app").foregroundStyle(.orange)
                 }
@@ -86,28 +86,28 @@ struct OverviewView: View {
 
         Section {
             LabeledContent("Profile", value: status.profile?.capitalized ?? "Unknown")
-            LabeledContent("Protocol") {
+            LabeledContent("Compatibility") {
                 Text(protocolLabel(status)).accessibilityIdentifier("host.protocol")
             }
             if let capabilities = status.capabilities, !capabilities.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Features")
-                    Text(capabilities.joined(separator: ", "))
+                    Text(capabilities.map(CommandLabel.title).joined(separator: ", "))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
             }
         } header: {
-            Text("Gateway")
+            Text("Host")
         }
     }
 
     private func protocolLabel(_ status: GatewayStatus) -> String {
         switch status.compatibility {
-        case .compatible: "v\(status.protocolVersion ?? 0)"
-        case .legacyGateway: "Legacy gateway"
-        case .appUpdateRequired(let version): "v\(version), update Glass"
+        case .compatible: "Up to date"
+        case .legacyGateway: "Older host"
+        case .appUpdateRequired: "Update Glass"
         }
     }
 }

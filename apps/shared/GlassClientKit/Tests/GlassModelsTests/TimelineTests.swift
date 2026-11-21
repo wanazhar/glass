@@ -125,4 +125,9 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         timeline.apply(.disconnected(message: nil))
         #expect(timeline.disconnected)
     }
+
+    @Test func originNoteOnlyFlagsTerminalConversations() throws {
+        let rows = try JSONDecoder().decode([ThreadSummary].self, from: Data(#"[{"session":"a","origin":"gc"},{"session":"b","origin":"glass"},{"session":"c"}]"#.utf8))
+        #expect(rows.map(\.originNote) == ["Started in Terminal", nil, nil])
+    }
 }

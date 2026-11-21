@@ -8,6 +8,10 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     public var sourceRef: String?
     public var origin: String?
     public var originLabel: String?
+
+    /// Plain-language origin, shown only when the conversation began outside Glass.
+    public var originNote: String? { origin == "gc" ? "Started in Terminal" : nil }
+
     public var writerActive: Bool?
     public var modified: Double?
     public var model: String?

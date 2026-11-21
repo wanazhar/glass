@@ -92,9 +92,11 @@ final class ScreenshotTourUITests: XCTestCase {
         let settingsTab = app.tabBars.buttons["Settings"]
         XCTAssertTrue(settingsTab.waitForExistence(timeout: 20))
         settingsTab.tap()
-        let general = app.buttons["settings.section.general"].firstMatch
-        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["settings.forget"].waitForExistence(timeout: 10))
         try save(app, "settings")
+        let general = app.buttons["settings.section.general"].firstMatch
+        for _ in 0..<6 where !(general.exists && general.isHittable) { app.swipeUp() }
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
         general.tap()
         XCTAssertTrue(app.switches["settings.image_input"].firstMatch.waitForExistence(timeout: 20))
         try save(app, "settings-general")

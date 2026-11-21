@@ -111,7 +111,7 @@ private struct ToolCard: View {
                 Image(systemName: symbol)
                     .foregroundStyle(failed == true ? .red : failed == false ? .green : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(CommandLabel.title(name)).font(.footnote.weight(.semibold))
+                    Text(CommandLabel.title(name)).font(.footnote.weight(.semibold)).foregroundStyle(.primary)
                     if !summary.isEmpty {
                         Text(summary)
                             .font(.system(.caption, design: .monospaced))
@@ -124,6 +124,7 @@ private struct ToolCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 12, style: .continuous))
+        .tint(.secondary)
         .accessibilityIdentifier("timeline.tool")
     }
 

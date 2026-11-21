@@ -74,12 +74,7 @@ struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
-                    Text(conversation.title).font(.headline).lineLimit(1)
-                    if let origin = conversation.originLabel {
-                        Text(origin).font(.caption2).foregroundStyle(.secondary).accessibilityIdentifier("conversation.origin")
-                    }
-                }
+                Text(conversation.title).font(.headline).lineLimit(1)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("Commands", systemImage: "command") { conversation.composer.showingCommands = true }

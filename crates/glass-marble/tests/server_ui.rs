@@ -2746,6 +2746,96 @@ fn everyone_entries(state: &Arc<Mutex<ProductState>>) -> Vec<TranscriptEntry> {
         .collect()
 }
 
+#[test]
+fn retiring_failed_prism_engines_restores_health() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("marble-prism-health-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let ids: Vec<String> = ["ben", "ada"]
+        .into_iter()
+        .map(|name| {
+            state
+                .lock()
+                .unwrap()
+                .prism
+                .add(name, "tester", "circle", 200, "", "")
+                .unwrap()
+                .id
+                .clone()
+        })
+        .collect();
+    let pool = fixture_prism_pool(
+        &script,
+        &root,
+        &state,
+        &events,
+        vec!["--exit-after-initialize".into()],
+    );
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: state.clone(),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(pool);
+    let dispatch = |id: &str| {
+        let (status, body) = server.handle(
+            "POST",
+            "/api/prism/dispatch",
+            &json!({"text": "hello", "marbles": [id]}).to_string(),
+        );
+        assert_eq!(status, 202, "{body}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let failed = state.lock().unwrap().prism.get(id).unwrap().state == "blocked";
+            if failed && server.handle("GET", "/healthz", "").0 == 503 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "engine did not report failure");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    dispatch(&ids[0]);
+    dispatch(&ids[1]);
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                &format!("/api/prism/marbles/{}/update", ids[0]),
+                r#"{"persona":"new personality"}"#
+            )
+            .0,
+        200
+    );
+    assert_eq!(server.handle("GET", "/healthz", "").0, 503);
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/prism/marbles/{}/remove", ids[1]), "")
+            .0,
+        200
+    );
+    assert_eq!(server.handle("GET", "/healthz", "").0, 200);
+    dispatch(&ids[0]);
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/prism/marbles/{}/remove", ids[0]), "")
+            .0,
+        200
+    );
+    assert_eq!(server.handle("GET", "/healthz", "").0, 200);
+}
+
 /// An @mention answers through the named marble's own engine and the reply
 /// lands on the shared timeline with its name on it.
 #[test]

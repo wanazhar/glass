@@ -84,8 +84,16 @@ impl RuntimeHealth {
     }
 
     pub(crate) fn note_engine_restart(&mut self, engine: u64) {
-        self.failed_engines.remove(&engine);
+        self.forget_engine(engine);
         self.note_restart();
+    }
+
+    pub(crate) fn forget_engine(&mut self, engine: u64) -> bool {
+        let removed = self.failed_engines.remove(&engine);
+        if removed {
+            self.note_ok();
+        }
+        removed
     }
 
     /// Presence document: one small block a surface can trust.
@@ -382,6 +390,21 @@ mod tests {
         runtime.note_engine_restart(2);
         assert!(runtime.is_ok());
         assert_eq!(runtime.restarts, 2);
+    }
+
+    #[test]
+    fn retiring_an_engine_clears_only_its_own_failure_without_counting_a_restart() {
+        let mut runtime = RuntimeHealth::default();
+        runtime.note_engine_failure(1, "first engine closed");
+        runtime.note_engine_failure(2, "second engine closed");
+        assert!(!runtime.forget_engine(3));
+        assert!(!runtime.is_ok());
+        assert!(runtime.forget_engine(1));
+        assert!(!runtime.is_ok());
+        assert!(runtime.forget_engine(2));
+        assert!(runtime.is_ok());
+        assert_eq!(runtime.restarts, 0);
+        assert_eq!(runtime.last_error, "second engine closed");
     }
 
     #[test]

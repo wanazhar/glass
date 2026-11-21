@@ -263,6 +263,7 @@ pub struct Conversation {
     storage_dir: PathBuf,
     /// Set when the engine stopped answering; the next turn restarts it first.
     transport_failed: bool,
+    stopped: bool,
     restarts: u64,
     /// Request ids this conversation issued and has not consumed yet.
     ///
@@ -279,6 +280,12 @@ pub struct Conversation {
     /// Instructions computed per conversation, so an edited persona reaches
     /// the next conversation on a shared lane.
     instructions_fn: Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>,
+}
+
+impl Drop for Conversation {
+    fn drop(&mut self) {
+        self.clear_runtime_failure();
+    }
 }
 
 impl Conversation {
@@ -353,6 +360,7 @@ impl Conversation {
             respawn: None,
             storage_dir: storage_dir.to_path_buf(),
             transport_failed: false,
+            stopped: false,
             restarts: 0,
             instructions: None,
             instructions_fn: None,
@@ -457,6 +465,8 @@ impl Conversation {
         drop(previous);
         self.set_active("", "");
         self.transport_failed = false;
+        self.stopped = false;
+        self.clear_runtime_failure();
         // The ids belonged to the engine that just went away.
         self.outstanding.clear();
         self.buffered.clear();
@@ -656,7 +666,8 @@ impl Conversation {
     }
 
     pub(crate) fn check_idle_transport(&mut self, state: &Mutex<ProductState>) {
-        if self.transport_failed || self.buffered.len() >= MAX_OUTSTANDING_RESPONSES {
+        if self.stopped || self.transport_failed || self.buffered.len() >= MAX_OUTSTANDING_RESPONSES
+        {
             return;
         }
         match self.client.recv_typed_timeout(Duration::ZERO) {
@@ -1026,12 +1037,24 @@ impl Conversation {
     }
 
     pub fn shutdown(&mut self) -> Result<(), MarbleError> {
+        self.stopped = true;
+        self.clear_runtime_failure();
         let shutdown_id = self
             .client
             .request("shutdown", json!({}))
             .map_err(MarbleError::Io)?;
         let _ = Self::wait_response_on(&mut self.client, &self.router, &self.events, &shutdown_id);
         Ok(())
+    }
+
+    fn clear_runtime_failure(&self) {
+        if let Some(state) = &self.product {
+            let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+            if guard.presence.runtime.forget_engine(self.engine_id) {
+                guard.bump();
+                self.publish("runtime", value!({"revision": guard.revision, "health": guard.presence.runtime.document()}));
+            }
+        }
     }
 
     pub fn host(&self) -> &HostPolicy {

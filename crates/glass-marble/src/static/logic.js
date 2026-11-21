@@ -65,7 +65,10 @@
     if (person.lastError) return "Couldn't finish: " + person.lastError;
     return 'Idle';
   }
-  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus };
+  const hues = [210, 35, 150, 280, 340, 85, 185, 245];
+  const nextHue = people => hues.find(h => !people.some(p => Number(p.hue) === h)) ?? hues[0];
+  const characterCount = text => Array.from(text).length;
+  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus, hues, nextHue, characterCount };
   if (typeof module !== 'undefined') module.exports = api;
   else root.MarbleLogic = api;
 })(typeof window === 'undefined' ? globalThis : window);

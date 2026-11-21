@@ -77,6 +77,7 @@
     return value;
   }
   async function action(key, path, body = {}, after) {
+    if (document.activeElement.tagName === 'BUTTON') document.activeElement.blur();
     s.errors.delete(key); showError(key, '');
     try { const result = await api(path, body); if (after) after(result); await refresh(); return true; }
     catch (error) { s.errors.set(key, humanError(error)); showError(key, humanError(error)); return false; }
@@ -88,10 +89,10 @@
     const waiting = approvals().map(approval => ({ ...approval, owner: approvalOwner(approval)?.id }));
     return L.marbleStatus(p, relevant, waiting);
   }
-  function renderStatus() { document.querySelectorAll('[data-connection]').forEach(n => n.textContent = L.statusLabel(s.status)); }
+  function renderStatus() { document.querySelectorAll('[data-connection]').forEach(n => { n.textContent = L.statusLabel(s.status); n.parentNode.dataset.connected = String(L.statusLabel(s.status) === 'Connected'); }); }
   function connection(cls = '') {
     const text = el('span'); text.dataset.connection = ''; text.textContent = L.statusLabel(s.status);
-    const n = el('div', 'connection ' + cls, el('span', 'dot'), text); n.setAttribute('role', 'status'); return n;
+    const n = el('div', 'connection ' + cls, el('span', 'dot'), text); n.dataset.connected = String(L.statusLabel(s.status) === 'Connected'); n.setAttribute('role', 'status'); return n;
   }
   function nav(label, screen, count) {
     const active = screen === 'marbles' ? ['marbles', 'chat', 'info', 'new'].includes(s.route.screen) : screen === s.route.screen;
@@ -102,7 +103,7 @@
   function renderRail() {
     const count = approvals().length + suggestions().length;
     $('rail').replaceChildren(el('div', 'brand', glyph(), t('Marble')), nav(t('Everyone'), 'everyone'));
-    $('rail').append(el('div', 'rail-heading', link(t('Marbles'), '#/marbles'), link(t('New Marble'), '#/new', 'button')));
+    $('rail').append(el('div', 'rail-heading', el('span', '', t('Marbles')), link(t('New Marble'), '#/new', 'button')));
     for (const p of s.people) {
       const a = link(null, chatRoute(p.id), 'nav-item' + (s.route.id === p.id ? ' active' : ''));
       a.append(glyph(p), el('div', 'row-copy', el('strong', '', p.name), el('span', '', personality(p)), el('span', '', statusText(p))));
@@ -147,7 +148,6 @@
     const title = chat ? p?.name || t('Missing Marble') : ({ everyone: t('Everyone'), marbles: t('Marbles'), activity: t('Activity'), settings: t('Settings'), new: t('New Marble') }[screen] || t('Not found'));
     const titleBlock = el('div', 'heading', el('h1', '', title));
     if (chat && p) titleBlock.append(el('p', 'muted', statusText(p)));
-    else if (screen === 'everyone') titleBlock.append(el('p', 'muted', t('A shared conversation')));
     if (screen !== 'everyone') titleBlock.append(connection('mobile-status'));
     const actions = el('div', 'header-actions');
     if (screen === 'everyone') actions.append(connection('mobile-status'), overflow());
@@ -328,7 +328,8 @@
     if (!$('message')) return;
     const shared = s.route.screen === 'everyone'; const active = !shared && running();
     $('message').placeholder = shared ? t('Message everyone. Use @name to ask one Marble.') : active ? t('Add to the current reply…') : t('Message ') + (current()?.name || t('Marble')) + '…';
-    $('compose-hint').textContent = shared ? L.answerHint($('message').value, s.people) : active ? t('Adds to the current reply.') : t('Chat with ') + (current()?.name || t('Marble')) + '.';
+    $('compose-hint').textContent = shared && $('message').value.trim() ? L.answerHint($('message').value, s.people) : active ? t('Adds to the current reply.') : '';
+    $('compose-hint').hidden = !$('compose-hint').textContent;
     $('send').textContent = active ? $('message').value.trim() ? t('Add') : t('Stop') : t('Send'); $('send').disabled = s.busy;
   }
   function stop(task) { if (task) action('conversation', '/api/tasks/' + enc(task.id) + '/cancel'); }
@@ -361,52 +362,103 @@
   }
   function form(key, fields, save) {
     const f = el('form', '', ...fields.map(x => x.node), button(t('Save'), () => f.requestSubmit(), 'primary'), errorNode(key));
-    f.addEventListener('submit', event => { event.preventDefault(); save(); }); return f;
+    const dirty = () => { f.dataset.dirty = 'true'; };
+    f.addEventListener('input', dirty); f.addEventListener('change', dirty);
+    f.addEventListener('click', event => { if (event.target.closest('.look-options')) dirty(); });
+    f.addEventListener('submit', async event => {
+      event.preventDefault(); document.activeElement.blur();
+      const submit = f.querySelector('.primary'); submit.disabled = true;
+      try { if (await save()) { delete f.dataset.dirty; render(); } } finally { submit.disabled = false; }
+    }); return f;
   }
   function placeholderNote() { return el('p', 'stage-note', t('This screen is still being built. The available actions work here.')); }
-  function infoPage(p) {
-    const key = 'info'; const page = el('div', 'page', placeholderNote()); if (!p) return page;
-    const name = field(t('Name'), p.name); const role = field(t('Role'), p.role); const persona = field(t('Personality'), p.persona, 'textarea'); persona.input.maxLength = 2000;
-    const counter = el('small', 'muted', persona.input.value.length + t(' / 2000')); persona.node.append(counter); persona.input.addEventListener('input', () => counter.textContent = persona.input.value.length + t(' / 2000'));
-    const shape = selectField(t('Shape'), (s.shapes || ['circle', 'hex', 'shield', 'drop', 'star', 'square']).map(x => [x, x]), p.glyph);
-    const hue = field(t('Hue'), p.hue, 'number'); hue.input.min = 0; hue.input.max = 359;
-    const folder = field(t('Workspace folder'), p.workspace);
-    const fields = p.isDefault ? [persona] : [name, role, persona, shape, hue, folder];
-    page.append(section(t('About ') + p.name, form(key, fields, () => action(key, '/api/prism/marbles/' + enc(p.id) + '/update', p.isDefault ? { persona: persona.input.value } : { name: name.input.value, role: role.input.value, persona: persona.input.value, glyph: shape.input.value, hue: Number(hue.input.value), workspace: folder.input.value }))));
-    const memory = section(t('Memory'));
-    for (const fact of s.data.memory?.facts || []) if (!fact.owner || fact.owner === p.id) {
-      memory.append(el('div', 'record', el('small', 'muted', fact.owner ? t('Only ') + p.name : t('Shared')), prose(fact.text), el('div', 'actions', button(t('Edit'), () => { const text = prompt(t('Memory'), fact.text); if (text?.trim()) action(key, '/api/memory/' + enc(fact.id) + '/update', { text: text.trim() }); }), button(t('Forget'), () => action(key, '/api/memory/' + enc(fact.id) + '/forget')))));
+  function personalityField(value = '') {
+    const item = field(t('Personality'), value, 'textarea');
+    const counter = el('small', 'muted'); item.node.append(counter);
+    const update = () => {
+      const count = L.characterCount(item.input.value);
+      counter.textContent = count + t(' / 2000');
+      item.input.setCustomValidity(count > 2000 ? t('A personality is at most 2000 characters.') : '');
+    };
+    item.input.addEventListener('input', update); update(); return item;
+  }
+  function lookEditor(p) {
+    const draft = { ...p }; const container = el('fieldset', 'look-editor');
+    container.append(el('legend', '', t('Look')));
+    const preview = el('div', 'look-preview'); const shapes = el('div', 'look-options'); const hues = el('div', 'look-options');
+    shapes.setAttribute('aria-label', t('Shape')); hues.setAttribute('aria-label', t('Hue'));
+    const redraw = () => {
+      preview.replaceChildren(glyph(draft), el('span', '', draft.name || t('Your Marble')));
+      shapes.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.shape === draft.glyph)));
+      hues.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.hue) === draft.hue)));
+    };
+    for (const shape of s.shapes || ['circle', 'hex', 'shield', 'drop', 'star', 'square']) {
+      const b = button(glyph({ ...draft, glyph: shape }), () => { draft.glyph = shape; redraw(); });
+      b.dataset.shape = shape; b.setAttribute('aria-label', shape); shapes.append(b);
     }
-    const fact = field(t('Add a fact'), '', 'textarea'); const shared = field(t('Shared with all Marbles'), false, 'checkbox');
-    memory.append(form(key, [fact, shared], () => action(key, '/api/memory', { text: fact.input.value, owner: shared.input.checked ? '' : p.id }))); page.append(memory);
-    const capabilities = section(t('What ') + p.name + t(' can do'), el('p', 'muted', t('Workspace: ') + (p.workspace || t('Host workspace'))), el('p', '', t('Model: ') + (s.data.model || t('Engine default'))), el('p', 'muted small', t('Per-Marble models are coming')));
-    capabilities.append(button(t('Show available tools'), async () => {
-      try { s.tools = await api('/api/tools'); const display = el('div');
-        for (const [title, items] of [[t('Coding tools'), s.tools.core?.observed || []], [t('Workspace tools'), s.tools.governed || []]]) {
-          const groupNode = section(title);
-          if (!items.length) groupNode.append(el('p', 'small muted', t('No tools observed yet.')));
-          for (const tool of items) groupNode.append(el('p', 'small', tool.name || String(tool), tool.description ? ' — ' + tool.description : ''));
-          display.append(groupNode);
-        }
-        capabilities.append(display);
-      } catch (error) { showError(key, humanError(error)); }
-    })); page.append(capabilities);
-    if (!p.isDefault) page.append(section(t('Remove Marble'), button(t('Remove ') + p.name, () => {
-      if (confirm(t('Remove ') + p.name + t('? Its chat is deleted too.'))) action(key, '/api/prism/marbles/' + enc(p.id) + '/remove', {}, () => { location.hash = '#/marbles'; });
-    }, 'danger'), errorNode(key)));
+    for (const hue of [...new Set([...L.hues, Number(draft.hue)])]) {
+      const b = button(glyph({ glyph: 'circle', hue }), () => { draft.hue = hue; redraw(); });
+      b.dataset.hue = hue; b.setAttribute('aria-label', t('Hue ') + hue); hues.append(b);
+    }
+    container.append(preview, el('small', 'muted', t('Shape')), shapes, el('small', 'muted', t('Hue')), hues); redraw();
+    return { node: container, draft, setName: name => { draft.name = name; redraw(); } };
+  }
+  function infoPage(p) {
+    const key = 'info'; const page = el('div', 'page info-page'); if (!p) return page;
+    page.append(el('div', 'editor-heading', el('h2', '', t('Marble info')), el('p', '', t('Personality, workspace and memory'))));
+    const name = field(t('Name'), p.name); name.input.required = true; name.input.maxLength = 40;
+    const role = field(t('Role'), p.role); const persona = personalityField(p.persona);
+    const look = lookEditor(p); name.input.addEventListener('input', () => look.setName(name.input.value));
+    const folder = field(t('Workspace folder'), p.workspace); folder.input.placeholder = t('Use the host workspace');
+    const fields = p.isDefault ? [persona] : [name, look, role, persona, folder];
+    const identity = form(key, fields, () => action(key, '/api/prism/marbles/' + enc(p.id) + '/update', p.isDefault ? { persona: persona.input.value } : { name: name.input.value.trim(), role: role.input.value, persona: persona.input.value, glyph: look.draft.glyph, hue: look.draft.hue, workspace: folder.input.value }));
+    identity.classList.add('identity-form'); identity.dataset.form = 'identity';
+    if (p.isDefault) page.append(el('div', 'look-preview', glyph(p), el('span', '', p.name)), el('p', 'muted small', t('The default Marble keeps its name and look.')));
+    page.append(section(t('About ') + p.name, identity));
+    const memory = section(t('Memory')); const facts = (s.data.memory?.facts || []).filter(fact => !fact.owner || fact.owner === p.id);
+    if (!facts.length) memory.append(el('p', 'muted small', t('No memories yet. Add something worth keeping.')));
+    for (const fact of facts) {
+      const record = el('div', 'record', el('small', 'muted', fact.owner ? t('Only ') + p.name : t('Shared')), prose(fact.text));
+      record.dataset.fact = fact.id;
+      record.append(el('div', 'actions', button(t('Edit'), () => {
+        const text = field(t('Memory'), fact.text, 'textarea');
+        const editor = form(key, [text], () => action(key, '/api/memory/' + enc(fact.id) + '/update', { text: text.input.value, kind: fact.kind }));
+        editor.append(button(t('Cancel'), () => { delete editor.dataset.dirty; document.activeElement.blur(); render(); }));
+        record.replaceChildren(el('small', 'muted', fact.owner ? t('Only ') + p.name : t('Shared')), editor); text.input.focus();
+      }), button(t('Forget'), () => action(key, '/api/memory/' + enc(fact.id) + '/forget')))); memory.append(record);
+    }
+    const fact = field(t('Add a fact'), '', 'textarea'); fact.input.required = true;
+    const shared = field(t('Shared with all Marbles'), false, 'checkbox');
+    const memoryForm = form('memory-add', [fact, shared], () => action('memory-add', '/api/memory', { text: fact.input.value.trim(), owner: shared.input.checked ? '' : p.id }));
+    memoryForm.classList.add('memory-add'); memoryForm.dataset.form = 'memory'; memory.append(memoryForm); page.append(memory);
+    const capabilities = section(t('What ') + p.name + t(' can do'), el('p', 'small', t('Workspace: ') + (p.workspace || t('Host workspace'))), el('p', 'small', t('Model: ') + (s.data.model || t('Engine default'))), el('p', 'muted small', t('Per-Marble models are coming')));
+    if (s.tools) {
+      for (const [title, items] of [[t('Coding tools'), s.tools.core?.observed || []], [t('Workspace tools'), s.tools.governed || []]]) {
+        const group = el('details', '', el('summary', '', title + ' · ' + items.length)); const list = el('ul', 'tools-list');
+        if (!items.length) list.append(el('li', '', t('No tools observed yet.')));
+        for (const tool of items) list.append(el('li', '', tool.description || tool.name));
+        group.append(list); capabilities.append(group);
+      }
+    } else capabilities.append(el('p', 'muted small', s.toolsError || t('Loading tools…')), button(t('Try again'), () => { s.toolsError = ''; refresh(); }));
+    page.append(capabilities);
+    if (!p.isDefault) page.append(section(t('Remove Marble'), el('p', 'muted small', t('Removing a Marble deletes its chat too.')), button(t('Remove ') + p.name, () => {
+      if (confirm(t('Remove ') + p.name + t('? Its chat is deleted too.'))) action('remove', '/api/prism/marbles/' + enc(p.id) + '/remove', {}, () => { location.hash = '#/marbles'; });
+    }, 'danger'), errorNode('remove')));
     return page;
   }
   function newPage() {
-    const key = 'new'; const page = el('div', 'page', placeholderNote());
-    const name = field(t('Name')); name.input.required = true;
-    const persona = field(t('Personality'), '', 'textarea'); persona.input.maxLength = 2000;
-    const shape = selectField(t('Shape'), (s.shapes || ['circle', 'hex', 'shield', 'drop', 'star', 'square']).map(x => [x, x]));
-    const unused = [210, 35, 150, 280, 340, 85, 185, 245].find(h => !s.people.some(p => p.hue === h)) || 210;
-    const hue = field(t('Hue'), unused, 'number'); hue.input.min = 0; hue.input.max = 359;
-    const workspace = field(t('Workspace folder'));
-    page.append(el('p', 'muted small', s.people.filter(p => !p.isDefault).length + t(' of ') + (s.limit || 8) + t(' Marbles')),
-      form(key, [name, persona, shape, hue, workspace], () => action(key, '/api/prism/marbles', { name: name.input.value, persona: persona.input.value, glyph: shape.input.value, hue: Number(hue.input.value), workspace: workspace.input.value }, result => { location.hash = chatRoute(result.marble.id); })));
-    return page;
+    const key = 'new'; const page = el('div', 'page new-page');
+    page.append(el('div', 'editor-heading', el('h2', '', t('Make a Marble')), el('p', '', t('Give it a name and a personality.'))));
+    const name = field(t('Name')); name.input.required = true; name.input.maxLength = 40; name.input.placeholder = t('For example, Ada');
+    const persona = personalityField(); persona.input.placeholder = t('What should this Marble be like?');
+    const look = lookEditor({ name: '', glyph: s.shapes?.[0] || 'circle', hue: L.nextHue(s.people) });
+    name.input.addEventListener('input', () => look.setName(name.input.value));
+    const workspace = field(t('Workspace folder (optional)')); workspace.input.placeholder = t('Use the host workspace');
+    const count = s.people.filter(p => !p.isDefault).length;
+    page.append(el('p', 'muted small', count + t(' of ') + (s.limit || 8) + t(' Marbles')));
+    const create = form(key, [name, persona, look, workspace], () => action(key, '/api/prism/marbles', { name: name.input.value.trim(), persona: persona.input.value, glyph: look.draft.glyph, hue: look.draft.hue, workspace: workspace.input.value }, result => { location.hash = chatRoute(result.marble.id) + '/info'; }));
+    create.classList.add('identity-form'); create.dataset.form = 'create'; create.querySelector('.primary').textContent = t('Create Marble');
+    page.append(create); return page;
   }
   function activityPage() {
     const key = 'activity'; const page = el('div', 'page', placeholderNote(), errorNode(key));
@@ -459,7 +511,7 @@
     if (!$('topbar').querySelector('input:focus') && !$('topbar').querySelector('details[open]')) header();
     const info = s.route.screen === 'info'; const wideInfo = info && innerWidth >= 1200; const sheetInfo = info && innerWidth >= 900 && innerWidth < 1200;
     document.body.classList.toggle('info-layout', wideInfo); document.body.classList.toggle('info-sheet', sheetInfo); $('info-panel').hidden = !(wideInfo || sheetInfo);
-    const editing = $('main').contains(document.activeElement) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+    const editing = $('main').querySelector('form[data-dirty="true"]') || $('main').contains(document.activeElement) && document.activeElement.closest('form');
     if (!editing) {
       if (s.route.screen === 'everyone') renderTimeline(true);
       else if (s.route.screen === 'chat' || wideInfo || sheetInfo) { if (current()) renderTimeline(); else $('main').replaceChildren(el('div', 'empty', t('This Marble no longer exists'), link(t('Back to Marbles'), '#/marbles', 'button'))); }
@@ -470,7 +522,7 @@
       else if (s.route.screen === 'settings') $('main').replaceChildren(settingsPage());
       else $('main').replaceChildren(el('div', 'empty', t('Page not found')));
     }
-    if ((wideInfo || sheetInfo) && !$('info-panel').contains(document.activeElement)) $('info-panel').replaceChildren(link(t('Close info'), chatRoute(s.route.id), 'button'), infoPage(current()));
+    if ((wideInfo || sheetInfo) && !$('info-panel').contains(document.activeElement) && !$('info-panel').querySelector('form[data-dirty="true"]')) $('info-panel').replaceChildren(link(t('Close info'), chatRoute(s.route.id), 'button'), infoPage(current()));
     composer();
   }
   async function refresh() {
@@ -479,6 +531,10 @@
       const [data, people, shared] = await Promise.all([api('/api/state?lean=1'), api('/api/prism'), api('/api/everyone'), api('/healthz')]);
       if (generation !== s.generation || request !== s.refreshId) return;
       s.data = data; s.people = people.marbles || []; s.limit = people.limit; s.shapes = people.glyphs; s.shared = shared.entries || []; s.loaded = true;
+      if (s.route.screen === 'info' && !s.tools) {
+        try { s.tools = await api('/api/tools'); } catch (error) { s.toolsError = humanError(error); }
+        if (generation !== s.generation || request !== s.refreshId) return;
+      }
       if (s.pendingDefault) {
         const task = tasks().find(task => task.prompt === s.pendingDefault.text && task.conversationId && !s.pendingDefault.knownChats.has(task.conversationId));
         if (task) { s.defaultChat = task.conversationId; s.pendingDefault = null; }

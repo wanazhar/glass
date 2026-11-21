@@ -1702,7 +1702,7 @@ impl MarbleServer {
                 );
             }
         }
-        self.remember_text(text, kind, "", true, owner)
+        self.remember_text(text, kind, "", true, parsed.get("owner").map(|_| owner))
     }
 
     fn remember_text(
@@ -1711,11 +1711,11 @@ impl MarbleServer {
         kind: &str,
         conversation_id: &str,
         explicit: bool,
-        owner: &str,
+        owner: Option<&str>,
     ) -> Response {
         // The owner of a remembered statement is the marble whose chat taught
         // it, unless the caller named an owner explicitly.
-        let owner = if owner.is_empty() {
+        let owner = if owner.is_none() {
             let guard = self.lock_state();
             guard
                 .prism
@@ -1723,7 +1723,7 @@ impl MarbleServer {
                 .map(|marble| marble.id.clone())
                 .unwrap_or_else(|| "marble".to_string())
         } else {
-            owner.to_string()
+            owner.unwrap_or_default().to_string()
         };
         let outcome = {
             let mut guard = self.lock_state();
@@ -2781,7 +2781,7 @@ impl MarbleServer {
                     &kind,
                     conversation_id.as_deref().unwrap_or_default(),
                     true,
-                    "",
+                    None,
                 );
             }
             Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),

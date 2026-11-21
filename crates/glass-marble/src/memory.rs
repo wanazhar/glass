@@ -128,11 +128,9 @@ impl MemoryState {
             ));
         }
         let candidate = text.to_ascii_lowercase();
-        if let Some(existing) = self
-            .facts
-            .iter_mut()
-            .find(|fact| normalize(&fact.text).to_ascii_lowercase() == candidate)
-        {
+        if let Some(existing) = self.facts.iter_mut().find(|fact| {
+            fact.owner == owner && normalize(&fact.text).to_ascii_lowercase() == candidate
+        }) {
             existing.updated_at = now_millis();
             existing.explicit = existing.explicit || explicit;
             return Ok(existing.clone());
@@ -552,6 +550,26 @@ mod tests {
             memory
                 .remember(&"x".repeat(MAX_FACT_CHARS + 1), "fact", "c1", true, "")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn identical_facts_keep_their_requested_owner() {
+        let mut memory = MemoryState::default();
+        let shared = memory
+            .remember("Keep it short", "fact", "", true, "")
+            .unwrap();
+        let private = memory
+            .remember("Keep it short", "fact", "", true, "ada")
+            .unwrap();
+        assert_ne!(shared.id, private.id);
+        assert_eq!(private.owner, "ada");
+        assert_eq!(
+            memory
+                .remember("Keep it short", "fact", "", true, "ada")
+                .unwrap()
+                .id,
+            private.id
         );
     }
 

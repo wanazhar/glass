@@ -45,6 +45,15 @@ test('routes decode ids and preserve info navigation', () => {
   assert.equal(L.route('').screen, 'everyone');
 });
 
+test('look defaults and personality counters respect host values', () => {
+  assert.equal(L.nextHue([]), 210);
+  assert.equal(L.nextHue([{ hue: 210 }, { hue: 35 }]), 150);
+  assert.equal(L.nextHue(L.hues.map(hue => ({ hue }))), 210);
+  assert.equal(L.characterCount(''), 0);
+  assert.equal(L.characterCount('A😀'), 2);
+  assert.equal(L.characterCount('😀'.repeat(2000)), 2000);
+});
+
 test('markdown supports paragraphs, lists, inline and unclosed code blocks', () => {
   assert.deepEqual(L.markdown(''), []);
   const blocks = L.markdown('Hello **Ada** and `code`.\n\n- one\n- two\n\n1. ordered\n\n```js\nconst x = 1;');

@@ -774,9 +774,12 @@ Four hash-routed destinations work with browser back and forward:
   placeholder screens with working controls: attention requests, running and
   queued turns, pause/resume and stop, routines, permissions, grants, decision
   history, model, notifications, devices, voice, exports and the workspace map.
-  **Marble info** (`#/m/<id>/info`) and **New Marble** (`#/new`) likewise retain
-  the working identity, personality, memory, tools and creation controls while
-  their final layouts are deferred. Info opens on the right at 1200px, in a
+  **Marble info** (`#/m/<id>/info`) edits identity, personality, workspace and
+  memory, with shape and hue choices and a live glyph preview. **New Marble**
+  (`#/new`) starts with the next unused hue and shows host refusals inline.
+  Memory creation sends an explicit owner: a Marble ID for private facts, or
+  an empty string for shared facts. Omitting the owner retains the historical
+  default-Marble behavior; editing a fact preserves its owner. Info opens on the right at 1200px, in a
   sheet from 900px, and as a pushed screen on phones.
 
 At 900px the rail becomes a bottom tab bar. Glass is limited to navigation,

@@ -11,8 +11,6 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u64 = 1;
-/// Negotiated protocol for mixed Core-native and host-integration tools.
-pub const MIXED_PROTOCOL_VERSION: u64 = 2;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// A single runtime child. Drop terminates and reaps the owned process.
@@ -187,27 +185,13 @@ mod tests {
 }
 
 pub mod protocol;
-pub use protocol::{
-    Incoming, RuntimeEvent, SessionOptions, ToolDefinition, ToolMode, ToolResult, TurnInput,
-};
+pub use protocol::{Incoming, SessionOptions, ToolDefinition, ToolMode, ToolResult, TurnInput};
 
 impl RuntimeClient {
     pub fn initialize(&mut self, storage: impl AsRef<Path>) -> io::Result<String> {
         self.request(
             "initialize",
             json!({"protocolVersion":PROTOCOL_VERSION,"storageDir":storage.as_ref()}),
-        )
-    }
-    /// Negotiate protocol v2 mixed tool ownership. There is no downgrade: the
-    /// caller must check the reported protocol and `mixedTools` capability.
-    pub fn initialize_mixed(&mut self, storage: impl AsRef<Path>) -> io::Result<String> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": MIXED_PROTOCOL_VERSION,
-                "requiredCapabilities": ["mixedTools"],
-                "storageDir": storage.as_ref(),
-            }),
         )
     }
     pub fn new_session(&mut self, options: &SessionOptions) -> io::Result<String> {

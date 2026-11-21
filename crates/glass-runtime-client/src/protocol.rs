@@ -15,9 +15,6 @@ pub enum ToolMode {
     #[default]
     Host,
     Local,
-    /// Core native tools plus registered `glass.*` host integrations.
-    /// Accepted only after protocol v2 initialization with `mixedTools`.
-    Mixed,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,15 +55,6 @@ impl SessionOptions {
             image_input: None,
             max_tokens: None,
             reasoning_budget: None,
-        }
-    }
-
-    /// Core keeps its native coding tools and only registered `glass.*`
-    /// integrations are routed back to the host for execution.
-    pub fn mixed(cwd: impl Into<PathBuf>, tools: Vec<ToolDefinition>) -> Self {
-        Self {
-            tool_mode: ToolMode::Mixed,
-            ..Self::host(cwd, tools)
         }
     }
 }

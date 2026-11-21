@@ -84,6 +84,11 @@ final class MarbleStore: ObservableObject {
     private var transcriptConversationId: String?
     private var transcriptCursor: UInt64 = 0
     private var transcriptRevision: Int = -1
+    /// Everyone and each marble's own chat, paged from the host: a lean state
+    /// poll carries no transcript, so these never come from `state`.
+    @Published private(set) var everyoneTimeline: [MarbleEntry] = []
+    @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
+    private var chatsRevision: Int = -1
     @Published private(set) var liveText = ""
     @Published private(set) var liveReasoning = ""
     @Published private(set) var liveTools: [LiveTool] = []
@@ -237,6 +242,7 @@ final class MarbleStore: ObservableObject {
         transcriptConversationId = nil
         transcriptCursor = 0
         transcriptRevision = -1
+        resetChats()
         live = [:]
         syncLive()
         started = true
@@ -263,6 +269,7 @@ final class MarbleStore: ObservableObject {
         transcriptConversationId = nil
         transcriptCursor = 0
         transcriptRevision = -1
+        resetChats()
         live = [:]
         syncLive()
         status.signedOut()
@@ -365,6 +372,7 @@ final class MarbleStore: ObservableObject {
             }
             loaded = true
             await loadTranscript()
+            await loadChats()
         } catch MarbleClientError.unauthorized {
             needsToken = true
             status.refreshFailed("The token was rejected")
@@ -372,6 +380,37 @@ final class MarbleStore: ObservableObject {
         } catch {
             status.refreshFailed(error.localizedDescription)
             loaded = true
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func resetChats() {
+        everyoneTimeline = []
+        marbleTranscripts = [:]
+        chatsRevision = -1
+    }
+
+    /// Fetch the Everyone timeline and every marble's own chat once per
+    /// document revision.
+    private func loadChats() async {
+        guard let client, chatsRevision != state.revision else { return }
+        let revision = state.revision
+        do {
+            everyoneTimeline = try await client.everyone()
+            var transcripts: [String: [MarbleEntry]] = [:]
+            for marble in prism.marbles where !marble.conversationId.isEmpty {
+                do {
+                    let page = try await client.transcript(
+                        conversationId: marble.conversationId, after: nil
+                    )
+                    transcripts[marble.conversationId] = page.entries
+                } catch MarbleClientError.notFound {
+                    transcripts[marble.conversationId] = []
+                }
+            }
+            marbleTranscripts = transcripts
+            chatsRevision = revision
+        } catch {
             errorMessage = error.localizedDescription
         }
     }
@@ -523,9 +562,9 @@ final class MarbleStore: ObservableObject {
         await updateMarble(marble.id, update: .init(persona: persona))
     }
 
-    /// The shared plane's timeline, from the state document.
+    /// The shared plane's timeline, as last fetched from the host.
     var everyoneEntries: [MarbleEntry] {
-        state.transcript(for: everyoneConversationId)
+        everyoneTimeline.isEmpty ? state.transcript(for: everyoneConversationId) : everyoneTimeline
     }
 
     /// Settings → Data: wipe the shared plane's history on the host.
@@ -568,7 +607,7 @@ final class MarbleStore: ObservableObject {
 
     /// A marble's own chat transcript once it has a durable conversation.
     func marbleTranscript(_ marble: MarblePrismMarble) -> [MarbleEntry] {
-        state.transcript(for: marble.conversationId)
+        marbleTranscripts[marble.conversationId] ?? state.transcript(for: marble.conversationId)
     }
 
     func removeMarble(_ marble: MarblePrismMarble) async {

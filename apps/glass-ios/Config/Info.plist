@@ -24,6 +24,15 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Glass uses the camera to scan the pairing QR code shown by gc connect qr.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Glass connects to your Glass host on the local network when you allow HTTP pairing.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

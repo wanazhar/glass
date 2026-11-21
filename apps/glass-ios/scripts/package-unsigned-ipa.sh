@@ -21,6 +21,7 @@ check() { [[ "$(/usr/libexec/PlistBuddy -c "Print $1" "$plist")" == "$2" ]] || f
 check CFBundleIdentifier com.wanazhar.glass
 check CFBundleDisplayName Glass
 check MinimumOSVersion 18.0
+/usr/libexec/PlistBuddy -c "Print NSCameraUsageDescription" "$plist" >/dev/null || fail "NSCameraUsageDescription missing"
 [[ -f "$app/Assets.car" ]] || fail "Assets.car missing"
 [[ -d "$app/Base.lproj/LaunchScreen.storyboardc" ]] || fail "LaunchScreen.storyboardc missing"
 [[ ! -e "$app/embedded.mobileprovision" ]] || fail "embedded.mobileprovision present"

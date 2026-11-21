@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		6C1A55000000000000000101 /* GlassModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000100 /* GlassModels */; };
+		6C1A55000000000000000103 /* GlassTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000102 /* GlassTransport */; };
+		6C1A55000000000000000105 /* GlassAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000104 /* GlassAuth */; };
+		6C1A55000000000000000107 /* GlassAPI in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000106 /* GlassAPI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +49,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				6C1A55000000000000000101 /* GlassModels in Frameworks */,
+				6C1A55000000000000000103 /* GlassTransport in Frameworks */,
+				6C1A55000000000000000105 /* GlassAuth in Frameworks */,
+				6C1A55000000000000000107 /* GlassAPI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -108,6 +114,9 @@
 			name = Glass;
 			packageProductDependencies = (
 				6C1A55000000000000000100 /* GlassModels */,
+				6C1A55000000000000000102 /* GlassTransport */,
+				6C1A55000000000000000104 /* GlassAuth */,
+				6C1A55000000000000000106 /* GlassAPI */,
 			);
 			productName = Glass;
 			productReference = 6C1A55000000000000000002 /* Glass.app */;
@@ -276,7 +285,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -305,7 +314,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -468,6 +477,18 @@
 		6C1A55000000000000000100 /* GlassModels */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GlassModels;
+		};
+		6C1A55000000000000000102 /* GlassTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GlassTransport;
+		};
+		6C1A55000000000000000104 /* GlassAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GlassAuth;
+		};
+		6C1A55000000000000000106 /* GlassAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GlassAPI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -770,10 +770,15 @@ Four hash-routed destinations work with browser back and forward:
   Retry. The default Marble's Earlier chats picker has search, rename, delete
   and export; New chat clears the selected history. A missing chat explains
   what happened rather than looking empty.
-- **Activity** (`#/activity`) and **Settings** (`#/settings`) are stage-one
-  placeholder screens with working controls: attention requests, running and
-  queued turns, pause/resume and stop, routines, permissions, grants, decision
-  history, model, notifications, devices, voice, exports and the workspace map.
+- **Activity** (`#/activity`) and **Settings** (`#/settings`) are
+  operational screens: Activity groups attention requests, running and queued
+  turns, pause/resume and stop, scheduled routines and recent work. Routines
+  offer interval or daily choices, custom `every:15m` / `daily:09:30` syntax,
+  timezone, catch-up and quiet hours. Settings holds connection health,
+  permissions, grants, denied paths and decision history, model, notifications,
+  devices, voice, exports and the workspace map. Notification tests report each
+  channel separately; empty webhook-token fields retain the saved token unless
+  removal is selected. Quiet hours use clock inputs with a saved UTC offset.
   **Marble info** (`#/m/<id>/info`) edits identity, personality, workspace and
   memory, with shape and hue choices and a live glyph preview. **New Marble**
   (`#/new`) starts with the next unused hue and shows host refusals inline.

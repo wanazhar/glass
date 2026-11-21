@@ -833,6 +833,8 @@
         transcript: [],
         transcriptConversation: null,
         transcriptCursor: 0,
+        transcriptRequest: 0,
+        transcriptError: null,
         stream: null,
         offline: false,
         revision: null,
@@ -949,7 +951,9 @@
         try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
         if (!response.ok) {
           const message = (body && (body.message || body.error)) || "request failed";
-          throw new Error(message);
+          const error = new Error(message);
+          error.status = response.status;
+          throw error;
         }
         return body;
       }
@@ -1049,6 +1053,10 @@
           return;
         }
         el.transcript.removeAttribute("aria-busy");
+        if (app.transcriptError) {
+          el.transcript.append(node("p", "empty", app.transcriptError));
+          return;
+        }
         const conversationId = activeConversation();
         const entries = (app.transcript || []).filter(
           (entry) => !conversationId || entry.conversationId === conversationId
@@ -1685,6 +1693,8 @@
       }
 
       async function openConversation(id) {
+        app.transcriptRequest++;
+        app.transcriptError = null;
         app.conversationId = id;
         app.transcript = [];
         app.transcriptConversation = null;
@@ -1926,6 +1936,7 @@
       /// last cursor. The lean state no longer carries every conversation.
       async function syncTranscript() {
         const conversationId = activeConversation();
+        const request = ++app.transcriptRequest;
         if (conversationId !== app.transcriptConversation) {
           app.transcriptConversation = conversationId;
           app.transcript = [];
@@ -1934,7 +1945,19 @@
         if (!conversationId) return;
         const query = "conversationId=" + encodeURIComponent(conversationId) +
           (app.transcriptCursor ? "&after=" + app.transcriptCursor : "");
-        const page = await api("/api/transcript?" + query);
+        let page;
+        try {
+          page = await api("/api/transcript?" + query);
+        } catch (error) {
+          if (request !== app.transcriptRequest || conversationId !== activeConversation()) return;
+          app.transcriptError = error.status === 404 ? "This chat no longer exists" : "Could not load this chat: " + error.message;
+          if (error.status === 404 && app.state) {
+            app.state.conversations = app.state.conversations.filter((chat) => chat.id !== conversationId);
+          }
+          return;
+        }
+        if (request !== app.transcriptRequest || conversationId !== activeConversation()) return;
+        app.transcriptError = null;
         const keyOf = (entry) => [entry.at, entry.kind, entry.taskId, entry.text].join("|");
         const known = new Set((app.transcript || []).map(keyOf));
         (page.entries || []).forEach((entry) => {
@@ -1990,11 +2013,7 @@
             app.live.reasoning = "";
             app.live.tools = [];
           }
-          try {
-            await syncTranscript();
-          } catch {
-            /* the transcript retries on the next refresh */
-          }
+          await syncTranscript();
           render();
         } catch (error) {
           app.offline = true;

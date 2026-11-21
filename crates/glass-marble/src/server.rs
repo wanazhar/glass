@@ -627,10 +627,10 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/conversations/")
         {
             if let Some(id) = rest.strip_suffix("/rename") {
-                return self.rename_conversation(id, body);
+                return self.rename_conversation(&decode_path_segment(id), body);
             }
             if let Some(id) = rest.strip_suffix("/delete") {
-                return self.delete_conversation(id);
+                return self.delete_conversation(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/events" {
@@ -670,7 +670,7 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/control/grants/")
             && let Some(grant_id) = rest.strip_suffix("/revoke")
         {
-            return self.revoke_grant(grant_id);
+            return self.revoke_grant(&decode_path_segment(grant_id));
         }
         if head.method == "GET" && path == "/api/export" {
             return self.export_response(head);
@@ -706,10 +706,10 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/prism/marbles/")
         {
             if let Some(id) = rest.strip_suffix("/update") {
-                return self.update_marble(id, body);
+                return self.update_marble(&decode_path_segment(id), body);
             }
             if let Some(id) = rest.strip_suffix("/remove") {
-                return self.remove_marble(id);
+                return self.remove_marble(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/memory" {
@@ -722,16 +722,16 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/memory/")
         {
             if let Some(id) = rest.strip_suffix("/forget") {
-                return self.forget_memory(id);
+                return self.forget_memory(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/update") {
-                return self.update_memory(id, body);
+                return self.update_memory(&decode_path_segment(id), body);
             }
             if let Some(id) = rest.strip_suffix("/accept") {
-                return self.accept_suggestion(id);
+                return self.accept_suggestion(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/dismiss") {
-                return self.dismiss_suggestion(id);
+                return self.dismiss_suggestion(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/routines" {
@@ -750,19 +750,19 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/routines/")
         {
             if let Some(id) = rest.strip_suffix("/run") {
-                return self.run_routine(id);
+                return self.run_routine(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/enable") {
-                return self.set_routine_enabled(id, true);
+                return self.set_routine_enabled(&decode_path_segment(id), true);
             }
             if let Some(id) = rest.strip_suffix("/disable") {
-                return self.set_routine_enabled(id, false);
+                return self.set_routine_enabled(&decode_path_segment(id), false);
             }
             if let Some(id) = rest.strip_suffix("/remove") {
-                return self.remove_routine(id);
+                return self.remove_routine(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/catch-up") {
-                return self.set_routine_catch_up(id, body);
+                return self.set_routine_catch_up(&decode_path_segment(id), body);
             }
         }
         if head.method == "GET" && path == "/api/notifications" {
@@ -785,7 +785,7 @@ impl MarbleServer {
                 .strip_prefix("/api/devices/")
                 .and_then(|rest| rest.strip_suffix("/remove"))
         {
-            return self.remove_device(token);
+            return self.remove_device(&decode_path_segment(token));
         }
         if head.method == "GET" && path == "/api/voice" {
             return self.voice_response();
@@ -800,7 +800,7 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/tasks/")
             && let Some(task_id) = rest.strip_suffix("/cancel")
         {
-            return self.cancel_task(task_id);
+            return self.cancel_task(&decode_path_segment(task_id));
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/approvals/")
@@ -1596,6 +1596,17 @@ impl MarbleServer {
             .map(|value| value.clamp(1, 1_000))
             .unwrap_or(500);
         let guard = self.lock_state();
+        if !conversation_id.is_empty()
+            && !guard
+                .conversations
+                .iter()
+                .any(|conversation| conversation.id == conversation_id)
+        {
+            return Response::json(
+                404,
+                json!({"error": "not_found", "message": "This chat no longer exists"}),
+            );
+        }
         let mut entries: Vec<&crate::state::TranscriptEntry> = guard
             .transcript
             .iter()

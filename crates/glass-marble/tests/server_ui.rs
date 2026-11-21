@@ -1504,7 +1504,7 @@ fn transcript_pages_search_and_conversation_lifecycle() {
 
     let (status, _) = server.handle(
         "POST",
-        "/api/conversations/c1/rename",
+        "/api/conversations/%631/rename",
         r#"{"title":"Deploys"}"#,
     );
     assert_eq!(status, 200);
@@ -1512,11 +1512,13 @@ fn transcript_pages_search_and_conversation_lifecycle() {
     let lean: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(lean["conversations"][0]["title"], json!("Deploys"));
 
-    let (status, _) = server.handle("POST", "/api/conversations/c1/delete", "");
+    let (status, _) = server.handle("POST", "/api/conversations/%631/delete", "");
     assert_eq!(status, 200);
-    let (_, body) = server.handle("GET", "/api/transcript?conversationId=c1", "");
+    let (status, body) = server.handle("GET", "/api/transcript?conversationId=c1", "");
     let page: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(page["entries"].as_array().map(Vec::len), Some(0));
+    assert_eq!(status, 404);
+    assert_eq!(page["error"], "not_found");
+    assert_eq!(page["message"], "This chat no longer exists");
     // Its tasks go with it: nothing is left to render as orphaned "recent
     // turns" on the chat list.
     let (_, body) = server.handle("GET", "/api/state?lean=1", "");

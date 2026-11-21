@@ -400,14 +400,22 @@ final class MarbleStore: ObservableObject {
                 conversationId: conversationId,
                 after: transcriptCursor == 0 ? nil : transcriptCursor
             )
+            guard selectedConversationId == conversationId else { return }
             var known = Set(conversationTranscript.map(Self.transcriptKey))
             for entry in page.entries where known.insert(Self.transcriptKey(entry)).inserted {
                 conversationTranscript.append(entry)
             }
             transcriptCursor = max(transcriptCursor, page.cursor)
             transcriptRevision = state.revision
+        } catch MarbleClientError.notFound {
+            guard selectedConversationId == conversationId else { return }
+            state.conversations.removeAll { $0.id == conversationId }
+            selectedConversationId = nil
+            conversationTranscript = []
+            errorMessage = "This chat no longer exists"
         } catch {
-            // Keep the previous page; the next refresh retries.
+            guard selectedConversationId == conversationId else { return }
+            errorMessage = error.localizedDescription
         }
     }
 

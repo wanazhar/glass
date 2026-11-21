@@ -89,6 +89,25 @@ final class ScreenshotTourUITests: XCTestCase {
         app.terminate()
         app.launchArguments = []
         app.launch()
+        if app.waitForThreadList(timeout: 20) {
+            let first = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'thread.'")).firstMatch
+            if first.waitForExistence(timeout: 10) {
+                first.tap()
+                app.buttons["conversation.menu"].firstMatch.tap()
+                app.buttons["conversation.details"].firstMatch.tap()
+                if app.buttons["details.done"].firstMatch.waitForExistence(timeout: 10) {
+                    sleep(1)
+                    try save(app, "details")
+                    app.buttons["details.done"].firstMatch.tap()
+                }
+            }
+        }
+        let desktopTab = app.tabBars.buttons["Desktop"]
+        if desktopTab.waitForExistence(timeout: 10) {
+            desktopTab.tap()
+            _ = app.buttons["desktop.start.reusable"].firstMatch.waitForExistence(timeout: 20)
+            try save(app, "desktop")
+        }
         let settingsTab = app.tabBars.buttons["Settings"]
         XCTAssertTrue(settingsTab.waitForExistence(timeout: 20))
         settingsTab.tap()

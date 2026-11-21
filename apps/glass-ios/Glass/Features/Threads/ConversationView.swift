@@ -142,8 +142,8 @@ struct ConversationView: View {
         .background {
             // Hardware-keyboard shortcuts, as in the web UI: ⌘K and ⌘/ open the palette.
             Group {
-                Button("Commands") { conversation.composer.showingCommands = true }.keyboardShortcut("k", modifiers: .command)
-                Button("Commands") { conversation.composer.showingCommands = true }.keyboardShortcut("/", modifiers: .command)
+                Button("Commands") { conversation.composer.showingCommands = true }.keyCommand(.commands)
+                Button("Commands") { conversation.composer.showingCommands = true }.keyCommand(.commandsAlternate)
             }
             .opacity(0)
             .allowsHitTesting(false)

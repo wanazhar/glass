@@ -89,15 +89,6 @@ struct OverviewView: View {
             LabeledContent("Compatibility") {
                 Text(protocolLabel(status)).accessibilityIdentifier("host.protocol")
             }
-            if let capabilities = status.capabilities, !capabilities.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Features")
-                    Text(capabilities.map(CommandLabel.title).joined(separator: ", "))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .combine)
-            }
         } header: {
             Text("Host")
         }

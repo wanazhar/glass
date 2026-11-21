@@ -29,9 +29,10 @@ struct HostTabView: View {
             .accessibilityIdentifier("tab.settings")
         }
         .background {
-            Button("Settings") { model.selectedTab = .settings }
-                .keyboardShortcut(",", modifiers: .command)
-                .opacity(0)
+            // No visible label: it only carries ⌘, and must not show up as on-screen text.
+            Button { model.selectedTab = .settings } label: { EmptyView() }
+                .keyCommand(.settings)
+                .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
     }

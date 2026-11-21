@@ -91,7 +91,7 @@ struct ThreadListView: View {
         .searchable(text: $threads.query, isPresented: $searching, prompt: "Search conversations")
         .background {
             Button("Search Conversations") { searching = true }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyCommand(.searchConversations)
                 .hidden()
         }
         .task(id: "\(threads.query)\u{1}\(threads.project)") {
@@ -116,7 +116,7 @@ struct ThreadListView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("New conversation", systemImage: "square.and.pencil") { Task { await threads.newThread() } }
-                    .keyboardShortcut("n", modifiers: .command)
+                    .keyCommand(.newConversation)
                     .accessibilityIdentifier("threads.new")
             }
         }
@@ -134,21 +134,24 @@ private struct ThreadRow: View {
                 }
                 Text(thread.displayTitle).font(.body.weight(.medium)).lineLimit(2)
             }
-            HStack(spacing: 6) {
-                if let workspace = thread.workspace, !workspace.isEmpty {
-                    Label((workspace as NSString).lastPathComponent, systemImage: "folder")
-                        .labelStyle(.titleAndIcon)
-                }
-                if let date = thread.modifiedDate {
-                    Text(date, format: .relative(presentation: .named))
-                }
-                if let origin = thread.originNote { Text(origin) }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+            metadata
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
+        .accessibilityElement(children: .combine)
         .padding(.vertical, 2)
+    }
+
+    /// Folder, age and origin in one line, so it wraps as a sentence instead of truncating each piece.
+    private var metadata: Text {
+        var parts: [Text] = []
+        if let workspace = thread.workspace, !workspace.isEmpty {
+            parts.append(Text((workspace as NSString).lastPathComponent))
+        }
+        if let date = thread.modifiedDate { parts.append(Text(date, format: .relative(presentation: .named))) }
+        if let origin = thread.originNote { parts.append(Text(origin)) }
+        return parts.dropFirst().reduce(parts.first ?? Text("")) { $0 + Text(" · ") + $1 }
     }
 }
 

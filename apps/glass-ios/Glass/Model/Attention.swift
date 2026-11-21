@@ -18,8 +18,13 @@ enum Attention {
         return granted
     }
 
+    /// Alerts only when they're on and Glass isn't on screen, matching the web client's hidden-tab rule.
+    nonisolated static func shouldNotify(enabled: Bool, appState: UIApplication.State) -> Bool {
+        enabled && appState != .active
+    }
+
     static func notify(_ title: String, conversation: String, id: String) {
-        guard isOn, UIApplication.shared.applicationState != .active else { return }
+        guard shouldNotify(enabled: isOn, appState: UIApplication.shared.applicationState) else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = conversation

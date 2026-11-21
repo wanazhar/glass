@@ -597,4 +597,27 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertFalse(quick.isEnabled, "desktops the host can't run are disabled")
         attach(app, "e2e-desktop")
     }
+
+    @MainActor
+    func testEveryScreenPassesTheAccessibilityAudit() throws {
+        let thread = try call("thread/new?title=Audit", method: "POST")
+        _ = try call("thread/rich?id=\(thread)", method: "POST")
+        let app = try pairedApp()
+        var issues = auditIssues(app, "conversations")
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        issues += auditIssues(app, "conversation")
+        openDetails(app)
+        sleep(2)
+        attach(app, "audit-details")
+        issues += auditIssues(app, "details")
+        app.buttons["details.done"].firstMatch.tap()
+        for tab in ["Host", "Desktop", "Diagnostics", "Settings"] {
+            app.tabBars.buttons[tab].tap()
+            XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 10))
+            sleep(2)
+            issues += auditIssues(app, tab)
+        }
+        XCTAssertTrue(issues.isEmpty, issues.joined(separator: "\n"))
+    }
 }

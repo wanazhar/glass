@@ -39,6 +39,7 @@ struct DetailsView: View {
                 } footer: {
                     if let workspace = conversation.thread.workspace, !workspace.isEmpty {
                         Text(workspace).textSelection(.enabled)
+                            .accessibilityLabel("Folder \((workspace as NSString).lastPathComponent)")
                     }
                 }
 

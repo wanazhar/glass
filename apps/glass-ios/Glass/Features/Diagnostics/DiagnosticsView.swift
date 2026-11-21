@@ -37,6 +37,12 @@ struct DiagnosticsView: View {
                 }
             }
             if let report { reportSections(report) }
+            if let capabilities = model.status?.capabilities, !capabilities.isEmpty {
+                Section("Features") {
+                    Text(capabilities.map(CommandLabel.title).joined(separator: ", "))
+                        .textSelection(.enabled)
+                }
+            }
         }
         .overlay { if loading && report == nil { ProgressView() } }
         .navigationTitle("Diagnostics")

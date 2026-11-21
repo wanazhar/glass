@@ -15,7 +15,8 @@ final class PairingUITests: XCTestCase {
     @MainActor
     func testFirstLaunchShowsPairing() throws {
         let app = launch()
-        XCTAssertEqual(app.staticTexts["pair.title"].label, "Connect to your host")
+        XCTAssertTrue(app.navigationBars["Connect to Host"].exists)
+        XCTAssertTrue(app.staticTexts["pair.title"].label.contains("gc connect qr"))
         XCTAssertTrue(app.textFields["pair.link"].exists || app.textViews["pair.link"].exists)
         XCTAssertTrue(app.buttons["pair.scan"].exists)
         XCTAssertFalse(app.buttons["pair.connect"].isEnabled)
@@ -28,7 +29,7 @@ final class PairingUITests: XCTestCase {
         let app = launch()
         enter("hello there", in: app)
         app.buttons["pair.connect"].tap()
-        let error = app.descendants(matching: .any)["pair.error"]
+        let error = app.descendants(matching: .any)["pair.error"].firstMatch
         XCTAssertTrue(error.waitForExistence(timeout: 5))
         XCTAssertTrue(error.label.contains("isn’t a Glass Connect link"), error.label)
     }
@@ -38,7 +39,7 @@ final class PairingUITests: XCTestCase {
         let app = launch()
         enter("http://192.168.1.10:8080#owner=AbCdEfGhIjKlMnOpQr_-12", in: app)
         app.buttons["pair.connect"].tap()
-        let error = app.descendants(matching: .any)["pair.error"]
+        let error = app.descendants(matching: .any)["pair.error"].firstMatch
         XCTAssertTrue(error.waitForExistence(timeout: 5))
         XCTAssertTrue(error.label.contains("Allow HTTP on local network"), error.label)
         attach(app, "pairing-http-refused")

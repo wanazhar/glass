@@ -62,6 +62,9 @@ final class AppModel {
         }
     }
 
+    /// The paired host's client; nil until paired.
+    var api: GlassClient? { client }
+
     var status: GatewayStatus? { if case .connected(let status) = phase { status } else { nil } }
 
     func pair(with text: String) async {
@@ -127,7 +130,7 @@ final class AppModel {
         phase = .unpaired
     }
 
-    private func handle(_ error: GlassError) {
+    func handle(_ error: GlassError) {
         switch error {
         case .unauthorized(let message):
             client = nil
@@ -154,14 +157,6 @@ extension GlassEndpoint {
         case (.local, _): "Local"
         case (.remote, true): looksLikeTailnet ? "Tailscale HTTPS" : "HTTPS"
         case (.remote, false): looksLikeTailnet ? "Tailnet HTTP" : "Local network HTTP"
-        }
-    }
-
-    var transportSymbol: String {
-        switch (mode, isSecure) {
-        case (.local, _): "laptopcomputer"
-        case (.remote, true): "lock.fill"
-        case (.remote, false): "wifi"
         }
     }
 }

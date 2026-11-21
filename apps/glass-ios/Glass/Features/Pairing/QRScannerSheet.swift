@@ -14,10 +14,10 @@ struct QRScannerSheet: View {
                         .ignoresSafeArea()
                         .overlay(alignment: .bottom) {
                             Text("Point at the QR code from gc connect qr")
-                                .font(.subheadline.weight(.medium))
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 12)
-                                .glassSurface()
+                                .font(.subheadline)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .floatingGlass()
                                 .padding(.bottom, 32)
                         }
                 } else {

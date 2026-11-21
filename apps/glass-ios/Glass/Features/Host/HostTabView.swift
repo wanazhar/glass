@@ -4,6 +4,10 @@ import SwiftUI
 struct HostTabView: View {
     var body: some View {
         TabView {
+            Tab("Conversations", systemImage: "bubble.left.and.text.bubble.right") {
+                ThreadsView()
+            }
+            .accessibilityIdentifier("tab.threads")
             Tab("Host", systemImage: "desktopcomputer") {
                 NavigationStack { OverviewView() }
             }

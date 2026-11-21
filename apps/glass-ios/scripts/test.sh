@@ -21,6 +21,6 @@ for destination in "${destinations[@]}"; do
   echo "== $destination"
   slug=$(echo "$destination" | tr -c 'A-Za-z0-9' '-')
   rm -rf "build/results/$slug.xcresult"
-  xcodebuild test -project Glass.xcodeproj -scheme Glass -destination "$destination" \
+  xcodebuild test -project Glass.xcodeproj -scheme Glass -collect-test-diagnostics never -destination "$destination" \
     -derivedDataPath build/test -resultBundlePath "build/results/$slug.xcresult" -quiet
 done

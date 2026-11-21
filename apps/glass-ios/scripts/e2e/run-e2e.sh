@@ -38,9 +38,12 @@ for _ in $(seq 60); do grep -q '^ready' "$root/harness.log" && break; kill -0 $h
 grep '^ready' "$root/harness.log"
 curl -sf --cacert "$root/tls/ca.pem" "https://$host/api/status" -o /dev/null -w 'tailnet front end: HTTP %{http_code}\n' || true
 
+# GLASS_E2E_HARNESS_ONLY=1 keeps the gateway up for manual probing without running tests.
+[[ -n ${GLASS_E2E_HARNESS_ONLY:-} ]] && { wait $harness; exit; }
+
 cd "$app"
 rm -rf build/results/e2e.xcresult
 TEST_RUNNER_GLASS_E2E_CONTROL="http://127.0.0.1:${GLASS_E2E_CONTROL_PORT:-51999}" \
-  xcodebuild test -project Glass.xcodeproj -scheme Glass -destination "platform=iOS Simulator,id=$udid" \
+  xcodebuild test -project Glass.xcodeproj -scheme Glass -collect-test-diagnostics never -destination "platform=iOS Simulator,id=$udid" \
   -derivedDataPath build/test -resultBundlePath build/results/e2e.xcresult \
   -only-testing:GlassUITests/LiveHostE2ETests -quiet

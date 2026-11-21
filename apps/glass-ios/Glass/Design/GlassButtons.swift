@@ -12,21 +12,15 @@ extension View {
     }
 }
 
-/// Small rounded label used for connection state and capabilities.
-struct Pill: View {
+/// A status word with a small colored dot, for list rows and toolbars.
+struct StatusLabel: View {
     var title: String
-    var symbol: String?
-    var tint: Color = .accentColor
+    var color: Color
 
     var body: some View {
-        HStack(spacing: 5) {
-            if let symbol { Image(systemName: symbol).imageScale(.small) }
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7).accessibilityHidden(true)
             Text(title)
         }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(tint.opacity(0.14), in: Capsule())
     }
 }

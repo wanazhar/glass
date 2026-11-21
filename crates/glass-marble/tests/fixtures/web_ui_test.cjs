@@ -122,3 +122,28 @@ test('notification results retain each channel success and failure, including em
     { ok: false, text: 'apns · Not delivered · Connection refused' },
   ]);
 });
+
+test('routine schedules use words and preserve the host minimum interval', () => {
+  assert.equal(L.scheduleLabel('daily:09:00'), 'Every day at 9:00');
+  assert.equal(L.scheduleLabel(' DAILY:23:05 '), 'Every day at 23:05');
+  assert.equal(L.scheduleLabel('every:15m'), 'Every 15 minutes');
+  assert.equal(L.scheduleLabel('every:60s'), 'Every minute');
+  assert.equal(L.scheduleLabel('every:1s'), 'Every minute');
+  assert.equal(L.scheduleLabel('every:2h'), 'Every 2 hours');
+  assert.equal(L.scheduleLabel('every:24h'), 'Every day');
+  assert.equal(L.scheduleLabel(''), 'Not scheduled');
+  for (const spec of ['every:0m', 'every:-2h', 'daily:24:00', 'daily:09:60', 'invalid']) assert.equal(L.scheduleLabel(spec), 'Custom schedule');
+});
+
+test('next runs use local calendar days, including month and year boundaries', () => {
+  const now = new Date(2026, 11, 31, 20).getTime();
+  assert.match(L.relativeRun(new Date(2026, 11, 31, 21).getTime(), now, 'en-US'), /^Today, 9:00/);
+  assert.match(L.relativeRun(new Date(2027, 0, 1, 9).getTime(), now, 'en-US'), /^Tomorrow, 9:00/);
+  assert.match(L.relativeRun(new Date(2027, 0, 2, 9).getTime(), now, 'en-US'), /Jan 2, 2027/);
+  for (const at of [0, null, undefined, 'invalid', Infinity]) assert.equal(L.relativeRun(at, now), 'Not scheduled');
+});
+
+test('the stylesheet uses only the product type scale', () => {
+  const css = fs.readFileSync(path.join(root, 'app.css'), 'utf8');
+  for (const match of css.matchAll(/font-size:\s*(\d+)px/g)) assert.ok([12, 13, 15, 17, 22].includes(Number(match[1])), match[0]);
+});

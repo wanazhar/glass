@@ -7,8 +7,10 @@
 use crate::MarbleError;
 use crate::state::ProductState;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -106,7 +108,11 @@ pub fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "document".into());
-    let temp = parent.join(format!("{name}.tmp"));
+    // Several threads persist the same document; a shared temporary name let
+    // one writer rename another's half-written file, or find it already gone.
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!("{name}.{}-{sequence}.tmp", std::process::id()));
     {
         let mut file = fs::File::create(&temp)?;
         std::io::Write::write_all(&mut file, bytes)?;
@@ -361,9 +367,23 @@ impl StateStore {
         // leaves nothing else behind; `write_durably` fsyncs before the rename.
         // The error names the file it could not write — "No such file or
         // directory" alone does not say which directory went missing.
+        // Saves are serialised per document, and an older snapshot that loses
+        // the race never replaces a newer revision already on disk.
+        static SAVED: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+        let mut saved = SAVED
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if saved
+            .get(&self.path)
+            .is_some_and(|revision| *revision > state.revision)
+        {
+            return Ok(());
+        }
         write_durably(&self.path, &encoded).map_err(|error| {
             MarbleError::Protocol(format!("cannot write {}: {error}", self.path.display()))
         })?;
+        saved.insert(self.path.clone(), state.revision);
         Ok(())
     }
 }
@@ -382,6 +402,13 @@ pub fn load_or_default(data_dir: &Path) -> ProductState {
     // Tasks recorded for conversations that no longer exist are orphans —
     // nothing can open them, and a surface would show them as work anyway.
     let orphaned = state.prune_orphaned_tasks();
+    let orphaned_everyone = state.prune_everyone_entries();
+    if orphaned_everyone > 0 {
+        tracing::info!(
+            orphaned_everyone,
+            "dropped Everyone entries quoting deleted turns"
+        );
+    }
     if orphaned > 0 {
         tracing::info!(orphaned, "pruned tasks whose conversations are gone");
         state.bump();
@@ -579,6 +606,35 @@ mod tests {
         assert_eq!(store.newest_backup(), Some(path));
         let (restored, _) = store.restore(None).unwrap();
         assert_eq!(restored, state);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_saves_never_fail_or_regress_the_revision() {
+        let dir = data_dir("concurrent");
+        let store = std::sync::Arc::new(StateStore::in_data_dir(&dir));
+        let handles: Vec<_> = (1..=32u64)
+            .map(|revision| {
+                let store = std::sync::Arc::clone(&store);
+                std::thread::spawn(move || {
+                    let state = ProductState {
+                        revision,
+                        ..ProductState::default()
+                    };
+                    store.save(&state)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(store.load().unwrap().revision, 32);
+        let leftovers = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

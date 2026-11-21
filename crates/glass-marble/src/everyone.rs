@@ -108,6 +108,15 @@ pub fn claim(state: &mut ProductState, placeholder: &str, task_id: &str) -> bool
         state
             .everyone_pending
             .insert(format!("task:{task_id}"), speaker);
+        // Stamp the person's line with the task now answering it, so
+        // deleting that turn's chat takes the line it triggered too.
+        if let Some(entry) = state.transcript.iter_mut().rev().find(|entry| {
+            entry.conversation_id == EVERYONE_CONVERSATION
+                && entry.kind == "user"
+                && entry.task_id.is_empty()
+        }) {
+            entry.task_id = task_id.to_string();
+        }
         true
     } else {
         false
@@ -245,5 +254,37 @@ mod tests {
             settle_mirror(&mut state, "task-1").is_none(),
             "the mirror is consumed"
         );
+    }
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+
+    #[test]
+    fn a_claimed_turn_stamps_the_persons_line() {
+        let mut state = ProductState::default();
+        mirror(&mut state, USER_SPEAKER, "You", "user", "@ben hi", "", None);
+        state
+            .everyone_pending
+            .insert("marble:m-ben".into(), "m-ben".into());
+        assert!(claim(&mut state, "marble:m-ben", "task-9"));
+        let line = state
+            .transcript
+            .iter()
+            .find(|entry| entry.kind == "user")
+            .unwrap();
+        assert_eq!(line.task_id, "task-9");
+        // A second marble answering the same line does not re-stamp it.
+        state
+            .everyone_pending
+            .insert("marble:m-ada".into(), "m-ada".into());
+        assert!(claim(&mut state, "marble:m-ada", "task-10"));
+        let line = state
+            .transcript
+            .iter()
+            .find(|entry| entry.kind == "user")
+            .unwrap();
+        assert_eq!(line.task_id, "task-9");
     }
 }

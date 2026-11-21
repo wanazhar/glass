@@ -2530,3 +2530,141 @@ fn a_marble_can_ask_another_and_the_ask_is_visible() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Clearing the shared plane empties the timeline and leaves other chats
+/// alone.
+#[test]
+fn clearing_everyone_empties_the_timeline() {
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        for (task, kind) in [("", "user"), ("t-1", "assistant"), ("t-1", "handoff")] {
+            guard.transcript.push(TranscriptEntry {
+                conversation_id: "everyone".into(),
+                kind: kind.into(),
+                text: "line".into(),
+                task_id: task.into(),
+                at: 1,
+                speaker: "user".into(),
+                speaker_name: "You".into(),
+                handoff: None,
+            });
+        }
+        guard.transcript.push(TranscriptEntry {
+            conversation_id: "chat-1".into(),
+            kind: "user".into(),
+            text: "private".into(),
+            task_id: "t-2".into(),
+            at: 1,
+            speaker: "user".into(),
+            speaker_name: "You".into(),
+            handoff: None,
+        });
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+
+    let (status, body) = server.handle("POST", "/api/everyone/clear", "");
+    assert_eq!(status, 200, "{body}");
+    assert!(everyone_entries(&state).is_empty());
+    let guard = state.lock().unwrap_or_else(|error| error.into_inner());
+    assert_eq!(guard.transcript.len(), 1);
+    assert_eq!(guard.transcript[0].conversation_id, "chat-1");
+}
+
+/// Removing a marble takes its chat, its tasks, and the Everyone lines
+/// quoting them — "Remove Ada and her chat" means gone.
+#[test]
+fn removing_a_marble_deletes_its_chat_and_everyone_lines() {
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        let id = guard
+            .prism
+            .add("ada", "helpful", "star", 45, "", "")
+            .unwrap()
+            .id
+            .clone();
+        guard.conversations.push(glass_marble::ConversationRecord {
+            id: "conv-ada".into(),
+            title: "ada".into(),
+            task_ids: vec![],
+            updated_at: 0,
+            lane: 0,
+        });
+        guard.tasks.push(TaskRecord {
+            id: "t-ada".into(),
+            conversation_id: "conv-ada".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: "hi".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        if let Some(marble) = guard.prism.marbles.iter_mut().find(|m| m.id == id) {
+            marble.conversation_id = "conv-ada".into();
+        }
+        // The person's stamped line and the marble's reply on Everyone.
+        for kind in ["user", "assistant"] {
+            guard.transcript.push(TranscriptEntry {
+                conversation_id: "everyone".into(),
+                kind: kind.into(),
+                text: "line".into(),
+                task_id: "t-ada".into(),
+                at: 1,
+                speaker: "user".into(),
+                speaker_name: "You".into(),
+                handoff: None,
+            });
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+
+    let marble_id = {
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .prism
+            .marbles[0]
+            .id
+            .clone()
+    };
+    let (status, body) = server.handle(
+        "POST",
+        &format!("/api/prism/marbles/{marble_id}/remove"),
+        "",
+    );
+    assert_eq!(status, 200, "{body}");
+    let guard = state.lock().unwrap_or_else(|error| error.into_inner());
+    assert!(guard.prism.get(&marble_id).is_none());
+    assert!(guard.conversations.iter().all(|c| c.id != "conv-ada"));
+    assert!(guard.tasks.iter().all(|t| t.id != "t-ada"));
+    assert!(
+        guard.transcript.iter().all(|e| e.task_id != "t-ada"),
+        "everyone echoes survived: {:?}",
+        guard.transcript
+    );
+}

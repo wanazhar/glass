@@ -672,6 +672,9 @@ impl MarbleServer {
         if head.method == "POST" && path == "/api/everyone" {
             return self.post_everyone(body);
         }
+        if head.method == "POST" && path == "/api/everyone/clear" {
+            return self.clear_everyone();
+        }
         if head.method == "GET" && path == "/api/everyone" {
             return self.everyone_timeline(head);
         }
@@ -990,10 +993,26 @@ impl MarbleServer {
     /// Its conversation stays in the document: leaving a roster is a change of
     /// who works, not permission to delete what was already said.
     fn remove_marble(&self, id: &str) -> Response {
+        if let Some(pool) = &self.prism {
+            pool.shutdown_marble(id);
+        }
         let removed = {
             let mut guard = self.lock_state();
             match guard.prism.remove(id) {
                 Ok(conversation) => {
+                    // Its chat, tasks, and the Everyone lines quoting them go
+                    // with the marble — "Remove Ada and her chat" means gone,
+                    // not just off the roster. A conversation that refuses
+                    // (a turn still running) is left readable rather than
+                    // torn down mid-turn.
+                    if !conversation.is_empty() && guard.delete_conversation(&conversation).is_err()
+                    {
+                        tracing::info!(
+                            marble = %id,
+                            conversation = %conversation,
+                            "removed a marble whose chat still has a live turn; chat kept"
+                        );
+                    }
                     guard.bump();
                     Ok(conversation)
                 }
@@ -1002,8 +1021,14 @@ impl MarbleServer {
         };
         match removed {
             Ok(conversation) => {
-                if let Some(pool) = &self.prism {
-                    pool.shutdown_marble(id);
+                if let Some(store) = &self.store
+                    && !conversation.is_empty()
+                {
+                    let removed =
+                        crate::live::LiveStore::for_store(store).remove_conversation(&conversation);
+                    if removed > 0 {
+                        tracing::info!(removed, conversation = %conversation, "cleared live journal for a removed marble");
+                    }
                 }
                 self.save_state();
                 self.events.publish(
@@ -1018,6 +1043,27 @@ impl MarbleServer {
                 Response::json(404, json!({"error": "unknown_marble", "message": message}))
             }
         }
+    }
+
+    /// `POST /api/everyone/clear` — empty the shared timeline. The plane
+    /// itself stays; only what was said in it goes.
+    fn clear_everyone(&self) -> Response {
+        let removed = {
+            let mut guard = self.lock_state();
+            let removed = guard.clear_everyone();
+            if removed > 0 {
+                guard.bump();
+            }
+            removed
+        };
+        self.save_state();
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "everyone",
+            json!({"cleared": removed}),
+        );
+        Response::json(200, json!({"ok": true, "cleared": removed}))
     }
 
     /// `GET /api/everyone?after=` — the shared timeline, newest entries after a

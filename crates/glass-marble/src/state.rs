@@ -339,8 +339,22 @@ impl ProductState {
         }
         self.conversations
             .retain(|conversation| conversation.id != id);
+        // Everyone entries quoting one of this conversation's turns — the
+        // mirrored reply, any handoff lines, and the person's line that
+        // triggered them (stamped with the task id once the turn starts) —
+        // go with the chat, or the shared plane keeps quoting a deleted turn.
+        let dropped: std::collections::HashSet<String> = self
+            .tasks
+            .iter()
+            .filter(|task| task.conversation_id == id)
+            .map(|task| task.id.clone())
+            .collect();
         self.tasks.retain(|task| task.conversation_id != id);
-        self.transcript.retain(|entry| entry.conversation_id != id);
+        self.transcript.retain(|entry| {
+            entry.conversation_id != id
+                && (entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION
+                    || !dropped.contains(&entry.task_id))
+        });
         self.control
             .queue
             .retain(|entry| entry.conversation_id.as_deref() != Some(id));
@@ -371,6 +385,36 @@ impl ProductState {
         self.transcript
             .retain(|entry| known.contains(entry.conversation_id.as_str()));
         dropped + before - self.transcript.len()
+    }
+
+    /// Everyone entries quoting a task that no longer exists.
+    ///
+    /// A mirrored reply (or the person's stamped line that triggered it)
+    /// references its turn by task id; when the chat behind that turn is
+    /// deleted out from under the shared plane — an older document, a
+    /// quirk restore, or direct state edits — the entries would keep
+    /// quoting a turn nobody can open. Unstamped lines (a busy note, or a
+    /// message whose turn never started) carry no task id and stay.
+    pub fn prune_everyone_entries(&mut self) -> usize {
+        let tasks: std::collections::HashSet<&str> =
+            self.tasks.iter().map(|task| task.id.as_str()).collect();
+        let before = self.transcript.len();
+        self.transcript.retain(|entry| {
+            entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION
+                || entry.task_id.is_empty()
+                || tasks.contains(entry.task_id.as_str())
+        });
+        before - self.transcript.len()
+    }
+
+    /// Empty the shared Everyone timeline. The conversation record stays —
+    /// the plane itself is a fixture; only what was said in it goes.
+    pub fn clear_everyone(&mut self) -> usize {
+        let before = self.transcript.len();
+        self.transcript
+            .retain(|entry| entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION);
+        self.everyone_pending.clear();
+        before - self.transcript.len()
     }
 
     /// Newest transcript entries whose text contains `query`.
@@ -944,5 +988,110 @@ mod tests {
         assert_eq!(recovered.state, "blocked");
         assert!(recovered.last_error.contains("restarted"));
         assert!(recovered.task_id.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod everyone_tests {
+    use super::*;
+
+    fn everyone_entry(task_id: &str, kind: &str) -> TranscriptEntry {
+        TranscriptEntry {
+            conversation_id: crate::everyone::EVERYONE_CONVERSATION.into(),
+            kind: kind.into(),
+            text: "line".into(),
+            task_id: task_id.into(),
+            at: 1,
+            speaker: "user".into(),
+            speaker_name: "You".into(),
+            handoff: None,
+        }
+    }
+
+    #[test]
+    fn deleting_a_conversation_takes_its_everyone_echoes() {
+        let mut state = ProductState::default();
+        state.conversations.push(ConversationRecord {
+            id: "c-1".into(),
+            title: "chat".into(),
+            task_ids: vec![],
+            updated_at: 0,
+            lane: 0,
+        });
+        state.tasks.push(TaskRecord {
+            id: "t-1".into(),
+            conversation_id: "c-1".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: "hi".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        // The person's stamped line, the mirrored reply, a handoff echo —
+        // all tied to t-1 — plus an unstamped busy note and an unrelated
+        // conversation's entry.
+        state.transcript.push(everyone_entry("t-1", "user"));
+        state.transcript.push(everyone_entry("t-1", "assistant"));
+        state.transcript.push(everyone_entry("t-1", "handoff"));
+        state.transcript.push(everyone_entry("", "system"));
+        state
+            .transcript
+            .push(everyone_entry("t-other", "assistant"));
+        state.transcript.push(TranscriptEntry {
+            conversation_id: "c-1".into(),
+            ..everyone_entry("t-1", "user")
+        });
+        state.delete_conversation("c-1").unwrap();
+        let left = everyone_in(&state);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left.iter().all(|entry| entry.task_id != "t-1"));
+    }
+
+    #[test]
+    fn everyone_entries_quoting_dead_tasks_are_pruned() {
+        let mut state = ProductState::default();
+        state.tasks.push(TaskRecord {
+            id: "t-live".into(),
+            conversation_id: "c".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: "hi".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        state.transcript.push(everyone_entry("t-live", "assistant"));
+        state.transcript.push(everyone_entry("t-gone", "assistant"));
+        state.transcript.push(everyone_entry("t-gone", "user"));
+        state.transcript.push(everyone_entry("", "system"));
+        state.transcript.push(everyone_entry("", "user"));
+        assert_eq!(state.prune_everyone_entries(), 2);
+        let left = everyone_in(&state);
+        assert_eq!(left.len(), 3, "{left:?}");
+    }
+
+    #[test]
+    fn clearing_everyone_empties_the_timeline_only() {
+        let mut state = ProductState::default();
+        state.transcript.push(everyone_entry("", "user"));
+        state.transcript.push(everyone_entry("t-1", "assistant"));
+        state.transcript.push(TranscriptEntry {
+            conversation_id: "chat-1".into(),
+            ..everyone_entry("t-1", "assistant")
+        });
+        state
+            .everyone_pending
+            .insert("task:t-1".into(), "marble".into());
+        assert_eq!(state.clear_everyone(), 2);
+        assert_eq!(state.transcript.len(), 1);
+        assert_eq!(state.transcript[0].conversation_id, "chat-1");
+        assert!(state.everyone_pending.is_empty());
+    }
+
+    fn everyone_in(state: &ProductState) -> Vec<&TranscriptEntry> {
+        state
+            .transcript
+            .iter()
+            .filter(|entry| entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION)
+            .collect()
     }
 }

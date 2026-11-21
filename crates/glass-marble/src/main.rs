@@ -365,6 +365,13 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     // Tasks recorded for conversations that no longer exist are orphans —
     // nothing can open them, and a surface would show them as work anyway.
     let orphaned = loaded.prune_orphaned_tasks();
+    let orphaned_everyone = loaded.prune_everyone_entries();
+    if orphaned_everyone > 0 {
+        tracing::info!(
+            orphaned_everyone,
+            "dropped Everyone entries quoting deleted turns"
+        );
+    }
     if orphaned > 0 {
         tracing::info!(orphaned, "pruned tasks whose conversations are gone");
     }

@@ -142,6 +142,30 @@ fn control_of(server: &MarbleServer) -> serde_json::Value {
 }
 
 #[test]
+fn cancelling_a_paused_message_withdraws_it_before_resume() {
+    let (turn_tx, inbox) = TurnInbox::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    let (_, body) = server.handle("POST", "/api/turns", r#"{"text":"withdraw this"}"#);
+    let queued: Value = serde_json::from_str(&body).unwrap();
+    let id = queued["queueId"].as_str().unwrap();
+    let (status, body) = server.handle("POST", &format!("/api/tasks/{id}/cancel"), "");
+    assert_eq!(status, 200, "{body}");
+    assert!(control_of(&server)["queue"].as_array().unwrap().is_empty());
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["tasks"][0]["status"], "cancelled");
+    assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+    assert!(inbox.try_recv().is_none(), "withdrawn work must not resume");
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/tasks/{id}/cancel"), "")
+            .0,
+        409
+    );
+}
+
+#[test]
 fn paused_admission_queues_messages_and_resume_dispatches_in_order() {
     let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(ProductState::default(), turn_tx);

@@ -3223,9 +3223,9 @@ impl MarbleServer {
                     guard.routines.note_admitted(routine_id, task_id);
                 }
                 guard.upsert_task(TaskRecord {
-                    marble_id: String::new(),
                     id: entry.id,
                     conversation_id: entry.conversation_id.unwrap_or_default(),
+                    marble_id: entry.marble_id.unwrap_or_default(),
                     status: "queued".into(),
                     owner: "agent".into(),
                     prompt: entry.text,

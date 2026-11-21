@@ -9,7 +9,6 @@ struct MemoryView: View {
     @State private var editDraft = ""
 
     var body: some View {
-        NavigationStack {
             Form {
                 Section {
                     TextField("Remember that…", text: $draft, axis: .vertical)
@@ -22,7 +21,7 @@ struct MemoryView: View {
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
-                Section("Remembered") {
+                Section(header: Text("Remembered")) {
                     if store.memory.facts.isEmpty {
                         Text("Nothing remembered yet.")
                             .foregroundStyle(.secondary)
@@ -50,7 +49,7 @@ struct MemoryView: View {
                     }
                 }
 
-                Section("Suggested") {
+                Section(header: Text("Suggested")) {
                     if store.memory.suggestions.isEmpty {
                         Text("No suggestions waiting.")
                             .foregroundStyle(.secondary)
@@ -98,11 +97,7 @@ struct MemoryView: View {
             }
             .navigationTitle("Memory")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            
             .task { await store.refresh() }
             .alert("Edit memory", isPresented: editingBinding) {
                 TextField("Memory", text: $editDraft, axis: .vertical)
@@ -114,7 +109,6 @@ struct MemoryView: View {
                     Task { await store.update(fact, text: text) }
                 }
             }
-        }
     }
 
     private var editingBinding: Binding<Bool> {

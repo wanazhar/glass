@@ -299,7 +299,7 @@ enum MarbleAttention {
             return Alert(
                 key: key,
                 title: "Marble needs approval",
-                body: event.data.tool ?? "a governed tool"
+                body: event.data.tool ?? "an action"
             )
         case "settled":
             let key = "settled|\(event.conversationId)|\(taskId)"

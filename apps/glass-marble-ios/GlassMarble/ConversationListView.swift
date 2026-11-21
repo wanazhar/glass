@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConversationListView: View {
     @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var searchText = ""
     @State private var hits: [MarbleSearchHit] = []
     @State private var searchTask: Task<Void, Never>?
@@ -10,9 +11,9 @@ struct ConversationListView: View {
     @State private var deleting: MarbleConversation?
 
     var body: some View {
-        List(selection: $store.selectedConversationId) {
+        List {
             if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Section("Transcript matches") {
+                Section(header: Text("Transcript matches")) {
                     if hits.isEmpty {
                         Text("No matches")
                             .font(.footnote)
@@ -20,7 +21,7 @@ struct ConversationListView: View {
                     }
                     ForEach(hits) { hit in
                         Button {
-                            store.open(conversationId: hit.conversationId)
+                            navigation.openConversation(hit.conversationId)
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(hit.title.isEmpty ? hit.conversationId : hit.title)
@@ -37,15 +38,16 @@ struct ConversationListView: View {
                     }
                 }
             }
-            Section("Conversations") {
+            Section(header: Text("Conversations")) {
                 if store.state.conversations.isEmpty {
                     Text("No conversations yet")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 ForEach(filteredConversations) { conversation in
-                    ConversationRow(conversation: conversation)
-                        .tag(Optional(conversation.id))
+                    NavigationLink(value: ChatRoute.conversation(conversation.id)) {
+                        ConversationRow(conversation: conversation)
+                    }
                         .contextMenu {
                             Button("Rename") {
                                 renaming = conversation
@@ -58,9 +60,9 @@ struct ConversationListView: View {
                 }
             }
 
-            Section("Durable tasks") {
+            Section(header: Text("Recent turns")) {
                 if store.state.tasks.isEmpty {
-                    Text("No durable tasks yet")
+                    Text("No turns yet")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -90,7 +92,7 @@ struct ConversationListView: View {
         }
         .navigationTitle("Glass Marble")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, placement: .sidebar, prompt: "Search conversations")
+        .searchable(text: $searchText, prompt: "Search conversations")
         .onChange(of: searchText) { _, _ in debounceSearch() }
         .alert("Rename conversation", isPresented: renameBinding) {
             TextField("Title", text: $renameDraft)
@@ -110,7 +112,12 @@ struct ConversationListView: View {
             Button("Delete", role: .destructive) {
                 guard let conversation = deleting else { return }
                 deleting = nil
-                Task { await store.delete(conversation) }
+                Task {
+                    await store.delete(conversation)
+                    if !store.state.conversations.contains(where: { $0.id == conversation.id }) {
+                        navigation.deleted(conversation.id)
+                    }
+                }
             }
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: {
@@ -119,7 +126,7 @@ struct ConversationListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    store.selectedConversationId = nil
+                    navigation.newChat()
                 } label: {
                     Image(systemName: "square.and.pencil")
                 }

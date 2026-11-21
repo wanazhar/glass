@@ -642,3 +642,16 @@ struct MarbleDevice: Decodable, Identifiable, Equatable {
 
     var id: String { tokenPrefix }
 }
+
+/// The /api/turns request body: exactly the composer text and the conversation
+/// the person is looking at — nothing else, so a stale prompt can never ride
+/// along inside a later send.
+public struct MarbleTurnBody: Encodable, Equatable, Sendable {
+    public var text: String
+    public var conversationId: String?
+
+    public init(text: String, conversationId: String?) {
+        self.text = text
+        self.conversationId = conversationId
+    }
+}

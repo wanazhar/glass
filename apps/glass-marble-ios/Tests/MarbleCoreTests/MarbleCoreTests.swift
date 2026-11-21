@@ -792,3 +792,131 @@ final class MarbleCryptoTests: XCTestCase {
         ))
     }
 }
+
+final class MarbleNavigationTests: XCTestCase {
+    func testLaunchLandsOnChatsListWithEmptyPath() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.selectTab(.settings)
+        nav.launch()
+        XCTAssertEqual(nav.tab, .chats)
+        XCTAssertTrue(nav.chatPath.isEmpty)
+        XCTAssertNil(nav.viewingConversationId)
+    }
+
+    func testRefreshNeverChangesNavigation() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        let before = nav
+        nav.refreshed()
+        XCTAssertEqual(nav, before)
+    }
+
+    func testNewChatPushesDraftAndDraftResolves() {
+        var nav = MarbleNavigation()
+        nav.newChat()
+        nav.newChat() // a second tap does not stack drafts
+        XCTAssertEqual(nav.chatPath, [.draft])
+        nav.draftResolved("conv-1")
+        XCTAssertEqual(nav.chatPath, [.conversation("conv-1")])
+        XCTAssertEqual(nav.viewingConversationId, "conv-1")
+    }
+
+    func testDeletedPopsBackToList() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.deleted("a")
+        XCTAssertTrue(nav.chatPath.isEmpty)
+    }
+
+    func testNotificationTappedReplacesPath() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.selectTab(.activity)
+        nav.notificationTapped("b")
+        XCTAssertEqual(nav.tab, .chats)
+        XCTAssertEqual(nav.chatPath, [.conversation("b")])
+    }
+
+    func testPendingOpenDrainsOnce() {
+        var nav = MarbleNavigation()
+        nav.queuePendingOpen("x")
+        XCTAssertEqual(nav.drainPendingOpen(), "x")
+        XCTAssertNil(nav.drainPendingOpen())
+    }
+
+    func testSignOutResets() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.signOut()
+        XCTAssertEqual(nav, MarbleNavigation())
+    }
+}
+
+final class MarbleScrollFollowTests: XCTestCase {
+    func testFollowsWhenAtBottom() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 0)
+        XCTAssertTrue(follow.shouldFollow(now: 1.0))
+        XCTAssertFalse(follow.showJumpButton)
+    }
+
+    func testStopsFollowingWhenUserScrollsUp() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 400)
+        XCTAssertFalse(follow.shouldFollow(now: 1.0))
+        XCTAssertTrue(follow.showJumpButton)
+    }
+
+    func testThrottlesStreamingScrolls() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 0)
+        XCTAssertTrue(follow.shouldFollow(now: 1.0))
+        XCTAssertFalse(follow.shouldFollow(now: 1.05))
+        XCTAssertTrue(follow.shouldFollow(now: 1.2))
+    }
+
+    func testJumpToLatestReArms() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 400)
+        follow.jumpToLatest(now: 2.0)
+        XCTAssertTrue(follow.following)
+        XCTAssertFalse(follow.showJumpButton)
+    }
+}
+
+final class MarbleScheduleTests: XCTestCase {
+    func testRoundTrips() {
+        XCTAssertEqual(MarbleSchedule(spec: "every:30m")?.spec, "every:30m")
+        XCTAssertEqual(MarbleSchedule(spec: "every:2h")?.spec, "every:2h")
+        XCTAssertEqual(MarbleSchedule(spec: "daily:09:30")?.spec, "daily:09:30")
+        XCTAssertEqual(MarbleSchedule(spec: "daily:9:30"), .daily(hour: 9, minute: 30))
+        XCTAssertNil(MarbleSchedule(spec: "daily:25:00"))
+        XCTAssertNil(MarbleSchedule(spec: "cron:0 9 * * *"))
+    }
+
+    func testPlainLanguage() {
+        XCTAssertEqual(MarbleSchedule(spec: "every:2h")?.summary, "Every 2 hours")
+        XCTAssertEqual(MarbleSchedule(spec: "every:1h")?.summary, "Every hour")
+        XCTAssertEqual(MarbleSchedule(spec: "daily:09:30")?.summary, "Every day at 9:30")
+    }
+}
+
+final class MarbleTurnBodyTests: XCTestCase {
+    func testBodyCarriesExactlyTheDraftAndConversation() throws {
+        let data = try JSONEncoder().encode(
+            MarbleTurnBody(text: "hello draft", conversationId: "conv-7")
+        )
+        let doc = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(doc.count, 2)
+        XCTAssertEqual(doc["text"] as? String, "hello draft")
+        XCTAssertEqual(doc["conversationId"] as? String, "conv-7")
+    }
+
+    func testNilConversationIsNewChat() throws {
+        let data = try JSONEncoder().encode(MarbleTurnBody(text: "hi", conversationId: nil))
+        let doc = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(doc["text"] as? String, "hi")
+        XCTAssertNil(doc["conversationId"])
+    }
+}

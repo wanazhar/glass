@@ -79,7 +79,16 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
 
 final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
+    #if DEBUG
+    private let store: MarbleStore = {
+        ProcessInfo.processInfo.arguments.contains("-MarbleUITestFixture")
+            ? MarbleStore.uiTestFixture()
+            : MarbleStore()
+    }()
+    #else
     private let store = MarbleStore()
+    #endif
+    private let navigation = MarbleNavigationModel()
 
     func scene(
         _ scene: UIScene,
@@ -90,10 +99,11 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // A notification can launch the app cold; honour its target too.
         if let response = connectionOptions.notificationResponse,
            let id = marbleConversationId(from: response.notification.request.content.userInfo) {
-            store.open(conversationId: id)
+            navigation.queuePendingOpen(id)
         }
         let root = MarbleRootView()
             .environmentObject(store)
+            .environmentObject(navigation)
         let controller = UIHostingController(rootView: root)
         controller.view.backgroundColor = .clear
 

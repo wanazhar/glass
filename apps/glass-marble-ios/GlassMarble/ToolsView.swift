@@ -6,12 +6,11 @@ import SwiftUI
 /// has seen them do but cannot approve them. The `glass.*` integrations are the
 /// opposite: Marble classifies each one through the control layer before it
 /// runs. Listing both is the difference between a capability claim and a record.
-struct ToolsView: View {
+struct WhatMarbleCanUseView: View {
     @EnvironmentObject private var store: MarbleStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
             List {
                 // A sheet covers the chat's error strip, so a failed load
                 // has to say so here.
@@ -24,7 +23,7 @@ struct ToolsView: View {
                     }
                 }
 
-                Section("Core tools this host has used") {
+                Section(header: Text("Tools this host has used")) {
                     if store.toolInventory.observed.isEmpty {
                         Text("No Core tool has run on this host yet.")
                             .foregroundStyle(.secondary)
@@ -40,9 +39,9 @@ struct ToolsView: View {
                     }
                 }
 
-                Section("Governed by Marble") {
+                Section(header: Text("Workspace actions Marble manages")) {
                     if store.toolInventory.governed.isEmpty {
-                        Text("No governed integrations are registered.")
+                        Text("No workspace actions are registered.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(store.toolInventory.governed) { tool in
@@ -56,15 +55,10 @@ struct ToolsView: View {
                 }
             }
             .refreshable { await store.loadTools() }
-            .navigationTitle("Tooling")
+            .navigationTitle("What Marble can use")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            
             .task { await store.loadTools() }
-        }
     }
 }
 

@@ -131,14 +131,9 @@ final class MarbleStore: ObservableObject {
             guard let token = notification.object as? String else { return }
             Task { await self?.registerPushToken(token) }
         }
-        NotificationCenter.default.addObserver(
-            forName: .marbleOpenConversation,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let id = notification.object as? String else { return }
-            Task { @MainActor [weak self] in self?.open(conversationId: id) }
-        }
+        // `.marbleOpenConversation` is observed by MarbleRootView, which owns
+        // navigation: it pushes the chat, and the chat view then marks itself
+        // as the conversation this store is watching.
     }
 
     // MARK: - Derived product state
@@ -197,14 +192,6 @@ final class MarbleStore: ObservableObject {
             await refresh()
             listen()
             await registerForPush()
-        }
-    }
-
-    /// Select the conversation a notification pointed at.
-    func open(conversationId: String) {
-        guard !conversationId.isEmpty else { return }
-        if selectedConversationId != conversationId {
-            selectedConversationId = conversationId
         }
     }
 
@@ -311,13 +298,12 @@ final class MarbleStore: ObservableObject {
                 hostVersion = health.version
                 engineHealth = health.runtime
             }
-            if selectedConversationId == nil || snapshot.conversation(selectedConversationId) == nil {
-                let newest = snapshot.conversations
-                    .sorted { $0.updatedAt > $1.updatedAt }
-                    .first?.id
-                if selectedConversationId != newest {
-                    selectedConversationId = newest
-                }
+            // Navigation owns which chat is on screen. A refresh may only
+            // clear a selection whose conversation disappeared — never choose
+            // one, or a poll would re-push a chat the person just left.
+            if let selected = selectedConversationId,
+               snapshot.conversation(selected) == nil {
+                selectedConversationId = nil
             }
             // Several chats run at once, one engine lane each. This surface is
             // looking at one of them, so only that chat's turn makes it busy.
@@ -744,6 +730,27 @@ final class MarbleStore: ObservableObject {
         await perform { try await client.setRoutine(id: routine.id, enabled: enabled) }
     }
 
+    /// Stop one running task from anywhere (Activity's "Running now" list).
+    func cancel(_ task: MarbleTask) async {
+        guard let client else { return }
+        do {
+            try await client.cancel(taskId: task.id)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func setRoutineCatchUp(_ routine: MarbleRoutine, enabled: Bool) async {
+        guard let client else { return }
+        do {
+            try await client.setRoutineCatchUp(id: routine.id, enabled: enabled)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+    }
+
     func remove(_ routine: MarbleRoutine) async {
         guard let client else { return }
         await perform { try await client.removeRoutine(id: routine.id) }
@@ -950,3 +957,146 @@ final class MarbleStore: ObservableObject {
         errorMessage = error.localizedDescription
     }
 }
+
+#if DEBUG
+extension MarbleStore {
+    /// In-memory fixture for XCUITest runs (`-MarbleUITestFixture`): a seeded
+    /// host state and a timer that keeps "streaming" so scroll-follow and
+    /// navigation can be exercised without any network. Debug builds only;
+    /// release binaries must not contain this symbol.
+    static func uiTestFixture() -> MarbleStore {
+        let store = MarbleStore()
+        store.onboarded = true
+        store.loaded = true
+        store.connection = .live
+        var state = MarbleState.empty
+        let now = UInt64(Date().timeIntervalSince1970)
+        state.conversations = (0..<200).map { index in
+            MarbleConversation(
+                id: "fixture-\(index)",
+                title: "Fixture conversation \(index)",
+                taskIds: ["task-\(index)"],
+                updatedAt: now - UInt64(index * 60)
+            )
+        }
+        state.transcript = (0..<300).map { index in
+            MarbleEntry(
+                conversationId: "fixture-0",
+                kind: index.isMultiple(of: 2) ? "user" : "assistant",
+                text: "Fixture message \(index)",
+                taskId: "task-0",
+                at: now - UInt64((300 - index) * 5)
+            )
+        }
+        state.transcript.insert(
+            MarbleEntry(conversationId: "fixture-0", kind: "reasoning",
+                        text: "Working out the fixture reply step by step.",
+                        taskId: "task-0", at: now - 10),
+            at: 200
+        )
+        // A cancelled turn so the "Cancelled before replying" footnote shows.
+        state.tasks.append(MarbleTask(
+            id: "task-cancelled", conversationId: "fixture-0", status: "cancelled",
+            owner: "agent", prompt: "a cancelled fixture turn", at: now - 5
+        ))
+        // Activity: one approval waiting, one running turn, recent decisions.
+        state.approvals = [
+            MarbleApproval(
+                requestId: "req-fixture-1", callId: "call-1", tool: "glass.write",
+                arguments: .object(["path": .string("Sources/App.swift"), "content": .string("…")]),
+                conflict: nil
+            )
+        ]
+        state.tasks.append(MarbleTask(
+            id: "task-running", conversationId: "fixture-1", status: "running",
+            owner: "agent", prompt: "renaming the fixture files", at: now - 30
+        ))
+        state.control = MarbleControl(
+            profile: "workspace",
+            paused: false,
+            grants: [
+                MarbleGrant(
+                    id: "grant-1", tool: "glass.read",
+                    pathPrefix: "", createdAt: now - 3600, uses: 12
+                )
+            ],
+            deniedPaths: ["/private/keys"],
+            ledger: [
+                MarbleControlEntry(
+                    at: now - 600, conversationId: "fixture-0", taskId: "task-0",
+                    tool: "glass.read", path: "README.md", decision: "allowed",
+                    reason: "read profile"
+                ),
+                MarbleControlEntry(
+                    at: now - 300, conversationId: "fixture-0", taskId: "task-0",
+                    tool: "glass.write", path: "/private/keys/x", decision: "denied",
+                    reason: "off-limits folder"
+                ),
+            ],
+            queue: [],
+            profiles: [
+                MarbleProfileOption(
+                    id: "observe", label: "Read only",
+                    description: "read the workspace", allowsWrites: false, prompts: false
+                ),
+                MarbleProfileOption(
+                    id: "workspace", label: "Ask before changes",
+                    description: "ask first", allowsWrites: true, prompts: true
+                ),
+                MarbleProfileOption(
+                    id: "unattended", label: "Don't ask",
+                    description: "act without asking", allowsWrites: true, prompts: false
+                ),
+            ]
+        )
+        state.memory = MarbleMemory(
+            facts: [
+                MarbleMemoryFact(
+                    id: "fact-1", text: "The project builds with Swift 6.4.2.",
+                    kind: "fact", createdAt: now - 7200, uses: 3
+                )
+            ],
+            suggestions: [
+                MarbleMemorySuggestion(
+                    id: "sug-1", text: "Azhar prefers concise replies.",
+                    kind: "preference", reason: "seen in three conversations"
+                )
+            ],
+            count: 1, limit: nil
+        )
+        state.routines = MarbleRoutines(
+            routines: [
+                MarbleRoutine(
+                    id: "routine-1", title: "Morning check",
+                    prompt: "Summarise overnight builds", schedule: "daily:09:30",
+                    conversationId: nil, enabled: true, createdAt: now - 86400,
+                    lastRunAt: now - 3600, nextRunAt: now + 50400, runs: 7,
+                    lastTaskId: "task-9", lastStatus: "completed",
+                    missedRuns: nil, missedLastGap: nil, catchUp: true
+                ),
+                MarbleRoutine(
+                    id: "routine-2", title: "Frequent sweep",
+                    prompt: "Sweep the fixture workspace", schedule: "every:2h",
+                    conversationId: nil, enabled: false, createdAt: now - 172800,
+                    lastRunAt: 0, nextRunAt: 0, runs: 0,
+                    lastTaskId: "", lastStatus: "",
+                    missedRuns: nil, missedLastGap: nil, catchUp: nil
+                ),
+            ],
+            count: 2, limit: nil, enabled: 1,
+            offsetMinutes: 0, quietHours: .off
+        )
+        store.state = state
+        store.conversationTranscript = state.transcript
+        store.transcriptConversationId = "fixture-0"
+        // A turn keeps emitting text so streaming-follow behavior is testable.
+        var tick = 0
+        Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak store] _ in
+            guard let store else { return }
+            tick += 1
+            store.liveText = "Streaming fixture reply \(tick) " + String(repeating: "…", count: tick % 40)
+        }
+        return store
+    }
+}
+#endif

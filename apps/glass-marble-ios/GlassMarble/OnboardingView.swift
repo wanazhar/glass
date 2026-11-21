@@ -15,7 +15,7 @@ struct MarbleOnboardingView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Host") {
+                Section(header: Text("Host")) {
                     TextField("http://100.x.y.z:4783", text: $address)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

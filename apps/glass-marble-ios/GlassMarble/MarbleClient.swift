@@ -151,12 +151,8 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func send(text: String, conversationId: String?) async throws -> MarbleAccepted {
-        struct Body: Encodable {
-            var text: String
-            var conversationId: String?
-        }
         let data = try JSONEncoder().encode(
-            Body(text: text, conversationId: conversationId)
+            MarbleTurnBody(text: text, conversationId: conversationId)
         )
         return try await fetch(
             try makeRequest(path: "/api/turns", method: "POST", body: data)
@@ -363,6 +359,12 @@ final class MarbleClient: @unchecked Sendable {
 
     func setRoutine(id: String, enabled: Bool) async throws {
         try await post("/api/routines/\(encoded(id))/\(enabled ? "enable" : "disable")")
+    }
+
+    /// Whether a routine runs the schedules it missed while the host was down.
+    func setRoutineCatchUp(id: String, enabled: Bool) async throws {
+        struct Body: Encodable { let enabled: Bool }
+        try await post("/api/routines/\(encoded(id))/catch-up", body: Body(enabled: enabled))
     }
 
     func removeRoutine(id: String) async throws {

@@ -2,6 +2,10 @@ import SwiftUI
 
 struct TranscriptView: View {
     @EnvironmentObject private var store: MarbleStore
+    @State private var follow = MarbleScrollFollow()
+    /// True only while the person's finger is driving the scroll view;
+    /// content growth alone must never count as "scrolled away".
+    @State private var userDriven = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -54,6 +58,15 @@ struct TranscriptView: View {
                     if !store.liveText.isEmpty {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
                     }
+                    if let task = retryableTask {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(footnote(task))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Button("Retry") { Task { await store.retry(task) } }
+                                .font(.footnote.weight(.semibold))
+                        }
+                    }
                     Color.clear
                         .frame(height: 1)
                         .id(Self.bottomAnchor)
@@ -66,12 +79,38 @@ struct TranscriptView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: store.transcript.count) { _, _ in scroll(proxy) }
-            .onChange(of: store.liveText) { _, _ in scroll(proxy) }
-            .onChange(of: store.liveTools.count) { _, _ in scroll(proxy) }
-            .onChange(of: store.loaded) { _, _ in scroll(proxy) }
-            .animation(.snappy(duration: 0.24), value: store.transcript.count)
-            .animation(.snappy(duration: 0.2), value: store.isWorking)
+            .onScrollPhaseChange { _, phase in
+                userDriven = phase == .tracking || phase == .interacting || phase == .decelerating
+            }
+            .onScrollGeometryChange(for: Double.self) { geometry in
+                geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height
+            } action: { _, distance in
+                if userDriven { follow.userMoved(distanceFromBottom: distance) }
+            }
+            .onChange(of: store.transcript.count) { _, _ in scrollIfFollowing(proxy) }
+            .onChange(of: store.liveText) { _, _ in scrollIfFollowing(proxy) }
+            .onChange(of: store.liveTools.count) { _, _ in scrollIfFollowing(proxy) }
+            .onChange(of: store.loaded) { _, _ in scrollIfFollowing(proxy) }
+            .onAppear {
+                // First appearance jumps straight to the end, no animation.
+                if follow.initialFollow(now: now()) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if follow.showJumpButton {
+                    Button {
+                        follow.jumpToLatest(now: now())
+                        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                    } label: {
+                        Label("Jump to latest", systemImage: "arrow.down")
+                            .labelStyle(.iconOnly)
+                            .padding(10)
+                            .marbleFloating()
+                    }
+                    .accessibilityLabel("Jump to latest")
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                }
+            }
         }
     }
 
@@ -90,10 +129,33 @@ struct TranscriptView: View {
 
     private static let bottomAnchor = "marble-bottom"
 
-    private func scroll(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.18)) {
-            proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+    /// The newest turn for this chat that ended without a reply.
+    private var retryableTask: MarbleTask? {
+        let conversationId = store.selectedConversationId
+        return store.state.tasks.reversed().first { task in
+            ["failed", "cancelled", "interrupted"].contains(task.status)
+                && task.conversationId == conversationId
+                && !task.prompt.isEmpty
         }
+    }
+
+    private func footnote(_ task: MarbleTask) -> String {
+        switch task.status {
+        case "cancelled": return "Cancelled before replying"
+        case "interrupted": return "Interrupted before replying"
+        default: return "Failed before replying"
+        }
+    }
+
+    private func now() -> TimeInterval {
+        Date().timeIntervalSinceReferenceDate
+    }
+
+    /// Follow the tail only while the person is at the end, and at most as
+    /// fast as the throttle allows — streaming must never fight their scroll.
+    private func scrollIfFollowing(_ proxy: ScrollViewProxy) {
+        guard follow.shouldFollow(now: now()) else { return }
+        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
     }
 }
 
@@ -117,6 +179,17 @@ struct MarbleEntryView: View {
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous)
                 )
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if entry.kind == "reasoning" {
+            // Thinking stays tucked away — never inline with the reply.
+            DisclosureGroup("Reasoning") {
+                Text(entry.text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 if isMuted {
@@ -167,6 +240,17 @@ struct ComposerBar: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
+            if let onDictate {
+                Button(action: onDictate) {
+                    Image(systemName: isDictating ? "waveform" : "mic")
+                        .imageScale(.medium)
+                        .foregroundStyle(isDictating ? .red : .secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
+            }
+
             TextField(
                 isWorking
                     ? "Correct Marble while it works…"
@@ -178,49 +262,39 @@ struct ComposerBar: View {
             .focused($focused)
             .submitLabel(.send)
             .onSubmit(onSend)
-            .padding(.vertical, 6)
-
-            if let onDictate {
-                Button(action: onDictate) {
-                    Image(systemName: isDictating ? "waveform" : "mic")
-                        .imageScale(.medium)
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(isDictating ? .red : .secondary)
-                }
-                .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Color(.secondarySystemBackground),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color(.separator), lineWidth: 0.5)
+            )
 
             Button(action: isWorking ? onSteer : onSend) {
-                Image(systemName: isWorking ? "arrow.turn.up.left" : "arrow.up")
-                    .imageScale(.medium)
-                    .fontWeight(.bold)
-                    .frame(width: 34, height: 34)
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(trimmed.isEmpty ? .secondary : MarbleTheme.tint)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.circle)
             .disabled(trimmed.isEmpty)
             .accessibilityLabel(isWorking ? "Steer" : "Send")
-
             if isWorking {
                 Button(action: onStop) {
-                    Image(systemName: "stop.fill")
-                        .imageScale(.medium)
-                        .frame(width: 34, height: 34)
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.red)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
-                .tint(.red)
                 .accessibilityLabel("Stop")
             }
         }
-        .padding(.leading, 16)
-        .padding(.trailing, 8)
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .marbleFloating()
-        .padding(.horizontal, 14)
-        .padding(.bottom, 10)
-        .frame(maxWidth: 820)
-        .frame(maxWidth: .infinity)
     }
 
     private var trimmed: String {

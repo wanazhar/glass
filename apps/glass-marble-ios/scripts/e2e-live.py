@@ -9,6 +9,9 @@ model-backed steps retry with backoff instead of failing on the first window.
 """
 
 import argparse
+import os
+import tempfile
+import time
 import hashlib
 import hmac as hmac_mod
 import json
@@ -262,11 +265,66 @@ def tls_pin_check():
     return True, "pin verified and state answers over TLS"
 
 
+def start_isolated_host():
+    """Launch `glass-marble serve` on loopback with throwaway data/workspace/
+    token so the e2e can never touch a real host. Returns (base_url, token, proc).
+    The caller must terminate proc at the end via finish().
+    """
+    import subprocess
+    binary = os.environ.get("MARBLE_BINARY", os.path.expanduser("~/.local/lib/marble/glass-marble"))
+    root = tempfile.mkdtemp(prefix="marble-e2e-")
+    workspace = os.path.join(root, "workspace")
+    os.makedirs(workspace)
+    with open(os.path.join(workspace, "notes.txt"), "w") as fh:
+        fh.write("e2e fixture\n")
+    token_path = os.path.join(root, "token")
+    token = "e2e-fixture-token"
+    with open(token_path, "w") as fh:
+        fh.write(token + "\n")
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    env = dict(os.environ)
+    env.setdefault("GLASS_CORE_BINARY", os.path.expanduser("~/.local/lib/marble/glass-core"))
+    proc = subprocess.Popen(
+        [binary, "--cwd", workspace, "--data-dir", os.path.join(root, "data"),
+         "serve", "--host", "127.0.0.1", "--port", str(port),
+         "--token-file", token_path],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen(base + "/healthz", timeout=1):
+                break
+        except Exception:
+            time.sleep(0.25)
+    else:
+        proc.terminate()
+        raise SystemExit("isolated host did not come up")
+    return base, token, proc
+
+
 def main():
     global HOST, TOKEN, FORCE_QUIESCE, SSL_CTX
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--token-file", required=True)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Live end-to-end check for Marble. By default it launches its own "
+            "isolated `glass-marble serve` on 127.0.0.1 (temp data dir, temp "
+            "workspace, temp token) and tears it down afterwards. Pointing it "
+            "at an existing host requires --host/--token-file plus "
+            "--i-know-this-is-a-live-host."
+        )
+    )
+    fixture_proc = None
+    parser.add_argument("--host")
+    parser.add_argument("--token-file")
+    parser.add_argument(
+        "--i-know-this-is-a-live-host",
+        action="store_true",
+        help="required with --host: confirms you mean to drive a real host",
+    )
     parser.add_argument(
         "--force-quiesce",
         action="store_true",
@@ -279,8 +337,16 @@ def main():
     )
     args = parser.parse_args()
     FORCE_QUIESCE = args.force_quiesce
-    HOST = args.host.rstrip("/")
-    TOKEN = open(args.token_file).read().strip()
+    if args.host or args.token_file:
+        if not args.i_know_this_is_a_live_host:
+            parser.error(
+                "--host/--token-file talks to an existing host; re-run with "
+                "--i-know-this-is-a-live-host to confirm that is what you want"
+            )
+        HOST = args.host.rstrip("/")
+        TOKEN = open(args.token_file).read().strip()
+    else:
+        HOST, TOKEN, fixture_proc = start_isolated_host()
     SSL_CTX = (
         ssl._create_unverified_context() if HOST.startswith("https") else None
     )
@@ -504,6 +570,10 @@ def finish(stream):
             break
     done(t, failed == 0, f"deleted {len(set(CREATED)) - failed}/{len(set(CREATED))}")
 
+    global fixture_proc
+    if fixture_proc is not None:
+        fixture_proc.terminate()
+        fixture_proc = None
     print(f"== {sum(RESULTS)} passed, {len(RESULTS) - sum(RESULTS)} failed")
     return 0 if all(RESULTS) else 1
 

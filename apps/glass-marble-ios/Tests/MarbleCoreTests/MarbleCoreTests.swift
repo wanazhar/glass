@@ -1,0 +1,922 @@
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+import XCTest
+@testable import MarbleCore
+
+private func fixture(_ name: String) throws -> Data {
+    let url = Bundle.module.url(forResource: "Fixtures/\(name)", withExtension: nil)!
+    return try Data(contentsOf: url)
+}
+
+private func decode<T: Decodable>(_ type: T.Type, _ name: String) throws -> T {
+    try JSONDecoder().decode(type, from: fixture(name))
+}
+
+final class EndpointTests: XCTestCase {
+    func testBareHostGetsHTTP() throws {
+        let e = try MarbleEndpoint.parse("  100.98.115.95:4783  ").get()
+        XCTAssertEqual(e.baseURL.absoluteString, "http://100.98.115.95:4783")
+    }
+
+    func testTrailingSlashStripped() throws {
+        let e = try MarbleEndpoint.parse("http://host:4783/").get()
+        XCTAssertEqual(e.baseURL.absoluteString, "http://host:4783")
+    }
+
+    func testHTTPSKept() throws {
+        let e = try MarbleEndpoint.parse("https://marble.example.com").get()
+        XCTAssertEqual(e.baseURL.scheme, "https")
+    }
+
+    func testRejectsNonHTTP() {
+        XCTAssertEqual(MarbleEndpoint.parse("ftp://host"), .failure(.badScheme))
+    }
+
+    func testRejectsEmpty() {
+        XCTAssertEqual(MarbleEndpoint.parse("   "), .failure(.empty))
+    }
+
+    func testRejectsMissingHost() {
+        XCTAssertEqual(MarbleEndpoint.parse("http://"), .failure(.missingHost))
+    }
+
+    func testPathJoinsOntoBase() throws {
+        let e = try MarbleEndpoint.parse("http://host:4783").get()
+        XCTAssertEqual(
+            e.url(path: "/api/state")?.absoluteString,
+            "http://host:4783/api/state"
+        )
+    }
+
+    func testQueryEncoding() throws {
+        let e = try MarbleEndpoint.parse("http://h").get()
+        let url = e.url(path: "/api/transcript/search", query: [
+            URLQueryItem(name: "q", value: "a b&c"),
+            URLQueryItem(name: "limit", value: "5"),
+        ])
+        XCTAssertEqual(
+            url?.absoluteString,
+            "http://h/api/transcript/search?q=a%20b%26c&limit=5"
+        )
+    }
+}
+
+final class RequestTests: XCTestCase {
+    func testBearerHeaderSet() throws {
+        var e = try MarbleEndpoint.parse("http://h").get()
+        e.token = "secret-token"
+        let request = try e.request(path: "/api/state")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/json")
+        XCTAssertEqual(request.httpMethod, "GET")
+    }
+
+    func testNoTokenNoAuthHeader() throws {
+        let e = try MarbleEndpoint.parse("http://h").get()
+        let request = try e.request(path: "/api/state")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testEventStreamAccept() throws {
+        let e = try MarbleEndpoint.parse("http://h").get()
+        let request = try e.request(path: "/api/events", acceptsEventStream: true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+    }
+
+    func testPostBodyContentType() throws {
+        let e = try MarbleEndpoint.parse("http://h").get()
+        let request = try e.request(path: "/api/turns", method: "POST", body: Data("{}".utf8))
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(request.httpBody, Data("{}".utf8))
+    }
+}
+
+final class FixtureDecodeTests: XCTestCase {
+    func testHealthzDecodes() throws {
+        let health = try decode(MarbleHealth.self, "healthz.json")
+        XCTAssertEqual(health.ok, true)
+        XCTAssertEqual(health.version, "0.3.14")
+        XCTAssertEqual(health.authRequired, true)
+        XCTAssertEqual(health.runtime?.health, "ok")
+    }
+
+    func testLeanStateDecodes() throws {
+        let state = try decode(MarbleState.self, "state-lean.json")
+        XCTAssertFalse(state.conversations.isEmpty)
+        XCTAssertNotNil(state.conversations[0].id)
+    }
+
+    func testTranscriptDecodes() throws {
+        let page = try decode(MarbleTranscriptPage.self, "transcript.json")
+        XCTAssertFalse(page.entries.isEmpty)
+    }
+
+    func testSearchDecodes() throws {
+        struct Reply: Decodable { var hits: [MarbleSearchHit] }
+        let reply = try decode(Reply.self, "search.json")
+        XCTAssertFalse(reply.hits.isEmpty)
+        XCTAssertTrue(reply.hits[0].text.contains("pong"))
+    }
+
+    func testExportDecodes() throws {
+        struct Export: Decodable {
+            var format: String?
+            var transcript: [MarbleEntry]?
+            var conversations: [MarbleConversation]?
+        }
+        let export = try decode(Export.self, "export.json")
+        XCTAssertEqual(export.format, "glass-marble-conversation/v1")
+    }
+
+    func testEventDecodes() throws {
+        struct Event: Decodable {
+            var kind: String
+            var sequence: UInt64
+            var conversationId: String
+        }
+        let event = try decode(Event.self, "event.json")
+        XCTAssertEqual(event.kind, "text")
+    }
+
+    func testNoTokenInFixtures() throws {
+        for name in ["healthz.json", "state-lean.json", "transcript.json",
+                     "search.json", "export.json", "events.sse"] {
+            let text = String(data: try fixture(name), encoding: .utf8) ?? ""
+            XCTAssertFalse(text.contains("Bearer"), "\(name) leaks an auth header")
+        }
+    }
+}
+
+final class SSEParserTests: XCTestCase {
+    func testLiveCaptureParses() throws {
+        var parser = MarbleSSEParser()
+        var frames: [MarbleSSEFrame] = []
+        let text = String(decoding: try fixture("events.sse"), as: UTF8.self)
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let frame = parser.feed(String(line)) { frames.append(frame) }
+        }
+        XCTAssertEqual(frames.count, 17)
+        XCTAssertEqual(frames[0].id, "1")
+        XCTAssertEqual(frames[0].event, "queued")
+        // tool and approval frames captured live from a real denied call.
+        XCTAssertTrue(frames.contains { $0.event == "approval_pending" })
+        XCTAssertTrue(frames.contains { $0.event == "approval_resolved" })
+        XCTAssertTrue(frames.contains { $0.event == "tool_end" })
+        XCTAssertTrue(frames.contains { $0.event == "settled" })
+        // The text event carries its word.
+        let textFrame = frames.first { $0.event == "text" }
+        XCTAssertTrue(textFrame?.data.contains("fixturemark") == true)
+    }
+
+    func testKeepaliveIgnored() {
+        var parser = MarbleSSEParser()
+        XCTAssertNil(parser.feed(": keepalive"))
+        XCTAssertNil(parser.feed(""))
+    }
+
+    func testMultiLineData() {
+        var parser = MarbleSSEParser()
+        XCTAssertNil(parser.feed("data: one"))
+        XCTAssertNil(parser.feed("data: two"))
+        let frame = parser.feed("")
+        XCTAssertEqual(frame?.data, "one\ntwo")
+    }
+
+    func testEventAndIDFields() {
+        var parser = MarbleSSEParser()
+        _ = parser.feed("id: 42")
+        _ = parser.feed("event: text")
+        _ = parser.feed("data: {}")
+        let frame = parser.feed("")
+        XCTAssertEqual(frame?.id, "42")
+        XCTAssertEqual(frame?.event, "text")
+    }
+
+    func testFieldlessLineIgnored() {
+        var parser = MarbleSSEParser()
+        XCTAssertNil(parser.feed("somegarbage"))
+        XCTAssertNil(parser.feed(""))
+    }
+
+    func testFinishFlushesOpenFrame() {
+        var parser = MarbleSSEParser()
+        _ = parser.feed("data: tail")
+        XCTAssertEqual(parser.finish()?.data, "tail")
+    }
+
+    func testBlankFrameReturnsNil() {
+        var parser = MarbleSSEParser()
+        XCTAssertNil(parser.feed(""))
+    }
+}
+
+final class ErrorMappingTests: XCTestCase {
+    private func validate(status: Int, body: String = "") throws {
+        let response = HTTPURLResponse(
+            url: URL(string: "http://h/api")!,
+            statusCode: status,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        try marbleValidate(response, data: Data(body.utf8))
+    }
+
+    func testStatusMapping() {
+        XCTAssertThrowsError(try validate(status: 401)) {
+            XCTAssertEqual($0 as? MarbleClientError, .unauthorized)
+        }
+    }
+
+    func testForbidden() {
+        XCTAssertThrowsError(try validate(status: 403)) {
+            XCTAssertEqual($0 as? MarbleClientError, .forbidden)
+        }
+    }
+
+    func testNotFound() {
+        XCTAssertThrowsError(try validate(status: 404)) {
+            XCTAssertEqual($0 as? MarbleClientError, .notFound)
+        }
+    }
+
+    func testConflictCarriesCode() {
+        XCTAssertThrowsError(try validate(status: 409, body: #"{"error":"task_running"}"#)) {
+            XCTAssertEqual($0 as? MarbleClientError, .conflict("task_running"))
+        }
+    }
+
+    func testServerError() {
+        XCTAssertThrowsError(try validate(status: 502, body: "bad gateway")) {
+            guard case .server(let code, _) = $0 as? MarbleClientError else {
+                return XCTFail("expected .server, got \($0)")
+            }
+            XCTAssertEqual(code, 502)
+        }
+    }
+
+    func testURLErrorMapsToUnreachable() {
+        let error = URLError(.cannotConnectToHost)
+        guard case .unreachable = MarbleClientError.from(error) else {
+            return XCTFail("expected .unreachable")
+        }
+    }
+
+    func testTimeoutMaps() {
+        XCTAssertEqual(MarbleClientError.from(URLError(.timedOut)), .timeout)
+    }
+
+    func testErrorCopyPresent() {
+        for error: MarbleClientError in [
+            .invalidURL, .unreachable(""), .timeout, .offline(""), .unauthorized,
+            .forbidden, .notFound, .conflict("x"), .server(500, ""), .decoding("x"),
+            .http(418, ""),
+        ] {
+            XCTAssertFalse(error.errorDescription?.isEmpty ?? true, "\(error)")
+        }
+    }
+}
+
+final class SemverTests: XCTestCase {
+    func testEqual() {
+        XCTAssertEqual(MarbleCompatibility.compare("0.3.14", "0.3.14"), 0)
+    }
+
+    func testOlderHost() {
+        XCTAssertLessThan(MarbleCompatibility.compare("0.3.13", "0.3.14"), 0)
+    }
+
+    func testNewerHost() {
+        XCTAssertGreaterThan(MarbleCompatibility.compare("1.0.0", "0.3.14"), 0)
+    }
+
+    func testDirtySuffixIgnored() {
+        XCTAssertTrue(MarbleCompatibility.isSupported("0.3.14-dirty"))
+    }
+
+    func testMinimum() {
+        XCTAssertTrue(MarbleCompatibility.isSupported("0.3.14"))
+        XCTAssertFalse(MarbleCompatibility.isSupported("0.3.13"))
+    }
+}
+
+final class OnboardingEvaluatorTests: XCTestCase {
+    private let health = MarbleHealth(
+        ok: true, version: "0.3.14", revision: 1, sequence: 0, authRequired: true,
+        status: "idle",
+        runtime: MarbleHealth.RuntimeHealth(health: "ok", lastError: nil)
+    )
+    private let url = "http://100.64.0.5:4783"
+
+    private func verdict(
+        _ h: Result<MarbleHealth, MarbleClientError>,
+        _ s: MarbleOnboardingEvaluator.StateOutcome,
+        token: Bool
+    ) -> MarbleOnboarding {
+        MarbleOnboardingEvaluator.evaluate(urlTried: url, health: h, state: s, hadToken: token)
+    }
+
+    func testReady() {
+        XCTAssertEqual(verdict(.success(health), .ok, token: true), .ready("0.3.14"))
+    }
+
+    func testUnreachable() {
+        guard case .unreachable(let message) = verdict(
+            .failure(.unreachable("nope")), .ok, token: false
+        ) else { return XCTFail("expected .unreachable") }
+        XCTAssertTrue(message.contains(url))
+    }
+
+    func testTokenRequired() {
+        XCTAssertEqual(verdict(.success(health), .http(401, "unauthorized"), token: false), .tokenRequired)
+    }
+
+    func testBadToken() {
+        XCTAssertEqual(verdict(.success(health), .http(401, "unauthorized"), token: true), .badToken)
+    }
+
+    func testVersionMismatch() {
+        var old = health
+        old.version = "0.3.10"
+        XCTAssertEqual(
+            verdict(.success(old), .ok, token: true),
+            .versionMismatch(found: "0.3.10", required: "0.3.14")
+        )
+    }
+
+    func testUnhealthy() {
+        var bad = health
+        bad.runtime = MarbleHealth.RuntimeHealth(health: "error", lastError: "engine died")
+        guard case .unhealthy(let detail) = verdict(.success(bad), .ok, token: true) else {
+            return XCTFail("expected .unhealthy")
+        }
+        XCTAssertEqual(detail, "engine died")
+    }
+
+    func testNotMarble() {
+        var odd = health
+        odd.version = nil
+        XCTAssertEqual(verdict(.success(odd), .ok, token: true), .notMarble)
+        XCTAssertEqual(verdict(.failure(.decoding("x")), .ok, token: true), .notMarble)
+    }
+
+    func testStateFailureIsUnhealthyNotBadToken() {
+        // A 5xx (or other non-401) state answer is a host problem, not a token
+        // problem — even with a token present.
+        XCTAssertEqual(
+            verdict(.success(health), .failed("host exploded"), token: true),
+            .unhealthy("host exploded")
+        )
+    }
+
+    func testUnhealthyFlag() {
+        var bad = health
+        bad.ok = false
+        guard case .unhealthy = verdict(.success(bad), .ok, token: true) else {
+            return XCTFail("expected .unhealthy")
+        }
+    }
+}
+
+final class AttentionTests: XCTestCase {
+    private func event(
+        kind: String, taskId: String = "task-1",
+        reason: String? = nil, cancelled: Bool? = nil, requestId: String? = nil
+    ) -> MarbleEvent {
+        MarbleEvent(
+            sequence: 1,
+            conversationId: "conv-1",
+            taskId: taskId,
+            kind: kind,
+            data: MarbleEventData(
+                text: nil, tool: nil, isError: nil, message: nil, status: nil,
+                revision: nil, taskId: taskId, reason: reason,
+                cancelled: cancelled, requestId: requestId, approved: nil
+            )
+        )
+    }
+
+    func testDoubleSettledNotifiesOnce() {
+        var seen: Set<String> = []
+        let first = MarbleAttention.alert(
+            for: event(kind: "settled", reason: "completed"), seen: &seen
+        )
+        XCTAssertEqual(first?.title, "Marble finished")
+        let second = MarbleAttention.alert(
+            for: event(kind: "settled", cancelled: false), seen: &seen
+        )
+        XCTAssertNil(second)
+    }
+
+    func testCancelledTitle() {
+        var seen: Set<String> = []
+        let alert = MarbleAttention.alert(
+            for: event(kind: "settled", reason: "cancelled"), seen: &seen
+        )
+        XCTAssertEqual(alert?.title, "Marble stopped")
+    }
+
+    func testCancelledFlagTitle() {
+        var seen: Set<String> = []
+        let alert = MarbleAttention.alert(
+            for: event(kind: "settled", cancelled: true), seen: &seen
+        )
+        XCTAssertEqual(alert?.title, "Marble stopped")
+    }
+
+    func testFailedTitle() {
+        var seen: Set<String> = []
+        for reason in ["failed", "error", "interrupted"] {
+            seen = []
+            let alert = MarbleAttention.alert(
+                for: event(kind: "settled", reason: reason), seen: &seen
+            )
+            XCTAssertEqual(alert?.title, "Marble hit a problem", reason)
+        }
+    }
+
+    func testApprovalAlert() {
+        var seen: Set<String> = []
+        let alert = MarbleAttention.alert(
+            for: event(kind: "approval_pending", requestId: "req-1"), seen: &seen
+        )
+        XCTAssertEqual(alert?.title, "Marble needs approval")
+        XCTAssertNil(
+            MarbleAttention.alert(
+                for: event(kind: "approval_pending", requestId: "req-1"), seen: &seen
+            )
+        )
+    }
+
+    func testOtherKindsSilent() {
+        var seen: Set<String> = []
+        XCTAssertNil(MarbleAttention.alert(for: event(kind: "text"), seen: &seen))
+        XCTAssertNil(MarbleAttention.alert(for: event(kind: "state"), seen: &seen))
+    }
+}
+
+final class EmbeddedQueryTests: XCTestCase {
+    private let endpoint = try! MarbleEndpoint.parse("http://100.64.0.5:4783").get()
+
+    func testQuestionMarkInPathBecomesQuery() {
+        let url = endpoint.url(path: "/api/state?lean=1")
+        XCTAssertNotNil(url)
+        XCTAssertFalse(url!.absoluteString.contains("%3F"))
+        XCTAssertEqual(url?.path, "/api/state")
+        XCTAssertEqual(url?.query, "lean=1")
+    }
+
+    func testEmbeddedAndExplicitQueryMerge() {
+        let url = endpoint.url(
+            path: "/api/transcript?conversationId=abc",
+            query: [URLQueryItem(name: "after", value: "7")]
+        )
+        XCTAssertEqual(url?.path, "/api/transcript")
+        XCTAssertTrue(url!.query!.contains("conversationId=abc"))
+        XCTAssertTrue(url!.query!.contains("after=7"))
+    }
+
+    func testRouteQueryStillBuilds() {
+        let route = MarbleRoute.state
+        let url = endpoint.url(path: route.path, query: route.query)
+        XCTAssertEqual(url?.absoluteString, "http://100.64.0.5:4783/api/state?lean=1")
+    }
+}
+
+final class TokenNormalizeTests: XCTestCase {
+    func testTrimsWhitespaceAndNewlines() {
+        XCTAssertEqual(MarbleToken.normalize("  abc123\n"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("abc 123 def"), "abc123def")
+        XCTAssertEqual(MarbleToken.normalize("ab\ncd\nef"), "abcdef")
+        XCTAssertEqual(MarbleToken.normalize("  ab c \t d  "), "abcd")
+    }
+
+    func testStripsQuotes() {
+        XCTAssertEqual(MarbleToken.normalize("\"abc123\""), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("'abc123'"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize(" \" abc \" "), "abc")
+    }
+
+    func testStripsBearerPrefix() {
+        XCTAssertEqual(MarbleToken.normalize("Bearer abc123"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("bearer  abc123"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("BEARER\tabc"), "abc")
+        // A token that merely starts with the letters is kept whole.
+        XCTAssertEqual(MarbleToken.normalize("bearerabc"), "bearerabc")
+    }
+
+    func testEmpty() {
+        XCTAssertEqual(MarbleToken.normalize("   "), "")
+        XCTAssertEqual(MarbleToken.normalize("Bearer "), "")
+    }
+}
+
+final class EvaluatorMessageTests: XCTestCase {
+    private let health = MarbleHealth(
+        ok: true, version: "0.3.14", revision: 1, sequence: 0, authRequired: true,
+        status: "idle",
+        runtime: MarbleHealth.RuntimeHealth(health: "ok", lastError: nil)
+    )
+    private let url = "http://100.64.0.5:4783"
+
+    private func verdict(
+        _ h: Result<MarbleHealth, MarbleClientError>,
+        _ s: MarbleOnboardingEvaluator.StateOutcome,
+        token: Bool = true
+    ) -> MarbleOnboarding {
+        MarbleOnboardingEvaluator.evaluate(urlTried: url, health: h, state: s, hadToken: token)
+    }
+
+    func testHealthAnswersNeverSayCannotReach() {
+        // Any HTTP status means the host answered; only transport errors may
+        // claim "Cannot reach".
+        for error: MarbleClientError in [
+            .unauthorized, .forbidden, .notFound,
+            .server(500, "{\"error\":\"boom\"}"), .http(418, ""),
+        ] {
+            let verdict = verdict(.failure(error), .ok)
+            guard case .hostAnswered(let message) = verdict else {
+                return XCTFail("expected .hostAnswered for \(error), got \(verdict)")
+            }
+            XCTAssertTrue(message.contains("healthz"), message)
+        }
+    }
+
+    func testHealthServerErrorCarriesStatusAndCode() {
+        let verdict = verdict(
+            .failure(.server(503, "{\"error\":\"engine_down\"}")), .ok
+        )
+        XCTAssertEqual(
+            verdict,
+            .hostAnswered("The host answered HTTP 503 (engine_down) for /healthz.")
+        )
+    }
+
+    func testStateUnauthorizedIsBadToken() {
+        XCTAssertEqual(
+            verdict(.success(health), .http(401, "unauthorized")),
+            .badToken
+        )
+        XCTAssertTrue(MarbleOnboarding.badToken.message.contains("401"))
+    }
+
+    func testState404IsMismatchNotBadToken() {
+        let verdict = verdict(.success(health), .http(404, "not_found"))
+        guard case .hostAnswered(let message) = verdict else {
+            return XCTFail("expected .hostAnswered, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("404"), message)
+        XCTAssertTrue(message.contains("0.3.14"), message)
+    }
+
+    func testStateOtherStatusCarriesCode() {
+        XCTAssertEqual(
+            verdict(.success(health), .http(503, "engine_down")),
+            .hostAnswered("The host answered HTTP 503 (engine_down) for /api/state.")
+        )
+    }
+
+    func testStateTransportHasOwnMessage() {
+        guard case .unreachable(let message) = verdict(
+            .success(health), .transport("connection lost"), token: true
+        ) else { return XCTFail("expected .unreachable") }
+        XCTAssertTrue(message.contains("/api/state"), message)
+        XCTAssertTrue(message.contains("connection lost"), message)
+    }
+
+    func testOutcomeMapping() {
+        XCTAssertEqual(
+            MarbleOnboardingEvaluator.stateOutcome(from: MarbleClientError.unauthorized),
+            .http(401, "unauthorized")
+        )
+        XCTAssertEqual(
+            MarbleOnboardingEvaluator.stateOutcome(
+                from: MarbleClientError.server(500, "{\"error\":\"boom\"}")
+            ),
+            .http(500, "boom")
+        )
+        guard case .transport = MarbleOnboardingEvaluator.stateOutcome(
+            from: MarbleClientError.timeout
+        ) else { return XCTFail("expected .transport") }
+        guard case .failed = MarbleOnboardingEvaluator.stateOutcome(
+            from: MarbleClientError.decoding("bad json")
+        ) else { return XCTFail("expected .failed") }
+    }
+}
+
+final class ATSErrorMappingTests: XCTestCase {
+    func testATSErrorMaps() {
+        XCTAssertEqual(
+            MarbleClientError.from(URLError(.appTransportSecurityRequiresSecureConnection)),
+            .appTransportSecurity
+        )
+    }
+
+    func testSecureConnectionMapsToTLS() {
+        guard case .tls = MarbleClientError.from(URLError(.secureConnectionFailed)) else {
+            return XCTFail("expected .tls")
+        }
+    }
+
+    func testServerCertErrorsMapToTLS() {
+        for code: URLError.Code in [
+            .serverCertificateHasBadDate, .serverCertificateUntrusted,
+            .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+            .clientCertificateRejected, .clientCertificateRequired,
+        ] {
+            guard case .tls = MarbleClientError.from(URLError(code)) else {
+                return XCTFail("expected .tls for \(code)")
+            }
+        }
+    }
+}
+
+final class OnboardingTLSVerdictTests: XCTestCase {
+    private let health = MarbleHealth(
+        ok: true, version: "0.3.14", revision: 1, sequence: 0, authRequired: true,
+        status: "idle",
+        runtime: MarbleHealth.RuntimeHealth(health: "ok", lastError: nil)
+    )
+
+    func testHTTPAddressThatHitTLSSaysSo() {
+        let verdict = MarbleOnboardingEvaluator.evaluate(
+            urlTried: "http://100.98.115.95:4783",
+            health: .failure(.tls("handshake failed")),
+            state: .failed("state check failed"),
+            hadToken: true
+        )
+        guard case .hostAnswered(let message) = verdict else {
+            return XCTFail("expected .hostAnswered, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("iOS tried to use HTTPS"), message)
+    }
+
+    func testHTTPAddressBlockedByATSSaysSo() {
+        let verdict = MarbleOnboardingEvaluator.evaluate(
+            urlTried: "http://100.98.115.95:4783",
+            health: .failure(.appTransportSecurity),
+            state: .failed("state check failed"),
+            hadToken: true
+        )
+        guard case .hostAnswered(let message) = verdict else {
+            return XCTFail("expected .hostAnswered, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("iOS tried to use HTTPS"), message)
+    }
+
+    func testSpeaksHTTPCarriesHint() {
+        let verdict = MarbleOnboarding.speaksHTTP("http://100.98.115.95:4783")
+        XCTAssertEqual(verdict.httpHint, "http://100.98.115.95:4783")
+        XCTAssertTrue(verdict.message.contains("HTTP, not HTTPS"))
+        XCTAssertNil(MarbleOnboarding.ready("0.3.14").httpHint)
+    }
+
+    func testProbeRetriesHTTPSOverHTTP() async {
+        // https health dies in TLS; the http retry answers like Marble.
+        let endpoint = MarbleEndpoint(
+            baseURL: URL(string: "https://100.98.115.95:4783")!, token: "t"
+        )
+        var calls: [String] = []
+        let (verdict, _) = await MarbleOnboardingEvaluator.probe(
+            endpoint: endpoint,
+            health: { candidate in
+                calls.append(candidate.baseURL.absoluteString)
+                if candidate.baseURL.scheme == "https" {
+                    throw MarbleClientError.tls("handshake failed")
+                }
+                return self.health
+            },
+            state: { _ in 0 }
+        )
+        XCTAssertEqual(verdict, .speaksHTTP("http://100.98.115.95:4783"))
+        XCTAssertEqual(calls, [
+            "https://100.98.115.95:4783",
+            "http://100.98.115.95:4783",
+        ])
+    }
+
+    func testProbeKeepsTLSVerdictWhenHTTPAlsoFails() async {
+        let endpoint = MarbleEndpoint(
+            baseURL: URL(string: "https://100.98.115.95:4783")!, token: "t"
+        )
+        let (verdict, _) = await MarbleOnboardingEvaluator.probe(
+            endpoint: endpoint,
+            health: { _ in throw MarbleClientError.tls("handshake failed") },
+            state: { _ in 0 }
+        )
+        guard case .unreachable(let message) = verdict else {
+            return XCTFail("expected .unreachable, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("TLS"), message)
+    }
+}
+
+final class MarbleCryptoTests: XCTestCase {
+    func testSHA256Vectors() {
+        XCTAssertEqual(
+            MarbleSHA256.hex(Data("abc".utf8)),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        )
+        XCTAssertEqual(
+            MarbleSHA256.hex(Data()),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        )
+        let million = Data(repeating: 0x61, count: 1_000_000)
+        XCTAssertEqual(
+            MarbleSHA256.hex(million),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        )
+    }
+
+    func testHMACRFC4231() {
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8](repeating: 0x0b, count: 20),
+                message: [UInt8]("Hi There".utf8)
+            ),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        )
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8]("Jefe".utf8),
+                message: [UInt8]("what do ya want for nothing?".utf8)
+            ),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        )
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8](repeating: 0x0a, count: 25),
+                message: [UInt8](repeating: 0xdd, count: 50)
+            ),
+            "b74f4dabb5e3f7f4c09efc5808cd288179ddd2975060fe3739f2b12a90e47c49"
+        )
+        // Long keys are hashed first — the >64-byte path.
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8](repeating: 0xaa, count: 131),
+                message: [UInt8](
+                    "Test Using Larger Than Block-Size Key - Hash Key First".utf8
+                )
+            ),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        )
+    }
+
+    func testNonce() {
+        let a = MarbleTLSPin.nonce()
+        XCTAssertEqual(a.count, 64)
+        XCTAssertTrue(a.allSatisfy { $0.isHexDigit })
+        XCTAssertNotEqual(a, MarbleTLSPin.nonce())
+    }
+
+    func testVerifyMatchesHostProof() {
+        let token = "tokentest"
+        let nonce = String(repeating: "a", count: 64)
+        let cert = String(repeating: "0", count: 64)
+        var message = [UInt8]("marble-tls-pin-v1".utf8)
+        message.append(0)
+        message.append(contentsOf: [UInt8](nonce.utf8))
+        message.append(0)
+        message.append(contentsOf: [UInt8](cert.utf8))
+        let proof = MarbleHMAC.sha256Hex(key: [UInt8](token.utf8), message: message)
+        XCTAssertTrue(MarbleTLSPin.verify(
+            token: token, nonce: nonce, observedCertSHA256: cert, proofHex: proof
+        ))
+        XCTAssertFalse(MarbleTLSPin.verify(
+            token: "wrong", nonce: nonce, observedCertSHA256: cert, proofHex: proof
+        ))
+        XCTAssertFalse(MarbleTLSPin.verify(
+            token: token, nonce: nonce, observedCertSHA256: cert,
+            proofHex: String(repeating: "f", count: 64)
+        ))
+    }
+}
+
+final class MarbleNavigationTests: XCTestCase {
+    func testLaunchLandsOnChatsListWithEmptyPath() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.selectTab(.settings)
+        nav.launch()
+        XCTAssertEqual(nav.tab, .chats)
+        XCTAssertTrue(nav.chatPath.isEmpty)
+        XCTAssertNil(nav.viewingConversationId)
+    }
+
+    func testRefreshNeverChangesNavigation() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        let before = nav
+        nav.refreshed()
+        XCTAssertEqual(nav, before)
+    }
+
+    func testNewChatPushesDraftAndDraftResolves() {
+        var nav = MarbleNavigation()
+        nav.newChat()
+        nav.newChat() // a second tap does not stack drafts
+        XCTAssertEqual(nav.chatPath, [.draft])
+        nav.draftResolved("conv-1")
+        XCTAssertEqual(nav.chatPath, [.conversation("conv-1")])
+        XCTAssertEqual(nav.viewingConversationId, "conv-1")
+    }
+
+    func testDeletedPopsBackToList() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.deleted("a")
+        XCTAssertTrue(nav.chatPath.isEmpty)
+    }
+
+    func testNotificationTappedReplacesPath() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.selectTab(.activity)
+        nav.notificationTapped("b")
+        XCTAssertEqual(nav.tab, .chats)
+        XCTAssertEqual(nav.chatPath, [.conversation("b")])
+    }
+
+    func testPendingOpenDrainsOnce() {
+        var nav = MarbleNavigation()
+        nav.queuePendingOpen("x")
+        XCTAssertEqual(nav.drainPendingOpen(), "x")
+        XCTAssertNil(nav.drainPendingOpen())
+    }
+
+    func testSignOutResets() {
+        var nav = MarbleNavigation()
+        nav.openConversation("a")
+        nav.signOut()
+        XCTAssertEqual(nav, MarbleNavigation())
+    }
+}
+
+final class MarbleScrollFollowTests: XCTestCase {
+    func testFollowsWhenAtBottom() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 0)
+        XCTAssertTrue(follow.shouldFollow(now: 1.0))
+        XCTAssertFalse(follow.showJumpButton)
+    }
+
+    func testStopsFollowingWhenUserScrollsUp() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 400)
+        XCTAssertFalse(follow.shouldFollow(now: 1.0))
+        XCTAssertTrue(follow.showJumpButton)
+    }
+
+    func testThrottlesStreamingScrolls() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 0)
+        XCTAssertTrue(follow.shouldFollow(now: 1.0))
+        XCTAssertFalse(follow.shouldFollow(now: 1.05))
+        XCTAssertTrue(follow.shouldFollow(now: 1.2))
+    }
+
+    func testJumpToLatestReArms() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 400)
+        follow.jumpToLatest(now: 2.0)
+        XCTAssertTrue(follow.following)
+        XCTAssertFalse(follow.showJumpButton)
+    }
+}
+
+final class MarbleScheduleTests: XCTestCase {
+    func testRoundTrips() {
+        XCTAssertEqual(MarbleSchedule(spec: "every:30m")?.spec, "every:30m")
+        XCTAssertEqual(MarbleSchedule(spec: "every:2h")?.spec, "every:2h")
+        XCTAssertEqual(MarbleSchedule(spec: "daily:09:30")?.spec, "daily:09:30")
+        XCTAssertEqual(MarbleSchedule(spec: "daily:9:30"), .daily(hour: 9, minute: 30))
+        XCTAssertNil(MarbleSchedule(spec: "daily:25:00"))
+        XCTAssertNil(MarbleSchedule(spec: "cron:0 9 * * *"))
+    }
+
+    func testPlainLanguage() {
+        XCTAssertEqual(MarbleSchedule(spec: "every:2h")?.summary, "Every 2 hours")
+        XCTAssertEqual(MarbleSchedule(spec: "every:1h")?.summary, "Every hour")
+        XCTAssertEqual(MarbleSchedule(spec: "daily:09:30")?.summary, "Every day at 9:30")
+    }
+}
+
+final class MarbleTurnBodyTests: XCTestCase {
+    func testBodyCarriesExactlyTheDraftAndConversation() throws {
+        let data = try JSONEncoder().encode(
+            MarbleTurnBody(text: "hello draft", conversationId: "conv-7")
+        )
+        let doc = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(doc.count, 2)
+        XCTAssertEqual(doc["text"] as? String, "hello draft")
+        XCTAssertEqual(doc["conversationId"] as? String, "conv-7")
+    }
+
+    func testNilConversationIsNewChat() throws {
+        let data = try JSONEncoder().encode(MarbleTurnBody(text: "hi", conversationId: nil))
+        let doc = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(doc["text"] as? String, "hi")
+        XCTAssertNil(doc["conversationId"])
+    }
+}

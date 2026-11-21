@@ -644,6 +644,174 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A turn cancelled before it replies must never leak its prompt into the
+/// next turn: the engine's newest input is the follow-up, and the settled
+/// reply belongs to the follow-up's own task.
+#[test]
+fn cancelled_turn_does_not_steal_the_next_turns_reply() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    // The turn sleeps before its tool call, leaving a window to cancel it.
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let storage_dir = root.join("sessions");
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let mut python = Command::new("python3");
+    python
+        .arg(&script)
+        .arg("runtime")
+        .arg("--delay-ms")
+        .arg("1500");
+    let conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        events.clone(),
+    )
+    .unwrap();
+    let cancels = CancelRegistry::default();
+    let turn_tx = spawn_single_lane(
+        conversation,
+        Arc::clone(&state),
+        None,
+        LiveStore::in_data_dir(&root),
+        events.clone(),
+        Duration::from_secs(60),
+        cancels.clone(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels,
+    });
+
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"first"}"#);
+    assert_eq!(status, 202, "{body}");
+    let first_task = serde_json::from_str::<Value>(&body).unwrap()["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Wait for the turn to be on the engine, then cancel it mid-run.
+    let mut cancelled = false;
+    let mut last_status: Option<String> = None;
+    for _ in 0..80 {
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        let running = doc["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["id"] == first_task.as_str() && task["status"] == "running");
+        if running {
+            let (status, body) =
+                server.handle("POST", &format!("/api/tasks/{first_task}/cancel"), "");
+            if status == 200 || status == 202 {
+                cancelled = true;
+                break;
+            }
+            last_status = Some(format!("{status} {body}"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        cancelled,
+        "the running turn could not be cancelled: {last_status:?}"
+    );
+
+    // Whatever the cancelled turn still asks for is denied, so it unwinds.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut first_settled = false;
+    while Instant::now() < deadline {
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        if let Some(pending) = doc["approvals"].as_array() {
+            for approval in pending {
+                let id = approval["requestId"].as_str().unwrap();
+                let encoded = id.replace(':', "%3A");
+                server.handle("POST", &format!("/api/approvals/{encoded}/deny"), "");
+            }
+        }
+        let task = doc["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == first_task.as_str())
+            .cloned();
+        if let Some(task) = task
+            && task["status"] != "running"
+        {
+            first_settled = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(first_settled, "cancelled turn never settled");
+
+    // The follow-up is what the engine must see next — not the stale prompt.
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"hello"}"#);
+    assert_eq!(status, 202, "{body}");
+    let hello_task = serde_json::from_str::<Value>(&body).unwrap()["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        if let Some(pending) = doc["approvals"].as_array() {
+            for approval in pending {
+                let id = approval["requestId"].as_str().unwrap();
+                let encoded = id.replace(':', "%3A");
+                server.handle("POST", &format!("/api/approvals/{encoded}/allow"), "");
+            }
+        }
+        let entries = doc["transcript"].as_array().unwrap();
+        let done = entries
+            .iter()
+            .any(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "assistant");
+        if done {
+            let user_for_hello = entries
+                .iter()
+                .find(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "user");
+            assert_eq!(
+                user_for_hello.map(|e| e["text"].clone()),
+                Some(Value::from("hello")),
+                "the engine's newest input was not the follow-up: {body}"
+            );
+            let reply = entries.iter().find(|entry| {
+                entry["taskId"] == hello_task.as_str() && entry["kind"] == "assistant"
+            });
+            assert_eq!(
+                reply.map(|e| e["text"].clone()),
+                Some(Value::from("handled hello")),
+                "the reply was attributed to the wrong turn: {body}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "hello never replied: {body}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn connect(port: u16) -> TcpStream {
     for _ in 0..100 {
         if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) {
@@ -1729,6 +1897,132 @@ fn the_workspace_crate_map_is_served_when_the_host_has_one() {
     assert_eq!(status, 200, "{body}");
     let state: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(state["control"]["crates"], Value::Null);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `openssl s_client` doubles as the TLS client so the test exercises a real
+/// handshake, not just the rustls plumbing.
+fn openssl_cli() -> bool {
+    Command::new("openssl")
+        .arg("version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// One request/response over TLS via the openssl CLI.
+fn tls_get(port: u16, path: &str) -> String {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "printf 'GET {path} HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n' | \
+             openssl s_client -connect 127.0.0.1:{port} -quiet -servername localhost 2>/dev/null"
+        ))
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+#[test]
+fn tls_and_plain_http_share_one_port() {
+    if !openssl_cli() {
+        eprintln!("openssl CLI unavailable; skipping TLS socket test");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("marble-tls-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let cert = root.join("cert.pem");
+    let key = root.join("key.pem");
+    let status = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .args([
+            "-days",
+            "1",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ])
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "{:?}", status.stderr);
+    let identity = glass_marble::tls::load_identity(&cert, &key).unwrap();
+    let leaf = identity.leaf_sha256_hex();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::new(Mutex::new(ProductState::default())),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(Some("tokentest".into())),
+        cancels: CancelRegistry::default(),
+    })
+    .with_tls(Arc::new(identity));
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+
+    // Plain HTTP keeps working on the same port.
+    let mut stream = connect(port);
+    stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut plain = String::new();
+    stream.read_to_string(&mut plain).unwrap();
+    assert!(plain.starts_with("HTTP/1.1 200"), "{plain}");
+
+    // tls-proof is TLS-only: the same request over plain HTTP gets 400.
+    let mut stream = connect(port);
+    let nonce = "a".repeat(64);
+    stream
+        .write_all(
+            format!(
+                "GET /api/tls-proof?nonce={nonce} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut refused = String::new();
+    stream.read_to_string(&mut refused).unwrap();
+    assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+    assert!(refused.contains("tls_only"), "{refused}");
+
+    // TLS: healthz answers inside the handshake-protected stream.
+    let secure = tls_get(port, "/healthz");
+    assert!(secure.contains("200"), "{secure}");
+    assert!(secure.contains("\"ok\":true"), "{secure}");
+
+    // tls-proof over TLS: verify the HMAC the app recomputes.
+    let proof_reply = tls_get(port, &format!("/api/tls-proof?nonce={nonce}"));
+    let body = proof_reply
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or(&proof_reply)
+        .trim()
+        .to_string();
+    let body: Value = serde_json::from_str(&body)
+        .unwrap_or_else(|_| panic!("tls-proof did not return JSON: {proof_reply}"));
+    assert_eq!(body["certSha256"], serde_json::json!(leaf));
+    let expected = glass_marble::tls::tls_proof("tokentest", &nonce, &leaf);
+    assert_eq!(body["proof"], serde_json::json!(expected));
 
     let _ = std::fs::remove_dir_all(&root);
 }

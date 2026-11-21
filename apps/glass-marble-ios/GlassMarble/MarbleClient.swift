@@ -1,39 +1,6 @@
 import Foundation
 import Security
 
-/// One self-hosted Marble host, usually reached over Tailscale.
-struct MarbleEndpoint: Equatable {
-    var baseURL: URL
-    var token: String?
-
-    static let fallback = MarbleEndpoint(
-        baseURL: URL(string: "http://127.0.0.1:4783")!,
-        token: nil
-    )
-
-    var displayHost: String { baseURL.absoluteString }
-}
-
-enum MarbleClientError: LocalizedError, Equatable {
-    case invalidURL
-    case unauthorized
-    case http(Int, String)
-    case offline(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidURL:
-            return "That host address is not a valid URL."
-        case .unauthorized:
-            return "This host needs its access token."
-        case .http(let status, let body):
-            return "Host rejected the request (\(status)): \(body)"
-        case .offline(let message):
-            return message.isEmpty ? "Cannot reach the host." : message
-        }
-    }
-}
-
 /// HTTP and server-sent-event access to a Marble host.
 final class MarbleClient: @unchecked Sendable {
     let endpoint: MarbleEndpoint
@@ -49,7 +16,14 @@ final class MarbleClient: @unchecked Sendable {
         configuration.httpShouldSetCookies = true
         configuration.httpCookieAcceptPolicy = .always
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        session = URLSession(configuration: configuration)
+        let delegate: URLSessionDelegate? =
+            endpoint.baseURL.scheme == "https"
+                ? MarblePinnedSessionDelegate() : nil
+        session = URLSession(
+            configuration: configuration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
     }
 
     // MARK: - Requests
@@ -61,53 +35,70 @@ final class MarbleClient: @unchecked Sendable {
         body: Data? = nil,
         acceptsEventStream: Bool = false
     ) throws -> URLRequest {
-        guard var components = URLComponents(
-            url: endpoint.baseURL,
-            resolvingAgainstBaseURL: false
-        ) else {
-            throw MarbleClientError.invalidURL
-        }
-        components.path = path
-        if !query.isEmpty { components.queryItems = query }
-        guard let url = components.url else { throw MarbleClientError.invalidURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue(
-            acceptsEventStream ? "text/event-stream" : "application/json",
-            forHTTPHeaderField: "Accept"
+        try endpoint.request(
+            path: path,
+            query: query,
+            method: method,
+            body: body,
+            acceptsEventStream: acceptsEventStream
         )
-        if let token = endpoint.token, !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = body
-        }
-        return request
     }
 
-    private func validate(_ response: URLResponse, data: Data) throws {
-        guard let http = response as? HTTPURLResponse else {
-            throw MarbleClientError.offline("The host did not answer over HTTP.")
-        }
-        if http.statusCode == 401 { throw MarbleClientError.unauthorized }
-        guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw MarbleClientError.http(http.statusCode, body)
+    private func makeRequest(
+        route: MarbleRoute,
+        method: String = "GET",
+        body: Data? = nil,
+        acceptsEventStream: Bool = false
+    ) throws -> URLRequest {
+        try makeRequest(
+            path: route.path,
+            query: route.query,
+            method: method,
+            body: body,
+            acceptsEventStream: acceptsEventStream
+        )
+    }
+
+    /// A renewed certificate fails the pin check once; re-pair against the
+    /// token and retry the request before giving up.
+    private func withRepin<T>(_ work: () async throws -> T) async throws -> T {
+        do {
+            return try await work()
+        } catch let error as MarbleClientError {
+            guard case .tls = error, endpoint.baseURL.scheme == "https",
+                  endpoint.token != nil
+            else { throw error }
+            _ = try await MarblePinning.pin(endpoint)
+            return try await work()
         }
     }
 
     private func fetch<T: Decodable>(_ request: URLRequest) async throws -> T {
-        do {
-            let (data, response) = try await session.data(for: request)
-            try validate(response, data: data)
-            return try decoder.decode(T.self, from: data)
-        } catch let error as MarbleClientError {
-            throw error
-        } catch let error as DecodingError {
-            throw MarbleClientError.offline("Unexpected host response: \(error)")
-        } catch {
-            throw MarbleClientError.offline(error.localizedDescription)
+        try await withRepin {
+            do {
+                let (data, response) = try await session.data(for: request)
+                try marbleValidate(response, data: data)
+                return try decoder.decode(T.self, from: data)
+            } catch let error as MarbleClientError {
+                throw error
+            } catch {
+                throw MarbleClientError.from(error)
+            }
+        }
+    }
+
+    /// Raw bytes for endpoints that return a whole document (export).
+    func fetchData(_ request: URLRequest) async throws -> Data {
+        try await withRepin {
+            do {
+                let (data, response) = try await session.data(for: request)
+                try marbleValidate(response, data: data)
+                return data
+            } catch let error as MarbleClientError {
+                throw error
+            } catch {
+                throw MarbleClientError.from(error)
+            }
         }
     }
 
@@ -116,40 +107,52 @@ final class MarbleClient: @unchecked Sendable {
         let request = try makeRequest(path: path, method: "POST", body: data)
         do {
             let (responseData, response) = try await session.data(for: request)
-            try validate(response, data: responseData)
+            try marbleValidate(response, data: responseData)
         } catch let error as MarbleClientError {
             throw error
         } catch {
-            throw MarbleClientError.offline(error.localizedDescription)
+            throw MarbleClientError.from(error)
         }
     }
 
     // MARK: - Product API
 
     func health() async throws -> MarbleHealth {
-        try await fetch(try makeRequest(path: "/healthz"))
+        // healthz answers 503 with the same JSON body when the engine is down;
+        // onboarding needs that body to say so instead of "unreachable". Every
+        // failure maps through MarbleClientError so the evaluator can tell a
+        // refused request from a silent one.
+        do {
+            let (data, response) = try await session.data(
+                for: try makeRequest(route: .health)
+            )
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 503 {
+                return try decoder.decode(MarbleHealth.self, from: data)
+            }
+            try marbleValidate(response, data: data)
+            return try decoder.decode(MarbleHealth.self, from: data)
+        } catch let error as MarbleClientError {
+            throw error
+        } catch {
+            throw MarbleClientError.from(error)
+        }
     }
 
     /// Lean state: control, presence, and counts without every transcript.
     func state() async throws -> MarbleState {
-        try await fetch(try makeRequest(path: "/api/state?lean=1"))
+        try await fetch(try makeRequest(route: .state))
     }
 
     func transcript(conversationId: String, after: UInt64?) async throws -> MarbleTranscriptPage {
-        var path = "/api/transcript?conversationId=\(encoded(conversationId))"
-        if let after, after > 0 {
-            path += "&after=\(after)"
-        }
-        return try await fetch(try makeRequest(path: path))
+        try await fetch(
+            try makeRequest(route: .transcript(conversationId: conversationId, after: after))
+        )
     }
 
     func send(text: String, conversationId: String?) async throws -> MarbleAccepted {
-        struct Body: Encodable {
-            var text: String
-            var conversationId: String?
-        }
         let data = try JSONEncoder().encode(
-            Body(text: text, conversationId: conversationId)
+            MarbleTurnBody(text: text, conversationId: conversationId)
         )
         return try await fetch(
             try makeRequest(path: "/api/turns", method: "POST", body: data)
@@ -179,7 +182,40 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func cancel(taskId: String) async throws {
-        try await post("/api/tasks/\(taskId)/cancel")
+        try await post("/api/tasks/\(encoded(taskId))/cancel")
+    }
+
+    /// Repeat the last failed, cancelled, or interrupted turn.
+    func retry(taskId: String) async throws {
+        struct Body: Encodable { var taskId: String }
+        try await post("/api/turns/retry", body: Body(taskId: taskId))
+    }
+
+    /// Newest transcript matches across all history.
+    func search(query: String, limit: Int = 30) async throws -> [MarbleSearchHit] {
+        struct Reply: Decodable { var hits: [MarbleSearchHit] }
+        let reply: Reply = try await fetch(
+            try makeRequest(route: .search(query, limit: limit))
+        )
+        return reply.hits
+    }
+
+    /// `GET /api/export` — the whole document, or one conversation's slice.
+    func export(conversationId: String? = nil) async throws -> Data {
+        try await fetchData(
+            try makeRequest(route: .export(conversationId: conversationId))
+        )
+    }
+
+    /// Choose the model new conversations use; empty means the engine default.
+    func setModel(_ model: String) async throws {
+        struct Body: Encodable { var model: String }
+        try await post("/api/model", body: Body(model: model))
+    }
+
+    /// Routines quiet-hours window, in host minutes past midnight.
+    func setRoutineQuiet(_ quiet: MarbleQuietHours) async throws {
+        try await post("/api/routines/quiet", body: quiet)
     }
 
     func decide(requestId: String, allow: Bool, remember: Bool = false) async throws {
@@ -224,11 +260,11 @@ final class MarbleClient: @unchecked Sendable {
     // MARK: - Presence, memory, routines
 
     func presence() async throws -> MarblePresence {
-        try await fetch(try makeRequest(path: "/api/presence"))
+        try await fetch(try makeRequest(route: .presence))
     }
 
     func memory() async throws -> MarbleMemory {
-        try await fetch(try makeRequest(path: "/api/memory"))
+        try await fetch(try makeRequest(route: .memory))
     }
 
     private struct MemoryReply: Decodable { var memory: MarbleMemory }
@@ -282,7 +318,7 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func routines() async throws -> MarbleRoutines {
-        try await fetch(try makeRequest(path: "/api/routines"))
+        try await fetch(try makeRequest(route: .routines))
     }
 
     func addRoutine(
@@ -325,6 +361,12 @@ final class MarbleClient: @unchecked Sendable {
         try await post("/api/routines/\(encoded(id))/\(enabled ? "enable" : "disable")")
     }
 
+    /// Whether a routine runs the schedules it missed while the host was down.
+    func setRoutineCatchUp(id: String, enabled: Bool) async throws {
+        struct Body: Encodable { let enabled: Bool }
+        try await post("/api/routines/\(encoded(id))/catch-up", body: Body(enabled: enabled))
+    }
+
     func removeRoutine(id: String) async throws {
         try await post("/api/routines/\(encoded(id))/remove")
     }
@@ -332,7 +374,7 @@ final class MarbleClient: @unchecked Sendable {
     // MARK: - Prism and tooling
 
     func prism() async throws -> MarblePrism {
-        try await fetch(try makeRequest(path: "/api/prism"))
+        try await fetch(try makeRequest(route: .prism))
     }
 
     struct MarbleDraft: Encodable {
@@ -378,12 +420,12 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func tools() async throws -> MarbleToolInventory {
-        try await fetch(try makeRequest(path: "/api/tools"))
+        try await fetch(try makeRequest(route: .tools))
     }
 
     /// The workspace crate map, read when the sheet that shows it opens.
     func crates() async throws -> MarbleCrateMap {
-        try await fetch(try makeRequest(path: "/api/crates"))
+        try await fetch(try makeRequest(route: .crates))
     }
 
     // MARK: - Notifications and voice
@@ -393,10 +435,14 @@ final class MarbleClient: @unchecked Sendable {
         var webhookToken: String
         var events: [String]
         var apns: MarbleApns?
+        var quietHours: MarbleQuietHours?
+        var reAlertSeconds: Int?
+        var retries: Int?
+        var dedupeSeconds: Int?
     }
 
     func notificationSettings() async throws -> MarbleNotificationSettings {
-        try await fetch(try makeRequest(path: "/api/notifications"))
+        try await fetch(try makeRequest(route: .notifications))
     }
 
     func saveNotifications(_ update: NotificationUpdate) async throws -> MarbleNotificationSettings {
@@ -423,8 +469,25 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
+    /// Registered push devices (the host only ever shows token prefixes).
+    func devices() async throws -> [MarbleDevice] {
+        struct Reply: Decodable { var devices: [MarbleDevice] }
+        do {
+            let reply: Reply = try await fetch(try makeRequest(route: .devices))
+            return reply.devices
+        } catch {
+            // Some hosts answer with a bare array instead of a wrapper.
+            let devices: [MarbleDevice] = try await fetch(try makeRequest(route: .devices))
+            return devices
+        }
+    }
+
+    func removeDevice(tokenPrefix: String) async throws {
+        try await post("/api/devices/\(encoded(tokenPrefix))/remove")
+    }
+
     func voice() async throws -> MarbleVoice {
-        try await fetch(try makeRequest(path: "/api/voice"))
+        try await fetch(try makeRequest(route: .voice))
     }
 
     func setVoice(enabled: Bool) async throws -> MarbleVoice {
@@ -454,26 +517,22 @@ final class MarbleClient: @unchecked Sendable {
             let task = Task {
                 do {
                     let request = try makeRequest(
-                        path: "/api/events",
-                        query: [URLQueryItem(name: "since", value: String(since))],
+                        route: .events(since: since),
                         acceptsEventStream: true
                     )
                     let (bytes, response) = try await session.bytes(for: request)
-                    guard let http = response as? HTTPURLResponse else {
-                        throw MarbleClientError.offline("The host closed the stream.")
-                    }
-                    if http.statusCode == 401 { throw MarbleClientError.unauthorized }
-                    guard http.statusCode == 200 else {
-                        throw MarbleClientError.http(http.statusCode, "stream rejected")
-                    }
+                    try marbleValidateStatus(response)
+                    var parser = MarbleSSEParser()
                     for try await line in bytes.lines {
-                        guard line.hasPrefix("data:") else { continue }
-                        let payload = line.dropFirst("data:".count)
-                            .trimmingCharacters(in: .whitespaces)
-                        guard
-                            let data = payload.data(using: .utf8),
-                            let event = try? decoder.decode(MarbleEvent.self, from: data)
+                        guard let frame = parser.feed(line),
+                              let data = frame.data.data(using: .utf8),
+                              let event = try? decoder.decode(MarbleEvent.self, from: data)
                         else { continue }
+                        continuation.yield(event)
+                    }
+                    if let frame = parser.finish(),
+                       let data = frame.data.data(using: .utf8),
+                       let event = try? decoder.decode(MarbleEvent.self, from: data) {
                         continuation.yield(event)
                     }
                     continuation.finish()
@@ -496,13 +555,28 @@ enum MarblePreferences {
     private static let tokenAccount = "marble.token"
     private static let keychainService = "com.wanazhar.glassmarble"
 
-    static var baseURLString: String {
-        get { UserDefaults.standard.string(forKey: baseURLKey) ?? MarbleEndpoint.fallback.baseURL.absoluteString }
+    /// Nothing is saved until onboarding succeeds; there is no default host.
+    static var baseURLString: String? {
+        get { UserDefaults.standard.string(forKey: baseURLKey) }
         set { UserDefaults.standard.set(newValue, forKey: baseURLKey) }
     }
 
-    static var baseURL: URL {
-        URL(string: baseURLString) ?? MarbleEndpoint.fallback.baseURL
+    static var baseURL: URL? {
+        baseURLString.flatMap { URL(string: $0) }
+    }
+
+    static var hasHost: Bool { baseURL != nil }
+
+    static func signOut() {
+        if let baseURL {
+            MarblePinStore.clear(
+                for: MarblePinStore.authority(
+                    for: MarbleEndpoint(baseURL: baseURL, token: nil)
+                )
+            )
+        }
+        baseURLString = nil
+        token = nil
     }
 
     static var token: String? {
@@ -521,7 +595,7 @@ enum MarblePreferences {
         token = endpoint.token
     }
 
-    private static func readKeychain(account: String) -> String? {
+    static func readKeychain(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -537,7 +611,7 @@ enum MarblePreferences {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func writeKeychain(_ value: String, account: String) {
+    static func writeKeychain(_ value: String, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -550,7 +624,7 @@ enum MarblePreferences {
         SecItemAdd(attributes as CFDictionary, nil)
     }
 
-    private static func deleteKeychain(account: String) {
+    static func deleteKeychain(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,

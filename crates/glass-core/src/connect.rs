@@ -3792,6 +3792,9 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.to_string()),
             };
+            // BSD sockets inherit O_NONBLOCK from the listener; handlers rely
+            // on blocking reads bounded by their read timeouts.
+            stream.set_nonblocking(false).map_err(|e| e.to_string())?;
             // Input acknowledgements and region headers must not wait for
             // Nagle batching behind a small preceding response write.
             stream.set_nodelay(true).map_err(|e| e.to_string())?;

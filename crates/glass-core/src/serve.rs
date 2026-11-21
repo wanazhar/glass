@@ -173,9 +173,30 @@ fn connect_cancellable(
 fn send(stream: &mut UnixStream, value: Value) {
     if let Ok(mut line) = serde_json::to_string(&value) {
         line.push('\n');
-        let _ = stream.write_all(line.as_bytes());
-        let _ = stream.flush();
+        let _ = write_line(stream, line.as_bytes());
     }
+}
+
+/// Writes one whole line to a possibly non-blocking client. Local sockets can
+/// buffer as little as 8 KiB (macOS), so a replay snapshot needs several
+/// writes; a reader that stops draining for two seconds is treated as gone.
+fn write_line(stream: &mut UnixStream, mut bytes: &[u8]) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !bytes.is_empty() {
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    stream.flush()
 }
 
 /// Send to every attached client, dropping any whose pipe stopped taking
@@ -186,12 +207,7 @@ fn broadcast(clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>, value: Valu
     };
     line.push('\n');
     let mut slots = clients.borrow_mut();
-    slots.retain_mut(|c| {
-        c.stream
-            .write_all(line.as_bytes())
-            .and_then(|_| c.stream.flush())
-            .is_ok()
-    });
+    slots.retain_mut(|c| write_line(&mut c.stream, line.as_bytes()).is_ok());
 }
 
 enum Incoming {
@@ -2206,6 +2222,23 @@ impl CommandRuntime<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_lines_reach_non_blocking_clients_intact() {
+        let (mut server, peer) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut line = String::new();
+            std::io::BufReader::new(peer).read_line(&mut line).unwrap();
+            line
+        });
+        let text = "x".repeat(512 * 1024);
+        send(&mut server, json!({"t":"replay","text":text}));
+        let line = reader.join().unwrap();
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["text"].as_str().unwrap().len(), 512 * 1024);
+    }
 
     #[test]
     fn replay_is_bounded_and_marks_utf8_previews() {

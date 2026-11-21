@@ -783,7 +783,14 @@ fn drain(
     mut conversation: Conversation,
     parts: LaneParts,
 ) {
-    while let Some(command) = receiver.recv() {
+    loop {
+        let Some(command) = receiver.recv_timeout(Duration::from_secs(1)) else {
+            if lock_inbox(&receiver.inbox).senders == 0 {
+                break;
+            }
+            conversation.check_idle_transport(&parts.state);
+            continue;
+        };
         run_command(
             command,
             lane,

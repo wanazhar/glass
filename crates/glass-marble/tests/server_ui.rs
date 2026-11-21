@@ -498,6 +498,41 @@ fn chunked_request_bodies_are_decoded() {
 }
 
 #[test]
+fn event_stream_greets_a_quiet_connection_immediately() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::new(Mutex::new(ProductState::default())),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+    let mut stream = connect(port);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .write_all(b"GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    let mut buffer = [0; 1024];
+    while !response.contains(": connected\n\n") {
+        let read = stream.read(&mut buffer).unwrap();
+        assert_ne!(read, 0);
+        response.push_str(&String::from_utf8_lossy(&buffer[..read]));
+    }
+    assert!(response.contains("200 OK"));
+}
+
+#[test]
 fn event_stream_replays_from_a_cursor() {
     let events = EventBus::default();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1775,6 +1810,124 @@ fn a_typed_message_runs_before_a_waiting_routine_firing() {
 }
 
 #[test]
+fn health_reports_storage_write_failure_and_recovery() {
+    const ISOLATED: &str = "MARBLE_STORAGE_HEALTH_TEST";
+    if std::env::var_os(ISOLATED).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "health_reports_storage_write_failure_and_recovery",
+                "--nocapture",
+            ])
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("marble-storage-health-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let store = Arc::new(StateStore::in_data_dir(&root));
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::new(Mutex::new(ProductState::default())),
+        store: Some(store.clone()),
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+    let (status, body) = server.handle("GET", "/healthz", "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["storage"]["document"],
+        false
+    );
+    std::fs::create_dir(store.path()).unwrap();
+    glass_marble::store::persist(&store, &ProductState::default());
+    let (status, body) = server.handle("GET", "/healthz", "");
+    assert_eq!(status, 503, "{body}");
+    assert!(
+        !serde_json::from_str::<Value>(&body).unwrap()["lastPersistError"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir(store.path()).unwrap();
+    glass_marble::store::persist(&store, &ProductState::default());
+    assert_eq!(server.handle("GET", "/healthz", "").0, 200);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn idle_engine_exit_makes_health_unhealthy() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("marble-idle-health-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let events = EventBus::default();
+    let mut python = Command::new("python3");
+    python
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fake_glass_core_runtime.py"
+        ))
+        .arg("runtime")
+        .arg("--exit-after-initialize");
+    let conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &root.join("sessions"),
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        events.clone(),
+    )
+    .unwrap();
+    let turn_tx = spawn_single_lane(
+        conversation,
+        state.clone(),
+        None,
+        LiveStore::in_data_dir(&root),
+        events.clone(),
+        Duration::from_secs(10),
+        CancelRegistry::default(),
+    );
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state,
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, body) = server.handle("GET", "/healthz", "");
+        if status == 503 {
+            let health: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(health["runtime"]["health"], "failed");
+            assert_eq!(health["ok"], false);
+            break;
+        }
+        assert!(Instant::now() < deadline, "{body}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn health_reports_the_runtime_the_document_and_the_backup() {
     let dir = std::env::temp_dir().join(format!("glass-marble-health-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1809,6 +1962,14 @@ fn health_reports_the_runtime_the_document_and_the_backup() {
     assert_eq!(health["storage"]["backup"]["count"], json!(0));
     assert!(health["lastPersistError"].is_null());
     assert_eq!(health["recoveredTasks"], json!(0));
+
+    std::fs::remove_file(dir.join("product-state.json")).unwrap();
+    let (status, body) = server.handle("GET", "/healthz", "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["storage"]["document"],
+        false
+    );
 
     // An engine that stopped answering is not a healthy host, and the answer
     // says so instead of reporting "ok" and leaving it to a log.

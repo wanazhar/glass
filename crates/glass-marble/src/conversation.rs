@@ -8,7 +8,7 @@ use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
 };
 use serde_json::{Value, json as value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
@@ -271,6 +271,7 @@ pub struct Conversation {
     /// the turn that asked for them, so the next turn drops them instead of
     /// failing on a response id it never used.
     outstanding: Vec<String>,
+    buffered: VecDeque<Incoming>,
     /// Instructions a durable conversation opens with; `None` uses the default
     /// product posture. Set for a named marble's engine.
     instructions: Option<String>,
@@ -355,6 +356,7 @@ impl Conversation {
             instructions: None,
             instructions_fn: None,
             outstanding: Vec::new(),
+            buffered: VecDeque::new(),
         })
     }
 
@@ -452,6 +454,7 @@ impl Conversation {
         self.transport_failed = false;
         // The ids belonged to the engine that just went away.
         self.outstanding.clear();
+        self.buffered.clear();
         self.restarts = self.restarts.saturating_add(1);
         tracing::warn!(
             restarts = self.restarts,
@@ -639,9 +642,32 @@ impl Conversation {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<Incoming>, MarbleError> {
+        if let Some(incoming) = self.buffered.pop_front() {
+            return Ok(Some(incoming));
+        }
         self.client
             .recv_typed_timeout(timeout)
             .map_err(MarbleError::Io)
+    }
+
+    pub(crate) fn check_idle_transport(&mut self, state: &Mutex<ProductState>) {
+        if self.transport_failed || self.buffered.len() >= MAX_OUTSTANDING_RESPONSES {
+            return;
+        }
+        match self.client.recv_typed_timeout(Duration::ZERO) {
+            Ok(Some(incoming)) => self.buffered.push_back(incoming),
+            Ok(None) => {}
+            Err(error) => {
+                let error = self.transport_error(MarbleError::Io(error));
+                let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+                guard.presence.runtime.note_failure(error.to_string());
+                guard.bump();
+                self.publish(
+                    "runtime",
+                    value!({"error": error.to_string(), "revision": guard.revision}),
+                );
+            }
+        }
     }
 
     /// Start one durable task; returns the runtime response id to await.

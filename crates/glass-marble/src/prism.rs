@@ -829,6 +829,19 @@ impl PrismPool {
                 marble, &roster, root,
             ));
         let engine = Arc::new(Mutex::new(conversation));
+        let watched = Arc::downgrade(&engine);
+        let state = Arc::downgrade(&self.state);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let (Some(engine), Some(state)) = (watched.upgrade(), state.upgrade()) else {
+                    break;
+                };
+                if let Ok(mut conversation) = engine.try_lock() {
+                    conversation.check_idle_transport(&state);
+                }
+            }
+        });
         self.engines
             .lock()
             .unwrap_or_else(|error| error.into_inner())

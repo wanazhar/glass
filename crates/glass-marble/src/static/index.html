@@ -836,7 +836,8 @@
         transcriptRequest: 0,
         transcriptError: null,
         stream: null,
-        offline: false,
+        streamConnected: false,
+        lastRequestFailed: false,
         revision: null,
         frame: 0,
         notifyDraft: null,
@@ -970,6 +971,10 @@
       function setStatus(label, kind) {
         el.statusText.textContent = label;
         el.statusDot.className = "dot" + (kind ? " " + kind : "");
+      }
+
+      function isOffline() {
+        return !app.streamConnected && app.lastRequestFailed;
       }
 
       function renderSidebar() {
@@ -1666,7 +1671,7 @@
             body: JSON.stringify({ title: title.trim() }),
           });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
           return;
         }
         await refresh();
@@ -1680,7 +1685,7 @@
             method: "POST",
           });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
           return;
         }
         if (app.conversationId === conversation.id) {
@@ -1805,7 +1810,7 @@
           });
           setStatus("notifications saved", "live");
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         el.webhookToken.value = "";
         await refresh();
@@ -1816,7 +1821,7 @@
           const report = await api("/api/notifications/test", { method: "POST" });
           setStatus(report.ok ? "notification delivered" : "no channel configured", report.ok ? "live" : "paused");
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
       }
 
@@ -1825,7 +1830,7 @@
         try {
           await api("/api/voice", { method: "POST", body: JSON.stringify({ enabled: !voice.enabled }) });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       }
@@ -1837,7 +1842,7 @@
             body: body ? JSON.stringify(body) : undefined,
           });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       }
@@ -1917,7 +1922,7 @@
         el.workspace.textContent =
           presence.summary || (app.revision ? "revision " + app.revision : "");
         renderAssistant();
-        if (app.offline) setStatus("offline", "offline");
+        if (isOffline()) setStatus("offline", "offline");
         else if (status === "working") setStatus("working", "busy");
         else if (status === "waiting") setStatus("waiting for you", "busy");
         else if (status === "paused" || control.paused) setStatus("paused", "paused");
@@ -1984,7 +1989,7 @@
         try {
           const state = await api("/api/state?lean=1");
           app.state = state;
-          app.offline = false;
+          app.lastRequestFailed = false;
           app.loading = false;
           if (!app.conversationId && state.conversations.length) {
             const newest = state.conversations
@@ -2016,7 +2021,7 @@
           await syncTranscript();
           render();
         } catch (error) {
-          app.offline = true;
+          app.lastRequestFailed = true;
           app.loading = false;
           render();
         }
@@ -2073,7 +2078,7 @@
         } catch (error) {
           app.outbox.pop();
           renderTranscript();
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
       }
 
@@ -2093,7 +2098,7 @@
           });
           setStatus("correction sent", "busy");
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
       }
 
@@ -2108,7 +2113,7 @@
             body: JSON.stringify({ text: trimmed }),
           });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       }
@@ -2118,7 +2123,7 @@
         try {
           await api("/api/tasks/" + encodeURIComponent(app.live.taskId) + "/cancel", { method: "POST" });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
       }
 
@@ -2189,7 +2194,7 @@
             break;
           }
           case "error":
-            setStatus(data.message || "error", "offline");
+            setStatus(data.message || "error", "paused");
             refresh();
             break;
           case "steer_queued":
@@ -2199,7 +2204,7 @@
             setStatus("steering", "busy");
             break;
           case "steer_rejected":
-            setStatus(data.reason || "correction refused", "offline");
+            setStatus(data.reason || "correction refused", "paused");
             break;
           case "cancel_requested":
             setStatus("cancelling", "busy");
@@ -2211,6 +2216,7 @@
 
       function connectStream() {
         if (app.stream) app.stream.close();
+        app.streamConnected = false;
         const stream = new EventSource("/api/events?since=" + app.sequence);
         app.stream = stream;
         KINDS.forEach((kind) => {
@@ -2223,12 +2229,12 @@
           });
         });
         stream.addEventListener("open", () => {
-          app.offline = false;
+          app.streamConnected = true;
           setStatus(app.live.taskId ? "working" : "idle", app.live.taskId ? "busy" : "live");
         });
         stream.addEventListener("error", () => {
-          app.offline = true;
-          setStatus("reconnecting", "offline");
+          app.streamConnected = false;
+          setStatus("reconnecting", isOffline() ? "offline" : "paused");
           if (stream.readyState === EventSource.CLOSED) {
             setTimeout(connectStream, 2000);
           }
@@ -2307,7 +2313,7 @@
         try {
           await api("/api/memory", { method: "POST", body: JSON.stringify({ text }) });
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       });
@@ -2335,7 +2341,7 @@
           el.routinePrompt.value = "";
           el.routineSchedule.value = "";
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       });
@@ -2355,7 +2361,7 @@
           });
           setStatus("model saved for new conversations", "live");
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       });
@@ -2367,7 +2373,7 @@
           });
           setStatus("routine times follow this device", "live");
         } catch (error) {
-          setStatus(error.message, "offline");
+          setStatus(error.message, "paused");
         }
         await refresh();
       });

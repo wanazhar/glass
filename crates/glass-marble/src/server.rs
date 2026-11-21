@@ -3497,6 +3497,7 @@ impl MarbleServer {
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\n\
               Cache-Control: no-store\r\nConnection: close\r\nX-Accel-Buffering: no\r\n\r\n",
         )?;
+        stream.write_all(b": connected\n\n")?;
         stream.flush()?;
         let receiver = self.events.subscribe();
         for event in self.events.since(since) {

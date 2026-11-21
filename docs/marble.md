@@ -55,6 +55,8 @@ runs. A turn that lost its engine settles `failed` with the reason in the
 transcript rather than looking like it is still working. Presence carries a
 `runtime` block (`health`, `restarts`, `lastRestartAt`, `lastError`), kept after
 a successful restart so a flapping engine is visible rather than forgiven.
+Idle engine transports are checked once a second without sending model requests;
+closed output marks the runtime unhealthy before another message arrives.
 
 `serve` and `restore` both take a lock file (`marble.lock`) in the data
 directory. A second copy is refused with the owning pid instead of silently
@@ -66,8 +68,11 @@ write underneath a running service.
 version, pid, revision, event sequence, posture, waiting and running turns,
 recovered tasks, the runtime block, the data directory with its document, backup
 count and age, quarantined documents, and `lastPersistError`. It answers `200`
-only when the engine is answering and the last durable write succeeded, and
-`503` otherwise.
+when no engine transport failure or storage write failure is recorded, and
+`503` otherwise. A fresh host with no document or backups remains healthy until
+its first write; document existence, backup age, and quarantined-file counts are
+diagnostic fields, not additional health gates. This is transport health, not a
+provider availability probe. A successful write clears the last write error.
 
 The installed service writes `marble.log`, so the installer prints a rotation
 reminder. An always-on assistant writes forever, and an unbounded log is the one
@@ -563,7 +568,7 @@ recognition rather than falling back to a network service.
 | `/healthz` | GET | Version, revision, posture, waiting and running turns, engine health, document and backup state, last write error; `503` when the engine or the last write is unhealthy |
 | `/api/login` | POST | Exchange the access token for an HTTP-only session cookie |
 | `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications, retention; `?lean=1` omits the transcript; revalidates with `ETag` and `If-None-Match` |
-| `/api/transcript?conversationId=…&after=…` | GET | Bounded history for one conversation, resumable from a cursor |
+| `/api/transcript?conversationId=…&after=…` | GET | Bounded history for one conversation, resumable from a cursor; unknown or deleted conversations return `404 not_found` |
 | `/api/transcript/search?q=…` | GET | Newest transcript matches across conversations |
 | `/api/presence` | GET | What the assistant is doing, uptime, recovery, counts, and the Prism block |
 | `/api/tools` | GET | Every tool the marble can reach for: Core-native names it has used, plus the governed integrations and the posture in force |
@@ -573,11 +578,11 @@ recognition rather than falling back to a network service.
 | `/api/prism/marbles/{id}/update` | POST | Change a marble's name, role, shape, hue, or workspace |
 | `/api/prism/marbles/{id}/remove` | POST | Take a marble off the roster; its conversation stays |
 | `/api/prism/dispatch` | POST | Hand one prompt to several marbles at once (`text`, optional `marbles`) |
-| `/api/events?since=N` | GET | Server-sent events with bounded replay from a cursor |
+| `/api/events?since=N` | GET | Server-sent events with an immediate `: connected` comment, bounded replay from a cursor, and a keepalive comment every 15 seconds |
 | `/api/turns` | POST | Admit a durable turn (`202` accepted, or `202` queued with its place in line while the worker is busy), queue it while paused, or apply an explicit memory command |
 | `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
 | `/api/turns/retry` | POST | Repeat the newest failed, cancelled, or interrupted turn (`taskId` or `conversationId` to choose one) |
-| `/api/tasks/{id}/cancel` | POST | Request cancellation of a running task, including one a routine fired or a resume dispatched |
+| `/api/tasks/{id}/cancel` | POST | Remove a queued task before execution (`200`, cancelled), or request cancellation of a running task (`202`); settled tasks return `409`, unknown tasks `404` |
 | `/api/approvals/{id}/allow` and `/deny` | POST | Answer one pending governed tool; `{"remember":true}` also records a grant |
 | `/api/control` | GET | Control document: posture, pause, grants, denied paths, ledger, queue, and the workspace crate map (`null` outside a Rust workspace) |
 | `/api/control/profile` | POST | Select `observe`, `workspace`, or `unattended` |
@@ -655,7 +660,27 @@ millisecond cursor, inclusive so entries sharing a timestamp are not lost) and
 returns a `cursor` plus how many older entries it omitted. The WebUI keeps one
 conversation's page and appends; the iOS app does the same for the selected
 conversation. That keeps a refresh proportional to the conversation in view
-rather than to months of history.
+rather than to months of history. A missing conversation returns `404` with
+`error: "not_found"` and the message "This chat no longer exists". Clients remove
+that chat from the list and explain the missing history rather than displaying
+an empty successful page. Conversation IDs in query parameters and resource IDs
+in route segments must be URL-encoded; route segments are decoded once.
+
+Queued turns can be cancelled before an engine starts them. The task remains
+in history as `cancelled`, with "Cancelled before it started", but its queued
+command is removed and never submitted to Core. A conversationless cancelled
+turn receives a `recovered-*` history conversation. Running turns still use
+cooperative engine cancellation. If the preceding turn in the same conversation
+was cancelled, failed, or interrupted without a visible reply, Marble supplies
+a host context note withdrawing that earlier request on the next turn; the
+person's transcript is unchanged.
+
+Text deltas are split before entering the event stream: `<think>` and
+`<thinking>` blocks arrive as separate `reasoning` events, including an unclosed
+block at end of stream. Settled assistant replies and live journal text use the
+same split. The web UI tracks stream connectivity separately from request
+failures, so a failed poll does not label an open stream offline, and an
+operation error does not imply a disconnected host.
 
 History is also something you can curate and take with you:
 

@@ -216,6 +216,8 @@ def main():
                     "storageDir": params.get("storageDir"),
                 },
             )
+            if "--exit-after-initialize" in sys.argv:
+                return
         elif method == "durable/create":
             global CONVERSATION_SEQ
             if params.get("toolMode") != "mixed":

@@ -44,3 +44,18 @@ test('empty transcripts clear a previous load error', async () => {
   assert.equal(app.transcriptError, null);
   assert.equal(app.transcript.length, 0);
 });
+
+test('poll failures cannot mark an open stream offline', () => {
+  const context = vm.createContext({ app: { streamConnected: true, lastRequestFailed: true } });
+  vm.runInContext(html.slice(html.indexOf('function isOffline()'), html.indexOf('function renderSidebar()')), context);
+  assert.equal(context.isOffline(), false);
+  context.app.streamConnected = false;
+  assert.equal(context.isOffline(), true);
+  context.app.lastRequestFailed = false;
+  assert.equal(context.isOffline(), false);
+});
+
+test('operation errors do not use disconnected styling', () => {
+  assert.ok(!html.includes('setStatus(error.message, "offline")'));
+  assert.ok(!html.includes('setStatus(data.message || "error", "offline")'));
+});

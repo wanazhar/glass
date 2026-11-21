@@ -123,7 +123,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 - [Browser crate](../crates/glass-browser/README.md) and
   [Glass development crate](../crates/glass-dev/README.md) — package-level
   APIs and ownership.
-- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant, with a supervised engine, one instance per data directory, health that reports what is actually wrong, and the design note on concurrent sessions
+- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant, with a supervised engine, queued-turn cancellation, transcript and event HTTP semantics, one instance per data directory, and the design note on concurrent sessions
   built on the mixed-tool runtime: governance, presence, memory, routines,
   webhook and APNs notifications, on-device voice, a token-protected HTTP
   surface, a responsive WebUI, and the iOS client.

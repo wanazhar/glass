@@ -161,3 +161,27 @@ test('opaque message parts use their supplied safe Markdown fallback', () => {
   assert.equal(L.messagePart(component, { html: '<img src=x onerror=unsafe()>' }), '');
   assert.equal(L.messagePart('Existing **text**', 'Ignored fallback'), 'Existing **text**');
 });
+
+test('handoff instructions add a period only when terminal punctuation is missing', () => {
+  const handoff = { fromName: 'Ada', toName: 'Ben', status: 'asked' };
+  for (const ending of ['.', '!', '?']) assert.equal(L.handoffLine({ text: 'Old doubled punctuation..', handoff: { ...handoff, instruction: 'Check the workspace' + ending + '  ' } }), 'Ada asked Ben to Check the workspace' + ending);
+  assert.equal(L.handoffLine({ handoff: { ...handoff, instruction: 'Check the workspace' } }), 'Ada asked Ben to Check the workspace.');
+  assert.equal(L.handoffLine({ handoff: { ...handoff, instruction: '' } }), 'Ada asked Ben.');
+  assert.equal(L.handoffLine({ text: 'Earlier handoff' }), 'Earlier handoff');
+  assert.equal(L.handoffLine(null), '');
+});
+
+test('finished handoffs summarize the first line or sentence without changing the full reply', () => {
+  const reply = 'Here is the outline:\n\n- What changed\n- What we verified';
+  const entry = { handoff: { toName: 'Ben', status: 'finished', summary: reply } };
+  assert.equal(L.handoffLine(entry), 'Ben finished: Here is the outline:');
+  assert.equal(entry.handoff.summary, reply);
+  for (const marker of ['-', '*', '+', '1.', '2)']) assert.equal(L.handoffSummary('\n' + marker + ' **What changed**\n- More detail'), 'What changed');
+  assert.equal(L.handoffSummary('All checks passed! More detail follows.'), 'All checks passed!');
+  assert.equal(L.handoffSummary('Release 1.2 is ready. More detail follows.'), 'Release 1.2 is ready.');
+  const long = L.handoffSummary('🟢'.repeat(150));
+  assert.equal(Array.from(long).length, 120);
+  assert.ok(long.endsWith('…'));
+  for (const empty of ['', '\n  \n', null, undefined, {}]) assert.equal(L.handoffSummary(empty), '');
+  assert.equal(L.handoffLine({ handoff: { toName: 'Ben', status: 'finished', summary: '' } }), 'Ben finished.');
+});

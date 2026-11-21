@@ -187,7 +187,7 @@
     return el('div', 'tool-step', icon('tool'), el('span', '', label, tool.text || tool.summary ? ' · ' + String(tool.text || tool.summary).slice(0, 240) : ''));
   }
   function entryNode(entry, fallback, key) {
-    if (entry.kind === 'handoff') return el('p', 'handoff', entry.text);
+    if (entry.kind === 'handoff') return el('p', 'handoff', L.handoffLine(entry));
     if (entry.kind === 'system') return el('div', 'system-line', entry.text);
     if (entry.kind === 'reasoning') return disclosure(t('Thought'), prose(entry.text), key);
     if (entry.kind === 'tool') return toolStep({ tool: entry.text });

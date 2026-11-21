@@ -37,6 +37,21 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
+    private func makeRequest(
+        route: MarbleRoute,
+        method: String = "GET",
+        body: Data? = nil,
+        acceptsEventStream: Bool = false
+    ) throws -> URLRequest {
+        try makeRequest(
+            path: route.path,
+            query: route.query,
+            method: method,
+            body: body,
+            acceptsEventStream: acceptsEventStream
+        )
+    }
+
     private func fetch<T: Decodable>(_ request: URLRequest) async throws -> T {
         do {
             let (data, response) = try await session.data(for: request)
@@ -79,27 +94,35 @@ final class MarbleClient: @unchecked Sendable {
 
     func health() async throws -> MarbleHealth {
         // healthz answers 503 with the same JSON body when the engine is down;
-        // onboarding needs that body to say so instead of "unreachable".
-        let (data, response) = try await session.data(for: try makeRequest(path: "/healthz"))
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if status == 503 {
+        // onboarding needs that body to say so instead of "unreachable". Every
+        // failure maps through MarbleClientError so the evaluator can tell a
+        // refused request from a silent one.
+        do {
+            let (data, response) = try await session.data(
+                for: try makeRequest(route: .health)
+            )
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 503 {
+                return try decoder.decode(MarbleHealth.self, from: data)
+            }
+            try marbleValidate(response, data: data)
             return try decoder.decode(MarbleHealth.self, from: data)
+        } catch let error as MarbleClientError {
+            throw error
+        } catch {
+            throw MarbleClientError.from(error)
         }
-        try marbleValidate(response, data: data)
-        return try decoder.decode(MarbleHealth.self, from: data)
     }
 
     /// Lean state: control, presence, and counts without every transcript.
     func state() async throws -> MarbleState {
-        try await fetch(try makeRequest(path: "/api/state?lean=1"))
+        try await fetch(try makeRequest(route: .state))
     }
 
     func transcript(conversationId: String, after: UInt64?) async throws -> MarbleTranscriptPage {
-        var path = "/api/transcript?conversationId=\(encoded(conversationId))"
-        if let after, after > 0 {
-            path += "&after=\(after)"
-        }
-        return try await fetch(try makeRequest(path: path))
+        try await fetch(
+            try makeRequest(route: .transcript(conversationId: conversationId, after: after))
+        )
     }
 
     func send(text: String, conversationId: String?) async throws -> MarbleAccepted {
@@ -150,23 +173,17 @@ final class MarbleClient: @unchecked Sendable {
     /// Newest transcript matches across all history.
     func search(query: String, limit: Int = 30) async throws -> [MarbleSearchHit] {
         struct Reply: Decodable { var hits: [MarbleSearchHit] }
-        let reply: Reply = try await fetch(try makeRequest(
-            path: "/api/transcript/search",
-            query: [
-                URLQueryItem(name: "q", value: query),
-                URLQueryItem(name: "limit", value: String(limit)),
-            ]
-        ))
+        let reply: Reply = try await fetch(
+            try makeRequest(route: .search(query, limit: limit))
+        )
         return reply.hits
     }
 
     /// `GET /api/export` — the whole document, or one conversation's slice.
     func export(conversationId: String? = nil) async throws -> Data {
-        var query: [URLQueryItem] = []
-        if let conversationId, !conversationId.isEmpty {
-            query.append(URLQueryItem(name: "conversationId", value: conversationId))
-        }
-        return try await fetchData(try makeRequest(path: "/api/export", query: query))
+        try await fetchData(
+            try makeRequest(route: .export(conversationId: conversationId))
+        )
     }
 
     /// Choose the model new conversations use; empty means the engine default.
@@ -222,11 +239,11 @@ final class MarbleClient: @unchecked Sendable {
     // MARK: - Presence, memory, routines
 
     func presence() async throws -> MarblePresence {
-        try await fetch(try makeRequest(path: "/api/presence"))
+        try await fetch(try makeRequest(route: .presence))
     }
 
     func memory() async throws -> MarbleMemory {
-        try await fetch(try makeRequest(path: "/api/memory"))
+        try await fetch(try makeRequest(route: .memory))
     }
 
     private struct MemoryReply: Decodable { var memory: MarbleMemory }
@@ -280,7 +297,7 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func routines() async throws -> MarbleRoutines {
-        try await fetch(try makeRequest(path: "/api/routines"))
+        try await fetch(try makeRequest(route: .routines))
     }
 
     func addRoutine(
@@ -330,7 +347,7 @@ final class MarbleClient: @unchecked Sendable {
     // MARK: - Prism and tooling
 
     func prism() async throws -> MarblePrism {
-        try await fetch(try makeRequest(path: "/api/prism"))
+        try await fetch(try makeRequest(route: .prism))
     }
 
     struct MarbleDraft: Encodable {
@@ -376,12 +393,12 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func tools() async throws -> MarbleToolInventory {
-        try await fetch(try makeRequest(path: "/api/tools"))
+        try await fetch(try makeRequest(route: .tools))
     }
 
     /// The workspace crate map, read when the sheet that shows it opens.
     func crates() async throws -> MarbleCrateMap {
-        try await fetch(try makeRequest(path: "/api/crates"))
+        try await fetch(try makeRequest(route: .crates))
     }
 
     // MARK: - Notifications and voice
@@ -398,7 +415,7 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func notificationSettings() async throws -> MarbleNotificationSettings {
-        try await fetch(try makeRequest(path: "/api/notifications"))
+        try await fetch(try makeRequest(route: .notifications))
     }
 
     func saveNotifications(_ update: NotificationUpdate) async throws -> MarbleNotificationSettings {
@@ -429,11 +446,11 @@ final class MarbleClient: @unchecked Sendable {
     func devices() async throws -> [MarbleDevice] {
         struct Reply: Decodable { var devices: [MarbleDevice] }
         do {
-            let reply: Reply = try await fetch(try makeRequest(path: "/api/devices"))
+            let reply: Reply = try await fetch(try makeRequest(route: .devices))
             return reply.devices
         } catch {
             // Some hosts answer with a bare array instead of a wrapper.
-            let devices: [MarbleDevice] = try await fetch(try makeRequest(path: "/api/devices"))
+            let devices: [MarbleDevice] = try await fetch(try makeRequest(route: .devices))
             return devices
         }
     }
@@ -443,7 +460,7 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func voice() async throws -> MarbleVoice {
-        try await fetch(try makeRequest(path: "/api/voice"))
+        try await fetch(try makeRequest(route: .voice))
     }
 
     func setVoice(enabled: Bool) async throws -> MarbleVoice {
@@ -473,8 +490,7 @@ final class MarbleClient: @unchecked Sendable {
             let task = Task {
                 do {
                     let request = try makeRequest(
-                        path: "/api/events",
-                        query: [URLQueryItem(name: "since", value: String(since))],
+                        route: .events(since: since),
                         acceptsEventStream: true
                     )
                     let (bytes, response) = try await session.bytes(for: request)

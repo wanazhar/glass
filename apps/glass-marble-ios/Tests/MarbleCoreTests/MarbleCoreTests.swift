@@ -329,11 +329,11 @@ final class OnboardingEvaluatorTests: XCTestCase {
     }
 
     func testTokenRequired() {
-        XCTAssertEqual(verdict(.success(health), .unauthorized, token: false), .tokenRequired)
+        XCTAssertEqual(verdict(.success(health), .http(401, "unauthorized"), token: false), .tokenRequired)
     }
 
     func testBadToken() {
-        XCTAssertEqual(verdict(.success(health), .unauthorized, token: true), .badToken)
+        XCTAssertEqual(verdict(.success(health), .http(401, "unauthorized"), token: true), .badToken)
     }
 
     func testVersionMismatch() {
@@ -453,5 +453,154 @@ final class AttentionTests: XCTestCase {
         var seen: Set<String> = []
         XCTAssertNil(MarbleAttention.alert(for: event(kind: "text"), seen: &seen))
         XCTAssertNil(MarbleAttention.alert(for: event(kind: "state"), seen: &seen))
+    }
+}
+
+final class EmbeddedQueryTests: XCTestCase {
+    private let endpoint = try! MarbleEndpoint.parse("http://100.64.0.5:4783").get()
+
+    func testQuestionMarkInPathBecomesQuery() {
+        let url = endpoint.url(path: "/api/state?lean=1")
+        XCTAssertNotNil(url)
+        XCTAssertFalse(url!.absoluteString.contains("%3F"))
+        XCTAssertEqual(url?.path, "/api/state")
+        XCTAssertEqual(url?.query, "lean=1")
+    }
+
+    func testEmbeddedAndExplicitQueryMerge() {
+        let url = endpoint.url(
+            path: "/api/transcript?conversationId=abc",
+            query: [URLQueryItem(name: "after", value: "7")]
+        )
+        XCTAssertEqual(url?.path, "/api/transcript")
+        XCTAssertTrue(url!.query!.contains("conversationId=abc"))
+        XCTAssertTrue(url!.query!.contains("after=7"))
+    }
+
+    func testRouteQueryStillBuilds() {
+        let route = MarbleRoute.state
+        let url = endpoint.url(path: route.path, query: route.query)
+        XCTAssertEqual(url?.absoluteString, "http://100.64.0.5:4783/api/state?lean=1")
+    }
+}
+
+final class TokenNormalizeTests: XCTestCase {
+    func testTrimsWhitespaceAndNewlines() {
+        XCTAssertEqual(MarbleToken.normalize("  abc123\n"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("abc 123 def"), "abc123def")
+        XCTAssertEqual(MarbleToken.normalize("ab\ncd\nef"), "abcdef")
+        XCTAssertEqual(MarbleToken.normalize("  ab c \t d  "), "abcd")
+    }
+
+    func testStripsQuotes() {
+        XCTAssertEqual(MarbleToken.normalize("\"abc123\""), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("'abc123'"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize(" \" abc \" "), "abc")
+    }
+
+    func testStripsBearerPrefix() {
+        XCTAssertEqual(MarbleToken.normalize("Bearer abc123"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("bearer  abc123"), "abc123")
+        XCTAssertEqual(MarbleToken.normalize("BEARER\tabc"), "abc")
+        // A token that merely starts with the letters is kept whole.
+        XCTAssertEqual(MarbleToken.normalize("bearerabc"), "bearerabc")
+    }
+
+    func testEmpty() {
+        XCTAssertEqual(MarbleToken.normalize("   "), "")
+        XCTAssertEqual(MarbleToken.normalize("Bearer "), "")
+    }
+}
+
+final class EvaluatorMessageTests: XCTestCase {
+    private let health = MarbleHealth(
+        ok: true, version: "0.3.14", revision: 1, sequence: 0, authRequired: true,
+        status: "idle",
+        runtime: MarbleHealth.RuntimeHealth(health: "ok", lastError: nil)
+    )
+    private let url = "http://100.64.0.5:4783"
+
+    private func verdict(
+        _ h: Result<MarbleHealth, MarbleClientError>,
+        _ s: MarbleOnboardingEvaluator.StateOutcome,
+        token: Bool = true
+    ) -> MarbleOnboarding {
+        MarbleOnboardingEvaluator.evaluate(urlTried: url, health: h, state: s, hadToken: token)
+    }
+
+    func testHealthAnswersNeverSayCannotReach() {
+        // Any HTTP status means the host answered; only transport errors may
+        // claim "Cannot reach".
+        for error: MarbleClientError in [
+            .unauthorized, .forbidden, .notFound,
+            .server(500, "{\"error\":\"boom\"}"), .http(418, ""),
+        ] {
+            let verdict = verdict(.failure(error), .ok)
+            guard case .hostAnswered(let message) = verdict else {
+                return XCTFail("expected .hostAnswered for \(error), got \(verdict)")
+            }
+            XCTAssertTrue(message.contains("healthz"), message)
+        }
+    }
+
+    func testHealthServerErrorCarriesStatusAndCode() {
+        let verdict = verdict(
+            .failure(.server(503, "{\"error\":\"engine_down\"}")), .ok
+        )
+        XCTAssertEqual(
+            verdict,
+            .hostAnswered("The host answered HTTP 503 (engine_down) for /healthz.")
+        )
+    }
+
+    func testStateUnauthorizedIsBadToken() {
+        XCTAssertEqual(
+            verdict(.success(health), .http(401, "unauthorized")),
+            .badToken
+        )
+        XCTAssertTrue(MarbleOnboarding.badToken.message.contains("401"))
+    }
+
+    func testState404IsMismatchNotBadToken() {
+        let verdict = verdict(.success(health), .http(404, "not_found"))
+        guard case .hostAnswered(let message) = verdict else {
+            return XCTFail("expected .hostAnswered, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("404"), message)
+        XCTAssertTrue(message.contains("0.3.14"), message)
+    }
+
+    func testStateOtherStatusCarriesCode() {
+        XCTAssertEqual(
+            verdict(.success(health), .http(503, "engine_down")),
+            .hostAnswered("The host answered HTTP 503 (engine_down) for /api/state.")
+        )
+    }
+
+    func testStateTransportHasOwnMessage() {
+        guard case .unreachable(let message) = verdict(
+            .success(health), .transport("connection lost"), token: true
+        ) else { return XCTFail("expected .unreachable") }
+        XCTAssertTrue(message.contains("/api/state"), message)
+        XCTAssertTrue(message.contains("connection lost"), message)
+    }
+
+    func testOutcomeMapping() {
+        XCTAssertEqual(
+            MarbleOnboardingEvaluator.stateOutcome(from: MarbleClientError.unauthorized),
+            .http(401, "unauthorized")
+        )
+        XCTAssertEqual(
+            MarbleOnboardingEvaluator.stateOutcome(
+                from: MarbleClientError.server(500, "{\"error\":\"boom\"}")
+            ),
+            .http(500, "boom")
+        )
+        guard case .transport = MarbleOnboardingEvaluator.stateOutcome(
+            from: MarbleClientError.timeout
+        ) else { return XCTFail("expected .transport") }
+        guard case .failed = MarbleOnboardingEvaluator.stateOutcome(
+            from: MarbleClientError.decoding("bad json")
+        ) else { return XCTFail("expected .failed") }
     }
 }

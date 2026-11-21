@@ -58,9 +58,11 @@ struct MarbleOnboardingView: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
-            if let saved = store.endpoint {
-                if address.isEmpty { address = saved.baseURL.absoluteString }
-                if token.isEmpty, let savedToken = saved.token { token = savedToken }
+            // The host is prefilled; the token never is. A saved token that
+            // was already rejected must not sit in the field and corrupt the
+            // next paste.
+            if let saved = store.endpoint, address.isEmpty {
+                address = saved.baseURL.absoluteString
             }
         }
     }
@@ -68,7 +70,7 @@ struct MarbleOnboardingView: View {
     /// healthz → semver → lean state, all before anything is saved.
     private func connect() async {
         let rawAddress = address
-        let rawToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawToken = MarbleToken.normalize(token)
         checking = true
         defer { checking = false }
         let (verdict, endpoint) = await MarbleProbe.check(host: rawAddress, token: rawToken)
@@ -93,32 +95,15 @@ enum MarbleProbe {
             }
             return (.unreachable(hint), nil)
         case .success(var endpoint):
-            endpoint.token = token.isEmpty ? nil : token
+            let normalized = MarbleToken.normalize(token)
+            endpoint.token = normalized.isEmpty ? nil : normalized
             let client = MarbleClient(endpoint: endpoint)
-            let healthResult: Swift.Result<MarbleHealth, MarbleClientError>
-            var stateOutcome = MarbleOnboardingEvaluator.StateOutcome.failed("state check failed")
-            do {
-                healthResult = .success(try await client.health())
-                do {
-                    _ = try await client.state()
-                    stateOutcome = .ok
-                } catch MarbleClientError.unauthorized {
-                    stateOutcome = .unauthorized
-                } catch {
-                    stateOutcome = .failed(error.localizedDescription)
-                }
-            } catch let error as MarbleClientError {
-                healthResult = .failure(error)
-            } catch {
-                healthResult = .failure(.from(error))
-            }
-            let verdict = MarbleOnboardingEvaluator.evaluate(
-                urlTried: endpoint.baseURL.absoluteString,
-                health: healthResult,
-                state: stateOutcome,
-                hadToken: endpoint.token != nil
+            // Same plumbing the Linux live tests exercise.
+            return await MarbleOnboardingEvaluator.probe(
+                endpoint: endpoint,
+                health: { try await client.health() },
+                state: { try await client.state() }
             )
-            return (verdict, endpoint)
         }
     }
 }

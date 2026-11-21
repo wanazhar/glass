@@ -47,7 +47,17 @@ struct MarbleEndpoint: Equatable {
 
     /// Build the URL for one API path and its query items, joining onto any
     /// path the base URL already carries and percent-encoding the pieces.
+    /// A `?` embedded in `path` is split out and its items merged into the
+    /// query, so a route string can never be encoded into `%3F`.
     func url(path: String, query: [URLQueryItem] = []) -> URL? {
+        var path = path
+        var query = query
+        if let question = path.firstIndex(of: "?") {
+            let embedded = String(path[path.index(after: question)...])
+            path = String(path[..<question])
+            let items = URLComponents(string: "/?\(embedded)")?.queryItems ?? []
+            query = items + query
+        }
         guard var components = URLComponents(
             url: baseURL,
             resolvingAgainstBaseURL: false
@@ -87,6 +97,85 @@ struct MarbleEndpoint: Equatable {
             request.httpBody = body
         }
         return request
+    }
+}
+
+/// Every GET route the app uses, defined once so the client and the live
+/// tests can never disagree about a path or put a query string inside one.
+struct MarbleRoute: Equatable {
+    var path: String
+    var query: [URLQueryItem] = []
+
+    static let health = MarbleRoute(path: "/healthz")
+    static let state = MarbleRoute(
+        path: "/api/state",
+        query: [URLQueryItem(name: "lean", value: "1")]
+    )
+    static let presence = MarbleRoute(path: "/api/presence")
+    static let memory = MarbleRoute(path: "/api/memory")
+    static let routines = MarbleRoute(path: "/api/routines")
+    static let prism = MarbleRoute(path: "/api/prism")
+    static let tools = MarbleRoute(path: "/api/tools")
+    static let crates = MarbleRoute(path: "/api/crates")
+    static let notifications = MarbleRoute(path: "/api/notifications")
+    static let devices = MarbleRoute(path: "/api/devices")
+    static let voice = MarbleRoute(path: "/api/voice")
+    static let control = MarbleRoute(path: "/api/control")
+
+    static func transcript(conversationId: String, after: UInt64? = nil) -> MarbleRoute {
+        var query = [URLQueryItem(name: "conversationId", value: conversationId)]
+        if let after, after > 0 {
+            query.append(URLQueryItem(name: "after", value: String(after)))
+        }
+        return MarbleRoute(path: "/api/transcript", query: query)
+    }
+
+    static func search(_ q: String, limit: Int = 30) -> MarbleRoute {
+        MarbleRoute(
+            path: "/api/transcript/search",
+            query: [
+                URLQueryItem(name: "q", value: q),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+        )
+    }
+
+    static func export(conversationId: String? = nil) -> MarbleRoute {
+        var query: [URLQueryItem] = []
+        if let conversationId, !conversationId.isEmpty {
+            query.append(URLQueryItem(name: "conversationId", value: conversationId))
+        }
+        return MarbleRoute(path: "/api/export", query: query)
+    }
+
+    static func events(since: UInt64) -> MarbleRoute {
+        MarbleRoute(
+            path: "/api/events",
+            query: [URLQueryItem(name: "since", value: String(since))]
+        )
+    }
+}
+
+/// What a person pastes is not always what the token file contains: strip
+/// surrounding quotes and a leading `Bearer `, then remove every whitespace
+/// character anywhere so a copied multi-line value still works.
+enum MarbleToken {
+    static func normalize(_ input: String) -> String {
+        var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        while text.hasPrefix("\"") || text.hasPrefix("'") {
+            text = String(text.dropFirst())
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        while text.hasSuffix("\"") || text.hasSuffix("'") {
+            text = String(text.dropLast())
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if text.prefix(6).lowercased() == "bearer",
+           text.count == 6 || text.dropFirst(6).first?.isWhitespace == true {
+            text = String(text.dropFirst(6))
+        }
+        text.removeAll { $0.isWhitespace }
+        return text
     }
 }
 

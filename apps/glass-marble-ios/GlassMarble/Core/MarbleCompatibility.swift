@@ -36,6 +36,8 @@ enum MarbleOnboarding: Equatable {
     case versionMismatch(found: String, required: String)
     case unhealthy(String)
     case notMarble
+    /// The host answered over HTTP, so "cannot reach" would be a lie.
+    case hostAnswered(String)
 
     var message: String {
         switch self {
@@ -44,7 +46,7 @@ enum MarbleOnboarding: Equatable {
         case .unreachable(let detail):
             return detail
         case .badToken:
-            return "The host rejected that token. Check the token file on the host machine."
+            return "The host rejected that token (HTTP 401). Copy it again from the token file on the host."
         case .tokenRequired:
             return "This host requires an access token — paste it above."
         case .versionMismatch(let found, let required):
@@ -53,6 +55,8 @@ enum MarbleOnboarding: Equatable {
             return "Marble answered but is not healthy: \(detail)"
         case .notMarble:
             return "Something answered there, but it is not a Marble host."
+        case .hostAnswered(let detail):
+            return detail
         }
     }
 
@@ -67,8 +71,101 @@ enum MarbleOnboarding: Equatable {
 enum MarbleOnboardingEvaluator {
     enum StateOutcome: Equatable {
         case ok
-        case unauthorized
+        /// Any HTTP status the host returned, with its `error` code if one
+        /// was sent (empty string otherwise).
+        case http(Int, String)
+        /// No HTTP answer at all after a good health check.
+        case transport(String)
+        /// The host answered, but not with JSON the app understands.
         case failed(String)
+    }
+
+    /// Map a thrown client error to a state outcome: statuses keep their
+    /// code, transport failures keep their description.
+    static func stateOutcome(from error: Error) -> StateOutcome {
+        guard let error = error as? MarbleClientError else {
+            return .transport(error.localizedDescription)
+        }
+        switch error {
+        case .unauthorized:
+            return .http(401, "unauthorized")
+        case .forbidden:
+            return .http(403, "forbidden")
+        case .notFound:
+            return .http(404, "not_found")
+        case .conflict(let code):
+            return .http(409, code)
+        case .server(let status, let body), .http(let status, let body):
+            return .http(status, MarbleClientError.errorCode(from: body))
+        case .unreachable, .timeout, .offline:
+            return .transport(error.localizedDescription)
+        case .decoding(let detail):
+            return .failed(detail)
+        case .invalidURL:
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    /// The status an HTTP-layer error carries, for the health messages.
+    static func statusCode(of error: MarbleClientError) -> Int {
+        switch error {
+        case .unauthorized: return 401
+        case .forbidden: return 403
+        case .notFound: return 404
+        case .conflict: return 409
+        case .server(let status, _), .http(let status, _): return status
+        default: return 0
+        }
+    }
+
+    /// The host `error` code an HTTP-layer error carries, if any.
+    static func errorCode(of error: MarbleClientError) -> String {
+        switch error {
+        case .unauthorized: return "unauthorized"
+        case .forbidden: return "forbidden"
+        case .notFound: return "not_found"
+        case .conflict(let code): return code
+        case .server(_, let body), .http(_, let body):
+            return MarbleClientError.errorCode(from: body)
+        default: return ""
+        }
+    }
+
+    private static func httpDetail(_ status: Int, _ code: String) -> String {
+        code.isEmpty ? "HTTP \(status)" : "HTTP \(status) (\(code))"
+    }
+
+    /// The probe's decision plumbing, shared by onboarding and the live
+    /// tests: fetch health, fetch state, fold both into one verdict. The
+    /// caller supplies the network calls so the iOS client and the Linux
+    /// test client can each use their own transport.
+    static func probe(
+        endpoint: MarbleEndpoint,
+        health: () async throws -> MarbleHealth,
+        state: () async throws -> Any
+    ) async -> (MarbleOnboarding, MarbleEndpoint) {
+        let healthResult: Result<MarbleHealth, MarbleClientError>
+        var stateOutcome = StateOutcome.failed("state check failed")
+        do {
+            healthResult = .success(try await health())
+            do {
+                _ = try await state()
+                stateOutcome = .ok
+            } catch {
+                stateOutcome = Self.stateOutcome(from: error)
+            }
+        } catch let error as MarbleClientError {
+            healthResult = .failure(error)
+        } catch {
+            healthResult = .failure(.from(error))
+        }
+        let verdict = evaluate(
+            urlTried: endpoint.baseURL.absoluteString,
+            health: healthResult,
+            state: stateOutcome,
+            hadToken: endpoint.token != nil
+        )
+        return (verdict, endpoint)
     }
 
     static func evaluate(
@@ -80,14 +177,25 @@ enum MarbleOnboardingEvaluator {
         switch health {
         case .failure(let error):
             switch error {
-            case .unreachable, .timeout, .offline:
+            case .unreachable, .timeout, .offline, .invalidURL:
+                // The host never answered: only transport failures may say so.
                 return .unreachable(
                     "Cannot reach \(urlTried). Is Tailscale on, the phone on the same tailnet, and the port right?"
+                )
+            case .unauthorized:
+                return .hostAnswered(
+                    "The host answered 401 for /healthz — the health check is public, so something else is listening there."
+                )
+            case .forbidden:
+                return .hostAnswered(
+                    "The host answered 403 for /healthz — the health check is public, so something else is listening there."
                 )
             case .decoding:
                 return .notMarble
             default:
-                return .unreachable("\(error.localizedDescription) (\(urlTried))")
+                return .hostAnswered(
+                    "The host answered \(httpDetail(statusCode(of: error), errorCode(of: error))) for /healthz."
+                )
             }
         case .success(let health):
             guard let version = health.version, !version.isEmpty else {
@@ -107,12 +215,24 @@ enum MarbleOnboardingEvaluator {
             switch state {
             case .ok:
                 return .ready(version)
-            case .unauthorized:
+            case .http(let status, _) where status == 401:
                 if !health.authRequired { return .unhealthy("state returned 401") }
                 return hadToken ? .badToken : .tokenRequired
+            case .http(let status, _) where status == 404:
+                return .hostAnswered(
+                    "The host answered 404 for /api/state — this app and host don't match (host is Marble \(version))."
+                )
+            case .http(let status, let code):
+                return .hostAnswered(
+                    "The host answered \(httpDetail(status, code)) for /api/state."
+                )
+            case .transport(let detail):
+                return .unreachable(
+                    "The health check answered but /api/state did not: \(detail)"
+                )
             case .failed(let detail):
-                // A state endpoint that answers 5xx (or garbage) is a host
-                // problem, never a token problem.
+                // A state endpoint that answers garbage is a host problem,
+                // never a token problem.
                 return .unhealthy(detail)
             }
         }

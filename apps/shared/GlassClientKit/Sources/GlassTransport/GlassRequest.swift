@@ -28,11 +28,15 @@ public struct GlassRequest: Sendable, Hashable {
     /// Sends the in-memory secret capability; refused on plain HTTP.
     public var carriesSecret: Bool
     public var timeout: TimeInterval
+    /// `Content-Type` of a `POST` body; uploads send raw bytes.
+    public var contentType: String
 
     public init(
         method: Method, path: String, query: [URLQueryItem] = [], body: Data? = nil,
-        bodyLimit: Int = GlassBodyLimit.json, carriesSecret: Bool = false, timeout: TimeInterval = 30
+        bodyLimit: Int = GlassBodyLimit.json, carriesSecret: Bool = false, timeout: TimeInterval = 30,
+        contentType: String = "application/json"
     ) {
+        self.contentType = contentType
         self.method = method
         self.path = path
         self.query = query
@@ -86,7 +90,7 @@ public enum GlassRequestBuilder {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         if request.method == .post {
             urlRequest.setValue(endpoint.origin, forHTTPHeaderField: "Origin")
-            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            urlRequest.setValue(request.contentType, forHTTPHeaderField: "Content-Type")
             urlRequest.httpBody = request.body ?? Data("{}".utf8)
         }
         switch credential {

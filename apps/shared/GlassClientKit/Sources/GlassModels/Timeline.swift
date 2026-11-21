@@ -17,6 +17,8 @@ public struct Timeline: Sendable, Hashable {
     public private(set) var isActive = false
     public private(set) var disconnected = false
     public private(set) var largeRecordOmitted = false
+    /// The decision the turn is paused on, if any.
+    public private(set) var interaction: Interaction?
 
     private var seenRecords: Set<Int> = []
     private var liveSerial = 0
@@ -57,6 +59,7 @@ public struct Timeline: Sendable, Hashable {
         isActive = frame.active
         disconnected = false
         notice = nil
+        interaction = frame.interaction.flatMap(Interaction.init)
         for event in frame.live { apply(event) }
         activity = frame.active ? (activity ?? "Working") : nil
     }
@@ -127,8 +130,9 @@ public struct Timeline: Sendable, Hashable {
             notice = Notice(text: message ?? "This request is already recorded; it was not run twice.", isError: false)
         case .steering:
             notice = Notice(text: "Applying your correction before further actions.", isError: false)
-        case .error(let message, let settled, _):
+        case .error(let message, let settled, _, _):
             if settled {
+                interaction = nil
                 finishStream()
                 isActive = false
                 activity = nil
@@ -149,7 +153,13 @@ public struct Timeline: Sendable, Hashable {
             if let text = value["t"]?.stringValue, text.range(of: "error:|failed:|stopped:", options: .regularExpression) != nil {
                 entries.append(.notice(id: nextID("meta"), text: text, isError: true))
             }
-        case .interaction, .interactionDone, .unknown:
+        case .interaction(let value):
+            interaction = Interaction(value)
+            activity = "Waiting for your decision"
+        case .interactionDone:
+            interaction = nil
+            if activity == "Waiting for your decision" { activity = isActive ? "Working" : nil }
+        case .commandResult, .commandCatalogue, .unknown:
             break
         }
     }

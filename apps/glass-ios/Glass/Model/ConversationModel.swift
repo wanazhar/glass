@@ -16,6 +16,7 @@ final class ConversationModel {
     }
 
     let thread: ThreadSummary
+    let composer: ComposerModel
     private(set) var timeline = Timeline()
     private(set) var connection: Connection = .idle
     private(set) var originLabel: String?
@@ -28,14 +29,23 @@ final class ConversationModel {
     private let app: AppModel
     private var liveTask: Task<Void, Never>?
     private var starting: Task<Void, Never>?
+    /// Incremental frames waiting to be drawn. A fast stream sends far more frames than the timeline can
+    /// re-render, so they are applied together at most every `frameInterval`.
+    private var pendingFrames: [EventFrame] = []
+    private var drawTask: Task<Void, Never>?
+    private static let frameInterval = Duration.milliseconds(100)
 
     init(app: AppModel, thread: ThreadSummary) {
         self.app = app
         self.thread = thread
+        composer = ComposerModel(app: app, thread: thread)
         originLabel = thread.originLabel
     }
 
     var title: String { thread.displayTitle }
+
+    /// This app holds the session control channel and may send input.
+    var canWrite: Bool { timeline.canWrite && connection == .live }
 
     /// Loads history, attaches the host connection, and follows live events until stopped.
     func start() async {
@@ -68,6 +78,10 @@ final class ConversationModel {
             self.error = error.localizedDescription
             return
         }
+        Task {
+            await composer.refreshContext()
+            await composer.refreshChecklist()
+        }
         let live = LiveEvents(client: api, thread: thread.id, sourceRef: thread.sourceRef)
         let resume = cursor
         liveTask = Task { [weak self] in
@@ -81,6 +95,7 @@ final class ConversationModel {
     func stop() {
         liveTask?.cancel()
         liveTask = nil
+        drawPendingFrames()
         if connection != .readOnly { connection = .idle }
     }
 
@@ -97,6 +112,16 @@ final class ConversationModel {
 
     func dismissNotice() { timeline.dismissNotice() }
 
+    private func drawPendingFrames() {
+        drawTask?.cancel()
+        drawTask = nil
+        guard !pendingFrames.isEmpty else { return }
+        var next = timeline
+        for frame in pendingFrames { next.apply(frame) }
+        pendingFrames.removeAll()
+        timeline = next
+    }
+
     private func receive(_ update: LiveUpdate) async {
         switch update {
         case .connected:
@@ -105,10 +130,23 @@ final class ConversationModel {
         case .frame(let frame, let id):
             let resumed = cursor != nil
             if let id { cursor = id }
-            if frame.reset && !resumed {
+            if !frame.reset {
+                pendingFrames.append(frame)
+                if drawTask == nil {
+                    drawTask = Task { [weak self] in
+                        try? await Task.sleep(for: Self.frameInterval)
+                        guard !Task.isCancelled else { return }
+                        self?.drawPendingFrames()
+                    }
+                }
+                for event in frame.live + frame.events { composer.observe(event) }
+                return
+            }
+            drawPendingFrames()
+            if !resumed {
                 // A fresh stream always opens with a snapshot of the history just loaded.
                 timeline.applySnapshot(frame)
-            } else if frame.reset {
+            } else {
                 guard let api = app.api else { return }
                 do {
                     let history = try await api.history(thread.id, sourceRef: thread.sourceRef)
@@ -117,9 +155,8 @@ final class ConversationModel {
                 } catch {
                     fail(error)
                 }
-            } else {
-                timeline.apply(frame)
             }
+            for event in frame.live + frame.events { composer.observe(event) }
         case .reconnecting(_, let reason):
             connection = .reconnecting(reason)
         case .unauthorized(let message):

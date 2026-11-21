@@ -7,7 +7,9 @@ Starts a real glass-core gateway in a disposable workspace in two modes:
   * local: `connect --local` on loopback.
 Then serves a control API the UI tests call:
   GET /link/owner | /link/secret | /link/local, POST /revoke (restart = new token),
-  POST /thread/new | /thread/send | /thread/seed | /thread/wait, POST /net/drop | /net/restore.
+  POST /thread/new | /thread/send | /thread/seed | /thread/wait, POST /net/drop | /net/restore,
+  POST /control/claim | /control/release (a second session client, like another device taking control),
+  GET /thread/context.
 A scripted OpenAI-compatible provider answers every turn so threads stream real events.
 """
 import http.client, http.server, json, os, re, select, signal, socket, ssl, subprocess, sys, threading, time, uuid
@@ -167,7 +169,8 @@ class Proxy:
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
-    """Scripted OpenAI chat-completions stream. `flood N` streams N one-char deltas."""
+    """Scripted OpenAI chat-completions stream. `flood N` streams N one-char deltas as fast as it can;
+    `slow N` streams N short words half a second apart, a long turn that stays cheap to render."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):
@@ -175,15 +178,33 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
-        last = ""
+        last, tool_result = "", None
         for message in body.get("messages", []):
+            content = message.get("content")
+            text = content if isinstance(content, str) else " ".join(
+                part.get("text", "") for part in content or [] if isinstance(part, dict))
             if message.get("role") == "user":
-                content = message.get("content")
-                last = content if isinstance(content, str) else " ".join(
-                    part.get("text", "") for part in content or [] if isinstance(part, dict))
+                last, tool_result = text, None
+            elif message.get("role") == "tool":
+                tool_result = text
         flood = re.search(r"flood (\d+)", last)
-        if flood:
+        slow = re.search(r"slow (\d+)", last)
+        call = None
+        if tool_result is None and "ask question" in last:
+            call = ("ask_user_question", {"questions": [{"question": "Which color?", "multiSelect": False, "options": [
+                {"label": "Blue", "description": "Calm"}, {"label": "Green", "description": "Fresh"}]}]})
+        elif tool_result is None and "need secret" in last:
+            call = ("request_secret", {"purpose": "Call the E2E API", "destination": "https://api.example.test",
+                                       "tool": "web_secret_request", "operation": "GET /v1/ping"})
+        if call:
+            return self.tool_call(*call)
+        if tool_result is not None:
+            reply = "Tool said: " + re.sub(r"\s+", " ", tool_result)[:300]
+            deltas, pause = [reply[i:i + 6] for i in range(0, len(reply), 6)], 0.02
+        elif flood:
             deltas, pause = ["x"] * int(flood.group(1)), 0.001
+        elif slow:
+            deltas, pause = ["tick "] * int(slow.group(1)), 0.5
         else:
             words = re.sub(r"\s+", " ", last).strip()[-200:]
             reply = f"Echo from the host: **{words}**\n\n```swift\nlet glass = \"live\"\n```"
@@ -214,6 +235,49 @@ class Provider(http.server.BaseHTTPRequestHandler):
         chunk({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": len(deltas)}})
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+
+    def tool_call(self, name, arguments):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        for payload in (
+            {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_" + uuid.uuid4().hex[:8], "type": "function",
+                                                                "function": {"name": name, "arguments": json.dumps(arguments)}}]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+        ):
+            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+
+class SessionClient:
+    """A second raw client on a thread's serve socket, standing in for another device."""
+    clients = {}
+
+    @classmethod
+    def control(cls, thread, action):
+        client = cls.clients.get(thread)
+        if client is None:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(os.path.join(data_dir("remote"), f"serve-{thread}.sock"))
+            client.settimeout(10)
+            cls.clients[thread] = (client, client.makefile("rb"))
+        sock, reader = cls.clients[thread]
+        sock.sendall(json.dumps({"t": "control", "action": action}).encode() + b"\n")
+        while True:
+            line = reader.readline()
+            if not line:
+                raise RuntimeError("session socket closed")
+            message = json.loads(line)
+            if message.get("t") == "control":
+                if action == "release":
+                    sock.close()
+                    del cls.clients[thread]
+                return json.dumps({"can_write": message.get("can_write")})
 
 
 class Gateway:
@@ -316,6 +380,9 @@ class Control(http.server.BaseHTTPRequestHandler):
                     return self.reply(link("local", "--local"))
                 if self.path == "/net/events":
                     return self.reply(json.dumps(proxy.event_requests))
+                if self.path.startswith("/thread/context?"):
+                    thread = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)["id"][0]
+                    return self.reply(json.dumps(gateway.request("GET", f"/api/context?id={thread}")))
                 if self.path == "/health":
                     return self.reply("ok")
             self.reply("not found", 404)
@@ -352,6 +419,8 @@ class Control(http.server.BaseHTTPRequestHandler):
                 if q.get("wait") == "1":
                     return self.reply(gateway.wait_idle(q["id"], before))
                 return self.reply("sent")
+            if url.path in ("/control/claim", "/control/release"):
+                return self.reply(SessionClient.control(q["id"], url.path.rsplit("/", 1)[1]))
             if url.path == "/thread/wait":
                 return self.reply(gateway.wait_idle(q["id"]))
             self.reply("not found", 404)

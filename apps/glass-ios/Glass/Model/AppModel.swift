@@ -148,6 +148,7 @@ final class AppModel {
     func resetForTesting() {
         forget()
         allowLANHTTP = false
+        Drafts.shared.removeAll()
     }
 }
 

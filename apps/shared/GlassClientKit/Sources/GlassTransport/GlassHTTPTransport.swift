@@ -7,6 +7,14 @@ public protocol GlassHTTPTransport: Sendable {
 }
 
 extension GlassHTTPTransport {
+    /// Sends a request body, reporting bytes sent. Transports without progress report once at the end.
+    public func upload(_ request: URLRequest, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> (Data, HTTPURLResponse) {
+        let result = try await send(request)
+        let size = Int64(request.httpBody?.count ?? 0)
+        progress(size, size)
+        return result
+    }
+
     /// Request/response transports that never stream (test doubles, simple tools).
     public func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, any Error>, HTTPURLResponse) {
         throw GlassError.invalidResponse("streaming is not supported by this transport")
@@ -46,8 +54,9 @@ public final class URLSessionTransport: NSObject, GlassHTTPTransport, URLSession
                 do {
                     for try await byte in bytes {
                         chunk.append(byte)
-                        // Flush at frame boundaries so events are delivered promptly.
-                        if byte == 0x0A, chunk.count >= 2, chunk[chunk.count - 2] == 0x0A || chunk.count >= 16 * 1024 {
+                        // Flush every line: holding a lone frame-ending newline back would stall
+                        // the frame until the host sends its next bytes.
+                        if byte == 0x0A {
                             continuation.yield(chunk)
                             chunk.removeAll(keepingCapacity: true)
                         }
@@ -61,6 +70,15 @@ public final class URLSessionTransport: NSObject, GlassHTTPTransport, URLSession
             continuation.onTermination = { _ in task.cancel() }
         }
         return (chunks, http)
+    }
+
+    public func upload(_ request: URLRequest, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> (Data, HTTPURLResponse) {
+        var request = request
+        let body = request.httpBody ?? Data()
+        request.httpBody = nil
+        let (data, response) = try await session.upload(for: request, from: body, delegate: UploadProgressDelegate(progress))
+        guard let http = response as? HTTPURLResponse else { throw GlassError.invalidResponse("not HTTP") }
+        return (data, http)
     }
 
     public func urlSession(
@@ -84,4 +102,19 @@ public enum GlassResponse {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return (object["error"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
+}
+
+/// Per-upload delegate: reports progress and, like the session delegate, never follows redirects.
+private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    let progress: @Sendable (Int64, Int64) -> Void
+
+    init(_ progress: @escaping @Sendable (Int64, Int64) -> Void) { self.progress = progress }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        progress(totalBytesSent, totalBytesExpectedToSend)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? { nil }
 }

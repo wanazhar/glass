@@ -19,8 +19,8 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
             (#"{"t":"queued","request_id":"r2"}"#, .queued(requestID: "r2")),
             (#"{"t":"duplicate","message":"dup"}"#, .duplicate(message: "dup")),
             (#"{"t":"steering","request_id":"r3"}"#, .steering(requestID: "r3")),
-            (#"{"t":"error","message":"boom","settled":true}"#, .error(message: "boom", settled: true, provider: false)),
-            (#"{"t":"provider_error","message":"rate"}"#, .error(message: "rate", settled: false, provider: true)),
+            (#"{"t":"error","message":"boom","settled":true}"#, .error(message: "boom", settled: true, provider: false, requestID: nil)),
+            (#"{"t":"provider_error","message":"rate"}"#, .error(message: "rate", settled: false, provider: true, requestID: nil)),
             (#"{"t":"retrying","attempt":2}"#, .notice(message: "Provider cooldown · retry 2")),
             (#"{"t":"provider_notice","message":"slow"}"#, .notice(message: "slow")),
             (#"{"t":"disconnected","message":"gone"}"#, .disconnected(message: "gone")),
@@ -108,7 +108,7 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     @Test func resetSnapshotReplacesState() throws {
         var timeline = Timeline()
         timeline.apply(.text(delta: "stale"))
-        timeline.apply(.error(message: "x", settled: false, provider: false))
+        timeline.apply(.error(message: "x", settled: false, provider: false, requestID: nil))
         let frame = try decode(EventFrame.self, #"{"reset":true,"cursor":4,"active":true,"control":{"can_write":true},"live":[{"t":"text","delta":"live"}]}"#)
         timeline.reset(history: try Self.page([(0, #"{"k":"user","t":"q"}"#)], before: 0), frame: frame)
         #expect(timeline.entries.count == 2)
@@ -120,7 +120,7 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         var timeline = Timeline()
         timeline.apply(.queued(requestID: nil))
         #expect(timeline.notice?.text == "Follow-up saved on the host. It will run after the current turn.")
-        timeline.apply(.error(message: "boom", settled: true, provider: true))
+        timeline.apply(.error(message: "boom", settled: true, provider: true, requestID: nil))
         #expect(timeline.notice == .init(text: "boom", isError: true))
         timeline.apply(.disconnected(message: nil))
         #expect(timeline.disconnected)

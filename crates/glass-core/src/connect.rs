@@ -2464,10 +2464,7 @@ fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Val
         .take(120)
         .collect();
     let token = crate::workspace::hash(&[name.as_bytes(), b"\0", body].concat());
-    let thread_key = crate::workspace::hash(session_path.as_os_str().as_encoded_bytes());
-    let dir = crate::config::data_dir()
-        .join("web-uploads")
-        .join(&thread_key);
+    let dir = crate::web_commands::upload_dir(&session_path);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

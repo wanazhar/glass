@@ -40,7 +40,7 @@ public enum GlassEvent: Sendable, Hashable, Decodable {
     case queued(requestID: String?)
     case duplicate(message: String?)
     case steering(requestID: String?)
-    case error(message: String, settled: Bool, provider: Bool)
+    case error(message: String, settled: Bool, provider: Bool, requestID: String?)
     case notice(message: String)
     case disconnected(message: String?)
     case control(canWrite: Bool)
@@ -48,6 +48,9 @@ public enum GlassEvent: Sendable, Hashable, Decodable {
     case interactionDone
     case commandStart(name: String?)
     case commandDone
+    /// Reply to a `command` message: `result` or `error`, matched by request ID.
+    case commandResult(requestID: String?, result: JSONValue?, error: String?)
+    case commandCatalogue(JSONValue)
     case meta(JSONValue)
     case unknown(type: String, payload: JSONValue)
 
@@ -68,7 +71,7 @@ public enum GlassEvent: Sendable, Hashable, Decodable {
         case "duplicate": self = .duplicate(message: s("message"))
         case "steering": self = .steering(requestID: s("request_id"))
         case "error", "provider_error":
-            self = .error(message: s("message") ?? "The operation failed", settled: b("settled"), provider: type == "provider_error")
+            self = .error(message: s("message") ?? "The operation failed", settled: b("settled"), provider: type == "provider_error", requestID: s("request_id"))
         case "retrying", "provider_notice":
             let attempt = v["attempt"]?.doubleValue.map { " · retry \(Int($0))" } ?? ""
             self = .notice(message: s("message") ?? "Provider cooldown\(attempt)")
@@ -78,6 +81,8 @@ public enum GlassEvent: Sendable, Hashable, Decodable {
         case "interaction_done": self = .interactionDone
         case "command_start": self = .commandStart(name: s("name"))
         case "command_done": self = .commandDone
+        case "command_result": self = .commandResult(requestID: s("request_id"), result: v["result"], error: s("error"))
+        case "command_catalogue": self = .commandCatalogue(v["commands"] ?? .null)
         case "meta": self = .meta(v)
         default: self = .unknown(type: type, payload: v)
         }

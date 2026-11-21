@@ -11,6 +11,7 @@ host=${GLASS_E2E_HOST:-glass-e2e.tail0e2e.ts.net}
 root=${GLASS_E2E_ROOT:-$HOME/.glass-e2e}
 udid=${1:-$(xcrun simctl list devices available | awk '/^-- iOS 26/{f=1;next} /^--/{f=0} f && /iPhone 17 \(/{print; exit}' | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')}
 
+pkill -f "$repo/target/debug/glass-core serve $root/" 2>/dev/null || true
 rm -rf "$root" && mkdir -p "$root/tls"
 (cd "$repo" && cargo build -p glass-core --locked -q)
 (cd "$repo/products/glass-core/web" && { [[ -d node_modules ]] || npm ci --silent; } && npm run --silent build >/dev/null)
@@ -30,15 +31,31 @@ grep -q " $host\$" /etc/hosts || echo "127.0.0.1 $host" | sudo tee -a /etc/hosts
 xcrun simctl boot "$udid" 2>/dev/null || true
 xcrun simctl bootstatus "$udid" -b >/dev/null
 xcrun simctl keychain "$udid" add-root-cert "$root/tls/ca.pem"
+# A known photo for the attachment test.
+python3 - "$root/e2e-photo.png" <<'PY'
+import struct, sys, zlib
+w = h = 64
+rows = b"".join(b"\x00" + b"".join(bytes((x * 4, 120, 255 - y * 4)) for x in range(w)) for y in range(h))
+chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+PY
+xcrun simctl addmedia "$udid" "$root/e2e-photo.png"
+xcrun simctl privacy "$udid" grant photos com.wanazhar.glass 2>/dev/null || true
 
 python3 "$here/harness.py" >"$root/harness.log" 2>&1 &
 harness=$!
-trap 'kill $harness 2>/dev/null; wait $harness 2>/dev/null || true' EXIT
+# Gateway and per-thread serve processes outlive the harness; stop them with it.
+stop_host() {
+  kill $harness 2>/dev/null; wait $harness 2>/dev/null || true
+  pkill -f "$GLASS_CORE_BIN connect _serve" 2>/dev/null || true
+  pkill -f "$GLASS_CORE_BIN serve $root/" 2>/dev/null || true
+}
+trap stop_host EXIT
 for _ in $(seq 60); do grep -q '^ready' "$root/harness.log" && break; kill -0 $harness || { cat "$root/harness.log"; exit 1; }; sleep 0.5; done
 grep '^ready' "$root/harness.log"
 curl -sf --cacert "$root/tls/ca.pem" "https://$host/api/status" -o /dev/null -w 'tailnet front end: HTTP %{http_code}\n' || true
 
-# GLASS_E2E_HARNESS_ONLY=1 keeps the gateway up for manual probing without running tests.
+# GLASS_E2E_ONLY=testName runs one test. GLASS_E2E_HARNESS_ONLY=1 keeps the gateway up for manual probing without running tests.
 [[ -n ${GLASS_E2E_HARNESS_ONLY:-} ]] && { wait $harness; exit; }
 
 cd "$app"
@@ -46,4 +63,4 @@ rm -rf build/results/e2e.xcresult
 TEST_RUNNER_GLASS_E2E_CONTROL="http://127.0.0.1:${GLASS_E2E_CONTROL_PORT:-51999}" \
   xcodebuild test -project Glass.xcodeproj -scheme Glass -collect-test-diagnostics never -destination "platform=iOS Simulator,id=$udid" \
   -derivedDataPath build/test -resultBundlePath build/results/e2e.xcresult \
-  -only-testing:GlassUITests/LiveHostE2ETests -quiet
+  -only-testing:GlassUITests/LiveHostE2ETests${GLASS_E2E_ONLY:+/$GLASS_E2E_ONLY} -quiet

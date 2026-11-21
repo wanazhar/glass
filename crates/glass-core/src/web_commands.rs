@@ -357,6 +357,16 @@ pub fn form(name: &str) -> Value {
     };
     json!({"fields":fields.into_iter().map(|(key,label,kind)|json!({"key":key,"label":label,"kind":kind})).collect::<Vec<_>>(),"confirm":matches!(name,"handoff"|"undo"|"restore"|"forget"|"rewrite"|"bg"|"security"|"profiles"|"login"|"logout"|"git"|"pr"|"init"|"capture"|"rewind"|"extensions"|"agents"|"plan"),"model_request":matches!(name,"compact"|"plan"|"init"|"btw"|"code-review"|"advisor"|"retry"|"queue-run"|"doctor")})
 }
+/// Staging directory for one thread's web uploads, keyed by its canonical session path.
+pub(crate) fn upload_dir(session_path: &std::path::Path) -> std::path::PathBuf {
+    let path = session_path
+        .canonicalize()
+        .unwrap_or_else(|_| session_path.to_path_buf());
+    config::data_dir()
+        .join("web-uploads")
+        .join(crate::workspace::hash(path.as_os_str().as_encoded_bytes()))
+}
+
 pub fn execute(
     name: &str,
     v: &Value,
@@ -958,9 +968,7 @@ pub fn execute(
                 if upload.len() != 64 || !upload.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err("Invalid upload token".into());
                 }
-                config::data_dir()
-                    .join("web-uploads")
-                    .join(&s.id)
+                upload_dir(&s.path)
                     .join(upload)
                     .to_string_lossy()
                     .into_owned()

@@ -47,6 +47,24 @@ final class ScreenshotTourUITests: XCTestCase {
             XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 20))
             sleep(2)
             try save(app, "conversation")
+
+            let composer = app.textViews["composer.field"]
+            guard composer.waitForExistence(timeout: 10) else { return }
+            composer.tap()
+            composer.typeText("Summarize the open pull requests")
+            try save(app, "composer-draft")
+            app.buttons["composer.attach"].tap()
+            try save(app, "composer-attach-menu")
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+            app.buttons["composer.send"].tap()
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'pull requests'")).firstMatch
+                .waitForExistence(timeout: 30))
+            composer.tap()
+            composer.typeText("ask question")
+            app.buttons["composer.send"].tap()
+            if app.descendants(matching: .any)["interaction"].waitForExistence(timeout: 30) {
+                try save(app, "interaction-question")
+            }
         }
     }
 }

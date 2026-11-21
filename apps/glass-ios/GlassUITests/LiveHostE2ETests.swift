@@ -105,12 +105,12 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
-    private func pairedApp() throws -> XCUIApplication {
+    private func pairedApp(link: String = "link/owner") throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-GlassResetState"]
         app.launch()
         XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
-        pair(app, link: try call("link/owner"))
+        pair(app, link: try call(link))
         XCTAssertTrue(app.waitForThreadList(timeout: 20), "conversations load after pairing")
         return app
     }
@@ -195,6 +195,185 @@ final class LiveHostE2ETests: XCTestCase {
         app.buttons["conversation.menu"].tap()
         app.buttons["conversation.close"].tap()
         XCTAssertTrue(app.staticTexts["threads.count"].waitForExistence(timeout: 20))
+    }
+
+    @MainActor
+    private func composerField(_ app: XCUIApplication) -> XCUIElement {
+        let field = app.textViews["composer.field"].exists ? app.textViews["composer.field"] : app.textFields["composer.field"]
+        return field.firstMatch
+    }
+
+    @MainActor
+    private func waitUntil(_ timeout: TimeInterval = 30, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            usleep(250_000)
+        }
+        return false
+    }
+
+    @MainActor
+    private func typeAndSend(_ app: XCUIApplication, _ message: String) {
+        let field = composerField(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(10) { field.isEnabled }, "the composer accepts input")
+        field.tap()
+        field.typeText(message)
+        app.buttons["composer.send"].tap()
+    }
+
+    @MainActor
+    func testComposerSendsStopsQueuesAndKeepsDrafts() throws {
+        let thread = try call("thread/new?title=Composer", method: "POST")
+        var app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(app.buttons["composer.send"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["composer.send"].isEnabled, "send is disabled while the draft is empty")
+
+        typeAndSend(app, "hello from the phone")
+        XCTAssertTrue(text(app, containing: "Echo from the host: hello from the phone").waitForExistence(timeout: 30), "native prompt runs a turn")
+        attach(app, "e2e-composer-sent")
+
+        // Hardware keyboard: Shift-Return breaks the line, Return sends.
+        let field = composerField(app)
+        field.tap()
+        // The first hardware key event switches the simulator to its hardware keyboard and is not delivered.
+        field.typeKey(XCUIKeyboardKey.shift, modifierFlags: [])
+        field.typeText("line one")
+        field.typeKey("\n", modifierFlags: .shift)
+        field.typeText("line two")
+        XCTAssertTrue((field.value as? String)?.contains("line one\nline two") == true, "Shift-Return inserts a line break")
+        field.typeKey("\n", modifierFlags: [])
+        XCTAssertTrue(text(app, containing: "Echo from the host: line one line two").waitForExistence(timeout: 30), "Return sends")
+
+        typeAndSend(app, "slow 240")
+        let stop = app.buttons["composer.stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 20), "stop appears while a turn runs")
+        let mode = app.segmentedControls["composer.mode"]
+        XCTAssertTrue(mode.exists, "steer or queue is offered while working")
+        let queue = mode.buttons["Queue"]
+        XCTAssertTrue(waitUntil(10) {
+            if !queue.isSelected { queue.tap() }
+            return queue.isSelected
+        }, "queue mode is selected")
+        let field2 = composerField(app)
+        field2.tap()
+        field2.typeText("queued after stop")
+        app.buttons["composer.send"].tap()
+        attach(app, "e2e-composer-queue")
+        XCTAssertTrue(stop.waitForExistence(timeout: 10))
+        stop.tap()
+        XCTAssertTrue(text(app, containing: "Echo from the host: queued after stop").waitForExistence(timeout: 60), "queued prompt runs after the stopped turn")
+
+        let draft = composerField(app)
+        draft.tap()
+        draft.typeText("unsent draft")
+        // Drafts are written 300 ms after the last keystroke; leave room for a busy main thread.
+        sleep(2)
+        app.terminate()
+        app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: thread)
+        XCTAssertTrue(waitUntil(10) { (composerField(app).value as? String) == "unsent draft" }, "draft survives app termination")
+
+        // Dictation asks for Speech Recognition; declining explains how to enable it.
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let clear = composerField(app)
+        clear.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        let delete = app.keys["delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        for _ in 0..<"unsent draft".count { delete.tap() }
+        XCTAssertTrue(app.buttons["composer.dictate"].waitForExistence(timeout: 5), "the draft clears")
+        app.buttons["composer.dictate"].tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let alert = springboard.alerts.firstMatch
+        if alert.waitForExistence(timeout: 10) {
+            attach(app, "e2e-dictation-permission")
+            let deny = alert.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Don'")).firstMatch
+            (deny.exists ? deny : alert.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(app.descendants(matching: .any)["composer.dictation.message"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testControlHandoffMakesTheAppReadOnly() throws {
+        let thread = try call("thread/new?title=Handoff", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(app.buttons["composer.send"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists }, "the opening client holds control")
+
+        app.buttons["conversation.menu"].tap()
+        app.buttons["conversation.releaseControl"].tap()
+        let readOnly = app.descendants(matching: .any)["composer.readOnly"]
+        XCTAssertTrue(readOnly.waitForExistence(timeout: 15), "releasing control makes the composer read-only")
+        XCTAssertTrue(try call("control/claim?id=\(thread)", method: "POST").contains("true"), "another client takes control")
+
+        app.buttons["composer.takeControl"].tap()
+        sleep(2)
+        XCTAssertTrue(readOnly.exists, "control stays with the other client")
+        XCTAssertFalse(composerField(app).isEnabled)
+        attach(app, "e2e-read-only")
+
+        _ = try call("control/release?id=\(thread)", method: "POST")
+        app.buttons["composer.takeControl"].tap()
+        XCTAssertTrue(waitUntil(15) { !readOnly.exists }, "taking control after release restores the composer")
+        typeAndSend(app, "back in control")
+        XCTAssertTrue(text(app, containing: "Echo from the host: back in control").waitForExistence(timeout: 30))
+    }
+
+    @MainActor
+    func testQuestionAndSecretInteractionsOverHTTPS() throws {
+        let thread = try call("thread/new?title=Interactions", method: "POST")
+        let app = try pairedApp(link: "link/secret")
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        typeAndSend(app, "ask question")
+        let interaction = app.descendants(matching: .any)["interaction"]
+        XCTAssertTrue(interaction.waitForExistence(timeout: 30), "question interaction appears")
+        app.buttons.matching(identifier: "interaction.option").matching(NSPredicate(format: "label CONTAINS 'Blue'")).firstMatch.tap()
+        attach(app, "e2e-question")
+        app.buttons["interaction.submit"].tap()
+        XCTAssertTrue(text(app, containing: "Tool said").waitForExistence(timeout: 30))
+        XCTAssertTrue(text(app, containing: "Blue").exists, "the chosen answer reaches the agent")
+        XCTAssertTrue(waitUntil(10) { !interaction.exists })
+
+        typeAndSend(app, "need secret")
+        let field = app.secureTextFields["interaction.secret.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 30), "secret prompt appears over HTTPS with secret entry unlocked")
+        field.tap()
+        field.typeText("hunter2-e2e")
+        attach(app, "e2e-secret")
+        app.buttons["interaction.submit"].tap()
+        XCTAssertTrue(text(app, containing: "provided").waitForExistence(timeout: 30), "the agent receives a secret handle")
+        XCTAssertFalse(text(app, containing: "hunter2-e2e").exists, "the secret value never appears in the transcript")
+    }
+
+    @MainActor
+    func testAttachPhotoUploadsAndRunsATurn() throws {
+        let thread = try call("thread/new?title=Attachments", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(app.buttons["composer.attach"].waitForExistence(timeout: 10))
+        app.buttons["composer.attach"].tap()
+        app.buttons["composer.attach.photos"].tap()
+        let photo = app.images.matching(NSPredicate(format: "label CONTAINS[c] 'photo' OR identifier BEGINSWITH 'PXGGridLayout'")).firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 20), "photo picker shows the library")
+        photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let add = app.buttons.matching(NSPredicate(format: "label == 'Add' OR label == 'Done'")).firstMatch
+        XCTAssertTrue(waitUntil(10) { add.exists && add.isEnabled }, "picking a photo enables Add")
+        add.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer.context"].firstMatch.waitForExistence(timeout: 30), "uploaded photo appears as a context chip")
+        XCTAssertTrue(try call("thread/context?id=\(thread)").contains("Uploaded Photo 1"), "the host lists the attachment")
+        attach(app, "e2e-attachment")
+        typeAndSend(app, "what is in the photo")
+        XCTAssertTrue(text(app, containing: "Echo from the host: what is in the photo").waitForExistence(timeout: 30))
     }
 
     @MainActor

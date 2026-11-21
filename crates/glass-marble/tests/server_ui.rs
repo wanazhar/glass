@@ -336,9 +336,10 @@ fn server_approval_inbox_routes_allow_and_deny() {
         "",
     );
     assert_eq!(status, 409);
+    // Clients percent-escape the `:` in request ids; the route decodes them.
     let (status, _) = server.handle(
         "POST",
-        "/api/approvals/host:fixture-session:generation-fixture-1:call-2/allow",
+        "/api/approvals/host%3Afixture-session%3Ageneration-fixture-1%3Acall-2/allow",
         "",
     );
     assert_eq!(status, 200);

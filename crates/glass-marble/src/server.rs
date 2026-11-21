@@ -194,6 +194,27 @@ fn host_of(authority: &str) -> &str {
     authority.split('/').next().unwrap_or(authority)
 }
 
+/// Percent-decoding for a path segment: no `+` handling, which is a query-only
+/// form convention. Approval request ids carry `:` and clients send it escaped.
+fn decode_path_segment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16)
+        {
+            decoded.push(byte);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
 fn decode_query(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -785,7 +806,7 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/approvals/")
             && let Some((request_id, action)) = rest.rsplit_once('/')
         {
-            return self.decide_approval(request_id, action, body);
+            return self.decide_approval(&decode_path_segment(request_id), action, body);
         }
         Response::error(404, "not_found")
     }
@@ -3717,6 +3738,18 @@ pub fn pending_approvals(approvals: &ApprovalInbox) -> Vec<PendingApproval> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_segments_decode_percent_escapes() {
+        assert_eq!(
+            decode_path_segment("host%3Asession%3Atask%3Acall-1"),
+            "host:session:task:call-1"
+        );
+        assert_eq!(decode_path_segment("plain-id"), "plain-id");
+        assert_eq!(decode_path_segment("a+b"), "a+b");
+        assert_eq!(decode_path_segment("trailing%"), "trailing%");
+        assert_eq!(decode_path_segment("bad%zz"), "bad%zz");
+    }
 
     #[test]
     fn query_tokens_decode_and_match() {

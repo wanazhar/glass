@@ -73,6 +73,107 @@ impl<'a> Default for TurnOptions<'a> {
 }
 
 /// Run one durable turn, streaming every runtime event to the product bus.
+/// Splits `<think>…</think>` / `<thinking>…</thinking>` blocks out of a text
+/// stream into reasoning. Providers sometimes send their reasoning as plain
+/// text deltas (no separate `reasoning` event), and a tag can straddle chunk
+/// boundaries, so this keeps a pending tail that might be half a tag.
+#[derive(Debug, Default)]
+struct ThinkSplitter {
+    pending: String,
+    in_think: bool,
+}
+
+impl ThinkSplitter {
+    const OPEN_TAGS: [&'static str; 2] = ["<thinking>", "<think>"];
+    const CLOSE_TAGS: [&'static str; 2] = ["</thinking>", "</think>"];
+
+    /// Feed one delta; returns (text, reasoning) produced by it.
+    fn feed(&mut self, delta: &str) -> (String, String) {
+        self.pending.push_str(delta);
+        self.drain(false)
+    }
+
+    /// End of stream: unterminated input goes where the parser stood —
+    /// inside an open think block it is reasoning, outside it is text.
+    fn flush(&mut self) -> (String, String) {
+        self.drain(true)
+    }
+
+    fn drain(&mut self, eof: bool) -> (String, String) {
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        loop {
+            if self.in_think {
+                match Self::find_tag(&self.pending, &Self::CLOSE_TAGS) {
+                    Some((start, len)) => {
+                        reasoning.push_str(&self.pending[..start]);
+                        self.pending.drain(..start + len);
+                        self.in_think = false;
+                    }
+                    None => {
+                        let keep = Self::partial_tag_tail(&self.pending, &Self::CLOSE_TAGS);
+                        if eof || keep == 0 {
+                            reasoning.push_str(&self.pending);
+                            self.pending.clear();
+                        } else {
+                            let cut = self.pending.len() - keep;
+                            reasoning.push_str(&self.pending[..cut]);
+                            self.pending.drain(..cut);
+                        }
+                        break;
+                    }
+                }
+            } else {
+                match Self::find_tag(&self.pending, &Self::OPEN_TAGS) {
+                    Some((start, len)) => {
+                        text.push_str(&self.pending[..start]);
+                        self.pending.drain(..start + len);
+                        self.in_think = true;
+                    }
+                    None => {
+                        let keep = Self::partial_tag_tail(&self.pending, &Self::OPEN_TAGS);
+                        if eof || keep == 0 {
+                            text.push_str(&self.pending);
+                            self.pending.clear();
+                        } else {
+                            let cut = self.pending.len() - keep;
+                            text.push_str(&self.pending[..cut]);
+                            self.pending.drain(..cut);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        (text, reasoning)
+    }
+
+    /// Earliest occurrence of any tag in `haystack` as (offset, length).
+    fn find_tag(haystack: &str, tags: &[&str]) -> Option<(usize, usize)> {
+        tags.iter()
+            .filter_map(|tag| haystack.find(tag).map(|at| (at, tag.len())))
+            .min_by_key(|(at, _)| *at)
+    }
+
+    /// Length of a trailing run that could still grow into a full tag, so it
+    /// must be held for the next delta.
+    fn partial_tag_tail(pending: &str, tags: &[&str]) -> usize {
+        for cut in (1..=pending.len().min(10)).rev() {
+            if !pending.is_char_boundary(pending.len() - cut) {
+                continue;
+            }
+            let tail = &pending[pending.len() - cut..];
+            if !tail.starts_with('<') {
+                continue;
+            }
+            if tags.iter().any(|tag| tag.starts_with(tail)) {
+                return cut;
+            }
+        }
+        0
+    }
+}
+
 pub fn run_turn(
     turn: &MarbleTurn,
     conversation: &mut Conversation,
@@ -107,6 +208,7 @@ pub fn run_turn(
     let deadline = Instant::now() + options.timeout;
     let mut text = String::new();
     let mut reasoning = String::new();
+    let mut splitter = ThinkSplitter::default();
     let mut usage: Option<Value> = None;
     let cancel = options.cancel.map(|requested| CancelToken {
         requested,
@@ -118,7 +220,11 @@ pub fn run_turn(
     {
         "text" => {
             if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
-                text.push_str(delta);
+                // Providers may inline `<think>` blocks inside ordinary text
+                // deltas; split them out so reasoning never lands in replies.
+                let (visible, thought) = splitter.feed(delta);
+                text.push_str(&visible);
+                reasoning.push_str(&thought);
                 if let Some(turn) = live.as_deref_mut() {
                     turn.progress(&text, &reasoning);
                 }
@@ -147,6 +253,9 @@ pub fn run_turn(
     if let Some(turn) = live {
         turn.finish();
     }
+    let (visible, thought) = splitter.flush();
+    text.push_str(&visible);
+    reasoning.push_str(&thought);
     let cancelled = options
         .cancel
         .map(|requested| requested.load(Ordering::Relaxed))
@@ -168,4 +277,66 @@ pub fn run_turn(
         }),
     );
     Ok(reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThinkSplitter;
+
+    fn split(deltas: &[&str]) -> (String, String) {
+        let mut splitter = ThinkSplitter::default();
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        for delta in deltas {
+            let (t, r) = splitter.feed(delta);
+            text.push_str(&t);
+            reasoning.push_str(&r);
+        }
+        let (t, r) = splitter.flush();
+        text.push_str(&t);
+        reasoning.push_str(&r);
+        (text, reasoning)
+    }
+
+    #[test]
+    fn plain_text_passes_through() {
+        let (text, reasoning) = split(&["Hello ", "world."]);
+        assert_eq!(text, "Hello world.");
+        assert!(reasoning.is_empty());
+    }
+
+    #[test]
+    fn think_block_becomes_reasoning() {
+        let (text, reasoning) = split(&["ok <think>let me reason</think> done"]);
+        assert_eq!(text, "ok  done");
+        assert_eq!(reasoning, "let me reason");
+    }
+
+    #[test]
+    fn thinking_block_becomes_reasoning() {
+        let (text, reasoning) = split(&["a<thinking>plan</thinking>b"]);
+        assert_eq!(text, "ab");
+        assert_eq!(reasoning, "plan");
+    }
+
+    #[test]
+    fn tags_split_across_deltas() {
+        let (text, reasoning) = split(&["hel", "<th", "ink>rea", "soning</thi", "nk>", " lo"]);
+        assert_eq!(text, "hel lo");
+        assert_eq!(reasoning, "reasoning");
+    }
+
+    #[test]
+    fn unterminated_block_is_reasoning_not_text() {
+        let (text, reasoning) = split(&["start <think>never closed"]);
+        assert_eq!(text, "start ");
+        assert_eq!(reasoning, "never closed");
+    }
+
+    #[test]
+    fn lone_angle_brackets_survive() {
+        let (text, reasoning) = split(&["a < b and x < y <think>r</think>"]);
+        assert_eq!(text, "a < b and x < y ");
+        assert_eq!(reasoning, "r");
+    }
 }

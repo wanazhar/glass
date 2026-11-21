@@ -644,6 +644,174 @@ fn server_turn_route_admits_a_durable_turn_and_tracks_it() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A turn cancelled before it replies must never leak its prompt into the
+/// next turn: the engine's newest input is the follow-up, and the settled
+/// reply belongs to the follow-up's own task.
+#[test]
+fn cancelled_turn_does_not_steal_the_next_turns_reply() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    // The turn sleeps before its tool call, leaving a window to cancel it.
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let storage_dir = root.join("sessions");
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let mut python = Command::new("python3");
+    python
+        .arg(&script)
+        .arg("runtime")
+        .arg("--delay-ms")
+        .arg("1500");
+    let conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        events.clone(),
+    )
+    .unwrap();
+    let cancels = CancelRegistry::default();
+    let turn_tx = spawn_single_lane(
+        conversation,
+        Arc::clone(&state),
+        None,
+        LiveStore::in_data_dir(&root),
+        events.clone(),
+        Duration::from_secs(60),
+        cancels.clone(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels,
+    });
+
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"first"}"#);
+    assert_eq!(status, 202, "{body}");
+    let first_task = serde_json::from_str::<Value>(&body).unwrap()["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Wait for the turn to be on the engine, then cancel it mid-run.
+    let mut cancelled = false;
+    let mut last_status: Option<String> = None;
+    for _ in 0..80 {
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        let running = doc["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["id"] == first_task.as_str() && task["status"] == "running");
+        if running {
+            let (status, body) =
+                server.handle("POST", &format!("/api/tasks/{first_task}/cancel"), "");
+            if status == 200 || status == 202 {
+                cancelled = true;
+                break;
+            }
+            last_status = Some(format!("{status} {body}"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        cancelled,
+        "the running turn could not be cancelled: {last_status:?}"
+    );
+
+    // Whatever the cancelled turn still asks for is denied, so it unwinds.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut first_settled = false;
+    while Instant::now() < deadline {
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        if let Some(pending) = doc["approvals"].as_array() {
+            for approval in pending {
+                let id = approval["requestId"].as_str().unwrap();
+                let encoded = id.replace(':', "%3A");
+                server.handle("POST", &format!("/api/approvals/{encoded}/deny"), "");
+            }
+        }
+        let task = doc["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == first_task.as_str())
+            .cloned();
+        if let Some(task) = task
+            && task["status"] != "running"
+        {
+            first_settled = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(first_settled, "cancelled turn never settled");
+
+    // The follow-up is what the engine must see next — not the stale prompt.
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"hello"}"#);
+    assert_eq!(status, 202, "{body}");
+    let hello_task = serde_json::from_str::<Value>(&body).unwrap()["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        if let Some(pending) = doc["approvals"].as_array() {
+            for approval in pending {
+                let id = approval["requestId"].as_str().unwrap();
+                let encoded = id.replace(':', "%3A");
+                server.handle("POST", &format!("/api/approvals/{encoded}/allow"), "");
+            }
+        }
+        let entries = doc["transcript"].as_array().unwrap();
+        let done = entries
+            .iter()
+            .any(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "assistant");
+        if done {
+            let user_for_hello = entries
+                .iter()
+                .find(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "user");
+            assert_eq!(
+                user_for_hello.map(|e| e["text"].clone()),
+                Some(Value::from("hello")),
+                "the engine's newest input was not the follow-up: {body}"
+            );
+            let reply = entries.iter().find(|entry| {
+                entry["taskId"] == hello_task.as_str() && entry["kind"] == "assistant"
+            });
+            assert_eq!(
+                reply.map(|e| e["text"].clone()),
+                Some(Value::from("handled hello")),
+                "the reply was attributed to the wrong turn: {body}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "hello never replied: {body}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn connect(port: u16) -> TcpStream {
     for _ in 0..100 {
         if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) {

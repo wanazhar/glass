@@ -33,6 +33,15 @@ path = "src/lib.rs"
 [package.metadata.docs.rs]
 all-features = true
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/glass-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/glass-{ target }.zip"
+pkg-fmt = "zip"
+
 [features]
 default = ["native-engine"]
 visual-compare = []

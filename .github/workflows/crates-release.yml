@@ -1,6 +1,8 @@
-# This workflow publishes the crates.io package and creates a source-only
-# GitHub Release with generated notes. It does not build or publish native
-# release binaries, checksum bundles, provenance bundles, or npm assets.
+# This workflow publishes the crates.io packages and creates the GitHub
+# Release with generated notes. Official size-optimized binaries, checksums,
+# and cargo-binstall assets are attached by release-binaries.yml after this
+# release record exists. This workflow does not itself build those binaries,
+# provenance bundles, or npm assets.
 name: Release
 
 on:

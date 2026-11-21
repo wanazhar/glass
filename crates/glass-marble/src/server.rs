@@ -3163,6 +3163,26 @@ impl MarbleServer {
     fn cancel_task(&self, task_id: &str) -> Response {
         let queued = {
             let mut guard = self.lock_state();
+            if let Some(index) = guard
+                .control
+                .queue
+                .iter()
+                .position(|entry| entry.id == task_id)
+            {
+                let entry = guard.control.queue.remove(index);
+                if let Some(routine_id) = &entry.routine_id {
+                    guard.routines.note_admitted(routine_id, task_id);
+                }
+                guard.upsert_task(TaskRecord {
+                    id: entry.id,
+                    conversation_id: entry.conversation_id.unwrap_or_default(),
+                    status: "queued".into(),
+                    owner: "agent".into(),
+                    prompt: entry.text,
+                    at: entry.at,
+                    routine_id: entry.routine_id.unwrap_or_default(),
+                });
+            }
             if let Some(task) = guard
                 .tasks
                 .iter_mut()

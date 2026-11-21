@@ -1041,8 +1041,7 @@ impl MarbleServer {
 
     /// `POST /api/prism/marbles/{id}/remove` — take a marble off the roster.
     ///
-    /// Its conversation stays in the document: leaving a roster is a change of
-    /// who works, not permission to delete what was already said.
+    /// Remove its registered chat and recovered history targeting it.
     fn remove_marble(&self, id: &str) -> Response {
         if let Some(pool) = &self.prism {
             pool.shutdown_marble(id);
@@ -1051,34 +1050,46 @@ impl MarbleServer {
             let mut guard = self.lock_state();
             match guard.prism.remove(id) {
                 Ok(conversation) => {
+                    let conversations: std::collections::HashSet<String> = guard
+                        .tasks
+                        .iter()
+                        .filter(|task| task.marble_id == id)
+                        .map(|task| task.conversation_id.clone())
+                        .chain(std::iter::once(conversation.clone()))
+                        .filter(|id| !id.is_empty())
+                        .collect();
+                    let mut deleted = Vec::new();
                     // Its chat, tasks, and the Everyone lines quoting them go
                     // with the marble — "Remove Ada and her chat" means gone,
                     // not just off the roster. A conversation that refuses
                     // (a turn still running) is left readable rather than
                     // torn down mid-turn.
-                    if !conversation.is_empty() && guard.delete_conversation(&conversation).is_err()
-                    {
-                        tracing::info!(
-                            marble = %id,
-                            conversation = %conversation,
-                            "removed a marble whose chat still has a live turn; chat kept"
-                        );
+                    for candidate in conversations {
+                        if guard.delete_conversation(&candidate).is_ok() {
+                            deleted.push(candidate);
+                        } else {
+                            tracing::info!(
+                                marble = %id,
+                                conversation = %candidate,
+                                "removed a marble whose chat could not be deleted; chat kept"
+                            );
+                        }
                     }
                     guard.bump();
-                    Ok(conversation)
+                    Ok((conversation, deleted))
                 }
                 Err(message) => Err(message),
             }
         };
         match removed {
-            Ok(conversation) => {
-                if let Some(store) = &self.store
-                    && !conversation.is_empty()
-                {
-                    let removed =
-                        crate::live::LiveStore::for_store(store).remove_conversation(&conversation);
-                    if removed > 0 {
-                        tracing::info!(removed, conversation = %conversation, "cleared live journal for a removed marble");
+            Ok((conversation, deleted)) => {
+                if let Some(store) = &self.store {
+                    let live = crate::live::LiveStore::for_store(store);
+                    for conversation in deleted {
+                        let removed = live.remove_conversation(&conversation);
+                        if removed > 0 {
+                            tracing::info!(removed, conversation = %conversation, "cleared live journal for a removed marble");
+                        }
                     }
                 }
                 self.save_state();

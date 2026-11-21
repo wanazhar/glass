@@ -3152,6 +3152,100 @@ fn held_first_chat_startup_failures_are_recorded_and_retry_to_the_named_marble()
 }
 
 #[test]
+fn removing_a_marble_clears_all_failed_first_chat_history() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("remove-failed-first-chat");
+    std::fs::write(
+        &fixture.script,
+        "raise RuntimeError('fixture refuses startup')\n",
+    )
+    .unwrap();
+    let ben = fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Ben", "reviewer", "hex", 210, "", "")
+        .unwrap()
+        .id
+        .clone();
+    let mut failed = Vec::new();
+    for prompt in ["first private prompt", "second private prompt"] {
+        assert_eq!(
+            fixture
+                .post(
+                    "/api/turns",
+                    json!({"text":prompt, "marbleId":fixture.marble_id})
+                )
+                .0,
+            202
+        );
+        failed.push(fixture.settled(prompt));
+    }
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"text":"Ben keeps this", "marbleId":ben})
+            )
+            .0,
+        202
+    );
+    let kept = fixture.settled("Ben keeps this");
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .prism
+            .get(&fixture.marble_id)
+            .unwrap()
+            .conversation_id
+            .is_empty()
+    );
+    let store = Arc::new(StateStore::in_data_dir(&fixture.root));
+    store.save(&fixture.server.state()).unwrap();
+    *fixture.state.lock().unwrap() = store.load().unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::clone(&fixture.state),
+        store: Some(Arc::clone(&store)),
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(Arc::clone(&fixture.pool));
+    let path = format!("/api/prism/marbles/{}/remove", fixture.marble_id);
+    assert_eq!(server.handle("POST", &path, "{}").0, 200);
+    for state in [server.state(), store.load().unwrap()] {
+        assert!(state.prism.get(&fixture.marble_id).is_none());
+        for task in &failed {
+            assert!(
+                !state.tasks.iter().any(|item| item.id == task.id),
+                "removed Marble's task survived"
+            );
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|item| item.id == task.conversation_id)
+            );
+            assert!(!state.transcript.iter().any(
+                |item| item.task_id == task.id || item.conversation_id == task.conversation_id
+            ));
+        }
+        assert!(state.tasks.iter().any(|task| task.id == kept.id));
+        assert!(state.transcript.iter().any(|item| item.task_id == kept.id));
+    }
+    assert_eq!(server.handle("POST", &path, "{}").0, 404);
+}
+
+#[test]
 fn cancelling_a_held_first_chat_preserves_its_named_retry_target() {
     if !python3_available() {
         return;

@@ -9,6 +9,11 @@ struct ConversationView: View {
     @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
+    @State private var showingDetails = false
+    @State private var savedRecord: SavedRecord?
+    @State private var actionError: String?
+    @State private var pendingEdit: TimelineEntry?
+    @State private var previewPage: PreviewPage?
     @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
     @Environment(AppModel.self) private var app
 
@@ -85,17 +90,19 @@ struct ConversationView: View {
                     if let workspace = conversation.thread.workspace, !workspace.isEmpty {
                         Section(workspace) {}
                     }
+                    Button("Details", systemImage: "info.circle") { showingDetails = true }
+                        .accessibilityIdentifier("conversation.details")
                     Button("Model…", systemImage: "cpu") { picker = .model }
                         .disabled(!conversation.canWrite)
                         .accessibilityIdentifier("conversation.model")
-                    Button("Execution Profile…", systemImage: "slider.horizontal.3") { picker = .profiles }
+                    Button("Permissions…", systemImage: "slider.horizontal.3") { picker = .profiles }
                         .disabled(!conversation.canWrite)
                         .accessibilityIdentifier("conversation.profile")
                     if !conversation.composer.checklist.isEmpty {
                         Button("Checklist", systemImage: "checklist") { showingChecklist = true }
                     }
                     if conversation.canWrite {
-                        Button("Release Control", systemImage: "hand.raised") { Task { await conversation.composer.releaseControl() } }
+                        Button("Release control", systemImage: "hand.raised") { Task { await conversation.composer.releaseControl() } }
                             .accessibilityIdentifier("conversation.releaseControl")
                     }
                     Button("Close conversation", systemImage: "xmark.circle") {
@@ -109,6 +116,25 @@ struct ConversationView: View {
             }
         }
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
+        .sheet(isPresented: $showingDetails) { DetailsView(conversation: conversation) }
+        .sheet(item: $savedRecord) { SavedActivityView(conversation: conversation, record: $0.id) }
+        .environment(\.openSavedActivity) { savedRecord = SavedRecord(id: $0) }
+        .environment(\.messageAction) { entry, action in Task { await perform(action, on: entry) } }
+        .environment(\.previewHTML) { previewPage = PreviewPage(html: $0) }
+        .sheet(item: $previewPage) { ArtifactView(conversation: conversation, html: Data($0.html.utf8), title: "Preview") }
+        .alert("Couldn’t do that", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
+        .confirmationDialog("Edit in a new branch?", isPresented: Binding(get: { pendingEdit != nil }, set: { if !$0 { pendingEdit = nil } }),
+                            titleVisibility: .visible) {
+            Button("Create branch") {
+                if let entry = pendingEdit { Task { await perform(.editInBranch, on: entry, confirmed: true) } }
+            }
+        } message: {
+            Text("Glass makes a branch before this message and puts it in the message box to edit. Files stay as they are.")
+        }
         .sheet(isPresented: $showingChecklist) { ChecklistSheet(tasks: conversation.composer.checklist) }
         .sheet(isPresented: Bindable(conversation.composer).showingCommands) {
             CommandPaletteView(conversation: conversation) { perform($0) }
@@ -257,4 +283,43 @@ private extension View {
             safeAreaInset(edge: .bottom, content: bar)
         }
     }
+}
+
+extension ConversationView {
+    fileprivate func perform(_ action: MessageAction, on entry: TimelineEntry, confirmed: Bool = false) async {
+        guard let offset = entry.recordOffset, let api = app.api else { return }
+        guard conversation.canWrite else {
+            actionError = "Take control of the conversation first."
+            return
+        }
+        if action == .editInBranch && !confirmed {
+            pendingEdit = entry
+            return
+        }
+        do {
+            let thread = conversation.thread
+            let location = try await api.activityLocation(record: offset, thread: thread.id, sourceRef: thread.sourceRef)
+            let command = action.command(at: location)
+            let result = try await conversation.composer.command(command.name, command.values)
+            let opened = result["body"]?["open_thread"]?.stringValue ?? result["open_thread"]?.stringValue
+            if let opened {
+                await threads.reload()
+                threads.selection = opened
+                if action == .editInBranch, case .user(_, let text) = entry {
+                    Drafts.shared.write(opened, text)
+                }
+            } else if action == .quote {
+                conversation.composer.confirmation = "Quoted. It goes with your next messages."
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+}
+
+private struct SavedRecord: Identifiable { let id: Int }
+
+private struct PreviewPage: Identifiable {
+    let id = UUID()
+    let html: String
 }

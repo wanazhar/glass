@@ -409,6 +409,26 @@ class Control(http.server.BaseHTTPRequestHandler):
                         f.write(json.dumps({"k": "user", "t": q["title"]}) + "\n")
                         f.write(json.dumps({"k": "assistant", "t": "Ready when you are."}) + "\n")
                 return self.reply(thread)
+            if url.path == "/thread/rich":
+                # A saved reply with a formula and a diagram, rendered offline by the app.
+                with open(os.path.join(data_dir("remote"), f"{q['id']}.jsonl"), "a") as f:
+                    f.write(json.dumps({"k": "user", "t": "Show the maths"}) + "\n")
+                    f.write(json.dumps({"k": "assistant", "t": "Area:\n\n$$\\pi r^2$$\n\n```mermaid\ngraph TD\n  A[Pair] --> B[Work]\n```\n"}) + "\n")
+                return self.reply("rich")
+            if url.path == "/workspace/change":
+                # A committed file with an unstaged edit, so Changes and Files have real content.
+                git = ["git", "-C", WS, "-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid"]
+                path = os.path.join(WS, "notes.md")
+                with open(path, "w") as f:
+                    f.write("# Notes\n\nfirst line\n")
+                subprocess.run(git + ["add", "notes.md"], check=True)
+                subprocess.run(git + ["commit", "-q", "-m", "seed"], check=True)
+                with open(path, "a") as f:
+                    f.write("added from the harness\n")
+                return self.reply("changed")
+            if url.path == "/workspace/status":
+                out = subprocess.run(["git", "-C", WS, "status", "--porcelain"], check=True, capture_output=True, text=True)
+                return self.reply(out.stdout)
             if url.path == "/thread/seed":
                 seed(q["id"], int(q.get("pairs", "40")), int(q.get("size", "20000")))
                 return self.reply("seeded")

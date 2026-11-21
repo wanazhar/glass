@@ -4,10 +4,31 @@ import SwiftUI
 extension EnvironmentValues {
     /// Loads an image shared into the thread through `GET /api/attachment`.
     @Entry var attachmentLoader: @Sendable @MainActor (String) async -> Data? = { _ in nil }
+    /// Opens a large saved activity record by its history offset.
+    @Entry var openSavedActivity: @MainActor (Int) -> Void = { _ in }
+    /// Quotes or branches from a saved message.
+    @Entry var messageAction: (@MainActor (TimelineEntry, MessageAction) -> Void)? = nil
+    /// Shows an HTML code block as an isolated interactive page.
+    @Entry var previewHTML: (@MainActor (String) -> Void)? = nil
 }
 
 struct TimelineRow: View {
     var entry: TimelineEntry
+    @Environment(\.openSavedActivity) private var openSavedActivity
+    @Environment(\.messageAction) private var messageAction
+    @State private var readingReasoning = false
+
+    @ViewBuilder
+    private func actions(for kinds: [MessageAction]) -> some View {
+        if let messageAction, entry.recordOffset != nil {
+            Divider()
+            ForEach(kinds, id: \.self) { kind in
+                Button(kind.title, systemImage: kind == .quote ? "text.quote" : "arrow.triangle.branch") {
+                    messageAction(entry, kind)
+                }
+            }
+        }
+    }
 
     var body: some View {
         switch entry {
@@ -19,7 +40,10 @@ struct TimelineRow: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 18, style: .continuous))
-                    .contextMenu { CopyButton(text: text) }
+                    .contextMenu {
+                        CopyButton(text: text)
+                        actions(for: [.editInBranch, .branch, .quote])
+                    }
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("timeline.user")
@@ -30,16 +54,28 @@ struct TimelineRow: View {
                     ProgressView().controlSize(.small)
                 }
             }
-            .contextMenu { CopyButton(text: text) }
+            .contextMenu {
+                CopyButton(text: text)
+                actions(for: [.quote, .branch])
+            }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("timeline.assistant")
         case .reasoning(_, let text):
             DisclosureGroup {
-                Text(text)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(text)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(12)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if text.count > 600 {
+                        Button("Read all") { readingReasoning = true }
+                            .font(.footnote)
+                            .accessibilityIdentifier("timeline.reasoning.readAll")
+                    }
+                }
+                .sheet(isPresented: $readingReasoning) { ReasoningReader(text: text) }
             } label: {
                 Label("Reasoning", systemImage: "text.alignleft")
                     .font(.footnote.weight(.medium))
@@ -78,11 +114,17 @@ struct TimelineRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .accessibilityLabel("Thread attachment")
             }
-        case .largeRecord(_, _, let bytes):
-            Label("Large record · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) kept on the host",
-                  systemImage: "doc.text.magnifyingglass")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        case .largeRecord(_, let offset, let bytes):
+            Button {
+                openSavedActivity(offset)
+            } label: {
+                Label("Large activity · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)). Tap to read.",
+                      systemImage: "doc.text.magnifyingglass")
+                    .font(.footnote)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("timeline.largeRecord")
         }
     }
 }
@@ -198,6 +240,29 @@ private struct SharedImageView: View {
         .task(id: image.attachmentID) {
             guard let id = image.attachmentID else { failed = true; return }
             if let data = await load(id), let decoded = UIImage(data: data) { loaded = decoded } else { failed = true }
+        }
+    }
+}
+
+/// Full-screen reader for a long reasoning block.
+struct ReasoningReader: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                MarkdownView(text: ReasoningText.readable(text))
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .navigationTitle("Reasoning")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) { CopyButton(text: text) }
+            }
+            .accessibilityIdentifier("reasoning.reader")
         }
     }
 }

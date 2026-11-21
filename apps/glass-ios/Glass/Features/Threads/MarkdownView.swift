@@ -9,6 +9,7 @@ struct MarkdownView: View {
         case heading(String, level: Int)
         case bullet(String, marker: String)
         case code(String, language: String)
+        case math(String)
         case rule
     }
 
@@ -28,7 +29,13 @@ struct MarkdownView: View {
                         Text(Self.inline(value)).textSelection(.enabled)
                     }
                 case .code(let code, let language):
-                    CodeBlock(code: code, language: language)
+                    switch language.lowercased() {
+                    case "mermaid": RichBlockView(kind: .mermaid, source: code)
+                    case "math", "latex", "tex", "katex": RichBlockView(kind: .math, source: code)
+                    default: CodeBlock(code: code, language: language)
+                    }
+                case .math(let source):
+                    RichBlockView(kind: .math, source: source)
                 case .rule:
                     Divider()
                 }
@@ -47,6 +54,7 @@ struct MarkdownView: View {
         var paragraph: [String] = []
         var code: [String]?
         var language = ""
+        var math: [String]?
         func flush() {
             let joined = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             if !joined.isEmpty { blocks.append(.prose(joined)) }
@@ -66,6 +74,26 @@ struct MarkdownView: View {
                 continue
             }
             if code != nil { code?.append(line); continue }
+            if math != nil {
+                if trimmed.hasSuffix("$$") {
+                    math?.append(String(trimmed.dropLast(2)))
+                    blocks.append(.math(math!.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)))
+                    math = nil
+                } else {
+                    math?.append(line)
+                }
+                continue
+            }
+            if trimmed.hasPrefix("$$") {
+                flush()
+                let rest = String(trimmed.dropFirst(2))
+                if rest.count >= 2, rest.hasSuffix("$$") {
+                    blocks.append(.math(String(rest.dropLast(2)).trimmingCharacters(in: .whitespaces)))
+                } else {
+                    math = [rest]
+                }
+                continue
+            }
             if trimmed.isEmpty { flush(); continue }
             if let hashes = trimmed.firstIndex(where: { $0 != "#" }), trimmed.hasPrefix("#"),
                trimmed[hashes] == " ", trimmed.distance(from: trimmed.startIndex, to: hashes) <= 6 {
@@ -87,6 +115,7 @@ struct MarkdownView: View {
             }
         }
         if let lines = code { blocks.append(.code(lines.joined(separator: "\n"), language: language)) }
+        if let lines = math { paragraph.append("$$" + lines.joined(separator: "\n")) }
         flush()
         return blocks
     }
@@ -96,6 +125,9 @@ struct CodeBlock: View {
     var code: String
     var language: String
     @State private var copied = false
+    @Environment(\.previewHTML) private var previewHTML
+
+    private var isHTML: Bool { ["html", "htm", "xhtml"].contains(language.lowercased()) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -104,6 +136,13 @@ struct CodeBlock: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if isHTML, let previewHTML {
+                    Button("Preview", systemImage: "play.rectangle") { previewHTML(code) }
+                        .font(.caption)
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel("Preview page")
+                        .accessibilityIdentifier("code.preview")
+                }
                 Button(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
                     UIPasteboard.general.string = code
                     copied = true

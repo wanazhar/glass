@@ -525,5 +525,63 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitUntil(5) { (theme.value as? String)?.contains("Dark") == true || theme.label.contains("Dark") })
         attach(app, "e2e-settings-dark")
     }
-}
 
+    @MainActor
+    private func openDetails(_ app: XCUIApplication) {
+        app.buttons["conversation.menu"].firstMatch.tap()
+        app.buttons["conversation.details"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["details.done"].firstMatch.waitForExistence(timeout: 10), "Details opens")
+    }
+
+    @MainActor
+    func testDetailsShowChangesFilesExportAndRichReplies() throws {
+        let thread = try call("thread/new?title=Details", method: "POST")
+        _ = try call("thread/rich?id=\(thread)", method: "POST")
+        _ = try call("workspace/change", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists })
+
+        let math = app.descendants(matching: .any)["timeline.rich.math"].firstMatch
+        XCTAssertTrue(math.waitForExistence(timeout: 20), "the formula renders offline")
+        XCTAssertTrue(app.descendants(matching: .any)["timeline.rich.mermaid"].firstMatch.waitForExistence(timeout: 20),
+                      "the diagram renders offline")
+        attach(app, "e2e-rich-reply")
+
+        openDetails(app)
+        attach(app, "e2e-details")
+        app.buttons["details.changes"].firstMatch.tap()
+        let file = app.buttons["changes.file"].firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 20), "Changes lists the edited file")
+        file.tap()
+        XCTAssertTrue(text(app, containing: "added from the harness").waitForExistence(timeout: 10), "the diff shows the new line")
+        attach(app, "e2e-changes-diff")
+        app.buttons["changes.stageFile"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(20) { (try? self.call("workspace/status", method: "POST"))?.hasPrefix("M ") == true },
+                      "Stage runs git on the host")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["details.files"].firstMatch.tap()
+        let notes = app.buttons.containing(NSPredicate(format: "label CONTAINS 'notes.md'")).firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 20), "Files lists the workspace")
+        notes.tap()
+        XCTAssertTrue(text(app, containing: "first line").waitForExistence(timeout: 15), "the file opens")
+        attach(app, "e2e-file")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["details.export"].firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["details.share"].firstMatch.waitForExistence(timeout: 30), "export downloads Markdown")
+        app.buttons["details.done"].firstMatch.tap()
+
+        let reply = app.descendants(matching: .any)["timeline.assistant"].firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        reply.press(forDuration: 1.2)
+        let quote = app.buttons["Quote"].firstMatch
+        XCTAssertTrue(quote.waitForExistence(timeout: 10), "saved replies offer Quote")
+        quote.tap()
+        XCTAssertTrue(text(app, containing: "Quoted").waitForExistence(timeout: 20), "the host attaches the quote")
+        attach(app, "e2e-quote")
+    }
+}

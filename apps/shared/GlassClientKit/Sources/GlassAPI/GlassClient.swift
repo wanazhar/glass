@@ -6,7 +6,7 @@ import GlassTransport
 /// One paired gateway. A 403 clears the stored credential so the app can ask to re-pair.
 public actor GlassClient {
     public nonisolated let endpoint: GlassEndpoint
-    private let transport: any GlassHTTPTransport
+    let transport: any GlassHTTPTransport
     private let store: any CapabilityStore
     private var secretCapability: String?
 
@@ -24,6 +24,11 @@ public actor GlassClient {
     }
 
     public func data(for request: GlassRequest) async throws(GlassError) -> Data {
+        try await response(for: request).data
+    }
+
+    /// Sends a request and returns the body with its `Content-Type`.
+    public func response(for request: GlassRequest) async throws(GlassError) -> FileContent {
         let credential: GlassCredential
         do { credential = try store.credential(for: endpoint) } catch {
             throw .unauthorized("Couldn’t read this host’s pairing from the Keychain")
@@ -34,7 +39,8 @@ public actor GlassClient {
         )
         do {
             let (data, response) = try await transport.send(urlRequest)
-            return try GlassResponse.validate(data, response)
+            let body = try GlassResponse.validate(data, response)
+            return FileContent(data: body, contentType: response.value(forHTTPHeaderField: "Content-Type") ?? "")
         } catch {
             let mapped = GlassError.from(error, endpoint: endpoint)
             if mapped.isUnauthorized { forgetCredentials() }
@@ -220,7 +226,7 @@ public actor GlassClient {
         return try await decode(SettingsSnapshot.self, from: request)
     }
 
-    private func credential() throws(GlassError) -> GlassCredential {
+    func credential() throws(GlassError) -> GlassCredential {
         let credential: GlassCredential
         do { credential = try store.credential(for: endpoint) } catch {
             throw .unauthorized("Couldn’t read this host’s pairing from the Keychain")
@@ -244,19 +250,19 @@ public actor GlassClient {
         return out
     }
 
-    private static func threadQuery(_ id: String, _ sourceRef: String?) -> [URLQueryItem] {
+    static func threadQuery(_ id: String, _ sourceRef: String?) -> [URLQueryItem] {
         var items = [URLQueryItem(name: "id", value: id)]
         if let sourceRef, !sourceRef.isEmpty { items.append(URLQueryItem(name: "sourceRef", value: sourceRef)) }
         return items
     }
 
-    private static func threadBody(_ id: String, _ sourceRef: String?) -> [String: JSONValue] {
+    static func threadBody(_ id: String, _ sourceRef: String?) -> [String: JSONValue] {
         var body: [String: JSONValue] = ["id": .string(id)]
         if let sourceRef, !sourceRef.isEmpty { body["sourceRef"] = .string(sourceRef) }
         return body
     }
 
-    private static func post(_ path: String, _ body: [String: JSONValue]) throws(GlassError) -> GlassRequest {
+    static func post(_ path: String, _ body: [String: JSONValue]) throws(GlassError) -> GlassRequest {
         try GlassRequest.post(path, json: JSONValue.object(body))
     }
 

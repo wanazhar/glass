@@ -208,15 +208,16 @@ impl MemoryState {
         self.facts.len() != before
     }
 
-    /// Forget every fact whose text contains `query`.
-    pub fn forget_matching(&mut self, query: &str) -> usize {
+    /// Forget matching facts belonging to one owner.
+    pub fn forget_matching(&mut self, query: &str, owner: &str) -> usize {
         let needle = normalize(query).to_ascii_lowercase();
         if needle.is_empty() {
             return 0;
         }
         let before = self.facts.len();
-        self.facts
-            .retain(|fact| !normalize(&fact.text).to_ascii_lowercase().contains(&needle));
+        self.facts.retain(|fact| {
+            fact.owner != owner || !normalize(&fact.text).to_ascii_lowercase().contains(&needle)
+        });
         before - self.facts.len()
     }
 
@@ -683,7 +684,10 @@ mod tests {
         memory
             .remember("the office wifi is glassnet", "fact", "c1", true, "")
             .unwrap();
-        assert_eq!(memory.forget_matching("wifi"), 1);
+        assert_eq!(memory.forget_matching("", ""), 0);
+        assert_eq!(memory.forget_matching("   ", ""), 0);
+        assert_eq!(memory.forget_matching("wifi", "someone-else"), 0);
+        assert_eq!(memory.forget_matching("wifi", ""), 1);
         assert_eq!(memory.facts.len(), 1);
         assert!(memory.forget(&fact.id));
         assert!(memory.facts.is_empty());

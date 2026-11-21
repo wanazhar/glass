@@ -1705,6 +1705,17 @@ impl MarbleServer {
         self.remember_text(text, kind, "", true, parsed.get("owner").map(|_| owner))
     }
 
+    fn memory_owner(&self, conversation_id: &str, owner: Option<&str>) -> String {
+        if let Some(owner) = owner {
+            return owner.to_string();
+        }
+        self.lock_state()
+            .prism
+            .owner_of(conversation_id)
+            .map(|marble| marble.id.clone())
+            .unwrap_or_else(|| "marble".to_string())
+    }
+
     fn remember_text(
         &self,
         text: &str,
@@ -1715,16 +1726,7 @@ impl MarbleServer {
     ) -> Response {
         // The owner of a remembered statement is the marble whose chat taught
         // it, unless the caller named an owner explicitly.
-        let owner = if owner.is_none() {
-            let guard = self.lock_state();
-            guard
-                .prism
-                .owner_of(conversation_id)
-                .map(|marble| marble.id.clone())
-                .unwrap_or_else(|| "marble".to_string())
-        } else {
-            owner.unwrap_or_default().to_string()
-        };
+        let owner = self.memory_owner(conversation_id, owner);
         let outcome = {
             let mut guard = self.lock_state();
             let outcome = guard
@@ -1828,11 +1830,12 @@ impl MarbleServer {
         )
     }
 
-    /// Explicit "forget: …" command: drop every fact matching the text.
-    fn forget_text(&self, query: &str) -> Response {
+    /// Explicit "forget: …" command: drop matching facts owned by this chat.
+    fn forget_text(&self, query: &str, conversation_id: &str, owner: Option<&str>) -> Response {
+        let owner = self.memory_owner(conversation_id, owner);
         let forgotten = {
             let mut guard = self.lock_state();
-            let forgotten = guard.memory.forget_matching(query);
+            let forgotten = guard.memory.forget_matching(query, &owner);
             if forgotten > 0 {
                 guard.bump();
             }
@@ -2814,7 +2817,13 @@ impl MarbleServer {
                     marble.as_ref().map(|marble| marble.id.as_str()),
                 );
             }
-            Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),
+            Some(MemoryCommand::Forget { text: query }) => {
+                return self.forget_text(
+                    &query,
+                    conversation_id.as_deref().unwrap_or_default(),
+                    marble.as_ref().map(|marble| marble.id.as_str()),
+                );
+            }
             None => {}
         }
         self.submit_text_for(conversation_id, text, marble.map(|marble| marble.id))

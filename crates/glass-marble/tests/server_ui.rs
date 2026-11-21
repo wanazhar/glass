@@ -1212,6 +1212,63 @@ fn explicit_memory_commands_are_remembered_without_a_model_turn() {
 }
 
 #[test]
+fn chat_forget_commands_only_remove_the_target_owners_private_memories() {
+    for target in ["named-id", "named-chat", "default-new", "default-chat"] {
+        let mut state = ProductState::default();
+        let ada = state
+            .prism
+            .add("Ada", "writer", "star", 35, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let ben = state
+            .prism
+            .add("Ben", "reviewer", "hex", 210, "", "")
+            .unwrap()
+            .id
+            .clone();
+        state.prism.find_mut(&ada).unwrap().conversation_id = "ada-chat".into();
+        for owner in [&ada, &ben, "marble", ""] {
+            state
+                .memory
+                .remember("office wifi password", "fact", "", true, owner)
+                .unwrap();
+        }
+        let server = free_server(state);
+        let body = match target {
+            "named-id" => json!({"text":"forget: WIFI", "marbleId":ada}),
+            "named-chat" => json!({"text":"forget: WIFI", "conversationId":"ada-chat"}),
+            "default-chat" => json!({"text":"forget: WIFI", "conversationId":"default-chat"}),
+            _ => json!({"text":"forget: WIFI"}),
+        };
+        let (status, body) = server.handle("POST", "/api/turns", &body.to_string());
+        assert_eq!(status, 200, "{body}");
+        let result: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(result["forgotten"], 1, "{target}: {result}");
+        let state = server.state();
+        let owner = if target.starts_with("named") {
+            &ada
+        } else {
+            "marble"
+        };
+        assert!(!state.memory.facts.iter().any(|fact| fact.owner == owner));
+        assert_eq!(state.memory.facts.len(), 3);
+        assert!(state.memory.facts.iter().any(|fact| fact.owner.is_empty()));
+        assert_eq!(
+            server
+                .handle(
+                    "POST",
+                    "/api/turns",
+                    r#"{"text":"forget: wifi","marbleId":"missing"}"#
+                )
+                .0,
+            404
+        );
+        assert_eq!(server.state().memory.facts.len(), 3);
+    }
+}
+
+#[test]
 fn memory_suggestions_need_an_explicit_decision() {
     let mut state = ProductState::default();
     let suggestion = state

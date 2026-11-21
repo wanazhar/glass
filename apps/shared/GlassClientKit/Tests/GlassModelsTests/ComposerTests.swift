@@ -9,8 +9,9 @@ import Testing
     }
 
     @Test func everySendMessageEncodesLikeTheWebUI() throws {
-        #expect(try encoded(.prompt(text: "hi", requestID: "r1")) == ["t": "prompt", "text": "hi", "request_id": "r1"])
-        #expect(try encoded(.steer(text: "go left", requestID: "r2")) == ["t": "steer", "text": "go left", "request_id": "r2"])
+        let client = ClientRender.ios.json
+        #expect(try encoded(.prompt(text: "hi", requestID: "r1")) == ["t": "prompt", "text": "hi", "request_id": "r1", "client": client])
+        #expect(try encoded(.steer(text: "go left", requestID: "r2")) == ["t": "steer", "text": "go left", "request_id": "r2", "client": client])
         #expect(try encoded(.cancel) == ["t": "cancel"])
         #expect(try encoded(.cancelCommand(requestID: "c1")) == ["t": "cancel_command", "request_id": "c1"])
         #expect(try encoded(.claimControl) == ["t": "control", "action": "claim"])

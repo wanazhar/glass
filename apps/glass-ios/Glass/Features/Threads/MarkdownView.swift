@@ -1,3 +1,4 @@
+import GlassModels
 import SwiftUI
 
 /// Renders assistant Markdown: prose via `AttributedString`, fenced code as scrollable monospaced blocks.
@@ -30,6 +31,7 @@ struct MarkdownView: View {
                     }
                 case .code(let code, let language):
                     switch language.lowercased() {
+                    case ReplyComponent.fence: ComponentBlock(source: code)
                     case "mermaid": RichBlockView(kind: .mermaid, source: code)
                     case "math", "latex", "tex", "katex": RichBlockView(kind: .math, source: code)
                     default: CodeBlock(code: code, language: language)

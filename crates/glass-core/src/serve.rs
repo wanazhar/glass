@@ -395,7 +395,10 @@ fn accept_followup(
     if seen.contains_key(&id) || queue.iter().any(|v| v["request_id"] == id) {
         return Ok((json!({"request_id":id}), false));
     }
-    let value = json!({"t":"prompt","text":text,"request_id":id});
+    let mut value = json!({"t":"prompt","text":text,"request_id":id});
+    if let Some(client) = message.get("client") {
+        value["client"] = client.clone();
+    }
     let mut next = queue.clone();
     next.push_back(value.clone());
     save_followups(path, &next)?;
@@ -1360,6 +1363,7 @@ pub fn serve(
                     .with_image_input(cfg.image_input)
                     .prime_extensions()
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
+                    .with_client_render(crate::components::ClientRender::from_message(&message).as_ref())
                     .with_live(cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&turn_factory))
                     .with_limits(cfg.max_tokens,cfg.reasoning_budget,usize::MAX)
@@ -1855,7 +1859,7 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                         // before any uncertain prompt is resent.
                         send(
                             &mut stream,
-                            json!({"t":"prompt", "text":pending.text, "request_id":pending.id}),
+                            json!({"t":"prompt", "text":pending.text, "request_id":pending.id, "client":crate::components::ClientRender::tui()}),
                         );
                     }
                     shown_prompt = render(&mut out, value, shown_prompt)?;
@@ -1899,6 +1903,7 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                                     "t": "prompt",
                                     "text": pending.text,
                                     "request_id": pending.id,
+                                    "client": crate::components::ClientRender::tui(),
                                 }),
                             );
                             shown_prompt = false;
@@ -2507,6 +2512,22 @@ mod followup_regression {
         reserved["inbox_recorded"] = json!(true);
         assert!(accept_followup(&path, &mut queue, &reserved, &seen).is_err());
         assert_eq!(queue.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn queued_followups_keep_the_sending_clients_capabilities() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-queue-client-{}-{}.json",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let mut queue = VecDeque::new();
+        let client = json!({"name":"ios","schema":1,"components":["table"]});
+        let message = json!({"t":"prompt","text":"Compare","request_id":"c","client":client});
+        accept_followup(&path, &mut queue, &message, &std::collections::HashMap::new()).unwrap();
+        assert_eq!(queue[0]["client"], client);
+        let render = crate::components::ClientRender::from_message(&queue[0]).unwrap();
+        assert_eq!(render.components, ["table"]);
         std::fs::remove_file(path).unwrap();
     }
     #[test]

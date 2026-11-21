@@ -1544,6 +1544,7 @@ dependencies = [
  "libc",
  "ratatui",
  "ratatui-core",
+ "serde_json",
  "unicode-width 0.2.0",
  "zeroize",
 ]

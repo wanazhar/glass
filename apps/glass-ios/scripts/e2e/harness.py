@@ -7,7 +7,7 @@ Starts a real glass-core gateway in a disposable workspace in two modes:
   * local: `connect --local` on loopback.
 Then serves a control API the UI tests call:
   GET /link/owner | /link/secret | /link/local, POST /revoke (restart = new token),
-  POST /thread/new | /thread/send | /thread/seed | /thread/wait, POST /net/drop | /net/restore,
+  POST /thread/new | /thread/send | /thread/seed | /thread/components | /thread/wait, POST /net/drop | /net/restore,
   POST /control/claim | /control/release (a second session client, like another device taking control),
   GET /thread/context.
 A scripted OpenAI-compatible provider answers every turn so threads stream real events.
@@ -415,6 +415,31 @@ class Control(http.server.BaseHTTPRequestHandler):
                     f.write(json.dumps({"k": "user", "t": "Show the maths"}) + "\n")
                     f.write(json.dumps({"k": "assistant", "t": "Area:\n\n$$\\pi r^2$$\n\n```mermaid\ngraph TD\n  A[Pair] --> B[Work]\n```\n"}) + "\n")
                 return self.reply("rich")
+            if url.path == "/thread/count":
+                return self.reply(str(gateway.assistant_count(q["id"])))
+            if url.path == "/thread/components":
+                # A saved reply with reply components: drawn natively, or shown as their fallback.
+                blocks = [
+                    {"type": "table", "v": 1, "fallback": "| Service | Status |\n| --- | --- |\n| api | up |\n| web | down |",
+                     "data": {"title": "Services", "columns": [{"key": "service", "label": "Service"}, {"key": "status", "label": "Status"}],
+                              "rows": [{"service": "api", "status": "up"}, {"service": "web", "status": "down"}], "filter": "status"}},
+                    {"type": "chart", "v": 1, "fallback": "Requests: Mon 120, Tue 180, Wed 150.",
+                     "data": {"title": "Requests", "kind": "bar", "series": [{"name": "Requests", "points": [
+                         {"x": "Mon", "y": 120}, {"x": "Tue", "y": 180}, {"x": "Wed", "y": 150}]}]}},
+                    {"type": "form", "v": 1, "fallback": "1. Which host?\n2. Notes",
+                     "data": {"title": "Deploy", "fields": [{"id": "host", "label": "Host", "kind": "select", "options": ["staging", "production"]},
+                                                           {"id": "notes", "label": "Notes", "kind": "text"}], "submit": "Add Answers"}},
+                    {"type": "writing", "v": 1, "fallback": "**Subject:** Deploy done\n\nThe deploy finished.",
+                     "data": {"kind": "email", "to": "team@example.invalid", "subject": "Deploy done", "body": "The deploy finished."}},
+                    {"type": "weather", "v": 1, "example": True, "fallback": "_Example data, not live._\n\nLondon: 12°C, cloudy.",
+                     "data": {"location": "London", "unit": "C", "current": {"temp": 12, "condition": "Cloudy", "icon": "cloud.fill"}}},
+                    {"type": "hologram", "v": 1, "fallback": "Fallback for a type this app does not know.", "data": {}},
+                ]
+                text = "Status:\n\n" + "\n\n".join("```glass-ui\n" + json.dumps(b) + "\n```" for b in blocks) + "\n"
+                with open(os.path.join(data_dir("remote"), f"{q['id']}.jsonl"), "a") as f:
+                    f.write(json.dumps({"k": "user", "t": "Show the services"}) + "\n")
+                    f.write(json.dumps({"k": "assistant", "t": text}) + "\n")
+                return self.reply("components")
             if url.path == "/workspace/change":
                 # A committed file with an unstaged edit, so Changes and Files have real content.
                 git = ["git", "-C", WS, "-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid"]

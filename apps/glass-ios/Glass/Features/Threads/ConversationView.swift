@@ -121,6 +121,11 @@ struct ConversationView: View {
         .environment(\.openSavedActivity) { savedRecord = SavedRecord(id: $0) }
         .environment(\.messageAction) { entry, action in Task { await perform(action, on: entry) } }
         .environment(\.previewHTML) { previewPage = PreviewPage(html: $0) }
+        .environment(\.composeText) { text in
+            let current = conversation.composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            conversation.composer.text = current.isEmpty ? text : current + "\n\n" + text
+            UIAccessibility.post(notification: .announcement, argument: "Added to your message")
+        }
         .sheet(item: $previewPage) { ArtifactView(conversation: conversation, html: Data($0.html.utf8), title: "Preview") }
         .alert("Couldn’t do that", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
             Button("OK", role: .cancel) {}

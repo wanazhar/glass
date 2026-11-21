@@ -28,7 +28,8 @@ import Testing
         #expect(request.url?.path == "/api/send")
         #expect(request.value(forHTTPHeaderField: "Origin") == "https://mac.tail1.ts.net")
         #expect(try body(request) == ["id": "a1", "sourceRef": "/d/a1.jsonl",
-                                      "message": .object(["t": "prompt", "text": "hello", "request_id": "r1"])])
+                                      "message": .object(["t": "prompt", "text": "hello", "request_id": "r1",
+                                                                       "client": ClientRender.ios.json])])
     }
 
     @Test func readOnlyRejectionSurfacesTheGatewayMessage() async throws {

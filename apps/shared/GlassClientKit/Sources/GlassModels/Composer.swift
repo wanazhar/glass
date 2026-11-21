@@ -15,8 +15,10 @@ public enum SendMessage: Sendable, Hashable {
 
     public var json: JSONValue {
         switch self {
-        case .prompt(let text, let id): .object(["t": "prompt", "text": .string(text), "request_id": .string(id)])
-        case .steer(let text, let id): .object(["t": "steer", "text": .string(text), "request_id": .string(id)])
+        case .prompt(let text, let id):
+            .object(["t": "prompt", "text": .string(text), "request_id": .string(id), "client": ClientRender.ios.json])
+        case .steer(let text, let id):
+            .object(["t": "steer", "text": .string(text), "request_id": .string(id), "client": ClientRender.ios.json])
         case .cancel: .object(["t": "cancel"])
         case .cancelCommand(let id): .object(["t": "cancel_command", "request_id": .string(id)])
         case .claimControl: .object(["t": "control", "action": "claim"])

@@ -614,6 +614,45 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
+    func testReplyComponentsDrawNativelyAndUnknownTypesShowTheirFallback() throws {
+        let thread = try call("thread/new?title=Components", method: "POST")
+        _ = try call("thread/components?id=\(thread)", method: "POST")
+        let saved = try call("thread/count?id=\(thread)", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["component.table"].firstMatch.waitForExistence(timeout: 20), "the table draws natively")
+        for _ in 0..<6 where !any["component.table"].firstMatch.isHittable { app.swipeDown() }
+        XCTAssertTrue(text(app, containing: "Services").exists)
+        XCTAssertFalse(text(app, containing: "\"type\"").exists, "no component JSON is shown")
+        attach(app, "e2e-components-table")
+        for kind in ["chart", "form", "writing", "weather"] {
+            let view = any["component.\(kind)"].firstMatch
+            for _ in 0..<6 where !view.isHittable { app.swipeUp() }
+            XCTAssertTrue(view.waitForExistence(timeout: 10), "the \(kind) component draws natively")
+            attach(app, "e2e-components-\(kind)")
+        }
+        XCTAssertTrue(text(app, containing: "Example data").exists, "made-up data is labelled")
+        for _ in 0..<4 { app.swipeUp() }
+        XCTAssertTrue(text(app, containing: "Fallback for a type this app does not know").waitForExistence(timeout: 10),
+                      "an unknown type shows its fallback")
+
+        for _ in 0..<6 where !any["component.form"].firstMatch.isHittable { app.swipeDown() }
+        let notes = app.textFields["Notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 10))
+        notes.tap()
+        notes.typeText("Ship it")
+        app.buttons["Add Answers"].firstMatch.tap()
+        let composer = app.textViews["composer.field"]
+        XCTAssertTrue(waitUntil(10) { (composer.value as? String)?.contains("Notes: Ship it") == true },
+                      "form answers go into the message box")
+        XCTAssertEqual(try call("thread/count?id=\(thread)", method: "POST"), saved, "nothing is sent until the owner sends it")
+        attach(app, "e2e-components-form-answer")
+    }
+
+    @MainActor
     func testDesktopTabShowsTheHostsDesktopChoices() throws {
         let app = try pairedApp()
         app.tabBars.buttons["Desktop"].tap()

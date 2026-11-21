@@ -8,6 +8,10 @@ The [Connect guide](../products/glass-core/docs/connect.md) covers unified conve
 
 The [development runtime guide](development-runtime.md) explains process completion without model polling, ranked Glass tool discovery, resumed-session catalog refresh, and shared conversation resumption across Glass, GC, and Connect WebUI. `glass resume` continues chats in the Glass interface.
 
+[Reply components](../products/glass-core/docs/reply-components.md) describe
+the shared `glass-ui` schema, per-turn client render capabilities, and the
+Markdown fallback that keeps component replies readable in the terminal.
+
 The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)
 describes the shared desktop picker and quick, reusable, status, and stop commands.
 

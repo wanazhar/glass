@@ -24,6 +24,7 @@ mod cli;
 mod command_menus;
 mod compact;
 mod completions;
+mod components;
 mod concurrency;
 mod config;
 mod connect;

@@ -1,87 +1,83 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const vm = require('node:vm');
+const path = require('node:path');
 const test = require('node:test');
+const root = path.join(__dirname, '../../src/static');
+const L = require(path.join(root, 'logic.js'));
+const people = [{ id: 'marble', name: 'Marble', isDefault: true }, { id: 'a', name: 'Ada' }, { id: 'b', name: 'Ben' }];
 
-const html = fs.readFileSync(require('node:path').join(__dirname, '../../src/static/index.html'), 'utf8');
-function transcript(api) {
-  const app = { conversationId: 'first', transcript: [], transcriptCursor: 0, transcriptRequest: 0, state: { conversations: [{ id: 'first' }] } };
-  const context = vm.createContext({ app, api, activeConversation: () => app.conversationId });
-  vm.runInContext(html.slice(html.indexOf('async function syncTranscript()'), html.indexOf('function resetLive(')), context);
-  return { app, sync: () => context.syncTranscript() };
-}
-
-test('old transcript responses cannot overwrite the newly selected chat', async () => {
-  const pending = [];
-  const { app, sync } = transcript(() => new Promise((resolve) => pending.push(resolve)));
-  const first = sync();
-  app.conversationId = 'second';
-  const second = sync();
-  pending[1]({ entries: [{ text: 'new', at: 2 }], cursor: 2 });
-  await second;
-  pending[0]({ entries: [{ text: 'old', at: 1 }], cursor: 1 });
-  await first;
-  assert.equal(app.transcript.length, 1);
-  assert.equal(app.transcript[0].text, 'new');
-  assert.equal(app.transcriptCursor, 2);
+test('who answers follows whole-name, case-insensitive host rules', () => {
+  assert.deepEqual(L.whoAnswers('hello', people).map(p => p.id), ['marble']);
+  assert.deepEqual(L.whoAnswers('@ADA, check this', people).map(p => p.id), ['a']);
+  assert.deepEqual(L.whoAnswers('@ada and @ben', people).map(p => p.id), ['a', 'b']);
+  assert.deepEqual(L.whoAnswers('@everyone', people).map(p => p.id), ['a', 'b']);
+  assert.deepEqual(L.whoAnswers('@everyone @ada', people).map(p => p.id), ['a', 'b']);
+  for (const text of ['@adaptive', '@ben-tools', '@ben_2', '@bené', '@unknown']) assert.deepEqual(L.whoAnswers(text, people).map(p => p.id), ['marble']);
+  assert.deepEqual(L.whoAnswers('@everyone', [people[0]]), []);
+  assert.deepEqual(L.whoAnswers('', []), []);
+  assert.equal(L.answerHint('', people), 'Marble will answer.');
+  assert.equal(L.answerHint('@everyone', []), 'No Marbles to answer yet.');
 });
 
-test('missing chats are explained and removed, other errors stay visible', async () => {
-  let error = Object.assign(new Error('not_found'), { status: 404 });
-  const { app, sync } = transcript(async () => { throw error; });
-  await sync();
-  assert.equal(app.transcriptError, 'This chat no longer exists');
-  assert.equal(app.state.conversations.length, 0);
-  error = new Error('network failed');
-  await sync();
-  assert.equal(app.transcriptError, 'Could not load this chat: network failed');
+test('status keeps stream, request failure and engine health independent', () => {
+  let state = { stream: false, requestFailed: false, engine: false };
+  assert.equal(L.statusLabel(state), 'Reconnecting…');
+  state = L.reduceStatus(state, { type: 'open' });
+  state = L.reduceStatus(state, { type: 'request', ok: false });
+  assert.equal(L.statusLabel(state), 'Connected');
+  state = L.reduceStatus(state, { type: 'close' });
+  assert.equal(L.statusLabel(state), "Can't reach the host");
+  state = L.reduceStatus(state, { type: 'request', ok: true });
+  assert.equal(L.statusLabel(state), 'Reconnecting…');
+  state = L.reduceStatus(state, { type: 'health', health: { runtime: { health: 'failed' } } });
+  state = L.reduceStatus(state, { type: 'open' });
+  assert.equal(L.statusLabel(state), 'Engine stopped');
+  state = L.reduceStatus(state, { type: 'health', health: { runtime: { health: 'ok' } } });
+  assert.equal(L.statusLabel(state), 'Connected');
+  assert.deepEqual(L.reduceStatus(state, { type: 'operation_error' }), state);
 });
 
-test('empty transcripts clear a previous load error', async () => {
-  const { app, sync } = transcript(async () => ({ entries: [], cursor: 0 }));
-  app.transcriptError = 'old error';
-  await sync();
-  assert.equal(app.transcriptError, null);
-  assert.equal(app.transcript.length, 0);
+test('routes decode ids and preserve info navigation', () => {
+  assert.deepEqual(L.route('#/m/ada%3A1/info'), { screen: 'info', id: 'ada:1' });
+  assert.deepEqual(L.route('#/m/marble'), { screen: 'chat', id: 'marble' });
+  assert.deepEqual(L.route('#/m/%zz'), { screen: 'missing' });
+  for (const screen of ['everyone', 'marbles', 'activity', 'settings', 'new']) assert.equal(L.route('#/' + screen).screen, screen);
+  assert.equal(L.route('').screen, 'everyone');
 });
 
-test('poll failures cannot mark an open stream offline', () => {
-  const context = vm.createContext({ app: { streamConnected: true, lastRequestFailed: true } });
-  vm.runInContext(html.slice(html.indexOf('function isOffline()'), html.indexOf('function renderSidebar()')), context);
-  assert.equal(context.isOffline(), false);
-  context.app.streamConnected = false;
-  assert.equal(context.isOffline(), true);
-  context.app.lastRequestFailed = false;
-  assert.equal(context.isOffline(), false);
+test('markdown supports paragraphs, lists, inline and unclosed code blocks', () => {
+  assert.deepEqual(L.markdown(''), []);
+  const blocks = L.markdown('Hello **Ada** and `code`.\n\n- one\n- two\n\n1. ordered\n\n```js\nconst x = 1;');
+  assert.deepEqual(blocks.map(b => b.tag), ['p', 'ul', 'ol', 'pre']);
+  assert.equal(blocks[0].content[1].tag, 'strong');
+  assert.equal(blocks[1].items.length, 2);
+  assert.equal(blocks[3].text, 'const x = 1;');
 });
 
-test('operation errors do not use disconnected styling', () => {
-  assert.ok(!html.includes('setStatus(error.message, "offline")'));
-  assert.ok(!html.includes('setStatus(data.message || "error", "offline")'));
+test('model HTML, URLs and attributes remain inert text', () => {
+  const attack = '<img src=x onerror="alert(1)"><script>alert(2)</script> [click](javascript:alert(3))';
+  const blocks = L.markdown(attack);
+  assert.deepEqual(blocks, [{ tag: 'p', content: [{ tag: 'text', text: attack }] }]);
+  assert.equal(L.markdown('```\n' + attack + '\n```')[0].text, attack);
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write\(/.test(app));
 });
 
-test('new chat clears transcript errors and invalidates pending responses', async () => {
-  let reject;
-  const { app, sync } = transcript(() => new Promise((_, fail) => { reject = fail; }));
-  app.transcriptError = 'Could not load this chat';
-  const pending = sync();
-  const request = app.transcriptRequest;
-  let click;
-  let rendered = false;
-  const context = vm.createContext({
-    app,
-    document: { getElementById: () => ({ addEventListener: (_, handler) => { click = handler; } }) },
-    resetLive: () => {}, render: () => { rendered = true; }, el: { composer: { focus: () => {} } },
-  });
-  const start = html.indexOf('document.getElementById("new-chat").addEventListener');
-  vm.runInContext(html.slice(start, html.indexOf('el.sidebarToggle.addEventListener', start)), context);
-  click();
-  assert.equal(app.conversationId, null);
-  assert.equal(app.transcriptError, null);
-  assert.ok(app.transcriptRequest > request);
-  assert.equal(rendered, true);
-  assert.equal(app.transcript.length, 0);
-  reject(new Error('late failure'));
-  await pending;
-  assert.equal(app.transcriptError, null);
+test('Marble status attributes attention and work to the right chat', () => {
+  const person = { id: 'a', conversationId: 'chat-a', state: 'idle' };
+  const tasks = [{ conversationId: 'chat-a', status: 'running', prompt: 'Check tests' }];
+  assert.equal(L.marbleStatus(person, [], []), 'Idle');
+  assert.equal(L.marbleStatus(person, tasks, []), 'Working on Check tests');
+  assert.equal(L.marbleStatus(person, tasks, [{ owner: 'a' }]), 'Needs you');
+  assert.equal(L.marbleStatus(person, tasks, [{ owner: 'b' }]), 'Working on Check tests');
+  assert.equal(L.marbleStatus({ ...person, lastError: 'connection closed' }, [], []), "Couldn't finish: connection closed");
+});
+
+test('visible interface copy does not expose internal vocabulary', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8').replace(/<[^>]*>/g, ' ');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const visible = [...app.matchAll(/\bt\((['"])((?:\\.|(?!\1).)*)\1\)/g)].map(m => m[2]);
+  assert.ok(visible.length > 100, 'the copy marker must cover the UI');
+  const banned = /\b(prism|dispatch|swarm|lane|roster|assistant|control)\b/i;
+  for (const text of [html, ...visible]) assert.ok(!banned.test(text), text);
 });

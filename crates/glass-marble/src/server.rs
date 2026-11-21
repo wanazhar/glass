@@ -25,6 +25,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 pub const STATIC_HTML: &str = include_str!("static/index.html");
+const STATIC_CSS: &str = include_str!("static/app.css");
+const STATIC_JS: &str = include_str!("static/app.js");
+const STATIC_LOGIC: &str = include_str!("static/logic.js");
 /// Largest accepted JSON request body.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Largest accepted request head.
@@ -542,6 +545,7 @@ impl MarbleServer {
         let path = head.path();
         if head.method == "GET" && (path == "/" || path == "/index.html") {
             return Response::html(STATIC_HTML)
+                .with_header("Cache-Control", "no-cache")
                 .with_header("X-Content-Type-Options", "nosniff")
                 .with_header("Referrer-Policy", "no-referrer")
                 .with_header(
@@ -549,6 +553,23 @@ impl MarbleServer {
                     "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
                      script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
                 );
+        }
+        if head.method == "GET" {
+            let asset = match path {
+                "/app.css" => Some((STATIC_CSS, "text/css; charset=utf-8")),
+                "/app.js" => Some((STATIC_JS, "text/javascript; charset=utf-8")),
+                "/logic.js" => Some((STATIC_LOGIC, "text/javascript; charset=utf-8")),
+                _ => None,
+            };
+            if let Some((body, content_type)) = asset {
+                return Response {
+                    status: 200,
+                    body: body.into(),
+                    headers: vec![("Content-Type".into(), content_type.into())],
+                }
+                .with_header("Cache-Control", "no-cache")
+                .with_header("X-Content-Type-Options", "nosniff");
+            }
         }
         if head.method == "GET" && path == "/healthz" {
             // Liveness means the pieces Marble depends on are actually working:
@@ -605,6 +626,15 @@ impl MarbleServer {
         }
         if head.method == "POST" && path == "/api/login" {
             return self.login(body, peer);
+        }
+        if head.method == "POST" && path == "/api/logout" {
+            if !head.same_origin() {
+                return Response::error(403, "cross_origin_request");
+            }
+            return Response::json(200, json!({"ok": true})).with_header(
+                "Set-Cookie",
+                "marble_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+            );
         }
         if !self.policy.authorize(head) {
             return Response::error(401, "unauthorized");

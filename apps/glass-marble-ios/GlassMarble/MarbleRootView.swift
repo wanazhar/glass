@@ -2,23 +2,38 @@ import SwiftUI
 
 struct MarbleRootView: View {
     @EnvironmentObject private var store: MarbleStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showsSettings = false
     @State private var showsIntroduction = false
-    @State private var greeted = false
+    @AppStorage("marble.introduced") private var introduced = false
 
     var body: some View {
-        NavigationSplitView {
-            ConversationListView()
-                .navigationSplitViewColumnWidth(min: 236, ideal: 286, max: 340)
-        } detail: {
-            MarbleChatView()
+        Group {
+            if store.onboarded && !store.needsToken {
+                NavigationSplitView {
+                    ConversationListView()
+                        .navigationSplitViewColumnWidth(min: 236, ideal: 286, max: 340)
+                } detail: {
+                    MarbleChatView()
+                }
+                .navigationSplitViewStyle(.balanced)
+            } else {
+                // No usable host yet: onboarding is the whole screen, never an
+                // empty product UI pretending it is connected.
+                MarbleOnboardingView(expiredToken: store.needsToken)
+            }
         }
-        .navigationSplitViewStyle(.balanced)
-        .tint(MarblePalette.accent)
         .task { store.start() }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: store.appBecameActive()
+            case .background, .inactive: store.appBecameInactive()
+            @unknown default: break
+            }
+        }
         .onAppear {
-            guard !greeted else { return }
-            greeted = true
+            guard !introduced else { return }
+            introduced = true
             showsIntroduction = true
         }
         .sheet(isPresented: $showsSettings) {
@@ -28,11 +43,6 @@ struct MarbleRootView: View {
         .sheet(isPresented: $showsIntroduction) {
             ConnectIntroductionView { showsIntroduction = false }
                 .ignoresSafeArea()
-        }
-        .alert("Access token required", isPresented: $store.needsToken) {
-            Button("Open host settings") { showsSettings = true }
-        } message: {
-            Text("This Marble host is shared over a private network. Paste the token configured on the host machine.")
         }
     }
 }
@@ -49,21 +59,18 @@ struct MarbleChatView: View {
     @StateObject private var dictation = MarbleDictation()
 
     var body: some View {
-        ZStack {
-            MarbleBackdrop()
-            VStack(spacing: 0) {
-                approvalRail
-                TranscriptView()
-                ComposerBar(
-                    draft: $draft,
-                    isWorking: store.isWorking,
-                    isDictating: dictation.isRecording,
-                    onSend: send,
-                    onSteer: steer,
-                    onStop: { Task { await store.cancelActiveTask() } },
-                    onDictate: { dictation.toggle() }
-                )
-            }
+        VStack(spacing: 0) {
+            approvalRail
+            TranscriptView()
+            ComposerBar(
+                draft: $draft,
+                isWorking: store.isWorking,
+                isDictating: dictation.isRecording,
+                onSend: send,
+                onSteer: steer,
+                onStop: { Task { await store.cancelActiveTask() } },
+                onDictate: { dictation.toggle() }
+            )
         }
         .onChange(of: dictation.transcript) { _, transcript in
             guard !transcript.isEmpty else { return }
@@ -73,17 +80,20 @@ struct MarbleChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                MarbleStatusPill(
+                MarbleStatusText(
                     label: store.statusLabel,
                     tone: store.connection == .live
-                        ? MarblePalette.success
-                        : (store.connection == .offline ? MarblePalette.danger : MarblePalette.muted)
+                        ? .green
+                        : (store.connection == .offline ? .red : .secondary)
                 )
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                MarbleIconButton(systemName: "square.and.pencil", label: "New conversation") {
+                Button {
                     store.selectedConversationId = nil
+                } label: {
+                    Image(systemName: "square.and.pencil")
                 }
+                .accessibilityLabel("New conversation")
                 // Five icon buttons crowded most phones; the work that is not
                 // done every turn lives behind one menu instead.
                 Menu {
@@ -128,10 +138,6 @@ struct MarbleChatView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 38, height: 38)
-                        .foregroundStyle(MarblePalette.ink)
-                        .marbleGlass(cornerRadius: 19)
                 }
                 .accessibilityLabel("Tools and settings")
             }
@@ -164,10 +170,9 @@ struct MarbleChatView: View {
             if let message = store.errorMessage ?? dictation.errorMessage {
                 Text(message)
                     .font(.caption)
-                    .foregroundStyle(MarblePalette.ink)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
-                    .marbleGlass(cornerRadius: 18)
+                    .marbleFloating()
                     .padding(.bottom, 92)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }

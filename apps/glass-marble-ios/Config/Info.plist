@@ -33,10 +33,6 @@
 	<string>Marble listens only while you hold the microphone button, and the audio is transcribed on this device.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Marble turns your voice into a message using on-device speech recognition. Audio never leaves the phone.</string>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>remote-notification</string>
-	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Glass Marble connects to the collaborator you self-host over your private Tailscale network.</string>
 	<key>UIApplicationSceneManifest</key>
@@ -52,8 +48,6 @@
 	<array>
 		<string>arm64</string>
 	</array>
-	<key>UIStatusBarStyle</key>
-	<string>UIStatusBarStyleLightContent</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -67,7 +61,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UIUserInterfaceStyle</key>
-	<string>Dark</string>
 </dict>
 </plist>

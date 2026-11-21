@@ -21,34 +21,125 @@ struct PrismView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+            Form {
+                Section {
                     Text(store.prism.summary)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(MarblePalette.muted)
-
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     // A sheet hides the chat's error strip, so a refused add or
                     // dispatch has to be reported here or not at all.
                     if let notice = store.prismNotice {
                         Text(notice)
-                            .font(.caption)
-                            .foregroundStyle(MarblePalette.success)
+                            .font(.footnote)
+                            .foregroundStyle(.green)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let error = store.errorMessage {
                         Text(error)
-                            .font(.caption)
-                            .foregroundStyle(MarblePalette.danger)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-
-                    dispatch
-                    roster
-                    editor
                 }
-                .padding(20)
+
+                Section("Dispatch") {
+                    TextField("Hand the same question to every marble…", text: $prompt, axis: .vertical)
+                        .lineLimit(1...4)
+                    Button {
+                        let text = prompt
+                        prompt = ""
+                        Task { await store.dispatchSwarm(text: text) }
+                    } label: {
+                        Label("Swarm all", systemImage: "hexagon.fill")
+                    }
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                Section("Roster") {
+                    if store.prism.marbles.isEmpty {
+                        Text("No marbles yet.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(store.prism.marbles) { marble in
+                        HStack(alignment: .top, spacing: 12) {
+                            MarbleAvatar(marble: marble)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(marble.name)
+                                Text(marble.role.isEmpty ? "no role yet" : marble.role)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(meta(marble))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if !marble.lastError.isEmpty {
+                                    Text(marble.lastError)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Menu {
+                                Button("Ask this marble") {
+                                    let text = prompt
+                                    Task { await store.dispatchSwarm(text: text, marbles: [marble.id]) }
+                                }
+                                .disabled(marble.isWorking || prompt.isEmpty)
+                                Button("Open its conversation") {
+                                    guard !marble.conversationId.isEmpty else { return }
+                                    store.selectedConversationId = marble.conversationId
+                                    dismiss()
+                                }
+                                .disabled(marble.conversationId.isEmpty)
+                                Button("Remove from roster", role: .destructive) {
+                                    Task { await store.removeMarble(marble) }
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .frame(width: 34, height: 34)
+                            }
+                            .accessibilityLabel("\(marble.name) actions")
+                        }
+                    }
+                }
+
+                Section("Add a marble") {
+                    TextField("Name (Scout)", text: $name)
+                    TextField("Role (reads the repo)", text: $role)
+                    TextField("Workspace subfolder (optional)", text: $workspace)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    glyphPicker
+                    HStack(spacing: 12) {
+                        Slider(value: $hue, in: 0...359, step: 1)
+                        Circle()
+                            .fill(Color(hue: hue / 360.0, saturation: 0.62, brightness: 0.92))
+                            .frame(width: 22, height: 22)
+                    }
+                    Button {
+                        let draftName = name
+                        let draftRole = role
+                        let draftGlyph = glyph
+                        let draftHue = Int(hue)
+                        let draftWorkspace = workspace
+                        name = ""
+                        role = ""
+                        workspace = ""
+                        Task {
+                            await store.addMarble(
+                                name: draftName,
+                                role: draftRole,
+                                glyph: draftGlyph,
+                                hue: draftHue,
+                                workspace: draftWorkspace
+                            )
+                        }
+                    } label: {
+                        Label("Add marble", systemImage: "plus")
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
-            .background(MarbleBackdrop())
             .navigationTitle("Prism")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -57,133 +148,6 @@ struct PrismView: View {
                 }
             }
             .task { await store.refresh() }
-        }
-    }
-
-    private var dispatch: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle("Dispatch")
-            TextField("Hand the same question to every marble…", text: $prompt, axis: .vertical)
-                .lineLimit(1...4)
-                .marbleField()
-            Button {
-                let text = prompt
-                prompt = ""
-                Task { await store.dispatchSwarm(text: text) }
-            } label: {
-                Label("Swarm all", systemImage: "hexagon.fill")
-                    .font(.callout.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .opacity(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1)
-            }
-            .marbleGlass(cornerRadius: 18)
-            .buttonStyle(.plain)
-            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-    }
-
-    private var roster: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle("Roster")
-            if store.prism.marbles.isEmpty {
-                EmptyNote("No marbles yet.")
-            }
-            ForEach(store.prism.marbles) { marble in
-                HStack(alignment: .top, spacing: 12) {
-                    MarbleAvatar(marble: marble)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(marble.name)
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(MarblePalette.ink)
-                        Text(marble.role.isEmpty ? "no role yet" : marble.role)
-                            .font(.caption)
-                            .foregroundStyle(MarblePalette.muted)
-                        Text(meta(marble))
-                            .font(.caption2)
-                            .foregroundStyle(MarblePalette.muted)
-                        if !marble.lastError.isEmpty {
-                            Text(marble.lastError)
-                                .font(.caption2)
-                                .foregroundStyle(MarblePalette.danger)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    Menu {
-                        Button("Ask this marble") {
-                            let text = prompt
-                            Task { await store.dispatchSwarm(text: text, marbles: [marble.id]) }
-                        }
-                        .disabled(marble.isWorking || prompt.isEmpty)
-                        Button("Open its conversation") {
-                            guard !marble.conversationId.isEmpty else { return }
-                            store.selectedConversationId = marble.conversationId
-                            dismiss()
-                        }
-                        .disabled(marble.conversationId.isEmpty)
-                        Button("Remove from roster", role: .destructive) {
-                            Task { await store.removeMarble(marble) }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 34, height: 34)
-                            .marbleGlass(cornerRadius: 17)
-                    }
-                    .accessibilityLabel("\(marble.name) actions")
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .marbleGlass(cornerRadius: 20)
-            }
-        }
-    }
-
-    private var editor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle("Add a marble")
-            TextField("Name (Scout)", text: $name)
-                .marbleField()
-            TextField("Role (reads the repo)", text: $role)
-                .marbleField()
-            TextField("Workspace subfolder (optional)", text: $workspace)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .marbleField()
-            glyphPicker
-            HStack(spacing: 12) {
-                Slider(value: $hue, in: 0...359, step: 1)
-                Circle()
-                    .fill(Color(hue: hue / 360.0, saturation: 0.62, brightness: 0.92))
-                    .frame(width: 22, height: 22)
-            }
-            Button {
-                let draftName = name
-                let draftRole = role
-                let draftGlyph = glyph
-                let draftHue = Int(hue)
-                let draftWorkspace = workspace
-                name = ""
-                role = ""
-                workspace = ""
-                Task {
-                    await store.addMarble(
-                        name: draftName,
-                        role: draftRole,
-                        glyph: draftGlyph,
-                        hue: draftHue,
-                        workspace: draftWorkspace
-                    )
-                }
-            } label: {
-                Label("Add marble", systemImage: "plus")
-                    .font(.callout.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .opacity(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1)
-            }
-            .marbleGlass(cornerRadius: 18)
-            .buttonStyle(.plain)
-            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -201,7 +165,7 @@ struct PrismView: View {
                             .padding(6)
                             .overlay(
                                 Circle().strokeBorder(
-                                    option == glyph ? MarblePalette.accent : Color.clear,
+                                    option == glyph ? MarbleTheme.tint : Color.clear,
                                     lineWidth: 2
                                 )
                             )
@@ -233,17 +197,7 @@ struct MarbleGlyphMark: View {
     var body: some View {
         ZStack {
             marbleShape(glyph, size: size)
-                .fill(
-                    LinearGradient(
-                        colors: [tint.opacity(0.95), tint.opacity(0.6)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    marbleShape(glyph, size: size)
-                        .stroke(Color.white.opacity(0.22), lineWidth: 0.6)
-                )
+                .fill(tint)
             HStack(spacing: max(3, size * 0.12)) {
                 eye
                 eye
@@ -255,7 +209,7 @@ struct MarbleGlyphMark: View {
 
     private var eye: some View {
         Capsule()
-            .fill(Color.black.opacity(0.8))
+            .fill(Color.black.opacity(0.75))
             .frame(width: max(3, size * 0.095), height: max(4, size * 0.12))
     }
 
@@ -306,9 +260,9 @@ struct MarbleAvatar: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if marble.state == "blocked" {
-                Circle().fill(MarblePalette.danger).frame(width: 9, height: 9)
+                Circle().fill(.red).frame(width: 9, height: 9)
             } else if marble.state == "done" {
-                Circle().fill(MarblePalette.success).frame(width: 9, height: 9)
+                Circle().fill(.green).frame(width: 9, height: 9)
             }
         }
         // Motion only while the marble is actually working, and none at all

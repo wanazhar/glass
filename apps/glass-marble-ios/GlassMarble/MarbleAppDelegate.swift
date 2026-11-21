@@ -48,6 +48,7 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
+        guard MarbleFeatures.remotePush else { return }
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         NotificationCenter.default.post(name: .marblePushToken, object: token)
     }
@@ -93,7 +94,6 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         let root = MarbleRootView()
             .environmentObject(store)
-            .preferredColorScheme(.dark)
         let controller = UIHostingController(rootView: root)
         controller.view.backgroundColor = .clear
 

@@ -198,6 +198,34 @@ struct MarbleControl: Decodable, Equatable {
     // The crate map is fetched from `/api/crates` when the sheet that shows it
     // opens: it is a workspace scan, not a fact every state poll should carry.
 
+    enum CodingKeys: String, CodingKey {
+        case profile, paused, grants, deniedPaths, ledger, queue, profiles
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profile = try container.decode(String.self, forKey: .profile)
+        paused = try container.decode(Bool.self, forKey: .paused)
+        grants = try container.decodeIfPresent([MarbleGrant].self, forKey: .grants) ?? []
+        deniedPaths = try container.decodeIfPresent([String].self, forKey: .deniedPaths) ?? []
+        ledger = try container.decodeIfPresent([MarbleControlEntry].self, forKey: .ledger) ?? []
+        queue = try container.decodeIfPresent([MarbleQueuedTurn].self, forKey: .queue) ?? []
+        profiles = try container.decodeIfPresent([MarbleProfileOption].self, forKey: .profiles) ?? []
+    }
+
+    init(
+        profile: String, paused: Bool, grants: [MarbleGrant], deniedPaths: [String],
+        ledger: [MarbleControlEntry], queue: [MarbleQueuedTurn], profiles: [MarbleProfileOption]
+    ) {
+        self.profile = profile
+        self.paused = paused
+        self.grants = grants
+        self.deniedPaths = deniedPaths
+        self.ledger = ledger
+        self.queue = queue
+        self.profiles = profiles
+    }
+
     static let empty = MarbleControl(
         profile: "workspace",
         paused: false,
@@ -314,6 +342,7 @@ struct MarbleState: Decodable, Equatable {
     var devices: [MarbleDevice]?
     var transcriptCount: Int?
     var prism: MarblePrism?
+    var model: String?
 
     static let empty = MarbleState(
         revision: 0,
@@ -329,7 +358,8 @@ struct MarbleState: Decodable, Equatable {
         notifications: nil,
         devices: nil,
         transcriptCount: 0,
-        prism: nil
+        prism: nil,
+        model: nil
     )
 
     /// Hosts from before the control layer answer without one.
@@ -379,6 +409,22 @@ struct MarbleEventData: Decodable, Equatable {
     var status: String?
     var revision: Int?
     var taskId: String?
+    var reason: String?
+    var cancelled: Bool?
+    var requestId: String?
+    var approved: Bool?
+}
+
+/// One transcript-search hit, newest first.
+struct MarbleSearchHit: Decodable, Identifiable, Equatable {
+    var conversationId: String
+    var title: String
+    var kind: String
+    var text: String
+    var at: UInt64
+    var taskId: String
+
+    var id: String { "\(conversationId)|\(taskId)|\(at)" }
 }
 
 /// One bounded page of durable history for a conversation.
@@ -401,9 +447,17 @@ struct MarbleAccepted: Decodable, Equatable {
 
 struct MarbleHealth: Decodable, Equatable {
     var ok: Bool
+    var version: String?
     var revision: Int
     var sequence: UInt64
     var authRequired: Bool
+    var status: String?
+    var runtime: RuntimeHealth?
+
+    struct RuntimeHealth: Decodable, Equatable {
+        var health: String
+        var lastError: String?
+    }
 }
 
 /// What the always-on assistant is doing right now.
@@ -503,14 +557,34 @@ struct MarbleRoutine: Decodable, Identifiable, Equatable {
     }
 }
 
+/// A quiet-hours window, in host minutes past midnight with an offset to the
+/// client's timezone.
+struct MarbleQuietHours: Codable, Equatable {
+    var enabled: Bool
+    var startMinute: Int
+    var endMinute: Int
+    var offsetMinutes: Int
+
+    static let off = MarbleQuietHours(enabled: false, startMinute: 1320, endMinute: 420, offsetMinutes: 0)
+
+    private func clock(_ minute: Int) -> String {
+        String(format: "%02d:%02d", minute / 60 % 24, minute % 60)
+    }
+
+    var label: String {
+        enabled ? "\(clock(startMinute))–\(clock(endMinute))" : "off"
+    }
+}
+
 struct MarbleRoutines: Decodable, Equatable {
     var routines: [MarbleRoutine]
     var count: Int?
     var limit: Int?
     var enabled: Int?
     var offsetMinutes: Int?
+    var quietHours: MarbleQuietHours?
 
-    static let empty = MarbleRoutines(routines: [], count: 0, limit: nil, enabled: 0, offsetMinutes: nil)
+    static let empty = MarbleRoutines(routines: [], count: 0, limit: nil, enabled: 0, offsetMinutes: nil, quietHours: nil)
 }
 
 /// Local-only voice preferences.
@@ -540,6 +614,10 @@ struct MarbleNotificationSettings: Decodable, Equatable {
     var apns: MarbleApns?
     var apnsConfigured: Bool
     var webhookConfigured: Bool
+    var quietHours: MarbleQuietHours?
+    var reAlertSeconds: Int?
+    var retries: Int?
+    var dedupeSeconds: Int?
 
     static let empty = MarbleNotificationSettings(
         webhookUrl: "",
@@ -548,7 +626,11 @@ struct MarbleNotificationSettings: Decodable, Equatable {
         availableEvents: [],
         apns: nil,
         apnsConfigured: false,
-        webhookConfigured: false
+        webhookConfigured: false,
+        quietHours: nil,
+        reAlertSeconds: nil,
+        retries: nil,
+        dedupeSeconds: nil
     )
 }
 

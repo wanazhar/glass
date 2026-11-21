@@ -3,17 +3,45 @@ import SwiftUI
 struct ConversationListView: View {
     @EnvironmentObject private var store: MarbleStore
     @State private var searchText = ""
+    @State private var hits: [MarbleSearchHit] = []
+    @State private var searchTask: Task<Void, Never>?
     @State private var renaming: MarbleConversation?
     @State private var renameDraft = ""
     @State private var deleting: MarbleConversation?
 
     var body: some View {
         List(selection: $store.selectedConversationId) {
+            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Section("Transcript matches") {
+                    if hits.isEmpty {
+                        Text("No matches")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(hits) { hit in
+                        Button {
+                            store.open(conversationId: hit.conversationId)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(hit.title.isEmpty ? hit.conversationId : hit.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(hit.text)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
             Section("Conversations") {
                 if store.state.conversations.isEmpty {
                     Text("No conversations yet")
                         .font(.footnote)
-                        .foregroundStyle(MarblePalette.muted)
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(filteredConversations) { conversation in
                     ConversationRow(conversation: conversation)
@@ -34,26 +62,36 @@ struct ConversationListView: View {
                 if store.state.tasks.isEmpty {
                     Text("No durable tasks yet")
                         .font(.footnote)
-                        .foregroundStyle(MarblePalette.muted)
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(recentTasks) { task in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(task.prompt.isEmpty ? task.id : task.prompt)
                             .font(.footnote)
                             .lineLimit(2)
-                        Text("\(task.status) · \(task.owner)")
-                            .font(.caption2)
-                            .foregroundStyle(statusTone(task.status))
+                        HStack(spacing: 8) {
+                            Text("\(task.status) · \(task.owner)")
+                                .font(.caption2)
+                                .foregroundStyle(statusTone(task.status))
+                            Spacer(minLength: 0)
+                            if retryable(task) {
+                                Button("Retry") {
+                                    Task { await store.retry(task) }
+                                }
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(MarbleTheme.tint)
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                     .padding(.vertical, 2)
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(MarbleBackdrop())
         .navigationTitle("Glass Marble")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, placement: .sidebar, prompt: "Search conversations")
+        .onChange(of: searchText) { _, _ in debounceSearch() }
         .alert("Rename conversation", isPresented: renameBinding) {
             TextField("Title", text: $renameDraft)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -92,15 +130,14 @@ struct ConversationListView: View {
         // only has to say which host is answering and what it is doing.
         .safeAreaInset(edge: .top) {
             HStack(spacing: 8) {
-                MarbleMarbleMark()
-                Text(store.endpoint.displayHost)
+                Text(store.endpoint?.displayHost ?? "not connected")
                     .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                MarbleStatusPill(
+                MarbleStatusText(
                     label: store.statusLabel,
-                    tone: store.connection == .live ? MarblePalette.success : MarblePalette.muted
+                    tone: store.connection == .live ? .green : .secondary
                 )
             }
             .padding(.horizontal, 16)
@@ -143,13 +180,27 @@ struct ConversationListView: View {
         Array(store.state.tasks.sorted { $0.at > $1.at }.prefix(8))
     }
 
-    private func statusTone(_ status: String) -> Color {
-        switch status {
-        case "completed": return MarblePalette.success
-        case "failed": return MarblePalette.danger
-        case "running": return MarblePalette.accent
-        default: return MarblePalette.muted
+    private func retryable(_ task: MarbleTask) -> Bool {
+        ["failed", "cancelled", "interrupted"].contains(task.status) && !task.prompt.isEmpty
+    }
+
+    /// Debounced server-side transcript search while the field has text.
+    private func debounceSearch() {
+        searchTask?.cancel()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            hits = []
+            return
         }
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            hits = (try? await store.search(query: query)) ?? []
+        }
+    }
+
+    private func statusTone(_ status: String) -> Color {
+        MarbleTheme.status(status)
     }
 }
 
@@ -163,7 +214,7 @@ private struct ConversationRow: View {
                 .lineLimit(1)
             Text(conversation.taskIds.count == 1 ? "1 turn" : "\(conversation.taskIds.count) turns")
                 .font(.caption2)
-                .foregroundStyle(MarblePalette.muted)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
     }

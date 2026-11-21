@@ -10,14 +10,78 @@ struct RoutinesView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    editor
-                    list
+            Form {
+                Section("New routine") {
+                    TextField("Title (optional)", text: $title)
+                    TextField("What should Marble do each time?", text: $prompt, axis: .vertical)
+                        .lineLimit(1...4)
+                    TextField("every:1h · every:30m · daily:09:30", text: $schedule)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button {
+                        let newTitle = title
+                        let newPrompt = prompt
+                        let newSchedule = schedule
+                        title = ""
+                        prompt = ""
+                        Task {
+                            await store.addRoutine(
+                                title: newTitle,
+                                prompt: newPrompt,
+                                schedule: newSchedule
+                            )
+                        }
+                    } label: {
+                        Label("Add routine", systemImage: "plus")
+                    }
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button("Use this phone's time for daily schedules") {
+                        Task { await store.useLocalRoutineTime() }
+                    }
                 }
-                .padding(20)
+
+                QuietHoursSection()
+
+                Section("Scheduled") {
+                    if store.routines.routines.isEmpty {
+                        Text("No routines yet.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(store.routines.routines) { routine in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(routine.title)
+                            Text(routine.prompt)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(meta(routine))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if let next = routine.nextRunLabel {
+                                Text(next)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 12) {
+                                Button("Run now") {
+                                    Task { await store.run(routine) }
+                                }
+                                .buttonStyle(.borderless)
+                                Button(routine.enabled ? "Pause" : "Resume") {
+                                    Task { await store.setRoutine(routine, enabled: !routine.enabled) }
+                                }
+                                .buttonStyle(.borderless)
+                                Spacer(minLength: 0)
+                                Button("Remove", role: .destructive) {
+                                    Task { await store.remove(routine) }
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
             }
-            .background(MarbleBackdrop())
             .navigationTitle("Routines")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -29,101 +93,67 @@ struct RoutinesView: View {
         }
     }
 
-    private var editor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionTitle("New routine")
-            TextField("Title (optional)", text: $title)
-                .marbleField()
-            TextField("What should Marble do each time?", text: $prompt, axis: .vertical)
-                .lineLimit(1...4)
-                .marbleField()
-            TextField("every:1h · every:30m · daily:09:30", text: $schedule)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .marbleField()
-            Button {
-                let newTitle = title
-                let newPrompt = prompt
-                let newSchedule = schedule
-                title = ""
-                prompt = ""
-                Task {
-                    await store.addRoutine(
-                        title: newTitle,
-                        prompt: newPrompt,
-                        schedule: newSchedule
-                    )
-                }
-            } label: {
-                Label("Add routine", systemImage: "plus")
-                    .font(.callout.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .marbleGlass(cornerRadius: 18)
-            .buttonStyle(.plain)
-            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    private func meta(_ routine: MarbleRoutine) -> String {
+        var parts = [routine.schedule, routine.lastStatus]
+        if routine.runs > 0 {
+            parts.append("\(routine.runs) run\(routine.runs == 1 ? "" : "s")")
+        }
+        if let missed = routine.missedRuns, missed > 0 {
+            parts.append("missed \(missed)")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
 
-            Button("Use this phone's time for daily schedules") {
-                Task { await store.useLocalRoutineTime() }
+/// Window in which routines keep quiet, saved in host minutes past midnight.
+private struct QuietHoursSection: View {
+    @EnvironmentObject private var store: MarbleStore
+    @State private var enabled = false
+    @State private var start = Date()
+    @State private var end = Date()
+    @State private var loaded = false
+
+    var body: some View {
+        Section("Quiet hours") {
+            Toggle("Pause routines overnight", isOn: $enabled)
+            if enabled {
+                DatePicker("Start", selection: $start, displayedComponents: .hourAndMinute)
+                DatePicker("End", selection: $end, displayedComponents: .hourAndMinute)
             }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(MarblePalette.accent)
+            Button("Save quiet hours") { save() }
+        }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            let quiet = store.routines.quietHours ?? .off
+            enabled = quiet.enabled
+            start = minuteDate(quiet.startMinute)
+            end = minuteDate(quiet.endMinute)
         }
     }
 
-    private var list: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle("Scheduled")
-            if store.routines.routines.isEmpty {
-                EmptyNote("No routines yet.")
-            }
-            ForEach(store.routines.routines) { routine in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(routine.title)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(MarblePalette.ink)
-                    Text(routine.prompt)
-                        .font(.caption)
-                        .foregroundStyle(MarblePalette.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        Tag(routine.schedule)
-                        Tag(routine.lastStatus)
-                        if routine.runs > 0 {
-                            Tag("\(routine.runs) run\(routine.runs == 1 ? "" : "s")")
-                        }
-                        if let missed = routine.missedRuns, missed > 0 {
-                            Tag("missed \(missed)")
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    if let next = routine.nextRunLabel {
-                        Text(next)
-                            .font(.caption2)
-                            .foregroundStyle(MarblePalette.muted)
-                    }
-                    HStack(spacing: 12) {
-                        Button("Run now") {
-                            Task { await store.run(routine) }
-                        }
-                        .foregroundStyle(MarblePalette.accent)
-                        Button(routine.enabled ? "Pause" : "Resume") {
-                            Task { await store.setRoutine(routine, enabled: !routine.enabled) }
-                        }
-                        .foregroundStyle(MarblePalette.accent)
-                        Spacer(minLength: 0)
-                        Button("Remove", role: .destructive) {
-                            Task { await store.remove(routine) }
-                        }
-                        .foregroundStyle(MarblePalette.danger)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.plain)
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .marbleGlass(cornerRadius: 20)
-            }
-        }
+    private func minuteDate(_ minute: Int) -> Date {
+        Calendar.current.date(
+            bySettingHour: minute / 60,
+            minute: minute % 60,
+            second: 0,
+            of: Date()
+        ) ?? Date()
+    }
+
+    private func dateMinute(_ date: Date) -> Int {
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+    }
+
+    private func save() {
+        let offset = TimeZone.current.secondsFromGMT() / 60
+        let quiet = MarbleQuietHours(
+            enabled: enabled,
+            startMinute: dateMinute(start),
+            endMinute: dateMinute(end),
+            offsetMinutes: offset
+        )
+        Task { await store.setRoutineQuiet(quiet) }
     }
 }

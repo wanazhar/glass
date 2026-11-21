@@ -11,6 +11,7 @@ SWIFT_SDK_ID="${SWIFT_SDK_ID:-elektra-ios}"
 IOS_SDK="${IOS_SDK:-/srv/elektra/local/iPhoneOS.sdk}"
 TOOLCHAIN_LIB="${TOOLCHAIN_LIB:-/srv/elektra/local/materials/toolchain-lib}"
 OUT_DIR="${OUT_DIR:-$HOME/work/ipa}"
+PRERELEASE="${PRERELEASE:-alpha1}"
 MIN_IOS="18.0"
 LLVM_OBJDUMP="${LLVM_OBJDUMP:-/usr/local/swift-6.4.2-RELEASE-ubuntu24.04-aarch64/usr/bin/llvm-objdump}"
 
@@ -20,7 +21,8 @@ PBXPROJ="$APP_DIR/GlassMarble.xcodeproj/project.pbxproj"
 MARKETING_VERSION="$(grep -m1 'MARKETING_VERSION' "$PBXPROJ" | sed -E 's/.*= *"?([^";]+)"?;.*/\1/')"
 CURRENT_PROJECT_VERSION="$(grep -m1 'CURRENT_PROJECT_VERSION' "$PBXPROJ" | sed -E 's/.*= *"?([^";]+)"?;.*/\1/')"
 PRODUCT_BUNDLE_IDENTIFIER="$(grep -m1 'PRODUCT_BUNDLE_IDENTIFIER' "$PBXPROJ" | sed -E 's/.*= *"?([^";]+)"?;.*/\1/')"
-SHORT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+SHORT_SHA="$GIT_SHA"
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- apps/glass-marble-ios)" ]; then
     SHORT_SHA="$SHORT_SHA-dirty"
 fi
@@ -50,6 +52,7 @@ chmod 755 "$APP_BUNDLE/GlassMarble"
 MARKETING_VERSION="$MARKETING_VERSION" \
 CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
 PRODUCT_BUNDLE_IDENTIFIER="$PRODUCT_BUNDLE_IDENTIFIER" \
+GIT_SHA="$GIT_SHA" \
 MIN_IOS="$MIN_IOS" SDK_VERSION="$SDK_VERSION" SDK_NAME="$SDK_NAME" SDK_BUILD="$SDK_BUILD" \
 python3 - "$APP_DIR/Config/Info.plist" "$APP_BUNDLE/Info.plist" <<'PYEOF'
 import os, plistlib, sys
@@ -92,10 +95,30 @@ def check(value):
 if check(info):
     raise SystemExit("error: unsubstituted $(...) variable remains in Info.plist")
 
-# LaunchScreen.storyboard can't be compiled without ibtool; UIKit accepts a
-# UILaunchScreen dict instead.
+# LaunchScreen.storyboard can't be compiled without ibtool; a UIImage-backed
+# launch screen replaces it. UIColorName is omitted because it needs a
+# compiled asset catalog — the dark style already comes from
+# UIUserInterfaceStyle.
 info.pop("UILaunchStoryboardName", None)
-info["UILaunchScreen"] = {}
+info["UILaunchScreen"] = {
+    "UIImageName": "MarbleLaunch",
+    "UIImageRespectsSafeAreaInsets": False,
+}
+
+# Loose icon PNGs stand in for a compiled asset catalog; CFBundleIconName is
+# intentionally absent so the files are picked up directly.
+info["CFBundleIcons"] = {
+    "CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60"]}
+}
+info["CFBundleIcons~ipad"] = {
+    "CFBundlePrimaryIcon": {
+        "CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76", "AppIcon83.5x83.5"]
+    }
+}
+
+# The About screen shows this commit; Xcode builds leave it absent → "dev".
+if os.environ.get("GIT_SHA"):
+    info["MarbleGitCommit"] = os.environ["GIT_SHA"]
 
 # Keys Xcode normally injects at build time.
 info["CFBundleSupportedPlatforms"] = ["iPhoneOS"]
@@ -112,8 +135,33 @@ with open(dst, "wb") as f:
 PYEOF
 printf 'APPL????' > "$APP_BUNDLE/PkgInfo"
 
-# actool is Mac-only; AccentColor is applied in code via window.tintColor and
-# the AppIcon set has no image, so no Assets.car is produced.
+# Loose icon PNGs resized from the committed 1024 placeholder, and the launch
+# images referenced by UILaunchScreen (actool is Mac-only, so no Assets.car).
+APP_DIR_ENV="$APP_DIR" python3 - "$APP_BUNDLE" <<'PYEOF'
+import os, sys
+from PIL import Image
+
+bundle = sys.argv[1]
+app_dir = os.environ["APP_DIR_ENV"]
+icon_src = os.path.join(
+    app_dir, "GlassMarble/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+)
+sizes = [
+    ("AppIcon60x60.png", 120),
+    ("AppIcon60x60@2x.png", 120),
+    ("AppIcon60x60@3x.png", 180),
+    ("AppIcon76x76.png", 76),
+    ("AppIcon76x76@2x.png", 152),
+    ("AppIcon83.5x83.5@2x~ipad.png", 167),
+]
+icon = Image.open(icon_src).convert("RGB")
+for name, px in sizes:
+    icon.resize((px, px), Image.LANCZOS).save(os.path.join(bundle, name))
+import shutil
+for name in ("MarbleLaunch@2x.png", "MarbleLaunch@3x.png"):
+    shutil.copy(os.path.join(app_dir, "Config/Launch", name), bundle)
+PYEOF
+
 echo "note: no asset catalog compiled (actool unavailable on Linux); shipping without Assets.car"
 
 # Bundle any non-OS Swift dylibs the executable references. Everything under
@@ -144,7 +192,7 @@ done < <("$LLVM_OBJDUMP" --macho --dylibs-used "$APP_BUNDLE/GlassMarble" | tail 
 [ "$copied" -eq 0 ] && rmdir "$FRAMEWORKS_DIR" || echo "bundled $copied Swift dylib(s) into Frameworks/"
 
 mkdir -p "$OUT_DIR"
-IPA="$OUT_DIR/GlassMarble-$MARKETING_VERSION-$SHORT_SHA.ipa"
+IPA="$OUT_DIR/GlassMarble-$MARKETING_VERSION-$PRERELEASE-$SHORT_SHA.ipa"
 rm -f "$IPA"
 (cd "$STAGING" && zip -qry -X "$IPA" Payload)
 

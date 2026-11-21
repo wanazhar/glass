@@ -3152,6 +3152,62 @@ fn held_first_chat_startup_failures_are_recorded_and_retry_to_the_named_marble()
 }
 
 #[test]
+fn cancelling_a_held_first_chat_preserves_its_named_retry_target() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("held-cancel-retry");
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .prism
+            .get(&fixture.marble_id)
+            .unwrap()
+            .conversation_id
+            .is_empty()
+    );
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let prompt = "retry my cancelled named message";
+    let (status, queued) = fixture.post(
+        "/api/turns",
+        json!({"text":prompt, "marbleId":fixture.marble_id}),
+    );
+    assert_eq!(status, 202, "{queued}");
+    let queue_id = queued["queueId"].as_str().unwrap();
+    assert_eq!(
+        fixture
+            .post(&format!("/api/tasks/{queue_id}/cancel"), json!({}))
+            .0,
+        200
+    );
+    let saved = serde_json::to_value(fixture.server.state()).unwrap();
+    *fixture.state.lock().unwrap() = serde_json::from_value(saved).unwrap();
+    assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+    let (status, accepted) = fixture.post("/api/turns/retry", json!({"taskId":queue_id}));
+    assert_eq!(status, 202, "{accepted}");
+    assert_eq!(accepted["marbleId"], fixture.marble_id);
+    let completed = fixture.completed(prompt);
+    assert_eq!(completed.marble_id, fixture.marble_id);
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .prism
+            .get(&fixture.marble_id)
+            .unwrap()
+            .conversation_id,
+        completed.conversation_id
+    );
+    let state = fixture.state.lock().unwrap();
+    let cancelled = state.tasks.iter().find(|task| task.id == queue_id).unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.marble_id, fixture.marble_id);
+}
+
+#[test]
 fn named_turn_intake_handles_memory_and_resumes_held_messages_in_order() {
     if !python3_available() {
         return;

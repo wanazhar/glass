@@ -455,6 +455,20 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
+For LLM agents, `--tool-profile agent` replaces the full catalog with 19
+task-level `browser_*` tools (`browser_navigate`, `browser_snapshot`,
+`browser_click`, `browser_fill_form`, `browser_wait_for`, `browser_tabs`,
+`browser_handle_dialog`, `browser_upload_file`, `browser_download`, and so on).
+Each has a closed JSON schema with an example, says when to use it and when
+not to, and failed calls end with a `Next:` hint naming the tool to try.
+Glass Core offers this profile as typed tools when `glass-browser` is on
+`PATH` (`GC_BROWSER_TOOLS=0` disables it, `GC_BROWSER_BIN` and
+`GC_BROWSER_RUNTIME` override the binary and runtime).
+
+```console
+glass-browser --browser-runtime chromium --mcp --tool-profile agent
+```
+
 Native target sessions also own a bounded nested `iframe`/`frame` tree,
 including `srcdoc`, with stable parent-linked frame IDs and initialized child
 engine owners. Explicit frame selection routes the normal Glass operations to

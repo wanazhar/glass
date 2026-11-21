@@ -100,7 +100,7 @@ struct JsonRpcRequest {
     id: RequestId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 enum RequestId {
     #[default]
     Missing,
@@ -738,6 +738,7 @@ async fn run_mcp_server_local_with_backend(
     cli: &Cli,
     backend: Option<Arc<dyn HostMcpToolBackend>>,
 ) -> BrowserResult<()> {
+    super::agent_tools::set_agent_profile(cli.tool_profile == crate::cli::args::ToolProfile::Agent);
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     run_mcp_stream_inner(
@@ -1914,8 +1915,105 @@ async fn handle_request(
     .await
 }
 
+/// Route `browser_*` agent-profile calls through the full catalog and add a
+/// next step to their failures.
 #[allow(clippy::too_many_arguments)]
 async fn handle_request_with_viewport(
+    request: &JsonRpcRequest,
+    session: &mut Option<CdpBrowserSession>,
+    native_session: &mut Option<BrowserRuntimeSession>,
+    native_runtime: bool,
+    persistent_native_session: Option<&str>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
+    knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
+) -> Option<JsonRpcResponse> {
+    use super::agent_tools;
+    if request.method == "tools/list" && agent_tools::agent_profile() {
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"tools": agent_tools::agent_tools()}),
+        ));
+    }
+    let agent_tool = (request.method == "tools/call")
+        .then(|| request.params.get("name").and_then(Value::as_str))
+        .flatten()
+        .filter(|name| agent_tools::is_agent_tool(name))
+        .map(str::to_owned);
+    let Some(agent_tool) = agent_tool else {
+        return Box::pin(handle_request_inner(
+            request,
+            session,
+            native_session,
+            native_runtime,
+            persistent_native_session,
+            options,
+            policy,
+            viewport,
+            knowledge_store_path,
+            development_sessions,
+            host_backend,
+            elicitation,
+        ))
+        .await;
+    };
+    let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
+    let (tool, arguments) = match agent_tools::translate(&agent_tool, arguments) {
+        Ok(translated) => translated,
+        Err(message) => {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({"content":[{"type":"text","text":message}],"isError":true}),
+            ));
+        }
+    };
+    let mut params = request.params.clone();
+    params["name"] = json!(tool);
+    params["arguments"] = arguments;
+    let translated = JsonRpcRequest {
+        jsonrpc: request.jsonrpc.clone(),
+        method: request.method.clone(),
+        params,
+        id: request.id.clone(),
+    };
+    let mut response = Box::pin(handle_request_inner(
+        &translated,
+        session,
+        native_session,
+        native_runtime,
+        persistent_native_session,
+        options,
+        policy,
+        viewport,
+        knowledge_store_path,
+        development_sessions,
+        host_backend,
+        elicitation,
+    ))
+    .await?;
+    if let Some(result) = response.result.as_mut()
+        && result["isError"] == true
+        && let Some(content) = result["content"].as_array_mut()
+    {
+        let error = content
+            .first()
+            .and_then(|item| item["text"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        content.push(json!({
+            "type": "text",
+            "text": agent_tools::recovery_hint(&agent_tool, &error)
+        }));
+    }
+    Some(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_inner(
     request: &JsonRpcRequest,
     session: &mut Option<CdpBrowserSession>,
     native_session: &mut Option<BrowserRuntimeSession>,

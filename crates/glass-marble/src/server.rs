@@ -294,6 +294,58 @@ impl AccessPolicy {
     }
 }
 
+/// Which credential channel a request carried. The log records the channel,
+/// never the credential.
+fn auth_kind(head: &RequestHead) -> &'static str {
+    if head.header("authorization").is_some() {
+        "bearer"
+    } else if head.header("x-marble-token").is_some() {
+        "x-marble-token"
+    } else if head.cookie(SESSION_COOKIE).is_some() {
+        "cookie"
+    } else if head.query_param("token").is_some() {
+        "query"
+    } else {
+        "none"
+    }
+}
+
+/// One request/response line for the service log. The path is logged without
+/// its query string because the query may carry a `token=` credential, and the
+/// user agent is the only header value that may appear here.
+struct RequestLog<'a> {
+    peer: &'a str,
+    method: &'a str,
+    path: &'a str,
+    status: u16,
+    auth: &'a str,
+    authorized: bool,
+    head_bytes: usize,
+    content_length: usize,
+    user_agent: &'a str,
+    elapsed: Duration,
+}
+
+impl RequestLog<'_> {
+    fn line(&self) -> String {
+        let agent: String = self.user_agent.chars().take(60).collect();
+        format!(
+            "request peer={} method={} path={} status={} auth={} authorized={} \
+             head={}B body={}B ua=\"{}\" ms={}",
+            self.peer,
+            self.method,
+            self.path,
+            self.status,
+            self.auth,
+            if self.authorized { "yes" } else { "no" },
+            self.head_bytes,
+            self.content_length,
+            agent,
+            self.elapsed.as_millis()
+        )
+    }
+}
+
 /// Construction inputs for a served marble product.
 pub struct MarbleServerParts {
     pub listener: TcpListener,
@@ -2832,6 +2884,26 @@ impl MarbleServer {
                 active.fetch_sub(1, Ordering::SeqCst);
                 // Refusing here is honest: accepting the socket and queueing it
                 // would only move the queue into the kernel and hold a thread.
+                let peer = stream
+                    .peer_addr()
+                    .map(|address| address.ip().to_string())
+                    .unwrap_or_default();
+                tracing::info!(
+                    "{}",
+                    RequestLog {
+                        peer: &peer,
+                        method: "-",
+                        path: "-",
+                        status: 503,
+                        auth: "none",
+                        authorized: false,
+                        head_bytes: 0,
+                        content_length: 0,
+                        user_agent: "-",
+                        elapsed: Duration::ZERO,
+                    }
+                    .line()
+                );
                 let mut stream = stream;
                 let _ = write_response(
                     &mut stream,
@@ -2872,6 +2944,7 @@ impl MarbleServer {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut served = 0usize;
         loop {
+            let started = std::time::Instant::now();
             let head_bytes = read_head(&mut reader)?;
             if head_bytes.is_empty() {
                 return Ok(());
@@ -2882,6 +2955,7 @@ impl MarbleServer {
             let body = match read_body(&mut reader, &head)? {
                 BodyRead::Bytes(body) => String::from_utf8_lossy(&body).to_string(),
                 BodyRead::TooLarge => {
+                    self.log_request(&peer, head_bytes.len(), &head, 413, started);
                     return write_response(
                         &mut stream,
                         Response::error(413, "body_too_large"),
@@ -2890,16 +2964,21 @@ impl MarbleServer {
                 }
             };
             if head.method == "GET" && head.path() == "/api/events" {
-                if !self.policy.authorize(&head) {
+                let authorized = self.policy.authorize(&head);
+                if !authorized {
+                    self.log_request(&peer, head_bytes.len(), &head, 401, started);
                     return write_response(
                         &mut stream,
                         Response::error(401, "unauthorized"),
                         false,
                     );
                 }
+                self.log_request(&peer, head_bytes.len(), &head, 200, started);
                 return self.stream_events(&head, &mut stream);
             }
             let response = self.handle_request_from(&head, &body, &peer);
+            let status = response.status;
+            self.log_request(&peer, head_bytes.len(), &head, status, started);
             let keep_alive = wants_keep_alive(&head)
                 && response.status < 400
                 && served < MAX_REQUESTS_PER_CONNECTION;
@@ -2908,6 +2987,37 @@ impl MarbleServer {
                 return Ok(());
             }
         }
+    }
+
+    /// One line per request, after its status is known.
+    fn log_request(
+        &self,
+        peer: &str,
+        head_bytes: usize,
+        head: &RequestHead,
+        status: u16,
+        started: std::time::Instant,
+    ) {
+        let content_length = head
+            .header("content-length")
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        tracing::info!(
+            "{}",
+            RequestLog {
+                peer,
+                method: &head.method,
+                path: head.path(),
+                status,
+                auth: auth_kind(head),
+                authorized: self.policy.authorize(head),
+                head_bytes,
+                content_length,
+                user_agent: head.header("user-agent").unwrap_or("-"),
+                elapsed: started.elapsed(),
+            }
+            .line()
+        );
     }
 
     /// Server-sent events with bounded replay from the client's own cursor.
@@ -3154,6 +3264,57 @@ mod tests {
         assert_eq!(head.query_param("since"), Some("4".to_string()));
         assert_eq!(head.query_param("token"), Some("a+b c".to_string()));
         assert_eq!(head.path(), "/api/events");
+    }
+
+    #[test]
+    fn request_log_line_never_carries_a_token_or_query() {
+        let head = RequestHead::new("GET", "/api/state?lean=1&token=super-secret")
+            .with_header("authorization", "Bearer super-secret")
+            .with_header("user-agent", "GlassMarble/1 CFNetwork/1 Darwin/24")
+            .with_header("content-length", "42");
+        assert_eq!(auth_kind(&head), "bearer");
+        let line = RequestLog {
+            peer: "100.64.0.5",
+            method: &head.method,
+            path: head.path(),
+            status: 401,
+            auth: auth_kind(&head),
+            authorized: false,
+            head_bytes: 256,
+            content_length: 42,
+            user_agent: head.header("user-agent").unwrap_or("-"),
+            elapsed: Duration::from_millis(7),
+        }
+        .line();
+        assert!(line.contains("peer=100.64.0.5"));
+        assert!(line.contains("method=GET"));
+        assert!(line.contains("path=/api/state"));
+        assert!(line.contains("status=401"));
+        assert!(line.contains("auth=bearer"));
+        assert!(line.contains("authorized=no"));
+        assert!(line.contains("head=256B"));
+        assert!(line.contains("body=42B"));
+        assert!(line.contains("ms=7"));
+        assert!(!line.contains("super-secret"));
+        assert!(!line.contains("?"));
+        assert!(!line.contains("lean=1"));
+
+        let long_agent = "x".repeat(120);
+        let truncated = RequestLog {
+            peer: "",
+            method: "GET",
+            path: "/",
+            status: 200,
+            auth: "none",
+            authorized: false,
+            head_bytes: 0,
+            content_length: 0,
+            user_agent: &long_agent,
+            elapsed: Duration::ZERO,
+        }
+        .line();
+        assert!(truncated.contains(&"x".repeat(60)));
+        assert!(!truncated.contains(&"x".repeat(61)));
     }
 
     #[test]

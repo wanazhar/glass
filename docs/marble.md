@@ -581,7 +581,7 @@ recognition rather than falling back to a network service.
 | `/api/prism/dispatch` | POST | Hand one prompt to several marbles at once (`text`, optional `marbles`) |
 | `/api/everyone` | GET / POST | Read the shared timeline (`after` timestamp), or send a message (`text`); mentions select who answers |
 | `/api/everyone/clear` | POST | Clear the shared timeline without deleting individual chats |
-| `/api/events?since=N` | GET | Server-sent events with an immediate `: connected` comment, bounded replay from a cursor, and a keepalive comment every 15 seconds |
+| `/api/events?since=N` | GET | Server-sent events with an immediate `: connected` comment, a `hello` event announcing the current `cursor`, bounded replay (from zero if the requested cursor is ahead of the host), and a keepalive comment every 15 seconds |
 | `/api/turns` | POST | Admit a durable turn (`202` accepted or queued), hold it while paused, or apply an explicit memory command. Optional `marbleId` selects a named Marble, including before its first chat; memory belongs to that Marble and held messages retain the target |
 | `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
 | `/api/turns/retry` | POST | Repeat the newest failed, cancelled, or interrupted turn (`taskId` or `conversationId` to choose one) |

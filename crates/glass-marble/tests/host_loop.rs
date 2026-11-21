@@ -1,8 +1,8 @@
 use glass_marble::{
     AcceptedTurn, Approval, ApprovalInbox, CancelRegistry, ControlProfile, Conversation, EventBus,
     HostPolicy, InboundMessage, LaneFactory, LiveStore, MarbleError, MarbleReply, MarbleTurn,
-    PendingApproval, ProductState, StateStore, SteerRequest, ToolRouter, TurnCommand, TurnOptions,
-    TurnPool, TurnRequest, run_turn, spawn_turn_pool, to_turn_input,
+    PendingApproval, ProductState, StateStore, SteerRequest, TaskRecord, ToolRouter, TurnCommand,
+    TurnOptions, TurnPool, TurnRequest, run_turn, spawn_turn_pool, to_turn_input,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -534,6 +534,170 @@ fn a_lane_that_cannot_start_does_not_disturb_another_chat() {
             .len(),
         1,
         "the refused chat left no conversation behind"
+    );
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Launching an engine means starting a subprocess and greeting it, which takes
+/// long enough that doing it in the dispatcher would hold up every other chat.
+///
+/// The second lane's engine is held inside its factory, so the first chat is
+/// still starting when the second chat is submitted. That chat lands on lane
+/// zero and must be admitted while the first lane is still blocked.
+#[test]
+fn a_slow_lane_start_does_not_hold_up_another_chat() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-start-blocking");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let gate = Arc::new(Mutex::new(Some(release_rx)));
+    let begun = Arc::new(AtomicBool::new(false));
+    let inner = lane_factory(
+        &root,
+        &script,
+        vec![LaneSpec::default(); 2],
+        ApprovalInbox::default(),
+        Arc::clone(&started),
+    );
+    let factory: LaneFactory = {
+        let gate = Arc::clone(&gate);
+        let begun = Arc::clone(&begun);
+        Arc::new(move |lane: u8| {
+            if lane == 1 {
+                begun.store(true, Ordering::SeqCst);
+                let waiting = gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(waiting) = waiting {
+                    let _ = waiting.recv_timeout(Duration::from_secs(60));
+                }
+            }
+            inner(lane)
+        })
+    };
+    let pool = spawn_turn_pool(
+        2,
+        factory,
+        Arc::clone(&state),
+        None,
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .expect("two lanes");
+
+    // The dispatcher rotates, so this chat needs lane one, whose engine is held.
+    let (held_accepted, held_answer) = mpsc::channel();
+    pool.sender
+        .send(TurnCommand {
+            request: TurnRequest::new(None, "held chat"),
+            accepted: held_accepted,
+        })
+        .expect("the pool takes the command");
+    wait_until("the second lane to start", || begun.load(Ordering::SeqCst));
+
+    // A chat that lands on lane zero is admitted while lane one still starts.
+    let (free_accepted, free_answer) = mpsc::channel();
+    pool.sender
+        .send(TurnCommand {
+            request: TurnRequest::new(None, "free chat"),
+            accepted: free_accepted,
+        })
+        .expect("the pool takes the command");
+    let free = free_answer
+        .recv_timeout(Duration::from_secs(20))
+        .expect("a lane starting must not hold up another chat")
+        .expect("the free lane admits the chat");
+    wait_for_settled(&state, &free.task_id);
+    assert_eq!(
+        lane_of(&state, &free.conversation_id),
+        0,
+        "the free chat ran on the idle lane"
+    );
+
+    // Let the held engine start; the first chat then runs on its own lane.
+    release_tx.send(()).expect("the gate opens");
+    let held = held_answer
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the held lane answers once its engine is up")
+        .expect("the held chat is accepted");
+    wait_for_settled(&state, &held.task_id);
+    assert_eq!(lane_of(&state, &held.conversation_id), 1);
+
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Work handed to a lane whose engine never started must not be left looking
+/// queued in the durable document.
+///
+/// The surface answers `202 queued` as soon as admission takes longer than its
+/// short wait, so the worker cannot rely on the caller still listening. The
+/// durable row is what a person sees, and it has to say the message failed
+/// instead of promising a turn that can never run.
+#[test]
+fn work_on_a_lane_that_never_started_fails_instead_of_staying_queued() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("lane-never-started");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let pool = lanes(
+        &root,
+        &script,
+        vec![
+            LaneSpec::default(),
+            LaneSpec {
+                fail: true,
+                ..LaneSpec::default()
+            },
+        ],
+        ApprovalInbox::default(),
+        &state,
+        &started,
+        CancelRegistry::default(),
+    );
+
+    // The surface records the queued row before it hands the message over.
+    let request = TurnRequest::new(None, "doomed chat");
+    let queued_id = format!("queued-{}", request.request_id);
+    {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        guard.upsert_task(TaskRecord {
+            id: queued_id.clone(),
+            conversation_id: String::new(),
+            status: "queued".into(),
+            owner: "agent".into(),
+            prompt: "doomed chat".into(),
+            at: 0,
+            routine_id: String::new(),
+        });
+        guard.bump();
+    }
+    let (accepted, answer) = mpsc::channel();
+    // The surface already gave up waiting and answered `202 queued`.
+    drop(answer);
+    pool.sender
+        .send(TurnCommand { request, accepted })
+        .expect("the pool takes the command");
+
+    wait_until("the doomed message to fail", || {
+        task_status(&state, &queued_id) == "failed"
+    });
+    assert_eq!(
+        task_status(&state, &queued_id),
+        "failed",
+        "a message that can never run must not stay queued"
     );
 
     drop(pool);

@@ -433,6 +433,26 @@ struct LaneRuntime {
     in_flight: Arc<AtomicUsize>,
 }
 
+/// One lane's queue, created before its engine so work can be handed over while
+/// that engine is still starting.
+struct LaneQueue {
+    sender: mpsc::Sender<TurnCommand>,
+    receiver: mpsc::Receiver<TurnCommand>,
+    steer_tx: mpsc::Sender<SteerRequest>,
+    steer_rx: mpsc::Receiver<SteerRequest>,
+    in_flight: Arc<AtomicUsize>,
+}
+
+/// What a lane thread needs besides its own engine session.
+struct LaneParts {
+    state: Arc<Mutex<ProductState>>,
+    store: Option<Arc<StateStore>>,
+    live: LiveStore,
+    events: EventBus,
+    timeout: Duration,
+    cancels: CancelRegistry,
+}
+
 /// Start a pool of durable turn lanes.
 ///
 /// This is the only turn loop: a host with one engine passes one lane, and the
@@ -478,20 +498,35 @@ pub fn spawn_turn_pool(
                     &mut next,
                 );
                 if runtimes[lane].is_none() {
-                    match wiring.start(lane as u8) {
+                    // Starting an engine launches a subprocess and greets it,
+                    // which can take seconds. Doing that here would hold up
+                    // every other chat, so the lane starts on its own thread and
+                    // its queue takes the message now.
+                    match wiring.spawn(lane as u8) {
                         Ok(runtime) => runtimes[lane] = Some(runtime),
                         Err(error) => {
-                            let _ = command.accepted.send(Err(error));
+                            undelivered(
+                                &wiring.state,
+                                wiring.store.as_deref(),
+                                &wiring.events,
+                                command,
+                                error,
+                            );
                             continue;
                         }
                     }
                 }
-                let Some(runtime) = runtimes[lane].as_ref() else {
-                    continue;
-                };
-                runtime.in_flight.fetch_add(1, Ordering::Relaxed);
-                if runtime.sender.send(command).is_err() {
-                    runtime.in_flight.fetch_sub(1, Ordering::Relaxed);
+                if let Some(command) = hand_over(&mut runtimes, lane, command) {
+                    undelivered(
+                        &wiring.state,
+                        wiring.store.as_deref(),
+                        &wiring.events,
+                        command,
+                        MarbleError::Protocol(
+                            "the engine that would run this message stopped before it started, so the message was not delivered; send it again"
+                                .into(),
+                        ),
+                    );
                 }
             }
             // Dropping the lane senders ends every lane loop, which shuts its
@@ -518,42 +553,196 @@ struct LaneWiring {
 }
 
 impl LaneWiring {
-    /// Start one lane's engine and the thread that drains its queue.
-    fn start(&self, index: u8) -> Result<LaneRuntime, MarbleError> {
-        let (steer_tx, steer_rx) = mpsc::channel();
-        self.steer.add(index, steer_tx);
-        let mut conversation = (self.factory)(index)?.with_steering(steer_rx);
+    /// The queue one lane drains, ready before its engine is.
+    fn queue(&self) -> LaneQueue {
         let (sender, receiver) = mpsc::channel();
-        let in_flight = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&in_flight);
-        let state = Arc::clone(&self.state);
-        let store = self.store.clone();
-        let live = self.live.clone();
-        let events = self.events.clone();
-        let timeout = self.timeout;
-        let cancels = self.cancels.clone();
+        let (steer_tx, steer_rx) = mpsc::channel();
+        LaneQueue {
+            sender,
+            receiver,
+            steer_tx,
+            steer_rx,
+            in_flight: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Handles a lane thread needs besides its own engine.
+    fn parts(&self) -> LaneParts {
+        LaneParts {
+            state: Arc::clone(&self.state),
+            store: self.store.clone(),
+            live: self.live.clone(),
+            events: self.events.clone(),
+            timeout: self.timeout,
+            cancels: self.cancels.clone(),
+        }
+    }
+
+    /// Start one lane's engine and the thread that drains its queue, waiting for
+    /// the engine to answer.
+    ///
+    /// Lane zero starts this way, so a host whose engine cannot launch fails at
+    /// startup instead of on the first message.
+    fn start(&self, index: u8) -> Result<LaneRuntime, MarbleError> {
+        let LaneQueue {
+            sender,
+            receiver,
+            steer_tx,
+            steer_rx,
+            in_flight,
+        } = self.queue();
+        let conversation = (self.factory)(index)?.with_steering(steer_rx);
+        self.steer.add(index, steer_tx);
+        let runtime = LaneRuntime {
+            sender: sender.clone(),
+            in_flight: Arc::clone(&in_flight),
+        };
+        let parts = self.parts();
+        std::thread::Builder::new()
+            .name(format!("glass-marble-turn-{index}"))
+            .spawn(move || drain(index, receiver, in_flight, conversation, parts))
+            .map_err(MarbleError::Io)?;
+        Ok(runtime)
+    }
+
+    /// Start one lane's engine off the calling thread.
+    ///
+    /// The queue exists at once, so the dispatcher hands over work and moves on
+    /// while this engine launches. A lane whose engine cannot start keeps
+    /// answering every message it is handed with that failure: nothing waits
+    /// behind an engine that will never run.
+    fn spawn(&self, index: u8) -> Result<LaneRuntime, MarbleError> {
+        let LaneQueue {
+            sender,
+            receiver,
+            steer_tx,
+            steer_rx,
+            in_flight,
+        } = self.queue();
+        let runtime = LaneRuntime {
+            sender: sender.clone(),
+            in_flight: Arc::clone(&in_flight),
+        };
+        drop(sender);
+        let factory = Arc::clone(&self.factory);
+        let steer = self.steer.clone();
+        let parts = self.parts();
         std::thread::Builder::new()
             .name(format!("glass-marble-turn-{index}"))
             .spawn(move || {
-                while let Ok(command) = receiver.recv() {
-                    run_command(
-                        command,
-                        index,
-                        &mut conversation,
-                        &state,
-                        store.as_deref(),
-                        &live,
-                        &events,
-                        timeout,
-                        &cancels,
-                    );
-                    counter.fetch_sub(1, Ordering::Relaxed);
-                }
-                let _ = conversation.shutdown();
+                let conversation = match (factory)(index) {
+                    Ok(conversation) => conversation.with_steering(steer_rx),
+                    Err(error) => {
+                        // This engine never came up, so this lane can never run
+                        // a turn. Answer every message it is handed, now and
+                        // later, instead of leaving them in a queue nothing
+                        // drains.
+                        let reason = error.to_string();
+                        for command in receiver.iter() {
+                            in_flight.fetch_sub(1, Ordering::Relaxed);
+                            undelivered(
+                                &parts.state,
+                                parts.store.as_deref(),
+                                &parts.events,
+                                command,
+                                MarbleError::Protocol(reason.clone()),
+                            );
+                        }
+                        return;
+                    }
+                };
+                steer.add(index, steer_tx);
+                drain(index, receiver, in_flight, conversation, parts);
             })
             .map_err(MarbleError::Io)?;
-        Ok(LaneRuntime { sender, in_flight })
+        Ok(runtime)
     }
+}
+
+/// Hand one command to a lane, taking a dead lane out of service.
+///
+/// A dead lane must not swallow the message: the command comes back so the
+/// caller can be told it will not run, and the lane is retired so later chats
+/// are not handed to it.
+fn hand_over(
+    runtimes: &mut [Option<LaneRuntime>],
+    lane: usize,
+    command: TurnCommand,
+) -> Option<TurnCommand> {
+    let Some(runtime) = runtimes[lane].as_ref() else {
+        return Some(command);
+    };
+    runtime.in_flight.fetch_add(1, Ordering::Relaxed);
+    match runtime.sender.send(command) {
+        Ok(()) => None,
+        Err(mpsc::SendError(command)) => {
+            Arc::clone(&runtime.in_flight).fetch_sub(1, Ordering::Relaxed);
+            runtimes[lane] = None;
+            Some(command)
+        }
+    }
+}
+
+/// Answer work that will never run.
+///
+/// The surface may already have answered `202 queued` and stopped listening —
+/// admission gives up long before an engine can finish starting — so the durable
+/// row and the event stream carry the failure too. A message that cannot run
+/// must not sit in the document looking like it is still waiting its turn.
+fn undelivered(
+    state: &Arc<Mutex<ProductState>>,
+    store: Option<&StateStore>,
+    events: &EventBus,
+    command: TurnCommand,
+    error: MarbleError,
+) {
+    let TurnCommand { request, accepted } = command;
+    let queued_id = format!("queued-{}", request.request_id);
+    let conversation_id = request.conversation_id.clone().unwrap_or_default();
+    let message = error.to_string();
+    let snapshot = {
+        let mut guard = lock(state);
+        guard.set_task_status(&queued_id, "failed");
+        guard.bump();
+        guard.clone()
+    };
+    if let Some(store) = store {
+        store::persist(store, &snapshot);
+    }
+    // Whoever is still waiting for admission hears the failure; a surface that
+    // already answered `202` learns it from the row and the stream.
+    let _ = accepted.send(Err(error));
+    events.publish(
+        &conversation_id,
+        &queued_id,
+        "error",
+        json!({"message": message, "revision": snapshot.revision}),
+    );
+}
+
+/// Drain one lane's queue until the last sender is gone.
+fn drain(
+    lane: u8,
+    receiver: mpsc::Receiver<TurnCommand>,
+    in_flight: Arc<AtomicUsize>,
+    mut conversation: Conversation,
+    parts: LaneParts,
+) {
+    while let Ok(command) = receiver.recv() {
+        run_command(
+            command,
+            lane,
+            &mut conversation,
+            &parts.state,
+            parts.store.as_deref(),
+            &parts.live,
+            &parts.events,
+            parts.timeout,
+            &parts.cancels,
+        );
+        in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+    let _ = conversation.shutdown();
 }
 
 /// Which lane takes the next command.
@@ -739,9 +928,6 @@ fn run_command(
         // The worker registers the flag, so every admitted turn is cancellable —
         // including one a routine fired or one a resume dispatched.
         cancels.register(task_id, Arc::clone(&cancel));
-        if let Some(sender) = sender.take() {
-            let _ = sender.send(Ok(identity));
-        }
         let snapshot = {
             let mut guard = lock(state);
             guard.presence.mark_turn();
@@ -791,6 +977,12 @@ fn run_command(
         };
         if let Some(store) = store {
             store::persist(store, &snapshot);
+        }
+        // The conversation is durable with its lane before the caller is told
+        // it exists, so the very next turn or correction is routed to the
+        // engine that owns the session instead of guessing lane zero.
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(Ok(identity));
         }
         events.publish(
             conversation_id,
@@ -1054,6 +1246,28 @@ mod tests {
         // real lane instead of failing the admission.
         let mut next = 0;
         assert_eq!(choose_lane(&state, Some("unknown"), &busy, &mut next), 1);
+    }
+
+    #[test]
+    fn a_lane_whose_thread_stopped_hands_the_command_back() {
+        let (sender, receiver) = mpsc::channel();
+        // The lane's thread is gone, so its queue can never reach an engine.
+        drop(receiver);
+        let mut runtimes = vec![Some(LaneRuntime {
+            sender,
+            in_flight: Arc::new(AtomicUsize::new(0)),
+        })];
+        let command = TurnCommand {
+            request: TurnRequest::new(None, "still here"),
+            accepted: mpsc::channel().0,
+        };
+        let returned = hand_over(&mut runtimes, 0, command)
+            .expect("a dead lane returns the command instead of swallowing it");
+        assert_eq!(returned.request.text, "still here");
+        assert!(
+            runtimes[0].is_none(),
+            "the dead lane is taken out of service"
+        );
     }
 
     #[test]

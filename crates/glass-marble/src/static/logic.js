@@ -44,6 +44,9 @@
       part.startsWith('`') && part.endsWith('`') ? { tag: 'code', text: part.slice(1, -1) } :
         part.startsWith('**') && part.endsWith('**') ? { tag: 'strong', text: part.slice(2, -2) } : { tag: 'text', text: part });
   }
+  function messagePart(part, fallback) {
+    return typeof part === 'string' ? part : typeof fallback === 'string' ? fallback : '';
+  }
   function markdown(text) {
     const blocks = []; let paragraph = []; let code = null; let list = null;
     const flush = () => { if (paragraph.length) blocks.push({ tag: 'p', content: inline(paragraph.join('\n')) }); paragraph = []; list = null; };
@@ -93,7 +96,7 @@
     const label = distance === 0 ? 'Today' : distance === 1 ? 'Tomorrow' : date.toLocaleDateString(locale, { month: 'short', day: 'numeric', ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
     return label + ', ' + date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
   }
-  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines, scheduleLabel, relativeRun };
+  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, messagePart, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines, scheduleLabel, relativeRun };
   if (typeof module !== 'undefined') module.exports = api;
   else root.MarbleLogic = api;
 })(typeof window === 'undefined' ? globalThis : window);

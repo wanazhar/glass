@@ -165,10 +165,10 @@
     if (chat && p) $('topbar').append(glyph(p));
     $('topbar').append(titleBlock, actions);
   }
-  function prose(text) {
+  function prose(text, fallback) {
     const container = el('div', 'prose');
     const appendInline = (parent, content) => content.forEach(part => parent.append(part.tag === 'text' ? document.createTextNode(part.text) : el(part.tag, '', part.text)));
-    for (const block of L.markdown(text)) {
+    for (const block of L.markdown(L.messagePart(text, fallback))) {
       const node = el(block.tag);
       if (block.tag === 'pre') node.append(el('code', '', block.text));
       else if (block.items) for (const item of block.items) { const li = el('li'); appendInline(li, item); node.append(li); }
@@ -200,7 +200,7 @@
       const time = el('time', '', entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '');
       body.append(el('div', 'speaker', name, time));
     }
-    body.append(prose(entry.text));
+    body.append(own ? prose(entry.text) : prose(entry, entry.text));
     if (!own && s.data.voice?.enabled && entry.text) body.append(button(t('Read aloud'), () => readAloud(entry.text), 'quiet small'));
     return own ? el('article', 'message user', body) : el('article', 'message', glyph(p), body);
   }
@@ -652,7 +652,7 @@
     if (kind === 'approval_resolved') s.approvalChats.delete(data.requestId);
     if (taskId && ['text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress', 'tool_cancel'].includes(kind)) {
       const live = s.live.get(taskId) || { conversationId: payload.conversationId, text: '', reasoning: '', tools: [] };
-      if (kind === 'text' || kind === 'reasoning') live[kind] += data.text || data.delta || '';
+      if (kind === 'text' || kind === 'reasoning') live[kind] += L.messagePart(data, data.text || data.delta);
       else {
         const id = data.callId || data.call_id;
         const existing = live.tools.find(tool => id && tool.callId === id);

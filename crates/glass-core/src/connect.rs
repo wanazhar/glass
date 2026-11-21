@@ -430,8 +430,61 @@ fn https_url(settings: &Settings) -> String {
 }
 fn ready_output(product: &str, url: &str, command: &str) -> String {
     format!(
-        "{product} · ready\n{url}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{command} status · {command} stop"
+        "{product} · ready\n{url}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{command} status · {command} qr · {command} stop"
     )
+}
+
+/// Native clients read these from `/api/status` to detect an incompatible gateway.
+/// Bump the version only for breaking changes; add a capability for each new feature.
+const CONNECT_PROTOCOL_VERSION: u32 = 1;
+const CONNECT_CAPABILITIES: &[&str] = &[
+    "owner-capability",
+    "events-resume",
+    "agent-events",
+    "secret-submission",
+    "uploads",
+    "artifacts",
+    "commands",
+    "settings",
+    "files",
+    "export",
+    "desktop",
+];
+
+/// Renders `text` as a QR code of half-block characters, two modules per line.
+/// With `ansi`, colors are forced to dark-on-light so the code scans on any terminal theme.
+fn terminal_qr(text: &str, ansi: bool) -> Result<String, String> {
+    let code = qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)
+        .map_err(|_| "The link is too long for a QR code")?;
+    let width = code.width();
+    let quiet = 2;
+    let size = width + quiet * 2;
+    let dark = |x: usize, y: usize| {
+        x >= quiet
+            && y >= quiet
+            && x < width + quiet
+            && y < width + quiet
+            && code[(x - quiet, y - quiet)] == qrcode::Color::Dark
+    };
+    let mut out = String::new();
+    for y in (0..size).step_by(2) {
+        if ansi {
+            out.push_str("\x1b[30;107m");
+        }
+        for x in 0..size {
+            out.push(match (dark(x, y), dark(x, y + 1)) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => ' ',
+            });
+        }
+        if ansi {
+            out.push_str("\x1b[0m");
+        }
+        out.push('\n');
+    }
+    Ok(out)
 }
 fn assets() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
@@ -485,6 +538,21 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     };
     match args.first().map(String::as_str) {
         Some("_serve") => return gateway(cfg, load()?),
+        Some("qr") => {
+            let settings = load()?;
+            if !alive(&settings) {
+                return Err("Connect is not running".into());
+            }
+            let link = zeroize::Zeroizing::new(access_link(&settings));
+            let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && std::env::var_os("NO_COLOR").is_none();
+            crate::cli_println!(
+                "{}Scan with Glass on iPhone, or paste the link:\n{}",
+                terminal_qr(&link, ansi)?,
+                link.as_str()
+            );
+            return Ok(());
+        }
         Some("secret-link") => {
             let settings = load()?;
             if !alive(&settings) {
@@ -541,7 +609,8 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         None | Some("--local" | "--http") => {}
         _ => {
             return Err(format!(
-                "usage: {} [--local | --http] | {} status | {} stop | secret-link",
+                "usage: {} [--local | --http] | {} status | {} qr | {} stop | secret-link",
+                crate::cli::connect_command(),
                 crate::cli::connect_command(),
                 crate::cli::connect_command(),
                 crate::cli::connect_command()
@@ -3016,7 +3085,7 @@ fn handle_with_transport(
     }
     let result: Result<Value, String> = (|| match (r.method.as_str(), path) {
         ("GET", "/api/status") => Ok(
-            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
+            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","protocolVersion":CONNECT_PROTOCOL_VERSION,"capabilities":CONNECT_CAPABILITIES,"web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
         ("GET", "/api/diagnostics") => {
             let selected = query
@@ -4532,7 +4601,7 @@ mod tests {
     fn ready_output_keeps_the_action_hints_for_existing_sessions() {
         assert_eq!(
             ready_output("Glass Connect", "http://127.0.0.1:8083", "glass connect"),
-            "Glass Connect · ready\nhttp://127.0.0.1:8083\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\nglass connect status · glass connect stop"
+            "Glass Connect · ready\nhttp://127.0.0.1:8083\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\nglass connect status · glass connect qr · glass connect stop"
         );
         assert!(
             ready_output(
@@ -4540,12 +4609,42 @@ mod tests {
                 "http://localhost",
                 "glass core connect"
             )
-            .ends_with("glass core connect status · glass core connect stop")
+            .ends_with(
+                "glass core connect status · glass core connect qr · glass core connect stop"
+            )
         );
         assert!(
             ready_output("GC Connect", "http://localhost", "gc connect")
-                .ends_with("gc connect status · gc connect stop")
+                .ends_with("gc connect status · gc connect qr · gc connect stop")
         );
+    }
+    #[test]
+    fn terminal_qr_encodes_owner_links_as_square_half_blocks() {
+        let link = format!("https://host.tail.ts.net:8443#owner={}", "A".repeat(22));
+        let plain = terminal_qr(&link, false).unwrap();
+        let rows: Vec<&str> = plain.lines().collect();
+        let width = rows[0].chars().count();
+        assert!(
+            (25..=45).contains(&width),
+            "QR width {width} must fit a phone terminal"
+        );
+        assert_eq!(rows.len(), width.div_ceil(2));
+        assert!(rows.iter().all(|row| row.chars().count() == width));
+        assert!(rows[0].trim().is_empty(), "quiet zone");
+        assert!(!plain.contains('\x1b'));
+        let colored = terminal_qr(&link, true).unwrap();
+        assert!(
+            colored
+                .lines()
+                .all(|row| row.starts_with("\x1b[30;107m") && row.ends_with("\x1b[0m"))
+        );
+    }
+    #[test]
+    fn status_advertises_protocol_version_and_capabilities() {
+        assert_eq!(CONNECT_PROTOCOL_VERSION, 1);
+        assert!(CONNECT_CAPABILITIES.contains(&"events-resume"));
+        let unique: std::collections::HashSet<_> = CONNECT_CAPABILITIES.iter().collect();
+        assert_eq!(unique.len(), CONNECT_CAPABILITIES.len());
     }
     #[test]
     fn malformed_connect_status_state_remains_an_error() {

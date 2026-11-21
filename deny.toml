@@ -5,6 +5,27 @@ yanked = "deny"
 ignore = [
   "RUSTSEC-2025-0141",
   "RUSTSEC-2024-0320",
+  # Bundled SQLite in libsqlite3-sys 0.36 / rusqlite 0.38 (glass-dev). The
+  # patched crates are libsqlite3-sys 0.39 and rusqlite 0.41, but rusqlite
+  # 0.41 declares Rust 1.89 and this workspace MSRV is 1.88. The issue is a
+  # local crafted sibling WAL file, not a remote attack. Revisit when MSRV
+  # can move.
+  { id = "RUSTSEC-2026-0459", reason = "safe upgrade needs rusqlite 0.41 (Rust 1.89); workspace MSRV is 1.88" },
+  # ttf-parser, unsafe-libyaml, and the zbus/zvariant 0.x stack used by atspi
+  # have no safe upgrade in the current graph. These are unmaintained notices,
+  # not patched vulnerabilities.
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; no safe upgrade" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained; no safe upgrade" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained; pulled in by atspi, no safe upgrade" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained; pulled in by atspi, no safe upgrade" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained; pulled in by atspi, no safe upgrade" },
+  # zip 2.4.2 is a direct glass-browser dependency (`zip = "2"`). The
+  # patched line starts at 9.0.0, a major bump that is not a lockfile-only
+  # update. The flagged APIs are ZipArchive/ZipStreamReader extract helpers.
+  { id = "RUSTSEC-2026-0367", reason = "zip 9 is a major bump from the zip 2 dependency; not a lockfile-only update" },
+  { id = "RUSTSEC-2026-0368", reason = "zip 9 is a major bump from the zip 2 dependency; not a lockfile-only update" },
+  { id = "RUSTSEC-2026-0369", reason = "zip 9 is a major bump from the zip 2 dependency; not a lockfile-only update" },
+  { id = "RUSTSEC-2026-0429", reason = "zip 9 is a major bump from the zip 2 dependency; not a lockfile-only update" },
 ]
 
 [licenses]
@@ -15,6 +36,9 @@ allow = [
   "BSD-3-Clause",
   "CDLA-Permissive-2.0",
   "ISC",
+  # Independent JPEG Group License. FSF Free/Libre. Required by jpeg-encoder
+  # 0.7.1, whose SPDX expression is `(MIT OR Apache-2.0) AND IJG`.
+  "IJG",
   "MIT",
   "MPL-2.0",
   "Unicode-3.0",

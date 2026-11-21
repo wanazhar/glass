@@ -1786,6 +1786,33 @@
       ]
     },
     {
+      "path": "crates/glass-marble/README.md",
+      "class": "current",
+      "topic": "api",
+      "audience": "api-or-package",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Cargo package documentation is included by package metadata and routes users to the canonical product/API guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "glass-marble"
+      ],
+      "dependencies": [
+        "docs/glass-core-harness.md",
+        "products/glass-core/docs/reference/runtime.md"
+      ],
+      "topicRoute": "docs/INDEX.md#interface-references",
+      "route": "crates/glass-marble/README.md#glass-marble",
+      "sections": [
+        {
+          "level": "1",
+          "title": "glass-marble",
+          "anchor": "glass-marble"
+        }
+      ]
+    },
+    {
       "path": "crates/glass-mod-api/README.md",
       "class": "current",
       "topic": "api",
@@ -1907,6 +1934,7 @@
         "crates/glass-browser/README.md",
         "crates/glass-core/README.md",
         "crates/glass-dev/README.md",
+        "crates/glass-marble/README.md",
         "crates/glass-mod-api/README.md",
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
@@ -5089,6 +5117,7 @@
       "canonicalSuccessor": null,
       "consumers": [
         "README.md",
+        "crates/glass-marble/README.md",
         "docs/INDEX.md",
         "docs/architecture/development-tui.md",
         "docs/cli.md",
@@ -91718,6 +91747,7 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
+        "crates/glass-marble/README.md",
         "crates/glass-runtime-client/README.md",
         "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/task-agent-coordination-001.md",

@@ -155,13 +155,18 @@ fn server_state_route_serves_pending_approvals_from_live_inbox() {
     let (status, body) = server.handle("GET", "/api/state", "");
     assert_eq!(status, 200);
     let value: serde_json::Value = serde_json::from_str(&body).expect("state body should be json");
-    let pending = value["approvals"].as_array().expect("approvals should be a list");
+    let pending = value["approvals"]
+        .as_array()
+        .expect("approvals should be a list");
     assert_eq!(pending.len(), 1);
     assert_eq!(
         pending[0]["requestId"],
         serde_json::json!("host:fixture-session:generation-fixture-1:call-1")
     );
-    assert_eq!(pending[0]["tool"], serde_json::json!("glass.workspace.list"));
+    assert_eq!(
+        pending[0]["tool"],
+        serde_json::json!("glass.workspace.list")
+    );
 
     let (resolve_status, _) = server.handle(
         "POST",

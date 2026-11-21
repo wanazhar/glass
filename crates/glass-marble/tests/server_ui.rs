@@ -2883,6 +2883,151 @@ fn everyone_entries(state: &Arc<Mutex<ProductState>>) -> Vec<TranscriptEntry> {
         .collect()
 }
 
+struct NamedTurnFixture {
+    root: std::path::PathBuf,
+    script: std::path::PathBuf,
+    state: Arc<Mutex<ProductState>>,
+    pool: Arc<glass_marble::PrismPool>,
+    server: MarbleServer,
+    marble_id: String,
+}
+
+impl NamedTurnFixture {
+    fn new(label: &str) -> Self {
+        let root =
+            std::env::temp_dir().join(format!("glass-marble-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("runtime.py");
+        std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+        let events = EventBus::default();
+        let mut initial = ProductState::default();
+        initial.control.profile = glass_marble::ControlProfile::Unattended;
+        let marble_id = initial
+            .prism
+            .add("Ada", "writer", "star", 35, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let state = Arc::new(Mutex::new(initial));
+        let pool = fixture_prism_pool(&script, &root, &state, &events, Vec::new());
+        let server = MarbleServer::new(MarbleServerParts {
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            state: Arc::clone(&state),
+            store: None,
+            approvals: ApprovalInbox::default(),
+            events,
+            turn_tx: TurnSender::detached(),
+            steer_tx: mpsc::channel().0,
+            policy: AccessPolicy::new(None),
+            cancels: CancelRegistry::default(),
+        })
+        .with_prism(Arc::clone(&pool));
+        Self {
+            root,
+            script,
+            state,
+            pool,
+            server,
+            marble_id,
+        }
+    }
+
+    fn post(&self, path: &str, body: Value) -> (u16, Value) {
+        let (status, body) = self.server.handle("POST", path, &body.to_string());
+        (status, serde_json::from_str(&body).unwrap())
+    }
+
+    fn settled(&self, prompt: &str) -> TaskRecord {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(task) = self
+                .state
+                .lock()
+                .unwrap()
+                .tasks
+                .iter()
+                .rev()
+                .find(|task| {
+                    task.prompt == prompt
+                        && matches!(task.status.as_str(), "completed" | "failed" | "cancelled")
+                })
+                .cloned()
+            {
+                return task;
+            }
+            assert!(Instant::now() < deadline, "no settled task for {prompt}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for NamedTurnFixture {
+    fn drop(&mut self) {
+        self.pool.shutdown();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn named_followups_include_ios_acceptance_and_legacy_dispatch_fields() {
+    if !python3_available() {
+        return;
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Accepted {
+        accepted: bool,
+        request_id: String,
+        conversation_id: String,
+        task_id: String,
+        marble_name: Option<String>,
+    }
+    let fixture = NamedTurnFixture::new("named-acceptance");
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"text":"first message", "marbleId":fixture.marble_id})
+            )
+            .0,
+        202
+    );
+    let first = fixture.settled("first message");
+    assert_eq!(first.status, "completed");
+    let (status, value) = fixture.post(
+        "/api/turns",
+        json!({"text":"follow up", "conversationId":first.conversation_id}),
+    );
+    assert_eq!(status, 202, "{value}");
+    let accepted: Accepted = serde_json::from_value(value.clone()).expect("iOS acceptance fields");
+    assert!(accepted.accepted);
+    assert_eq!(accepted.conversation_id, first.conversation_id);
+    assert_eq!(accepted.marble_name.as_deref(), Some("Ada"));
+    assert!(accepted.request_id.is_empty());
+    assert!(accepted.task_id.is_empty());
+    assert_eq!(value["dispatched"], json!([fixture.marble_id]));
+    assert_eq!(value["marbles"], json!(["Ada"]));
+    assert_eq!(value["swarm"], false);
+    assert_eq!(value["ok"], true);
+    assert!(value["prism"].is_object());
+    assert_eq!(fixture.settled("follow up").status, "completed");
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"text":"", "marbleId":fixture.marble_id})
+            )
+            .0,
+        400
+    );
+    assert_eq!(
+        fixture
+            .post("/api/turns", json!({"text":"hello", "marbleId":"missing"}))
+            .0,
+        404
+    );
+}
+
 #[test]
 fn named_turn_intake_handles_memory_and_resumes_held_messages_in_order() {
     if !python3_available() {

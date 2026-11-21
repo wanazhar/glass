@@ -1688,7 +1688,11 @@ fn the_model_can_be_changed_and_is_validated() {
 #[test]
 fn cancelling_a_queued_turn_removes_it_before_execution() {
     let (turn_tx, inbox) = TurnInbox::channel();
-    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let mut state = ProductState::default();
+    for index in 0..glass_marble::state::CONVERSATION_LIMIT {
+        state.conversation_mut(&format!("old-{index}")).updated_at = index as u64 + 1;
+    }
+    let server = server_with_turn_channel(state, turn_tx);
     let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"never run"}"#);
     assert_eq!(status, 202);
     let queued: Value = serde_json::from_str(&body).unwrap();
@@ -1700,6 +1704,21 @@ fn cancelling_a_queued_turn_removes_it_before_execution() {
     let doc: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(doc["tasks"][0]["status"], "cancelled");
     assert_eq!(doc["transcript"][0]["text"], "Cancelled before it started");
+    let mut state: ProductState = serde_json::from_str(&body).unwrap();
+    state.prune(glass_marble::worker::now_millis());
+    let recovered = format!("recovered-{id}");
+    assert!(
+        state
+            .conversations
+            .iter()
+            .any(|chat| chat.id == recovered && chat.updated_at > 100)
+    );
+    assert!(
+        state
+            .transcript
+            .iter()
+            .any(|entry| entry.conversation_id == recovered)
+    );
     assert_eq!(server.handle("POST", &route, "").0, 409);
     assert_eq!(
         server.handle("POST", "/api/tasks/missing/cancel", "").0,

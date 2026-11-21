@@ -3140,6 +3140,7 @@ impl MarbleServer {
                 let conversation_id = task.conversation_id.clone();
                 let prompt = task.prompt.clone();
                 let conversation = guard.conversation_mut(&conversation_id);
+                conversation.updated_at = now_millis();
                 if conversation.title.is_empty() {
                     conversation.title = prompt.chars().take(64).collect();
                 }

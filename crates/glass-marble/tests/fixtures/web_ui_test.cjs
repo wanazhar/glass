@@ -147,3 +147,17 @@ test('the stylesheet uses only the product type scale', () => {
   const css = fs.readFileSync(path.join(root, 'app.css'), 'utf8');
   for (const match of css.matchAll(/font-size:\s*(\d+)px/g)) assert.ok([12, 13, 15, 17, 22].includes(Number(match[1])), match[0]);
 });
+
+test('opaque message parts use their supplied safe Markdown fallback', () => {
+  const component = { type: 'future-component', payload: { html: '<script>unsafe()</script>' } };
+  const fallback = '**Summary** <img src=x onerror=unsafe()>';
+  assert.deepEqual(L.markdown(L.messagePart(component, fallback)), [{ tag: 'p', content: [
+    { tag: 'strong', text: 'Summary' }, { tag: 'text', text: ' <img src=x onerror=unsafe()>' },
+  ] }]);
+  for (const part of [component, {}, null, undefined]) {
+    assert.doesNotThrow(() => L.messagePart(part));
+    assert.deepEqual(L.markdown(L.messagePart(part)), []);
+  }
+  assert.equal(L.messagePart(component, { html: '<img src=x onerror=unsafe()>' }), '');
+  assert.equal(L.messagePart('Existing **text**', 'Ignored fallback'), 'Existing **text**');
+});

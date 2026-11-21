@@ -1,0 +1,36 @@
+import SwiftUI
+
+@main
+struct GlassApp: App {
+    @State private var model: AppModel = {
+        let model = AppModel()
+        if ProcessInfo.processInfo.arguments.contains("-GlassResetState") { model.resetForTesting() }
+        return model
+    }()
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environment(model)
+        }
+    }
+}
+
+struct RootView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if model.endpoint == nil || model.phase == .unpaired {
+                PairingView()
+            } else {
+                HostTabView()
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.phase == .unpaired)
+        .task(id: model.endpoint) {
+            if model.phase == .connecting { await model.refresh() }
+        }
+    }
+}

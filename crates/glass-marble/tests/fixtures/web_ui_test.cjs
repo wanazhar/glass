@@ -12,6 +12,17 @@ function appFunction(start, end, context, name) {
   return vm.runInNewContext(source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))) + ';' + name, context);
 }
 
+test('tasks retain their named owner before a chat exists and older tasks still resolve', () => {
+  const owner = appFunction('function taskPerson(', 'function activityPage(', {
+    person: id => people.find(person => person.id === id),
+    personForChat: id => id === 'ben-chat' ? people[2] : id === 'default-chat' ? people[0] : undefined,
+  }, 'taskPerson');
+  assert.equal(owner({ marbleId: 'a', conversationId: 'recovered-failed' }), people[1]);
+  assert.equal(owner({ conversationId: 'ben-chat' }), people[2]);
+  assert.equal(owner({ conversationId: 'default-chat' }), people[0]);
+  assert.equal(owner({}), undefined);
+});
+
 test('who answers follows whole-name, case-insensitive host rules', () => {
   assert.deepEqual(L.whoAnswers('hello', people).map(p => p.id), ['marble']);
   assert.deepEqual(L.whoAnswers('@ADA, check this', people).map(p => p.id), ['a']);

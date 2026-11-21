@@ -1033,6 +1033,7 @@ fn run_command(
             guard.tasks.retain(|task| task.id != queued_id);
             crate::everyone::claim(&mut guard, &queued_id, task_id);
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: task_id.to_string(),
                 conversation_id: conversation_id.to_string(),
                 status: "running".into(),

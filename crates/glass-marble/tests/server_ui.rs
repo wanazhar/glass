@@ -56,6 +56,7 @@ fn test_state() -> ProductState {
         lane: 0,
     });
     state.tasks.push(TaskRecord {
+        marble_id: String::new(),
         id: "generation-fixture-1".into(),
         conversation_id: "durable-fixture-1".into(),
         status: "completed".into(),
@@ -1511,6 +1512,7 @@ fn a_correction_reaches_the_running_turn_and_idle_hosts_refuse_it() {
     let (steer_tx, steer_rx) = mpsc::channel();
     let mut state = ProductState::default();
     state.tasks.push(TaskRecord {
+        marble_id: String::new(),
         id: "t1".into(),
         conversation_id: "c1".into(),
         status: "running".into(),
@@ -1654,6 +1656,7 @@ fn transcript_pages_search_and_conversation_lifecycle() {
     // chat that is already gone — the delete must take both kinds of history
     // it owns, and the load path prunes what it does not.
     state.tasks.push(TaskRecord {
+        marble_id: String::new(),
         id: "t1".into(),
         conversation_id: "c1".into(),
         status: "completed".into(),
@@ -1759,6 +1762,7 @@ fn export_covers_the_whole_document_or_one_conversation() {
     let mut state = ProductState::default();
     state.conversation_mut("c1").title = "Notes".into();
     state.tasks.push(TaskRecord {
+        marble_id: String::new(),
         id: "t1".into(),
         conversation_id: "c1".into(),
         status: "completed".into(),
@@ -2233,6 +2237,7 @@ fn health_reports_the_runtime_the_document_and_the_backup() {
 fn retry_repeats_the_last_turn_that_did_not_finish() {
     let mut state = ProductState::default();
     state.tasks.push(TaskRecord {
+        marble_id: String::new(),
         id: "t-old".into(),
         conversation_id: "c1".into(),
         status: "completed".into(),
@@ -2242,6 +2247,7 @@ fn retry_repeats_the_last_turn_that_did_not_finish() {
         routine_id: String::new(),
     });
     state.tasks.push(TaskRecord {
+        marble_id: String::new(),
         id: "t-failed".into(),
         conversation_id: "c1".into(),
         status: "failed".into(),
@@ -2959,6 +2965,18 @@ impl NamedTurnFixture {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
+    fn completed(&self, prompt: &str) -> TaskRecord {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let task = self.settled(prompt);
+            if task.status == "completed" {
+                return task;
+            }
+            assert!(Instant::now() < deadline, "no completed task for {prompt}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 impl Drop for NamedTurnFixture {
@@ -3026,6 +3044,54 @@ fn named_followups_include_ios_acceptance_and_legacy_dispatch_fields() {
             .0,
         404
     );
+}
+
+#[test]
+fn held_first_chat_startup_failures_are_recorded_and_retry_to_the_named_marble() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("held-startup-failure");
+    std::fs::write(
+        &fixture.script,
+        "raise RuntimeError('fixture refuses startup')\n",
+    )
+    .unwrap();
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    for prompt in ["first startup failure", "second startup failure"] {
+        let (status, body) = fixture.post(
+            "/api/turns",
+            json!({"text":prompt, "marbleId":fixture.marble_id}),
+        );
+        assert_eq!(status, 202, "{body}");
+    }
+    assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+    let first = fixture.settled("first startup failure");
+    let second = fixture.settled("second startup failure");
+    for task in [&first, &second] {
+        assert_eq!(task.status, "failed");
+        assert_eq!(
+            serde_json::to_value(task).unwrap()["marbleId"],
+            fixture.marble_id
+        );
+    }
+    let saved = serde_json::to_value(fixture.server.state()).unwrap();
+    *fixture.state.lock().unwrap() = serde_json::from_value(saved).unwrap();
+    std::fs::write(
+        &fixture.script,
+        include_str!("fixtures/fake_glass_core_runtime.py"),
+    )
+    .unwrap();
+    let (status, body) = fixture.post("/api/turns/retry", json!({"taskId":first.id}));
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(body["marbleName"], "Ada");
+    let completed = fixture.completed("first startup failure");
+    assert_eq!(
+        serde_json::to_value(&completed).unwrap()["marbleId"],
+        fixture.marble_id
+    );
+    assert_ne!(completed.id, first.id);
+    assert!(fixture.state.lock().unwrap().control.queue.is_empty());
 }
 
 #[test]
@@ -3564,6 +3630,7 @@ fn removing_a_marble_deletes_its_chat_and_everyone_lines() {
             lane: 0,
         });
         guard.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-ada".into(),
             conversation_id: "conv-ada".into(),
             status: "completed".into(),

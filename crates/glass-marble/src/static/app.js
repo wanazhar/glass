@@ -462,6 +462,7 @@
         create.classList.add('identity-form'); create.dataset.form = 'create'; create.querySelector('.primary').textContent = t('Create Marble');
         page.append(create); return page;
     }
+    function taskPerson(task) { return person(task.marbleId) || personForChat(task.conversationId); }
     function activityPage() {
         const key = 'activity'; const page = el('div', 'page activity-page', errorNode(key));
         if (s.data.control.paused) page.append(el('div', 'paused-banner', el('p', '', t('New messages are paused. Resume when you are ready.')), button(t('Resume'), () => action(key, '/api/control/resume'))));
@@ -471,7 +472,7 @@
         runningNow.append(runningHeading);
         const active = tasks().filter(task => ['running', 'queued'].includes(task.status));
         if (!active.length && !s.data.control.queue?.length) runningNow.append(el('p', 'muted', t('No turns are running. Send a message to a Marble to start.')));
-        for (const task of active) runningNow.append(el('div', 'record', el('strong', '', (personForChat(task.conversationId)?.name || t('Marble')) + ' · ' + (task.status === 'queued' ? t('Queued') : t('Working'))), el('p', '', task.prompt), button(task.status === 'queued' ? t('Cancel') : t('Stop'), () => action(key, '/api/tasks/' + enc(task.id) + '/cancel'))));
+        for (const task of active) runningNow.append(el('div', 'record', el('strong', '', (taskPerson(task)?.name || t('Marble')) + ' · ' + (task.status === 'queued' ? t('Queued') : t('Working'))), el('p', '', task.prompt), button(task.status === 'queued' ? t('Cancel') : t('Stop'), () => action(key, '/api/tasks/' + enc(task.id) + '/cancel'))));
         for (const item of s.data.control.queue || []) if (!active.some(task => task.id === item.id)) runningNow.append(el('div', 'record', el('strong', '', (person(item.marbleId)?.name || personForChat(item.conversationId)?.name || t('Marble')) + t(s.data.control.paused ? ' · Waiting for resume' : ' · Queued')), el('p', '', item.text), button(t('Cancel'), () => action(key, '/api/tasks/' + enc(item.id) + '/cancel')))); page.append(runningNow);
         const scheduled = section(t('Scheduled'));
         if (!s.data.routines?.routines?.length) scheduled.append(el('p', 'muted', t('No routines yet. Choose Add routine to schedule a message.')));
@@ -496,7 +497,7 @@
         scheduled.append(disclosure(t('Quiet hours for scheduled messages'), form('routine-quiet', quiet.fields, () => action('routine-quiet', '/api/routines/quiet', quiet.read())), 'routine-quiet')); page.append(scheduled);
         const recent = section(t('Recent'));
         if (!L.recentTasks(tasks()).length) recent.append(el('p', 'muted', t('No finished turns yet. Your recent work will appear here.')));
-        for (const task of L.recentTasks(tasks())) recent.append(el('div', 'record', el('strong', '', personForChat(task.conversationId)?.name || t('Marble')), el('p', '', task.prompt), el('p', 'small muted', task.status), el('div', 'actions', button(t('Open chat'), () => { const p = personForChat(task.conversationId); if (p?.isDefault) s.defaultChat = task.conversationId; location.hash = chatRoute(p?.id || 'marble'); }), ...(['failed', 'cancelled', 'interrupted'].includes(task.status) ? [retry(task)] : []))));
+        for (const task of L.recentTasks(tasks())) recent.append(el('div', 'record', el('strong', '', taskPerson(task)?.name || t('Marble')), el('p', '', task.prompt), el('p', 'small muted', task.status), el('div', 'actions', button(t('Open chat'), () => { const p = taskPerson(task); if (p?.isDefault) s.defaultChat = task.conversationId; location.hash = chatRoute(p?.id || 'marble'); }), ...(['failed', 'cancelled', 'interrupted'].includes(task.status) ? [retry(task)] : []))));
         page.append(recent); return page;
     }
     function quietFields(value) {

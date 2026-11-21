@@ -795,12 +795,17 @@ impl PrismPool {
             let prompt = prompt.clone();
             let marble_id = marble.id.clone();
             let marble_name = marble.name.clone();
+            let target = marble.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("glass-marble-prism-{marble_id}"))
-                .spawn(move || pool.run_marble(&marble, root, &prompt));
+                .spawn(move || pool.run_marble(&target, root, &prompt));
             if let Err(error) = spawned {
                 tracing::error!(%error, marble = %marble_name, "could not start a prism turn");
-                self.block(&marble_id, &format!("could not start the turn: {error}"));
+                self.fail_before_acceptance(
+                    &marble,
+                    text,
+                    &format!("could not start the turn: {error}"),
+                );
             }
         }
         Ok(PrismDispatch { ids, names, swarm })
@@ -1115,7 +1120,7 @@ impl PrismPool {
         let engine = match self.engine(marble, &root) {
             Ok(engine) => engine,
             Err(error) => {
-                self.block(&marble.id, &error);
+                self.fail_before_acceptance(marble, text, &error);
                 self.resume_held();
                 return;
             }
@@ -1176,6 +1181,7 @@ impl PrismPool {
                     record.task_ids.push(task_id.to_string());
                 }
                 state.upsert_task(TaskRecord {
+                    marble_id: marble.id.clone(),
                     id: task_id.to_string(),
                     conversation_id: conversation_id.to_string(),
                     status: "running".into(),
@@ -1338,20 +1344,50 @@ impl PrismPool {
         self.resume_held();
     }
 
-    /// Leave a marble visibly blocked, with the reason it could not work.
-    fn block(&self, id: &str, error: &str) {
+    fn fail_before_acceptance(&self, marble: &PrismMarble, text: &str, error: &str) {
+        let task_id = format!("failed-{}", crate::next_request_id());
         let snapshot = {
             let mut state = self.lock_state();
-            state.prism.note_settled(id, "failed", error);
+            let conversation_id = if marble.conversation_id.is_empty() {
+                format!("recovered-{task_id}")
+            } else {
+                marble.conversation_id.clone()
+            };
+            let now = now_millis();
+            let conversation = state.conversation_mut(&conversation_id);
+            if conversation.title.is_empty() {
+                conversation.title = format!("{} · {}", marble.name, truncate(text, 64));
+            }
+            conversation.updated_at = now;
+            conversation.task_ids.push(task_id.clone());
+            state.upsert_task(TaskRecord {
+                id: task_id.clone(),
+                conversation_id: conversation_id.clone(),
+                marble_id: marble.id.clone(),
+                status: "failed".into(),
+                owner: "prism".into(),
+                prompt: text.to_string(),
+                at: now,
+                ..Default::default()
+            });
+            state.push_transcript(TranscriptEntry {
+                conversation_id,
+                task_id: task_id.clone(),
+                kind: "system".into(),
+                text: format!("{} could not start: {error}", marble.name),
+                at: now,
+                ..Default::default()
+            });
+            state.prism.note_settled(&marble.id, "failed", error);
             state.bump();
             state.clone()
         };
         self.persist(&snapshot);
         self.events.publish(
             "",
-            "",
+            &task_id,
             "prism",
-            json!({ "marble": id, "status": "failed", "message": error }),
+            json!({ "marble": marble.id, "status": "failed", "message": error }),
         );
     }
 

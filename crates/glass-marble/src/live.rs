@@ -417,6 +417,7 @@ mod tests {
         let journal = LiveStore::in_data_dir(&dir);
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "task-1".into(),
             conversation_id: "conv-1".into(),
             status: "running".into(),
@@ -479,6 +480,7 @@ mod tests {
         let journal = LiveStore::in_data_dir(&dir);
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "task-1".into(),
             conversation_id: "conv-1".into(),
             status: "completed".into(),

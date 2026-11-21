@@ -674,6 +674,7 @@ fn work_on_a_lane_that_never_started_fails_instead_of_staying_queued() {
     {
         let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
         guard.upsert_task(TaskRecord {
+            marble_id: String::new(),
             id: queued_id.clone(),
             conversation_id: String::new(),
             status: "queued".into(),

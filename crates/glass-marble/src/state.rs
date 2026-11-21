@@ -101,6 +101,9 @@ pub struct ConversationRecord {
 pub struct TaskRecord {
     pub id: String,
     pub conversation_id: String,
+    /// Named target, including turns that failed before a chat existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub marble_id: String,
     /// `queued`, `running`, `completed`, `cancelled`, `failed`, or
     /// `interrupted` when the process stopped mid-turn.
     pub status: String,
@@ -745,6 +748,7 @@ mod tests {
         assert_eq!(state.conversations[0].title, "");
         assert_eq!(state.tasks[0].at, 0);
         assert_eq!(state.tasks[0].routine_id, "");
+        assert_eq!(state.tasks[0].marble_id, "");
         assert_eq!(state.transcript[0].task_id, "");
         assert!(state.memory.facts.is_empty());
         assert!(state.routines.routines.is_empty());
@@ -755,6 +759,7 @@ mod tests {
 
     fn settled_task(id: &str, at: u64) -> TaskRecord {
         TaskRecord {
+            marble_id: String::new(),
             id: id.into(),
             conversation_id: "c1".into(),
             status: "completed".into(),
@@ -822,6 +827,7 @@ mod tests {
         assert!(state.search_transcript("nothing here", 10).is_empty());
 
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t2".into(),
             conversation_id: "c1".into(),
             status: "running".into(),
@@ -848,6 +854,7 @@ mod tests {
                 .push(settled_task(&format!("t{index}"), index as u64));
         }
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "running".into(),
             conversation_id: "c1".into(),
             status: "running".into(),
@@ -865,6 +872,7 @@ mod tests {
     fn restarting_marks_running_turns_interrupted() {
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t1".into(),
             conversation_id: "c1".into(),
             status: "running".into(),
@@ -890,6 +898,7 @@ mod tests {
         let mut state = ProductState::default();
         state.conversation_mut("c1").title = "chat".into();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "queued-1".into(),
             conversation_id: "c1".into(),
             status: "queued".into(),
@@ -913,6 +922,7 @@ mod tests {
         // and the explanation land in a chat that stays open.
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "queued-9".into(),
             conversation_id: String::new(),
             status: "queued".into(),
@@ -960,6 +970,7 @@ mod tests {
     fn the_orphan_prune_keeps_queued_work_without_a_conversation() {
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "queued-3".into(),
             conversation_id: String::new(),
             status: "queued".into(),
@@ -1019,6 +1030,7 @@ mod everyone_tests {
             lane: 0,
         });
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-1".into(),
             conversation_id: "c-1".into(),
             status: "completed".into(),
@@ -1051,6 +1063,7 @@ mod everyone_tests {
     fn everyone_entries_quoting_dead_tasks_are_pruned() {
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-live".into(),
             conversation_id: "c".into(),
             status: "completed".into(),

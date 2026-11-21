@@ -457,6 +457,7 @@ mod tests {
         let mut state = ProductState::default();
         state.conversation_mut("kept").title = "real".into();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-kept".into(),
             conversation_id: "kept".into(),
             status: "completed".into(),
@@ -466,6 +467,7 @@ mod tests {
             routine_id: String::new(),
         });
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-orphan".into(),
             conversation_id: "gone".into(),
             status: "interrupted".into(),

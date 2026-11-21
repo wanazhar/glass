@@ -29,6 +29,9 @@ struct ComposerView: View {
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("composer.mode")
             }
+            if dictation.isListening {
+                RecordingBar(dictation: dictation)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 attachMenu
                 field
@@ -54,6 +57,10 @@ struct ComposerView: View {
                 composer.showingEditor = false
                 Task { await composer.send(active: active, canWrite: canWrite) }
             }
+        }
+        .sensoryFeedback(trigger: dictation.isListening) { _, listening in listening ? .start : .stop }
+        .onChange(of: dictation.isListening) { _, listening in
+            AccessibilityNotification.Announcement(listening ? "Recording. Speak now." : "Recording stopped.").post()
         }
         .onDisappear { dictation.stop(); composer.flushDraft() }
     }
@@ -89,7 +96,7 @@ struct ComposerView: View {
         GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
                 if composer.trimmed.isEmpty {
-                    Button(dictation.isListening ? "Stop dictation" : "Dictate", systemImage: dictation.isListening ? "waveform" : "mic") {
+                    Button(dictation.isListening ? "Stop Recording" : "Dictate", systemImage: dictation.isListening ? "mic.slash" : "mic") {
                         let base = composer.text.isEmpty ? "" : composer.text + " "
                         Task { await dictation.toggle { composer.text = base + $0 } }
                     }
@@ -310,5 +317,60 @@ struct ChecklistSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
+    }
+}
+
+/// Shown while dictation records: a red dot, elapsed time, a live input level and Stop.
+struct RecordingBar: View {
+    var dictation: Dictation
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(.red).frame(width: 10, height: 10)
+                .opacity(reduceMotion ? 1 : Double(0.5 + dictation.level / 2))
+                .accessibilityHidden(true)
+            Text("Recording").font(.subheadline.weight(.semibold))
+            if let start = dictation.startedAt {
+                TimelineView(.periodic(from: start, by: 1)) { context in
+                    Text(Duration.seconds(max(0, context.date.timeIntervalSince(start).rounded(.down))),
+                         format: .time(pattern: .minuteSecond))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("composer.recording.elapsed")
+            }
+            LevelMeter(level: dictation.level)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Stop", systemImage: "stop.fill") { dictation.stop() }
+                .tint(.red)
+                .glassButtonStyle(prominent: true)
+                .accessibilityIdentifier("composer.recording.stop")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(Color(.secondarySystemBackground), in: .capsule)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Recording")
+        .accessibilityIdentifier("composer.recording")
+    }
+}
+
+/// Bars that follow the microphone input level.
+struct LevelMeter: View {
+    var level: Float
+    private let weights: [Float] = [0.55, 0.8, 1, 0.8, 0.55, 0.7, 0.9]
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(weights.indices, id: \.self) { index in
+                Capsule()
+                    .fill(Color.red.opacity(0.8))
+                    .frame(width: 3, height: 4 + CGFloat(level * weights[index]) * 18)
+            }
+        }
+        .frame(height: 22)
+        .accessibilityHidden(true)
     }
 }

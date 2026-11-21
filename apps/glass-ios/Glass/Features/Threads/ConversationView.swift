@@ -162,75 +162,71 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func bottomBar(_ proxy: ScrollViewProxy) -> some View {
-        GlassGroup(spacing: 8) {
-            VStack(spacing: 8) {
-                if let interaction = conversation.timeline.interaction {
-                    // The decision is docked above the composer so it stays in view,
-                    // scrolling on its own when it is taller than the space allows.
-                    ScrollView {
-                        InteractionView(interaction: interaction, composer: conversation.composer,
-                                        canWrite: conversation.canWrite, secretsAllowed: secretsBlocked)
-                            .id(interaction.id)
-                            .onGeometryChange(for: CGFloat.self, of: \.size.height) { interactionHeight = $1 }
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .frame(height: min(max(interactionHeight, 44), 340))
+        VStack(spacing: 8) {
+            if let interaction = conversation.timeline.interaction {
+                // The decision is docked above the composer so it stays in view,
+                // scrolling on its own when it is taller than the space allows.
+                ScrollView {
+                    InteractionView(interaction: interaction, composer: conversation.composer,
+                                    canWrite: conversation.canWrite, secretsAllowed: secretsBlocked)
+                        .id(interaction.id)
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { interactionHeight = $1 }
                 }
-                if let notice = conversation.timeline.notice
-                    ?? (conversation.error ?? conversation.composer.error).map({ Timeline.Notice(text: $0, isError: true) })
-                    ?? conversation.composer.confirmation.map({ Timeline.Notice(text: $0, isError: false) }) {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                            .foregroundStyle(notice.isError ? .red : .accentColor)
-                        Text(notice.text).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
-                        Button("Dismiss", systemImage: "xmark") {
-                            conversation.dismissNotice()
-                            conversation.error = nil
-                            conversation.composer.error = nil
-                            conversation.composer.confirmation = nil
-                        }
-                        .labelStyle(.iconOnly)
-                        .font(.footnote)
-                    }
-                    .padding(12)
-                    .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12, style: .continuous))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("conversation.notice")
-                }
-                HStack(spacing: 8) {
-                    statusPill
-                    if let activity = conversation.timeline.activity {
-                        HStack(spacing: 6) {
-                            ActivityIndicator()
-                            Text(activity).font(.caption.weight(.medium))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .floatingGlass()
-                        .accessibilityIdentifier("conversation.activity")
-                    }
-                    Spacer()
-                    if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
-                        Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
-                            .font(.caption)
-                            .glassButtonStyle()
-                            .accessibilityIdentifier("conversation.checklist")
-                    }
-                    if !following {
-                        Button("Latest", systemImage: "arrow.down") {
-                            following = true
-                            withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-                        }
-                        .glassButtonStyle()
-                        .accessibilityIdentifier("conversation.latest")
-                    }
-                }
-                ComposerView(conversation: conversation)
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: min(max(interactionHeight, 44), 340))
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 6)
-            .frame(maxWidth: 760)
+            if let notice = conversation.timeline.notice
+                ?? (conversation.error ?? conversation.composer.error).map({ Timeline.Notice(text: $0, isError: true) })
+                ?? conversation.composer.confirmation.map({ Timeline.Notice(text: $0, isError: false) }) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                        .foregroundStyle(notice.isError ? .red : .accentColor)
+                    Text(notice.text).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Dismiss", systemImage: "xmark") {
+                        conversation.dismissNotice()
+                        conversation.error = nil
+                        conversation.composer.error = nil
+                        conversation.composer.confirmation = nil
+                    }
+                    .labelStyle(.iconOnly)
+                    .font(.footnote)
+                }
+                .padding(12)
+                .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12, style: .continuous))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("conversation.notice")
+            }
+            HStack(spacing: 8) {
+                statusPill
+                if let activity = conversation.timeline.activity {
+                    HStack(spacing: 6) {
+                        ActivityIndicator()
+                        Text(activity).font(.caption.weight(.medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.activity")
+                }
+                Spacer()
+                if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
+                    Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
+                        .font(.caption)
+                        .glassButtonStyle()
+                        .accessibilityIdentifier("conversation.checklist")
+                }
+                if !following {
+                    Button("Latest", systemImage: "arrow.down") {
+                        following = true
+                        withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                    }
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.latest")
+                }
+            }
+            ComposerView(conversation: conversation)
         }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+        .frame(maxWidth: 760)
     }
 
     private var secretsBlocked: String? {
@@ -249,9 +245,6 @@ struct ConversationView: View {
         return StatusLabel(title: title, color: tint)
             .font(.caption)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .floatingGlass()
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("conversation.connection")
             .accessibilityValue("\(title), \(conversation.resets) resets")

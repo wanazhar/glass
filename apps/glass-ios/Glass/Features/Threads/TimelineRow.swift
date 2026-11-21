@@ -111,7 +111,7 @@ private struct ToolCard: View {
                 Image(systemName: symbol)
                     .foregroundStyle(failed == true ? .red : failed == false ? .green : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.footnote.weight(.semibold))
+                    Text(CommandLabel.title(name)).font(.footnote.weight(.semibold))
                     if !summary.isEmpty {
                         Text(summary)
                             .font(.system(.caption, design: .monospaced))

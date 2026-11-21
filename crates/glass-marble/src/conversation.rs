@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver},
 };
 use std::time::{Duration, Instant};
@@ -241,6 +241,7 @@ fn call_path(call: &ToolRequest) -> String {
 
 /// Durable conversation handle over the local runtime.
 pub struct Conversation {
+    engine_id: u64,
     client: RuntimeClient,
     cwd: PathBuf,
     host: HostPolicy,
@@ -357,6 +358,10 @@ impl Conversation {
             instructions_fn: None,
             outstanding: Vec::new(),
             buffered: VecDeque::new(),
+            engine_id: {
+                static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
+                NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed)
+            },
         })
     }
 
@@ -660,7 +665,10 @@ impl Conversation {
             Err(error) => {
                 let error = self.transport_error(MarbleError::Io(error));
                 let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
-                guard.presence.runtime.note_failure(error.to_string());
+                guard
+                    .presence
+                    .runtime
+                    .note_engine_failure(self.engine_id, error.to_string());
                 guard.bump();
                 self.publish(
                     "runtime",
@@ -668,6 +676,10 @@ impl Conversation {
                 );
             }
         }
+    }
+
+    pub(crate) fn engine_id(&self) -> u64 {
+        self.engine_id
     }
 
     /// Start one durable task; returns the runtime response id to await.

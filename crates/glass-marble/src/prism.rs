@@ -1248,6 +1248,12 @@ impl PrismPool {
                 let snapshot = {
                     let mut state = self.lock_state();
                     let now = now_millis();
+                    if conversation.transport_failed() {
+                        state
+                            .presence
+                            .runtime
+                            .note_engine_failure(conversation.engine_id(), error.to_string());
+                    }
                     if let Some((conversation_id, task_id)) = &accepted {
                         self.task_depths
                             .lock()

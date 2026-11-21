@@ -10,6 +10,7 @@ use crate::state::ProductState;
 use crate::worker::now_millis;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 /// Whether the engine behind the assistant is answering.
 ///
@@ -32,6 +33,8 @@ pub struct RuntimeHealth {
     /// engine is visible rather than silently forgiven.
     #[serde(default)]
     pub last_error: String,
+    #[serde(skip)]
+    failed_engines: BTreeSet<u64>,
 }
 
 fn healthy() -> String {
@@ -45,6 +48,7 @@ impl Default for RuntimeHealth {
             restarts: 0,
             last_restart_at: 0,
             last_error: String::new(),
+            failed_engines: BTreeSet::new(),
         }
     }
 }
@@ -62,14 +66,26 @@ impl RuntimeHealth {
 
     /// Record a successful in-place restart.
     pub fn note_restart(&mut self) {
-        self.health = healthy();
+        self.note_ok();
         self.restarts = self.restarts.saturating_add(1);
         self.last_restart_at = now_millis();
     }
 
     /// Mark the engine as answering again without counting a restart.
     pub fn note_ok(&mut self) {
-        self.health = healthy();
+        if self.failed_engines.is_empty() {
+            self.health = healthy();
+        }
+    }
+
+    pub(crate) fn note_engine_failure(&mut self, engine: u64, message: impl Into<String>) {
+        self.failed_engines.insert(engine);
+        self.note_failure(message);
+    }
+
+    pub(crate) fn note_engine_restart(&mut self, engine: u64) {
+        self.failed_engines.remove(&engine);
+        self.note_restart();
     }
 
     /// Presence document: one small block a surface can trust.
@@ -123,6 +139,7 @@ impl PresenceState {
         self.recovered_tasks = 0;
         self.instance = instance_name();
         // A fresh process has a fresh engine; the restart history stays visible.
+        self.runtime.failed_engines.clear();
         self.runtime.note_ok();
     }
 
@@ -351,6 +368,20 @@ mod tests {
             conflict: None,
         });
         assert_eq!(presence.status(&state), "waiting");
+    }
+
+    #[test]
+    fn a_healthy_lane_cannot_clear_another_engines_failure() {
+        let mut runtime = RuntimeHealth::default();
+        runtime.note_engine_failure(1, "first engine closed");
+        runtime.note_ok();
+        assert!(!runtime.is_ok());
+        runtime.note_engine_failure(2, "second engine closed");
+        runtime.note_engine_restart(1);
+        assert!(!runtime.is_ok());
+        runtime.note_engine_restart(2);
+        assert!(runtime.is_ok());
+        assert_eq!(runtime.restarts, 2);
     }
 
     #[test]

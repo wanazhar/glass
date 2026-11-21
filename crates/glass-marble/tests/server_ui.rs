@@ -1911,7 +1911,17 @@ fn idle_engine_exit_makes_health_unhealthy() {
         ToolRouter::new(&root).unwrap(),
         events.clone(),
     )
-    .unwrap();
+    .unwrap()
+    .with_respawn(|| {
+        let mut command = Command::new("python3");
+        command
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fake_glass_core_runtime.py"
+            ))
+            .arg("runtime");
+        command
+    });
     let turn_tx = spawn_single_lane(
         conversation,
         state.clone(),
@@ -1923,10 +1933,10 @@ fn idle_engine_exit_makes_health_unhealthy() {
     );
     let server = MarbleServer::new(MarbleServerParts {
         listener: TcpListener::bind("127.0.0.1:0").unwrap(),
-        state,
+        state: state.clone(),
         store: None,
         approvals: ApprovalInbox::default(),
-        events,
+        events: events.clone(),
         turn_tx,
         steer_tx: mpsc::channel().0,
         policy: AccessPolicy::new(None),
@@ -1943,6 +1953,69 @@ fn idle_engine_exit_makes_health_unhealthy() {
         }
         assert!(Instant::now() < deadline, "{body}");
         std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut python = Command::new("python3");
+    python
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fake_glass_core_runtime.py"
+        ))
+        .arg("runtime");
+    let healthy = Conversation::spawn_with_router(
+        python,
+        &root,
+        &root.join("healthy-sessions"),
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        events.clone(),
+    )
+    .unwrap();
+    let healthy_tx = spawn_single_lane(
+        healthy,
+        state.clone(),
+        None,
+        LiveStore::in_data_dir(&root),
+        events,
+        Duration::from_secs(10),
+        CancelRegistry::default(),
+    );
+    let healthy_server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: state.clone(),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: healthy_tx,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+    for (surface, prompt) in [
+        (&healthy_server, "healthy lane"),
+        (&server, "restarted lane"),
+    ] {
+        let (status, body) =
+            surface.handle("POST", "/api/turns", &json!({"text": prompt}).to_string());
+        assert_eq!(status, 202, "{body}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if state
+                .lock()
+                .unwrap()
+                .tasks
+                .iter()
+                .any(|task| task.prompt == prompt && task.status == "completed")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{prompt} did not complete");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            server.handle("GET", "/healthz", "").0,
+            if prompt == "healthy lane" { 503 } else { 200 }
+        );
     }
 }
 

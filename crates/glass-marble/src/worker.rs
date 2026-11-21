@@ -933,7 +933,10 @@ fn run_command(
         Ok(true) => {
             let (snapshot, restarts) = {
                 let mut guard = lock(state);
-                guard.presence.runtime.note_restart();
+                guard
+                    .presence
+                    .runtime
+                    .note_engine_restart(conversation.engine_id());
                 guard.bump();
                 let restarts = guard.presence.runtime.restarts;
                 (guard.clone(), restarts)
@@ -951,7 +954,10 @@ fn run_command(
         Err(error) => {
             {
                 let mut guard = lock(state);
-                guard.presence.runtime.note_failure(error.to_string());
+                guard
+                    .presence
+                    .runtime
+                    .note_engine_failure(conversation.engine_id(), error.to_string());
                 guard.tasks.retain(|task| task.id != queued_id);
                 guard.bump();
             }
@@ -1184,6 +1190,12 @@ fn run_command(
             }
         }
         Err(error) => {
+            if conversation.transport_failed() {
+                lock(state)
+                    .presence
+                    .runtime
+                    .note_engine_failure(conversation.engine_id(), error.to_string());
+            }
             if let Some(sender) = sender.take() {
                 // The turn never started, so the queued placeholder must not
                 // outlive it and look like work that is still waiting.
@@ -1201,13 +1213,9 @@ fn run_command(
             }
             if let Some(identity) = &accepted_turn {
                 cancels.forget(&identity.task_id);
-                let transport_failed = conversation.transport_failed();
                 let snapshot = {
                     let mut guard = lock(state);
                     guard.presence.mark_settled();
-                    if transport_failed {
-                        guard.presence.runtime.note_failure(error.to_string());
-                    }
                     guard.bump();
                     guard.set_task_status(&identity.task_id, "failed");
                     guard.routines.note_settled(&identity.task_id, "failed");

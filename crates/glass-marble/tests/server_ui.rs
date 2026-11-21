@@ -1307,6 +1307,18 @@ fn transcript_pages_search_and_conversation_lifecycle() {
             at: 10 * (index as u64 + 1),
         });
     }
+    // A settled task from this conversation, and an orphan left behind by a
+    // chat that is already gone — the delete must take both kinds of history
+    // it owns, and the load path prunes what it does not.
+    state.tasks.push(TaskRecord {
+        id: "t1".into(),
+        conversation_id: "c1".into(),
+        status: "completed".into(),
+        owner: "agent".into(),
+        prompt: "done".into(),
+        at: 5,
+        routine_id: String::new(),
+    });
     let server = server_with(
         state,
         ApprovalInbox::default(),
@@ -1347,6 +1359,12 @@ fn transcript_pages_search_and_conversation_lifecycle() {
     let (_, body) = server.handle("GET", "/api/transcript?conversationId=c1", "");
     let page: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(page["entries"].as_array().map(Vec::len), Some(0));
+    // Its tasks go with it: nothing is left to render as orphaned "recent
+    // turns" on the chat list.
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    let lean: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(lean["tasks"].as_array().map(Vec::len), Some(0));
+    assert_eq!(lean["conversations"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         server
             .handle("POST", "/api/conversations/c1/rename", r#"{"title":"x"}"#)
@@ -2023,6 +2041,210 @@ fn tls_and_plain_http_share_one_port() {
     assert_eq!(body["certSha256"], serde_json::json!(leaf));
     let expected = glass_marble::tls::tls_proof("tokentest", &nonce, &leaf);
     assert_eq!(body["proof"], serde_json::json!(expected));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A message held while admission is paused still runs to completion when the
+/// queue resumes — the `202 queued` promise is kept, not just relayed.
+#[test]
+fn a_paused_queue_resumes_and_the_turn_completes() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-resume-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let storage_dir = root.join("sessions");
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let mut python = Command::new("python3");
+    python.arg(&script).arg("runtime");
+    let conversation = Conversation::spawn_with_router(
+        python,
+        &root,
+        &storage_dir,
+        HostPolicy::approving(),
+        ApprovalInbox::default(),
+        ToolRouter::new(&root).unwrap(),
+        events.clone(),
+    )
+    .unwrap();
+    let turn_tx = spawn_single_lane(
+        conversation,
+        Arc::clone(&state),
+        None,
+        LiveStore::in_data_dir(&root),
+        events.clone(),
+        Duration::from_secs(60),
+        CancelRegistry::default(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+
+    assert_eq!(server.handle("POST", "/api/control/pause", "").0, 200);
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"resume me"}"#);
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["queued"],
+        json!(true)
+    );
+    assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let (status, body) = server.handle("GET", "/api/state", "");
+        assert_eq!(status, 200);
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        let tasks = doc["tasks"].as_array().unwrap();
+        if let Some(task) = tasks
+            .iter()
+            .find(|task| task["prompt"] == json!("resume me"))
+        {
+            if task["status"] == json!("completed") {
+                let entries: Vec<&Value> = doc["transcript"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry["taskId"] == task["id"])
+                    .collect();
+                let kinds: Vec<&str> = entries
+                    .iter()
+                    .filter_map(|entry| entry["kind"].as_str())
+                    .collect();
+                assert_eq!(kinds, ["user", "assistant"], "{doc}");
+                assert_eq!(entries[1]["text"], json!("handled resume me"));
+                break;
+            }
+            assert_ne!(
+                task["status"],
+                json!("failed"),
+                "the resumed turn failed: {doc}"
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "resumed turn did not settle: {body}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A queued placeholder is a promise. When the lane that would run it can
+/// never start, the row fails in bounded time instead of sitting in `queued`
+/// until a restart turns it "interrupted".
+#[test]
+fn a_lane_that_cannot_start_fails_the_queued_placeholder() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-deadlane-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let storage_dir = root.join("sessions");
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let factory: LaneFactory = {
+        let events = events.clone();
+        let root = root.clone();
+        let storage_dir = storage_dir.clone();
+        Arc::new(move |lane| {
+            if lane > 0 {
+                // A spawned lane takes its engine-start failure on its own
+                // thread. The sleep keeps the admission window from answering
+                // the turn before the failure, which is the `202 queued` path
+                // under test.
+                std::thread::sleep(Duration::from_secs(3));
+                return Err(MarbleError::Protocol("no engine for this lane".into()));
+            }
+            let mut python = Command::new("python3");
+            python.arg(&script).arg("runtime");
+            Conversation::spawn_with_router(
+                python,
+                &root,
+                &storage_dir,
+                HostPolicy::approving(),
+                ApprovalInbox::default(),
+                ToolRouter::new(&root).unwrap(),
+                events.clone(),
+            )
+        })
+    };
+    let pool = spawn_turn_pool(
+        2,
+        factory,
+        Arc::clone(&state),
+        None,
+        LiveStore::in_data_dir(&root),
+        events.clone(),
+        Duration::from_secs(60),
+        CancelRegistry::default(),
+    )
+    .expect("a two lane pool");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: pool.sender,
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+
+    // A fresh chat picks the least loaded lane — the one that cannot start.
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"anyone there"}"#);
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["queued"],
+        json!(true)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (status, body) = server.handle("GET", "/api/state", "");
+        assert_eq!(status, 200);
+        let doc: Value = serde_json::from_str(&body).unwrap();
+        let tasks = doc["tasks"].as_array().unwrap();
+        if let Some(task) = tasks
+            .iter()
+            .find(|task| task["prompt"] == json!("anyone there"))
+        {
+            if task["status"] == json!("failed") {
+                break;
+            }
+            assert_eq!(
+                task["status"],
+                json!("queued"),
+                "the placeholder settled to an unexpected state: {doc}"
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the queued placeholder never failed: {body}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     let _ = std::fs::remove_dir_all(&root);
 }

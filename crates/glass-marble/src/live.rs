@@ -144,6 +144,30 @@ impl LiveStore {
         Some(turn)
     }
 
+    /// Remove journal entries that belong to one conversation. Deleting a
+    /// conversation clears its in-flight record too; a turn that is still
+    /// running cannot be deleted, so anything left for it is finished.
+    pub fn remove_conversation(&self, conversation_id: &str) -> usize {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for path in entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        {
+            let belongs = fs::read_to_string(&path)
+                .ok()
+                .and_then(|encoded| serde_json::from_str::<LiveRecord>(&encoded).ok())
+                .is_some_and(|record| record.conversation_id == conversation_id);
+            if belongs && fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Fold every journal entry left by a previous process into the document.
     ///
     /// A recovered turn is marked interrupted, its partial reply is appended to
@@ -197,6 +221,20 @@ impl LiveStore {
 fn apply(record: &LiveRecord, state: &mut ProductState) {
     let now = now_millis();
     let conversation_id = record.conversation_id.trim();
+    // A journal entry outlives its turn only when the process died mid-flight.
+    // If the task already settled, the entry is a leftover from a finish() that
+    // raced the stop: the turn's real outcome is in the document, and replaying
+    // it would both rewrite the status and append a bogus "stopped mid-turn"
+    // note beside the reply that did arrive.
+    let already_settled = !record.task_id.is_empty()
+        && state
+            .tasks
+            .iter()
+            .find(|task| task.id == record.task_id)
+            .is_some_and(|task| crate::state::settled(&task.status));
+    if already_settled {
+        return;
+    }
     if !conversation_id.is_empty() {
         let conversation = state.conversation_mut(conversation_id);
         conversation.updated_at = now;
@@ -341,6 +379,36 @@ mod tests {
     }
 
     #[test]
+    fn remove_conversation_clears_only_its_own_journal() {
+        let dir = dir("remove");
+        let journal = LiveStore::in_data_dir(&dir);
+        let mut first = journal
+            .begin("gone work", "Marble", "gone", "req-1")
+            .unwrap();
+        first.note_task("gone", "task-1");
+        let mut second = journal
+            .begin("kept work", "Marble", "kept", "req-2")
+            .unwrap();
+        second.note_task("kept", "task-2");
+
+        assert_eq!(journal.remove_conversation("gone"), 1);
+        assert_eq!(journal.remove_conversation("gone"), 0);
+
+        // The kept turn still recovers; the removed one is gone for good.
+        let mut state = ProductState::default();
+        state.conversation_mut("kept");
+        let outcome = journal.recover(&mut state);
+        assert_eq!(outcome.turns, 1);
+        assert!(
+            state
+                .transcript
+                .iter()
+                .all(|entry| entry.conversation_id != "gone")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_crashed_turn_recovers_its_partial_reply_once() {
         let dir = dir("partial");
         let journal = LiveStore::in_data_dir(&dir);
@@ -395,6 +463,41 @@ mod tests {
                 .count(),
             1
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_entry_for_a_settled_turn_rewrites_nothing() {
+        // finish() removes the journal file, but a stop that lands between the
+        // settled state write and the removal leaves a stale entry. Recovery
+        // must not flip the real outcome back to interrupted nor append a
+        // "stopped mid-turn" note beside the reply that did arrive.
+        let dir = dir("stale-settled");
+        let journal = LiveStore::in_data_dir(&dir);
+        let mut state = ProductState::default();
+        state.tasks.push(TaskRecord {
+            id: "task-1".into(),
+            conversation_id: "conv-1".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: "tidy this".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        {
+            let mut turn = journal
+                .begin("tidy this", "Marble", "conv-1", "req-1")
+                .unwrap();
+            turn.note_task("conv-1", "task-1");
+            std::thread::sleep(PARTIAL_INTERVAL + Duration::from_millis(50));
+            turn.progress("all done", "");
+            // Dropped without finish: the file survives as if stale.
+        }
+
+        let outcome = journal.recover(&mut state);
+        assert_eq!(outcome.turns, 1, "the entry is still folded in once");
+        assert_eq!(state.tasks[0].status, "completed");
+        assert!(state.transcript.is_empty(), "no replay, no note");
         let _ = fs::remove_dir_all(&dir);
     }
 

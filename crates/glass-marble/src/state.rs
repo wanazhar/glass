@@ -72,7 +72,7 @@ impl PruneSummary {
 }
 
 /// Whether a task can be trimmed without losing unfinished work.
-fn settled(status: &str) -> bool {
+pub(crate) fn settled(status: &str) -> bool {
     matches!(status, "completed" | "cancelled" | "failed" | "interrupted")
 }
 
@@ -311,6 +311,32 @@ impl ProductState {
         Ok(())
     }
 
+    /// Tasks recorded against a conversation that no longer exists. A deleted
+    /// conversation takes its own tasks with it, but older documents, quirk
+    /// restores, and test pollution leave orphans behind — rows that render as
+    /// "recent turns" for a chat nobody can open. Dropping them on load keeps
+    /// the document self-consistent.
+    pub fn prune_orphaned_tasks(&mut self) -> usize {
+        let known: std::collections::HashSet<&str> = self
+            .conversations
+            .iter()
+            .map(|conversation| conversation.id.as_str())
+            .collect();
+        let mut dropped = self.tasks.len();
+        // A queued placeholder legitimately has no conversation yet — the
+        // engine names the chat only when the turn starts, so keep it.
+        self.tasks.retain(|task| {
+            task.status == "queued" || known.contains(task.conversation_id.as_str())
+        });
+        dropped -= self.tasks.len();
+        // Transcript rows for a chat that is gone render nowhere; notes left
+        // by an older recovery carried no conversation at all.
+        let before = self.transcript.len();
+        self.transcript
+            .retain(|entry| known.contains(entry.conversation_id.as_str()));
+        dropped + before - self.transcript.len()
+    }
+
     /// Newest transcript entries whose text contains `query`.
     pub fn search_transcript(&self, query: &str, limit: usize) -> Vec<&TranscriptEntry> {
         let needle = query.trim().to_ascii_lowercase();
@@ -517,26 +543,82 @@ impl ProductState {
     /// tasks were recovered.
     pub fn recover_interrupted(&mut self) -> usize {
         let now = now_millis();
-        let recovered: Vec<(String, String)> = self
+        // `true` marks a turn that was running; `false` one still queued.
+        let recovered: Vec<(String, String, bool)> = self
             .tasks
             .iter_mut()
             .filter(|task| task.status == "running" || task.status == "queued")
             .map(|task| {
-                task.status = "interrupted".to_string();
-                (task.id.clone(), task.conversation_id.clone())
+                let was_running = task.status == "running";
+                task.status = if was_running {
+                    "interrupted".to_string()
+                } else {
+                    // The admission queue lives in the worker's channel, which
+                    // is memory only: a restart drops it, so a `202 queued`
+                    // answer can never be honoured. Fail the row honestly
+                    // instead of interrupting a turn that never ran.
+                    "failed".to_string()
+                };
+                (task.id.clone(), task.conversation_id.clone(), was_running)
             })
             .collect();
-        for (task_id, conversation_id) in &recovered {
+        for (task_id, conversation_id, was_running) in &recovered {
+            // A queued placeholder can carry no conversation — the engine only
+            // names the chat when the turn starts. Give it one now so the
+            // failed row, its prompt, and the explanation stay visible (and so
+            // the orphan prune keeps it).
+            let conversation_id = if conversation_id.is_empty() {
+                let synthetic = format!("recovered-{task_id}");
+                let prompt = self
+                    .tasks
+                    .iter()
+                    .find(|task| &task.id == task_id)
+                    .map(|task| task.prompt.clone())
+                    .unwrap_or_default();
+                {
+                    let conversation = self.conversation_mut(&synthetic);
+                    conversation.title = prompt.chars().take(64).collect();
+                    conversation.updated_at = now;
+                    if !conversation.task_ids.iter().any(|id| id == task_id) {
+                        conversation.task_ids.push(task_id.clone());
+                    }
+                }
+                if let Some(task) = self.tasks.iter_mut().find(|task| &task.id == task_id) {
+                    task.conversation_id = synthetic.clone();
+                }
+                self.push_transcript(TranscriptEntry {
+                    conversation_id: synthetic.clone(),
+                    kind: "user".into(),
+                    text: prompt,
+                    task_id: task_id.clone(),
+                    at: now.saturating_sub(1),
+                });
+                synthetic
+            } else {
+                conversation_id.clone()
+            };
+            let text = if *was_running {
+                "Marble restarted while this turn was running. It is marked interrupted; \
+                 send the message again to continue."
+                    .to_string()
+            } else {
+                "Marble restarted before this turn could run, and its place in line was lost. \
+                 It is marked failed; retry or send the message again."
+                    .to_string()
+            };
             self.push_transcript(TranscriptEntry {
-                conversation_id: conversation_id.clone(),
+                conversation_id,
                 kind: "system".into(),
-                text: "Marble restarted while this turn was running. It is marked interrupted; \
-                       send the message again to continue."
-                    .into(),
+                text,
                 task_id: task_id.clone(),
                 at: now,
             });
-            self.routines.note_settled(task_id, "interrupted");
+            let outcome = if *was_running {
+                "interrupted"
+            } else {
+                "failed"
+            };
+            self.routines.note_settled(task_id, outcome);
         }
         self.presence.recovered_tasks = recovered.len() as u64;
         // The roster is durable too, and a marble mid-dispatch is the case a
@@ -714,6 +796,96 @@ mod tests {
         assert_eq!(entry.kind, "system");
         assert!(entry.text.contains("restarted"));
         assert_eq!(state.recover_interrupted(), 0);
+    }
+
+    #[test]
+    fn restarting_fails_a_queued_turn_instead_of_interrupting_it() {
+        // A queued placeholder is a promise kept in a memory-only channel: the
+        // restart drops it, so the row fails with a reason rather than being
+        // interrupted as if the turn had run.
+        let mut state = ProductState::default();
+        state.conversation_mut("c1").title = "chat".into();
+        state.tasks.push(TaskRecord {
+            id: "queued-1".into(),
+            conversation_id: "c1".into(),
+            status: "queued".into(),
+            owner: "agent".into(),
+            prompt: "later".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        assert_eq!(state.recover_interrupted(), 1);
+        assert_eq!(state.tasks[0].status, "failed");
+        let entry = state.transcript.last().expect("a recovery note");
+        assert_eq!(entry.kind, "system");
+        assert!(entry.text.contains("before this turn could run"));
+        assert!(entry.text.contains("failed"));
+    }
+
+    #[test]
+    fn restarting_gives_a_conversationless_queued_turn_a_chat() {
+        // A message admitted before the engine named its conversation carried
+        // no conversation id. Failing it must not orphan the row — the prompt
+        // and the explanation land in a chat that stays open.
+        let mut state = ProductState::default();
+        state.tasks.push(TaskRecord {
+            id: "queued-9".into(),
+            conversation_id: String::new(),
+            status: "queued".into(),
+            owner: "agent".into(),
+            prompt: "what did I ask".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        assert_eq!(state.recover_interrupted(), 1);
+        let task = &state.tasks[0];
+        assert_eq!(task.status, "failed");
+        assert_eq!(task.conversation_id, "recovered-queued-9");
+        let conversation = state
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == "recovered-queued-9")
+            .expect("a recovered chat");
+        assert_eq!(conversation.title, "what did I ask");
+        assert_eq!(conversation.task_ids, vec!["queued-9".to_string()]);
+        let kinds: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter(|entry| entry.conversation_id == "recovered-queued-9")
+            .map(|entry| entry.kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["user", "system"]);
+        // And the orphan prune agrees this is not an orphan.
+        assert_eq!(state.prune_orphaned_tasks(), 0);
+    }
+
+    #[test]
+    fn settled_tasks_survive_a_restart_unchanged() {
+        let mut state = ProductState::default();
+        state.conversation_mut("c1").title = "chat".into();
+        state.tasks.push(settled_task("t-done", 1));
+        state.tasks.push(settled_task("t-cancelled", 2));
+        state.tasks[1].status = "cancelled".into();
+        assert_eq!(state.recover_interrupted(), 0);
+        assert_eq!(state.tasks[0].status, "completed");
+        assert_eq!(state.tasks[1].status, "cancelled");
+        assert!(state.transcript.is_empty(), "no note for settled work");
+    }
+
+    #[test]
+    fn the_orphan_prune_keeps_queued_work_without_a_conversation() {
+        let mut state = ProductState::default();
+        state.tasks.push(TaskRecord {
+            id: "queued-3".into(),
+            conversation_id: String::new(),
+            status: "queued".into(),
+            owner: "agent".into(),
+            prompt: "waiting".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        assert_eq!(state.prune_orphaned_tasks(), 0);
+        assert_eq!(state.tasks.len(), 1);
     }
 
     #[test]

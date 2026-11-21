@@ -362,6 +362,12 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     if recovered > 0 {
         tracing::warn!(recovered, "marked interrupted turns from the previous run");
     }
+    // Tasks recorded for conversations that no longer exist are orphans —
+    // nothing can open them, and a surface would show them as work anyway.
+    let orphaned = loaded.prune_orphaned_tasks();
+    if orphaned > 0 {
+        tracing::info!(orphaned, "pruned tasks whose conversations are gone");
+    }
     // A document written by an older build may already be past the bounds, so
     // the first thing a restart does is fold it back in.
     let pruned = loaded.prune(glass_marble::worker::now_millis());

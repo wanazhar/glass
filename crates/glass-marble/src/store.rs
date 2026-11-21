@@ -359,7 +359,11 @@ impl StateStore {
         })?;
         // The temporary file is named after the document so a failed write
         // leaves nothing else behind; `write_durably` fsyncs before the rename.
-        write_durably(&self.path, &encoded).map_err(MarbleError::Io)?;
+        // The error names the file it could not write — "No such file or
+        // directory" alone does not say which directory went missing.
+        write_durably(&self.path, &encoded).map_err(|error| {
+            MarbleError::Protocol(format!("cannot write {}: {error}", self.path.display()))
+        })?;
         Ok(())
     }
 }
@@ -370,12 +374,20 @@ impl StateStore {
 /// Serving does not use this: a surface that would write the document back must
 /// report an unreadable file instead of quietly starting over.
 pub fn load_or_default(data_dir: &Path) -> ProductState {
-    StateStore::in_data_dir(data_dir)
-        .load()
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "starting from empty marble product state");
-            ProductState::default()
-        })
+    let store = StateStore::in_data_dir(data_dir);
+    let mut state = store.load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "starting from empty marble product state");
+        ProductState::default()
+    });
+    // Tasks recorded for conversations that no longer exist are orphans —
+    // nothing can open them, and a surface would show them as work anyway.
+    let orphaned = state.prune_orphaned_tasks();
+    if orphaned > 0 {
+        tracing::info!(orphaned, "pruned tasks whose conversations are gone");
+        state.bump();
+        persist(&store, &state);
+    }
+    state
 }
 
 /// Persist one snapshot, keeping the revision the caller already bumped.
@@ -390,6 +402,7 @@ pub fn persist(store: &StateStore, state: &ProductState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::TaskRecord;
 
     fn data_dir(name: &str) -> PathBuf {
         let dir =
@@ -405,6 +418,59 @@ mod tests {
         let dir = data_dir("missing");
         let store = StateStore::in_data_dir(&dir);
         assert_eq!(store.load().unwrap(), ProductState::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_default_prunes_tasks_without_a_conversation() {
+        // Test pollution and older documents leave tasks behind when their
+        // conversation is gone. A load drops them and persists the fix.
+        let dir = data_dir("orphans");
+        let store = StateStore::in_data_dir(&dir);
+        let mut state = ProductState::default();
+        state.conversation_mut("kept").title = "real".into();
+        state.tasks.push(TaskRecord {
+            id: "t-kept".into(),
+            conversation_id: "kept".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: "real work".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        state.tasks.push(TaskRecord {
+            id: "t-orphan".into(),
+            conversation_id: "gone".into(),
+            status: "interrupted".into(),
+            owner: "agent".into(),
+            prompt: "leftover".into(),
+            at: 2,
+            routine_id: String::new(),
+        });
+        store.save(&state).unwrap();
+
+        let loaded = load_or_default(&dir);
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.tasks[0].id, "t-kept");
+        // The document on disk is fixed too, so the next boot sees no orphans.
+        let reloaded = store.load().unwrap();
+        assert_eq!(reloaded.tasks.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_data_directory_is_recreated_on_save() {
+        // Deleting the data directory under a running store used to surface as
+        // a bare "No such file or directory". The save recreates whatever the
+        // path needs instead of failing the write.
+        let dir = data_dir("deleted");
+        let store = StateStore::in_data_dir(&dir);
+        let mut state = ProductState::default();
+        state.bump();
+        store.save(&state).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(store.load().unwrap(), state);
         let _ = fs::remove_dir_all(&dir);
     }
 

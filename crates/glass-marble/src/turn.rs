@@ -179,20 +179,40 @@ pub fn run_turn(
     conversation: &mut Conversation,
     options: TurnOptions<'_>,
 ) -> Result<MarbleReply, MarbleError> {
+    let mut live = options.live;
+    // Every path that returns finishes the journal entry: a leftover file is
+    // read on the next start as "this turn was running", which a turn that
+    // never reached the engine was not. A panic is the exception — dropping
+    // without finish is exactly the crash the journal exists for.
     let conversation_id = match turn.conversation_id.as_deref() {
         Some(id) if !id.is_empty() => id.to_string(),
-        _ => conversation.create()?,
+        _ => match conversation.create() {
+            Ok(id) => id,
+            Err(error) => {
+                if let Some(turn) = live.as_deref_mut() {
+                    turn.finish();
+                }
+                return Err(error);
+            }
+        },
     };
     // Durable request ids are scoped to the real durable conversation so a
     // resumed conversation keeps its submission identity, while each new turn
     // still carries a distinct id.
     let request_id = format!("marble-{conversation_id}-{}", turn.request_id);
-    let task_id = conversation.submit(&conversation_id, &request_id, &turn.input)?;
+    let task_id = match conversation.submit(&conversation_id, &request_id, &turn.input) {
+        Ok(task_id) => task_id,
+        Err(error) => {
+            if let Some(turn) = live.as_deref_mut() {
+                turn.finish();
+            }
+            return Err(error);
+        }
+    };
     conversation.set_active(&conversation_id, &task_id);
     if let Some(on_accepted) = options.on_accepted {
         on_accepted(&conversation_id, &task_id);
     }
-    let mut live = options.live;
     if let Some(turn) = live.as_deref_mut() {
         turn.note_task(&conversation_id, &task_id);
     }

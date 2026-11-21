@@ -1286,6 +1286,14 @@ impl MarbleServer {
         match outcome {
             Ok(()) => {
                 self.save_state();
+                // Its live journal goes too — a deleted chat must not replay
+                // a recovered turn into the transcript on the next boot.
+                if let Some(store) = &self.store {
+                    let removed = crate::live::LiveStore::for_store(store).remove_conversation(id);
+                    if removed > 0 {
+                        tracing::info!(removed, conversation = %id, "cleared live journal for a deleted conversation");
+                    }
+                }
                 self.events
                     .publish("", "", "conversation", json!({"deleted": id}));
                 Response::json(
@@ -2675,7 +2683,11 @@ impl MarbleServer {
             );
         }
         let retrying = task.id.clone();
-        let mut response = self.submit_text(Some(task.conversation_id), task.prompt);
+        // A turn recovered from a lost queue lives in a placeholder chat the
+        // engine never created, so repeating it starts a fresh conversation.
+        let conversation =
+            (!task.conversation_id.starts_with("recovered-")).then_some(task.conversation_id);
+        let mut response = self.submit_text(conversation, task.prompt);
         // Name the turn being repeated, so a surface can say what it restarted.
         if let Ok(mut body) = serde_json::from_str::<Value>(&response.body)
             && let Value::Object(ref mut map) = body

@@ -90,3 +90,35 @@ test('visible interface copy does not expose internal vocabulary', () => {
   const banned = /\b(prism|dispatch|swarm|lane|roster|assistant|control)\b/i;
   for (const text of [html, ...visible]) assert.ok(!banned.test(text), text);
 });
+
+test('quiet-hour fields round trip clock times and reject invalid input', () => {
+  assert.equal(L.minuteTime(0), '00:00');
+  assert.equal(L.minuteTime(1320), '22:00');
+  assert.equal(L.minuteTime(1439), '23:59');
+  for (const minute of [0, 1, 420, 720, 1439]) assert.equal(L.timeMinute(L.minuteTime(minute)), minute);
+  for (const invalid of ['', '9:00', '24:00', '12:60', 'every:1h']) assert.equal(L.timeMinute(invalid), null);
+});
+
+test('recent activity selects the latest twenty settled turns without changing state', () => {
+  assert.deepEqual(L.recentTasks([]), []);
+  const input = Array.from({ length: 25 }, (_, at) => ({ at, status: 'completed' }));
+  input.push({ at: 100, status: 'running' }, { at: 101, status: 'queued' });
+  const result = L.recentTasks(input);
+  assert.equal(result.length, 20);
+  assert.equal(result[0].at, 24);
+  assert.equal(result[19].at, 5);
+  assert.equal(input[0].at, 0);
+  assert.equal(L.recentTasks([{ status: 'failed' }])[0].status, 'failed');
+});
+
+test('notification results retain each channel success and failure, including empty results', () => {
+  assert.deepEqual(L.deliveryLines(null), []);
+  assert.deepEqual(L.deliveryLines({ delivered: [] }), []);
+  assert.deepEqual(L.deliveryLines({ delivered: [
+    { channel: 'webhook', ok: true, detail: 'HTTP 200' },
+    { channel: 'apns', ok: false, detail: 'Connection refused' },
+  ] }), [
+    { ok: true, text: 'webhook · Delivered · HTTP 200' },
+    { ok: false, text: 'apns · Not delivered · Connection refused' },
+  ]);
+});

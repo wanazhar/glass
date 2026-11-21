@@ -68,7 +68,11 @@
   const hues = [210, 35, 150, 280, 340, 85, 185, 245];
   const nextHue = people => hues.find(h => !people.some(p => Number(p.hue) === h)) ?? hues[0];
   const characterCount = text => Array.from(text).length;
-  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus, hues, nextHue, characterCount };
+  const minuteTime = minute => [Math.floor((Number(minute) || 0) / 60) % 24, (Number(minute) || 0) % 60].map(n => String(n).padStart(2, '0')).join(':');
+  const timeMinute = time => { const match = /^(\d{2}):(\d{2})$/.exec(time); return match && Number(match[1]) < 24 && Number(match[2]) < 60 ? Number(match[1]) * 60 + Number(match[2]) : null; };
+  const recentTasks = tasks => tasks.filter(task => !['running', 'queued'].includes(task.status)).slice().sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 20);
+  const deliveryLines = result => (result?.delivered || []).map(item => ({ ok: !!item.ok, text: [item.channel, item.ok ? 'Delivered' : 'Not delivered', item.detail].filter(Boolean).join(' · ') }));
+  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines };
   if (typeof module !== 'undefined') module.exports = api;
   else root.MarbleLogic = api;
 })(typeof window === 'undefined' ? globalThis : window);

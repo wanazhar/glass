@@ -779,6 +779,9 @@ Four hash-routed destinations work with browser back and forward:
   devices, voice, exports and the workspace map. Notification tests report each
   channel separately; empty webhook-token fields retain the saved token unless
   removal is selected. Quiet hours use clock inputs with a saved UTC offset.
+  Permission radio choices save immediately with inline confirmation or errors.
+  Schedules use plain words and relative next-run dates; the Add routine button
+  opens the creation form. Connection uses compact label/value rows.
   **Marble info** (`#/m/<id>/info`) edits identity, personality, workspace and
   memory, with shape and hue choices and a live glyph preview. **New Marble**
   (`#/new`) starts with the next unused hue and shows host refusals inline.

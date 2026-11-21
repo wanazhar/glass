@@ -466,23 +466,30 @@
     const key = 'activity'; const page = el('div', 'page activity-page', errorNode(key));
     if (s.data.control.paused) page.append(el('div', 'paused-banner', el('p', '', t('New messages are paused. Resume when you are ready.')), button(t('Resume'), () => action(key, '/api/control/resume'))));
     const attention = section(t('Needs you'), requestCards(true)); if (!approvals().length && !suggestions().length) attention.append(el('p', 'muted', t('Nothing needs you right now. New requests will appear here.'))); page.append(attention);
-    const runningNow = section(t('Running now'), el('div', 'actions', ...(!s.data.control.paused ? [button(t('Pause new messages'), () => action(key, '/api/control/pause'))] : []), button(t('Stop everything'), () => { if (confirm(t('Stop everything? Running turns stop and queued messages are cancelled.'))) action(key, '/api/control/stop'); }, 'danger')));
+    const runningNow = section(t('Running now'));
+    const runningHeading = el('div', 'section-heading', runningNow.firstElementChild, el('div', 'actions', ...(!s.data.control.paused ? [button(t('Pause new messages'), () => action(key, '/api/control/pause'))] : []), button(t('Stop everything'), () => { if (confirm(t('Stop everything? Running turns stop and queued messages are cancelled.'))) action(key, '/api/control/stop'); }, 'danger')));
+    runningNow.append(runningHeading);
     const active = tasks().filter(task => ['running', 'queued'].includes(task.status));
     if (!active.length && !s.data.control.queue?.length) runningNow.append(el('p', 'muted', t('No turns are running. Send a message to a Marble to start.')));
     for (const task of active) runningNow.append(el('div', 'record', el('strong', '', (personForChat(task.conversationId)?.name || t('Marble')) + ' · ' + (task.status === 'queued' ? t('Queued') : t('Working'))), el('p', '', task.prompt), button(task.status === 'queued' ? t('Cancel') : t('Stop'), () => action(key, '/api/tasks/' + enc(task.id) + '/cancel'))));
     for (const item of s.data.control.queue || []) if (!active.some(task => task.id === item.id)) runningNow.append(el('div', 'record', el('strong', '', (personForChat(item.conversationId)?.name || t('Marble')) + t(' · Waiting for resume')), el('p', '', item.text), button(t('Cancel'), () => action(key, '/api/tasks/' + enc(item.id) + '/cancel')))); page.append(runningNow);
     const scheduled = section(t('Scheduled'));
-    if (!s.data.routines?.routines?.length) scheduled.append(el('p', 'muted', t('No routines yet. Add a message and a schedule below.')));
+    if (!s.data.routines?.routines?.length) scheduled.append(el('p', 'muted', t('No routines yet. Choose Add routine to schedule a message.')));
     for (const item of s.data.routines?.routines || []) {
-      scheduled.append(el('div', 'record routine', el('h3', '', item.title || item.prompt), el('p', '', item.prompt), el('p', 'small muted', item.enabled ? t('Next run: ') + new Date(item.nextRunAt).toLocaleString() : t('Paused. Resume to schedule the next run.')), el('p', 'small muted', item.schedule + t(' · Missed runs: ') + (item.missedRuns || 0)), el('div', 'actions', ...[[t('Run now'), 'run'], [item.enabled ? t('Pause') : t('Resume'), item.enabled ? 'disable' : 'enable'], [t('Remove'), 'remove']].map(([label, suffix]) => button(label, () => action(key, '/api/routines/' + enc(item.id) + '/' + suffix))), button(item.catchUp ? t('Turn catch-up off') : t('Turn catch-up on'), () => action(key, '/api/routines/' + enc(item.id) + '/catch-up', { enabled: !item.catchUp })))));
+      scheduled.append(el('div', 'record routine', el('h3', '', item.title || item.prompt), el('p', '', item.prompt), el('p', 'small muted', L.scheduleLabel(item.schedule)), el('p', 'small muted', item.enabled ? t('Next run: ') + L.relativeRun(item.nextRunAt) : t('Paused. Resume to schedule the next run.')), ...(item.missedRuns > 0 ? [el('p', 'small muted', t('Missed runs: ') + item.missedRuns)] : []), el('div', 'actions', ...[[t('Run now'), 'run'], [item.enabled ? t('Pause') : t('Resume'), item.enabled ? 'disable' : 'enable'], [t('Remove'), 'remove']].map(([label, suffix]) => button(label, () => action(key, '/api/routines/' + enc(item.id) + '/' + suffix))), button(item.catchUp ? t('Turn catch-up off') : t('Turn catch-up on'), () => action(key, '/api/routines/' + enc(item.id) + '/catch-up', { enabled: !item.catchUp })))));
     }
     const title = field(t('Title')); const prompt = field(t('Prompt'), '', 'textarea'); prompt.input.required = true;
     const schedule = selectField(t('Schedule'), [['every:1h', t('Every hour')], ['every:1d', t('Every 24 hours')], ['daily:09:00', t('Daily at 9:00')], ['custom', t('Custom')]], 'every:1h');
     const custom = field(t('Custom schedule'), 'every:2h'); custom.node.hidden = true;
     schedule.input.addEventListener('change', () => { custom.node.hidden = schedule.input.value !== 'custom'; custom.input.required = !custom.node.hidden; });
-    const add = form('routine-add', [title, prompt, schedule, custom], () => action('routine-add', '/api/routines', { title: title.input.value, prompt: prompt.input.value, schedule: schedule.input.value === 'custom' ? custom.input.value : schedule.input.value }));
+    const add = form('routine-add', [title, prompt, schedule, custom], () => action('routine-add', '/api/routines', { title: title.input.value, prompt: prompt.input.value, schedule: schedule.input.value === 'custom' ? custom.input.value : schedule.input.value }, () => { s.addRoutineOpen = false; }));
     add.dataset.form = 'routine'; add.querySelector('.primary').textContent = t('Add routine');
-    scheduled.append(el('h3', '', t('Add routine')), el('p', 'small muted', t('Custom: every:15m, every:2h, every:1d or daily:09:30. Times use the saved timezone; intervals are at least one minute.')), add);
+    const toggle = button(t('Add routine'), () => { s.addRoutineOpen = !s.addRoutineOpen; render(); if (s.addRoutineOpen) $('main').querySelector('[data-form="routine"] input')?.focus(); });
+    toggle.setAttribute('aria-expanded', String(!!s.addRoutineOpen)); toggle.setAttribute('aria-controls', 'routine-editor'); scheduled.append(toggle);
+    if (s.addRoutineOpen) {
+      add.append(button(t('Cancel'), () => { s.addRoutineOpen = false; render(); }));
+      scheduled.append(el('div', 'routine-editor', el('p', 'small muted', t('Custom: every:15m, every:2h, every:1d or daily:09:30. Times use the saved timezone; intervals are at least one minute.')), add)); scheduled.lastElementChild.id = 'routine-editor';
+    }
     scheduled.append(button(t('Use this device’s timezone'), () => action(key, '/api/routines/offset', { offsetMinutes: -new Date().getTimezoneOffset() })));
     scheduled.append(el('p', 'small muted', t('Schedule UTC offset (minutes): ') + (s.data.routines.offsetMinutes || 0)));
     const quiet = quietFields(s.data.routines.quietHours || {});
@@ -502,11 +509,28 @@
   }
   function settingsPage() {
     const key = 'settings'; const page = el('div', 'page settings-page', errorNode(key));
-    const connectionSection = section(t('Connection'), el('p', '', t('Host version: ') + (s.health.version || t('Not available yet. Reconnect to this host.'))), el('p', '', t('Stream: ') + (s.status.stream ? t('Open') : t('Reconnecting…'))), el('p', '', t('Engine: ') + (s.health.runtime?.health === 'ok' ? t('Healthy') : s.health.runtime?.health ? t('Stopped') : t('Unknown. Waiting for the host.'))), el('p', 'muted', s.health.runtime?.lastError || s.health.lastPersistError || ''), el('p', 'muted small', t('Uptime: ') + Math.floor((s.data.presence?.uptimeSeconds || 0) / 60) + t(' minutes')));
+    const connectionValues = [[t('Host version'), s.health.version || t('Not available yet')], [t('Stream'), s.status.stream ? t('Open') : t('Reconnecting…')], [t('Engine'), s.health.runtime?.health === 'ok' ? t('Healthy') : s.health.runtime?.health ? t('Stopped') : t('Waiting for the host')], [t('Uptime'), Math.floor((s.data.presence?.uptimeSeconds || 0) / 60) + t(' minutes')]];
+    const connectionSection = section(t('Connection'), el('dl', 'connection-values', ...connectionValues.map(([label, value]) => el('div', 'connection-row', el('dt', '', label), el('dd', '', value)))), el('p', 'error', s.health.runtime?.lastError || s.health.lastPersistError || ''));
     if (s.health.authRequired) connectionSection.append(button(t('Sign out'), async () => { await action(key, '/api/logout'); $('unlock').showModal(); s.stream?.close(); })); page.append(connectionSection);
-    const profile = selectField(t('Posture'), [['observe', t('Read only')], ['workspace', t('Work in the workspace')], ['unattended', t('Work unattended')]], s.data.control.profile);
-    const posture = form('permissions', [profile], () => action('permissions', '/api/control/profile', { profile: profile.input.value })); posture.dataset.form = 'permissions';
-    const permissions = section(t('Permissions'), el('p', 'muted small', t('Read only reads the workspace without changes or approval prompts. Work in the workspace asks before each governed call unless a standing grant applies. Work unattended approves governed calls. Denied paths apply to every choice. Core-native tools run in the engine, outside these governed approvals.')), posture, el('h3', '', t('Standing grants')));
+    const posture = el('fieldset', 'posture-list', el('legend', 'visually-hidden', t('Permissions posture')));
+    for (const [value, title, description] of [
+      ['observe', t('Read only'), t('Read the workspace. No changes or approval prompts.')],
+      ['workspace', t('Work in the workspace'), t('Ask before governed calls, unless a grant applies.')],
+      ['unattended', t('Work unattended'), t('Approve governed calls without asking.')],
+    ]) {
+      const input = el('input'); input.type = 'radio'; input.name = 'posture'; input.value = value; input.id = 'posture-' + value;
+      input.checked = value === (s.pendingProfile || s.data.control.profile); input.disabled = !!s.permissionSaving;
+      input.addEventListener('change', async () => {
+        if (!input.checked || s.permissionSaving) return;
+        s.permissionSaving = true; s.pendingProfile = value; s.permissionNotice = ''; s.errors.delete('permissions'); render();
+        const saved = await action('permissions', '/api/control/profile', { profile: value }, () => { s.data.control.profile = value; });
+        s.permissionSaving = false; s.pendingProfile = null; s.permissionNotice = saved ? t('Saved') : ''; render();
+        if (s.route.screen === 'settings' && document.activeElement === document.body) $('posture-' + (s.data.control.profile || value))?.focus({ preventScroll: true });
+      });
+      posture.append(el('label', 'posture-choice', input, el('span', '', el('strong', '', title), el('span', 'posture-description', description))));
+    }
+    const confirmation = el('p', 'small muted', s.permissionSaving ? t('Saving…') : s.permissionNotice || ''); confirmation.setAttribute('role', 'status');
+    const permissions = section(t('Permissions'), posture, confirmation, errorNode('permissions'), el('p', 'small muted', t('Denied paths always apply. Engine-native tools run outside these approvals.')), el('h3', '', t('Standing grants')));
     if (!s.data.control.grants?.length) permissions.append(el('p', 'muted small', t('No standing grants. Choose “Always allow here” on a request to add one.')));
     for (const grant of s.data.control.grants || []) permissions.append(el('div', 'record', el('p', '', grant.tool + ' · ' + (grant.pathPrefix || t('Workspace'))), button(t('Revoke'), () => action(key, '/api/control/grants/' + enc(grant.id) + '/revoke'))));
     const denied = s.data.control.deniedPaths || []; permissions.append(el('h3', '', t('Denied paths')), el('p', 'muted small', denied.length ? denied.join(', ') : t('No denied paths are configured. Review permissions before starting work.')));
@@ -651,6 +675,7 @@
   }
   window.addEventListener('hashchange', () => {
     s.route = L.route(location.hash); s.generation++; s.entries = []; s.missing = false; s.transcriptError = ''; s.errors.delete('conversation');
+    s.addRoutineOpen = false;
     $('main').replaceChildren(); $('composer-area').replaceChildren(); render(); refresh(); window.scrollTo(0, 0); $('main').focus();
   });
   window.addEventListener('resize', () => { if (s.route.screen === 'info') render(); });

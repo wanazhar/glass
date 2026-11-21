@@ -72,7 +72,28 @@
   const timeMinute = time => { const match = /^(\d{2}):(\d{2})$/.exec(time); return match && Number(match[1]) < 24 && Number(match[2]) < 60 ? Number(match[1]) * 60 + Number(match[2]) : null; };
   const recentTasks = tasks => tasks.filter(task => !['running', 'queued'].includes(task.status)).slice().sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 20);
   const deliveryLines = result => (result?.delivered || []).map(item => ({ ok: !!item.ok, text: [item.channel, item.ok ? 'Delivered' : 'Not delivered', item.detail].filter(Boolean).join(' · ') }));
-  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines };
+  function scheduleLabel(spec) {
+    const text = String(spec || '').trim().toLowerCase();
+    if (!text) return 'Not scheduled';
+    const daily = /^daily:\s*(\d+)\s*:\s*(\d+)$/.exec(text);
+    if (daily && Number(daily[1]) < 24 && Number(daily[2]) < 60) return 'Every day at ' + Number(daily[1]) + ':' + String(Number(daily[2])).padStart(2, '0');
+    const every = /^every:\s*(\d+)\s*([smhd])$/.exec(text);
+    if (!every || Number(every[1]) < 1 || !Number.isSafeInteger(Number(every[1]))) return 'Custom schedule';
+    const seconds = Math.max(60, Number(every[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 }[every[2]]));
+    const [unit, divisor] = [['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]].find(([, divisor]) => seconds % divisor === 0);
+    const count = seconds / divisor;
+    return count === 1 ? 'Every ' + unit : 'Every ' + count + ' ' + unit + 's';
+  }
+  function relativeRun(at, now = Date.now(), locale) {
+    if (!at || !Number.isFinite(Number(at))) return 'Not scheduled';
+    const date = new Date(Number(at)); const today = new Date(now);
+    if (Number.isNaN(date.getTime())) return 'Not scheduled';
+    const day = value => Date.UTC(value.getFullYear(), value.getMonth(), value.getDate());
+    const distance = Math.round((day(date) - day(today)) / 86400000);
+    const label = distance === 0 ? 'Today' : distance === 1 ? 'Tomorrow' : date.toLocaleDateString(locale, { month: 'short', day: 'numeric', ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
+    return label + ', ' + date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+  }
+  const api = { mentioned, whoAnswers, answerHint, reduceStatus, statusLabel, route, inline, markdown, marbleStatus, hues, nextHue, characterCount, minuteTime, timeMinute, recentTasks, deliveryLines, scheduleLabel, relativeRun };
   if (typeof module !== 'undefined') module.exports = api;
   else root.MarbleLogic = api;
 })(typeof window === 'undefined' ? globalThis : window);

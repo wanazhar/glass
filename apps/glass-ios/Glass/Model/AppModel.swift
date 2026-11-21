@@ -27,7 +27,7 @@ final class AppModel {
     private(set) var repairReason: String?
     private(set) var secretEntryUnlocked = false
 
-    enum Tab: Hashable { case threads, host, diagnostics, settings }
+    enum Tab: Hashable { case threads, host, desktop, diagnostics, settings }
     /// The selected root tab, so commands can move between them.
     var selectedTab: Tab = .threads
     /// The host's command catalogue, loaded once per pairing.

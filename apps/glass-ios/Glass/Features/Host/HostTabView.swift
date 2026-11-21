@@ -15,6 +15,10 @@ struct HostTabView: View {
                 NavigationStack { OverviewView() }
             }
             .accessibilityIdentifier("tab.host")
+            Tab("Desktop", systemImage: "display", value: .desktop) {
+                NavigationStack { DesktopView() }
+            }
+            .accessibilityIdentifier("tab.desktop")
             Tab("Diagnostics", systemImage: "stethoscope", value: .diagnostics) {
                 NavigationStack { DiagnosticsView() }
             }

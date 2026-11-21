@@ -584,4 +584,17 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(text(app, containing: "Quoted").waitForExistence(timeout: 20), "the host attaches the quote")
         attach(app, "e2e-quote")
     }
+
+    @MainActor
+    func testDesktopTabShowsTheHostsDesktopChoices() throws {
+        let app = try pairedApp()
+        app.tabBars.buttons["Desktop"].tap()
+        let reusable = app.buttons["desktop.start.reusable"].firstMatch
+        let quick = app.buttons["desktop.start.disposable"].firstMatch
+        XCTAssertTrue(reusable.waitForExistence(timeout: 20), "the host lists its desktops")
+        XCTAssertTrue(quick.exists)
+        // The macOS test host has no Linux desktop, so each choice explains why it can't start.
+        XCTAssertFalse(quick.isEnabled, "desktops the host can't run are disabled")
+        attach(app, "e2e-desktop")
+    }
 }

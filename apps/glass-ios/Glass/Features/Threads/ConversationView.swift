@@ -21,7 +21,7 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if conversation.timeline.hasOlder {
+                    if conversation.hasEarlier {
                         Button {
                             Task { await conversation.loadOlder() }
                         } label: {
@@ -74,7 +74,7 @@ struct ConversationView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation")
-        .accessibilityValue("\(conversation.timeline.entries.count) entries\(conversation.timeline.hasOlder ? ", earlier available" : "")")
+        .accessibilityValue("\(conversation.timeline.entries.count) entries\(conversation.hasEarlier ? ", earlier available" : "")")
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -162,11 +162,12 @@ struct ConversationView: View {
     private func perform(_ local: LocalCommand) {
         switch local {
         case .help: conversation.composer.showingCommands = true
-        case .diagnostics, .layout: app.selectedTab = .diagnostics
+        case .diagnostics, .layout: app.show(.diagnostics)
         case .clear: Task { await threads.newThread() }
         case .tools: density = density == .compact ? .expanded : .compact
         case .editor: conversation.composer.showingEditor = true
-        case .animation, .theme, .settings: app.selectedTab = .settings
+        case .animation, .theme: app.show(.appearance)
+        case .settings: app.show(nil)
         case .conversations, .search: threads.selection = nil
         }
     }

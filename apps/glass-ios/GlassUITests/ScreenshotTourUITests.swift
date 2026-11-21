@@ -30,9 +30,8 @@ final class ScreenshotTourUITests: XCTestCase {
         try save(app, "pairing-filled")
         app.buttons["pair.connect"].tap()
 
-        let hostTab = app.tabBars.buttons["Host"]
-        XCTAssertTrue(hostTab.waitForExistence(timeout: 20))
-        hostTab.tap()
+        XCTAssertTrue(app.tabBars.buttons["Settings"].waitForExistence(timeout: 20))
+        app.openSettings("host")
         XCTAssertTrue(app.descendants(matching: .any)["host.connected"].waitForExistence(timeout: 20))
         try save(app, "overview")
 
@@ -110,9 +109,15 @@ final class ScreenshotTourUITests: XCTestCase {
         }
         let settingsTab = app.tabBars.buttons["Settings"]
         XCTAssertTrue(settingsTab.waitForExistence(timeout: 20))
-        settingsTab.tap()
-        XCTAssertTrue(app.buttons["settings.forget"].waitForExistence(timeout: 10))
+        app.openSettings(nil)
+        XCTAssertTrue(app.buttons["settings.host"].waitForExistence(timeout: 10))
         try save(app, "settings")
+        for route in ["appearance", "notifications", "voice", "diagnostics", "about"] {
+            app.openSettings(route)
+            sleep(1)
+            try save(app, "settings-\(route)")
+        }
+        app.openSettings("defaults")
         let general = app.buttons["settings.section.general"].firstMatch
         for _ in 0..<6 where !(general.exists && general.isHittable) { app.swipeUp() }
         XCTAssertTrue(general.waitForExistence(timeout: 10))
@@ -127,6 +132,23 @@ final class ScreenshotTourUITests: XCTestCase {
 }
 
 extension XCUIApplication {
+    /// Settings tab, then optionally one of its submenus by route name (`settings.<route>`).
+    @MainActor
+    func openSettings(_ route: String?) {
+        let tab = tabBars.buttons["Settings"]
+        _ = tab.waitForExistence(timeout: 10)
+        tab.tap()
+        // A second tap pops the Settings stack back to its root.
+        if !buttons["settings.host"].waitForExistence(timeout: 2) { tab.tap() }
+        let back = navigationBars.buttons["Settings"].firstMatch
+        while back.exists { back.tap() }
+        guard let route else { return }
+        let row = buttons["settings.\(route)"].firstMatch
+        _ = row.waitForExistence(timeout: 10)
+        for _ in 0..<4 where !row.isHittable { swipeUp() }
+        row.tap()
+    }
+
     /// The conversation list finished loading: either its count header or the empty state is shown.
     @MainActor
     func waitForThreadList(timeout: TimeInterval) -> Bool {

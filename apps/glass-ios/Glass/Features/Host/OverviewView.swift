@@ -3,13 +3,17 @@ import SwiftUI
 
 struct OverviewView: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmingForget = false
 
     var body: some View {
         Group {
             switch model.phase {
             case .connected(let status):
-                List { sections(status) }
-                    .refreshable { await model.refresh() }
+                List {
+                    sections(status)
+                    pairingSection
+                }
+                .refreshable { await model.refresh() }
             case .unreachable(let message):
                 ContentUnavailableView {
                     Label("Host unreachable", systemImage: "wifi.exclamationmark")
@@ -26,6 +30,12 @@ struct OverviewView: View {
             }
         }
         .navigationTitle("Host")
+        .confirmationDialog("Forget this host?", isPresented: $confirmingForget, titleVisibility: .visible) {
+            Button("Forget Host", role: .destructive) { model.forget() }
+                .accessibilityIdentifier("settings.forget.confirm")
+        } message: {
+            Text("You’ll need a new private link from gc connect to pair again.")
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
@@ -91,6 +101,21 @@ struct OverviewView: View {
             }
         } header: {
             Text("Host")
+        }
+    }
+
+    @ViewBuilder
+    private var pairingSection: some View {
+        @Bindable var model = model
+        Section {
+            Toggle("Allow HTTP on local network", isOn: $model.allowLANHTTP)
+                .accessibilityIdentifier("settings.allowHTTP")
+            Button("Forget This Host", role: .destructive) { confirmingForget = true }
+                .accessibilityIdentifier("settings.forget")
+        } header: {
+            Text("This iPhone")
+        } footer: {
+            Text("HTTP lets you pair with hosts started with gc connect --http; secret entry always needs HTTPS. The pairing is kept in this iPhone’s Keychain, and forgetting it leaves conversations on the host.")
         }
     }
 

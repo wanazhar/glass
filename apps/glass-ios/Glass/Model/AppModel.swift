@@ -27,9 +27,17 @@ final class AppModel {
     private(set) var repairReason: String?
     private(set) var secretEntryUnlocked = false
 
-    enum Tab: Hashable { case threads, host, desktop, diagnostics, settings }
+    enum Tab: Hashable { case threads, desktop, settings }
     /// The selected root tab, so commands can move between them.
     var selectedTab: Tab = .threads
+    /// Submenus open under Settings, so commands can land on Diagnostics or Appearance.
+    var settingsPath: [SettingsRoute] = []
+
+    /// Opens Settings, optionally at one of its submenus.
+    func show(_ route: SettingsRoute?) {
+        settingsPath = route.map { [$0] } ?? []
+        selectedTab = .settings
+    }
     /// The host's command catalogue, loaded once per pairing.
     private(set) var commands: [CommandDescriptor] = []
     private(set) var commandsError: String?

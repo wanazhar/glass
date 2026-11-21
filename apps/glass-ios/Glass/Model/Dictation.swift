@@ -28,7 +28,7 @@ final class Dictation {
             state = .unavailable("Allow Microphone and Speech Recognition for Glass in Settings to dictate.")
             return
         }
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else {
+        guard let recognizer = VoicePreference.recognizer, recognizer.isAvailable else {
             state = .unavailable("Dictation isn’t available right now.")
             return
         }
@@ -38,6 +38,7 @@ final class Dictation {
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
+            request.requiresOnDeviceRecognition = VoicePreference.prefersOnDevice && recognizer.supportsOnDeviceRecognition
             let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0), block: Self.tap(request) { [weak self] level in
                 self?.level = level

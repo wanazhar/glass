@@ -14,6 +14,8 @@ public struct Timeline: Sendable, Hashable {
     public private(set) var activity: String?
     public private(set) var notice: Notice?
     public private(set) var canWrite = false
+    /// A snapshot or control event has said whether this client may write. Until then `canWrite` is a guess.
+    public private(set) var controlKnown = false
     public private(set) var isActive = false
     public private(set) var disconnected = false
     public private(set) var largeRecordOmitted = false
@@ -29,6 +31,12 @@ public struct Timeline: Sendable, Hashable {
 
     public var hasOlder: Bool { (olderBefore ?? 0) > 0 }
     public var isEmpty: Bool { entries.isEmpty }
+
+    /// Whether an older window would add anything visible. Session headers and private records produce no entries.
+    public func hasVisibleEntries(_ page: HistoryPage) -> Bool {
+        var seen = seenRecords
+        return !Self.entries(from: page, skipping: &seen).isEmpty
+    }
 
     /// Replaces everything with the newest history window (initial load and reset snapshots).
     public mutating func replaceHistory(_ page: HistoryPage) {
@@ -56,6 +64,7 @@ public struct Timeline: Sendable, Hashable {
     /// Applies a snapshot frame's control state over the history already shown.
     public mutating func applySnapshot(_ frame: EventFrame) {
         canWrite = frame.canWrite
+        controlKnown = frame.control != nil
         isActive = frame.active
         disconnected = false
         notice = nil
@@ -145,6 +154,7 @@ public struct Timeline: Sendable, Hashable {
             notice = Notice(text: message ?? "The host disconnected.", isError: true)
         case .control(let canWrite):
             self.canWrite = canWrite
+            controlKnown = true
         case .commandStart(let name):
             activity = name.map { "Working · /\($0)" } ?? "Working"
         case .commandDone:

@@ -10,6 +10,7 @@ struct ComposerView: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
     @State private var importingFiles = false
+    @State private var showsControlPrompt = false
 
     private var composer: ComposerModel { conversation.composer }
     private var canWrite: Bool { conversation.canWrite }
@@ -17,7 +18,7 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if conversation.connection == .live, !canWrite {
+            if showsControlPrompt, conversation.needsControl {
                 controlPrompt
             }
             if !composer.uploads.isEmpty { uploadList }
@@ -63,6 +64,13 @@ struct ComposerView: View {
             AccessibilityNotification.Announcement(listening ? "Recording. Speak now." : "Recording stopped.").post()
         }
         .onDisappear { dictation.stop(); composer.flushDraft() }
+        .task(id: conversation.needsControl) {
+            // Control often settles a moment after the stream opens; only ask if it stays with another client.
+            showsControlPrompt = false
+            guard conversation.needsControl else { return }
+            try? await Task.sleep(for: .milliseconds(900))
+            if !Task.isCancelled { showsControlPrompt = conversation.needsControl }
+        }
     }
 
     private var controlPrompt: some View {

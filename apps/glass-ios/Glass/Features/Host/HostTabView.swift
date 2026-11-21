@@ -1,39 +1,51 @@
 import SwiftUI
 
-/// Paired shell. Native `TabView` adopts the Liquid Glass tab bar on iOS 26.
+/// Paired shell. Native `TabView` adopts the Liquid Glass tab bar on iOS 26. Tabs show icons only;
+/// each keeps a spoken name for VoiceOver and UI tests.
 struct HostTabView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
-            Tab("Conversations", systemImage: "bubble.left.and.text.bubble.right", value: .threads) {
+            Tab(value: .threads) {
                 ThreadsView()
+            } label: {
+                TabIcon(title: "Conversations", systemImage: "bubble.left.and.text.bubble.right")
             }
             .accessibilityIdentifier("tab.threads")
-            Tab("Host", systemImage: "desktopcomputer", value: .host) {
-                NavigationStack { OverviewView() }
-            }
-            .accessibilityIdentifier("tab.host")
-            Tab("Desktop", systemImage: "display", value: .desktop) {
+            Tab(value: .desktop) {
                 NavigationStack { DesktopView() }
+            } label: {
+                TabIcon(title: "Desktop", systemImage: "display")
             }
             .accessibilityIdentifier("tab.desktop")
-            Tab("Diagnostics", systemImage: "stethoscope", value: .diagnostics) {
-                NavigationStack { DiagnosticsView() }
-            }
-            .accessibilityIdentifier("tab.diagnostics")
-            Tab("Settings", systemImage: "gearshape", value: .settings) {
-                NavigationStack { SettingsView() }
+            Tab(value: .settings) {
+                NavigationStack(path: $model.settingsPath) {
+                    SettingsView()
+                        .navigationDestination(for: SettingsRoute.self) { $0.destination }
+                }
+            } label: {
+                TabIcon(title: "Settings", systemImage: "gearshape")
             }
             .accessibilityIdentifier("tab.settings")
         }
         .background {
             // No visible label: it only carries ⌘, and must not show up as on-screen text.
-            Button { model.selectedTab = .settings } label: { EmptyView() }
+            Button { model.show(nil) } label: { EmptyView() }
                 .keyCommand(.settings)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
+    }
+}
+
+private struct TabIcon: View {
+    var title: String
+    var systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .accessibilityLabel(Text(title))
     }
 }

@@ -44,12 +44,11 @@ final class LiveHostE2ETests: XCTestCase {
         app.buttons["pair.connect"].tap()
     }
 
-    /// Pairing lands on Conversations; host status lives on the Host tab.
+    /// Pairing lands on Conversations; host status lives under Settings › Host.
     @MainActor
     private func waitForHost(_ app: XCUIApplication) -> Bool {
-        let tab = app.tabBars.buttons["Host"]
-        guard tab.waitForExistence(timeout: 20) else { return false }
-        tab.tap()
+        guard app.tabBars.buttons["Settings"].waitForExistence(timeout: 20) else { return false }
+        app.openSettings("host")
         return app.descendants(matching: .any)["host.connected"].waitForExistence(timeout: 20)
     }
 
@@ -69,7 +68,7 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["host.protocol"].label.contains("Up to date"))
         attach(app, "e2e-connected")
 
-        app.tabBars.buttons["Diagnostics"].tap()
+        app.openSettings("diagnostics")
         XCTAssertTrue(app.staticTexts["diag.core"].firstMatch.waitForExistence(timeout: 20), "host diagnostics report should load")
         let hostSection = app.staticTexts["Host machine"]
         for _ in 0..<6 where !hostSection.exists { app.swipeUp() }
@@ -77,7 +76,7 @@ final class LiveHostE2ETests: XCTestCase {
         attach(app, "e2e-diagnostics")
 
         _ = try call("revoke", method: "POST")
-        app.tabBars.buttons["Host"].tap()
+        app.openSettings("host")
         app.buttons["host.refresh"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["pair.repair"].waitForExistence(timeout: 20))
         attach(app, "e2e-revoked")
@@ -86,8 +85,10 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitForHost(app))
         XCTAssertTrue(text(app, containing: "Unlocked").exists, "secret link should unlock secret entry")
 
-        app.tabBars.buttons["Settings"].tap()
-        app.buttons["settings.forget"].tap()
+        app.openSettings("host")
+        let forget = app.buttons["settings.forget"].firstMatch
+        for _ in 0..<6 where !(forget.exists && forget.isHittable) { app.swipeUp() }
+        forget.tap()
         app.buttons["settings.forget.confirm"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
     }
@@ -327,6 +328,33 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
+    func testOpeningAShortChatShowsNoControlPromptOrEarlierMessages() throws {
+        let thread = try call("thread/new?title=Short%20chat", method: "POST")
+        _ = try call("thread/seed?id=\(thread)&pairs=1&size=40", method: "POST")
+        let app = try pairedApp()
+        let readOnly = app.descendants(matching: .any)["composer.readOnly"]
+        let older = app.buttons["conversation.older"]
+        for attempt in 0..<3 {
+            open(app, thread: thread)
+            var flashed = false
+            var earlier = false
+            let deadline = Date().addingTimeInterval(4)
+            while Date() < deadline {
+                if readOnly.exists { flashed = true }
+                if older.exists { earlier = true }
+                usleep(100_000)
+            }
+            XCTAssertFalse(flashed, "opening (attempt \(attempt)) never shows Take Control while this iPhone gets control")
+            XCTAssertFalse(earlier, "a two-message chat has no earlier messages")
+            XCTAssertTrue(waitForConnection(app, "Live"))
+            XCTAssertTrue(text(app, containing: "Seeded answer 1").exists)
+            if attempt == 0 { attach(app, "e2e-short-chat") }
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(app.waitForThreadList(timeout: 10))
+        }
+    }
+
+    @MainActor
     func testQuestionAndSecretInteractionsOverHTTPS() throws {
         let thread = try call("thread/new?title=Interactions", method: "POST")
         let app = try pairedApp(link: "link/secret")
@@ -486,7 +514,7 @@ final class LiveHostE2ETests: XCTestCase {
     @MainActor
     func testSettingsSaveKeepsEditsThroughAConflict() throws {
         let app = try pairedApp()
-        app.tabBars.buttons["Settings"].tap()
+        app.openSettings("defaults")
         let general = app.buttons["settings.section.general"].firstMatch
         XCTAssertTrue(general.waitForExistence(timeout: 10))
         attach(app, "e2e-settings")
@@ -517,7 +545,7 @@ final class LiveHostE2ETests: XCTestCase {
         app.buttons["settings.save.max_tokens"].tap()
         XCTAssertTrue(waitUntil(15) { (try? self.call("settings/get?key=max_tokens", method: "POST")) == "4321" }, "the retried save lands")
 
-        app.navigationBars.buttons["Settings"].firstMatch.tap()
+        app.openSettings("appearance")
         let theme = app.buttons["settings.theme"].firstMatch
         XCTAssertTrue(theme.waitForExistence(timeout: 10))
         theme.tap()
@@ -612,11 +640,17 @@ final class LiveHostE2ETests: XCTestCase {
         attach(app, "audit-details")
         issues += auditIssues(app, "details")
         app.buttons["details.done"].firstMatch.tap()
-        for tab in ["Host", "Desktop", "Diagnostics", "Settings"] {
-            app.tabBars.buttons[tab].tap()
-            XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 10))
+        app.tabBars.buttons["Desktop"].tap()
+        XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 10))
+        sleep(2)
+        issues += auditIssues(app, "Desktop")
+        app.openSettings(nil)
+        sleep(1)
+        issues += auditIssues(app, "Settings")
+        for route in ["host", "diagnostics", "appearance", "notifications", "voice", "about"] {
+            app.openSettings(route)
             sleep(2)
-            issues += auditIssues(app, tab)
+            issues += auditIssues(app, route)
         }
         XCTAssertTrue(issues.isEmpty, issues.joined(separator: "\n"))
     }

@@ -116,6 +116,30 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(timeline.notice == nil && timeline.canWrite && timeline.isActive)
     }
 
+    @Test func controlIsUnknownUntilTheHostSaysSo() throws {
+        var timeline = Timeline()
+        #expect(!timeline.controlKnown && !timeline.canWrite)
+        timeline.applySnapshot(try decode(EventFrame.self, #"{"reset":true,"cursor":1,"active":false,"live":[]}"#))
+        #expect(!timeline.controlKnown, "a snapshot without control leaves it unknown")
+        timeline.applySnapshot(try decode(EventFrame.self, #"{"reset":true,"cursor":2,"active":false,"control":{"can_write":false},"live":[]}"#))
+        #expect(timeline.controlKnown && !timeline.canWrite)
+        var live = Timeline()
+        live.apply(.control(canWrite: true))
+        #expect(live.controlKnown && live.canWrite)
+    }
+
+    @Test func olderWindowsWithNothingVisibleAreNotEarlierMessages() throws {
+        var timeline = Timeline()
+        timeline.replaceHistory(try Self.page([(100, #"{"k":"user","t":"hi"}"#), (200, #"{"k":"assistant","t":"hello"}"#)], before: 100))
+        let header = try Self.page([(0, #"{"k":"custom","c":"provider/chat-reasoning","d":"{}"}"#)], before: 0)
+        #expect(!timeline.hasVisibleEntries(header))
+        let repeated = try Self.page([(100, #"{"k":"user","t":"hi"}"#)], before: 0)
+        #expect(!timeline.hasVisibleEntries(repeated), "records already shown don't count")
+        let real = try Self.page([(0, #"{"k":"user","t":"earlier"}"#)], before: 0)
+        #expect(timeline.hasVisibleEntries(real))
+        #expect(timeline.entries.count == 2, "probing doesn't change the timeline")
+    }
+
     @Test func noticesFollowTheWebCopy() {
         var timeline = Timeline()
         timeline.apply(.queued(requestID: nil))

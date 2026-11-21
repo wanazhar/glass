@@ -47,6 +47,16 @@ final class ConversationModel {
     /// This app holds the session control channel and may send input.
     var canWrite: Bool { timeline.canWrite && connection == .live }
 
+    /// Ask to take control only once the host has said another client holds it, never while that is still unknown.
+    var needsControl: Bool { connection == .live && timeline.controlKnown && !timeline.canWrite }
+
+    /// The older window that will be shown next, fetched ahead so "Earlier messages" only appears when it adds something.
+    private var earlier: (before: Int, page: HistoryPage?)?
+    var hasEarlier: Bool {
+        guard let before = timeline.olderBefore, before > 0 else { return false }
+        return earlier?.before == before
+    }
+
     /// Loads history, attaches the host connection, and follows live events until stopped.
     func start() async {
         if let starting { return await starting.value }
@@ -64,6 +74,7 @@ final class ConversationModel {
             do {
                 timeline.replaceHistory(try await api.history(thread.id, sourceRef: thread.sourceRef))
                 loadedHistory = true
+                await probeEarlier()
             } catch {
                 return fail(error)
             }
@@ -104,10 +115,36 @@ final class ConversationModel {
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            timeline.prependOlder(try await api.history(thread.id, sourceRef: thread.sourceRef, before: before))
+            let page: HistoryPage
+            if earlier?.before == before, let ready = earlier?.page { page = ready } else {
+                page = try await api.history(thread.id, sourceRef: thread.sourceRef, before: before)
+            }
+            earlier = nil
+            timeline.prependOlder(page)
         } catch {
             fail(error)
         }
+        await probeEarlier()
+    }
+
+    /// Skips older windows that hold nothing visible (session headers, private records) so a short chat
+    /// shows no "Earlier messages" button. Gives up after a few windows and offers the button anyway.
+    private func probeEarlier() async {
+        earlier = nil
+        guard let api = app.api else { return }
+        for _ in 0..<4 {
+            guard let before = timeline.olderBefore, before > 0 else { return }
+            guard let page = try? await api.history(thread.id, sourceRef: thread.sourceRef, before: before) else {
+                earlier = (before, nil)
+                return
+            }
+            if timeline.hasVisibleEntries(page) {
+                earlier = (before, page)
+                return
+            }
+            timeline.prependOlder(page)
+        }
+        if let before = timeline.olderBefore, before > 0 { earlier = (before, nil) }
     }
 
     func dismissNotice() { timeline.dismissNotice() }
@@ -155,6 +192,7 @@ final class ConversationModel {
                     let history = try await api.history(thread.id, sourceRef: thread.sourceRef)
                     timeline.reset(history: history, frame: frame)
                     resets += 1
+                    await probeEarlier()
                 } catch {
                     fail(error)
                 }

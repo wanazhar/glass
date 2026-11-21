@@ -159,18 +159,18 @@ dialog input { margin: 8px 0 16px; }
 @media (max-width: 1199px) { .info-layout #workspace { margin-right: 0; } #info-panel { display: none; } }
 @media (min-width: 900px) and (max-width: 1199px) { .info-sheet #info-panel { display: block; inset: auto 16px 0 252px; width: auto; max-height: 85dvh; border: 1px solid var(--line); border-radius: 12px 12px 0 0; } }
 @media (max-width: 899px) {
-  #rail { display: none; } #workspace { margin-left: 0; padding-bottom: calc(66px + env(safe-area-inset-bottom)); }
-  #topbar { min-height: 76px; padding: 14px 18px; flex-wrap: wrap; gap: 10px; }
-  .heading { min-width: 120px; }
-  .heading h1 { overflow-wrap: anywhere; }
-  .back { display: inline-flex; }
-  #tabs { position: fixed; z-index: 9; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-around; border-top: 1px solid var(--line); padding: 7px 6px calc(8px + env(safe-area-inset-bottom)); }
-  #tabs .nav-item { flex-direction: column; gap: 2px; font-size: 12px; padding: 4px 10px; }
-  .mobile-status { display: flex; padding: 0; font-size: 12px; }
-  .timeline { padding: 26px 18px; gap: 24px; }
-  .message { max-width: 96%; gap: 9px; } .message.user { max-width: 90%; } .message.user .message-body { padding: 10px 13px; }
-  .handoff { padding: 2px 8px; } #composer-area { bottom: calc(66px + env(safe-area-inset-bottom)); padding: 8px 12px 10px; }
-  .page { padding: 24px 20px; } .empty { margin: 50px auto; } .header-actions { gap: 4px; margin-left: auto; } .form-grid { grid-template-columns: 1fr; }
+    #rail { display: none; } #workspace { margin-left: 0; padding-bottom: calc(66px + env(safe-area-inset-bottom)); }
+    #topbar { min-height: 76px; padding: 14px 18px; flex-wrap: wrap; gap: 10px; }
+    .heading { min-width: 120px; }
+    .heading h1 { overflow-wrap: anywhere; }
+    .back { display: inline-flex; }
+    #tabs { position: fixed; z-index: 9; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-around; border-top: 1px solid var(--line); padding: 7px 6px calc(8px + env(safe-area-inset-bottom)); }
+    #tabs .nav-item { flex-direction: column; gap: 2px; font-size: 12px; padding: 4px 10px; }
+    .mobile-status { display: flex; padding: 0; font-size: 12px; }
+    .timeline { padding: 26px 18px; gap: 24px; }
+    .message { max-width: 96%; gap: 9px; } .message.user { max-width: 90%; } .message.user .message-body { padding: 10px 13px; }
+    .handoff { padding: 2px 8px; } #composer-area { bottom: calc(66px + env(safe-area-inset-bottom)); padding: 8px 12px 10px; }
+    .page { padding: 24px 20px; } .empty { margin: 50px auto; } .header-actions { gap: 4px; margin-left: auto; } .form-grid { grid-template-columns: 1fr; }
 }
 @media (pointer: coarse) { button, .button, .menu > summary, .section-heading button { min-height: 44px; } }
 @media (prefers-reduced-transparency: reduce) { #rail, #tabs, #topbar, .composer { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; } }

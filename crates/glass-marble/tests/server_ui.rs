@@ -1732,3 +1732,129 @@ fn the_workspace_crate_map_is_served_when_the_host_has_one() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `openssl s_client` doubles as the TLS client so the test exercises a real
+/// handshake, not just the rustls plumbing.
+fn openssl_cli() -> bool {
+    Command::new("openssl")
+        .arg("version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// One request/response over TLS via the openssl CLI.
+fn tls_get(port: u16, path: &str) -> String {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "printf 'GET {path} HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n' | \
+             openssl s_client -connect 127.0.0.1:{port} -quiet -servername localhost 2>/dev/null"
+        ))
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+#[test]
+fn tls_and_plain_http_share_one_port() {
+    if !openssl_cli() {
+        eprintln!("openssl CLI unavailable; skipping TLS socket test");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("marble-tls-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let cert = root.join("cert.pem");
+    let key = root.join("key.pem");
+    let status = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .args([
+            "-days",
+            "1",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ])
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "{:?}", status.stderr);
+    let identity = glass_marble::tls::load_identity(&cert, &key).unwrap();
+    let leaf = identity.leaf_sha256_hex();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::new(Mutex::new(ProductState::default())),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(Some("tokentest".into())),
+        cancels: CancelRegistry::default(),
+    })
+    .with_tls(Arc::new(identity));
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+
+    // Plain HTTP keeps working on the same port.
+    let mut stream = connect(port);
+    stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut plain = String::new();
+    stream.read_to_string(&mut plain).unwrap();
+    assert!(plain.starts_with("HTTP/1.1 200"), "{plain}");
+
+    // tls-proof is TLS-only: the same request over plain HTTP gets 400.
+    let mut stream = connect(port);
+    let nonce = "a".repeat(64);
+    stream
+        .write_all(
+            format!(
+                "GET /api/tls-proof?nonce={nonce} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut refused = String::new();
+    stream.read_to_string(&mut refused).unwrap();
+    assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+    assert!(refused.contains("tls_only"), "{refused}");
+
+    // TLS: healthz answers inside the handshake-protected stream.
+    let secure = tls_get(port, "/healthz");
+    assert!(secure.contains("200"), "{secure}");
+    assert!(secure.contains("\"ok\":true"), "{secure}");
+
+    // tls-proof over TLS: verify the HMAC the app recomputes.
+    let proof_reply = tls_get(port, &format!("/api/tls-proof?nonce={nonce}"));
+    let body = proof_reply
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or(&proof_reply)
+        .trim()
+        .to_string();
+    let body: Value = serde_json::from_str(&body)
+        .unwrap_or_else(|_| panic!("tls-proof did not return JSON: {proof_reply}"));
+    assert_eq!(body["certSha256"], serde_json::json!(leaf));
+    let expected = glass_marble::tls::tls_proof("tokentest", &nonce, &leaf);
+    assert_eq!(body["proof"], serde_json::json!(expected));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

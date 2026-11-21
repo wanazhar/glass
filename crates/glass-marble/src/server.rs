@@ -18,7 +18,7 @@ use crate::voice;
 use crate::worker::{CancelRegistry, SteerSink, TurnCommand, TurnRequest, TurnSender, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -248,6 +248,11 @@ impl AccessPolicy {
         self.token.is_some()
     }
 
+    /// The configured token, for the tls-proof HMAC; never logged or served raw.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     fn matches(&self, candidate: &str) -> bool {
         self.token
             .as_deref()
@@ -319,6 +324,7 @@ struct RequestLog<'a> {
     path: &'a str,
     status: u16,
     auth: &'a str,
+    tls: bool,
     authorized: bool,
     head_bytes: usize,
     content_length: usize,
@@ -330,13 +336,14 @@ impl RequestLog<'_> {
     fn line(&self) -> String {
         let agent: String = self.user_agent.chars().take(60).collect();
         format!(
-            "request peer={} method={} path={} status={} auth={} authorized={} \
+            "request peer={} method={} path={} status={} auth={} tls={} authorized={} \
              head={}B body={}B ua=\"{}\" ms={}",
             self.peer,
-            self.method,
-            self.path,
+            printable(self.method),
+            printable(self.path),
             self.status,
             self.auth,
+            if self.tls { "yes" } else { "no" },
             if self.authorized { "yes" } else { "no" },
             self.head_bytes,
             self.content_length,
@@ -437,6 +444,8 @@ pub struct MarbleServer {
     prism: Option<Arc<PrismPool>>,
     /// The workspace crate map, when the host was started inside one.
     crates: Option<CrateMap>,
+    /// The TLS identity, when the operator serves https on the same port.
+    tls: Option<Arc<crate::tls::TlsIdentity>>,
 }
 
 impl MarbleServer {
@@ -454,7 +463,14 @@ impl MarbleServer {
             login: LoginThrottle::default(),
             prism: None,
             crates: None,
+            tls: None,
         }
+    }
+
+    /// Serve https on the same port next to plain http.
+    pub fn with_tls(mut self, tls: Arc<crate::tls::TlsIdentity>) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Attach the Prism pool. Sessions that never swarm keep the roster read-only.
@@ -2896,6 +2912,7 @@ impl MarbleServer {
                         path: "-",
                         status: 503,
                         auth: "none",
+                        tls: false,
                         authorized: false,
                         head_bytes: 0,
                         content_length: 0,
@@ -2939,25 +2956,66 @@ impl MarbleServer {
             .peer_addr()
             .map(|address| address.ip().to_string())
             .unwrap_or_default();
-        // Read through a clone so the buffer survives across requests while the
-        // responses are written to the original stream.
-        let mut reader = BufReader::new(stream.try_clone()?);
+        // Peek (without consuming) at the connection's first bytes: a TLS
+        // ClientHello on this port gets a real handshake when a cert is
+        // configured, a fatal alert otherwise.
+        let mut first = [0u8; 3];
+        let mut n = stream.peek(&mut first)?;
+        for _ in 0..100 {
+            if n >= 3 || n == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            n = stream.peek(&mut first)?;
+        }
+        if is_tls_handshake(&first[..n]) {
+            let Some(tls) = self.tls.clone() else {
+                tracing::info!(
+                    "tls handshake on plain-http port peer={peer} — this host serves HTTP; \
+                     use http:// not https://"
+                );
+                let _ = stream.write_all(&[0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28]);
+                return Ok(());
+            };
+            let connection = match rustls::ServerConnection::new(Arc::clone(&tls.config)) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::warn!("TLS handshake setup failed for {peer}: {error}");
+                    return Ok(());
+                }
+            };
+            return self.serve_stream(
+                IoBuf::new(rustls::StreamOwned::new(connection, stream)),
+                &peer,
+                true,
+            );
+        }
+        self.serve_stream(IoBuf::new(stream), &peer, false)
+    }
+
+    /// One connection, plain or TLS, sharing routing and keep-alive.
+    fn serve_stream<S: Read + Write>(
+        &self,
+        mut conn: IoBuf<S>,
+        peer: &str,
+        tls: bool,
+    ) -> std::io::Result<()> {
         let mut served = 0usize;
         loop {
             let started = std::time::Instant::now();
-            let head_bytes = read_head(&mut reader)?;
+            let head_bytes = read_head(&mut conn)?;
             if head_bytes.is_empty() {
                 return Ok(());
             }
             served += 1;
             let head_text = String::from_utf8_lossy(&head_bytes).to_string();
             let head = parse_head(&head_text);
-            let body = match read_body(&mut reader, &head)? {
+            let body = match read_body(&mut conn, &head)? {
                 BodyRead::Bytes(body) => String::from_utf8_lossy(&body).to_string(),
                 BodyRead::TooLarge => {
-                    self.log_request(&peer, head_bytes.len(), &head, 413, started);
+                    self.log_request(peer, head_bytes.len(), &head, 413, started, tls);
                     return write_response(
-                        &mut stream,
+                        &mut conn,
                         Response::error(413, "body_too_large"),
                         false,
                     );
@@ -2966,27 +3024,57 @@ impl MarbleServer {
             if head.method == "GET" && head.path() == "/api/events" {
                 let authorized = self.policy.authorize(&head);
                 if !authorized {
-                    self.log_request(&peer, head_bytes.len(), &head, 401, started);
-                    return write_response(
-                        &mut stream,
-                        Response::error(401, "unauthorized"),
-                        false,
-                    );
+                    self.log_request(peer, head_bytes.len(), &head, 401, started, tls);
+                    return write_response(&mut conn, Response::error(401, "unauthorized"), false);
                 }
-                self.log_request(&peer, head_bytes.len(), &head, 200, started);
-                return self.stream_events(&head, &mut stream);
+                self.log_request(peer, head_bytes.len(), &head, 200, started, tls);
+                return self.stream_events(&head, &mut conn);
             }
-            let response = self.handle_request_from(&head, &body, &peer);
+            let response = if head.method == "GET" && head.path() == "/api/tls-proof" {
+                self.tls_proof(&head, tls)
+            } else {
+                self.handle_request_from(&head, &body, peer)
+            };
             let status = response.status;
-            self.log_request(&peer, head_bytes.len(), &head, status, started);
+            self.log_request(peer, head_bytes.len(), &head, status, started, tls);
             let keep_alive = wants_keep_alive(&head)
                 && response.status < 400
                 && served < MAX_REQUESTS_PER_CONNECTION;
-            write_response(&mut stream, response, keep_alive)?;
+            write_response(&mut conn, response, keep_alive)?;
             if !keep_alive {
                 return Ok(());
             }
         }
+    }
+
+    /// Unauthenticated proof that a client holding the token saw this
+    /// certificate: HMAC-SHA256 keyed on the token over the leaf hash it
+    /// observed and a caller-chosen nonce. TLS connections only.
+    fn tls_proof(&self, head: &RequestHead, tls: bool) -> Response {
+        if !tls {
+            return Response::error(400, "tls_only");
+        }
+        let Some(identity) = &self.tls else {
+            return Response::error(404, "not_found");
+        };
+        let Some(token) = self.policy.token() else {
+            return Response::error(404, "not_found");
+        };
+        let nonce = head.query_param("nonce").unwrap_or_default();
+        let valid_nonce = (32..=128).contains(&nonce.len())
+            && nonce.chars().all(|character| character.is_ascii_hexdigit());
+        if !valid_nonce {
+            return Response::error(400, "bad_nonce");
+        }
+        let cert_sha256 = identity.leaf_sha256_hex();
+        let proof = crate::tls::tls_proof(token, &nonce, &cert_sha256);
+        Response::json(
+            200,
+            json!({
+                "certSha256": cert_sha256,
+                "proof": proof,
+            }),
+        )
     }
 
     /// One line per request, after its status is known.
@@ -2997,6 +3085,7 @@ impl MarbleServer {
         head: &RequestHead,
         status: u16,
         started: std::time::Instant,
+        tls: bool,
     ) {
         let content_length = head
             .header("content-length")
@@ -3010,6 +3099,7 @@ impl MarbleServer {
                 path: head.path(),
                 status,
                 auth: auth_kind(head),
+                tls,
                 authorized: self.policy.authorize(head),
                 head_bytes,
                 content_length,
@@ -3021,7 +3111,7 @@ impl MarbleServer {
     }
 
     /// Server-sent events with bounded replay from the client's own cursor.
-    fn stream_events(&self, head: &RequestHead, stream: &mut TcpStream) -> std::io::Result<()> {
+    fn stream_events(&self, head: &RequestHead, stream: &mut impl Write) -> std::io::Result<()> {
         let since = head
             .query_param("since")
             .and_then(|value| value.parse::<u64>().ok())
@@ -3093,7 +3183,7 @@ fn valid_conversation_id(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
-fn write_event(stream: &mut TcpStream, event: &TurnEvent) -> std::io::Result<()> {
+fn write_event(stream: &mut impl Write, event: &TurnEvent) -> std::io::Result<()> {
     let data = serde_json::to_string(&EventBus::encode(event)).unwrap_or_default();
     stream.write_all(
         format!(
@@ -3106,7 +3196,7 @@ fn write_event(stream: &mut TcpStream, event: &TurnEvent) -> std::io::Result<()>
 }
 
 fn write_response(
-    stream: &mut TcpStream,
+    stream: &mut impl Write,
     response: Response,
     keep_alive: bool,
 ) -> std::io::Result<()> {
@@ -3210,6 +3300,75 @@ fn read_chunked_body(reader: &mut impl BufRead) -> std::io::Result<BodyRead> {
     }
 }
 
+/// One connection's buffered reader plus writer, so plain TCP and
+/// `rustls::StreamOwned` share the routing loop without a `try_clone`.
+struct IoBuf<S> {
+    inner: S,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl<S: Read> IoBuf<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            buf: Vec::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl<S: Read> Read for IoBuf<S> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let available = self.fill_buf()?;
+        let n = available.len().min(out.len());
+        out[..n].copy_from_slice(&available[..n]);
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl<S: Read> BufRead for IoBuf<S> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.pos >= self.buf.len() {
+            self.buf.resize(8192, 0);
+            let read = self.inner.read(&mut self.buf)?;
+            self.buf.truncate(read);
+            self.pos = 0;
+        }
+        Ok(&self.buf[self.pos..])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.pos = (self.pos + amount).min(self.buf.len());
+    }
+}
+
+impl<S: Write> Write for IoBuf<S> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A TLS handshake record: content type 0x16, version 0x03 0x00..0x04.
+fn is_tls_handshake(buf: &[u8]) -> bool {
+    buf.len() >= 3 && buf[0] == 0x16 && buf[1] == 0x03 && buf[2] <= 0x04
+}
+
+/// Log fields may come from bytes that were not HTTP at all (e.g. a TLS
+/// ClientHello); binary fields collapse to `<binary>` instead of raw bytes.
+fn printable(field: &str) -> &str {
+    if field.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+        field
+    } else {
+        "<binary>"
+    }
+}
+
 fn read_head(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -3279,6 +3438,7 @@ mod tests {
             path: head.path(),
             status: 401,
             auth: auth_kind(&head),
+            tls: false,
             authorized: false,
             head_bytes: 256,
             content_length: 42,
@@ -3306,6 +3466,7 @@ mod tests {
             path: "/",
             status: 200,
             auth: "none",
+            tls: false,
             authorized: false,
             head_bytes: 0,
             content_length: 0,
@@ -3315,6 +3476,45 @@ mod tests {
         .line();
         assert!(truncated.contains(&"x".repeat(60)));
         assert!(!truncated.contains(&"x".repeat(61)));
+    }
+
+    #[test]
+    fn tls_handshake_detection() {
+        for version in 0x00u8..=0x04 {
+            assert!(is_tls_handshake(&[0x16, 0x03, version, 0x00]));
+        }
+        // A real ClientHello head: handshake record, TLS 1.0 on the wire.
+        assert!(is_tls_handshake(&[0x16, 0x03, 0x01, 0x01, 0x2f]));
+        assert!(!is_tls_handshake(b"GET / HTTP/1.1\r\n"));
+        assert!(!is_tls_handshake(b"POST /api/turns HTTP/1.1\r\n"));
+        assert!(!is_tls_handshake(b""));
+        assert!(!is_tls_handshake(&[0x16]));
+        assert!(!is_tls_handshake(&[0x16, 0x03]));
+        // Alert record, not a handshake.
+        assert!(!is_tls_handshake(&[0x15, 0x03, 0x01]));
+        assert!(!is_tls_handshake(&[0x16, 0x03, 0x05]));
+    }
+
+    #[test]
+    fn request_log_sanitises_binary_method_and_path() {
+        let line = RequestLog {
+            peer: "1.2.3.4",
+            method: "\u{16}\u{3}\u{1}",
+            path: "\u{0}\u{1}\u{2}",
+            status: 0,
+            auth: "none",
+            tls: false,
+            authorized: false,
+            head_bytes: 512,
+            content_length: 0,
+            user_agent: "-",
+            elapsed: Duration::ZERO,
+        }
+        .line();
+        assert!(line.contains("method=<binary>"), "{line}");
+        assert!(line.contains("path=<binary>"), "{line}");
+        assert_eq!(printable("GET"), "GET");
+        assert_eq!(printable("/api/state"), "/api/state");
     }
 
     #[test]

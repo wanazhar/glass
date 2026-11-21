@@ -42,8 +42,8 @@ final class ScreenshotTourUITests: XCTestCase {
         XCTAssertTrue(app.waitForThreadList(timeout: 20))
         try save(app, "threads")
         let row = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'thread.'")).firstMatch
-        if row.waitForExistence(timeout: 10) {
-            row.tap()
+        if row.waitForExistence(timeout: 10) { row.tap() } else { app.buttons["threads.new"].tap() }
+        do {
             XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 20))
             sleep(2)
             try save(app, "conversation")
@@ -69,7 +69,35 @@ final class ScreenshotTourUITests: XCTestCase {
                 app.buttons["interaction.decline"].tap()
                 XCTAssertTrue(interaction.waitForNonExistence(timeout: 30))
             }
+
+            app.buttons["conversation.commands"].tap()
+            if app.buttons["palette.conversations"].firstMatch.waitForExistence(timeout: 15) {
+                try save(app, "commands")
+                let search = app.searchFields.firstMatch
+                search.tap()
+                search.typeText("usage")
+                let usage = app.buttons["palette.usage"].firstMatch
+                if usage.waitForExistence(timeout: 10) {
+                    usage.tap()
+                    _ = app.descendants(matching: .any)["command.result"].firstMatch.waitForExistence(timeout: 20)
+                    try save(app, "command-usage")
+                }
+            }
         }
+
+        // Relaunch (still paired) so Settings opens from a clean tab state.
+        app.terminate()
+        app.launchArguments = []
+        app.launch()
+        let settingsTab = app.tabBars.buttons["Settings"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 20))
+        settingsTab.tap()
+        let general = app.buttons["settings.section.general"].firstMatch
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        try save(app, "settings")
+        general.tap()
+        XCTAssertTrue(app.switches["settings.image_input"].firstMatch.waitForExistence(timeout: 20))
+        try save(app, "settings-general")
     }
 }
 

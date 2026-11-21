@@ -10,7 +10,6 @@ struct ComposerView: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
     @State private var importingFiles = false
-    @State private var editingFullScreen = false
 
     private var composer: ComposerModel { conversation.composer }
     private var canWrite: Bool { conversation.canWrite }
@@ -50,9 +49,9 @@ struct ComposerView: View {
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { attachFiles(urls) }
         }
-        .sheet(isPresented: $editingFullScreen) {
+        .sheet(isPresented: Bindable(composer).showingEditor) {
             DraftEditor(text: Bindable(composer).text) {
-                editingFullScreen = false
+                composer.showingEditor = false
                 Task { await composer.send(active: active, canWrite: canWrite) }
             }
         }
@@ -76,7 +75,8 @@ struct ComposerView: View {
     private var field: some View {
         ComposerTextField(placeholder: canWrite ? (active ? (composer.mode == .steer ? "Steer this turn" : "Queue a message") : "Message") : "Read-only",
                           text: Bindable(composer).text, isEnabled: canWrite,
-                          dismissFor: conversation.timeline.interaction?.id) {
+                          dismissFor: conversation.timeline.interaction?.id,
+                          onCommands: { composer.showingCommands = true }) {
             Task { await composer.send(active: active, canWrite: canWrite) }
         }
         .padding(.horizontal, 14)
@@ -125,7 +125,7 @@ struct ComposerView: View {
             Button("Files", systemImage: "folder") { importingFiles = true }
                 .accessibilityIdentifier("composer.attach.files")
             Divider()
-            Button("Expand Editor", systemImage: "arrow.up.left.and.arrow.down.right") { editingFullScreen = true }
+            Button("Expand Editor", systemImage: "arrow.up.left.and.arrow.down.right") { composer.showingEditor = true }
                 .accessibilityIdentifier("composer.expand")
         } label: {
             Label("Attach", systemImage: "plus")

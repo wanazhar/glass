@@ -421,6 +421,14 @@ class Control(http.server.BaseHTTPRequestHandler):
                 return self.reply("sent")
             if url.path in ("/control/claim", "/control/release"):
                 return self.reply(SessionClient.control(q["id"], url.path.rsplit("/", 1)[1]))
+            if url.path == "/settings/set":
+                # Another client saves a preference, so the app's next save hits a revision conflict.
+                revision = gateway.request("GET", "/api/settings")["revision"]
+                gateway.request("POST", "/api/settings", {"revision": revision, "action": "preference",
+                                                          "key": q["key"], "value": json.loads(q["value"])})
+                return self.reply("saved")
+            if url.path == "/settings/get":
+                return self.reply(json.dumps(gateway.request("GET", "/api/settings")["defaults"].get(q["key"])))
             if url.path == "/thread/wait":
                 return self.reply(gateway.wait_idle(q["id"]))
             self.reply("not found", 404)

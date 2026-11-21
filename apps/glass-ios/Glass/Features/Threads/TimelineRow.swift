@@ -92,10 +92,11 @@ private struct ToolCard: View {
     var summary: String
     var output: String
     var failed: Bool?
-    @State private var expanded = false
+    @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
+    @State private var expanded: Bool?
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
+        DisclosureGroup(isExpanded: Binding { expanded ?? (density == .expanded) } set: { expanded = $0 }) {
             if !output.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(output)

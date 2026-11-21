@@ -9,6 +9,7 @@ struct ConversationView: View {
     @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
+    @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
     @Environment(AppModel.self) private var app
 
     var body: some View {
@@ -81,6 +82,10 @@ struct ConversationView: View {
                 }
             }
             ToolbarItem(placement: .primaryAction) {
+                Button("Commands", systemImage: "command") { conversation.composer.showingCommands = true }
+                    .accessibilityIdentifier("conversation.commands")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Menu {
                     if let workspace = conversation.thread.workspace, !workspace.isEmpty {
                         Section(workspace) {}
@@ -110,6 +115,19 @@ struct ConversationView: View {
         }
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
         .sheet(isPresented: $showingChecklist) { ChecklistSheet(tasks: conversation.composer.checklist) }
+        .sheet(isPresented: Bindable(conversation.composer).showingCommands) {
+            CommandPaletteView(conversation: conversation) { perform($0) }
+        }
+        .background {
+            // Hardware-keyboard shortcuts, as in the web UI: ⌘K and ⌘/ open the palette.
+            Group {
+                Button("Commands") { conversation.composer.showingCommands = true }.keyboardShortcut("k", modifiers: .command)
+                Button("Commands") { conversation.composer.showingCommands = true }.keyboardShortcut("/", modifiers: .command)
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .environment(\.attachmentLoader) { [composer = conversation.composer] id in await composer.attachment(id) }
         .task { await conversation.start() }
         .onChange(of: scenePhase) { _, phase in
@@ -119,6 +137,18 @@ struct ConversationView: View {
         }
     }
 
+
+    private func perform(_ local: LocalCommand) {
+        switch local {
+        case .help: conversation.composer.showingCommands = true
+        case .diagnostics, .layout: app.selectedTab = .diagnostics
+        case .clear: Task { await threads.newThread() }
+        case .tools: density = density == .compact ? .expanded : .compact
+        case .editor: conversation.composer.showingEditor = true
+        case .animation, .theme, .settings: app.selectedTab = .settings
+        case .conversations, .search: threads.selection = nil
+        }
+    }
     private static let bottom = "timeline.bottom"
 
     private var emptyState: some View {
@@ -171,7 +201,7 @@ struct ConversationView: View {
                     statusPill
                     if let activity = conversation.timeline.activity {
                         HStack(spacing: 6) {
-                            ProgressView().controlSize(.mini)
+                            ActivityIndicator()
                             Text(activity).font(.caption.weight(.medium))
                         }
                         .padding(.horizontal, 10)

@@ -19,6 +19,7 @@ struct GlassApp: App {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(ThemePreference.key) private var theme: ThemePreference = .system
 
     var body: some View {
         Group {
@@ -28,6 +29,7 @@ struct RootView: View {
                 HostTabView()
             }
         }
+        .preferredColorScheme(theme.colorScheme)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.phase == .unpaired)
         .task(id: model.endpoint) {
             if model.phase == .connecting { await model.refresh() }

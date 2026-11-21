@@ -27,6 +27,13 @@ final class AppModel {
     private(set) var repairReason: String?
     private(set) var secretEntryUnlocked = false
 
+    enum Tab: Hashable { case threads, host, diagnostics, settings }
+    /// The selected root tab, so commands can move between them.
+    var selectedTab: Tab = .threads
+    /// The host's command catalogue, loaded once per pairing.
+    private(set) var commands: [CommandDescriptor] = []
+    private(set) var commandsError: String?
+
     var allowLANHTTP: Bool {
         didSet { defaults.set(allowLANHTTP, forKey: Keys.allowLANHTTP) }
     }
@@ -119,8 +126,19 @@ final class AppModel {
         }
     }
 
+    func loadCommands(force: Bool = false) async {
+        guard force || commands.isEmpty, let api = client else { return }
+        commandsError = nil
+        do { commands = try await api.commands() } catch {
+            if error.isUnauthorized { handle(error) }
+            commandsError = error.localizedDescription
+        }
+    }
+
     /// Removes the Keychain credential and returns to pairing; the host keeps its threads.
     func forget() {
+        commands = []
+        selectedTab = .threads
         if let endpoint { try? store.remove(for: endpoint) }
         defaults.removeObject(forKey: Keys.endpoint)
         client = nil

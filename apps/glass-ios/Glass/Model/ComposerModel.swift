@@ -55,6 +55,10 @@ final class ComposerModel {
     private(set) var checklist: [ChecklistTask] = []
     private(set) var model: String?
     private(set) var submittingSecret = false
+    /// Commands waiting for the running turn to finish.
+    private(set) var queuedCommands: Set<String> = []
+    var showingEditor = false
+    var showingCommands = false
     /// A transient confirmation, such as "Attached notes.txt to future requests."
     var confirmation: String?
     var error: String?
@@ -139,9 +143,9 @@ final class ComposerModel {
     // MARK: Commands
 
     /// Runs a control-channel command and waits for its `command_result`.
-    func command(_ name: String, _ values: [String: JSONValue] = [:], timeout: Duration = .seconds(60)) async throws -> JSONValue {
+    func command(_ name: String, _ values: [String: JSONValue] = [:], requestID id: String = SendMessage.newRequestID(),
+                 timeout: Duration = .seconds(60)) async throws -> JSONValue {
         guard let api = app.api else { throw CommandError.failed("Not connected to a host.") }
-        let id = SendMessage.newRequestID()
         let thread = thread
         return try await withCheckedThrowingContinuation { continuation in
             pendingCommands[id] = continuation
@@ -159,13 +163,19 @@ final class ComposerModel {
         }
     }
 
+    /// Asks the host to stop a queued or running command; its `command_result` settles the wait.
+    func cancelCommand(_ id: String) async { await post(.cancelCommand(requestID: id)) }
+
     private func resolve(_ id: String, _ result: Result<JSONValue, any Error>) {
+        queuedCommands.remove(id)
         pendingCommands.removeValue(forKey: id)?.resume(with: result)
     }
 
     /// Live events the composer cares about: command replies and checklist changes.
     func observe(_ event: GlassEvent) {
         switch event {
+        case .commandQueued(let id?):
+            if pendingCommands[id] != nil { queuedCommands.insert(id) }
         case .commandResult(let id?, let result, let failure):
             if let failure { resolve(id, .failure(CommandError.failed(failure))) } else { resolve(id, .success(result ?? .null)) }
         case .tool(_, let name, _):

@@ -411,4 +411,119 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(text(app, containing: "xxxxxxxxxx").waitForExistence(timeout: 20), "reset reloads history with the missed turn")
         attach(app, "e2e-reset")
     }
+
+    // MARK: Commands and settings (M4)
+
+    @MainActor
+    private func search(_ app: XCUIApplication, _ query: String) {
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        if let clear = field.buttons.firstMatch as XCUIElement?, clear.exists { clear.tap() }
+        field.typeText(query)
+    }
+
+    @MainActor
+    private func runFromPalette(_ app: XCUIApplication, _ query: String, _ name: String) -> XCUIElement {
+        search(app, query)
+        let row = app.buttons["palette.\(name)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "/\(name) is in the catalogue")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["command.\(name)"].firstMatch.waitForExistence(timeout: 10))
+        return app.descendants(matching: .any)["command.result"].firstMatch
+    }
+
+    @MainActor
+    private func back(_ app: XCUIApplication) {
+        app.navigationBars.buttons["Commands"].firstMatch.tap()
+    }
+
+    @MainActor
+    func testCommandPaletteRunsStatusUsageTodoAndName() throws {
+        let thread = try call("thread/new?title=Commands", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists })
+
+        app.buttons["conversation.commands"].tap()
+        let palette = app.buttons["palette.done"].firstMatch
+        XCTAssertTrue(palette.waitForExistence(timeout: 10), "the toolbar opens the command palette")
+        XCTAssertTrue(app.buttons["palette.conversations"].firstMatch.waitForExistence(timeout: 15), "the catalogue loads")
+        attach(app, "e2e-palette")
+        app.buttons["palette.done"].tap()
+        XCTAssertTrue(waitUntil(10) { !palette.exists }, "Done closes the palette")
+
+        app.buttons["conversation.commands"].tap()
+        XCTAssertTrue(runFromPalette(app, "usage", "usage").waitForExistence(timeout: 20), "read-only /usage returns a result")
+        attach(app, "e2e-command-usage")
+        back(app)
+
+        XCTAssertTrue(runFromPalette(app, "/status", "status").waitForExistence(timeout: 20), "/status inspects on open")
+        attach(app, "e2e-command-status")
+        back(app)
+
+        _ = runFromPalette(app, "todo", "todo")
+        let args = app.textFields["command.field.args"].firstMatch
+        XCTAssertTrue(args.waitForExistence(timeout: 10), "the todo form shows the add field")
+        args.tap()
+        args.typeText("Ship the M4 build")
+        app.buttons["command.run"].tap()
+        XCTAssertTrue(text(app, containing: "Ship the M4 build").waitForExistence(timeout: 30), "/todo add runs over the control channel")
+        attach(app, "e2e-command-todo")
+        back(app)
+
+        _ = runFromPalette(app, "name", "name")
+        let title = app.textFields["command.field.args"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        title.typeText("Renamed from Glass")
+        app.buttons["command.run"].tap()
+        XCTAssertTrue(text(app, containing: "Renamed from Glass").waitForExistence(timeout: 30), "/name returns the new title")
+        attach(app, "e2e-command-name")
+    }
+
+    @MainActor
+    func testSettingsSaveKeepsEditsThroughAConflict() throws {
+        let app = try pairedApp()
+        app.tabBars.buttons["Settings"].tap()
+        let general = app.buttons["settings.section.general"].firstMatch
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        attach(app, "e2e-settings")
+        general.tap()
+
+        let imageInput = app.switches["settings.image_input"].firstMatch
+        XCTAssertTrue(imageInput.waitForExistence(timeout: 20), "host settings load")
+        let before = try call("settings/get?key=image_input", method: "POST")
+        imageInput.switches.firstMatch.exists ? imageInput.switches.firstMatch.tap() : imageInput.tap()
+        XCTAssertTrue(waitUntil(15) { (try? self.call("settings/get?key=image_input", method: "POST")) != before }, "the toggle saves on the host")
+
+        let field = app.textFields["settings.field.max_tokens"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(15) { field.isEnabled }, "the toggle save finishes")
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.8)).tap()
+        let current = field.value as? String ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + "4321")
+        _ = try call("settings/set?key=cost_limit&value=7", method: "POST")
+        app.buttons["settings.save.max_tokens"].tap()
+        let feedback = app.descendants(matching: .any)["settings.feedback"].firstMatch
+        XCTAssertTrue(feedback.waitForExistence(timeout: 15), "a stale revision reports a conflict")
+        XCTAssertEqual(field.value as? String, "4321", "the unsaved edit survives the conflict")
+        attach(app, "e2e-settings-conflict")
+
+        app.buttons["settings.refresh"].tap()
+        XCTAssertTrue(waitUntil(15) { !feedback.exists }, "refresh clears the conflict")
+        XCTAssertEqual(field.value as? String, "4321", "the edit survives the refresh")
+        app.buttons["settings.save.max_tokens"].tap()
+        XCTAssertTrue(waitUntil(15) { (try? self.call("settings/get?key=max_tokens", method: "POST")) == "4321" }, "the retried save lands")
+
+        app.navigationBars.buttons["Settings"].firstMatch.tap()
+        let theme = app.buttons["settings.theme"].firstMatch
+        XCTAssertTrue(theme.waitForExistence(timeout: 10))
+        theme.tap()
+        app.buttons["Dark"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(5) { (theme.value as? String)?.contains("Dark") == true || theme.label.contains("Dark") })
+        attach(app, "e2e-settings-dark")
+    }
 }
+

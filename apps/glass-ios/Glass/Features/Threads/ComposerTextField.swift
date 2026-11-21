@@ -10,6 +10,8 @@ struct ComposerTextField: UIViewRepresentable {
     var maxLines = 6
     /// A new pending decision puts the keyboard away so the request is visible.
     var dismissFor: String?
+    /// ⌘K and ⌘/ while typing open the command palette.
+    var onCommands: (() -> Void)?
     var onReturn: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
@@ -31,6 +33,7 @@ struct ComposerTextField: UIViewRepresentable {
         view.isEditable = isEnabled
         view.textColor = isEnabled ? .label : .secondaryLabel
         view.onReturn = onReturn
+        view.onCommands = onCommands
         view.placeholder = placeholder
         if context.coordinator.dismissedFor != dismissFor {
             context.coordinator.dismissedFor = dismissFor
@@ -60,6 +63,7 @@ struct ComposerTextField: UIViewRepresentable {
 
 final class ComposerTextView: UITextView {
     var onReturn: (() -> Void)?
+    var onCommands: (() -> Void)?
     var placeholder = "" {
         didSet {
             placeholderLabel.text = placeholder
@@ -103,6 +107,17 @@ final class ComposerTextView: UITextView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard onCommands != nil else { return super.keyCommands }
+        return (super.keyCommands ?? []) + ["k", "/"].map { input in
+            let command = UIKeyCommand(title: "Commands", action: #selector(openCommands), input: input, modifierFlags: .command)
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+    }
+
+    @objc private func openCommands() { onCommands?() }
 
     func refreshPlaceholder() { placeholderLabel.isHidden = !(text ?? "").isEmpty }
 

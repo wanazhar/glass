@@ -2904,6 +2904,7 @@ impl MarbleServer {
                     json!({
                         "queued": true,
                         "accepted": false,
+                        "taskId": queued_id,
                         "requestId": request_id,
                         "position": position,
                         "message": "the assistant is busy; this message keeps its place and runs next",
@@ -3114,6 +3115,49 @@ impl MarbleServer {
     /// dispatched all answer here. A task that already settled is reported as
     /// such rather than as unknown.
     fn cancel_task(&self, task_id: &str) -> Response {
+        let queued = {
+            let mut guard = self.lock_state();
+            if let Some(task) = guard
+                .tasks
+                .iter_mut()
+                .find(|task| task.id == task_id && task.status == "queued")
+            {
+                task.status = "cancelled".into();
+                if task.conversation_id.is_empty() {
+                    task.conversation_id = format!("recovered-{task_id}");
+                }
+                let conversation_id = task.conversation_id.clone();
+                let prompt = task.prompt.clone();
+                let conversation = guard.conversation_mut(&conversation_id);
+                if conversation.title.is_empty() {
+                    conversation.title = prompt.chars().take(64).collect();
+                }
+                guard.push_transcript(crate::state::TranscriptEntry {
+                    conversation_id,
+                    task_id: task_id.into(),
+                    kind: "system".into(),
+                    text: "Cancelled before it started".into(),
+                    at: now_millis(),
+                    ..Default::default()
+                });
+                guard.routines.note_settled(task_id, "cancelled");
+                guard.bump();
+                true
+            } else {
+                false
+            }
+        };
+        if queued {
+            self.turn_tx.remove_queued(task_id);
+            self.save_state();
+            self.events.publish(
+                "",
+                task_id,
+                "state",
+                json!({"status": "cancelled", "message": "Cancelled before it started"}),
+            );
+            return Response::json(200, json!({"cancelled": true, "taskId": task_id}));
+        }
         if self.cancels.request(task_id) {
             self.events
                 .publish("", task_id, "cancel_requested", json!({"taskId": task_id}));

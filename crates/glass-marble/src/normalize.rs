@@ -11,11 +11,11 @@ pub(crate) fn engine_input(
 ) -> TurnInput {
     let mut input = to_turn_input(&InboundMessage::new(text));
     if let Some(previous) = conversation_id.filter(|id| !id.is_empty()).and_then(|id| {
-        state
-            .tasks
-            .iter()
-            .rev()
-            .find(|task| task.conversation_id == id && task.status != "queued")
+        state.tasks.iter().rev().find(|task| {
+            task.conversation_id == id
+                && task.status != "queued"
+                && !(task.status == "running" && task.id.starts_with("queued-"))
+        })
     }) && matches!(
         previous.status.as_str(),
         "cancelled" | "failed" | "interrupted"

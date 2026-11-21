@@ -1649,6 +1649,28 @@ fn the_model_can_be_changed_and_is_validated() {
 }
 
 #[test]
+fn cancelling_a_queued_turn_removes_it_before_execution() {
+    let (turn_tx, inbox) = TurnInbox::channel();
+    let server = server_with_turn_channel(ProductState::default(), turn_tx);
+    let (status, body) = server.handle("POST", "/api/turns", r#"{"text":"never run"}"#);
+    assert_eq!(status, 202);
+    let queued: Value = serde_json::from_str(&body).unwrap();
+    let id = queued["taskId"].as_str().unwrap();
+    let route = format!("/api/tasks/{id}/cancel");
+    assert_eq!(server.handle("POST", &route, "").0, 200);
+    assert!(inbox.try_recv().is_none());
+    let (_, body) = server.handle("GET", "/api/state", "");
+    let doc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["tasks"][0]["status"], "cancelled");
+    assert_eq!(doc["transcript"][0]["text"], "Cancelled before it started");
+    assert_eq!(server.handle("POST", &route, "").0, 409);
+    assert_eq!(
+        server.handle("POST", "/api/tasks/missing/cancel", "").0,
+        404
+    );
+}
+
+#[test]
 fn a_busy_worker_answers_queued_with_its_place_in_line() {
     let (turn_tx, inbox) = TurnInbox::channel();
     let server = server_with_turn_channel(ProductState::default(), turn_tx);

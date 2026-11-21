@@ -185,6 +185,7 @@ struct InboxState {
     routine: VecDeque<TurnCommand>,
     /// Live [`TurnSender`] handles; the last one leaving stops the worker.
     senders: usize,
+    closed: bool,
 }
 
 fn lock_inbox(inbox: &Inbox) -> std::sync::MutexGuard<'_, InboxState> {
@@ -219,9 +220,12 @@ impl std::error::Error for TurnWorkerGone {}
 ///
 /// Every clone keeps the worker alive, so dropping the last surface stops it
 /// once its current turn settles.
+type LaneQueues = Arc<Mutex<Vec<(Arc<Inbox>, Arc<AtomicUsize>)>>>;
+
 pub struct TurnSender {
     inbox: Arc<Inbox>,
     live: bool,
+    lanes: LaneQueues,
 }
 
 impl TurnSender {
@@ -233,19 +237,24 @@ impl TurnSender {
                 ready: Condvar::new(),
             }),
             live: false,
+            lanes: Arc::default(),
         }
     }
 
     /// Queue one command; the answer is its place among the commands waiting in
     /// front of it in the same lane.
     pub fn send(&self, command: TurnCommand) -> Result<usize, TurnWorkerGone> {
+        self.send_owned(command).map_err(|_| TurnWorkerGone)
+    }
+
+    fn send_owned(&self, command: TurnCommand) -> Result<usize, Box<TurnCommand>> {
         if !self.live {
-            return Err(TurnWorkerGone);
+            return Err(Box::new(command));
         }
         let lane = command.request.lane();
         let mut state = lock_inbox(&self.inbox);
-        if state.senders == 0 {
-            return Err(TurnWorkerGone);
+        if state.senders == 0 || state.closed {
+            return Err(Box::new(command));
         }
         let position = match lane {
             TurnLane::Human => {
@@ -260,6 +269,29 @@ impl TurnSender {
         drop(state);
         self.inbox.ready.notify_one();
         Ok(position)
+    }
+
+    pub(crate) fn remove_queued(&self, task_id: &str) {
+        fn remove(inbox: &Inbox, task_id: &str) -> usize {
+            let mut state = lock_inbox(inbox);
+            let before = state.human.len() + state.routine.len();
+            state
+                .human
+                .retain(|command| format!("queued-{}", command.request.request_id) != task_id);
+            state
+                .routine
+                .retain(|command| format!("queued-{}", command.request.request_id) != task_id);
+            before - state.human.len() - state.routine.len()
+        }
+        remove(&self.inbox, task_id);
+        for (inbox, in_flight) in self
+            .lanes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+        {
+            in_flight.fetch_sub(remove(inbox, task_id), Ordering::Relaxed);
+        }
     }
 
     /// Commands handed over that the worker has not started yet.
@@ -296,6 +328,7 @@ impl Clone for TurnSender {
         Self {
             inbox: Arc::clone(&self.inbox),
             live: self.live,
+            lanes: self.lanes.clone(),
         }
     }
 }
@@ -322,6 +355,12 @@ pub struct TurnInbox {
     inbox: Arc<Inbox>,
 }
 
+impl Drop for TurnInbox {
+    fn drop(&mut self) {
+        lock_inbox(&self.inbox).closed = true;
+    }
+}
+
 impl TurnInbox {
     /// A sender for every surface, and the worker's own receiving handle.
     pub fn channel() -> (TurnSender, Self) {
@@ -330,6 +369,7 @@ impl TurnInbox {
                 human: VecDeque::new(),
                 routine: VecDeque::new(),
                 senders: 1,
+                closed: false,
             }),
             ready: Condvar::new(),
         });
@@ -337,6 +377,7 @@ impl TurnInbox {
             TurnSender {
                 inbox: Arc::clone(&inbox),
                 live: true,
+                lanes: Arc::default(),
             },
             Self { inbox },
         )
@@ -427,7 +468,7 @@ pub struct TurnPool {
 
 /// One lane's runtime handle, as the dispatcher sees it.
 struct LaneRuntime {
-    sender: mpsc::Sender<TurnCommand>,
+    sender: TurnSender,
     /// Commands handed to this lane that have not settled yet, including the
     /// one it is running. The dispatcher sends new chats to the lightest lane.
     in_flight: Arc<AtomicUsize>,
@@ -436,8 +477,8 @@ struct LaneRuntime {
 /// One lane's queue, created before its engine so work can be handed over while
 /// that engine is still starting.
 struct LaneQueue {
-    sender: mpsc::Sender<TurnCommand>,
-    receiver: mpsc::Receiver<TurnCommand>,
+    sender: TurnSender,
+    receiver: TurnInbox,
     steer_tx: mpsc::Sender<SteerRequest>,
     steer_rx: mpsc::Receiver<SteerRequest>,
     in_flight: Arc<AtomicUsize>,
@@ -475,6 +516,7 @@ pub fn spawn_turn_pool(
     let (sender, inbox) = TurnInbox::channel();
     let steer = SteerSink::default();
     let wiring = LaneWiring {
+        queues: sender.lanes.clone(),
         factory,
         state: Arc::clone(&state),
         store,
@@ -542,6 +584,7 @@ pub fn spawn_turn_pool(
 
 /// What every lane thread needs besides its own engine session.
 struct LaneWiring {
+    queues: LaneQueues,
     factory: LaneFactory,
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
@@ -555,14 +598,19 @@ struct LaneWiring {
 impl LaneWiring {
     /// The queue one lane drains, ready before its engine is.
     fn queue(&self) -> LaneQueue {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = TurnInbox::channel();
         let (steer_tx, steer_rx) = mpsc::channel();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        self.queues
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((sender.inbox.clone(), in_flight.clone()));
         LaneQueue {
             sender,
             receiver,
             steer_tx,
             steer_rx,
-            in_flight: Arc::new(AtomicUsize::new(0)),
+            in_flight,
         }
     }
 
@@ -638,7 +686,7 @@ impl LaneWiring {
                         // later, instead of leaving them in a queue nothing
                         // drains.
                         let reason = error.to_string();
-                        for command in receiver.iter() {
+                        while let Some(command) = receiver.recv() {
                             in_flight.fetch_sub(1, Ordering::Relaxed);
                             undelivered(
                                 &parts.state,
@@ -673,12 +721,12 @@ fn hand_over(
         return Some(command);
     };
     runtime.in_flight.fetch_add(1, Ordering::Relaxed);
-    match runtime.sender.send(command) {
-        Ok(()) => None,
-        Err(mpsc::SendError(command)) => {
+    match runtime.sender.send_owned(command) {
+        Ok(_) => None,
+        Err(command) => {
             Arc::clone(&runtime.in_flight).fetch_sub(1, Ordering::Relaxed);
             runtimes[lane] = None;
-            Some(command)
+            Some(*command)
         }
     }
 }
@@ -702,6 +750,13 @@ fn undelivered(
     let message = error.to_string();
     let snapshot = {
         let mut guard = lock(state);
+        if guard
+            .tasks
+            .iter()
+            .any(|task| task.id == queued_id && task.status == "cancelled")
+        {
+            return;
+        }
         guard.set_task_status(&queued_id, "failed");
         guard.bump();
         guard.clone()
@@ -723,12 +778,12 @@ fn undelivered(
 /// Drain one lane's queue until the last sender is gone.
 fn drain(
     lane: u8,
-    receiver: mpsc::Receiver<TurnCommand>,
+    receiver: TurnInbox,
     in_flight: Arc<AtomicUsize>,
     mut conversation: Conversation,
     parts: LaneParts,
 ) {
-    while let Ok(command) = receiver.recv() {
+    while let Some(command) = receiver.recv() {
         run_command(
             command,
             lane,
@@ -825,6 +880,17 @@ fn run_command(
     // soon as the engine issues an id, and it is removed if the turn never
     // starts at all.
     let queued_id = format!("queued-{}", request.request_id);
+    {
+        let mut guard = lock(state);
+        if guard
+            .tasks
+            .iter()
+            .any(|task| task.id == queued_id && task.status == "cancelled")
+        {
+            return;
+        }
+        guard.set_task_status(&queued_id, "running");
+    }
     // A firing waits in the routine lane, and the routine can be removed or
     // disabled while it waits. Running it then would be work nobody asked for
     // any more, so drop the placeholder and say why instead of starting a turn.
@@ -1220,11 +1286,33 @@ mod tests {
     use super::*;
 
     fn lane_with(load: usize) -> Option<LaneRuntime> {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = TurnInbox::channel();
         Some(LaneRuntime {
             sender,
             in_flight: Arc::new(AtomicUsize::new(load)),
         })
+    }
+
+    #[test]
+    fn cancellation_removes_commands_from_a_lane_queue() {
+        let (sender, _) = TurnInbox::channel();
+        let (lane, receiver) = TurnInbox::channel();
+        let in_flight = Arc::new(AtomicUsize::new(1));
+        sender
+            .lanes
+            .lock()
+            .unwrap()
+            .push((lane.inbox.clone(), in_flight.clone()));
+        let request = TurnRequest::new(None, "never run");
+        let id = format!("queued-{}", request.request_id);
+        lane.send(TurnCommand {
+            request,
+            accepted: mpsc::channel().0,
+        })
+        .unwrap();
+        sender.remove_queued(&id);
+        assert!(receiver.try_recv().is_none());
+        assert_eq!(in_flight.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1254,7 +1342,7 @@ mod tests {
 
     #[test]
     fn a_lane_whose_thread_stopped_hands_the_command_back() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = TurnInbox::channel();
         // The lane's thread is gone, so its queue can never reach an engine.
         drop(receiver);
         let mut runtimes = vec![Some(LaneRuntime {

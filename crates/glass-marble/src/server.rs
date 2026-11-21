@@ -2879,35 +2879,25 @@ impl MarbleServer {
             };
         }
         if let Some(id) = marble_id {
-            return self.dispatch_swarm(&json!({"text": text, "marbles": [id]}).to_string());
-        }
-        // A conversation belongs to the engine that created its session. A
-        // marble's chat therefore goes back to that marble, so the same chat is
-        // continuable from any surface and runs beside the chat engine instead
-        // of waiting behind it.
-        if let Some((marble, outcome)) = self.dispatch_to_owner(conversation_id.as_deref(), &text) {
-            return match outcome {
-                Ok(dispatch) => Response::json(
-                    202,
-                    json!({
-                        "accepted": true,
-                        "queued": false,
-                        "conversationId": marble.conversation_id,
-                        "requestId": "",
-                        "marbleId": marble.id,
-                        "marbleName": marble.name,
-                        // The pool records the durable task while the turn is
-                        // admitted; the surface learns it from the next state.
-                        "taskId": "",
-                        "message": format!("{} is answering in its own conversation", marble.name),
-                        "dispatch": dispatch.document(),
-                    }),
-                ),
-                Err(refusal) => Response::json(
-                    refusal.status,
-                    json!({"error": refusal.code, "message": refusal.message}),
-                ),
+            let Some(marble) = self.lock_state().prism.get(&id).cloned() else {
+                return Response::error(404, "unknown_marble");
             };
+            let mut response =
+                self.dispatch_swarm(&json!({"text": text, "marbles": [id]}).to_string());
+            if response.status == 202
+                && let Ok(Value::Object(mut document)) =
+                    serde_json::from_str::<Value>(&response.body)
+            {
+                document.insert("accepted".into(), json!(true));
+                document.insert("queued".into(), json!(false));
+                document.insert("conversationId".into(), json!(marble.conversation_id));
+                document.insert("requestId".into(), json!(""));
+                document.insert("taskId".into(), json!(""));
+                document.insert("marbleId".into(), json!(marble.id));
+                document.insert("marbleName".into(), json!(marble.name));
+                response.body = Value::Object(document).to_string();
+            }
+            return response;
         }
         self.submit_request(TurnRequest::new(conversation_id, text))
     }

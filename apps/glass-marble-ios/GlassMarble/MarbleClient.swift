@@ -16,7 +16,14 @@ final class MarbleClient: @unchecked Sendable {
         configuration.httpShouldSetCookies = true
         configuration.httpCookieAcceptPolicy = .always
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        session = URLSession(configuration: configuration)
+        let delegate: URLSessionDelegate? =
+            endpoint.baseURL.scheme == "https"
+                ? MarblePinnedSessionDelegate() : nil
+        session = URLSession(
+            configuration: configuration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
     }
 
     // MARK: - Requests
@@ -52,28 +59,46 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
-    private func fetch<T: Decodable>(_ request: URLRequest) async throws -> T {
+    /// A renewed certificate fails the pin check once; re-pair against the
+    /// token and retry the request before giving up.
+    private func withRepin<T>(_ work: () async throws -> T) async throws -> T {
         do {
-            let (data, response) = try await session.data(for: request)
-            try marbleValidate(response, data: data)
-            return try decoder.decode(T.self, from: data)
+            return try await work()
         } catch let error as MarbleClientError {
-            throw error
-        } catch {
-            throw MarbleClientError.from(error)
+            guard case .tls = error, endpoint.baseURL.scheme == "https",
+                  endpoint.token != nil
+            else { throw error }
+            _ = try await MarblePinning.pin(endpoint)
+            return try await work()
+        }
+    }
+
+    private func fetch<T: Decodable>(_ request: URLRequest) async throws -> T {
+        try await withRepin {
+            do {
+                let (data, response) = try await session.data(for: request)
+                try marbleValidate(response, data: data)
+                return try decoder.decode(T.self, from: data)
+            } catch let error as MarbleClientError {
+                throw error
+            } catch {
+                throw MarbleClientError.from(error)
+            }
         }
     }
 
     /// Raw bytes for endpoints that return a whole document (export).
     func fetchData(_ request: URLRequest) async throws -> Data {
-        do {
-            let (data, response) = try await session.data(for: request)
-            try marbleValidate(response, data: data)
-            return data
-        } catch let error as MarbleClientError {
-            throw error
-        } catch {
-            throw MarbleClientError.from(error)
+        try await withRepin {
+            do {
+                let (data, response) = try await session.data(for: request)
+                try marbleValidate(response, data: data)
+                return data
+            } catch let error as MarbleClientError {
+                throw error
+            } catch {
+                throw MarbleClientError.from(error)
+            }
         }
     }
 
@@ -541,6 +566,13 @@ enum MarblePreferences {
     static var hasHost: Bool { baseURL != nil }
 
     static func signOut() {
+        if let baseURL {
+            MarblePinStore.clear(
+                for: MarblePinStore.authority(
+                    for: MarbleEndpoint(baseURL: baseURL, token: nil)
+                )
+            )
+        }
         baseURLString = nil
         token = nil
     }
@@ -561,7 +593,7 @@ enum MarblePreferences {
         token = endpoint.token
     }
 
-    private static func readKeychain(account: String) -> String? {
+    static func readKeychain(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -577,7 +609,7 @@ enum MarblePreferences {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func writeKeychain(_ value: String, account: String) {
+    static func writeKeychain(_ value: String, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -590,7 +622,7 @@ enum MarblePreferences {
         SecItemAdd(attributes as CFDictionary, nil)
     }
 
-    private static func deleteKeychain(account: String) {
+    static func deleteKeychain(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,

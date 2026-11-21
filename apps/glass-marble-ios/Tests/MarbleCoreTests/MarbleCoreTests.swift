@@ -604,3 +604,191 @@ final class EvaluatorMessageTests: XCTestCase {
         ) else { return XCTFail("expected .failed") }
     }
 }
+
+final class ATSErrorMappingTests: XCTestCase {
+    func testATSErrorMaps() {
+        XCTAssertEqual(
+            MarbleClientError.from(URLError(.appTransportSecurityRequiresSecureConnection)),
+            .appTransportSecurity
+        )
+    }
+
+    func testSecureConnectionMapsToTLS() {
+        guard case .tls = MarbleClientError.from(URLError(.secureConnectionFailed)) else {
+            return XCTFail("expected .tls")
+        }
+    }
+
+    func testServerCertErrorsMapToTLS() {
+        for code: URLError.Code in [
+            .serverCertificateHasBadDate, .serverCertificateUntrusted,
+            .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+            .clientCertificateRejected, .clientCertificateRequired,
+        ] {
+            guard case .tls = MarbleClientError.from(URLError(code)) else {
+                return XCTFail("expected .tls for \(code)")
+            }
+        }
+    }
+}
+
+final class OnboardingTLSVerdictTests: XCTestCase {
+    private let health = MarbleHealth(
+        ok: true, version: "0.3.14", revision: 1, sequence: 0, authRequired: true,
+        status: "idle",
+        runtime: MarbleHealth.RuntimeHealth(health: "ok", lastError: nil)
+    )
+
+    func testHTTPAddressThatHitTLSSaysSo() {
+        let verdict = MarbleOnboardingEvaluator.evaluate(
+            urlTried: "http://100.98.115.95:4783",
+            health: .failure(.tls("handshake failed")),
+            state: .failed("state check failed"),
+            hadToken: true
+        )
+        guard case .hostAnswered(let message) = verdict else {
+            return XCTFail("expected .hostAnswered, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("iOS tried to use HTTPS"), message)
+    }
+
+    func testHTTPAddressBlockedByATSSaysSo() {
+        let verdict = MarbleOnboardingEvaluator.evaluate(
+            urlTried: "http://100.98.115.95:4783",
+            health: .failure(.appTransportSecurity),
+            state: .failed("state check failed"),
+            hadToken: true
+        )
+        guard case .hostAnswered(let message) = verdict else {
+            return XCTFail("expected .hostAnswered, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("iOS tried to use HTTPS"), message)
+    }
+
+    func testSpeaksHTTPCarriesHint() {
+        let verdict = MarbleOnboarding.speaksHTTP("http://100.98.115.95:4783")
+        XCTAssertEqual(verdict.httpHint, "http://100.98.115.95:4783")
+        XCTAssertTrue(verdict.message.contains("HTTP, not HTTPS"))
+        XCTAssertNil(MarbleOnboarding.ready("0.3.14").httpHint)
+    }
+
+    func testProbeRetriesHTTPSOverHTTP() async {
+        // https health dies in TLS; the http retry answers like Marble.
+        let endpoint = MarbleEndpoint(
+            baseURL: URL(string: "https://100.98.115.95:4783")!, token: "t"
+        )
+        var calls: [String] = []
+        let (verdict, _) = await MarbleOnboardingEvaluator.probe(
+            endpoint: endpoint,
+            health: { candidate in
+                calls.append(candidate.baseURL.absoluteString)
+                if candidate.baseURL.scheme == "https" {
+                    throw MarbleClientError.tls("handshake failed")
+                }
+                return self.health
+            },
+            state: { _ in 0 }
+        )
+        XCTAssertEqual(verdict, .speaksHTTP("http://100.98.115.95:4783"))
+        XCTAssertEqual(calls, [
+            "https://100.98.115.95:4783",
+            "http://100.98.115.95:4783",
+        ])
+    }
+
+    func testProbeKeepsTLSVerdictWhenHTTPAlsoFails() async {
+        let endpoint = MarbleEndpoint(
+            baseURL: URL(string: "https://100.98.115.95:4783")!, token: "t"
+        )
+        let (verdict, _) = await MarbleOnboardingEvaluator.probe(
+            endpoint: endpoint,
+            health: { _ in throw MarbleClientError.tls("handshake failed") },
+            state: { _ in 0 }
+        )
+        guard case .unreachable(let message) = verdict else {
+            return XCTFail("expected .unreachable, got \(verdict)")
+        }
+        XCTAssertTrue(message.contains("TLS"), message)
+    }
+}
+
+final class MarbleCryptoTests: XCTestCase {
+    func testSHA256Vectors() {
+        XCTAssertEqual(
+            MarbleSHA256.hex(Data("abc".utf8)),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        )
+        XCTAssertEqual(
+            MarbleSHA256.hex(Data()),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        )
+        let million = Data(repeating: 0x61, count: 1_000_000)
+        XCTAssertEqual(
+            MarbleSHA256.hex(million),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        )
+    }
+
+    func testHMACRFC4231() {
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8](repeating: 0x0b, count: 20),
+                message: [UInt8]("Hi There".utf8)
+            ),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        )
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8]("Jefe".utf8),
+                message: [UInt8]("what do ya want for nothing?".utf8)
+            ),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        )
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8](repeating: 0x0a, count: 25),
+                message: [UInt8](repeating: 0xdd, count: 50)
+            ),
+            "b74f4dabb5e3f7f4c09efc5808cd288179ddd2975060fe3739f2b12a90e47c49"
+        )
+        // Long keys are hashed first — the >64-byte path.
+        XCTAssertEqual(
+            MarbleHMAC.sha256Hex(
+                key: [UInt8](repeating: 0xaa, count: 131),
+                message: [UInt8](
+                    "Test Using Larger Than Block-Size Key - Hash Key First".utf8
+                )
+            ),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        )
+    }
+
+    func testNonce() {
+        let a = MarbleTLSPin.nonce()
+        XCTAssertEqual(a.count, 64)
+        XCTAssertTrue(a.allSatisfy { $0.isHexDigit })
+        XCTAssertNotEqual(a, MarbleTLSPin.nonce())
+    }
+
+    func testVerifyMatchesHostProof() {
+        let token = "tokentest"
+        let nonce = String(repeating: "a", count: 64)
+        let cert = String(repeating: "0", count: 64)
+        var message = [UInt8]("marble-tls-pin-v1".utf8)
+        message.append(0)
+        message.append(contentsOf: [UInt8](nonce.utf8))
+        message.append(0)
+        message.append(contentsOf: [UInt8](cert.utf8))
+        let proof = MarbleHMAC.sha256Hex(key: [UInt8](token.utf8), message: message)
+        XCTAssertTrue(MarbleTLSPin.verify(
+            token: token, nonce: nonce, observedCertSHA256: cert, proofHex: proof
+        ))
+        XCTAssertFalse(MarbleTLSPin.verify(
+            token: "wrong", nonce: nonce, observedCertSHA256: cert, proofHex: proof
+        ))
+        XCTAssertFalse(MarbleTLSPin.verify(
+            token: token, nonce: nonce, observedCertSHA256: cert,
+            proofHex: String(repeating: "f", count: 64)
+        ))
+    }
+}

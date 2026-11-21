@@ -38,6 +38,9 @@ enum MarbleOnboarding: Equatable {
     case notMarble
     /// The host answered over HTTP, so "cannot reach" would be a lie.
     case hostAnswered(String)
+    /// An https:// probe died in TLS but the same host:port answers HTTP —
+    /// the associated value is the http:// URL to suggest.
+    case speaksHTTP(String)
 
     var message: String {
         switch self {
@@ -57,12 +60,20 @@ enum MarbleOnboarding: Equatable {
             return "Something answered there, but it is not a Marble host."
         case .hostAnswered(let detail):
             return detail
+        case .speaksHTTP(let httpURL):
+            return "This host speaks HTTP, not HTTPS. Use \(httpURL)."
         }
     }
 
     var isReady: Bool {
         if case .ready = self { return true }
         return false
+    }
+
+    /// The http:// URL an https:// probe should be corrected to, if any.
+    var httpHint: String? {
+        if case .speaksHTTP(let url) = self { return url }
+        return nil
     }
 }
 
@@ -97,7 +108,7 @@ enum MarbleOnboardingEvaluator {
             return .http(409, code)
         case .server(let status, let body), .http(let status, let body):
             return .http(status, MarbleClientError.errorCode(from: body))
-        case .unreachable, .timeout, .offline:
+        case .unreachable, .timeout, .offline, .appTransportSecurity, .tls:
             return .transport(error.localizedDescription)
         case .decoding(let detail):
             return .failed(detail)
@@ -138,26 +149,34 @@ enum MarbleOnboardingEvaluator {
     /// The probe's decision plumbing, shared by onboarding and the live
     /// tests: fetch health, fetch state, fold both into one verdict. The
     /// caller supplies the network calls so the iOS client and the Linux
-    /// test client can each use their own transport.
+    /// test client can each use their own transport. Both closures take the
+    /// endpoint to call, so the probe can retry a failed https:// health
+    /// check over plain http:// before judging.
     static func probe(
         endpoint: MarbleEndpoint,
-        health: () async throws -> MarbleHealth,
-        state: () async throws -> Any
+        health: (MarbleEndpoint) async throws -> MarbleHealth,
+        state: (MarbleEndpoint) async throws -> Any
     ) async -> (MarbleOnboarding, MarbleEndpoint) {
         let healthResult: Result<MarbleHealth, MarbleClientError>
         var stateOutcome = StateOutcome.failed("state check failed")
         do {
-            healthResult = .success(try await health())
+            healthResult = .success(try await health(endpoint))
             do {
-                _ = try await state()
+                _ = try await state(endpoint)
                 stateOutcome = .ok
             } catch {
                 stateOutcome = Self.stateOutcome(from: error)
             }
-        } catch let error as MarbleClientError {
-            healthResult = .failure(error)
         } catch {
-            healthResult = .failure(.from(error))
+            let mapped = MarbleClientError.from(error)
+            // An https:// probe that dies in the TLS handshake may simply be
+            // a plain-HTTP host — ask once over http:// before judging.
+            if endpoint.baseURL.scheme == "https", case .tls = mapped,
+               let insecure = endpoint.with(scheme: "http"),
+               (try? await health(insecure)) != nil {
+                return (.speaksHTTP(insecure.baseURL.absoluteString), endpoint)
+            }
+            healthResult = .failure(mapped)
         }
         let verdict = evaluate(
             urlTried: endpoint.baseURL.absoluteString,
@@ -181,6 +200,21 @@ enum MarbleOnboardingEvaluator {
                 // The host never answered: only transport failures may say so.
                 return .unreachable(
                     "Cannot reach \(urlTried). Is Tailscale on, the phone on the same tailnet, and the port right?"
+                )
+            case .appTransportSecurity where urlTried.hasPrefix("http:"),
+                 .tls where urlTried.hasPrefix("http:"):
+                // The address was already http:// yet the load went to TLS —
+                // ATS was forcing it; that pairing is the bug we fixed.
+                return .hostAnswered(
+                    "This host speaks HTTP, but iOS tried to use HTTPS for \(urlTried)."
+                )
+            case .tls(let detail):
+                return .unreachable(
+                    "The TLS handshake with \(urlTried) failed: \(detail)"
+                )
+            case .appTransportSecurity:
+                return .hostAnswered(
+                    "iOS blocked plain HTTP to \(urlTried) (App Transport Security)."
                 )
             case .unauthorized:
                 return .hostAnswered(

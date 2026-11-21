@@ -130,6 +130,16 @@ info["DTSDKName"] = os.environ["SDK_NAME"]
 if os.environ.get("SDK_BUILD"):
     info["DTSDKBuild"] = os.environ["SDK_BUILD"]
 
+# ATS regression guard: NSAllowsLocalNetworking makes iOS ignore
+# NSAllowsArbitraryLoads, which silently re-blocked plain HTTP to Tailscale
+# addresses. The two keys must never ship together.
+ats = info.get("NSAppTransportSecurity", {})
+if ats.get("NSAllowsArbitraryLoads") and ats.get("NSAllowsLocalNetworking"):
+    raise SystemExit(
+        "error: NSAllowsLocalNetworking alongside NSAllowsArbitraryLoads "
+        "makes iOS ignore arbitrary loads"
+    )
+
 with open(dst, "wb") as f:
     plistlib.dump(info, f, sort_keys=False)
 PYEOF

@@ -101,8 +101,8 @@ final class MarbleLiveTests: XCTestCase {
             authed.token = normalized.isEmpty ? nil : normalized
             return await MarbleOnboardingEvaluator.probe(
                 endpoint: authed,
-                health: { try await self.health(endpoint: authed) },
-                state: { try await self.fetchJSON(MarbleState.self, .state, token: authed.token ?? "") }
+                health: { try await self.health(endpoint: $0) },
+                state: { try await self.fetchJSON(MarbleState.self, .state, token: $0.token ?? "") }
             )
         }
     }
@@ -210,5 +210,71 @@ final class MarbleLiveTests: XCTestCase {
             return XCTFail("expected .unreachable, got \(verdict.message)")
         }
         XCTAssertTrue(message.contains("Cannot reach"), message)
+    }
+}
+
+extension MarbleLiveTests {
+    /// The real pinning check: fetch the leaf certificate over TLS with
+    /// openssl, hash it locally, then verify the host's proof with the token —
+    /// the same Core code the app uses.
+    func testTLSProofVerifiesObservedCertificate() async throws {
+        guard let tlsHost = ProcessInfo.processInfo.environment["MARBLE_LIVE_TLS_HOST"],
+              !tlsHost.isEmpty,
+              let url = URL(string: tlsHost),
+              let host = url.host,
+              let port = url.port
+        else {
+            throw XCTSkip("MARBLE_LIVE_TLS_HOST not configured")
+        }
+        // Leaf DER hash, taken from the certificate the client actually saw.
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c",
+            "openssl s_client -connect \(host):\(port) -servername \(host) </dev/null 2>/dev/null | openssl x509 -outform DER",
+        ]
+        process.standardOutput = pipe
+        try process.run()
+        let der = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard !der.isEmpty else {
+            return XCTFail("openssl produced no certificate")
+        }
+        let observed = MarbleSHA256.hex(der)
+
+        // tls-proof over plain HTTP must refuse.
+        let http = URL(string: "http://\(host):\(port)")!
+        var plainRequest = URLRequest(
+            url: http.appendingPathComponent("api/tls-proof")
+        )
+        plainRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (_, plainResponse) = try await session.data(for: plainRequest)
+        XCTAssertEqual((plainResponse as? HTTPURLResponse)?.statusCode, 400)
+
+        // The proof itself, over TLS (system trust accepts the ts.net cert).
+        var proofURL = URLComponents(url: url.appendingPathComponent("api/tls-proof"),
+                                     resolvingAgainstBaseURL: false)!
+        let nonce = MarbleTLSPin.nonce()
+        proofURL.queryItems = [URLQueryItem(name: "nonce", value: nonce)]
+        var request = URLRequest(url: proofURL.url!)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        struct Proof: Decodable { var certSha256: String; var proof: String }
+        let reply = try JSONDecoder().decode(Proof.self, from: data)
+        XCTAssertEqual(reply.certSha256, observed)
+        XCTAssertTrue(
+            MarbleTLSPin.verify(
+                token: token, nonce: nonce,
+                observedCertSHA256: observed, proofHex: reply.proof
+            )
+        )
+        XCTAssertFalse(
+            MarbleTLSPin.verify(
+                token: "not-the-token", nonce: nonce,
+                observedCertSHA256: observed, proofHex: reply.proof
+            )
+        )
     }
 }

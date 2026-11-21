@@ -30,7 +30,7 @@ struct MarbleOnboardingView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 } footer: {
-                    Text("The address of the machine running glass-marble — usually its Tailscale address. The token lives in the token file on the host.")
+                    Text("The address of the machine running glass-marble — its Tailscale address like http://100.x.y.z:4783, or https://<name>.ts.net:4783 when the host has a certificate. The token lives in the token file on the host.")
                 }
 
                 Section {
@@ -51,6 +51,11 @@ struct MarbleOnboardingView: View {
                             .font(.footnote)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
+                        if let httpURL = verdict.httpHint {
+                            Button("Use \(httpURL)") {
+                                address = httpURL
+                            }
+                        }
                     }
                 }
             }
@@ -97,12 +102,29 @@ enum MarbleProbe {
         case .success(var endpoint):
             let normalized = MarbleToken.normalize(token)
             endpoint.token = normalized.isEmpty ? nil : normalized
-            let client = MarbleClient(endpoint: endpoint)
-            // Same plumbing the Linux live tests exercise.
+            // https pairs the certificate against the token before any other
+            // traffic: a self-signed host earns its pin without a CA.
+            if endpoint.baseURL.scheme == "https" {
+                do {
+                    _ = try await MarblePinning.pin(endpoint)
+                } catch MarblePinningError.verificationFailed {
+                    return (
+                        .hostAnswered(
+                            "The certificate at this address could not be verified with your token."
+                        ), nil
+                    )
+                } catch {
+                    // A failed proof is not fatal — the certificate may still
+                    // be system-trusted (e.g. a real ts.net cert), so fall
+                    // through to the ordinary probe.
+                }
+            }
+            // Same plumbing the Linux live tests exercise. The closures take
+            // the endpoint because the probe may retry over http://.
             return await MarbleOnboardingEvaluator.probe(
                 endpoint: endpoint,
-                health: { try await client.health() },
-                state: { try await client.state() }
+                health: { try await MarbleClient(endpoint: $0).health() },
+                state: { try await MarbleClient(endpoint: $0).state() }
             )
         }
     }

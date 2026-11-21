@@ -45,6 +45,20 @@ struct MarbleEndpoint: Equatable {
         return .success(MarbleEndpoint(baseURL: url, token: nil))
     }
 
+    /// The same endpoint on another scheme (used to retry an https:// probe
+    /// over http:// when the host turns out to serve plain HTTP).
+    func with(scheme: String) -> MarbleEndpoint? {
+        guard var components = URLComponents(
+            url: baseURL,
+            resolvingAgainstBaseURL: false
+        ) else { return nil }
+        components.scheme = scheme
+        guard let url = components.url else { return nil }
+        var copy = self
+        copy.baseURL = url
+        return copy
+    }
+
     /// Build the URL for one API path and its query items, joining onto any
     /// path the base URL already carries and percent-encoding the pieces.
     /// A `?` embedded in `path` is split out and its items merged into the
@@ -148,6 +162,12 @@ struct MarbleRoute: Equatable {
         return MarbleRoute(path: "/api/export", query: query)
     }
 
+    static func tlsProof(nonce: String) -> MarbleRoute {
+        MarbleRoute(path: "/api/tls-proof", query: [
+            URLQueryItem(name: "nonce", value: nonce),
+        ])
+    }
+
     static func events(since: UInt64) -> MarbleRoute {
         MarbleRoute(
             path: "/api/events",
@@ -191,6 +211,11 @@ enum MarbleClientError: LocalizedError, Equatable {
     case server(Int, String)
     case decoding(String)
     case http(Int, String)
+    /// iOS refused the load before any bytes went out (-1022).
+    case appTransportSecurity
+    /// The connection died in the TLS handshake — often a plain-HTTP host
+    /// probed with an https:// address.
+    case tls(String)
 
     var errorDescription: String? {
         switch self {
@@ -216,6 +241,10 @@ enum MarbleClientError: LocalizedError, Equatable {
             return "Unexpected host response: \(detail)"
         case .http(let status, let body):
             return "Host rejected the request (\(status)): \(body)"
+        case .appTransportSecurity:
+            return "iOS blocked plain HTTP to this host (App Transport Security)."
+        case .tls(let detail):
+            return detail.isEmpty ? "The TLS handshake failed." : detail
         }
     }
 
@@ -225,6 +254,13 @@ enum MarbleClientError: LocalizedError, Equatable {
         if let clientError = error as? MarbleClientError { return clientError }
         if let urlError = error as? URLError {
             switch urlError.code {
+            case .appTransportSecurityRequiresSecureConnection:
+                return .appTransportSecurity
+            case .secureConnectionFailed, .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid, .clientCertificateRejected,
+                 .clientCertificateRequired:
+                return .tls(urlError.localizedDescription)
             case .timedOut:
                 return .timeout
             case .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,

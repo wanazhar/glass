@@ -9,7 +9,12 @@ model-backed steps retry with backoff instead of failing on the first window.
 """
 
 import argparse
+import hashlib
+import hmac as hmac_mod
 import json
+import secrets
+import socket
+import ssl
 import sys
 import threading
 import time
@@ -18,6 +23,7 @@ import urllib.error
 
 HOST = None
 TOKEN = None
+SSL_CTX = None
 FORCE_QUIESCE = False
 CREATED = []  # conversationIds created by this script, deleted at the end
 RESULTS = []
@@ -35,7 +41,7 @@ def request(path, method="GET", body=None, token=True, timeout=30):
         req.add_header("Content-Type", "application/json")
         data = json.dumps(body).encode()
     try:
-        with urllib.request.urlopen(req, data=data, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, data=data, timeout=timeout, context=SSL_CTX) as resp:
             raw = resp.read().decode()
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as e:
@@ -88,7 +94,7 @@ def sse_events(since, stop_event, sink):
     if TOKEN:
         req.add_header("Authorization", "Bearer " + TOKEN)
     try:
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=600, context=SSL_CTX) as resp:
             data_lines = []
             for raw in resp:
                 if stop_event.is_set():
@@ -223,8 +229,41 @@ def chat_to_settled(stream, prompt, timeout):
     return reason == "completed", f"settled reason={reason} conv={turn['conversationId']}"
 
 
+def tls_pin_check():
+    """Verify the cert the client saw against the host's HMAC proof."""
+    from urllib.parse import urlparse
+    parsed = urlparse(HOST)
+    host = parsed.hostname
+    port = parsed.port or 443
+    ctx = ssl._create_unverified_context()
+    with socket.create_connection((host, port), timeout=15) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as secure:
+            der = secure.getpeercert(binary_form=True)
+    if not der:
+        return False, "no peer certificate"
+    observed = hashlib.sha256(der).hexdigest()
+    nonce = secrets.token_hex(32)
+    status, body = request(f"/api/tls-proof?nonce={nonce}", token=False)
+    if status != 200:
+        return False, f"tls-proof status={status} body={body}"
+    if body.get("certSha256") != observed:
+        return False, "server certSha256 did not match the observed leaf"
+    message = (
+        b"marble-tls-pin-v1\0" + nonce.encode() + b"\0" + observed.encode()
+    )
+    expected = hmac_mod.new(
+        TOKEN.encode(), message, hashlib.sha256
+    ).hexdigest()
+    if not hmac_mod.compare_digest(expected, body.get("proof", "")):
+        return False, "proof HMAC mismatch"
+    status, _ = request("/api/state?lean=1")
+    if status != 200:
+        return False, f"state over TLS status={status}"
+    return True, "pin verified and state answers over TLS"
+
+
 def main():
-    global HOST, TOKEN, FORCE_QUIESCE
+    global HOST, TOKEN, FORCE_QUIESCE, SSL_CTX
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True)
     parser.add_argument("--token-file", required=True)
@@ -233,10 +272,46 @@ def main():
         action="store_true",
         help="deny pending approvals and cancel running tasks so the run starts idle",
     )
+    parser.add_argument(
+        "--tls-pin-check",
+        action="store_true",
+        help="verify the certificate pin proof, then run the quick steps over https",
+    )
     args = parser.parse_args()
     FORCE_QUIESCE = args.force_quiesce
     HOST = args.host.rstrip("/")
     TOKEN = open(args.token_file).read().strip()
+    SSL_CTX = (
+        ssl._create_unverified_context() if HOST.startswith("https") else None
+    )
+
+    if args.tls_pin_check:
+        t = step("tls-proof pins the observed certificate")
+        ok, detail = tls_pin_check()
+        done(t, ok, detail)
+        if not ok:
+            return finish(None)
+
+        t = step("healthz over TLS")
+        status, health = request("/healthz", token=False)
+        done(t, status == 200 and health.get("ok") is True, f"version={health.get('version')}")
+
+        t = step("unauthenticated state rejected over TLS")
+        status, _ = request("/api/state?lean=1", token=False)
+        done(t, status == 401, f"status={status}")
+
+        t = step("host idle")
+        done(t, quiesce(300), "")
+
+        _, health_doc = request("/healthz", token=False)
+        stream = Stream(health_doc.get("sequence", 0))
+        run_model_step(
+            "single chat over TLS streams to settled",
+            lambda to: chat_to_settled(
+                stream, "Reply with exactly the word: marble-tls-check", to
+            ),
+        )
+        return finish(stream)
 
     t = step("healthz and version")
     status, health = request("/healthz", token=False)

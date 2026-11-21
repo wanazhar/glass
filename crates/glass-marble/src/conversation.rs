@@ -51,6 +51,53 @@ fn session_instructions(cwd: &Path) -> String {
     instructions
 }
 
+/// Session instructions for the default assistant: its own personality when
+/// the person gave it one, else the plain product posture.
+pub fn default_assistant_instructions(persona: &str, cwd: &Path) -> String {
+    let persona = persona.trim();
+    if persona.is_empty() {
+        return session_instructions(cwd);
+    }
+    format!(
+        "You are Marble, the default assistant — a personal companion built on Glass. Personality: {persona}.
+{}",
+        session_instructions(cwd)
+    )
+}
+
+/// Session instructions for one named marble: who it is and who it can ask,
+/// then the same product posture and workspace briefing the default assistant
+/// gets. Instructions are fixed when the engine session is created, so a
+/// persona edit only reaches the model through a fresh conversation.
+pub fn marble_session_instructions(
+    marble: &crate::prism::PrismMarble,
+    roster: &[crate::prism::PrismMarble],
+    cwd: &Path,
+) -> String {
+    let persona = if marble.persona.trim().is_empty() {
+        marble.role.trim()
+    } else {
+        marble.persona.trim()
+    };
+    let others: Vec<String> = roster
+        .iter()
+        .filter(|other| other.id != marble.id)
+        .map(|other| format!("{} — {}", other.name, other.role))
+        .collect();
+    let others = if others.is_empty() {
+        "none yet".to_string()
+    } else {
+        others.join("; ")
+    };
+    let mut instructions = format!(
+        "You are {}, one of the user's Marbles — personal companions built on Glass. Personality: {}. Other Marbles you can ask for help: {}.",
+        marble.name, persona, others
+    );
+    instructions.push('\n');
+    instructions.push_str(&session_instructions(cwd));
+    instructions
+}
+
 /// Cancel intent for one running durable task.
 #[derive(Debug, Clone, Copy)]
 pub struct CancelToken<'a> {
@@ -224,6 +271,12 @@ pub struct Conversation {
     /// the turn that asked for them, so the next turn drops them instead of
     /// failing on a response id it never used.
     outstanding: Vec<String>,
+    /// Instructions a durable conversation opens with; `None` uses the default
+    /// product posture. Set for a named marble's engine.
+    instructions: Option<String>,
+    /// Instructions computed per conversation, so an edited persona reaches
+    /// the next conversation on a shared lane.
+    instructions_fn: Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 impl Conversation {
@@ -299,6 +352,8 @@ impl Conversation {
             storage_dir: storage_dir.to_path_buf(),
             transport_failed: false,
             restarts: 0,
+            instructions: None,
+            instructions_fn: None,
             outstanding: Vec::new(),
         })
     }
@@ -459,6 +514,23 @@ impl Conversation {
         self.model = model;
     }
 
+    /// Fix the instructions this session's conversations open with — a named
+    /// marble's identity instead of the default product posture.
+    pub fn with_instructions(mut self, instructions: String) -> Self {
+        self.instructions = Some(instructions);
+        self
+    }
+
+    /// Ask for the instructions each time a conversation is created, so an
+    /// edited persona reaches the next conversation without dropping the lane.
+    pub fn with_instructions_fn(
+        mut self,
+        instructions: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.instructions_fn = Some(std::sync::Arc::new(instructions));
+        self
+    }
+
     /// Override how long an unanswered approval waits before it is denied.
     pub fn with_approval_timeout(mut self, timeout: Duration) -> Self {
         self.approval_timeout = timeout;
@@ -468,7 +540,13 @@ impl Conversation {
     /// Create a durable conversation and return its id.
     pub fn create(&mut self) -> Result<String, MarbleError> {
         let mut options = SessionOptions::mixed(self.cwd.clone(), ToolRouter::catalog());
-        options.instructions = Some(session_instructions(&self.cwd));
+        options.instructions = Some(
+            self.instructions_fn
+                .as_ref()
+                .map(|instructions| instructions())
+                .or_else(|| self.instructions.clone())
+                .unwrap_or_else(|| session_instructions(&self.cwd)),
+        );
         options.model = self.model.clone();
         let created = self.client.durable_create(&options);
         let create_id = self.issue(created)?;

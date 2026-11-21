@@ -110,6 +110,17 @@ def run_turn(identifier, task, text, conversation, request):
     event(turn, "turn_start", {})
     if DELAY_MS > 0:
         time.sleep(DELAY_MS / 1000)
+    # A prompt of "ASK <name>: <instruction>" makes this engine ask another
+    # marble for help, so handoff tests need no provider.
+    tool_name = TOOL_NAME
+    tool_args = TOOL_ARGUMENTS
+    stripped = str(text).strip()
+    ask_at = stripped.find("ASK ")
+    if ask_at >= 0:
+        ask_text = stripped[ask_at + 4:]
+        target, _, instruction = ask_text.partition(":")
+        tool_name = "glass.marble.ask"
+        tool_args = {"to": target.strip(), "instruction": instruction.strip() or "help"}
     frame_id = "host:" + SESSION_ID + ":" + task + ":call-1"
     send(
         {
@@ -120,8 +131,8 @@ def run_turn(identifier, task, text, conversation, request):
                 "sessionId": SESSION_ID,
                 "turnId": turn,
                 "callId": "call-1",
-                "name": TOOL_NAME,
-                "arguments": TOOL_ARGUMENTS,
+                "name": tool_name,
+                "arguments": tool_args,
             },
         }
     )
@@ -141,8 +152,11 @@ def run_turn(identifier, task, text, conversation, request):
             result = message.get("result") or {}
             break
     if STORAGE_DIR:
-        with open(os.path.join(STORAGE_DIR, "fixture-tool-outcome.json"), "w", encoding="utf-8") as handle:
-            handle.write(json.dumps({"isError": bool(result.get("isError")), "text": str(result.get("text") or "")}))
+        try:
+            with open(os.path.join(STORAGE_DIR, "fixture-tool-outcome.json"), "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({"isError": bool(result.get("isError")), "text": str(result.get("text") or "")}))
+        except OSError:
+            pass
     event(turn, "tool_end", {"callId": "call-1", "isError": bool(result.get("isError")), "text": str(result.get("text") or "")})
     event(turn, "text", {"text": "handled " + str(text).strip()})
     event(turn, "usage", {"input": 1, "output": 1})

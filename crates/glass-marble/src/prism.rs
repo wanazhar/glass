@@ -21,7 +21,7 @@ use crate::events::EventBus;
 use crate::live::LiveStore;
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
-use crate::tools::ToolRouter;
+use crate::tools::{ToolOutcome, ToolRouter};
 use crate::worker::{CancelRegistry, now_millis};
 use crate::{
     ApprovalInbox, Conversation, HostPolicy, InboundMessage, MarbleError, TurnOptions, run_turn,
@@ -33,6 +33,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,6 +43,8 @@ pub const PRISM_LIMIT: usize = 8;
 pub const NAME_LIMIT: usize = 40;
 /// Longest accepted role line.
 pub const ROLE_LIMIT: usize = 80;
+/// Longest accepted personality text.
+pub const PERSONA_LIMIT: usize = 2000;
 /// Glyphs the roster offers. Simple shapes read at sidebar size; the eyes and
 /// the state motion are what make a marble recognisable rather than the outline.
 pub const GLYPHS: [&str; 6] = ["circle", "hex", "shield", "drop", "star", "square"];
@@ -83,6 +86,10 @@ pub struct PrismMarble {
     /// Last refusal or failure, kept so a blocked marble explains itself.
     #[serde(default)]
     pub last_error: String,
+    /// Who this marble is, in its own words: the personality its turns adopt.
+    /// Falls back to the one-line `role` when empty.
+    #[serde(default)]
+    pub persona: String,
 }
 
 fn default_glyph() -> String {
@@ -112,6 +119,9 @@ pub struct PrismState {
     /// Individual marble turns admitted through Prism.
     #[serde(default)]
     pub dispatched: u64,
+    /// The default assistant's own personality text, editable like a marble's.
+    #[serde(default)]
+    pub default_persona: String,
 }
 
 impl PrismState {
@@ -165,6 +175,7 @@ impl PrismState {
     }
 
     /// Add one marble, refusing anything a roster cannot show legibly.
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &mut self,
         name: &str,
@@ -172,6 +183,7 @@ impl PrismState {
         glyph: &str,
         hue: u16,
         workspace: &str,
+        persona: &str,
     ) -> Result<&PrismMarble, String> {
         if self.marbles.len() >= PRISM_LIMIT {
             return Err(format!(
@@ -202,6 +214,7 @@ impl PrismState {
             last_at: now_millis(),
             runs: 0,
             last_error: String::new(),
+            persona: valid_persona(persona)?,
         };
         self.marbles.push(marble);
         Ok(self
@@ -210,7 +223,33 @@ impl PrismState {
             .expect("the marble was just pushed onto the roster"))
     }
 
-    /// Change who a marble is without losing its conversation.
+    /// The default assistant as a roster entry: fixed id `marble`, fixed
+    /// shape, editable personality. Its chats are the ordinary conversation
+    /// list, not a marble-owned conversation.
+    pub fn default_marble(&self) -> PrismMarble {
+        PrismMarble {
+            id: "marble".to_string(),
+            name: "Marble".to_string(),
+            role: "the default assistant".to_string(),
+            glyph: GLYPHS[0].to_string(),
+            hue: 210,
+            workspace: String::new(),
+            state: idle(),
+            conversation_id: String::new(),
+            task_id: String::new(),
+            last_at: 0,
+            runs: self.dispatched,
+            last_error: String::new(),
+            persona: self.default_persona.clone(),
+        }
+    }
+
+    /// Change who a marble is without losing its conversation. Returns whether
+    /// the identity the engine was told about changed: a new persona only
+    /// reaches the model through a fresh conversation, so the caller drops the
+    /// marble's engine when this reports `true`. The default assistant
+    /// (`"marble"`) only takes a persona — its shape is fixed.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         id: &str,
@@ -219,7 +258,8 @@ impl PrismState {
         glyph: Option<&str>,
         hue: Option<u16>,
         workspace: Option<&str>,
-    ) -> Result<(), String> {
+        persona: Option<&str>,
+    ) -> Result<bool, String> {
         // Validate against the whole roster before mutating, so a bad edit
         // cannot leave the marble half-renamed.
         let name = match name {
@@ -237,14 +277,35 @@ impl PrismState {
         let role = role.map(valid_role).transpose()?;
         let glyph = glyph.map(valid_glyph).transpose()?;
         let workspace = workspace.map(valid_workspace).transpose()?;
+        let persona = persona.map(valid_persona).transpose()?;
+        if id == "marble" {
+            if name.is_some()
+                || role.is_some()
+                || glyph.is_some()
+                || hue.is_some()
+                || workspace.is_some()
+            {
+                return Err("the default assistant only changes its personality".into());
+            }
+            let persona = persona.unwrap_or_default();
+            let changed = self.default_persona != persona;
+            self.default_persona = persona;
+            return Ok(changed);
+        }
+        let mut identity_changed = false;
         let marble = self
             .find_mut(id)
             .ok_or_else(|| "unknown marble".to_string())?;
         if let Some(name) = name {
+            identity_changed |= marble.name != name;
             marble.name = name;
         }
         if let Some(role) = role {
             marble.role = role;
+        }
+        if let Some(persona) = persona {
+            identity_changed |= marble.persona != persona;
+            marble.persona = persona;
         }
         if let Some(glyph) = glyph {
             marble.glyph = glyph;
@@ -263,7 +324,19 @@ impl PrismState {
             marble.workspace = workspace;
         }
         marble.last_at = now_millis();
-        Ok(())
+        Ok(identity_changed)
+    }
+
+    /// Drop the conversation identity an edited marble was known by, keeping
+    /// the transcript rows behind it. The next dispatch starts a fresh engine
+    /// session that hears the new persona. The default assistant has no
+    /// marble-owned conversation to drop.
+    pub fn restart_conversation(&mut self, id: &str) {
+        if let Some(marble) = self.find_mut(id) {
+            marble.conversation_id.clear();
+            marble.task_id.clear();
+            marble.state = idle();
+        }
     }
 
     /// Remove one marble; returns the conversation it owned, if any.
@@ -319,8 +392,19 @@ impl PrismState {
 
     /// Roster document served by `/api/prism` and embedded in `/api/state`.
     pub fn document(&self) -> Value {
+        let mut marbles = vec![{
+            let mut entry =
+                serde_json::to_value(self.default_marble()).unwrap_or_else(|_| json!({}));
+            entry["isDefault"] = json!(true);
+            entry
+        }];
+        marbles.extend(self.marbles.iter().map(|marble| {
+            let mut entry = serde_json::to_value(marble).unwrap_or_else(|_| json!({}));
+            entry["isDefault"] = json!(false);
+            entry
+        }));
         json!({
-            "marbles": self.marbles,
+            "marbles": marbles,
             "limit": PRISM_LIMIT,
             "glyphs": GLYPHS,
             "swarms": self.swarms,
@@ -366,6 +450,16 @@ fn valid_name(name: &str) -> Result<String, String> {
         return Err("a name cannot contain control characters".into());
     }
     Ok(name.to_string())
+}
+
+fn valid_persona(persona: &str) -> Result<String, String> {
+    let persona = persona.trim();
+    if persona.chars().count() > PERSONA_LIMIT {
+        return Err(format!(
+            "a personality is at most {PERSONA_LIMIT} characters"
+        ));
+    }
+    Ok(persona.to_string())
 }
 
 fn valid_role(role: &str) -> Result<String, String> {
@@ -518,6 +612,9 @@ pub struct PrismPoolParts {
     pub timeout: Duration,
 }
 
+/// One end of a marble-to-marble ask: the reply text or why there is none.
+type AskWaiter = mpsc::Sender<Result<String, String>>;
+
 /// Owns one engine process and one conversation per marble.
 pub struct PrismPool {
     factory: Arc<dyn Fn() -> Command + Send + Sync>,
@@ -531,6 +628,14 @@ pub struct PrismPool {
     approvals: ApprovalInbox,
     timeout: Duration,
     engines: Mutex<HashMap<String, Arc<Mutex<Conversation>>>>,
+    /// Marbles waiting on an ask: marble id → the channels answering that ask.
+    ask_waiters: Mutex<HashMap<String, Vec<AskWaiter>>>,
+    /// Depth of the turn each task is part of, so asks cannot chain forever.
+    task_depths: Mutex<HashMap<String, u8>>,
+    /// Depth waiting for a dispatched task to be accepted, keyed by marble id.
+    pending_depths: Mutex<HashMap<String, u8>>,
+    /// How many asks one turn has made, capped so a turn cannot fan out forever.
+    ask_counts: Mutex<HashMap<String, usize>>,
 }
 
 impl std::fmt::Debug for PrismPool {
@@ -559,6 +664,10 @@ impl PrismPool {
             approvals: parts.approvals,
             timeout: parts.timeout,
             engines: Mutex::new(HashMap::new()),
+            ask_waiters: Mutex::new(HashMap::new()),
+            task_depths: Mutex::new(HashMap::new()),
+            pending_depths: Mutex::new(HashMap::new()),
+            ask_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -672,7 +781,7 @@ impl PrismPool {
 
     /// Engine for one marble, started on first use.
     fn engine(
-        &self,
+        self: &Arc<Self>,
         marble: &PrismMarble,
         root: &Path,
     ) -> Result<Arc<Mutex<Conversation>>, String> {
@@ -686,7 +795,16 @@ impl PrismPool {
             return Ok(engine);
         }
         let router = ToolRouter::new(root)
-            .map_err(|error| format!("cannot open {}'s workspace: {error}", marble.name))?;
+            .map_err(|error| format!("cannot open {}'s workspace: {error}", marble.name))?
+            .with_ask({
+                let pool = Arc::downgrade(self);
+                move |scope, arguments| {
+                    let Some(pool) = pool.upgrade() else {
+                        return ToolOutcome::error("the marble pool is gone");
+                    };
+                    pool.ask(scope, arguments)
+                }
+            });
         let sessions = self.sessions.join(&marble.id);
         std::fs::create_dir_all(&sessions).map_err(|error| {
             format!("cannot create {}'s session directory: {error}", marble.name)
@@ -705,7 +823,15 @@ impl PrismPool {
             self.events.clone(),
         )
         .map_err(|error| format!("{} could not start its engine: {error}", marble.name))?;
-        let conversation = conversation.with_product(Arc::clone(&self.state));
+        let roster = {
+            let state = self.lock_state();
+            state.prism.marbles.clone()
+        };
+        let conversation = conversation
+            .with_product(Arc::clone(&self.state))
+            .with_instructions(crate::conversation::marble_session_instructions(
+                marble, &roster, root,
+            ));
         let engine = Arc::new(Mutex::new(conversation));
         self.engines
             .lock()
@@ -715,8 +841,227 @@ impl PrismPool {
         Ok(engine)
     }
 
+    /// Seeds the ask depth for the next dispatch to this marble, then runs it.
+    fn run_marble_at_depth(
+        self: &Arc<Self>,
+        marble: &PrismMarble,
+        root: PathBuf,
+        text: &str,
+        depth: u8,
+    ) {
+        if depth > 0 {
+            self.pending_depths
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(marble.id.clone(), depth);
+        }
+        self.run_marble(marble, root, text);
+    }
+
+    /// Runs an ask from the marble that owns `scope`.
+    pub fn ask(
+        self: &Arc<Self>,
+        scope: &crate::tools::ToolScope,
+        arguments: &Value,
+    ) -> ToolOutcome {
+        const MAX_DEPTH: u8 = 2;
+        const MAX_ASKS: usize = 3;
+        const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+        let task_id = scope.task_id.clone();
+        let to = arguments.get("to").and_then(Value::as_str).unwrap_or("");
+        let instruction = arguments
+            .get("instruction")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let (asker_id, asker_name, depth) = {
+            let snapshot = self.lock_state();
+            let asker = snapshot
+                .prism
+                .marbles
+                .iter()
+                .find(|marble| marble.task_id == task_id)
+                .cloned();
+            let depth = *self
+                .task_depths
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&task_id)
+                .unwrap_or(&0);
+            match asker {
+                Some(asker) => (asker.id.clone(), asker.name.clone(), depth),
+                None => (String::new(), "Marble".to_string(), depth),
+            }
+        };
+        let mut entry = crate::state::HandoffEntry {
+            from: asker_id.clone(),
+            from_name: asker_name.clone(),
+            to: String::new(),
+            to_name: to.to_string(),
+            instruction: instruction.clone(),
+            status: "asked".into(),
+            summary: String::new(),
+        };
+        let fail = |pool: &Arc<Self>,
+                    reason: String,
+                    status: &str,
+                    entry: &crate::state::HandoffEntry|
+         -> ToolOutcome {
+            let mut entry = entry.clone();
+            entry.status = status.into();
+            entry.summary = reason.clone();
+            pool.record_ask(&asker_id, &task_id, &scope.conversation_id, entry);
+            ToolOutcome::error(reason)
+        };
+        if instruction.is_empty() {
+            return fail(
+                self,
+                "an ask needs an instruction".to_string(),
+                "failed",
+                &entry,
+            );
+        }
+        if depth >= MAX_DEPTH {
+            return fail(
+                self,
+                "the request has already been passed along twice; give the answer directly"
+                    .to_string(),
+                "refused",
+                &entry,
+            );
+        }
+        let target = {
+            let snapshot = self.lock_state();
+            snapshot
+                .prism
+                .marbles
+                .iter()
+                .find(|marble| marble.name.eq_ignore_ascii_case(to))
+                .cloned()
+        };
+        let Some(target) = target else {
+            return fail(
+                self,
+                format!("there is no Marble named {to}"),
+                "refused",
+                &entry,
+            );
+        };
+        entry.to = target.id.clone();
+        entry.to_name = target.name.clone();
+        if target.id == asker_id {
+            return fail(
+                self,
+                "a Marble cannot ask itself".to_string(),
+                "refused",
+                &entry,
+            );
+        }
+        let asks = {
+            let mut counts = self
+                .ask_counts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let asks = counts.entry(task_id.clone()).or_insert(0);
+            *asks += 1;
+            *asks
+        };
+        if asks > MAX_ASKS {
+            return fail(
+                self,
+                "this turn already asked three Marbles".to_string(),
+                "refused",
+                &entry,
+            );
+        }
+        if target.state == "working" {
+            return fail(
+                self,
+                format!("{} is busy with another task", target.name),
+                "refused",
+                &entry,
+            );
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.ask_waiters
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(target.id.clone())
+            .or_default()
+            .push(sender);
+        self.record_ask(&asker_id, &task_id, &scope.conversation_id, entry.clone());
+        let prompt = format!("{asker_name} asks: {instruction}");
+        let root = self.workspace_root(&target).unwrap_or_default();
+        let pool = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name(format!("glass-marble-ask-{}", target.id))
+            .spawn(move || pool.run_marble_at_depth(&target, root, &prompt, depth + 1));
+        if let Err(error) = spawned {
+            return fail(
+                self,
+                format!("could not start the turn: {error}"),
+                "failed",
+                &entry,
+            );
+        }
+        match receiver.recv_timeout(ASK_TIMEOUT) {
+            Ok(Ok(text)) => {
+                let mut done = entry.clone();
+                done.status = "finished".into();
+                done.summary = text.clone();
+                self.record_ask(&asker_id, &task_id, &scope.conversation_id, done);
+                ToolOutcome::ok(text)
+            }
+            Ok(Err(reason)) => fail(self, reason, "failed", &entry),
+            Err(_) => fail(
+                self,
+                format!("{} did not answer in ten minutes", entry.to),
+                "failed",
+                &entry,
+            ),
+        }
+    }
+
+    /// Writes a handoff line into the asker's transcript and into Everyone.
+    fn record_ask(
+        &self,
+        asker_id: &str,
+        task_id: &str,
+        scope_conversation: &str,
+        entry: crate::state::HandoffEntry,
+    ) {
+        let snapshot = {
+            let mut state = self.lock_state();
+            let conversation = if scope_conversation.is_empty() {
+                state
+                    .prism
+                    .get(asker_id)
+                    .map(|marble| marble.conversation_id.clone())
+                    .unwrap_or_default()
+            } else {
+                scope_conversation.to_string()
+            };
+            crate::everyone::record_handoff(&mut state, &conversation, task_id, &entry);
+            state.bump();
+            state.clone()
+        };
+        self.persist(&snapshot);
+        self.events.publish(
+            "",
+            "",
+            "handoff",
+            serde_json::json!({
+                "from": entry.from,
+                "to": entry.to,
+                "status": entry.status,
+            }),
+        );
+    }
+
     /// Run one marble's turn to settlement.
-    fn run_marble(&self, marble: &PrismMarble, root: PathBuf, text: &str) {
+    fn run_marble(self: &Arc<Self>, marble: &PrismMarble, root: PathBuf, text: &str) {
         let engine = match self.engine(marble, &root) {
             Ok(engine) => engine,
             Err(error) => {
@@ -739,7 +1084,7 @@ impl PrismPool {
         let mut live_turn = self
             .live
             .begin(text, &marble.name, &conversation_id, &request_id);
-        let input = self.turn_input(text);
+        let input = self.turn_input(&marble.id, text);
         let turn = crate::MarbleTurn {
             conversation_id: (!conversation_id.is_empty()).then_some(conversation_id),
             request_id,
@@ -748,6 +1093,17 @@ impl PrismPool {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut on_accepted = |conversation_id: &str, task_id: &str| {
             accepted = Some((conversation_id.to_string(), task_id.to_string()));
+            if let Some(depth) = self
+                .pending_depths
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&marble.id)
+            {
+                self.task_depths
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(task_id.to_string(), depth);
+            }
             // The stop switch reaches a swarm exactly like a typed turn: the
             // worker's cancel table is the one place that knows every task id.
             self.cancels.register(task_id, Arc::clone(&cancel));
@@ -778,8 +1134,10 @@ impl PrismPool {
                     text: text.to_string(),
                     task_id: task_id.to_string(),
                     at: now,
+                    ..Default::default()
                 });
                 state.prism.note_task(&marble.id, conversation_id, task_id);
+                crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), task_id);
                 state.bump();
                 state.clone()
             };
@@ -806,6 +1164,20 @@ impl PrismPool {
         match result {
             Ok(reply) => {
                 self.cancels.forget(&reply.task_id);
+                self.task_depths
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&reply.task_id);
+                if let Some(waiters) = self
+                    .ask_waiters
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&marble.id)
+                {
+                    for waiter in waiters {
+                        let _ = waiter.send(Ok(reply.text.clone()));
+                    }
+                }
                 let snapshot = {
                     let mut state = self.lock_state();
                     let now = now_millis();
@@ -823,9 +1195,16 @@ impl PrismPool {
                             text: reply.text.clone(),
                             task_id: reply.task_id.clone(),
                             at: now,
+                            ..Default::default()
                         });
                     }
                     state.prism.note_settled(&marble.id, status, "");
+                    crate::everyone::mirror_settlement(
+                        &mut state,
+                        &reply.task_id,
+                        &reply.text,
+                        status,
+                    );
                     state.bump();
                     state.clone()
                 };
@@ -842,10 +1221,25 @@ impl PrismPool {
                 );
             }
             Err(error) => {
+                if let Some(waiters) = self
+                    .ask_waiters
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&marble.id)
+                {
+                    for waiter in waiters {
+                        let _ = waiter.send(Err(error.to_string()));
+                    }
+                }
                 let snapshot = {
                     let mut state = self.lock_state();
                     let now = now_millis();
                     if let Some((conversation_id, task_id)) = &accepted {
+                        self.task_depths
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .remove(task_id);
+                        crate::everyone::mirror_settlement(&mut state, task_id, "", "failed");
                         self.cancels.forget(task_id);
                         state.set_task_status(task_id, "failed");
                         state.push_transcript(TranscriptEntry {
@@ -854,6 +1248,7 @@ impl PrismPool {
                             text: format!("{} could not finish: {error}", marble.name),
                             task_id: task_id.clone(),
                             at: now,
+                            ..Default::default()
                         });
                         state.conversation_mut(conversation_id).updated_at = now;
                     }
@@ -927,11 +1322,11 @@ impl PrismPool {
     }
 
     /// Carried into every prism turn, so a marble uses what was remembered.
-    fn turn_input(&self, text: &str) -> glass_runtime_client::TurnInput {
+    fn turn_input(&self, owner: &str, text: &str) -> glass_runtime_client::TurnInput {
         let mut input = to_turn_input(&InboundMessage::new(text));
         let block = {
             let state = self.lock_state();
-            state.memory.context_block()
+            state.memory.context_block_for(owner)
         };
         if let Some(block) = block {
             input.context.push(ContextBlock::Text { text: block });
@@ -966,10 +1361,10 @@ mod tests {
     fn roster() -> PrismState {
         let mut state = PrismState::default();
         state
-            .add("Scout", "reads the repo", "hex", 210, "")
+            .add("Scout", "reads the repo", "hex", 210, "", "")
             .unwrap();
         state
-            .add("Forge", "writes the patch", "shield", 12, "src")
+            .add("Forge", "writes the patch", "shield", 12, "src", "")
             .unwrap();
         state
     }
@@ -981,14 +1376,14 @@ mod tests {
         assert_eq!(state.marbles[0].name, "Scout");
         assert_eq!(state.marbles[0].state, "idle");
         assert_eq!(
-            state.add("scout", "", "circle", 0, "").unwrap_err(),
+            state.add("scout", "", "circle", 0, "", "").unwrap_err(),
             "a marble is already named scout",
             "names are compared without case, so a roster cannot show two Scouts"
         );
-        assert!(state.add("", "", "circle", 0, "").is_err());
-        assert!(state.add("Nova", "", "triangle", 0, "").is_err());
-        assert!(state.add("Nova", "", "star", 0, "../outside").is_err());
-        assert!(state.add("Nova", "", "star", 0, "/etc").is_err());
+        assert!(state.add("", "", "circle", 0, "", "").is_err());
+        assert!(state.add("Nova", "", "triangle", 0, "", "").is_err());
+        assert!(state.add("Nova", "", "star", 0, "../outside", "").is_err());
+        assert!(state.add("Nova", "", "star", 0, "/etc", "").is_err());
     }
 
     #[test]
@@ -996,10 +1391,12 @@ mod tests {
         let mut state = PrismState::default();
         for index in 0..PRISM_LIMIT {
             state
-                .add(&format!("marble {index}"), "", "circle", 0, "")
+                .add(&format!("marble {index}"), "", "circle", 0, "", "")
                 .unwrap();
         }
-        let error = state.add("one too many", "", "circle", 0, "").unwrap_err();
+        let error = state
+            .add("one too many", "", "circle", 0, "", "")
+            .unwrap_err();
         assert!(error.contains("at most"));
     }
 
@@ -1010,7 +1407,7 @@ mod tests {
         state.marbles[0].conversation_id = "conv-1".into();
         assert!(
             state
-                .update(&id, Some("forge"), None, None, None, None)
+                .update(&id, Some("forge"), None, None, None, None, None)
                 .is_err()
         );
         assert_eq!(
@@ -1025,6 +1422,7 @@ mod tests {
                 Some("drop"),
                 Some(300),
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(state.marbles[0].name, "Lookout");
@@ -1033,7 +1431,7 @@ mod tests {
         assert_eq!(state.marbles[0].conversation_id, "conv-1");
 
         state
-            .update(&id, None, None, None, None, Some("src/glass"))
+            .update(&id, None, None, None, None, Some("src/glass"), None)
             .unwrap();
         assert_eq!(state.marbles[0].workspace, "src/glass");
         assert!(
@@ -1041,7 +1439,93 @@ mod tests {
             "a marble that moves starts a conversation where it now works"
         );
         assert_eq!(state.remove(&id).unwrap(), "");
-        assert!(state.update(&id, None, None, None, None, None).is_err());
+        assert!(
+            state
+                .update(&id, None, None, None, None, None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_persona_reaches_the_instructions_and_restarts_the_chat() {
+        let mut state = PrismState::default();
+        let ada = state
+            .add("Ada", "writer", "star", 40, "", "dry wit, short sentences")
+            .unwrap()
+            .id
+            .clone();
+        state.add("Ben", "checker", "hex", 210, "", "").unwrap();
+        let roster = state.marbles.clone();
+        let marble = state.get(&ada).unwrap();
+        let instructions = crate::conversation::marble_session_instructions(
+            marble,
+            &roster,
+            std::path::Path::new("."),
+        );
+        assert!(instructions.contains("You are Ada"), "{instructions}");
+        assert!(
+            instructions.contains("dry wit, short sentences"),
+            "{instructions}"
+        );
+        assert!(instructions.contains("Ben — checker"), "{instructions}");
+        assert!(
+            instructions.contains(crate::conversation::SESSION_INSTRUCTIONS),
+            "the product posture still follows: {instructions}"
+        );
+
+        // An edited persona marks the identity changed, and restarting keeps
+        // the transcript while dropping the conversation id the engine knew.
+        state.marbles[0].conversation_id = "conv-1".into();
+        assert!(
+            state
+                .update(&ada, None, None, None, None, None, Some("warmer"))
+                .unwrap()
+        );
+        state.restart_conversation(&ada);
+        assert!(state.get(&ada).unwrap().conversation_id.is_empty());
+        assert_eq!(state.get(&ada).unwrap().persona, "warmer");
+        assert!(
+            !state
+                .update(&ada, None, None, None, None, None, Some("warmer"))
+                .unwrap(),
+            "the same persona changes nothing"
+        );
+    }
+
+    #[test]
+    fn the_default_assistant_is_a_roster_entry_with_an_editable_persona() {
+        let mut state = PrismState::default();
+        let document = state.document();
+        assert_eq!(document["marbles"][0]["id"], json!("marble"));
+        assert_eq!(document["marbles"][0]["name"], json!("Marble"));
+        assert_eq!(document["marbles"][0]["isDefault"], json!(true));
+
+        assert!(
+            state
+                .update(
+                    "marble",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("calm and brief")
+                )
+                .unwrap()
+        );
+        assert_eq!(state.default_persona, "calm and brief");
+        assert_eq!(
+            state.document()["marbles"][0]["persona"],
+            json!("calm and brief")
+        );
+        // Its name and shape are fixed.
+        assert!(
+            state
+                .update("marble", Some("Nope"), None, None, None, None, None)
+                .is_err()
+        );
+        // There is no marble-owned conversation to restart.
+        state.restart_conversation("marble");
     }
 
     #[test]
@@ -1177,7 +1661,7 @@ mod tests {
         assert_eq!(document["protocol"], json!("prism"));
         assert_eq!(document["limit"], json!(PRISM_LIMIT));
         assert_eq!(document["working"], json!(1));
-        assert_eq!(document["marbles"].as_array().unwrap().len(), 2);
+        assert_eq!(document["marbles"].as_array().unwrap().len(), 3);
         assert_eq!(document["swarms"], json!(3));
         assert_eq!(state.summary()["idle"], json!(1));
     }

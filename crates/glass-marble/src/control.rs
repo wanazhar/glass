@@ -283,6 +283,13 @@ impl ControlState {
                 reason: format!("marble governs glass.* tools only, not {tool}"),
             };
         }
+        // Asking another Marble for help is governed internally — refusal,
+        // depth, and count live in the pool, not on an approval card.
+        if tool == crate::tools::MARBLE_ASK {
+            return Verdict::Allow {
+                reason: "asking another Marble needs no approval".into(),
+            };
+        }
         let path = path.trim().trim_start_matches("./");
         if let Some(rule) = self
             .denied_paths

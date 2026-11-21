@@ -77,6 +77,7 @@ fn test_state() -> ProductState {
         text: "handled please list the workspace".into(),
         task_id: "generation-fixture-1".into(),
         at: 1,
+        ..Default::default()
     });
     state
 }
@@ -1305,6 +1306,7 @@ fn transcript_pages_search_and_conversation_lifecycle() {
             text: (*text).into(),
             task_id: format!("t{index}"),
             at: 10 * (index as u64 + 1),
+            ..Default::default()
         });
     }
     // A settled task from this conversation, and an orphan left behind by a
@@ -1428,6 +1430,7 @@ fn export_covers_the_whole_document_or_one_conversation() {
         text: "tidied the notes".into(),
         task_id: "t1".into(),
         at: 5,
+        ..Default::default()
     });
     let server = server_with(
         state,
@@ -1808,7 +1811,9 @@ fn prism_roster_is_served_and_editable_without_an_engine() {
     assert_eq!(status, 200, "{body}");
     let document: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(document["protocol"], json!("prism"));
-    assert_eq!(document["marbles"].as_array().unwrap().len(), 0);
+    // The roster always carries the default assistant, id `marble`.
+    assert_eq!(document["marbles"].as_array().unwrap().len(), 1);
+    assert_eq!(document["marbles"][0]["id"], json!("marble"));
     assert_eq!(document["engine"], json!(false));
 
     let (status, body) = server.handle(
@@ -1819,7 +1824,7 @@ fn prism_roster_is_served_and_editable_without_an_engine() {
     assert_eq!(status, 202, "{body}");
     let added: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(added["marble"]["name"], json!("Scout"));
-    assert_eq!(added["prism"]["marbles"].as_array().unwrap().len(), 1);
+    assert_eq!(added["prism"]["marbles"].as_array().unwrap().len(), 2);
 
     // A roster is only scannable if two marbles cannot share a name.
     let (status, _) = server.handle("POST", "/api/prism/marbles", r#"{"name":"scout"}"#);
@@ -1834,7 +1839,7 @@ fn prism_roster_is_served_and_editable_without_an_engine() {
     assert_eq!(server.handle("POST", &path, "").0, 200);
     let (_, body) = server.handle("GET", "/api/prism", "");
     let document: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(document["marbles"].as_array().unwrap().len(), 0);
+    assert_eq!(document["marbles"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -1857,7 +1862,12 @@ fn the_tool_inventory_reports_both_owners() {
     assert_eq!(tools["core"]["observed"][0]["runs"], json!(2));
     assert_eq!(tools["core"]["observed"][0]["errors"], json!(1));
     let governed = tools["governed"].as_array().unwrap();
-    assert_eq!(governed.len(), 5);
+    assert_eq!(governed.len(), 6);
+    assert!(
+        governed
+            .iter()
+            .any(|tool| { tool["name"] == json!("glass.marble.ask") })
+    );
     assert!(governed.iter().any(|tool| {
         tool["name"] == json!("glass.workspace.write") && tool["effect"] == json!("write")
     }));
@@ -2245,6 +2255,278 @@ fn a_lane_that_cannot_start_fails_the_queued_placeholder() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// One Prism pool around the fake engine, with one factory recipe.
+fn fixture_prism_pool(
+    script: &std::path::Path,
+    root: &std::path::Path,
+    state: &Arc<Mutex<ProductState>>,
+    events: &EventBus,
+    extra_args: Vec<String>,
+) -> Arc<glass_marble::PrismPool> {
+    let script = script.to_path_buf();
+    let factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(move || {
+        let mut command = Command::new("python3");
+        command.arg(&script).arg("runtime");
+        for arg in &extra_args {
+            command.arg(arg);
+        }
+        command
+    });
+    Arc::new(glass_marble::PrismPool::new(glass_marble::PrismPoolParts {
+        factory,
+        cwd: root.to_path_buf(),
+        sessions: root.join("prism-sessions"),
+        state: Arc::clone(state),
+        store: None,
+        live: LiveStore::in_data_dir(root),
+        events: events.clone(),
+        cancels: CancelRegistry::default(),
+        approvals: ApprovalInbox::default(),
+        timeout: Duration::from_secs(60),
+    }))
+}
+
+fn everyone_entries(state: &Arc<Mutex<ProductState>>) -> Vec<TranscriptEntry> {
+    let guard = state.lock().unwrap_or_else(|error| error.into_inner());
+    guard
+        .transcript
+        .iter()
+        .filter(|entry| entry.conversation_id == "everyone")
+        .cloned()
+        .collect()
+}
+
+/// An @mention answers through the named marble's own engine and the reply
+/// lands on the shared timeline with its name on it.
+#[test]
+fn an_everyone_mention_routes_to_the_named_marble() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-everyone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        guard.control.profile = glass_marble::ControlProfile::Unattended;
+        guard
+            .prism
+            .add("ben", "careful tester", "circle", 200, "", "")
+            .unwrap();
+    }
+    let pool = fixture_prism_pool(&script, &root, &state, &events, Vec::new());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(pool);
+
+    let (status, body) = server.handle("POST", "/api/everyone", r#"{"text":"@ben hello there"}"#);
+    assert_eq!(status, 202, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let entries = everyone_entries(&state);
+        if let Some(reply) = entries
+            .iter()
+            .find(|entry| entry.kind == "assistant" && entry.speaker_name == "ben")
+        {
+            assert_eq!(reply.text, "handled @ben hello there");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no mirrored reply: {entries:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let entries = everyone_entries(&state);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.kind == "user" && entry.speaker == "user")
+    );
+    let (status, body) = server.handle("GET", "/api/everyone", "");
+    assert_eq!(status, 200, "{body}");
+    let timeline: Value = serde_json::from_str(&body).unwrap();
+    assert!(timeline["entries"].as_array().unwrap().len() >= 2);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A busy marble does not go silent: the shared timeline says it is busy.
+#[test]
+fn a_busy_marble_says_so_on_the_shared_plane() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        guard.control.profile = glass_marble::ControlProfile::Unattended;
+        guard
+            .prism
+            .add("ben", "careful tester", "circle", 200, "", "")
+            .unwrap();
+    }
+    let pool = fixture_prism_pool(
+        &script,
+        &root,
+        &state,
+        &events,
+        vec!["--delay-ms".into(), "2500".into()],
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(pool);
+
+    let (status, body) = server.handle("POST", "/api/everyone", r#"{"text":"@ben first"}"#);
+    assert_eq!(status, 202, "{body}");
+    // The first turn is still inside the fixture delay, so the second mention
+    // meets a working marble.
+    std::thread::sleep(Duration::from_millis(300));
+    let (status, body) = server.handle("POST", "/api/everyone", r#"{"text":"@ben second"}"#);
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["busy"],
+        json!(["ben"]),
+        "{body}"
+    );
+    let entries = everyone_entries(&state);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.text.contains("busy with another task")),
+        "{entries:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// One marble can ask another for help; both sides of the ask are written in
+/// plain words on the shared timeline.
+#[test]
+fn a_marble_can_ask_another_and_the_ask_is_visible() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-ask-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+
+    let events = EventBus::default();
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let (ada_id, ben_id) = {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        guard.control.profile = glass_marble::ControlProfile::Unattended;
+        let ada = guard
+            .prism
+            .add("ada", "thoughtful planner", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let ben = guard
+            .prism
+            .add("ben", "careful tester", "square", 200, "", "")
+            .unwrap()
+            .id
+            .clone();
+        (ada, ben)
+    };
+    let pool = fixture_prism_pool(&script, &root, &state, &events, Vec::new());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MarbleServer::new(MarbleServerParts {
+        listener,
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(pool);
+
+    // Ada's fake engine reads the prompt and asks Ben to check the tests.
+    let (status, body) = server.handle(
+        "POST",
+        "/api/everyone",
+        r#"{"text":"@ada ASK ben: check the failing tests"}"#,
+    );
+    assert_eq!(status, 202, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let entries = everyone_entries(&state);
+        let finished = entries.iter().any(|entry| {
+            entry.kind == "handoff"
+                && entry
+                    .handoff
+                    .as_ref()
+                    .is_some_and(|handoff| handoff.status == "finished")
+        });
+        if finished {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the ask never finished: {entries:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let entries = everyone_entries(&state);
+    let asked = entries.iter().find_map(|entry| {
+        entry
+            .handoff
+            .as_ref()
+            .filter(|handoff| handoff.status == "asked")
+    });
+    let asked = asked.expect("an asked line was written");
+    assert_eq!(asked.from, ada_id);
+    assert_eq!(asked.to, ben_id);
+    assert_eq!(asked.instruction, "check the failing tests");
+    let finished = entries
+        .iter()
+        .find_map(|entry| {
+            entry
+                .handoff
+                .as_ref()
+                .filter(|handoff| handoff.status == "finished")
+        })
+        .expect("a finished line was written");
+    assert!(finished.summary.contains("check the failing tests"));
 
     let _ = std::fs::remove_dir_all(&root);
 }

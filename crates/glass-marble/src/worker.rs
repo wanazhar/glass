@@ -947,6 +947,7 @@ fn run_command(
                 record.task_ids.push(task_id.to_string());
             }
             guard.tasks.retain(|task| task.id != queued_id);
+            crate::everyone::claim(&mut guard, &queued_id, task_id);
             guard.upsert_task(TaskRecord {
                 id: task_id.to_string(),
                 conversation_id: conversation_id.to_string(),
@@ -962,6 +963,7 @@ fn run_command(
                 text: prompt.clone(),
                 task_id: task_id.to_string(),
                 at: now,
+                ..Default::default()
             });
             if let Some(routine_id) = &routine_id {
                 if request.routine_counted {
@@ -972,7 +974,7 @@ fn run_command(
                     guard.routines.note_run(routine_id, task_id, now);
                 }
             }
-            guard.memory.note_use();
+            guard.memory.note_use("marble");
             guard.clone()
         };
         if let Some(store) = store {
@@ -1024,6 +1026,7 @@ fn run_command(
                         text: reply.reasoning.clone(),
                         task_id: reply.task_id.clone(),
                         at: now,
+                        ..Default::default()
                     });
                 }
                 if !reply.text.trim().is_empty() {
@@ -1033,9 +1036,11 @@ fn run_command(
                         text: reply.text.clone(),
                         task_id: reply.task_id.clone(),
                         at: now,
+                        ..Default::default()
                     });
                 }
                 guard.routines.note_settled(&reply.task_id, status);
+                crate::everyone::mirror_settlement(&mut guard, &reply.task_id, &reply.text, status);
                 // A durable detail is offered, never memorized silently.
                 let suggestion = memory::detect(&prompt).and_then(|(text, kind, reason)| {
                     guard
@@ -1134,6 +1139,7 @@ fn run_command(
                         text: error.to_string(),
                         task_id: identity.task_id.clone(),
                         at: now_millis(),
+                        ..Default::default()
                     });
                     guard.clone()
                 };
@@ -1170,7 +1176,7 @@ fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
     let mut input = to_turn_input(&InboundMessage::new(text));
     let block = {
         let guard = lock(state);
-        guard.memory.context_block()
+        guard.memory.context_block_for("marble")
     };
     if let Some(block) = block {
         input.context.push(ContextBlock::Text { text: block });
@@ -1382,7 +1388,7 @@ mod tests {
         assert!(plain.context.is_empty());
         product
             .memory
-            .remember("my name is Azhar", "role", "c1", true)
+            .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
         assert_eq!(with_memory.context.len(), 1);

@@ -255,6 +255,7 @@ fn apply(record: &LiveRecord, state: &mut ProductState) {
             text: record.text.clone(),
             task_id: record.task_id.clone(),
             at: now.saturating_sub(1),
+            ..Default::default()
         });
     }
     if !record.reasoning.trim().is_empty() {
@@ -264,6 +265,7 @@ fn apply(record: &LiveRecord, state: &mut ProductState) {
             text: record.reasoning.clone(),
             task_id: record.task_id.clone(),
             at: now.saturating_sub(1),
+            ..Default::default()
         });
     }
     let who = match record.owner.trim() {
@@ -284,6 +286,7 @@ fn apply(record: &LiveRecord, state: &mut ProductState) {
         ),
         task_id: record.task_id.clone(),
         at: now,
+        ..Default::default()
     });
 }
 

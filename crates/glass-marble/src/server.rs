@@ -669,6 +669,12 @@ impl MarbleServer {
         if head.method == "POST" && path == "/api/prism/marbles" {
             return self.add_marble(body);
         }
+        if head.method == "POST" && path == "/api/everyone" {
+            return self.post_everyone(body);
+        }
+        if head.method == "GET" && path == "/api/everyone" {
+            return self.everyone_timeline(head);
+        }
         if head.method == "POST" && path == "/api/prism/dispatch" {
             return self.dispatch_swarm(body);
         }
@@ -903,6 +909,7 @@ impl MarbleServer {
                 &field("glyph"),
                 hue,
                 &field("workspace"),
+                &field("persona"),
             ) {
                 Ok(marble) => marble.clone(),
                 Err(message) => {
@@ -933,6 +940,10 @@ impl MarbleServer {
             .get("hue")
             .and_then(Value::as_u64)
             .map(|hue| hue as u16);
+        // A persona (or a rename) only reaches the model when the next
+        // conversation starts, so an identity change drops the marble's engine
+        // and its conversation id. The transcript rows stay — the old chat is
+        // still readable.
         let outcome = {
             let mut guard = self.lock_state();
             match guard.prism.update(
@@ -942,16 +953,23 @@ impl MarbleServer {
                 text("glyph"),
                 hue,
                 text("workspace"),
+                text("persona"),
             ) {
-                Ok(()) => {
+                Ok(identity_changed) => {
+                    if identity_changed {
+                        guard.prism.restart_conversation(id);
+                    }
                     guard.bump();
-                    Ok(guard.prism.get(id).cloned())
+                    Ok((guard.prism.get(id).cloned(), identity_changed))
                 }
                 Err(message) => Err(message),
             }
         };
         match outcome {
-            Ok(marble) => {
+            Ok((marble, identity_changed)) => {
+                if identity_changed && let Some(pool) = &self.prism {
+                    pool.shutdown_marble(id);
+                }
                 self.save_state();
                 let roster = { self.lock_state().prism.document() };
                 Response::json(200, json!({"ok": true, "marble": marble, "prism": roster}))
@@ -1000,6 +1018,185 @@ impl MarbleServer {
                 Response::json(404, json!({"error": "unknown_marble", "message": message}))
             }
         }
+    }
+
+    /// `GET /api/everyone?after=` — the shared timeline, newest entries after a
+    /// timestamp so a surface can poll without re-reading the whole plane.
+    fn everyone_timeline(&self, head: &RequestHead) -> Response {
+        let after: u64 = head
+            .query_param("after")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let entries: Vec<crate::state::TranscriptEntry> = {
+            let guard = self.lock_state();
+            guard
+                .transcript
+                .iter()
+                .filter(|entry| {
+                    entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                        && entry.at > after
+                })
+                .cloned()
+                .collect()
+        };
+        Response::json(200, json!({"ok": true, "entries": entries}))
+    }
+
+    /// `POST /api/everyone` — one line to the shared plane; the marbles it
+    /// names answer, or the default assistant when it names nobody.
+    fn post_everyone(&self, body: &str) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if text.is_empty() {
+            return Response::error(400, "empty_message");
+        }
+        if text.len() > 64 * 1024 {
+            return Response::error(413, "message_too_large");
+        }
+        {
+            let mut guard = self.lock_state();
+            crate::everyone::mirror(
+                &mut guard,
+                crate::everyone::USER_SPEAKER,
+                "You",
+                "user",
+                text.clone(),
+                "",
+                None,
+            );
+            guard.bump();
+        }
+        self.save_state();
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "everyone",
+            json!({"kind": "user"}),
+        );
+        let plan = crate::everyone::plan(&self.lock_state(), &text);
+        match plan {
+            crate::everyone::EveryoneTarget::Default => {
+                let request = TurnRequest::new(None, text.clone());
+                let key = format!("queued-{}", request.request_id);
+                {
+                    let mut guard = self.lock_state();
+                    guard
+                        .everyone_pending
+                        .insert(key, crate::everyone::DEFAULT_SPEAKER.to_string());
+                    guard.bump();
+                }
+                self.submit_request(request)
+            }
+            crate::everyone::EveryoneTarget::Named(ids) => self.dispatch_everyone(&text, ids),
+            crate::everyone::EveryoneTarget::All => {
+                let ids: Vec<String> = {
+                    let guard = self.lock_state();
+                    guard
+                        .prism
+                        .marbles
+                        .iter()
+                        .map(|marble| marble.id.clone())
+                        .collect()
+                };
+                self.dispatch_everyone(&text, ids)
+            }
+        }
+    }
+
+    /// Dispatch one Everyone line to each named marble, reporting busy ones
+    /// visibly rather than letting them fall silent.
+    fn dispatch_everyone(&self, text: &str, ids: Vec<String>) -> Response {
+        let Some(pool) = self.prism.as_ref() else {
+            return Response::json(
+                503,
+                json!({
+                    "error": "prism_unavailable",
+                    "message": "this host did not start a Prism pool",
+                }),
+            );
+        };
+        if ids.is_empty() {
+            let mut guard = self.lock_state();
+            crate::everyone::mirror(
+                &mut guard,
+                "",
+                "",
+                "system",
+                "There are no Marbles to answer yet.",
+                "",
+                None,
+            );
+            guard.bump();
+            drop(guard);
+            self.save_state();
+            return Response::json(200, json!({"ok": true, "answering": [], "busy": []}));
+        }
+        let mut answering = Vec::new();
+        let mut busy = Vec::new();
+        for id in &ids {
+            let marble = {
+                let guard = self.lock_state();
+                guard.prism.get(id).cloned()
+            };
+            let Some(marble) = marble else { continue };
+            {
+                let mut guard = self.lock_state();
+                guard
+                    .everyone_pending
+                    .insert(format!("marble:{}", marble.id), marble.id.clone());
+                guard.bump();
+            }
+            match pool.dispatch(text, Some(std::slice::from_ref(&marble.id))) {
+                Ok(_) => answering.push(marble.name.clone()),
+                Err(refusal) => {
+                    {
+                        let mut guard = self.lock_state();
+                        guard
+                            .everyone_pending
+                            .remove(&format!("marble:{}", marble.id));
+                        crate::everyone::mirror(
+                            &mut guard,
+                            &marble.id,
+                            &marble.name,
+                            "system",
+                            format!("{} is busy with another task", marble.name),
+                            "",
+                            None,
+                        );
+                        guard.bump();
+                    }
+                    self.save_state();
+                    self.events.publish(
+                        crate::everyone::EVERYONE_CONVERSATION,
+                        "",
+                        "everyone",
+                        json!({"kind": "busy", "marble": marble.id}),
+                    );
+                    busy.push(marble.name.clone());
+                    if refusal.status >= 500 {
+                        tracing::warn!(marble = %marble.name, %refusal.message, "everyone dispatch failed");
+                    }
+                }
+            }
+        }
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "everyone",
+            json!({"kind": "dispatch", "answering": answering}),
+        );
+        Response::json(
+            202,
+            json!({"ok": true, "answering": answering, "busy": busy}),
+        )
     }
 
     /// `POST /api/prism/dispatch` — hand one prompt to several marbles at once.
@@ -1380,7 +1577,24 @@ impl MarbleServer {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let kind = parsed.get("kind").and_then(Value::as_str).unwrap_or("fact");
-        self.remember_text(text, kind, "", true)
+        let owner = parsed
+            .get("owner")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !owner.is_empty() {
+            let known = {
+                let guard = self.lock_state();
+                owner == "marble" || guard.prism.get(owner).is_some()
+            };
+            if !known {
+                return Response::json(
+                    400,
+                    json!({"error": "invalid_memory", "message": "unknown memory owner"}),
+                );
+            }
+        }
+        self.remember_text(text, kind, "", true, owner)
     }
 
     fn remember_text(
@@ -1389,10 +1603,25 @@ impl MarbleServer {
         kind: &str,
         conversation_id: &str,
         explicit: bool,
+        owner: &str,
     ) -> Response {
+        // The owner of a remembered statement is the marble whose chat taught
+        // it, unless the caller named an owner explicitly.
+        let owner = if owner.is_empty() {
+            let guard = self.lock_state();
+            guard
+                .prism
+                .owner_of(conversation_id)
+                .map(|marble| marble.id.clone())
+                .unwrap_or_else(|| "marble".to_string())
+        } else {
+            owner.to_string()
+        };
         let outcome = {
             let mut guard = self.lock_state();
-            let outcome = guard.memory.remember(text, kind, conversation_id, explicit);
+            let outcome = guard
+                .memory
+                .remember(text, kind, conversation_id, explicit, &owner);
             if outcome.is_ok() {
                 guard.bump();
             }
@@ -1517,7 +1746,20 @@ impl MarbleServer {
     fn accept_suggestion(&self, id: &str) -> Response {
         let fact = {
             let mut guard = self.lock_state();
-            let fact = guard.memory.accept(id);
+            let owner = guard
+                .memory
+                .suggestions
+                .iter()
+                .find(|suggestion| suggestion.id == id)
+                .map(|suggestion| {
+                    guard
+                        .prism
+                        .owner_of(&suggestion.conversation_id)
+                        .map(|marble| marble.id.clone())
+                        .unwrap_or_else(|| "marble".to_string())
+                })
+                .unwrap_or_else(|| "marble".to_string());
+            let fact = guard.memory.accept(id, &owner);
             if fact.is_some() {
                 guard.bump();
             }
@@ -2426,6 +2668,7 @@ impl MarbleServer {
                     &kind,
                     conversation_id.as_deref().unwrap_or_default(),
                     true,
+                    "",
                 );
             }
             Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),

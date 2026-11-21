@@ -154,13 +154,44 @@ pub struct ObservedTool {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptEntry {
     pub conversation_id: String,
-    /// `user`, `assistant`, `reasoning`, `tool`, or `system`.
+    /// `user`, `assistant`, `reasoning`, `tool`, `system`, or `handoff`.
     pub kind: String,
     pub text: String,
     #[serde(default)]
     pub task_id: String,
     #[serde(default)]
     pub at: u64,
+    /// Who said it: a marble id, `"marble"`, `"user"`, or empty.
+    #[serde(default)]
+    pub speaker: String,
+    #[serde(default)]
+    pub speaker_name: String,
+    /// One marble asking another for help, when this entry records a handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<HandoffEntry>,
+}
+
+/// One marble-to-marble handoff, kept on the transcript row that tells it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffEntry {
+    /// Marble id of the asker, or `"marble"` for the default assistant.
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub from_name: String,
+    #[serde(default)]
+    pub to: String,
+    #[serde(default)]
+    pub to_name: String,
+    #[serde(default)]
+    pub instruction: String,
+    /// `asked`, `finished`, `refused`, or `failed`.
+    #[serde(default)]
+    pub status: String,
+    /// The reply the ask brought back, once it has one.
+    #[serde(default)]
+    pub summary: String,
 }
 
 /// Whole local product state served to the UI and encoded for the client.
@@ -178,6 +209,11 @@ pub struct ProductState {
     /// decisions, and the admission queue.
     #[serde(default)]
     pub control: ControlState,
+    /// Who answers for a turn currently running for the Everyone plane:
+    /// `task:<id>` or `marble:<id>` → the speaker id to mirror under. In-memory
+    /// only; a settled turn past a restart keeps nothing to mirror.
+    #[serde(skip)]
+    pub everyone_pending: std::collections::HashMap<String, String>,
     /// Whether the assistant is up, what it is doing, and what it recovered.
     #[serde(default)]
     pub presence: PresenceState,
@@ -592,6 +628,7 @@ impl ProductState {
                     text: prompt,
                     task_id: task_id.clone(),
                     at: now.saturating_sub(1),
+                    ..Default::default()
                 });
                 synthetic
             } else {
@@ -612,6 +649,7 @@ impl ProductState {
                 text,
                 task_id: task_id.clone(),
                 at: now,
+                ..Default::default()
             });
             let outcome = if *was_running {
                 "interrupted"
@@ -693,6 +731,7 @@ mod tests {
                 text: format!("entry {index}"),
                 task_id: String::new(),
                 at: index as u64,
+                ..Default::default()
             });
         }
         for index in 0..(TASK_LIMIT + 7) {
@@ -726,6 +765,7 @@ mod tests {
             text: "the deploy key is in 1Password".into(),
             task_id: "t1".into(),
             at: 5,
+            ..Default::default()
         });
         state.tasks.push(settled_task("t1", 5));
 
@@ -893,7 +933,7 @@ mod tests {
         let mut state = ProductState::default();
         let marble = state
             .prism
-            .add("Scout", "reads the repo", "hex", 210, "")
+            .add("Scout", "reads the repo", "hex", 210, "", "")
             .expect("a marble")
             .id
             .clone();

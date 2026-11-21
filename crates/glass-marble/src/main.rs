@@ -391,6 +391,23 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     let lane_events = events.clone();
     let lane_state = Arc::clone(&state);
     let approval_wait = approval_wait_secs.max(30);
+    // The Prism roster gets its own engine per marble, started on first use: a
+    // host that never swarms pays nothing for it, and each marble keeps a
+    // workspace and session of its own.
+    let prism_factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(runtime_factory(cli));
+    let prism = Arc::new(PrismPool::new(glass_marble::prism::PrismPoolParts {
+        factory: prism_factory,
+        cwd: cwd.to_path_buf(),
+        sessions: sessions_dir(data_dir).join("prism"),
+        state: Arc::clone(&state),
+        store: Some(Arc::clone(&store)),
+        live: live.clone(),
+        events: events.clone(),
+        cancels: cancels.clone(),
+        approvals: approvals.clone(),
+        timeout,
+    }));
+    let lane_prism = Arc::downgrade(&prism);
     let lane_factory: LaneFactory = Arc::new(move |index| {
         let sessions = if index == 0 {
             lane_root.clone()
@@ -407,12 +424,31 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
             &sessions,
             HostPolicy::asking(),
             lane_approvals.clone(),
-            ToolRouter::new(&lane_cwd)?,
+            ToolRouter::new(&lane_cwd)?.with_ask({
+                let pool = lane_prism.clone();
+                move |scope, arguments| {
+                    let Some(pool) = pool.upgrade() else {
+                        return glass_marble::tools::ToolOutcome::error("the marble pool is gone");
+                    };
+                    pool.ask(scope, arguments)
+                }
+            }),
             lane_events.clone(),
         )?;
+        let instructions_state = Arc::clone(&lane_state);
+        let instructions_cwd = lane_cwd.clone();
         Ok(conversation
             .with_model(lane_model.clone())
             .with_product(Arc::clone(&lane_state))
+            .with_instructions_fn(move || {
+                let persona = {
+                    let guard = instructions_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    guard.prism.default_persona.clone()
+                };
+                glass_marble::default_assistant_instructions(&persona, &instructions_cwd)
+            })
             .with_respawn(move || {
                 let mut command = Command::new(&respawn_binary);
                 command.arg("runtime");
@@ -441,22 +477,6 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         TICK,
     );
     notify::spawn_event_watcher(events.clone(), Arc::clone(&state));
-    // The Prism roster gets its own engine per marble, started on first use: a
-    // host that never swarms pays nothing for it, and each marble keeps a
-    // workspace and session of its own.
-    let prism_factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(runtime_factory(cli));
-    let prism = Arc::new(PrismPool::new(glass_marble::prism::PrismPoolParts {
-        factory: prism_factory,
-        cwd: cwd.to_path_buf(),
-        sessions: sessions_dir(data_dir).join("prism"),
-        state: Arc::clone(&state),
-        store: Some(Arc::clone(&store)),
-        live: live.clone(),
-        events: events.clone(),
-        cancels: cancels.clone(),
-        approvals: approvals.clone(),
-        timeout,
-    }));
     // The workspace's own crates, read once at startup: which crate owns a
     // behaviour is a question about the manifest, not about a file path.
     let crate_map = glass_marble::CrateMap::load(cwd);

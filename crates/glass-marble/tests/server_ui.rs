@@ -529,6 +529,49 @@ fn oversized_bodies_are_rejected_before_reading() {
 }
 
 #[test]
+fn explicit_shared_memory_owner_and_edits_preserve_scope() {
+    let server = free_server(ProductState::default());
+    for (body, owner) in [
+        (r#"{"text":"Shared preference", "owner":""}"#, ""),
+        (r#"{"text":"Default preference"}"#, "marble"),
+        (
+            r#"{"text":"Private preference", "owner":"marble"}"#,
+            "marble",
+        ),
+    ] {
+        let (status, body) = server.handle("POST", "/api/memory", body);
+        assert_eq!(status, 200, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["remembered"]["owner"], owner);
+        let id = value["remembered"]["id"].as_str().unwrap();
+        let (status, updated) = server.handle(
+            "POST",
+            &format!("/api/memory/{id}/update"),
+            &serde_json::json!({"text": format!("Edited {id}")}).to_string(),
+        );
+        assert_eq!(status, 200);
+        let updated: Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated["remembered"]["owner"], owner);
+    }
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/memory",
+                r#"{"text":"Bad", "owner":"unknown"}"#
+            )
+            .0,
+        400
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/memory", r#"{"text":"", "owner":""}"#)
+            .0,
+        400
+    );
+}
+
+#[test]
 fn chunked_request_bodies_are_decoded() {
     // A reverse proxy may forward a login chunked even though the browser sent
     // a length, so the body has to arrive either way.

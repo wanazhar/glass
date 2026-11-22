@@ -1803,7 +1803,12 @@ async fn diagnostics_snapshot_includes_session_readiness_metadata() {
 
 #[tokio::test]
 async fn action_network_tracking_includes_requests_started_before_the_wait() {
-    for (request, completes) in [(true, true), (false, true), (true, false)] {
+    for (request, completes, finish_ms, quiet_ms, deadline_ms) in [
+        (true, true, 900, 250, 1500),
+        (false, true, 900, 250, 1500),
+        (true, false, 900, 250, 50),
+        (true, true, 20, 110, 175),
+    ] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1829,7 +1834,7 @@ async fn action_network_tracking_includes_requests_started_before_the_wait() {
                     if completes {
                         let writer = Arc::clone(&writer);
                         tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(900)).await;
+                            tokio::time::sleep(Duration::from_millis(finish_ms)).await;
                             let _ = writer.lock().await.send(Message::Text(json!({"method":"Network.loadingFinished","params":{"requestId":"save"}}).to_string().into())).await;
                         });
                     }
@@ -1856,17 +1861,19 @@ async fn action_network_tracking_includes_requests_started_before_the_wait() {
             .await
             .unwrap();
         let started = tokio::time::Instant::now();
-        let deadline = if completes {
-            Duration::from_millis(1500)
-        } else {
-            Duration::from_millis(50)
-        };
-        let result = session
-            .wait_for_tracked_network_quiet(tracker, Duration::from_millis(250), deadline)
-            .await;
-        assert_eq!(result.is_ok(), completes);
+        let deadline = Duration::from_millis(deadline_ms);
+        let result = tokio::time::timeout(
+            deadline,
+            session.wait_for_tracked_network_quiet(
+                tracker,
+                Duration::from_millis(quiet_ms),
+                deadline,
+            ),
+        )
+        .await;
+        assert_eq!(matches!(result, Ok(Ok(_))), completes, "{result:?}");
         if request && completes {
-            assert!(started.elapsed() >= Duration::from_millis(900));
+            assert!(started.elapsed() >= Duration::from_millis(finish_ms));
         }
         tokio::time::timeout(Duration::from_secs(2), server)
             .await

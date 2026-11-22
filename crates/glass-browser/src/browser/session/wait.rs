@@ -18,6 +18,7 @@ struct VerificationBaseline {
 
 pub(crate) struct NetworkQuietTracker {
     state: Arc<std::sync::Mutex<TrackedNetworkState>>,
+    changed: Arc<tokio::sync::Notify>,
     collector: tokio::task::JoinHandle<()>,
     guard: NetworkDomainGuard,
 }
@@ -47,6 +48,8 @@ impl NetworkQuietTracker {
             empty_since: tokio::time::Instant::now(),
         }));
         let collected = Arc::clone(&state);
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let notify = Arc::clone(&changed);
         let collector = tokio::spawn(async move {
             loop {
                 let event = events.recv().await;
@@ -86,13 +89,17 @@ impl NetworkQuietTracker {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         state.closed = true;
+                        notify.notify_waiters();
                         break;
                     }
                 }
+                drop(state);
+                notify.notify_waiters();
             }
         });
         Self {
             state,
+            changed,
             collector,
             guard,
         }
@@ -469,6 +476,9 @@ impl CdpBrowserSession {
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
         loop {
+            let changed = tracker.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             self.ensured_route_identity().await?;
             let now = tokio::time::Instant::now();
             let (in_flight, overflowed, closed, empty_since) = {
@@ -488,8 +498,21 @@ impl CdpBrowserSession {
             }
             if in_flight == 0 && !overflowed && now.saturating_duration_since(empty_since) >= quiet
             {
-                tracker.guard.disable().await?;
                 let (target_id, frame_id) = self.route_identity().await?;
+                {
+                    let state = tracker
+                        .state
+                        .lock()
+                        .map_err(|_| "network tracker poisoned")?;
+                    if state.closed
+                        || state.overflowed
+                        || !state.in_flight.is_empty()
+                        || state.empty_since.max(started) + quiet > tokio::time::Instant::now()
+                    {
+                        continue;
+                    }
+                }
+                tracker.guard.disable().await?;
                 return Ok(WaitOutcome {
                     condition: "network_quiet".to_string(),
                     elapsed_ms: started.elapsed().as_millis() as u64,
@@ -512,12 +535,15 @@ impl CdpBrowserSession {
                 }
                 .into());
             }
-            tokio::time::sleep(
+            let wake = if in_flight == 0 && !overflowed {
+                (empty_since + quiet).min(expires)
+            } else {
                 expires
-                    .saturating_duration_since(now)
-                    .min(WAIT_POLL_INTERVAL),
-            )
-            .await;
+            };
+            tokio::select! {
+                _ = changed => {},
+                _ = tokio::time::sleep_until(wake) => {},
+            }
         }
     }
 }

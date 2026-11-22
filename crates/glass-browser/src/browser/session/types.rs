@@ -2773,9 +2773,7 @@ pub(crate) fn collect_diagnostic_event_with(
     match event.method.as_str() {
         "Runtime.consoleAPICalled" => {
             let text = if console_text {
-                redact_diagnostic_text(&bounded_diagnostic_text(&console_arguments_text(
-                    &event.params["args"],
-                )))
+                redact_diagnostic_text(&console_arguments_text(&event.params["args"]))
             } else {
                 "[console arguments redacted]".to_string()
             };
@@ -2798,7 +2796,7 @@ pub(crate) fn collect_diagnostic_event_with(
                 console,
                 ConsoleEvidence {
                     level: "exception".to_string(),
-                    text: redact_diagnostic_text(&bounded_diagnostic_text(text)),
+                    text: redact_diagnostic_text(text),
                 },
                 dropped,
             );
@@ -2906,6 +2904,7 @@ pub(crate) fn redact_diagnostic_text(value: &str) -> String {
     {
         return "[redacted sensitive console entry]".to_string();
     }
+    let value = crate::mcp::secrets::redact(value);
     let redacted = value
         .split_whitespace()
         .map(|part| {

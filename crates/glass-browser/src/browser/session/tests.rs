@@ -1686,6 +1686,26 @@ fn diagnostic_console_text_keeps_messages_and_exceptions_but_redacts_secrets() {
     assert_eq!(console[1].text, "[redacted sensitive console entry]");
     assert_eq!(console[2].level, "exception");
     assert_eq!(console[2].text, "Error: Boom");
+    for method in ["Runtime.consoleAPICalled", "Runtime.exceptionThrown"] {
+        let text = format!("{} password=hidden", "x".repeat(20_000));
+        let params = if method == "Runtime.consoleAPICalled" {
+            serde_json::json!({"args":[{"value":text}]})
+        } else {
+            serde_json::json!({"exceptionDetails":{"text":text}})
+        };
+        collect_diagnostic_event_with(
+            &event(method, params),
+            &mut console,
+            &mut network,
+            &mut indexes,
+            &mut dropped,
+            true,
+        );
+        assert_eq!(
+            console.last().unwrap().text,
+            "[redacted sensitive console entry]"
+        );
+    }
     let mut quiet = Vec::new();
     collect_diagnostic_event(
         &event(

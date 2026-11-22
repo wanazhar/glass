@@ -1159,30 +1159,13 @@ final class MarbleStore: ObservableObject {
     }
 
     func withLiveToolRows(_ entries: [MarbleEntry], conversationId: String?, threadId: String? = nil) -> [MarbleEntry] {
-        guard let conversationId else { return entries }
-        let durableIDs = Set(entries.map(\.id))
-        let live = toolsByTurn.flatMap { taskId, calls in
-            calls.compactMap { call -> (UInt64, MarbleEntry)? in
-                guard call.threadId == threadId, let id = call.entryIDs[conversationId], !durableIDs.contains(id)
-                else { return nil }
-                var entry = MarbleEntry(conversationId: conversationId, kind: "tool", text: call.transcriptText,
-                                        taskId: taskId, at: 0, speakerName: call.sender ?? "")
-                entry.serverID = id
-                entry.threadId = threadId
-                return (call.sequence, entry)
-            }
-        }.sorted { $0.0 < $1.0 }
-        var rows = entries
-        for (_, entry) in live {
-            // A reservation occupies its dispatch slot even when tools
-            // arrive later. Keep tool rows in the same order as the host.
-            let index = rows.firstIndex {
-                $0.taskId == entry.taskId && ["assistant", "failure"].contains($0.kind)
-                    && $0.conversationId != everyoneConversationId
-            }
-            rows.insert(entry, at: index ?? rows.endIndex)
-        }
-        return rows
+        guard let conversationId, !toolsByTurn.isEmpty else { return entries }
+        var activeTasks = Set(state.tasks.lazy.filter(\.isRunning).map(\.id))
+        if let task = live[conversationId]?.taskId, !settledToolTasks.contains(task) { activeTasks.insert(task) }
+        return MarbleToolActivity.insertingLiveRows(
+            toolsByTurn, into: entries, activeTasks: activeTasks,
+            conversationId: conversationId, threadId: threadId
+        )
     }
 
     func hasTranscriptToolRows(in conversationId: String, taskId: String) -> Bool {

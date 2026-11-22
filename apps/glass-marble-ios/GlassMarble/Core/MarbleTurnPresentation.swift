@@ -170,6 +170,37 @@ struct MarbleToolActivity: Identifiable, Equatable {
         }
         return [name, query, end].compactMap { $0 }.joined(separator: " · ")
     }
+
+    static func insertingLiveRows(
+        _ callsByTask: [String: [Self]], into entries: [MarbleEntry],
+        activeTasks: Set<String>, conversationId: String, threadId: String?
+    ) -> [MarbleEntry] {
+        guard !callsByTask.isEmpty else { return entries }
+        let durableIDs = Set(entries.map(\.id))
+        let visibleTasks = activeTasks.union(entries.map(\.taskId))
+        let live = callsByTask.flatMap { taskId, calls -> [(UInt64, MarbleEntry)] in
+            guard visibleTasks.contains(taskId) else { return [] }
+            return calls.compactMap { call in
+                guard call.threadId == threadId, let id = call.entryIDs[conversationId], !durableIDs.contains(id)
+                else { return nil }
+                var entry = MarbleEntry(conversationId: conversationId, kind: "tool", text: call.transcriptText,
+                                        taskId: taskId, at: 0, speakerName: call.sender ?? "")
+                entry.serverID = id
+                entry.threadId = threadId
+                return (call.sequence, entry)
+            }
+        }.sorted { $0.0 < $1.0 }
+        var rows = entries
+        for (_, entry) in live {
+            // Everyone's reserved reply slot precedes its tools.
+            let index = rows.firstIndex {
+                $0.taskId == entry.taskId && ["assistant", "failure"].contains($0.kind)
+                    && $0.conversationId != everyoneConversationId
+            }
+            rows.insert(entry, at: index ?? rows.endIndex)
+        }
+        return rows
+    }
 }
 
 struct MarbleFailureInfo: Codable, Equatable {

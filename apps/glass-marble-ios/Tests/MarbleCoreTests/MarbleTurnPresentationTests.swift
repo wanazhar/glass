@@ -21,6 +21,24 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertEqual(MarbleTurnFailure.retryID(entry: restored, task: nil), task.id)
     }
 
+    func testCompletedToolFromBeforePageIsNotAppendedBelowNewestReply() {
+        func tool(_ id: String, sequence: UInt64) -> MarbleToolActivity {
+            var step = MarbleToolActivity(id: id, name: "bash", status: .completed)
+            step.entryIDs["chat"] = id
+            step.sequence = sequence
+            return step
+        }
+        let reply = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Latest answer",
+                               taskId: "visible-turn", at: 200)
+        let updated = MarbleToolActivity.insertingLiveRows(
+            ["old-turn": [tool("old-tool", sequence: 1)],
+             "visible-turn": [tool("visible-tool", sequence: 2)],
+             "active-turn": [tool("active-tool", sequence: 3)]],
+            into: [reply], activeTasks: ["active-turn"], conversationId: "chat", threadId: nil
+        )
+        XCTAssertEqual(updated.map(\.id), ["visible-tool", reply.id, "active-tool"])
+    }
+
     func testNarrationUsesFinalReplyAndResetInvalidatesQueuedSpeechByTask() throws {
         var narration = MarbleReplyNarration()
         var entry = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Final answer.",

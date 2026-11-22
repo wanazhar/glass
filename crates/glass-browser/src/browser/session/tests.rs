@@ -1883,6 +1883,52 @@ async fn action_network_tracking_includes_requests_started_before_the_wait() {
 }
 
 #[tokio::test]
+async fn network_quiet_reports_route_loss_without_network_events() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        while let Some(Ok(Message::Text(text))) = websocket.next().await {
+            let request: Value = serde_json::from_str(&text).unwrap();
+            websocket
+                .send(Message::Text(
+                    json!({"id":request["id"],"result":{}}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+        }
+    });
+    let cdp = CdpClient::connect(&format!("ws://{address}"))
+        .await
+        .unwrap();
+    let session = Arc::new(test_session(cdp.clone()));
+    let tracker = session.start_network_quiet_tracking().await.unwrap();
+    let closed = Arc::clone(&session);
+    let closer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut topology = closed.topology.lock().await;
+        topology.active_target_id = None;
+        topology.active_frame_id = None;
+        topology.active_session_id = None;
+        closed.cdp.set_active_target_route(None, None, None, None);
+    });
+    let result = tokio::time::timeout(
+        Duration::from_millis(750),
+        session.wait_for_tracked_network_quiet(
+            tracker,
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+        ),
+    )
+    .await;
+    assert!(matches!(result, Ok(Err(_))), "{result:?}");
+    closer.await.unwrap();
+    cdp.close().await;
+    server.abort();
+}
+
+#[tokio::test]
 async fn diagnostic_cancellation_disables_every_scoped_domain() {
     let (url, server) = diagnostic_cleanup_server().await;
     let cdp = CdpClient::connect(&url).await.unwrap();

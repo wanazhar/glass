@@ -382,6 +382,14 @@ final class MarbleStore: ObservableObject {
         saveCache()
     }
 
+    func sceneDisconnected() {
+        appInBackground = true
+        status.suspend()
+        stopStreaming()
+        saveCursor()
+        saveCache()
+    }
+
     static func disconnectFromLiveActivity() {
         guard let store = liveActivityStore else {
             // A Live Activity button can wake the app without creating a scene.
@@ -1740,9 +1748,6 @@ final class MarbleStore: ObservableObject {
                             }
                         case .activity:
                             self.status.streamEvent()
-                            if let connectedAt = self.streamConnectedAt {
-                                self.backgroundConnection.refreshActivity(connectedAt: connectedAt)
-                            }
                         case .baseline(let cursor):
                             // A restart can land between /healthz and /api/events.
                             if cursor < self.sequence { break stream }
@@ -1752,7 +1757,7 @@ final class MarbleStore: ObservableObject {
                             self.streamConnectedAt = connectedAt
                             Self.streamLog.debug("SSE connected")
                             self.updateBackgroundConnection()
-                            self.backgroundConnection.refreshActivity(connectedAt: connectedAt, immediately: true)
+                            self.backgroundConnection.refreshActivity(connectedAt: connectedAt)
                         case .event(let event):
                             self.status.streamEvent()
                             self.handle(event, liveAfter: delivery.liveAfter)

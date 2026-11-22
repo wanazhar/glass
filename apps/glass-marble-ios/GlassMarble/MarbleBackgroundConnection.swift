@@ -20,7 +20,8 @@ final class MarbleBackgroundConnection: NSObject, @preconcurrency CLLocationMana
     private var wantsLocation = false
     private var requestedAuthorization = false
     private var activity: Activity<MarbleConnectionActivityAttributes>?
-    private var lastActivityUpdate = Date.distantPast
+    private var activityHeartbeat: Task<Void, Never>?
+    private var activityConnectedAt: Date?
     private(set) var isKeepingAlive = false
     var authorizationChanged: (() -> Void)?
 
@@ -75,7 +76,8 @@ final class MarbleBackgroundConnection: NSObject, @preconcurrency CLLocationMana
                 content: activityContent(connectedAt: connectedAt),
                 pushType: nil
             )
-            lastActivityUpdate = .now
+            activityConnectedAt = connectedAt
+            startActivityHeartbeat()
             return true
         } catch {
             Self.log.debug("Could not start connection Live Activity: \(error.localizedDescription, privacy: .public)")
@@ -84,31 +86,62 @@ final class MarbleBackgroundConnection: NSObject, @preconcurrency CLLocationMana
     }
 
     func showReconnecting() {
-        updateActivity(connectedAt: nil, immediately: true)
+        refreshActivity(connectedAt: nil)
     }
 
-    func refreshActivity(connectedAt: Date, immediately: Bool = false) {
-        updateActivity(connectedAt: connectedAt, immediately: immediately)
-    }
-
-    private func updateActivity(connectedAt: Date?, immediately: Bool) {
-        guard let activity,
-              immediately || Date.now.timeIntervalSince(lastActivityUpdate) >= 30 else { return }
-        lastActivityUpdate = .now
+    func refreshActivity(connectedAt: Date?) {
+        guard let activity, connectedAt != activityConnectedAt else { return }
+        activityConnectedAt = connectedAt
         let content = activityContent(connectedAt: connectedAt)
         Task { await activity.update(content) }
+    }
+
+    private func startActivityHeartbeat() {
+        activityHeartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                guard let self, let activity = self.activity else { return }
+                await activity.update(self.activityContent(connectedAt: self.activityConnectedAt))
+            }
+        }
     }
 
     private func activityContent(connectedAt: Date?) -> ActivityContent<MarbleConnectionActivityAttributes.ContentState> {
         .init(
             state: .init(connectedAt: connectedAt),
-            staleDate: connectedAt.map { _ in .now.addingTimeInterval(60) }
+            staleDate: .now.addingTimeInterval(25)
         )
     }
 
     func endActivity() {
+        activityHeartbeat?.cancel()
+        activityHeartbeat = nil
         guard let activity else { return }
         self.activity = nil
         Task { await activity.end(nil, dismissalPolicy: .immediate) }
+    }
+
+    static func endActivitiesFromPreviousLaunch() {
+        let activities = Activity<MarbleConnectionActivityAttributes>.activities
+        Task {
+            for activity in activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+    }
+
+    static func endActivitiesBeforeTermination() {
+        let activities = Activity<MarbleConnectionActivityAttributes>.activities
+        guard !activities.isEmpty else { return }
+        // The process can exit as soon as UIKit's termination callback
+        // returns. Give ActivityKit a bounded window on a separate executor.
+        let ended = DispatchSemaphore(value: 0)
+        Task.detached {
+            defer { ended.signal() }
+            for activity in activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+        _ = ended.wait(timeout: .now() + .milliseconds(300))
     }
 }

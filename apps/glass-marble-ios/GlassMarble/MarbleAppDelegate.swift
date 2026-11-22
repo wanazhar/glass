@@ -16,7 +16,12 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        MarbleBackgroundConnection.endActivitiesFromPreviousLaunch()
         return true
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        MarbleBackgroundConnection.endActivitiesBeforeTermination()
     }
 
     /// A tapped notification opens the conversation that needed attention, not
@@ -130,6 +135,10 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidBecomeActive(_ scene: UIScene) {
         store.appBecameActive()
+    }
+
+    func sceneDidDisconnect(_ scene: UIScene) {
+        store.sceneDisconnected()
     }
 }
 

@@ -155,7 +155,7 @@ private struct MarbleThreadView: View {
                 .marbleComposerBackground()
             }
         }
-        .task(id: store.threadUpdates[id]) {
+        .task(id: store.threadEventSequences[id]) {
             if jump == nil, let initialEntryId { jump = MarbleMessageJump(entryId: initialEntryId) }
             await load()
         }

@@ -62,7 +62,7 @@ final class MarbleStore: ObservableObject {
             // even for a turn that began before this surface was watching.
             if let id = selectedConversationId {
                 var buffers = live[id] ?? LiveBuffers()
-                if let taskId = state.runningTask(for: id)?.id, buffers.taskId == nil {
+                if let taskId = mainChatTask(in: id, state: state)?.id, buffers.taskId == nil {
                     buffers.taskId = taskId
                     live[id] = buffers
                 }
@@ -81,6 +81,8 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var everyoneTimeline: [MarbleEntry] = []
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
+    @Published private(set) var threadEventSequences: [String: UInt64] = [:]
+    private var threadTaskIds: Set<String> = []
     private var chatsRevision: Int = -1
     /// Advanced on every host change or sign-out so late replies from the
     /// previous host are dropped rather than shown.
@@ -123,6 +125,7 @@ final class MarbleStore: ObservableObject {
     private var pathMonitorSeenFirst = false
     private var appActive = true
     private var notificationCursor: MarbleNotificationCursor?
+    private var pendingSettlementAlerts: [String: (MarbleEvent, MarbleAttention.Alert)] = [:]
 
     /// Local-notification opt-in, persisted between launches (default off).
     private static let localNotificationsKey = "marble.localNotifications"
@@ -435,7 +438,7 @@ final class MarbleStore: ObservableObject {
             // looking at one of them, so only that chat's turn makes it busy.
             // The buffer is the single source of truth for activeTaskId;
             // writing the buffer keeps later syncLive() calls from reverting it.
-            let selectedTask = snapshot.runningTask(for: selectedConversationId)?.id
+            let selectedTask = mainChatTask(in: selectedConversationId, state: snapshot)?.id
             let selectedId = selectedConversationId ?? ""
             var buffers = live[selectedId] ?? LiveBuffers()
             if buffers.taskId != selectedTask {
@@ -481,6 +484,9 @@ final class MarbleStore: ObservableObject {
         retryingTurns = []
         retryFailures = []
         threadUpdates = [:]
+        threadEventSequences = [:]
+        threadTaskIds = []
+        pendingSettlementAlerts = [:]
         everyoneTimeline = []
         marbleTranscripts = [:]
         chatsRevision = -1
@@ -706,12 +712,19 @@ final class MarbleStore: ObservableObject {
 
     func latestTurn(in conversationID: String?) -> MarbleTask? {
         guard let conversationID, !conversationID.isEmpty else { return nil }
-        return state.tasks.last { $0.conversationId == conversationID }
+        return state.tasks.last { $0.conversationId == conversationID && !threadTaskIds.contains($0.id) }
+    }
+
+    private func mainChatTask(in id: String?, state: MarbleState) -> MarbleTask? {
+        guard let id else { return nil }
+        return state.tasks.first { $0.conversationId == id && $0.isRunning && !threadTaskIds.contains($0.id) }
     }
 
     var everyoneTurns: [MarbleTask] {
         let ids = Set(everyoneEntries.map(\.taskId)).union(everyoneTaskIds)
-        return state.tasks.filter { ids.contains($0.id) || $0.conversationId == everyoneConversationId }
+        return state.tasks.filter {
+            !threadTaskIds.contains($0.id) && (ids.contains($0.id) || $0.conversationId == everyoneConversationId)
+        }
     }
 
     /// Transcript search across every conversation.
@@ -825,9 +838,13 @@ final class MarbleStore: ObservableObject {
             ["assistant", "failure", "error"].contains($0.kind)
         }.map(\.taskId))
         return prism.marbles.filter { marble in
-            MarbleEveryoneTimeline.showsThinking(
-                working: isAgentWorking(marble), activeTaskIds: activeTaskIds(for: marble),
-                previousTaskIds: publishedEveryoneWork[marble.id] ?? [], visibleOutcomes: visibleOutcomes
+            let activeIds = activeTaskIds(for: marble)
+            let mainIds = activeIds.filter { !threadTaskIds.contains($0) }
+            return MarbleEveryoneTimeline.showsThinking(
+                working: isAgentWorking(marble) && (activeIds.isEmpty || !mainIds.isEmpty),
+                activeTaskIds: mainIds,
+                previousTaskIds: (publishedEveryoneWork[marble.id] ?? []).filter { !threadTaskIds.contains($0) },
+                visibleOutcomes: visibleOutcomes
             )
         }
     }
@@ -1257,13 +1274,17 @@ final class MarbleStore: ObservableObject {
     }
 
     /// Alert for an event that happened off-screen so a person can pull it back.
-    private func postLocalNotification(conversationId: String, taskId: String, title: String, body: String) {
+    private func postLocalNotification(
+        conversationId: String, taskId: String, threadId: String?, title: String, body: String
+    ) {
         guard localNotificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
-        content.userInfo = ["marble": ["conversationId": conversationId, "taskId": taskId]]
+        var marble = ["conversationId": conversationId, "taskId": taskId]
+        marble["threadId"] = threadId
+        content.userInfo = ["marble": marble]
         let request = UNNotificationRequest(
             identifier: "marble.\(UUID().uuidString)",
             content: content,
@@ -1278,11 +1299,45 @@ final class MarbleStore: ObservableObject {
         let previous = notificationCursor
         let alert = notificationCursor?.consume(event)
         if previous != notificationCursor { saveNotificationCursor() }
-        guard let alert else { return }
-        let conversationTitle = state.conversation(event.conversationId)?.title ?? ""
+        guard let alert, localNotificationsEnabled else { return }
+        let taskId = event.data.taskId ?? event.taskId
+        if event.kind == "settled", !taskId.isEmpty, event.conversationId != everyoneConversationId,
+           !isEveryoneNotificationTask(taskId) {
+            // The engine sends settlement before the host writes the mirrored
+            // entry. Resolve the alert's destination after the host's state event.
+            pendingSettlementAlerts[taskId] = (event, alert)
+            let generation = hostGeneration.current
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, self.hostGeneration.isCurrent(generation) else { return }
+                await self.deliverSettlementAlert(taskId: taskId)
+            }
+            return
+        }
+        deliverAlert(alert, event: event, mirrored: isEveryoneNotificationTask(taskId))
+    }
+
+    private func isEveryoneNotificationTask(_ taskId: String) -> Bool {
+        !taskId.isEmpty && (everyoneTaskIds.contains(taskId) || everyoneTimeline.contains { $0.taskId == taskId })
+    }
+
+    private func deliverSettlementAlert(taskId: String) async {
+        guard let (event, alert) = pendingSettlementAlerts.removeValue(forKey: taskId),
+              let client else { return }
+        let generation = hostGeneration.current
+        let entries = try? await client.everyone(main: false)
+        guard hostGeneration.isCurrent(generation) else { return }
+        let mirrored = isEveryoneNotificationTask(taskId) || entries?.contains { $0.taskId == taskId } == true
+        deliverAlert(alert, event: event, mirrored: mirrored)
+    }
+
+    private func deliverAlert(_ alert: MarbleAttention.Alert, event: MarbleEvent, mirrored: Bool) {
+        let destination = mirrored ? everyoneConversationId : event.conversationId
+        let conversationTitle = state.conversation(destination)?.title ?? ""
         postLocalNotification(
-            conversationId: event.conversationId,
+            conversationId: destination,
             taskId: event.data.taskId ?? event.taskId,
+            threadId: event.data.threadId,
             title: alert.title,
             body: conversationTitle.isEmpty ? alert.body : conversationTitle
         )
@@ -1387,6 +1442,25 @@ final class MarbleStore: ObservableObject {
     private func handle(_ event: MarbleEvent) {
         guard event.sequence > sequence else { return }
         sequence = event.sequence
+        if event.kind == "state", pendingSettlementAlerts[event.taskId] != nil {
+            Task { await deliverSettlementAlert(taskId: event.taskId) }
+        }
+        if let threadId = event.data.threadId {
+            if !event.taskId.isEmpty, threadTaskIds.insert(event.taskId).inserted,
+               live[event.conversationId]?.taskId == event.taskId {
+                live.removeValue(forKey: event.conversationId)
+                if selectedConversationId == event.conversationId { syncLive() }
+            }
+            if ["everyone", "settled"].contains(event.kind) {
+                threadEventSequences[threadId] = event.sequence
+            }
+            if ["state", "approval_pending", "approval_resolved", "error", "settled"].contains(event.kind) {
+                Task { await refresh() }
+            }
+            if event.kind == "settled" { saveCursor() }
+            notifyIfNeeded(event: event)
+            return
+        }
         var buffers = live[event.conversationId] ?? LiveBuffers()
         let forActive = event.conversationId.isEmpty
             || event.conversationId == (selectedConversationId ?? "")
@@ -1414,7 +1488,10 @@ final class MarbleStore: ObservableObject {
             chatsRevision = -1
             Task { await refresh() }
         case "thread":
-            if let thread = event.data.thread { threadUpdates[thread.id] = thread }
+            if let thread = event.data.thread {
+                threadUpdates[thread.id] = thread
+                threadEventSequences[thread.id] = event.sequence
+            }
         case "settled":
             guard buffers.taskId == nil || event.taskId.isEmpty || buffers.taskId == event.taskId else { break }
             let reply = forActive ? buffers.text : ""

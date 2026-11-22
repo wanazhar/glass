@@ -31,6 +31,14 @@ final class MarbleThreadsTests: XCTestCase {
         XCTAssertEqual(entry.threadId, "t")
     }
 
+    func testTurnEventsDecodeOptionalThreadMembership() throws {
+        let threadText = #"{"sequence":42,"conversationId":"everyone","taskId":"turn","kind":"text","data":{"text":"thread reply","thread_id":"t"}}"#
+        let mainText = #"{"sequence":43,"conversationId":"everyone","taskId":"main","kind":"text","data":{"text":"main reply"}}"#
+        let decoder = JSONDecoder()
+        XCTAssertEqual(try decoder.decode(MarbleEvent.self, from: Data(threadText.utf8)).data.threadId, "t")
+        XCTAssertNil(try decoder.decode(MarbleEvent.self, from: Data(mainText.utf8)).data.threadId)
+    }
+
     func testSearchDecodesThreadAndAppliesUTF8Ranges() throws {
         let json = """
         {"entry_id":"a","conversation_id":"everyone","thread_id":"t","sender":"Ada","created_at":40,

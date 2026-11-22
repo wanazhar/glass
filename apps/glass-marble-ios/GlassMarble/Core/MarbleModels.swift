@@ -523,6 +523,7 @@ struct MarbleEvent: Decodable, Equatable {
 
 struct MarbleEventData: Decodable, Equatable {
     var thread: MarbleThread? = nil
+    var threadId: String? = nil
     var text: String?
     var tool: String?
     var name: String? = nil
@@ -539,6 +540,12 @@ struct MarbleEventData: Decodable, Equatable {
     var approved: Bool?
     /// On an `everyone` event, how many entries a clear removed.
     var cleared: Int? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case thread, text, tool, name, callId, arguments, isError, message, status, revision
+        case taskId, reason, cancelled, requestId, approved, cleared
+        case threadId = "thread_id"
+    }
 }
 
 /// One marble-to-marble ask, kept on the transcript row that tells it.

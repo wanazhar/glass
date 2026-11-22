@@ -39,12 +39,14 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
     ) async -> UNNotificationPresentationOptions {
         let userInfo = notification.request.content.userInfo
         let target = marbleConversationId(from: userInfo)
-        let taskID = (userInfo["marble"] as? [String: Any])?["taskId"] as? String
+        let marble = userInfo["marble"] as? [String: Any]
+        let taskID = marble?["taskId"] as? String
+        let threadId = marble?["threadId"] as? String
         return await MainActor.run {
             let shouldSuppress = UIApplication.shared.connectedScenes.contains { scene in
                 guard scene.activationState == .foregroundActive,
                       let delegate = scene.delegate as? MarbleSceneDelegate else { return false }
-                return !delegate.shouldPresentNotification(target: target, taskID: taskID)
+                return !delegate.shouldPresentNotification(target: target, taskID: taskID, threadId: threadId)
             }
             return shouldSuppress ? [] : [.banner, .sound, .list]
         }
@@ -98,7 +100,7 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #endif
     private let navigation = MarbleNavigationModel()
 
-    func shouldPresentNotification(target: String?, taskID: String?) -> Bool {
+    func shouldPresentNotification(target: String?, taskID: String?, threadId: String?) -> Bool {
         guard store.onboarded, !store.needsToken,
               window?.rootViewController?.presentedViewController == nil else { return true }
         let visibleChat = navigation.state.visibleChat { id in
@@ -110,7 +112,9 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
         } ?? false
         return MarbleNotificationCursor.shouldPresent(
             target: visibleChat == everyoneConversationId && mirrored ? everyoneConversationId : target,
-            visibleChat: visibleChat
+            visibleChat: visibleChat,
+            threadId: threadId,
+            visibleThreadId: navigation.state.visibleThreadId
         )
     }
 

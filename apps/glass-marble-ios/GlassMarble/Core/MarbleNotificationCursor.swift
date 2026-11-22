@@ -33,7 +33,10 @@ struct MarbleNotificationCursor: Codable, Equatable {
         return alert
     }
 
-    static func shouldPresent(target: String?, visibleChat: String?) -> Bool {
+    static func shouldPresent(
+        target: String?, visibleChat: String?, threadId: String? = nil, visibleThreadId: String? = nil
+    ) -> Bool {
+        if let threadId { return threadId != visibleThreadId }
         guard let target, let visibleChat else { return true }
         return target != visibleChat
     }

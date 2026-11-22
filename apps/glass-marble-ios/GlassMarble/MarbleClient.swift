@@ -475,9 +475,9 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     /// The shared chat's timeline, newest entries after `after`.
-    func everyone(after: UInt64? = nil) async throws -> [MarbleEntry] {
+    func everyone(after: UInt64? = nil, main: Bool = true) async throws -> [MarbleEntry] {
         struct Reply: Decodable { var entries: [MarbleEntry] }
-        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after, main: true)))
+        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after, main: main)))
         return reply.entries
     }
 

@@ -43,4 +43,27 @@ final class MarbleNotificationTests: XCTestCase {
             target: "ada-chat", visibleChat: navigation.visibleChat { _ in "ada-chat" }
         ))
     }
+
+    func testThreadNotificationIsMutedOnlyWhenThatThreadIsOnScreen() {
+        var navigation = MarbleNavigation()
+        navigation.notificationTapped("everyone")
+        XCTAssertTrue(MarbleNotificationCursor.shouldPresent(
+            target: "everyone", visibleChat: "everyone", threadId: "t",
+            visibleThreadId: navigation.visibleThreadId
+        ))
+        navigation.openThread("t")
+        XCTAssertEqual(navigation.visibleThreadId, "t")
+        XCTAssertFalse(MarbleNotificationCursor.shouldPresent(
+            target: "everyone", visibleChat: nil, threadId: "t",
+            visibleThreadId: navigation.visibleThreadId
+        ))
+        XCTAssertTrue(MarbleNotificationCursor.shouldPresent(
+            target: "everyone", visibleChat: nil, threadId: "other",
+            visibleThreadId: navigation.visibleThreadId
+        ))
+        navigation.everyonePath = [.searchHit(conversationId: "everyone", threadId: "t", entryId: "reply")]
+        XCTAssertEqual(navigation.visibleThreadId, "t")
+        navigation.selectTab(.settings)
+        XCTAssertNil(navigation.visibleThreadId)
+    }
 }

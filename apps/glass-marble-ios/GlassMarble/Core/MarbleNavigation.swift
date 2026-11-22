@@ -50,14 +50,26 @@ public struct MarbleNavigation: Sendable, Equatable {
     /// Visible chat for foreground notifications. Inactive tabs can retain
     /// their paths even while another screen is on top.
     func visibleChat(namedConversation: (String) -> String?) -> String? {
+        switch activeChatRoute {
+        case .everyoneChat: return everyoneConversationId
+        case .marbleChat(let id): return namedConversation(id)
+        case .conversation(let id), .searchHit(let id, nil, _): return id
+        default: return nil
+        }
+    }
+
+    var visibleThreadId: String? {
+        switch activeChatRoute {
+        case .thread(let id), .searchHit(_, let id?, _): return id
+        default: return nil
+        }
+    }
+
+    private var activeChatRoute: ChatRoute? {
         switch tab {
-        case .everyone:
-            return everyonePath.last == .everyoneChat ? everyoneConversationId : nil
-        case .marbles:
-            if case .marbleChat(let id) = chatPath.last { return namedConversation(id) }
-            return viewingConversationId
-        case .settings:
-            return nil
+        case .everyone: return everyonePath.last
+        case .marbles: return chatPath.last
+        case .settings: return nil
         }
     }
     /// Set by the scene when a notification launch arrives before the view

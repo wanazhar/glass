@@ -65,10 +65,22 @@ struct MarbleNotificationCursor: Codable, Equatable {
         target: String?,
         visibleChat: String?,
         threadId: String? = nil,
-        visibleThreadId: String? = nil
+        visibleThreadId: String? = nil,
+        mirroredInEveryone: Bool = false
     ) -> Bool {
         if let threadId { return threadId != visibleThreadId }
+        if mirroredInEveryone && visibleChat == everyoneConversationId { return false }
         guard let target, let visibleChat else { return true }
         return target != visibleChat
+    }
+
+    static func isMirroredInEveryone(_ reply: MarbleEvent, entries: [MarbleEntry]) -> Bool {
+        let taskId = reply.data.taskId ?? reply.taskId
+        guard reply.conversationId != everyoneConversationId, reply.data.threadId == nil,
+              !taskId.isEmpty else { return false }
+        return entries.contains {
+            $0.conversationId == everyoneConversationId && $0.threadId == nil && $0.taskId == taskId
+                && ["pending", "assistant", "failure"].contains($0.kind)
+        }
     }
 }

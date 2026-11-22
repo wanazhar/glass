@@ -116,6 +116,24 @@ final class MarbleNotificationTests: XCTestCase {
         ))
     }
 
+    func testPrivateCopyOfEveryoneReplyIsMutedWhenEitherChatIsVisible() throws {
+        let payload = #"{"sequence":11,"conversationId":"ada-chat","taskId":"ada-turn","kind":"reply","data":{"id":"private","kind":"assistant","text":"Ready"}}"#
+        let reply = try JSONDecoder().decode(MarbleEvent.self, from: Data(payload.utf8))
+        let placeholder = MarbleEntry(conversationId: "everyone", kind: "pending", text: "", taskId: "ada-turn", at: 1)
+        XCTAssertFalse(MarbleNotificationCursor.isMirroredInEveryone(reply, entries: []))
+        let mirrored = MarbleNotificationCursor.isMirroredInEveryone(reply, entries: [placeholder])
+        XCTAssertTrue(mirrored)
+        XCTAssertFalse(MarbleNotificationCursor.shouldPresent(
+            target: reply.conversationId, visibleChat: "everyone", mirroredInEveryone: mirrored
+        ))
+        XCTAssertFalse(MarbleNotificationCursor.shouldPresent(
+            target: reply.conversationId, visibleChat: "ada-chat", mirroredInEveryone: mirrored
+        ))
+        XCTAssertTrue(MarbleNotificationCursor.shouldPresent(
+            target: reply.conversationId, visibleChat: "other-chat", mirroredInEveryone: mirrored
+        ))
+    }
+
     func testThreadNotificationIsMutedOnlyWhenThatThreadIsOnScreen() {
         var navigation = MarbleNavigation()
         navigation.notificationTapped("everyone")

@@ -149,7 +149,7 @@ final class MarbleStore: ObservableObject {
         }
     }
     private var notificationCursor = MarbleNotificationCursor()
-    var shouldPresentReply: ((String, String?) -> Bool)?
+    var shouldPresentReply: ((String, String?, Bool) -> Bool)?
 
     /// Local-notification opt-in, persisted between launches (default off).
     private static let localNotificationsKey = "marble.localNotifications"
@@ -1831,11 +1831,14 @@ final class MarbleStore: ObservableObject {
         let previous = notificationCursor
         let reply = notificationCursor.consume(event, liveAfter: liveAfter)
         if previous != notificationCursor { saveNotificationCursor() }
+        guard let reply, localNotificationsEnabled else { return }
         let conversationId = event.conversationId
         let threadId = event.data.threadId
-        guard let reply, localNotificationsEnabled,
-              appInBackground ? backgroundConnection.isKeepingAlive
-                  : shouldPresentReply?(conversationId, threadId) == true else { return }
+        let mirroredInEveryone = MarbleNotificationCursor.isMirroredInEveryone(
+            event, entries: (liveEntries[everyoneConversationId] ?? []) + everyoneEntries
+        )
+        guard appInBackground ? backgroundConnection.isKeepingAlive
+            : shouldPresentReply?(conversationId, threadId, mirroredInEveryone) == true else { return }
         notificationCursor.notified(reply.entry)
         saveNotificationCursor()
         let content = UNMutableNotificationContent()
@@ -1844,6 +1847,7 @@ final class MarbleStore: ObservableObject {
         content.sound = .default
         var marble = ["conversationId": conversationId]
         marble["threadId"] = threadId
+        if mirroredInEveryone { marble["mirroredInEveryone"] = "true" }
         content.userInfo = ["marble": marble]
         let request = UNNotificationRequest(
             identifier: "marble.\(reply.entry.conversationId).\(reply.entry.id)",

@@ -46,11 +46,14 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         let target = marbleConversationId(from: userInfo)
         let marble = userInfo["marble"] as? [String: Any]
         let threadId = marble?["threadId"] as? String
+        let mirroredInEveryone = marble?["mirroredInEveryone"] as? String == "true"
         return await MainActor.run {
             let shouldSuppress = UIApplication.shared.connectedScenes.contains { scene in
                 guard scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive,
                       let delegate = scene.delegate as? MarbleSceneDelegate else { return false }
-                return !delegate.shouldPresentNotification(target: target, threadId: threadId)
+                return !delegate.shouldPresentNotification(
+                    target: target, threadId: threadId, mirroredInEveryone: mirroredInEveryone
+                )
             }
             return shouldSuppress ? [] : [.banner, .sound, .list]
         }
@@ -83,7 +86,7 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #endif
     private let navigation = MarbleNavigationModel()
 
-    func shouldPresentNotification(target: String?, threadId: String?) -> Bool {
+    func shouldPresentNotification(target: String?, threadId: String?, mirroredInEveryone: Bool) -> Bool {
         guard store.onboarded, !store.needsToken,
               window?.rootViewController?.presentedViewController == nil else { return true }
         let visibleChat = navigation.state.visibleChat { id in
@@ -93,7 +96,8 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
             target: target,
             visibleChat: visibleChat,
             threadId: threadId,
-            visibleThreadId: navigation.state.visibleThreadId
+            visibleThreadId: navigation.state.visibleThreadId,
+            mirroredInEveryone: mirroredInEveryone
         )
     }
 
@@ -104,8 +108,10 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
         MarbleStore.liveActivityStore = store
-        store.shouldPresentReply = { [weak self] target, threadId in
-            self?.shouldPresentNotification(target: target, threadId: threadId) ?? false
+        store.shouldPresentReply = { [weak self] target, threadId, mirroredInEveryone in
+            self?.shouldPresentNotification(
+                target: target, threadId: threadId, mirroredInEveryone: mirroredInEveryone
+            ) ?? false
         }
         // A notification can launch the app cold; honour its target too.
         if let response = connectionOptions.notificationResponse,

@@ -83,7 +83,7 @@ struct MarbleApproval: Decodable, Identifiable, Equatable {
     var argumentsSummary: String { arguments.summary }
 }
 
-struct MarbleEntry: Decodable, Identifiable, Equatable {
+struct MarbleEntry: Codable, Identifiable, Equatable {
     var conversationId: String
     var kind: String
     var text: String
@@ -509,7 +509,7 @@ struct MarbleEventData: Decodable, Equatable {
 }
 
 /// One marble-to-marble ask, kept on the transcript row that tells it.
-struct MarbleHandoff: Decodable, Equatable {
+struct MarbleHandoff: Codable, Equatable {
     var from: String
     var fromName: String
     var to: String
@@ -548,11 +548,34 @@ struct MarbleHandoff: Decodable, Equatable {
     }
 }
 
-/// What `POST /api/everyone` answers: who is answering and who is busy.
+/// What `POST /api/everyone` answers: who is answering and who is busy when
+/// marbles were named, or the default turn's task when none were.
 struct MarbleEveryoneReply: Decodable, Equatable {
     var ok: Bool
     var answering: [String]
     var busy: [String]
+    /// Set when the default Marble took the message as an ordinary turn.
+    var taskId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, answering, busy, taskId, accepted
+    }
+
+    init(ok: Bool, answering: [String], busy: [String], taskId: String? = nil) {
+        self.ok = ok
+        self.answering = answering
+        self.busy = busy
+        self.taskId = taskId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted)
+        ok = try container.decodeIfPresent(Bool.self, forKey: .ok) ?? accepted ?? true
+        answering = try container.decodeIfPresent([String].self, forKey: .answering) ?? []
+        busy = try container.decodeIfPresent([String].self, forKey: .busy) ?? []
+        taskId = try container.decodeIfPresent(String.self, forKey: .taskId)
+    }
 }
 
 /// One transcript-search hit, newest first.

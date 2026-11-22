@@ -842,7 +842,7 @@ final class MarbleNavigationTests: XCTestCase {
     func testNotificationTappedReplacesPath() {
         var nav = MarbleNavigation()
         nav.openConversation("a")
-        nav.selectTab(.activity)
+        nav.selectTab(.settings)
         nav.notificationTapped("b")
         XCTAssertEqual(nav.tab, .marbles)
         XCTAssertEqual(nav.chatPath, [.marbleChats, .conversation("b")])
@@ -1196,6 +1196,16 @@ final class MarbleHandoffLineTests: XCTestCase {
         XCTAssertTrue(MarbleHandoffLine.isExpandable(handoff("finished", summary: "x")))
     }
 
+    func testQuietRowTitleAndDetail() {
+        XCTAssertEqual(MarbleHandoffLine.title(handoff("asked")), "Ada asked Ben")
+        XCTAssertEqual(MarbleHandoffLine.detail(handoff("asked")), "check the failing tests")
+        let finished = handoff("finished", summary: "three tests were flaky")
+        XCTAssertEqual(MarbleHandoffLine.title(finished), "Ben replied to Ada")
+        XCTAssertEqual(MarbleHandoffLine.detail(finished), "three tests were flaky")
+        XCTAssertEqual(MarbleHandoffLine.title(handoff("refused")), "Ben couldn't take it")
+        XCTAssertEqual(MarbleHandoffLine.title(handoff("failed")), "Ben couldn't finish")
+    }
+
     func testRefusedAndFailed() {
         XCTAssertEqual(
             MarbleHandoffLine.render(handoff("refused", summary: "busy with another task")),
@@ -1386,5 +1396,151 @@ final class MarbleEveryoneTimelineTests: XCTestCase {
         )
         XCTAssertFalse(MarbleEveryoneTimeline.isChange(text))
         XCTAssertEqual(MarbleEveryoneTimeline.applying(text, to: timeline), timeline)
+    }
+}
+
+final class MarbleMarkdownTests: XCTestCase {
+    func testQuoteListsTableCodeAndLink() {
+        let blocks = MarbleMarkdown.parse("""
+        Summary:
+
+        > Ship it first.
+
+        - Fix the composer
+          and its background
+        - [x] Render **Markdown**
+
+        1. One
+        2. Two
+
+        | Area | State |
+        |:---|---:|
+        | Chat | ready |
+
+        ```swift
+        let tint = Color.accentColor
+        ```
+
+        See [the docs](https://example.com).
+        """)
+        XCTAssertEqual(blocks, [
+            .paragraph("Summary:"),
+            .quote([.paragraph("Ship it first.")]),
+            .list(ordered: false, items: [
+                MarbleMarkdownListItem(marker: "•", level: 0, text: "Fix the composer\nand its background", checked: nil),
+                MarbleMarkdownListItem(marker: "", level: 0, text: "Render **Markdown**", checked: true),
+            ]),
+            .list(ordered: true, items: [
+                MarbleMarkdownListItem(marker: "1.", level: 0, text: "One", checked: nil),
+                MarbleMarkdownListItem(marker: "2.", level: 0, text: "Two", checked: nil),
+            ]),
+            .table(header: ["Area", "State"], alignments: [.leading, .trailing], rows: [["Chat", "ready"]]),
+            .code(language: "swift", code: "let tint = Color.accentColor"),
+            .paragraph("See [the docs](https://example.com)."),
+        ])
+    }
+
+    func testHeadingsRulesAndNestedQuotes() {
+        XCTAssertEqual(MarbleMarkdown.parse("## Plan ##\n---\n> > deep\n> - item"), [
+            .heading(level: 2, text: "Plan"),
+            .rule,
+            .quote([
+                .quote([.paragraph("deep")]),
+                .list(ordered: false, items: [MarbleMarkdownListItem(marker: "•", level: 0, text: "item", checked: nil)]),
+            ]),
+        ])
+    }
+
+    func testPlainTextWithPipesIsNotATable() {
+        XCTAssertEqual(MarbleMarkdown.parse("a | b\nnext line"), [.paragraph("a | b\nnext line")])
+    }
+
+    func testUnclosedFenceKeepsTheRestAsCode() {
+        XCTAssertEqual(MarbleMarkdown.parse("```\nx\ny"), [.code(language: "", code: "x\ny")])
+    }
+
+    func testShortTableRowsArePadded() {
+        XCTAssertEqual(MarbleMarkdown.parse("|a|b|\n|-|-|\n|1|"), [
+            .table(header: ["a", "b"], alignments: [.leading, .leading], rows: [["1", ""]])
+        ])
+    }
+
+    func testNestedListLevelComesFromIndent() {
+        guard case let .list(_, items) = MarbleMarkdown.parse("- a\n  - b\n    - c").first else {
+            return XCTFail("expected a list")
+        }
+        XCTAssertEqual(items.map(\.level), [0, 1, 2])
+    }
+}
+
+final class MarbleDecisionWordsTests: XCTestCase {
+    func testKnownToolsReadAsActions() {
+        XCTAssertEqual(MarbleDecisionWords.action(tool: "glass.workspace.write"), "Write to workspace")
+        XCTAssertEqual(MarbleDecisionWords.action(tool: "glass.workspace.list"), "List workspace files")
+        XCTAssertEqual(MarbleDecisionWords.action(tool: "glass.marble.ask"), "Ask another Marble")
+    }
+
+    func testUnknownToolsAreSpelledOut() {
+        XCTAssertEqual(MarbleDecisionWords.action(tool: "glass.not_real.thing"), "Not real thing")
+        XCTAssertEqual(MarbleDecisionWords.action(tool: "shell"), "Shell")
+        XCTAssertEqual(MarbleDecisionWords.action(tool: ""), "Use a tool")
+    }
+
+    func testHostReasonsBecomePlainOutcomes() {
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: "declined on this surface"), "Denied by you")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "approved", reason: "approved on this surface"), "Allowed by you")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: "cancelled before this tool call ran"), "Cancelled before it ran")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: ".env matches the denied path rule .env"), "Blocked: off-limits folder")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "allowed", reason: "grant g1 already allows glass.workspace.write in src"), "Allowed by a saved permission")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: "the observe profile allows reads only"), "Blocked: read-only mode")
+    }
+
+    func testUnknownReasonsFallBackToTheDecision() {
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "approved", reason: "human"), "Allowed by you")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "allowed", reason: ""), "Allowed automatically")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: "something new"), "Denied")
+        XCTAssertTrue(MarbleDecisionWords.wentAhead(decision: "allowed"))
+        XCTAssertFalse(MarbleDecisionWords.wentAhead(decision: "denied"))
+    }
+}
+
+final class MarbleEveryoneThinkingTests: XCTestCase {
+    func testDefaultMarbleThinksWhileItsEveryoneTurnRuns() {
+        XCTAssertEqual(
+            MarbleEveryoneTimeline.thinking(
+                working: ["Dietrich"], sentTaskIds: ["t1"], runningTaskIds: ["t1", "t9"], defaultName: "Marble"
+            ),
+            ["Marble", "Dietrich"]
+        )
+    }
+
+    func testFinishedTurnsShowNoBubble() {
+        XCTAssertEqual(
+            MarbleEveryoneTimeline.thinking(
+                working: [], sentTaskIds: ["t1"], runningTaskIds: ["t2"], defaultName: "Marble"
+            ),
+            []
+        )
+        XCTAssertEqual(
+            MarbleEveryoneTimeline.thinking(
+                working: ["Marble"], sentTaskIds: ["t1"], runningTaskIds: ["t1"], defaultName: "Marble"
+            ),
+            ["Marble"]
+        )
+    }
+
+    func testEveryoneReplyDecodesBothShapes() throws {
+        let named = try JSONDecoder().decode(
+            MarbleEveryoneReply.self,
+            from: Data(#"{"ok":true,"answering":["Ada"],"busy":[]}"#.utf8)
+        )
+        XCTAssertEqual(named, MarbleEveryoneReply(ok: true, answering: ["Ada"], busy: []))
+        let turn = try JSONDecoder().decode(
+            MarbleEveryoneReply.self,
+            from: Data(#"{"accepted":true,"taskId":"t1","conversationId":"c","queued":false}"#.utf8)
+        )
+        XCTAssertEqual(turn.taskId, "t1")
+        XCTAssertTrue(turn.ok)
+        XCTAssertEqual(turn.answering, [])
     }
 }

@@ -1,8 +1,137 @@
 import SwiftUI
 
-/// Settings: the connection, what Marble may do, this iPhone's alerts, and the
-/// host's facts. No hidden features — everything else lives on the host.
+/// Settings submenus, grouped by what they are for. Activity and Scheduled
+/// live here instead of in their own tabs.
+enum MarbleSettingsRoute: String, Hashable, CaseIterable {
+    case connection, marbles, activity, scheduled, notifications, data, about
+
+    var title: String {
+        switch self {
+        case .connection: "Connection"
+        case .marbles: "Marbles and models"
+        case .activity: "Approvals and activity"
+        case .scheduled: "Scheduled"
+        case .notifications: "Notifications"
+        case .data: "Chats and data"
+        case .about: "About"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .connection: "desktopcomputer"
+        case .marbles: "circle.hexagongrid"
+        case .activity: "checkmark.shield"
+        case .scheduled: "clock"
+        case .notifications: "bell"
+        case .data: "tray.full"
+        case .about: "info.circle"
+        }
+    }
+
+    @MainActor @ViewBuilder
+    var destination: some View {
+        switch self {
+        case .connection: ConnectionSettingsView()
+        case .marbles: MarblesModelsSettingsView()
+        case .activity: ActivityView()
+        case .scheduled: ScheduledView()
+        case .notifications: NotificationSettingsView()
+        case .data: DataSettingsView()
+        case .about: AboutSettingsView()
+        }
+    }
+}
+
+/// Settings: native grouped clusters, each opening its own screen.
 struct SettingsView: View {
+    @EnvironmentObject private var store: MarbleStore
+    @State private var confirmStop = false
+
+    var body: some View {
+        List {
+            Section {
+                NavigationLink(value: MarbleSettingsRoute.connection) {
+                    LabeledContent {
+                        Text(store.statusLabel)
+                    } label: {
+                        Label {
+                            Text(store.endpoint?.displayHost ?? "Host")
+                                .lineLimit(1)
+                        } icon: {
+                            Image(systemName: MarbleSettingsRoute.connection.systemImage)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("settings.connection")
+                link(.marbles)
+            }
+            Section {
+                NavigationLink(value: MarbleSettingsRoute.activity) {
+                    LabeledContent {
+                        if waiting > 0 {
+                            Text("\(waiting) waiting")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    } label: {
+                        Label(MarbleSettingsRoute.activity.title, systemImage: MarbleSettingsRoute.activity.systemImage)
+                    }
+                }
+                .accessibilityIdentifier("settings.activity")
+                NavigationLink(value: MarbleSettingsRoute.scheduled) {
+                    LabeledContent {
+                        let count = store.routines.routines.count
+                        if count > 0 { Text("\(count)") }
+                    } label: {
+                        Label(MarbleSettingsRoute.scheduled.title, systemImage: MarbleSettingsRoute.scheduled.systemImage)
+                    }
+                }
+                .accessibilityIdentifier("settings.scheduled")
+            }
+            Section {
+                link(.notifications)
+                link(.data)
+            }
+            Section {
+                link(.about)
+            }
+            Section {
+                Button(role: .destructive) {
+                    confirmStop = true
+                } label: {
+                    Label("Stop everything", systemImage: "stop.circle")
+                        .foregroundStyle(.red)
+                }
+                .accessibilityIdentifier("settings.stopEverything")
+            } footer: {
+                Text("Cancels every running turn on the host.")
+            }
+        }
+        .navigationTitle("Settings")
+        .navigationDestination(for: MarbleSettingsRoute.self) { $0.destination }
+        .confirmationDialog("Stop everything?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("Stop everything", role: .destructive) {
+                Task { await store.stopEverything() }
+            }
+        } message: {
+            Text("Every running turn is cancelled.")
+        }
+    }
+
+    private var waiting: Int {
+        store.state.approvals.count + store.memory.suggestions.count
+    }
+
+    private func link(_ route: MarbleSettingsRoute) -> some View {
+        NavigationLink(value: route) {
+            Label(route.title, systemImage: route.systemImage)
+        }
+        .accessibilityIdentifier("settings.\(route.rawValue)")
+    }
+}
+
+/// The host this iPhone talks to, how the connection is, and how to leave it.
+struct ConnectionSettingsView: View {
     @EnvironmentObject private var store: MarbleStore
     @State private var showsChangeHost = false
 
@@ -11,29 +140,72 @@ struct SettingsView: View {
             Section {
                 LabeledContent("Host", value: store.endpoint?.displayHost ?? "not connected")
                 LabeledContent("Status", value: store.statusLabel)
+                Button("Reconnect now") { store.reconnect(force: true) }
+            }
+            Section {
                 Button("Change host…") { showsChangeHost = true }
                 Button("Sign out", role: .destructive) { store.signOut() }
-            } header: {
-                Text("Connection")
             } footer: {
                 Text("Signing out forgets this host and token on this iPhone.")
             }
+        }
+        .navigationTitle("Connection")
+        .sheet(isPresented: $showsChangeHost) {
+            NavigationStack { ChangeHostView() }
+        }
+    }
+}
 
-            Section(header: Text("Assistant")) {
-                NavigationLink("Model") { ModelSettingsView() }
-                NavigationLink("Permissions") { PermissionsView() }
-                NavigationLink("Memory") { MemoryView() }
-            }
-
+/// Which model answers, what Marble may do, and what it remembers.
+struct MarblesModelsSettingsView: View {
+    var body: some View {
+        List {
             Section {
-                Toggle("Alerts on this iPhone", isOn: alertsBinding)
-                Toggle("Read replies aloud", isOn: voiceBinding)
-            } header: {
-                Text("On this iPhone")
+                NavigationLink { ModelSettingsView() } label: { Label("Model", systemImage: "cpu") }
+                NavigationLink { PermissionsView() } label: { Label("Permissions", systemImage: "hand.raised") }
+                NavigationLink { MemoryView() } label: { Label("Memory", systemImage: "brain") }
+                NavigationLink { WhatMarbleCanUseView() } label: {
+                    Label("What Marble can use", systemImage: "wrench.and.screwdriver")
+                }
+            } footer: {
+                Text("Each Marble's own personality and look are in the Marbles tab.")
+            }
+        }
+        .navigationTitle("Marbles and models")
+    }
+}
+
+/// Alerts and spoken replies on this iPhone.
+struct NotificationSettingsView: View {
+    @EnvironmentObject private var store: MarbleStore
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Alerts on this iPhone", isOn: Binding(
+                    get: { store.localNotificationsEnabled },
+                    set: { store.localNotificationsEnabled = $0 }
+                ))
+                Toggle("Read replies aloud", isOn: Binding(
+                    get: { store.voice.enabled },
+                    set: { _ in Task { await store.toggleVoice() } }
+                ))
             } footer: {
                 Text("Alerts only arrive while Marble is open or recently used — remote push isn't available with this signing.")
             }
+        }
+        .navigationTitle("Notifications")
+    }
+}
 
+/// Export and clearing.
+struct DataSettingsView: View {
+    @EnvironmentObject private var store: MarbleStore
+    @State private var confirmClearEveryone = false
+    @State private var exportURL: URL?
+
+    var body: some View {
+        Form {
             Section {
                 Button("Export all chats") {
                     Task { exportURL = await store.exportFile() }
@@ -43,52 +215,40 @@ struct SettingsView: View {
                         Label("Share \(exportURL.lastPathComponent)", systemImage: "square.and.arrow.up")
                     }
                 }
+            }
+            Section {
                 Button("Clear the Everyone chat", role: .destructive) {
                     confirmClearEveryone = true
                 }
-            } header: {
-                Text("Data")
             } footer: {
                 Text("Clearing Everyone erases what was said there, including Marbles' replies; one-to-one chats are untouched.")
             }
-            .confirmationDialog(
-                "Clear the Everyone chat?",
-                isPresented: $confirmClearEveryone,
-                titleVisibility: .visible
-            ) {
-                Button("Clear Everyone", role: .destructive) {
-                    Task { await store.clearEveryone() }
-                }
-            } message: {
-                Text("Everything in the shared chat is erased. Other chats stay.")
+        }
+        .navigationTitle("Chats and data")
+        .confirmationDialog(
+            "Clear the Everyone chat?",
+            isPresented: $confirmClearEveryone,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Everyone", role: .destructive) {
+                Task { await store.clearEveryone() }
             }
+        } message: {
+            Text("Everything in the shared chat is erased. Other chats stay.")
+        }
+    }
+}
 
-            Section(header: Text("About")) {
+/// This app's version and the host's facts.
+struct AboutSettingsView: View {
+    var body: some View {
+        List {
+            Section {
                 LabeledContent("Version") { Text(versionLabel) }
                 NavigationLink("About this host") { AboutHostView() }
             }
         }
-        .navigationTitle("Settings")
-        .sheet(isPresented: $showsChangeHost) {
-            NavigationStack { ChangeHostView() }
-        }
-    }
-
-    @State private var confirmClearEveryone = false
-    @State private var exportURL: URL?
-
-    private var alertsBinding: Binding<Bool> {
-        Binding(
-            get: { store.localNotificationsEnabled },
-            set: { store.localNotificationsEnabled = $0 }
-        )
-    }
-
-    private var voiceBinding: Binding<Bool> {
-        Binding(
-            get: { store.voice.enabled },
-            set: { _ in Task { await store.toggleVoice() } }
-        )
+        .navigationTitle("About")
     }
 
     private var versionLabel: String {

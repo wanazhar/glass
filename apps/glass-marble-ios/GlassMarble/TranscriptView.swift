@@ -52,8 +52,7 @@ struct TranscriptView: View {
                         && store.liveText.isEmpty
                         && store.liveReasoning.isEmpty
                         && store.liveTools.isEmpty {
-                        MarbleWorkingDots()
-                            .padding(.leading, 2)
+                        MarbleThinkingBubble()
                     }
                     if !store.liveText.isEmpty {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
@@ -95,6 +94,7 @@ struct TranscriptView: View {
                 // First appearance jumps straight to the end, no animation.
                 if follow.initialFollow(now: now()) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
             }
+            .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: follow.following)
             .overlay(alignment: .bottomTrailing) {
                 if follow.showJumpButton {
                     Button {
@@ -155,16 +155,17 @@ struct TranscriptView: View {
     /// fast as the throttle allows — streaming must never fight their scroll.
     private func scrollIfFollowing(_ proxy: ScrollViewProxy) {
         guard follow.shouldFollow(now: now()) else { return }
-        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+        DispatchQueue.main.async { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
     }
 }
 
-/// One transcript entry: assistant replies read as plain full-width text on
-/// the background; the person's own messages sit in a quiet bubble.
+/// One transcript entry. The person's own messages sit in a blue bubble on
+/// the right; replies read as full-width Markdown under a clear speaker line
+/// with the marble's avatar and name in its colour.
 struct MarbleEntryView: View {
     var entry: MarbleEntry
-    /// Who said it, when the row is on a shared timeline — a coloured dot and
-    /// the marble's name. Nil on one-to-one chats, which need no label.
+    /// Who said it, when the row is on a shared timeline. Nil on one-to-one
+    /// chats, which need no label.
     var speaker: MarbleSpeakerStyle? = nil
 
     private var isUser: Bool { entry.kind == "user" }
@@ -174,13 +175,15 @@ struct MarbleEntryView: View {
         if isUser {
             Text(entry.text)
                 .font(.body)
+                .foregroundStyle(.white)
                 .textSelection(.enabled)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 13)
                 .padding(.vertical, 8)
                 .background(
-                    Color(.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    Color.accentColor,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                 )
+                .padding(.leading, 48)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if entry.kind == "handoff", let handoff = entry.handoff {
             HandoffLine(handoff: handoff)
@@ -195,28 +198,28 @@ struct MarbleEntryView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+        } else if isMuted {
+            Text(entry.text)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .multilineTextAlignment(.center)
         } else {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 if let speaker {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(Color(hue: Double(speaker.hue ?? 210) / 360, saturation: 0.55, brightness: 0.75))
-                            .frame(width: 7, height: 7)
+                    HStack(spacing: 7) {
+                        MarbleAvatar(glyph: speaker.glyph, hue: speaker.hue ?? MarbleSpeakerStyle.defaultHue, size: 20)
                         Text(speaker.name)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(MarbleTheme.marble(hue: speaker.hue))
                     }
-                } else if isMuted {
-                    Text(entry.kind)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(speaker.name) said")
                 }
-                Text(entry.text)
-                    .font(isMuted ? .footnote : .body)
-                    .foregroundStyle(isMuted ? .secondary : .primary)
+                MarbleMarkdownView(text: entry.text)
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -229,7 +232,7 @@ struct MarbleToolRow: View {
             Image(systemName: tool.isError ? "exclamationmark.triangle" : "wrench.and.screwdriver")
                 .font(.caption)
                 .foregroundStyle(tool.isError ? .red : .secondary)
-            Text(tool.name)
+            Text(MarbleDecisionWords.action(tool: tool.name))
                 .font(.caption.weight(.semibold))
             Text(tool.summary)
                 .font(.caption)
@@ -239,12 +242,15 @@ struct MarbleToolRow: View {
     }
 }
 
-/// The composer floats above the transcript — the one place real glass
-/// belongs in this app.
+/// The message box: grows with the text up to six lines, then scrolls
+/// inside. Return adds a line; the arrow sends. While the keyboard is up a
+/// button beside the box hides it.
 struct ComposerBar: View {
     @Binding var draft: String
     var isWorking: Bool
     var isDictating: Bool = false
+    var placeholder: String = "Message"
+    var workingPlaceholder: String = "Add to what Marble is doing"
     var onSend: () -> Void
     /// Correct the running turn instead of starting a new one.
     var onSteer: () -> Void = {}
@@ -253,55 +259,64 @@ struct ComposerBar: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            if let onDictate {
+        HStack(alignment: .bottom, spacing: 8) {
+            if focused {
+                Button { focused = false } label: {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 38)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Hide keyboard")
+            } else if let onDictate {
                 Button(action: onDictate) {
                     Image(systemName: isDictating ? "waveform" : "mic")
-                        .imageScale(.medium)
+                        .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(isDictating ? .red : .secondary)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 36, height: 38)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
             }
 
             TextField(
-                isWorking
-                    ? "Correct Marble while it works…"
-                    : "Ask Marble to work in this workspace…",
+                isWorking ? workingPlaceholder : placeholder,
                 text: $draft,
                 axis: .vertical
             )
             .lineLimit(1...6)
             .focused($focused)
-            .submitLabel(.send)
-            .onSubmit(onSend)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
             .background(
-                Color(.secondarySystemBackground),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                Color(.systemBackground),
+                in: RoundedRectangle(cornerRadius: 19, style: .continuous)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 19, style: .continuous)
                     .strokeBorder(Color(.separator), lineWidth: 0.5)
             )
+            .accessibilityIdentifier("composer.field")
 
-            Button(action: isWorking ? onSteer : onSend) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(trimmed.isEmpty ? .secondary : MarbleTheme.tint)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+            if !trimmed.isEmpty || !isWorking {
+                Button(action: isWorking ? onSteer : onSend) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, trimmed.isEmpty ? Color(.systemGray3) : Color.accentColor)
+                        .frame(width: 38, height: 38)
+                        .contentShape(Rectangle())
+                }
+                .disabled(trimmed.isEmpty)
+                .accessibilityLabel(isWorking ? "Steer" : "Send")
             }
-            .disabled(trimmed.isEmpty)
-            .accessibilityLabel(isWorking ? "Steer" : "Send")
             if isWorking {
                 Button(action: onStop) {
                     Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 30))
+                        .font(.system(size: 32))
                         .foregroundStyle(.red)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 38, height: 38)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Stop")
@@ -316,6 +331,30 @@ struct ComposerBar: View {
     }
 }
 
+extension View {
+    /// A solid bar behind the composer so messages never show through it,
+    /// reaching down under the home indicator and the keyboard.
+    func marbleComposerBackground() -> some View {
+        background {
+            Rectangle()
+                .fill(.bar)
+                .overlay(alignment: .top) { Divider() }
+                .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    /// Keep the newest message in view when the keyboard opens, as long as
+    /// the person was reading the end of the chat.
+    func marbleKeepsLatestVisible(proxy: ScrollViewProxy, anchor: String, following: Bool) -> some View {
+        onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            guard following else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(anchor, anchor: .bottom)
+            }
+        }
+    }
+}
+
 /// A governed call asking for a decision, rendered as a grouped inset block.
 struct ApprovalCard: View {
     var approval: MarbleApproval
@@ -324,7 +363,7 @@ struct ApprovalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(approval.tool)
+            Text(MarbleDecisionWords.action(tool: approval.tool))
                 .font(.headline)
             Text(approval.argumentsSummary)
                 .font(.caption.monospaced())

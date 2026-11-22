@@ -32,7 +32,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testEveryTabIsReachable() {
-        for tab in ["Marbles", "Activity", "Scheduled", "Settings"] {
+        for tab in ["Marbles", "Settings"] {
             app.tabBars.buttons[tab].tap()
             XCTAssertTrue(app.tabBars.buttons[tab].isSelected, "\(tab) tab did not select")
             shot("02-tab-" + tab.lowercased())
@@ -40,12 +40,15 @@ final class GlassMarbleUITests: XCTestCase {
         app.tabBars.buttons["Everyone"].tap()
         // And the detail screens under Settings.
         app.tabBars.buttons["Settings"].tap()
+        app.buttons["settings.marbles"].tap()
         app.buttons["Permissions"].tap()
         shot("03-settings-permissions")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["Memory"].tap()
         shot("04-settings-memory")
         app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["settings.about"].tap()
         app.buttons["About this host"].tap()
         shot("05-settings-about")
         app.buttons["What Marble can use"].tap()
@@ -53,10 +56,12 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testActivityAndScheduledScreens() {
-        app.tabBars.buttons["Activity"].tap()
+        app.tabBars.buttons["Settings"].tap()
+        app.buttons["settings.activity"].tap()
         XCTAssertTrue(app.staticTexts["Needs you"].waitForExistence(timeout: 5))
         shot("12-activity-items")
-        app.tabBars.buttons["Scheduled"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["settings.scheduled"].tap()
         XCTAssertTrue(app.staticTexts["Morning check"].waitForExistence(timeout: 5))
         shot("13-scheduled-list")
         app.buttons["Add schedule"].tap()

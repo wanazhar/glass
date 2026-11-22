@@ -38,25 +38,26 @@ struct MarbleRootView: View {
     var body: some View {
         Group {
             if store.onboarded && !store.needsToken {
+                // Three tabs, icons only; each keeps its spoken name for
+                // VoiceOver and UI tests. Activity and Scheduled live in Settings.
                 TabView(selection: tabBinding) {
-                    Tab("Everyone", systemImage: "person.2", value: MarbleTab.everyone) {
+                    Tab(value: MarbleTab.everyone) {
                         EveryoneTabView()
+                    } label: {
+                        MarbleTabIcon(title: "Everyone", systemImage: "bubble.left.and.bubble.right")
                     }
-                    Tab("Marbles", systemImage: "circle.hexagongrid", value: MarbleTab.marbles) {
+                    Tab(value: MarbleTab.marbles) {
                         MarblesTabView()
+                    } label: {
+                        MarbleTabIcon(title: "Marbles", systemImage: "circle.hexagongrid")
                     }
-                    Tab("Activity", systemImage: "bell.badge", value: MarbleTab.activity) {
-                        NavigationStack { ActivityView() }
+                    Tab(value: MarbleTab.settings) {
+                        NavigationStack { SettingsView() }
+                    } label: {
+                        MarbleTabIcon(title: "Settings", systemImage: "gearshape")
                     }
                     .badge(store.state.approvals.count + store.memory.suggestions.count)
-                    Tab("Scheduled", systemImage: "clock.arrow.circlepath", value: MarbleTab.scheduled) {
-                        NavigationStack { ScheduledView() }
-                    }
-                    Tab("Settings", systemImage: "gear", value: MarbleTab.settings) {
-                        NavigationStack { SettingsView() }
-                    }
                 }
-                .tabViewStyle(.sidebarAdaptable)
             } else {
                 // No usable host yet: onboarding is the whole screen, never an
                 // empty product UI pretending it is connected.
@@ -100,6 +101,16 @@ struct MarbleRootView: View {
                 storedTab = newTab.rawValue
             }
         )
+    }
+}
+
+private struct MarbleTabIcon: View {
+    var title: String
+    var systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .accessibilityLabel(Text(title))
     }
 }
 
@@ -187,18 +198,12 @@ struct MarbleChatView: View {
         conversationId.flatMap { store.state.conversation($0) }?.title ?? ""
     }
 
-    private var statusText: String { store.statusLabel }
-
-    private var statusTone: Color {
-        store.connection == .live ? .green : (store.connection == .offline ? .red : .secondary)
-    }
-
     var body: some View {
         TranscriptView()
         .safeAreaInset(edge: .top) {
             approvalRail
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             ComposerBar(
                 draft: $draft,
                 isWorking: store.isWorking,
@@ -208,6 +213,7 @@ struct MarbleChatView: View {
                 onStop: { Task { await store.cancelActiveTask() } },
                 onDictate: { dictation.toggle() }
             )
+            .marbleComposerBackground()
         }
         .onAppear { store.selectedConversationId = conversationId }
         .onDisappear {
@@ -222,13 +228,7 @@ struct MarbleChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
-                    Text(conversationId.flatMap { store.state.conversation($0) }?.title ?? "Marble")
-                        .font(.headline)
-                        .lineLimit(1)
-                    MarbleStatusText(label: statusText, tone: statusTone)
-                        .fixedSize()
-                }
+                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.title ?? "Marble")
             }
             if conversationId != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -318,6 +318,7 @@ struct MarbleChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             }
+            .background(.bar)
         }
     }
 

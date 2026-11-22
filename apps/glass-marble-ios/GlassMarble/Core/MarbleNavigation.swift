@@ -8,7 +8,9 @@ public enum MarbleTab: String, Sendable, CaseIterable {
     /// The shared chat where every marble can answer; launch lands here.
     case everyone
     /// The roster: every marble, its chat, and its info.
-    case marbles, activity, scheduled, settings
+    case marbles
+    /// Connection, Marbles and models, Activity, Scheduled, and the rest.
+    case settings
 }
 
 /// One destination inside a tab's own NavigationStack. The Marbles stack

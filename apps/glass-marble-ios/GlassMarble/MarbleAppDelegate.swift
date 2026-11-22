@@ -109,7 +109,7 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = controller
-        window.tintColor = UIColor(red: 0.43, green: 0.66, blue: 0.95, alpha: 1)
+        window.tintColor = .systemBlue
         window.makeKeyAndVisible()
         self.window = window
     }

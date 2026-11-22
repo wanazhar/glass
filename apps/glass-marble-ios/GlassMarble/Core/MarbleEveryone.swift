@@ -101,6 +101,21 @@ enum MarbleHandoffLine {
         }
     }
 
+    /// The quiet row's two parts: who did what, then the instruction or
+    /// the reply it brought back.
+    static func title(_ handoff: MarbleHandoff) -> String {
+        switch handoff.status {
+        case "asked": "\(handoff.fromName) asked \(handoff.toName)"
+        case "finished": "\(handoff.toName) replied to \(handoff.fromName)"
+        case "refused": "\(handoff.toName) couldn't take it"
+        default: "\(handoff.toName) couldn't finish"
+        }
+    }
+
+    static func detail(_ handoff: MarbleHandoff) -> String {
+        handoff.status == "asked" ? handoff.instruction : handoff.summary
+    }
+
     /// A finished ask expands to the whole reply it brought back.
     static func isExpandable(_ handoff: MarbleHandoff) -> Bool {
         handoff.status == "finished" && !handoff.summary.isEmpty
@@ -111,12 +126,15 @@ enum MarbleHandoffLine {
 struct MarbleSpeakerStyle: Equatable, Sendable {
     var name: String
     var hue: Int?
+    /// The marble's avatar shape, when the roster knows it.
+    var glyph: String = "circle"
     /// The default assistant's dot, matching its roster hue.
     static let defaultHue = 210
 
-    init(name: String, hue: Int?) {
+    init(name: String, hue: Int?, glyph: String = "circle") {
         self.name = name
         self.hue = hue
+        self.glyph = glyph
     }
 
     /// Resolve a transcript row's speaker against the roster.
@@ -130,7 +148,8 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
         if let marble = marbles.first(where: { $0.id == entry.speaker }) {
             return MarbleSpeakerStyle(
                 name: entry.speakerName.isEmpty ? marble.name : entry.speakerName,
-                hue: marble.hue
+                hue: marble.hue,
+                glyph: marble.glyph
             )
         }
         return MarbleSpeakerStyle(
@@ -142,6 +161,22 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
 
 /// How a host `everyone` event changes a fetched Everyone timeline.
 enum MarbleEveryoneTimeline {
+    /// Who the thinking bubbles are for: named marbles the host reports as
+    /// working, plus the default Marble while a turn this iPhone sent to
+    /// Everyone is still running (the roster keeps it idle for those).
+    static func thinking(
+        working: [String],
+        sentTaskIds: Set<String>,
+        runningTaskIds: Set<String>,
+        defaultName: String
+    ) -> [String] {
+        var names = working
+        if !sentTaskIds.isDisjoint(with: runningTaskIds), !names.contains(defaultName) {
+            names.insert(defaultName, at: 0)
+        }
+        return names
+    }
+
     /// Whether the event says the shared timeline changed, so a fetched copy
     /// is stale and should be fetched again.
     static func isChange(_ event: MarbleEvent) -> Bool {

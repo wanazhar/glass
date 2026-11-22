@@ -284,10 +284,10 @@ final class MarbleStore: ObservableObject {
     /// Reconnect right now: scene became active or the network path changed.
     /// Coalesced — a foregrounding, a path callback, and a retry can all land
     /// within a second of each other, and only one attempt should run.
-    func reconnect() {
+    func reconnect(force: Bool = false) {
         guard onboarded, !reconnectInFlight else { return }
         let now = Date().timeIntervalSinceReferenceDate
-        guard now - lastReconnectAt >= 1 else { return }
+        guard force || now - lastReconnectAt >= 1 else { return }
         lastReconnectAt = now
         reconnectInFlight = true
         status.reconnectStarted()
@@ -347,6 +347,8 @@ final class MarbleStore: ObservableObject {
             let snapshot = try await client.state()
             guard hostGeneration.isCurrent(generation) else { return }
             state = snapshot
+            let finished = Set(snapshot.tasks.filter { !$0.isRunning && $0.status != "queued" }.map(\.id))
+            if !everyoneTaskIds.isDisjoint(with: finished) { everyoneTaskIds.subtract(finished) }
             needsToken = false
             errorMessage = nil
             status.refreshSucceeded()
@@ -394,6 +396,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func resetChats() {
+        everyoneTaskIds = []
         everyoneTimeline = []
         marbleTranscripts = [:]
         chatsRevision = -1
@@ -575,6 +578,32 @@ final class MarbleStore: ObservableObject {
         await updateMarble(marble.id, update: .init(persona: persona))
     }
 
+    /// Marbles working on something right now, for the thinking bubble.
+    var workingMarbles: [MarblePrismMarble] {
+        prism.marbles.filter(\.isWorking)
+    }
+
+    /// Default-Marble turns this iPhone started from Everyone.
+    @Published private(set) var everyoneTaskIds: Set<String> = []
+
+    /// Names to show a thinking bubble for under the Everyone timeline.
+    var everyoneThinking: [String] {
+        let runningTasks = state.tasks.filter { $0.isRunning || $0.status == "queued" }
+        let running = Set(runningTasks.map(\.id))
+        // After a relaunch the sent ids are gone; a running turn whose prompt
+        // is a message said in Everyone is still that message's answer.
+        let said = Set(everyoneEntries.filter { $0.kind == "user" }.map(\.text))
+        let answering = runningTasks.filter { said.contains($0.prompt) }.map(\.id)
+        let defaultName = prism.marbles.first(where: \.isDefault)?.name ?? "Marble"
+        return MarbleEveryoneTimeline.thinking(
+            working: workingMarbles.filter { !$0.isDefault }.map(\.name)
+                + workingMarbles.filter(\.isDefault).map(\.name),
+            sentTaskIds: everyoneTaskIds.union(answering),
+            runningTaskIds: running,
+            defaultName: defaultName
+        )
+    }
+
     /// The shared plane's timeline, as last fetched from the host.
     var everyoneEntries: [MarbleEntry] {
         everyoneTimeline.isEmpty ? state.transcript(for: everyoneConversationId) : everyoneTimeline
@@ -598,6 +627,7 @@ final class MarbleStore: ObservableObject {
         guard let client, !trimmed.isEmpty else { return nil }
         do {
             let reply = try await client.sendEveryone(text: trimmed)
+            if let taskId = reply.taskId, !taskId.isEmpty { everyoneTaskIds.insert(taskId) }
             errorMessage = nil
             Task { await refresh() }
             return reply

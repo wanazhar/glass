@@ -3924,6 +3924,21 @@ pub(crate) fn wait_timeout(condition: &str, deadline: Duration, last_state: &str
 impl Locator {
     pub fn parse(value: &str) -> BrowserResult<Self> {
         let value = value.trim().trim_matches('"');
+        if let Some(encoded) = value.strip_prefix("role64=") {
+            use base64::Engine;
+            let (role, name) = encoded
+                .split_once(";name64=")
+                .ok_or("invalid encoded role/name locator")?;
+            let decode = |text: &str| -> BrowserResult<String> {
+                let text =
+                    String::from_utf8(base64::engine::general_purpose::STANDARD.decode(text)?)?;
+                nonempty_locator(&text, "encoded role/name")
+            };
+            return Ok(Self::RoleAndName {
+                role: decode(role)?,
+                name: decode(name)?,
+            });
+        }
         if parse_revisioned_reference(value)?.is_some() {
             return Ok(Self::Reference(value.to_string()));
         }

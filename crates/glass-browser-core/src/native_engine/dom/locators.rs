@@ -4,6 +4,10 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) enum NativeLocator<'a> {
+    EncodedRole {
+        role: String,
+        name: String,
+    },
     Reference {
         revision: u64,
         index: u32,
@@ -31,6 +35,25 @@ pub(super) fn parse_locator(locator: &str) -> Result<NativeLocator<'_>, NativeEn
             MAX_LOCATOR_BYTES,
             locator.len(),
         ));
+    }
+    if let Some(encoded) = locator.strip_prefix("role64=") {
+        use base64::Engine;
+        let invalid =
+            || NativeEngineError::invalid("action locator", "invalid encoded role/name locator");
+        let (role, name) = encoded.split_once(";name64=").ok_or_else(invalid)?;
+        let decode = |value| {
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .map_err(|_| invalid())?,
+            )
+            .map_err(|_| invalid())
+        };
+        let (role, name) = (decode(role)?, decode(name)?);
+        if !SUPPORTED_ROLES.contains(&role.as_str()) || name.is_empty() {
+            return Err(invalid());
+        }
+        return Ok(NativeLocator::EncodedRole { role, name });
     }
     if let Some(value) = locator.strip_prefix("ref=") {
         let Some(value) = value.strip_prefix('r') else {
@@ -71,6 +94,18 @@ pub(super) fn parse_locator(locator: &str) -> Result<NativeLocator<'_>, NativeEn
             .ok_or_else(|| NativeEngineError::invalid("action locator", "id must not be empty"));
     }
     if let Some(value) = locator.strip_prefix("role=") {
+        if let Some((role, name)) = value.split_once(";name=") {
+            if !SUPPORTED_ROLES.contains(&role) || name.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "action locator",
+                    "invalid role/name locator",
+                ));
+            }
+            return Ok(NativeLocator::Role {
+                role,
+                name: Some(name),
+            });
+        }
         if let Some((role, name)) = value.split_once("[name=") {
             if !name.ends_with(']') || name.len() == 1 || role.is_empty() {
                 return Err(NativeEngineError::invalid(

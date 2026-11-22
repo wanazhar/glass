@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn encoded_role_locators_preserve_delimiters_and_reject_invalid_encodings() {
+    use base64::Engine;
+    let document = NativeDocument::parse(
+        "<button id='intended'>Save; name=other | export</button><button id='other'>other</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let encode = |value: &str| base64::engine::general_purpose::STANDARD.encode(value);
+    let locator = format!(
+        "role64={};name64={}",
+        encode("button"),
+        encode("Save; name=other | export")
+    );
+    assert_eq!(
+        document.resolve_target(&locator),
+        document.resolve_target("id=intended")
+    );
+    assert_eq!(
+        document.resolve_target("role=button;name=other"),
+        document.resolve_target("id=other")
+    );
+    for invalid in [
+        "role64=!!!;name64=!!!",
+        "role64=YnV0dG9u",
+        "role64=YnV0dG9u;name64=",
+    ] {
+        assert!(document.resolve_target(invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
 fn fragment_target_uses_unique_legacy_name_after_id_precedence() {
     let document = NativeDocument::parse(
             "<a name='legacy'>Legacy</a><a name='café'>UTF-8 legacy</a><div name='not-anchor'>Not an anchor</div><div id='same'>ID wins</div><a name='same'>Name loses</a><a name='duplicate'>One</a><a name='duplicate'>Two</a><p id='duplicate-id'>ID target</p>",

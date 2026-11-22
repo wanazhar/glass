@@ -1589,6 +1589,9 @@ impl NativeDocument {
             NativeLocator::Id(value) => {
                 self.unique_element_matches(|node| node.attribute("id") == Some(value))
             }
+            NativeLocator::EncodedRole { role, name } => {
+                self.unique_semantic_matches(|node| node.role == role && node.name == name)
+            }
             NativeLocator::Role { role, name } => self.unique_semantic_matches(|node| {
                 node.role == role && name.is_none_or(|expected| node.name == expected)
             }),

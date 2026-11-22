@@ -74,7 +74,7 @@ mod tests {
         assert_eq!(inspection.screenshot(), "screenshot-png");
 
         let tree = inspection.element_tree();
-        let expected = serde_json::to_value(&vec![WebUiElement {
+        let expected = serde_json::to_value(vec![WebUiElement {
             node_id: WebUiElement::stable_node_id(0),
             role: "button".to_string(),
             name: Some("Send".to_string()),

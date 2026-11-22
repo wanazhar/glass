@@ -12,6 +12,7 @@ struct PtySession {
     master: fs::File,
     child: Child,
     output: Vec<u8>,
+    cursor: usize,
     root: std::path::PathBuf,
     data_dir: std::path::PathBuf,
 }
@@ -103,6 +104,7 @@ impl PtySession {
             master,
             child,
             output: Vec::new(),
+            cursor: 0,
             root,
             data_dir: data.join("glass-core"),
         };
@@ -116,10 +118,11 @@ impl PtySession {
     }
 
     fn wait_for(&mut self, needle: &str, timeout: Duration) -> usize {
-        let start = self.output.len();
+        let start = self.cursor;
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if String::from_utf8_lossy(&self.output[start..]).contains(needle) {
+            if let Some(at) = String::from_utf8_lossy(&self.output[start..]).find(needle) {
+                self.cursor = start + at + needle.len();
                 return start;
             }
             let mut fd = libc::pollfd {
@@ -148,6 +151,11 @@ impl PtySession {
             "PTY did not display {needle:?}; output tail: {}",
             String::from_utf8_lossy(&self.output[self.output.len().saturating_sub(3000)..])
         );
+        self.cursor = start
+            + String::from_utf8_lossy(&self.output[start..])
+                .find(needle)
+                .unwrap()
+            + needle.len();
         start
     }
 

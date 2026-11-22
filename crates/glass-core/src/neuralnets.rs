@@ -114,7 +114,15 @@ fn load(path: &Path) -> Result<Store, String> {
     }
     Ok(store)
 }
-fn lock(path: &Path) -> Result<std::fs::File, String> {
+struct WriterLock(std::fs::File);
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn lock(path: &Path) -> Result<WriterLock, String> {
     std::fs::create_dir_all(path.parent().ok_or("Missing neuralnets directory")?)
         .map_err(|e| e.to_string())?;
     use std::os::unix::fs::OpenOptionsExt;
@@ -130,7 +138,7 @@ fn lock(path: &Path) -> Result<std::fs::File, String> {
         return Err("Invalid neuralnets lock".into());
     }
     fs2::FileExt::try_lock_exclusive(&file).map_err(|_| "Neuralnets is being updated; retry")?;
-    Ok(file)
+    Ok(WriterLock(file))
 }
 fn save(path: &Path, store: &mut Store) -> Result<(), String> {
     store.revision = store.revision.checked_add(1).ok_or("Revision exhausted")?;
@@ -751,6 +759,48 @@ fn view_facts(keys: &crate::input::KeyReader, root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn releasing_writer_unlocks_while_another_thread_spawns_a_child() {
+        use std::io::{Read, Write};
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+
+        fn available_after_drop<T>(guard: T, path: &Path) -> bool {
+            let (mut parent, child) = std::os::unix::net::UnixStream::pair().unwrap();
+            let fd = child.as_raw_fd();
+            let spawn = std::thread::spawn(move || {
+                let mut command = std::process::Command::new("/bin/true");
+                // SAFETY: only async-signal-safe read/write calls run before exec.
+                unsafe {
+                    command.pre_exec(move || {
+                        let mut byte = 1u8;
+                        if libc::write(fd, (&byte as *const u8).cast(), 1) != 1
+                            || libc::read(fd, (&mut byte as *mut u8).cast(), 1) != 1
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                command.spawn().unwrap().wait().unwrap()
+            });
+            parent.read_exact(&mut [0]).unwrap();
+            drop(guard);
+            let available = super::lock(path).is_ok();
+            parent.write_all(&[1]).unwrap();
+            assert!(spawn.join().unwrap().success());
+            available
+        }
+
+        let root = std::env::temp_dir().join(format!("gc-neuralnets-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("memory.json");
+        let raw = std::fs::File::create(path.with_extension("lock")).unwrap();
+        fs2::FileExt::try_lock_exclusive(&raw).unwrap();
+        assert!(!available_after_drop(raw, &path));
+        assert!(available_after_drop(super::lock(&path).unwrap(), &path));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn memory_page_count_conversion_does_not_wrap_or_overflow() {

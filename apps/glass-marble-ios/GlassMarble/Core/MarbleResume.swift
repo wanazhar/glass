@@ -70,8 +70,9 @@ enum MarbleHistoryWindow {
     /// Keep previously loaded rows only when they join the latest page.
     /// The newest page owns overlapping rows, including in-place settlements.
     static func refreshing(_ entries: [MarbleEntry], before: String?,
-                           with latest: [MarbleEntry], nextBefore: String?) -> ([MarbleEntry], String?) {
-        guard nextBefore != nil, let first = latest.first,
+                           with latest: [MarbleEntry], nextBefore: String?,
+                           invalidated: Bool = false) -> ([MarbleEntry], String?) {
+        guard !invalidated, nextBefore != nil, let first = latest.first,
               let overlap = entries.firstIndex(where: { $0.id == first.id }) else {
             return (latest, nextBefore)
         }

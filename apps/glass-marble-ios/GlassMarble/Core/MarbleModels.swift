@@ -568,10 +568,12 @@ struct MarbleEventData: Decodable, Equatable {
     var failure: MarbleFailureInfo? = nil
     /// On an `everyone` event, how many entries a clear removed.
     var cleared: Int? = nil
+    /// Conversation ID on a successful deletion event.
+    var deleted: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case thread, text, tool, name, callId, arguments, isError, message, status, revision
-        case taskId, reason, cancelled, requestId, approved, cleared, sender, failure
+        case taskId, reason, cancelled, requestId, approved, cleared, deleted, sender, failure
         case threadId = "thread_id"
         case entryId = "id"
         case toolEntryId = "entry_id"

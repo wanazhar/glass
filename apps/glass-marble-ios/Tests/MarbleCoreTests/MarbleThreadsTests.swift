@@ -105,4 +105,25 @@ final class MarbleThreadsTests: XCTestCase {
         XCTAssertEqual(cached.count, 50)
         XCTAssertEqual(cursor, "row-10")
     }
+
+    func testEveryoneDeletionInvalidatesAnOverlappingOlderPage() throws {
+        let event = try JSONDecoder().decode(MarbleEvent.self, from: Data(
+            #"{"sequence":2,"conversationId":"","taskId":"","kind":"conversation","data":{"deleted":"removed-chat"}}"#.utf8
+        ))
+        XCTAssertEqual(event.data.deleted, "removed-chat")
+        func entry(_ id: String, task: String) -> MarbleEntry {
+            var row = MarbleEntry(conversationId: "everyone", kind: "assistant", text: id, taskId: task, at: 0)
+            row.serverID = id
+            return row
+        }
+        let deleted = entry("old-mirror", task: "removed-turn")
+        let first = entry("retained", task: "retained-turn")
+        let latest = entry("latest", task: "new-turn")
+        let (rows, cursor) = MarbleHistoryWindow.refreshing(
+            [deleted, first], before: deleted.id, with: [first, latest],
+            nextBefore: first.id, invalidated: event.data.deleted != nil
+        )
+        XCTAssertEqual(rows, [first, latest])
+        XCTAssertEqual(cursor, first.id)
+    }
 }

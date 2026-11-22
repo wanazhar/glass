@@ -110,6 +110,19 @@ final class FixtureDecodeTests: XCTestCase {
         XCTAssertEqual(health.version, "0.3.14")
         XCTAssertEqual(health.authRequired, true)
         XCTAssertEqual(health.runtime?.health, "ok")
+        XCTAssertNil(health.build)
+    }
+
+    func testHealthzDecodesBuildIdentityWhenEngineIsUnavailable() throws {
+        let data = Data("""
+        {"ok":false,"version":"0.3.14","revision":1,"sequence":2,"authRequired":true,
+         "build":{"version":"0.3.14","gitCommit":"6e211232b75e6e9accf4050f7baaedf69e0e113a","gitCommitShort":"6e211232b75e"}}
+        """.utf8)
+        let health = try JSONDecoder().decode(MarbleHealth.self, from: data)
+        XCTAssertFalse(health.ok)
+        XCTAssertEqual(health.build?.version, "0.3.14")
+        XCTAssertEqual(health.build?.gitCommit, "6e211232b75e6e9accf4050f7baaedf69e0e113a")
+        XCTAssertEqual(health.build?.gitCommitShort, "6e211232b75e")
     }
 
     func testLeanStateDecodes() throws {

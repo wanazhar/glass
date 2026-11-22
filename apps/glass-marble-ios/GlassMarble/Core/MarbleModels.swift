@@ -690,6 +690,13 @@ struct MarbleHealth: Decodable, Equatable {
     var status: String?
     var runtime: RuntimeHealth?
     var pid: Int? = nil
+    var build: Build? = nil
+
+    struct Build: Decodable, Equatable {
+        var version: String
+        var gitCommit: String
+        var gitCommitShort: String
+    }
 
     struct RuntimeHealth: Decodable, Equatable {
         var health: String

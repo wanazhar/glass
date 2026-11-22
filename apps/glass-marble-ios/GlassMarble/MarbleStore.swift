@@ -107,7 +107,7 @@ final class MarbleStore: ObservableObject {
     @Published var prismNotice: String?
     @Published var needsToken = false
     /// Reported by `/healthz` during refresh, for the About section.
-    @Published private(set) var hostVersion: String?
+    @Published private(set) var hostBuild: MarbleHealth.Build?
     @Published private(set) var engineHealth: MarbleHealth.RuntimeHealth?
 
     private var client: MarbleClient?
@@ -274,6 +274,8 @@ final class MarbleStore: ObservableObject {
     /// A new host+token that passed onboarding validation.
     func apply(_ endpoint: MarbleEndpoint) {
         stopStreaming()
+        hostBuild = nil
+        engineHealth = nil
         setConnectionPaused(false)
         self.endpoint = endpoint
         MarblePreferences.save(endpoint)
@@ -306,6 +308,8 @@ final class MarbleStore: ObservableObject {
     /// Forget host and token and return to onboarding.
     func signOut() {
         stopStreaming()
+        hostBuild = nil
+        engineHealth = nil
         setConnectionPaused(false)
         if let endpoint { Self.removeCache(for: endpoint) }
         MarblePreferences.signOut()
@@ -547,8 +551,7 @@ final class MarbleStore: ObservableObject {
             status.refreshSucceeded()
             if let health = try? await healthFetch {
                 guard hostGeneration.isCurrent(generation) else { return }
-                hostVersion = health.version
-                engineHealth = health.runtime
+                updateHostHealth(health)
             }
             guard hostGeneration.isCurrent(generation) else { return }
             // Navigation owns which chat is on screen. A refresh may only
@@ -1699,6 +1702,11 @@ final class MarbleStore: ObservableObject {
 
     // MARK: - Streaming
 
+    private func updateHostHealth(_ health: MarbleHealth) {
+        if hostBuild != health.build { hostBuild = health.build }
+        if engineHealth != health.runtime { engineHealth = health.runtime }
+    }
+
     private func listen() {
         stopStreaming()
         status.reconnectStarted()
@@ -1713,6 +1721,7 @@ final class MarbleStore: ObservableObject {
                 do {
                     let health = try await client.health(timeout: 3)
                     guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
+                    self.updateHostHealth(health)
                     if self.prepareForStream(health) {
                         delivery.hostRestarted(keepingAlive: self.backgroundConnection.isKeepingAlive)
                     }

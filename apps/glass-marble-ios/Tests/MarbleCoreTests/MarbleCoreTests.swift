@@ -1495,6 +1495,16 @@ final class MarbleDecisionWordsTests: XCTestCase {
         XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: "the observe profile allows reads only"), "Blocked: read-only mode")
     }
 
+    func testPolicyReasonsAreWordedByTheDecision() {
+        let reason = "the observe profile allows reads only"
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "allowed", reason: reason), "Allowed in read-only mode")
+        XCTAssertEqual(MarbleDecisionWords.outcome(decision: "denied", reason: reason), "Blocked: read-only mode")
+        XCTAssertEqual(
+            MarbleDecisionWords.outcome(decision: "denied", reason: "the observe profile is read-only, so glass.workspace.write cannot change the workspace"),
+            "Blocked: read-only mode"
+        )
+    }
+
     func testUnknownReasonsFallBackToTheDecision() {
         XCTAssertEqual(MarbleDecisionWords.outcome(decision: "approved", reason: "human"), "Allowed by you")
         XCTAssertEqual(MarbleDecisionWords.outcome(decision: "allowed", reason: ""), "Allowed automatically")

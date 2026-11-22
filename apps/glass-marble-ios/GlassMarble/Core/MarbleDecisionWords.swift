@@ -37,10 +37,18 @@ enum MarbleDecisionWords {
         case "asking another marble needs no approval": return "Allowed automatically"
         default: break
         }
-        if lowered.hasPrefix("grant ") { return "Allowed by a saved permission" }
-        if lowered.contains("denied path rule") { return "Blocked: off-limits folder" }
-        if lowered.contains("read-only") || lowered.contains("reads only") { return "Blocked: read-only mode" }
-        if lowered.contains("profile answers governed calls") { return "Allowed automatically" }
+        // Policy reasons describe the rule that applied, not which way it
+        // went: an observe-profile read is allowed for the same reason a
+        // write is blocked. Word them by the decision.
+        let readOnly = lowered.contains("read-only") || lowered.contains("reads only")
+        if wentAhead(decision: decision) {
+            if lowered.hasPrefix("grant ") { return "Allowed by a saved permission" }
+            if readOnly { return "Allowed in read-only mode" }
+            if lowered.contains("profile answers governed calls") { return "Allowed automatically" }
+        } else if decision == "denied" {
+            if lowered.contains("denied path rule") { return "Blocked: off-limits folder" }
+            if readOnly { return "Blocked: read-only mode" }
+        }
         switch decision {
         case "approved": return "Allowed by you"
         case "allowed": return "Allowed automatically"

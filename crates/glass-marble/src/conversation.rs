@@ -39,11 +39,15 @@ pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collabor
      retrying the same call. Keep changes legible and reversible, say what you changed, and surface \
      attribution when you act on the human's behalf.";
 
+const TOOL_GUIDANCE: &str = "Use your tools (web_search/web_fetch) whenever the user asks for current or factual information you cannot be sure of. Never say you searched or checked without actually calling the tool.";
+
 /// Session instructions for one conversation: the product posture, plus what the
 /// workspace is made of so the marble does not infer crate ownership from a file
 /// path.
 fn session_instructions(cwd: &Path) -> String {
     let mut instructions = SESSION_INSTRUCTIONS.to_string();
+    instructions.push('\n');
+    instructions.push_str(TOOL_GUIDANCE);
     if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
         instructions.push('\n');
         instructions.push_str(&briefing);
@@ -96,6 +100,68 @@ pub fn marble_session_instructions(
     instructions.push('\n');
     instructions.push_str(&session_instructions(cwd));
     instructions
+}
+
+#[derive(Default)]
+struct ToolRows {
+    rows: Vec<(String, String, String)>,
+}
+
+impl ToolRows {
+    fn observe(&mut self, event: &RuntimeEvent) -> bool {
+        if !matches!(event.kind.as_str(), "tool_start" | "tool_end") {
+            return false;
+        }
+        let data = &event.data;
+        let id = data["callId"].as_str().unwrap_or_default();
+        if id.is_empty() {
+            return false;
+        }
+        let existing = self.rows.iter().position(|row| row.0 == id);
+        let status = if event.kind == "tool_start" {
+            "running"
+        } else if data["isError"].as_bool().unwrap_or(false) {
+            "failed"
+        } else {
+            "ok"
+        };
+        let name = data["name"]
+            .as_str()
+            .or_else(|| data["tool"].as_str())
+            .unwrap_or("tool");
+        let summary = ["query", "url", "path", "command"]
+            .iter()
+            .find_map(|key| data["arguments"][*key].as_str())
+            .or_else(|| data["title"].as_str())
+            .unwrap_or_default();
+        let summary: String = summary
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(120)
+            .collect();
+        let label = if summary.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} · {summary}")
+        };
+        if let Some(index) = existing {
+            if event.kind == "tool_start" && summary.is_empty() {
+                return true;
+            }
+            let label = if event.kind == "tool_end" {
+                self.rows[index].2.clone()
+            } else {
+                label
+            };
+            self.rows[index] = (id.into(), format!("{label} · {status}"), label);
+        } else {
+            self.rows
+                .push((id.into(), format!("{label} · {status}"), label));
+        }
+        true
+    }
 }
 
 /// Cancel intent for one running durable task.
@@ -715,6 +781,7 @@ impl Conversation {
     ) -> Result<Value, MarbleError> {
         let mut auxiliary: Vec<String> = Vec::new();
         let mut cancelled = false;
+        let mut tools = ToolRows::default();
         loop {
             self.drain_steering(&mut auxiliary);
             if let Some(token) = cancel
@@ -782,6 +849,9 @@ impl Conversation {
                     )));
                 }
                 Incoming::Event(event) => {
+                    if tools.observe(&event) {
+                        self.record_tool_rows(&tools);
+                    }
                     self.note_engine_tool(&event);
                     if !matches!(event.kind.as_str(), "text" | "reasoning") {
                         self.publish(&event.kind, event.data.clone());
@@ -789,16 +859,50 @@ impl Conversation {
                     sink(&event);
                 }
                 Incoming::Tool { request_id, call } => {
-                    sink(&RuntimeEvent {
+                    let start = RuntimeEvent {
                         session_id: call.session_id.clone(),
                         turn_id: call.turn_id.clone(),
                         kind: "tool_start".into(),
                         data: value!({"callId": call.call_id, "tool": call.name, "arguments": call.arguments}),
-                    });
-                    self.handle_tool(request_id, &call, cancel)?;
+                    };
+                    tools.observe(&start);
+                    self.record_tool_rows(&tools);
+                    sink(&start);
+                    let data = self.handle_tool(request_id, &call, cancel)?;
+                    let end = RuntimeEvent {
+                        kind: "tool_end".into(),
+                        data,
+                        ..start
+                    };
+                    tools.observe(&end);
+                    self.record_tool_rows(&tools);
+                    sink(&end);
                 }
                 Incoming::Unknown(_) => {}
             }
+        }
+    }
+
+    fn record_tool_rows(&self, tools: &ToolRows) {
+        let Some(product) = &self.product else { return };
+        if self.active_task.is_empty() {
+            return;
+        }
+        let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        state.transcript.retain(|entry| {
+            entry.conversation_id != self.active_conversation
+                || entry.task_id != self.active_task
+                || entry.kind != "tool"
+        });
+        for (_, text, _) in &tools.rows {
+            state.push_transcript(crate::TranscriptEntry {
+                conversation_id: self.active_conversation.clone(),
+                task_id: self.active_task.clone(),
+                kind: "tool".into(),
+                text: text.clone(),
+                at: crate::worker::now_millis(),
+                ..Default::default()
+            });
         }
     }
 
@@ -856,7 +960,7 @@ impl Conversation {
         request_id: Value,
         call: &ToolRequest,
         cancel: Option<CancelToken<'_>>,
-    ) -> Result<(), MarbleError> {
+    ) -> Result<Value, MarbleError> {
         let key = request_id
             .as_str()
             .map(str::to_owned)
@@ -896,18 +1000,16 @@ impl Conversation {
                 (false, outcome)
             }
         };
-        self.publish(
-            "tool_end",
-            value!({
-                "requestId": key,
-                "callId": call.call_id,
-                "tool": call.name,
-                "approved": approved,
-                "isError": outcome.is_error,
-                "text": outcome.text,
-            }),
-        );
-        Ok(())
+        let data = value!({
+            "requestId": key,
+            "callId": call.call_id,
+            "tool": call.name,
+            "approved": approved,
+            "isError": outcome.is_error,
+            "text": outcome.text,
+        });
+        self.publish("tool_end", data.clone());
+        Ok(data)
     }
 
     /// Classify one governed call through marble's control layer, falling back
@@ -1162,6 +1264,37 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_rows_keep_bounded_inputs_and_native_or_host_outcomes() {
+        let mut tools = ToolRows::default();
+        let mut event = RuntimeEvent {
+            session_id: "s".into(),
+            turn_id: value!("t"),
+            kind: "text".into(),
+            data: value!({}),
+        };
+        assert!(!tools.observe(&event));
+        event.kind = "tool_start".into();
+        assert!(!tools.observe(&event));
+        event.data =
+            value!({"callId":"search", "name":"web_search", "arguments":{"query":"latest\n news"}});
+        assert!(tools.observe(&event));
+        assert_eq!(tools.rows[0].1, "web_search · latest news · running");
+        event.kind = "tool_end".into();
+        event.data = value!({"callId":"search", "isError":false});
+        tools.observe(&event);
+        assert_eq!(tools.rows[0].1, "web_search · latest news · ok");
+        event.kind = "tool_start".into();
+        event.data = value!({"callId":"read", "tool":"glass.workspace.read", "arguments":{"path":"é".repeat(200)}});
+        tools.observe(&event);
+        assert!(tools.rows[1].1.chars().count() < 160);
+        event.kind = "tool_end".into();
+        event.data = value!({"callId":"read", "isError":true});
+        tools.observe(&event);
+        assert!(tools.rows[1].1.ends_with(" · failed"));
+        assert!(default_assistant_instructions("", Path::new(".")).contains(TOOL_GUIDANCE));
+    }
 
     fn capabilities(durable: bool, resume: bool, mixed: bool) -> serde_json::Value {
         serde_json::json!({

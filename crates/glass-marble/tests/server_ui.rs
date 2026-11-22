@@ -3086,6 +3086,39 @@ impl Drop for NamedTurnFixture {
 }
 
 #[test]
+fn named_engines_use_the_host_model_and_keep_tool_rows_after_reload() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("named-model-tools");
+    fixture.state.lock().unwrap().model = "selected-model".into();
+    let (status, _) = fixture.post(
+        "/api/turns",
+        json!({"text":"inspect", "marbleId":fixture.marble_id}),
+    );
+    assert_eq!(status, 202);
+    let task = fixture.completed("inspect");
+    let options: Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .root
+                .join("prism-sessions")
+                .join(&fixture.marble_id)
+                .join("fixture-session-options.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(options["model"], "selected-model");
+    let store = StateStore::in_data_dir(&fixture.root);
+    store.save(&fixture.state.lock().unwrap()).unwrap();
+    let saved = store.load().unwrap();
+    assert!(saved.transcript.iter().any(|entry| entry.task_id == task.id
+        && entry.kind == "tool"
+        && entry.text == "glass.workspace.list · ok"));
+}
+
+#[test]
 fn named_followups_include_ios_acceptance_and_legacy_dispatch_fields() {
     if !python3_available() {
         return;

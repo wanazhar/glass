@@ -871,6 +871,10 @@ impl PrismPool {
         };
         let conversation = conversation
             .with_product(Arc::clone(&self.state))
+            .with_model({
+                let state = self.lock_state();
+                (!state.model.trim().is_empty()).then(|| state.model.trim().to_string())
+            })
             .with_instructions(crate::conversation::marble_session_instructions(
                 marble, &roster, root,
             ));

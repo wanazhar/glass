@@ -222,6 +222,9 @@ def main():
                 return
         elif method == "durable/create":
             global CONVERSATION_SEQ
+            if STORAGE_DIR:
+                with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "w", encoding="utf-8") as handle:
+                    json.dump(params, handle)
             if params.get("toolMode") != "mixed":
                 send(
                     {

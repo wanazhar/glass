@@ -148,6 +148,50 @@ fn pre_tool_text_is_not_a_visible_delta_and_is_the_empty_answer_fallback() {
 }
 
 /// How one lane's fake engine is built for a test.
+#[test]
+fn default_tool_rows_survive_success_and_refusal_reload() {
+    if !python3_available() {
+        return;
+    }
+    for (host, status) in [
+        (HostPolicy::approving(), "ok"),
+        (HostPolicy::denying(), "failed"),
+    ] {
+        let root = workspace(&format!("tool-row-{status}"));
+        let script = write_fake_runtime(&root);
+        let product = Arc::new(Mutex::new(ProductState::default()));
+        let mut conversation = spawn_conversation(
+            &root,
+            &script,
+            &root.join("sessions"),
+            host,
+            ApprovalInbox::default(),
+        )
+        .with_product(product.clone());
+        let reply = run_turn(
+            &turn("inspect", None),
+            &mut conversation,
+            TurnOptions::default(),
+        )
+        .unwrap();
+        let store = StateStore::in_data_dir(&root);
+        store.save(&product.lock().unwrap()).unwrap();
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .transcript
+                .iter()
+                .any(|entry| entry.task_id == reply.task_id
+                    && entry.kind == "tool"
+                    && entry.text == format!("glass.workspace.list · {status}"))
+        );
+        conversation.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// How one lane's fake engine is built for a test.
 #[derive(Clone)]
 struct LaneSpec {
     delay_ms: u64,

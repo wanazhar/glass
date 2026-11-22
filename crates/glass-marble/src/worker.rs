@@ -540,7 +540,13 @@ pub fn spawn_turn_pool(
                 let everyone = lock(&wiring.state).everyone_pending.contains_key(
                     &format!("queued-{}", command.request.request_id),
                 );
+                if everyone && command.request.conversation_id.is_none() {
+                    command.request.conversation_id = crate::everyone::default_conversation(&lock(&wiring.state));
+                }
                 let lane = if everyone {
+                    if command.request.conversation_id.is_some() {
+                        everyone_lane = Some(choose_lane(&wiring.state, command.request.conversation_id.as_deref(), &runtimes, &mut next));
+                    }
                     *everyone_lane.get_or_insert_with(|| choose_lane(
                         &wiring.state,
                         command.request.conversation_id.as_deref(),
@@ -553,11 +559,6 @@ pub fn spawn_turn_pool(
                     &runtimes,
                     &mut next,
                 ) };
-                if everyone && command.request.conversation_id.as_ref().is_some_and(|id| {
-                    lock(&wiring.state).conversations.iter().any(|record| record.id == *id && usize::from(record.lane) != lane)
-                }) {
-                    command.request.conversation_id = None;
-                }
                 if runtimes[lane].is_none() {
                     // Starting an engine launches a subprocess and greets it,
                     // which can take seconds. Doing that here would hold up

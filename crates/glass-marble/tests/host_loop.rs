@@ -567,6 +567,68 @@ fn everyone_waiting_for_its_first_conversation_stays_on_one_engine() {
     drop(pool);
 }
 
+#[test]
+fn everyone_rebinds_to_a_surviving_chats_engine_after_deletion() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("everyone-rebind-lane");
+    let script = write_fake_runtime(&root);
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let pool = lanes(
+        &root,
+        &script,
+        vec![LaneSpec::default(); 2],
+        ApprovalInbox::default(),
+        &state,
+        &Arc::default(),
+        CancelRegistry::default(),
+    );
+    let everyone = |text: &str, conversation_id: Option<String>| {
+        let request = TurnRequest::new(conversation_id, text);
+        state
+            .lock()
+            .unwrap()
+            .everyone_pending
+            .insert(format!("queued-{}", request.request_id), "marble".into());
+        let (accepted, answer) = mpsc::channel();
+        pool.sender.send(TurnCommand { request, accepted }).unwrap();
+        let accepted = answer
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        wait_for_settled(&state, &accepted.task_id);
+        accepted
+    };
+    let original = everyone("Everyone original", None);
+    let survivor = submit(&pool, "private history that must survive", None);
+    wait_for_settled(&state, &survivor.task_id);
+    assert_ne!(
+        lane_of(&state, &original.conversation_id),
+        lane_of(&state, &survivor.conversation_id)
+    );
+    {
+        let mut state = state.lock().unwrap();
+        state
+            .conversations
+            .retain(|c| c.id != original.conversation_id);
+        state
+            .tasks
+            .retain(|t| t.conversation_id != original.conversation_id);
+        state.transcript.retain(|e| {
+            e.conversation_id != original.conversation_id && e.task_id != original.task_id
+        });
+    }
+    let resumed = everyone(
+        "Everyone resumes survivor",
+        Some(survivor.conversation_id.clone()),
+    );
+    assert_eq!(resumed.conversation_id, survivor.conversation_id);
+    let followup = everyone("Everyone deferred followup", None);
+    assert_eq!(followup.conversation_id, survivor.conversation_id);
+    drop(pool);
+}
+
 /// The lane a conversation was admitted on is durable, so a restarted process
 /// rebuilds that lane instead of opening the chat somewhere else.
 #[test]

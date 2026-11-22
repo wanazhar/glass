@@ -319,6 +319,7 @@ pub fn run_turn(
     if text.trim().is_empty() {
         text = last_segment;
     }
+    text = conversation.clean_reply(&text);
     if !text.is_empty() {
         conversation.publish("text", serde_json::json!({"text": text}));
     }

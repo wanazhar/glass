@@ -32,7 +32,7 @@ const MAX_OUTSTANDING_RESPONSES: usize = 64;
 const CANCELLED_APPROVAL: &str = "cancelled before this tool call ran";
 
 /// Product instructions for a marble conversation.
-pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collaborator working inside the \
+pub const SESSION_INSTRUCTIONS: &str = "You are a durable collaborator working inside the \
      user's workspace. Core executes your file and shell tools; the `glass.workspace.*` tools are \
      governed integrations that Marble's own control layer classifies before they run, and the human \
      answers anything that layer leaves open. A refusal names the rule behind it, so adapt instead of \
@@ -40,6 +40,7 @@ pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collabor
      attribution when you act on the human's behalf.";
 
 const TOOL_GUIDANCE: &str = "Use your tools (web_search/web_fetch) whenever the user asks for current or factual information you cannot be sure of. Never say you searched or checked without actually calling the tool.";
+const CONVERSATIONAL_GUIDANCE: &str = "Match the length of the message: greetings and small talk get one or two sentences, with no unsolicited speeches or monologues. Expand only when asked or when the task needs it.";
 
 /// Session instructions for one conversation: the product posture, plus what the
 /// workspace is made of so the marble does not infer crate ownership from a file
@@ -48,6 +49,8 @@ fn session_instructions(cwd: &Path) -> String {
     let mut instructions = SESSION_INSTRUCTIONS.to_string();
     instructions.push('\n');
     instructions.push_str(TOOL_GUIDANCE);
+    instructions.push('\n');
+    instructions.push_str(CONVERSATIONAL_GUIDANCE);
     if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
         instructions.push('\n');
         instructions.push_str(&briefing);
@@ -59,11 +62,8 @@ fn session_instructions(cwd: &Path) -> String {
 /// the person gave it one, else the plain product posture.
 pub fn default_assistant_instructions(persona: &str, cwd: &Path) -> String {
     let persona = persona.trim();
-    if persona.is_empty() {
-        return session_instructions(cwd);
-    }
     format!(
-        "You are Marble, the default assistant — a personal companion built on Glass. Personality: {persona}.
+        "You are Marble. Speak only as Marble. Never @mention yourself or call yourself 'a Marble'. Personality: {persona}.
 {}",
         session_instructions(cwd)
     )
@@ -94,12 +94,35 @@ pub fn marble_session_instructions(
         others.join("; ")
     };
     let mut instructions = format!(
-        "You are {}, one of the user's Marbles — personal companions built on Glass. Personality: {}. Other Marbles you can ask for help: {}.",
-        marble.name, persona, others
+        "You are {name}, one of the user's Marbles. Speak only as {name}. Never @mention yourself or call yourself 'a Marble'. Personality: {persona}. Other Marbles you can ask for help: {others}.",
+        name = marble.name
     );
     instructions.push('\n');
     instructions.push_str(&session_instructions(cwd));
     instructions
+}
+
+fn strip_self_mention<'a>(text: &'a str, name: &str) -> &'a str {
+    let Some(rest) = text.trim_start().strip_prefix('@') else {
+        return text;
+    };
+    let Some(prefix) = rest.get(..name.len()) else {
+        return text;
+    };
+    if name.is_empty() || prefix.to_lowercase() != name.to_lowercase() {
+        return text;
+    }
+    let tail = &rest[name.len()..];
+    if tail
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !matches!(c, ',' | ':' | '.' | '!' | '?' | '—'))
+    {
+        return text;
+    }
+    tail.trim_start_matches(|c: char| {
+        c.is_whitespace() || matches!(c, ',' | ':' | '.' | '!' | '?' | '—')
+    })
 }
 
 #[derive(Default)]
@@ -307,6 +330,7 @@ fn call_path(call: &ToolRequest) -> String {
 
 /// Durable conversation handle over the local runtime.
 pub struct Conversation {
+    speaker: String,
     engine_id: u64,
     client: RuntimeClient,
     cwd: PathBuf,
@@ -411,6 +435,7 @@ impl Conversation {
         let init = Self::wait_response(&mut client, &router, &events, &init_id)?;
         Self::require_capabilities(&init)?;
         Ok(Self {
+            speaker: "Marble".into(),
             client,
             cwd: cwd.to_path_buf(),
             host,
@@ -605,6 +630,15 @@ impl Conversation {
         self
     }
 
+    pub fn with_speaker(mut self, name: &str) -> Self {
+        self.speaker = name.to_string();
+        self
+    }
+
+    pub(crate) fn clean_reply(&self, text: &str) -> String {
+        strip_self_mention(text, &self.speaker).to_string()
+    }
+
     /// Ask for the instructions each time a conversation is created, so an
     /// edited persona reaches the next conversation without dropping the lane.
     pub fn with_instructions_fn(
@@ -629,7 +663,7 @@ impl Conversation {
                 .as_ref()
                 .map(|instructions| instructions())
                 .or_else(|| self.instructions.clone())
-                .unwrap_or_else(|| session_instructions(&self.cwd)),
+                .unwrap_or_else(|| default_assistant_instructions("", &self.cwd)),
         );
         options.model = self.model.clone();
         let created = self.client.durable_create(&options);
@@ -1264,6 +1298,45 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_and_brevity_are_shared_without_conflicting_names() {
+        for persona in ["", "warm and witty"] {
+            let prompt = default_assistant_instructions(persona, Path::new("."));
+            assert!(prompt.starts_with("You are Marble."));
+            assert!(prompt.contains(CONVERSATIONAL_GUIDANCE));
+            assert!(!prompt.contains("You are Glass Marble"));
+        }
+        let mut roster = crate::PrismState::default();
+        let ada = roster
+            .add("Ada", "writer", "star", 35, "", "brief")
+            .unwrap()
+            .clone();
+        let prompt = marble_session_instructions(&ada, &roster.marbles, Path::new("."));
+        assert!(prompt.starts_with("You are Ada, one of the user's Marbles. Speak only as Ada."));
+        assert!(prompt.contains("Never @mention yourself"));
+        assert!(prompt.contains(CONVERSATIONAL_GUIDANCE));
+        assert!(!prompt.contains("You are Glass Marble"));
+        assert!(!prompt.contains("You are Marble"));
+    }
+
+    #[test]
+    fn reply_cleanup_only_removes_a_leading_own_name() {
+        for (text, expected) in [
+            ("@Ada I'll take the lead", "I'll take the lead"),
+            ("  @ada: Hello", "Hello"),
+            ("@Ada", ""),
+            ("", ""),
+            ("@Ben hello", "@Ben hello"),
+            ("Ask @Ada", "Ask @Ada"),
+            ("@Adaline hello", "@Adaline hello"),
+            ("@Ada-team hello", "@Ada-team hello"),
+            ("  Normal reply", "  Normal reply"),
+        ] {
+            assert_eq!(strip_self_mention(text, "Ada"), expected);
+        }
+        assert_eq!(strip_self_mention("@Éva Hello", "Éva"), "Hello");
+    }
 
     #[test]
     fn tool_rows_keep_bounded_inputs_and_native_or_host_outcomes() {

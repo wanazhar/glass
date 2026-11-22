@@ -3076,6 +3076,37 @@ fn named_steps_persist_commentary_as_reasoning_and_only_deliver_the_answer() {
     );
 }
 
+#[test]
+fn named_replies_strip_only_their_own_leading_mention() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_args(
+        "own-mention",
+        vec![
+            "--text-chunks".into(),
+            r#"["@Ada I'll take the lead."]"#.into(),
+        ],
+    );
+    let (status, _) = fixture.post(
+        "/api/turns",
+        json!({"text":"lead", "marbleId":fixture.marble_id}),
+    );
+    assert_eq!(status, 202);
+    let task = fixture.completed("lead");
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .transcript
+            .iter()
+            .any(|entry| entry.task_id == task.id
+                && entry.kind == "assistant"
+                && entry.text == "I'll take the lead.")
+    );
+}
+
 impl Drop for NamedTurnFixture {
     fn drop(&mut self) {
         self.pool.shutdown();

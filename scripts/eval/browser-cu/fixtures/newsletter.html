@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Newsletter</title>
+<style>.cookie-consent{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center}.cookie-consent div{background:#fff;padding:2em}</style></head>
+<body><main><h1>Harbor Line newsletter</h1><form id="f"><label>Email <input name="email" type="email" required></label> <button>Subscribe</button></form><p id="done" role="status"></p></main>
+<div class="cookie-consent" id="cookie-consent" aria-label="Cookie consent"><div><p>We use cookies to improve your visit.</p><button onclick="document.getElementById('cookie-consent').remove()">Accept all</button></div></div>
+<script>document.getElementById('f').onsubmit=async e=>{e.preventDefault();await fetch('/api/subscribe',{method:'POST',body:JSON.stringify({email:e.target.email.value})});document.getElementById('done').textContent='Subscribed.';};</script></body></html>

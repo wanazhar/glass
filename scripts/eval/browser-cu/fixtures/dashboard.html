@@ -1,0 +1,2 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Dashboard</title></head><body><main><h1>Operations dashboard</h1><p id="widgets">Loading...</p>
+<script>fetch('/data/widgets.json').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{document.getElementById('widgets').textContent=JSON.stringify(d)}).catch(()=>{document.getElementById('widgets').textContent='No data'});</script></main></body></html>

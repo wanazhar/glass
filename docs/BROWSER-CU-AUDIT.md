@@ -154,7 +154,13 @@ the saved session and records:
 Tasks cover reading an article, a labelled form, delayed content, upload,
 download, a new tab, a confirm dialog, infinite scroll, a canvas click from a
 screenshot, a keyboard-driven combobox, and four desktop tasks (calculator,
-describe screen, clipboard, text editor).
+describe screen, clipboard, text editor). Ten later tasks cover the tools added
+since: finding text on a long page, extracting a table, a console error, a
+failed request, a cookie banner over a form, saving a PDF, pasting long text on
+the desktop, listing windows, recording the desktop, and an OSWorld-style task
+that saves a file in the desktop's Downloads and copies it into the workspace.
+File outputs are checked with `workspace_file` (a glob, plus optional
+`starts_with` or `contains`).
 
 Run it:
 

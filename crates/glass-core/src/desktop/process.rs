@@ -749,7 +749,7 @@ fn startup_diagnostic(log: &Path, session_directory: &Path) -> String {
     format!("; bounded private startup stderr: {}", detail.trim())
 }
 
-fn command(program: &str, args: &[&str]) -> Command {
+pub(super) fn command(program: &str, args: &[&str]) -> Command {
     let mut command = Command::new(program);
     apply_private_process_environment(&mut command);
     command

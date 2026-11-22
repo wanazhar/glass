@@ -3,6 +3,7 @@ use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use crate::browser::dom::AxNode;
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 

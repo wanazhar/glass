@@ -1584,8 +1584,12 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
                 .and_then(Value::as_str)
                 .ok_or_else(|| "sessionId is required from desktop_status".to_owned());
             session_id.and_then(|session_id| {
-                Desktop::agent_frame(session_id, &args["region"])
-                    .and_then(|value| save_agent_frame(workspace, &value))
+                if args.get("labels").is_some_and(|labels| !labels.is_null()) {
+                    labelled_screenshot(workspace, session_id, &args)
+                } else {
+                    Desktop::agent_frame(session_id, &args["region"])
+                        .and_then(|value| save_agent_frame(workspace, &value))
+                }
             })
         }
         _ => Err("unknown desktop tool".into()),
@@ -1740,6 +1744,89 @@ fn with_next_step(error: String) -> String {
         return error;
     };
     format!("{error}\nNext: {next}")
+}
+
+/// Observes the controls matching `labels.query`, draws a numbered box on
+/// each onscreen one and lists what each number is, so the image and the
+/// accessibility targets line up.
+fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Result<String, String> {
+    if !args["region"].is_null() {
+        return Err("desktop_screenshot takes either region or labels, not both; zoom with region after reading the labels".into());
+    }
+    let labels = args["labels"]
+        .as_object()
+        .ok_or("labels must be an object such as {\"query\":\"Save\"}")?;
+    if labels
+        .keys()
+        .any(|key| !matches!(key.as_str(), "query" | "windowId"))
+    {
+        return Err("labels accepts only query and windowId".into());
+    }
+    let query = labels
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|query| !query.trim().is_empty())
+        .ok_or("labels.query is required: name the app, window or controls to label, as in desktop_observe")?;
+    let mut observe = json!({"sessionId": session_id, "query": query});
+    if let Some(window_id) = labels.get("windowId") {
+        observe["windowId"] = window_id.clone();
+    }
+    let observation = Desktop::agent_observe(&observe)?;
+    let nodes: Vec<&Value> = observation["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| node["bounds"].is_object())
+        .take(capture::MAX_LABELS)
+        .collect();
+    if nodes.is_empty() {
+        return Err(format!(
+            "No onscreen control matched the query {query:?}, so nothing was labelled. Next: broaden the query, scope it with a windowId from desktop_observe, or call desktop_screenshot without labels."
+        ));
+    }
+    let boxes: Vec<&Value> = nodes.iter().map(|node| &node["bounds"]).collect();
+    let frame = Desktop::agent_request(
+        &json!({"action":"frame","sessionId":session_id,"region":null,"labels":boxes}),
+    )?;
+    if let Some(error) = frame["error"].as_str() {
+        return Err(error.to_owned());
+    }
+    let saved = save_agent_frame(workspace, &frame)?;
+    Ok(format!("{saved}\n{}", label_legend(&observation, &nodes)))
+}
+
+fn label_legend(observation: &Value, nodes: &[&Value]) -> String {
+    let revision = &observation["revision"];
+    let actionable = observation["queryAmbiguous"] != true && observation["truncated"] != true;
+    let mut legend = format!(
+        "Numbered boxes mark {} matching control(s) from desktop_observe revision {revision}. Act on a number with desktop_act using its targetId, this revision and the sessionId; a number with only a pointer is clicked with desktop_input pointer-click at that x/y.",
+        nodes.len()
+    );
+    if !actionable {
+        legend.push_str(" The match is ambiguous or truncated, so no number can be acted on yet: refine labels.query or pass a windowId, then label again.");
+    }
+    for (index, node) in nodes.iter().enumerate() {
+        let mut line = format!(
+            "\n[{}] {} {:?}",
+            index + 1,
+            node["role"].as_str().unwrap_or("control"),
+            node["name"].as_str().unwrap_or("")
+        );
+        if let Some(target_id) = node["targetId"].as_str() {
+            line.push_str(&format!(" targetId={target_id}"));
+        }
+        if let (Some(x), Some(y)) = (
+            node["pointerTarget"]["x"].as_f64(),
+            node["pointerTarget"]["y"].as_f64(),
+        ) {
+            line.push_str(&format!(" pointer x={x:.4} y={y:.4}"));
+        }
+        if node["targetId"].is_null() && node["pointerTarget"].is_null() {
+            line.push_str(" (look only)");
+        }
+        legend.push_str(&line);
+    }
+    legend
 }
 
 fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
@@ -1959,7 +2046,9 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
                 .and_then(|frame| match frame {
                     Some((session_id, workspace_root, seq, captured, frame)) => {
-                        let mut value = if request["region"].is_null() {
+                        let mut value = if !request["labels"].is_null() {
+                            capture::labelled(&frame.rgb, &request["labels"])?
+                        } else if request["region"].is_null() {
                             json!({"jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)})
                         } else {
                             capture::zoom(&frame.rgb, &request["region"])?
@@ -2423,6 +2512,77 @@ mod tests {
             return Some("first_tab_preservation_unverified");
         }
         None
+    }
+
+    #[test]
+    fn label_legend_numbers_controls_and_says_how_to_act() {
+        let observation = json!({"revision": 7, "queryAmbiguous": false, "truncated": false});
+        let save = json!({"role":"push button","name":"Save","targetId":"t-1","pointerTarget":{"x":0.25,"y":0.5}});
+        let label = json!({"role":"label","name":"Untitled","targetId":null,"pointerTarget":null});
+        let legend = label_legend(&observation, &[&save, &label]);
+        assert!(legend.contains("revision 7"));
+        assert!(legend.contains("[1] push button \"Save\" targetId=t-1 pointer x=0.2500 y=0.5000"));
+        assert!(legend.contains("[2] label \"Untitled\" (look only)"));
+        assert!(!legend.contains("ambiguous"));
+        let ambiguous = json!({"revision": 8, "queryAmbiguous": true});
+        assert!(label_legend(&ambiguous, &[&label]).contains("refine labels.query"));
+    }
+
+    #[test]
+    fn labelled_screenshot_rejects_bad_labels_before_observing() {
+        let workspace = Path::new("/nonexistent");
+        let both =
+            json!({"region":{"x":0,"y":0,"width":0.5,"height":0.5},"labels":{"query":"Save"}});
+        assert!(
+            labelled_screenshot(workspace, "s", &both)
+                .unwrap_err()
+                .contains("not both")
+        );
+        let extra = json!({"labels":{"query":"Save","limit":3}});
+        assert!(
+            labelled_screenshot(workspace, "s", &extra)
+                .unwrap_err()
+                .contains("only query")
+        );
+        let empty = json!({"labels":{"query":" "}});
+        assert!(
+            labelled_screenshot(workspace, "s", &empty)
+                .unwrap_err()
+                .contains("labels.query is required")
+        );
+    }
+
+    /// Labels controls on a running managed desktop (for example after
+    /// `gc desktop quick`); runs only with `GLASS_E2E=1`.
+    #[test]
+    fn labelled_screenshot_reaches_a_running_managed_desktop() {
+        if std::env::var_os("GLASS_E2E").is_none() || !service_running() {
+            return;
+        }
+        let status = Desktop::agent_status().unwrap();
+        let session_id = status["sessionId"].as_str().unwrap();
+        let workspace = Path::new(status["workspaceRoot"].as_str().unwrap());
+        let apps =
+            Desktop::agent_launch_app(&json!({"action":"list","sessionId":session_id})).unwrap();
+        let mousepad = apps.to_string().contains("org.xfce.mousepad");
+        if mousepad {
+            Desktop::agent_launch_app(&json!({"action":"launch","sessionId":session_id,"desktopEntryId":"org.xfce.mousepad"}))
+                .unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+        }
+        let query = if mousepad { "Mousepad" } else { "panel" };
+        let result =
+            labelled_screenshot(workspace, session_id, &json!({"labels":{"query":query}})).unwrap();
+        assert!(result.contains("Numbered boxes mark"), "{result}");
+        assert!(result.contains("\n[1] "), "{result}");
+        let path = result
+            .split('`')
+            .nth(1)
+            .map(|path| workspace.join(path))
+            .unwrap();
+        let image = image::open(&path).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (WIDTH, HEIGHT));
+        eprintln!("{result}");
     }
 
     #[test]

@@ -716,7 +716,12 @@ async fn observe_async(
                 }
                 nodes.push(node);
             }
-            if matches_query && (is_actionable || pointer_fallback_candidate) {
+            if query_match_counts_toward_ambiguity(
+                matches_query,
+                is_actionable || pointer_fallback_candidate,
+                visible,
+                screen_target_value.is_some(),
+            ) {
                 matched_actionable_count += 1;
             }
             if query.is_some() && matched_actionable_count >= 2 {
@@ -921,6 +926,15 @@ async fn observe_async(
         #[cfg(test)]
         application_root_names,
     })
+}
+
+fn query_match_counts_toward_ambiguity(
+    matches: bool,
+    actionable: bool,
+    visible: bool,
+    onscreen: bool,
+) -> bool {
+    matches && actionable && visible && onscreen
 }
 
 fn focused_search_result_is_actionable(
@@ -1650,6 +1664,32 @@ fn accessibility_error(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn offscreen_matches_do_not_hide_a_later_visible_wait_match() {
+        let matches = [(true, false), (true, false), (true, true)];
+        let mut count = 0;
+        let mut visited = 0;
+        for (visible, onscreen) in matches {
+            visited += 1;
+            count += usize::from(super::query_match_counts_toward_ambiguity(
+                true, true, visible, onscreen,
+            ));
+            if count >= 2 {
+                break;
+            }
+        }
+        assert_eq!(visited, 3);
+        assert_eq!(count, 1);
+        assert!(!super::query_match_counts_toward_ambiguity(
+            true, true, false, true
+        ));
+        assert!(!super::query_match_counts_toward_ambiguity(
+            false, true, true, true
+        ));
+        assert!(!super::query_match_counts_toward_ambiguity(
+            true, false, true, true
+        ));
+    }
     use super::{
         MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, UNSUPPORTED_CLICK_RECOVERY,
         accessibility_target_id, accessibility_window_id_from_parts, bounded_accessible_name,

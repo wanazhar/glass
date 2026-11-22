@@ -9,7 +9,8 @@ Then serves a control API the UI tests call:
   GET /link/owner | /link/secret | /link/local, POST /revoke (restart = new token),
   POST /thread/new | /thread/send | /thread/seed | /thread/components | /thread/wait, POST /net/drop | /net/stall | /net/restore,
   POST /control/claim | /control/release (a second session client, like another device taking control),
-  GET /thread/context.
+  GET /thread/context,
+  POST /desktop/fake?on=1&kbps=N&rtt=MS | /desktop/mark, GET /desktop/report (a stand-in desktop host, below).
 A scripted OpenAI-compatible provider answers every turn so threads stream real events.
 """
 import http.client, http.server, json, os, re, select, signal, socket, ssl, subprocess, sys, threading, time, uuid
@@ -62,6 +63,127 @@ def link(name, *args):
     if not match:
         raise RuntimeError("no link in connect output")
     return match.group(1)
+
+
+class FakeDesktop:
+    """Stands in for a running Linux desktop behind the same TLS front end, so the app's desktop path
+    (stream, decode, input, reconnects) can be timed on a Mac. Frames are real 30 fps JPEG video from
+    ffmpeg's test source, pre-encoded at each stream width; `kbps` caps the stream's bandwidth and `rtt`
+    delays every response, like a slow tailnet path."""
+
+    def __init__(self):
+        self.on = False
+        self.kbps = 0
+        self.rtt = 0
+        self.lease = "agent"
+        self.paused = False
+        self.frames = {}
+        self.seq = 0
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        with self.lock:
+            self.mark = None
+            self.resumed_ms = None
+            self.streams = []
+            self.inputs = 0
+            self.actions = []
+            self.sent = 0
+
+    def jpegs(self, width):
+        if width not in self.frames:
+            out = os.path.join(ROOT, "desktop", str(width))
+            os.makedirs(out, exist_ok=True)
+            height = width * 800 // 1280
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                            "testsrc2=size=1280x800:rate=30", "-frames:v", "60", "-vf", f"scale={width}:{height}",
+                            "-q:v", "4", os.path.join(out, "f%03d.jpg")], check=True)
+            self.frames[width] = [open(os.path.join(out, n), "rb").read() for n in sorted(os.listdir(out))]
+        return self.frames[width]
+
+    def status(self):
+        return {"available": True, "sessionId": "fake-desktop", "environment": "xfce", "lifecycle": "disposable",
+                "lease": self.lease, "width": 1280, "height": 800, "frameSeq": self.seq, "frameAgeMs": 1,
+                "regionUpdates": 0,
+                "capabilities": [{"environment": "xfce", "lifecycle": "disposable", "label": "Quick desktop",
+                                  "available": True, "profileExists": False}]}
+
+    def report(self):
+        with self.lock:
+            return {"resumedMs": self.resumed_ms, "streams": len(self.streams), "inputs": self.inputs, "actions": self.actions[-40:],
+                    "streamsAfterMark": len([t for t in self.streams if self.mark and t >= self.mark])}
+
+    def serve(self, client, method, target, body, frozen):
+        url = urllib.parse.urlparse(target)
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+        if self.rtt:
+            time.sleep(self.rtt / 1000)
+
+        def send_json(value, status=200):
+            data = json.dumps(value).encode()
+            client.sendall(f"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\n"
+                           "Connection: close\r\n\r\n".encode() + data)
+
+        if url.path == "/api/desktop/status":
+            return send_json(self.status())
+        if url.path == "/api/desktop/lease":
+            action = json.loads(body or b"{}").get("action")
+            self.lease = {"take-control": "human", "return-to-agent": "agent", "read-only": "read-only"}.get(action, self.lease)
+            return send_json({"lease": self.lease})
+        if url.path == "/api/desktop/input":
+            event = json.loads(body or b"{}")
+            with self.lock:
+                self.inputs += 1
+                self.actions.append(f"{event.get('action')}:{event.get('button', '')}")
+            return send_json({"ok": True})
+        if url.path == "/api/desktop/frame":
+            jpeg = self.jpegs(1280)[self.seq % 60]
+            client.sendall(f"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n"
+                           "Connection: close\r\n\r\n".encode() + jpeg)
+            return
+        if url.path != "/api/desktop/stream":
+            return send_json({"error": "not in the stand-in desktop"}, 404)
+        width = max(320, min(1280, int(q.get("width", "1280"))))
+        frames = self.jpegs(width)
+        opened = time.monotonic()
+        with self.lock:
+            self.streams.append(opened)
+        client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\n"
+                       b"Connection: close\r\n\r\n")
+        tick = time.monotonic()
+        send_ms = 0
+        while True:
+            if client in frozen():
+                time.sleep(0.2)
+                continue
+            if self.paused:
+                client.sendall(b"--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n")
+                time.sleep(1)
+                tick = time.monotonic()
+                continue
+            self.seq += 1
+            jpeg = frames[self.seq % len(frames)]
+            part = (f"--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\nX-Frame-Seq: {self.seq}\r\n"
+                    f"X-Frame-Time-Ms: {int(time.time() * 1000)}\r\nX-Frame-Age-Ms: 1\r\nX-Frame-Encode-Ms: 0\r\n"
+                    f"X-Frame-Send-Ms: {send_ms}\r\n\r\n").encode() + jpeg + b"\r\n"
+            started = time.monotonic()
+            for i in range(0, len(part), 16384):
+                client.sendall(part[i:i + 16384])
+                if self.kbps:
+                    due = started + (i + 16384) * 8 / (self.kbps * 1000)
+                    time.sleep(max(0, due - time.monotonic()))
+            send_ms = round((time.monotonic() - started) * 1000)
+            with self.lock:
+                self.sent += 1
+                if self.mark and opened >= self.mark and self.resumed_ms is None:
+                    self.resumed_ms = round((time.monotonic() - self.mark) * 1000)
+            tick += 1 / 30
+            time.sleep(max(0, tick - time.monotonic()))
+            tick = max(tick, time.monotonic() - 1 / 30)
+
+
+desktop = FakeDesktop()
 
 
 class Proxy:
@@ -143,6 +265,15 @@ class Proxy:
                 head += chunk
             headers, rest = head.split(b"\r\n\r\n", 1)
             lines = [l for l in headers.split(b"\r\n") if not l.lower().startswith(b"tailscale-")]
+            request = lines[0].decode(errors="replace").split(" ") if lines else []
+            if desktop.on and len(request) > 1 and request[1].startswith("/api/desktop/"):
+                length = next((int(l.split(b":", 1)[1]) for l in lines if l.lower().startswith(b"content-length:")), 0)
+                while len(rest) < length:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        return
+                    rest += chunk
+                return desktop.serve(client, request[0], request[1], rest[:length], lambda: self.frozen)
             if lines and lines[0].startswith(b"GET /api/events"):
                 resume = next((l.split(b":", 1)[1].strip().decode() for l in lines
                                if l.lower().startswith(b"last-event-id:")), "")
@@ -207,6 +338,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         if pause and tool_result is None:
             time.sleep(int(pause.group(1)))
         slow = re.search(r"slow (\d+)", last)
+        lines = re.search(r"lines (\d+)", last)
         call = None
         if tool_result is None and "ask question" in last:
             call = ("ask_user_question", {"questions": [{"question": "Which color?", "multiSelect": False, "options": [
@@ -223,6 +355,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             deltas, pause = ["x"] * int(flood.group(1)), 0.001
         elif slow:
             deltas, pause = ["tick "] * int(slow.group(1)), 0.5
+        elif lines:
+            words = [f"Line {i + 1} of a long streamed reply keeps going with enough words to wrap. " for i in range(int(lines.group(1)))]
+            deltas, pause = [w + ("\n\n" if i % 2 else "") for i, w in enumerate(words)], 0.15
         else:
             words = re.sub(r"\s+", " ", last).strip()[-200:]
             reply = f"Echo from the host: **{words}**\n\n```swift\nlet glass = \"live\"\n```"
@@ -403,6 +538,8 @@ class Control(http.server.BaseHTTPRequestHandler):
                     return self.reply(json.dumps(gateway.request("GET", f"/api/context?id={thread}")))
                 if self.path == "/provider/system":
                     return self.reply(Provider.last_system)
+                if self.path == "/desktop/report":
+                    return self.reply(json.dumps(desktop.report()))
                 if self.path == "/health":
                     return self.reply("ok")
             self.reply("not found", 404)
@@ -425,6 +562,22 @@ class Control(http.server.BaseHTTPRequestHandler):
             if url.path == "/net/restore":
                 proxy.dropped = False
                 return self.reply("restored")
+            if url.path == "/desktop/fake":
+                desktop.on = q.get("on", "1") == "1"
+                desktop.kbps = int(q.get("kbps", "0"))
+                desktop.rtt = int(q.get("rtt", "0"))
+                desktop.paused = q.get("paused") == "1"
+                desktop.reset()
+                for width in (1280, 960, 800, 640):
+                    desktop.jpegs(width)
+                return self.reply(json.dumps({w: sum(map(len, f)) // len(f) for w, f in desktop.frames.items()}))
+            if url.path == "/desktop/pause":
+                desktop.paused = q.get("on", "1") == "1"
+                return self.reply("paused" if desktop.paused else "playing")
+            if url.path == "/desktop/mark":
+                desktop.reset()
+                desktop.mark = time.monotonic()
+                return self.reply("marked")
             if url.path == "/thread/new":
                 thread = gateway.request("POST", "/api/new", {"workspace": ""})["id"]
                 if "title" in q:

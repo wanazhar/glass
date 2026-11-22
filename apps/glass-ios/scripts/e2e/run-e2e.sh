@@ -41,6 +41,8 @@ open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(
 PY
 xcrun simctl addmedia "$udid" "$root/e2e-photo.png"
 xcrun simctl privacy "$udid" grant photos com.wanazhar.glass 2>/dev/null || true
+# Keep-alive uses the coarsest location; the Simulator needs one to report.
+xcrun simctl location "$udid" set 3.1390,101.6869 2>/dev/null || true
 
 python3 "$here/harness.py" >"$root/harness.log" 2>&1 &
 harness=$!
@@ -70,6 +72,9 @@ else
 fi
 TEST_RUNNER_GLASS_E2E_CONTROL="http://127.0.0.1:${GLASS_E2E_CONTROL_PORT:-51999}" \
 TEST_RUNNER_GLASS_E2E_MEASURE_ONLY="${GLASS_E2E_MEASURE_ONLY:-}" \
+TEST_RUNNER_GLASS_E2E_BACKGROUND_MINUTES="${GLASS_E2E_BACKGROUND_MINUTES:-10}" \
+TEST_RUNNER_GLASS_E2E_DESKTOP_KBPS="${GLASS_E2E_DESKTOP_KBPS:-0}" \
+TEST_RUNNER_GLASS_E2E_DESKTOP_RTT="${GLASS_E2E_DESKTOP_RTT:-0}" \
   xcodebuild test -project Glass.xcodeproj -scheme Glass -collect-test-diagnostics never -destination "platform=iOS Simulator,id=$udid" \
   -derivedDataPath build/test -resultBundlePath build/results/e2e.xcresult \
   "${only[@]}" -quiet

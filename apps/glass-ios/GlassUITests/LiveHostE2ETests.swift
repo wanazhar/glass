@@ -106,9 +106,9 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
-    private func pairedApp(link: String = "link/owner") throws -> XCUIApplication {
+    private func pairedApp(link: String = "link/owner", arguments: [String] = []) throws -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-GlassResetState"]
+        app.launchArguments = ["-GlassResetState"] + arguments
         app.launch()
         XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
         pair(app, link: try call(link))
@@ -849,6 +849,66 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
+    func testStreamingReplyIsFollowedUntilYouScrollThenResumes() throws {
+        let thread = try call("thread/new?title=Follow", method: "POST")
+        // UI queries over a fast stream are slow, so give the test room to measure while paused.
+        let app = try pairedApp(arguments: ["-GlassFollowResumeSeconds", "6"])
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        _ = try call("thread/send?id=\(thread)&text=lines%20220", method: "POST")
+        let latest = app.buttons["conversation.latest"]
+        let window = app.windows.firstMatch.frame
+        func newestLine() -> Int {
+            let labels = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'of a long streamed reply'")).allElementsBoundByIndex
+                .filter { $0.frame.intersects(window) }.map(\.label)
+            return labels.flatMap { $0.matches(of: /Line (\d+) of/).compactMap { Int($0.1) } }.max() ?? 0
+        }
+        XCTAssertTrue(waitUntil(30) { newestLine() >= 30 }, "the reply streams in")
+        let followed = newestLine()
+        XCTAssertTrue(waitUntil(5) { newestLine() > followed + 5 }, "the newest text stays in view while following")
+        XCTAssertFalse(latest.exists, "no Latest button while following")
+        attach(app, "e2e-follow-streaming")
+
+        // Reading back stops following, and the stream never moves you.
+        let screen = app.descendants(matching: .any)["conversation"].firstMatch
+        readBack(screen)
+        let paused = latest.waitForExistence(timeout: 3)
+        if !paused { attach(app, "e2e-follow-not-paused") }
+        XCTAssertTrue(paused, "Latest appears once you scroll back")
+        attach(app, "e2e-follow-paused-start")
+        // Where the reply starts on screen must not move while it keeps growing below.
+        let reply = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'of a long streamed reply'")).firstMatch
+        let before = reply.frame.minY
+        usleep(600_000)
+        let after = reply.frame.minY
+        XCTAssertTrue(latest.exists, "still paused while measuring")
+        attach(app, "e2e-follow-paused")
+        XCTAssertEqual(before, after, accuracy: 1, "your position holds while the reply keeps streaming")
+
+        // Left alone for a few seconds, the chat picks the stream up again.
+        XCTAssertTrue(waitUntil(12) { !latest.exists }, "following resumes after a few idle seconds")
+        let resumed = newestLine()
+        XCTAssertTrue(waitUntil(5) { newestLine() > resumed }, "and moves with the stream again")
+
+        // Latest resumes at once.
+        readBack(screen)
+        XCTAssertTrue(latest.waitForExistence(timeout: 3))
+        latest.tap()
+        XCTAssertTrue(waitUntil(2) { !latest.exists }, "Latest picks the stream up right away")
+        attach(app, "e2e-follow-latest")
+    }
+
+    /// Drags the chat back by about a screen and lets go without a fling.
+    private func readBack(_ screen: XCUIElement) {
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).press(
+            forDuration: 0.01,
+            thenDragTo: screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)),
+            withVelocity: .slow,
+            thenHoldForDuration: 0.3
+        )
+    }
+
+    @MainActor
     func testDesktopTabShowsTheHostsDesktopChoices() throws {
         let app = try pairedApp()
         app.tabBars.buttons["Desktop"].tap()
@@ -859,6 +919,151 @@ final class LiveHostE2ETests: XCTestCase {
         // The macOS test host has no Linux desktop, so each choice explains why it can't start.
         XCTAssertFalse(quick.isEnabled, "desktops the host can't run are disabled")
         attach(app, "e2e-desktop")
+    }
+
+    /// Times the desktop path against the harness's stand-in desktop host: steady frame rate, frame size,
+    /// decode and input round trip, then how long the picture takes to come back after leaving the app
+    /// while iOS froze the stream's socket. `GLASS_E2E_DESKTOP_KBPS` caps the stream's bandwidth.
+    @MainActor
+    func testDesktopTimingsAgainstTheStandInHost() throws {
+        let env = ProcessInfo.processInfo.environment
+        let kbps = env["GLASS_E2E_DESKTOP_KBPS"] ?? "0"
+        let rtt = env["GLASS_E2E_DESKTOP_RTT"] ?? "0"
+        let sizes = try call("desktop/fake?on=1&kbps=\(kbps)&rtt=\(rtt)", method: "POST")
+        defer { _ = try? call("desktop/fake?on=0", method: "POST") }
+        let app = try pairedApp()
+        app.tabBars.buttons["Desktop"].tap()
+        let screen = app.descendants(matching: .any)["desktop.screen"].firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 20), "the stand-in desktop shows")
+        let state = app.descendants(matching: .any)["desktop.state"].firstMatch
+        for _ in 0..<3 where !state.label.contains("fps") {
+            app.buttons["desktop.more"].firstMatch.tap()
+            let toggle = app.descendants(matching: .any)["desktop.stats.toggle"].firstMatch
+            if toggle.waitForExistence(timeout: 5) { toggle.tap() }
+            _ = waitUntil(3) { state.label.contains("fps") }
+        }
+        XCTAssertTrue(state.label.contains("fps"), "connection details show")
+        app.buttons["desktop.takeControl"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["desktop.giveBack"].waitForExistence(timeout: 10))
+        for i in 0..<12 {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: 0.3 + Double(i % 4) * 0.1, dy: 0.4)).tap()
+            usleep(250_000)
+        }
+        sleep(8)
+        let steady = state.label
+        attach(app, "e2e-desktop-steady")
+
+        XCUIDevice.shared.press(.home)
+        sleep(3)
+        _ = try call("net/stall", method: "POST")
+        sleep(5)
+        _ = try call("desktop/mark", method: "POST")
+        app.activate()
+        var report = ""
+        XCTAssertTrue(waitUntil(90) {
+            report = (try? self.call("desktop/report")) ?? ""
+            return !report.contains("\"resumedMs\": null")
+        }, "the picture comes back")
+        sleep(2)
+        attach(app, "e2e-desktop-back")
+        let back = app.descendants(matching: .any)["desktop.state"].firstMatch.label
+        let note = XCTAttachment(string: "kbps \(kbps) rtt \(rtt)\nframe sizes \(sizes)\nsteady: \(steady)\nback: \(back)\nhost: \(report)")
+        note.name = "desktop-timings"
+        note.lifetime = .keepAlways
+        add(note)
+
+        // Gestures: a touch held still right-clicks and a tap left-clicks. (XCUITest on the Simulator can't
+        // synthesize the two-finger tap here.) The desktop holds still so the touches land where aimed.
+        _ = try call("desktop/pause", method: "POST")
+        sleep(2)
+        _ = try call("desktop/mark", method: "POST")
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.8)
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)).tap()
+        sleep(2)
+        let actions = try call("desktop/report")
+        XCTAssertEqual(actions.components(separatedBy: "click:right").count - 1, 1, "one right click: \(actions)")
+        XCTAssertTrue(actions.contains("click:left"), "a tap is a left click: \(actions)")
+    }
+
+    /// With keep-alive on, the open conversation's stream survives a long stretch in the background: a reply
+    /// that arrives near the end alerts while Glass is away and is already on screen when you come back.
+    /// The same round with keep-alive off is the baseline. `GLASS_E2E_BACKGROUND_MINUTES` sets the stretch.
+    @MainActor
+    func testKeepAliveHoldsTheConnectionThroughTheBackground() throws {
+        let minutes = Double(ProcessInfo.processInfo.environment["GLASS_E2E_BACKGROUND_MINUTES"] ?? "") ?? 10
+        let thread = try call("thread/new?title=Kept%20alive", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("notifications")
+        let alerts = app.switches["settings.notifications"].firstMatch
+        XCTAssertTrue(alerts.waitForExistence(timeout: 10))
+        alerts.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        if springboard.alerts.firstMatch.waitForExistence(timeout: 10) { springboard.alerts.firstMatch.buttons["Allow"].tap() }
+        XCTAssertTrue(waitUntil(10) { (alerts.value as? String) == "1" }, "alerts turn on")
+
+        let banner = springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS 'Reply ready' AND label CONTAINS 'Kept alive'")).firstMatch
+        func eventRequests() throws -> Int {
+            (try JSONSerialization.jsonObject(with: Data(call("net/events").utf8)) as? [Any])?.count ?? 0
+        }
+        func away(_ label: String) throws -> String {
+            app.tabBars.buttons["Conversations"].tap()
+            if !app.descendants(matching: .any)["conversation"].exists { open(app, thread: thread) }
+            XCTAssertTrue(waitForConnection(app, "Live"))
+            let streams = try eventRequests()
+            XCUIDevice.shared.press(.home)
+            sleep(UInt32(max(minutes * 60 - 20, 5)))
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "e2e-keepalive-\(label)-away"
+            shot.lifetime = .keepAlways
+            add(shot)
+            _ = try call("thread/send?id=\(thread)&text=\(label)%20while%20away&wait=1", method: "POST")
+            let alerted = banner.waitForExistence(timeout: 20)
+            let started = Date()
+            app.activate()
+            XCTAssertTrue(text(app, containing: "\(label) while away").waitForExistence(timeout: 90))
+            let backMs = Int(Date().timeIntervalSince(started) * 1000)
+            XCTAssertTrue(waitForConnection(app, "Live", timeout: 60))
+            let reopened = try eventRequests() - streams
+            return "\(label): \(Int(minutes)) min away, alerted while away \(alerted), reply on screen \(backMs) ms after return, "
+                + "new event streams \(reopened)"
+        }
+
+        let baseline = try away("off")
+        XCTAssertTrue(waitUntil(20) { !banner.exists })
+
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 10) {
+            let allow = permission.buttons["Allow While Using App"]
+            (allow.exists ? allow : permission.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(waitUntil(10) { (keep.value as? String) == "1" }, "keep-alive turns on")
+        attach(app, "e2e-keepalive-setting")
+
+        let kept = try away("on")
+        let note = XCTAttachment(string: baseline + "\n" + kept)
+        note.name = "keepalive-timings"
+        note.lifetime = .keepAlways
+        add(note)
+        XCTAssertTrue(kept.contains("alerted while away true"), "a reply arriving after a long time away still alerts")
+        XCTAssertTrue(kept.hasSuffix("new event streams 0"), "the same stream carried on, with no reconnect")
+
+        // The Live Activity's Disconnect closes the connection from the Dynamic Island.
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.025)).press(forDuration: 1.2)
+        let disconnect = springboard.buttons["Disconnect"].firstMatch
+        XCTAssertTrue(disconnect.waitForExistence(timeout: 5), "the Live Activity offers Disconnect")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "e2e-keepalive-live-activity"
+        shot.lifetime = .keepAlways
+        add(shot)
+        disconnect.tap()
+        XCTAssertTrue(waitUntil(10) { !springboard.buttons["Disconnect"].exists }, "the Live Activity ends")
     }
 
     @MainActor

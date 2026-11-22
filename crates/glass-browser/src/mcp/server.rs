@@ -1988,30 +1988,116 @@ async fn handle_request_with_viewport(
             ));
         }
     };
-    let mut params = request.params.clone();
-    params["name"] = json!(tool);
-    params["arguments"] = arguments;
-    let translated = JsonRpcRequest {
-        jsonrpc: request.jsonrpc.clone(),
-        method: request.method.clone(),
-        params,
-        id: request.id.clone(),
+    macro_rules! call_inner {
+        ($tool:expr, $arguments:expr) => {{
+            let mut params = request.params.clone();
+            params["name"] = json!($tool);
+            params["arguments"] = $arguments;
+            let translated = JsonRpcRequest {
+                jsonrpc: request.jsonrpc.clone(),
+                method: request.method.clone(),
+                params,
+                id: request.id.clone(),
+            };
+            Box::pin(handle_request_inner(
+                &translated,
+                session,
+                native_session,
+                native_runtime,
+                persistent_native_session,
+                options,
+                policy,
+                viewport,
+                knowledge_store_path,
+                development_sessions,
+                host_backend,
+                elicitation,
+            ))
+            .await
+        }};
+    }
+    // Reads around an action are best effort and bounded, so a page blocked
+    // by a dialog or a busy renderer delays the action by seconds, not 30 s.
+    macro_rules! inner_text {
+        ($tool:expr, $arguments:expr) => {{
+            tokio::time::timeout(Duration::from_secs(2), async {
+                call_inner!($tool, $arguments)
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|response| {
+                let result = response.result?;
+                (result["isError"] != true)
+                    .then(|| result["content"][0]["text"].as_str().map(str::to_owned))
+                    .flatten()
+            })
+        }};
+    }
+    macro_rules! page_state {
+        () => {{
+            let text = inner_text!("getText", json!({}));
+            let tabs = inner_text!("listTargets", json!({}))
+                .and_then(|tabs| serde_json::from_str::<Value>(&tabs).ok());
+            text.zip(tabs)
+                .map(|(text, tabs)| agent_tools::PageState { text, tabs })
+        }};
+    }
+    let before = if agent_tools::mutates_page(&agent_tool) {
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": agent_tools::WATCH_MUTATIONS, "timeoutMs": 1000})
+        );
+        page_state!()
+    } else {
+        None
     };
-    let mut response = Box::pin(handle_request_inner(
-        &translated,
-        session,
-        native_session,
-        native_runtime,
-        persistent_native_session,
-        options,
-        policy,
-        viewport,
-        knowledge_store_path,
-        development_sessions,
-        host_backend,
-        elicitation,
-    ))
-    .await?;
+    let mut response = call_inner!(tool, arguments)?;
+    let succeeded = response
+        .result
+        .as_ref()
+        .is_some_and(|result| result["isError"] != true);
+    let dialog_open = response.result.as_ref().is_some_and(|result| {
+        result["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("\"dialogOpen\":true"))
+    });
+    if succeeded && dialog_open {
+        if let Some(content) = response
+            .result
+            .as_mut()
+            .and_then(|result| result["content"].as_array_mut())
+        {
+            content.push(json!({"type": "text", "text": agent_tools::DIALOG_OPENED}));
+        }
+    } else if succeeded && let Some(before) = before {
+        // Let the page settle before reading it back: no requests for 250 ms
+        // (at most 1.5 s), then no DOM mutations for 300 ms after the action
+        // (at most 1 s). A page that stays busy just ends the wait.
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": agent_tools::WATCH_MUTATIONS, "timeoutMs": 1000})
+        );
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": "network-quiet=250", "timeoutMs": 1500})
+        );
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": agent_tools::DOM_QUIET, "timeoutMs": 1000})
+        );
+        if let Some(after) = page_state!()
+            && let Some(content) = response
+                .result
+                .as_mut()
+                .and_then(|result| result["content"].as_array_mut())
+        {
+            content.push(json!({
+                "type": "text",
+                "text": agent_tools::change_summary(&agent_tool, &before, &after)
+            }));
+        }
+    }
     if let Some(result) = response.result.as_mut()
         && result["isError"] == true
         && let Some(content) = result["content"].as_array_mut()

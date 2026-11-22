@@ -982,10 +982,38 @@ impl CdpBrowserSession {
         let mut topology_events = cdp.subscribe_events_with_params();
         let topology_for_events = Arc::clone(&topology);
         let cdp_for_events = cdp.clone();
+        // Chrome pauses auto-attached targets (for example a window.open
+        // popup) until they are resumed, even without waitForDebuggerOnStart,
+        // and the opener's click never completes meanwhile. The hardened
+        // presets resume them after arming interception instead.
+        let resume_attached_targets = !matches!(
+            policy.preset(),
+            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+        );
         tokio::spawn(async move {
             loop {
                 match topology_events.recv().await {
                     Ok(event) => {
+                        if resume_attached_targets
+                            && event.method == "Target.attachedToTarget"
+                            && let Some(attached) = event.params["sessionId"].as_str()
+                        {
+                            let cdp = cdp_for_events.clone();
+                            let attached = attached.to_owned();
+                            let page = event.params["targetInfo"]["type"] == "page";
+                            tokio::spawn(async move {
+                                if page {
+                                    let _ = emulate_focus(&cdp, &attached).await;
+                                }
+                                let _ = cdp
+                                    .send_to_session(
+                                        &attached,
+                                        "Runtime.runIfWaitingForDebugger",
+                                        None,
+                                    )
+                                    .await;
+                            });
+                        }
                         let mut topology = topology_for_events.lock().await;
                         let selected_frame = topology.active_frame_id.clone();
                         let selected_session = topology.active_session_id.clone();
@@ -1017,6 +1045,7 @@ impl CdpBrowserSession {
                 }
             }
         });
+        let _ = emulate_focus(&cdp, &session_id).await;
         cdp.send_browser(
             "Target.setAutoAttach",
             Some(serde_json::json!({
@@ -1361,3 +1390,17 @@ fn validate_viewport_dimensions(width: i64, height: i64) -> BrowserResult<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// Keep a page rendering as if focused. Without this, a page loses
+/// requestAnimationFrame as soon as it opens a popup, and actions on it stall.
+async fn emulate_focus(
+    cdp: &CdpClient,
+    session_id: &str,
+) -> Result<serde_json::Value, crate::browser::cdp::CdpError> {
+    cdp.send_to_session(
+        session_id,
+        "Emulation.setFocusEmulationEnabled",
+        Some(serde_json::json!({"enabled": true})),
+    )
+    .await
+}

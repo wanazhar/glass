@@ -3125,6 +3125,104 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn everyone_handoff_reply_emits_the_visible_delegate_entry_once() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence("handoff-reply-event", Vec::new(), true);
+    let ben = fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Ben", "tester", "square", 200, "", "")
+        .unwrap()
+        .id
+        .clone();
+    let receiver = fixture.events.subscribe();
+    let (status, body) = fixture.post(
+        "/api/everyone",
+        json!({"text":"@Ada ASK Ben: check the failing tests"}),
+    );
+    assert_eq!(status, 202, "{body}");
+    loop {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("delegate settlement");
+        if event.kind == "state"
+            && event.data["marble"] == ben
+            && event.data["status"] == "completed"
+        {
+            break;
+        }
+    }
+    let disk = fixture.store.as_ref().unwrap().load().unwrap();
+    let delegate = disk
+        .tasks
+        .iter()
+        .find(|t| t.marble_id == ben && t.status == "completed")
+        .unwrap();
+    let thread = disk
+        .threads
+        .iter()
+        .find(|t| disk.task_threads.get(&delegate.id) == Some(&t.id))
+        .unwrap();
+    assert_eq!(thread.conversation_id, "everyone");
+    let parent = disk
+        .transcript
+        .iter()
+        .find(|e| e.id == thread.parent_entry_id)
+        .unwrap();
+    assert_eq!(parent.kind, "handoff");
+    assert_eq!(parent.handoff.as_ref().unwrap().status, "asked");
+    let (status, body) = fixture
+        .server
+        .handle("GET", &format!("/api/threads/{}", thread.id), "");
+    assert_eq!(status, 200, "{body}");
+    let detail: Value = serde_json::from_str(&body).unwrap();
+    let entries: Vec<TranscriptEntry> = serde_json::from_value(detail["entries"].clone()).unwrap();
+    let reply = entries
+        .iter()
+        .find(|e| e.task_id == delegate.id && e.kind == "assistant")
+        .expect("delegate reply is visible in thread detail");
+    assert_ne!(reply.conversation_id, "everyone");
+    assert!(!disk.transcript.iter().any(|e| e.task_id == delegate.id
+        && e.kind == "assistant"
+        && e.conversation_id == "everyone"));
+    let replies: Vec<_> = fixture
+        .events
+        .since(0)
+        .into_iter()
+        .filter(|e| e.kind == "reply" && e.data["id"] == reply.id)
+        .collect();
+    assert_eq!(
+        replies.len(),
+        1,
+        "visible Everyone handoff reply has no matching SSE event"
+    );
+    assert_eq!(replies[0].conversation_id, "everyone");
+    assert_eq!(replies[0].data["thread_id"], thread.id);
+    assert_eq!(replies[0].data["task_id"], delegate.id);
+    assert_eq!(replies[0].data["sender"], "Ben");
+    assert_eq!(replies[0].data["text"], reply.text);
+    fixture
+        .store
+        .as_ref()
+        .unwrap()
+        .save(&fixture.state.lock().unwrap())
+        .unwrap();
+    assert_eq!(
+        fixture
+            .events
+            .since(0)
+            .iter()
+            .filter(|e| e.kind == "reply" && e.data["id"] == reply.id)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn durable_reply_events_match_visible_entries_for_default_named_and_everyone_turns() {
     if !python3_available() {
         return;

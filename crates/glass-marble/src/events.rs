@@ -248,6 +248,60 @@ mod tests {
     }
 
     #[test]
+    fn everyone_thread_reply_events_use_thread_detail_visibility() {
+        for kind in ["assistant", "failure"] {
+            for mirrored in [false, true] {
+                let mut state = crate::ProductState::default();
+                crate::everyone::mirror(
+                    &mut state,
+                    "marble",
+                    "Marble",
+                    "handoff",
+                    "asked Ben",
+                    "lead",
+                    None,
+                );
+                let parent = state.transcript[0].id.clone();
+                let thread = state.create_thread("everyone", &parent).unwrap();
+                let bus = EventBus::default();
+                bus.attach_replies(&mut state);
+                state.bind_thread("delegate", Some(&thread.id));
+                state.push_transcript(crate::TranscriptEntry {
+                    conversation_id: "private".into(),
+                    task_id: "delegate".into(),
+                    kind: kind.into(),
+                    text: "delegate result".into(),
+                    ..Default::default()
+                });
+                if mirrored {
+                    crate::everyone::mirror(
+                        &mut state,
+                        "ben",
+                        "Ben",
+                        kind,
+                        "delegate result",
+                        "delegate",
+                        None,
+                    );
+                }
+                let visible = state.thread_entries(&thread);
+                assert_eq!(visible.len(), 2);
+                bus.publish_replies(&state);
+                bus.publish_replies(&state);
+                let replies: Vec<_> = bus
+                    .since(0)
+                    .into_iter()
+                    .filter(|e| e.kind == "reply")
+                    .collect();
+                assert_eq!(replies.len(), 1, "{kind}, mirrored={mirrored}");
+                assert_eq!(replies[0].data["id"], visible[1].id);
+                assert_eq!(replies[0].data["kind"], kind);
+                assert_eq!(replies[0].conversation_id, "everyone");
+            }
+        }
+    }
+
+    #[test]
     fn releasing_buffered_everyone_replies_emits_only_newly_visible_entries() {
         let mut state = crate::ProductState::default();
         let bus = EventBus::default();

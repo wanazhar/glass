@@ -408,14 +408,26 @@ impl PolicyInterception {
     }
 
     async fn take_denial(&self) -> Option<PolicyError> {
+        self.take_navigation_denial(
+            self.cdp.current_session_id(),
+            self.cdp.active_frame().as_deref(),
+        )
+        .await
+    }
+
+    async fn take_navigation_denial(
+        &self,
+        session: Option<String>,
+        frame: Option<&str>,
+    ) -> Option<PolicyError> {
         if let Some(error) = self.last_denial.lock().await.take() {
             return Some(error);
         }
-        let frame = self.cdp.active_frame()?;
+        let frame = frame?;
         self.document_denials
             .lock()
             .await
-            .remove(&(self.cdp.current_session_id(), frame))
+            .remove(&(session, frame.to_owned()))
     }
 
     fn take_lagged_events(&self) -> u64 {

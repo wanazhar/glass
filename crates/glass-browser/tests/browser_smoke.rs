@@ -652,6 +652,72 @@ async fn targeted_download_after_popup_and_dialog_keeps_the_opener_responsive() 
 }
 
 #[tokio::test]
+async fn consent_dialogs_accept_explicit_cookie_choices_only() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let session = CdpBrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(required_chrome()),
+        profile: "consent-choices-e2e".into(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    for (html, dismissed) in [
+        (
+            "<dialog open aria-label='Cookie consent'><button onclick='window.choice=true'>Accept all cookies and continue</button></dialog>",
+            true,
+        ),
+        (
+            "<div id='cookie-notice'><button onclick='window.choice=true'>Got it</button></div>",
+            true,
+        ),
+        (
+            "<div id='cookie-notice'><button onclick='window.choice=true'>Accept invitation</button></div>",
+            false,
+        ),
+        (
+            "<dialog open aria-label='Payment'><button onclick='window.choice=true'>Accept all cookies</button></dialog>",
+            false,
+        ),
+        ("", false),
+    ] {
+        session
+            .evaluate(&format!(
+                "window.choice=false; document.body.innerHTML={}",
+                json!(html)
+            ))
+            .await
+            .unwrap();
+        let result = session.dismiss_consent().await.unwrap();
+        assert_eq!(
+            matches!(
+                result,
+                glass_browser::browser::session::ConsentDismissalOutcome::Dismissed
+            ),
+            dismissed,
+            "{html}"
+        );
+        assert_eq!(
+            session.evaluate("window.choice").await.unwrap(),
+            json!(dismissed)
+        );
+    }
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");

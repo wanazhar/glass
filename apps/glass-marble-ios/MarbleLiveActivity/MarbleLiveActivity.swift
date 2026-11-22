@@ -16,10 +16,7 @@ struct MarbleLiveActivity: Widget {
                     status(context)
                 }
                 Spacer(minLength: 0)
-                Button(intent: MarbleDisconnectIntent()) {
-                    Text("Disconnect")
-                }
-                .buttonStyle(.bordered)
+                disconnectButton(context)
             }
             .padding()
         } dynamicIsland: { context in
@@ -32,10 +29,7 @@ struct MarbleLiveActivity: Widget {
                     HStack {
                         status(context)
                         Spacer()
-                        Button(intent: MarbleDisconnectIntent()) {
-                            Text("Disconnect")
-                        }
-                        .buttonStyle(.bordered)
+                        disconnectButton(context)
                     }
                 }
             } compactLeading: {
@@ -50,15 +44,23 @@ struct MarbleLiveActivity: Widget {
     }
 
     private func connectionIcon(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>) -> some View {
-        let connected = !context.isStale && context.state.connectedAt != nil
-        return Image(systemName: connected ? "wifi" : "wifi.exclamationmark")
-            .accessibilityLabel(connected ? "Marble connected" : "Marble connection unconfirmed")
+        let connected = context.state.connectedAt != nil
+        return Image(systemName: context.isStale ? "wifi.slash" : connected ? "wifi" : "wifi.exclamationmark")
+            .accessibilityLabel(context.isStale ? "Marble disconnected" : connected ? "Marble connected" : "Marble reconnecting")
+    }
+
+    @ViewBuilder
+    private func disconnectButton(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>) -> some View {
+        if !context.isStale {
+            Button("Disconnect", intent: MarbleDisconnectIntent())
+                .buttonStyle(.bordered)
+        }
     }
 
     private func status(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>) -> some View {
         HStack(spacing: 6) {
             if context.isStale {
-                Text("Connection unconfirmed")
+                Text("Disconnected")
             } else if let connectedAt = context.state.connectedAt {
                 Text("Connected")
                 Text(timerInterval: connectedAt...Date.distantFuture, countsDown: false)

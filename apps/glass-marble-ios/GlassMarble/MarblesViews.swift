@@ -157,14 +157,18 @@ struct EveryoneView: View {
                     ForEach(responders, id: \.self) { id in
                         MarbleThinkingBubble(name: store.prism.marbles.first(where: { $0.id == id })?.name ?? "Marble")
                     }
+                    // A fixed scroll target survives the simultaneous insert
+                    // of the sent bubble, working rows and composer resize.
+                    MarbleTranscriptEnd()
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), hasEndTarget: true)
         .task { await store.openEveryoneHistory() }
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .marbleComposerInset { composer }

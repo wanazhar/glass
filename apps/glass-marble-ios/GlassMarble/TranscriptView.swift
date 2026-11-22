@@ -480,6 +480,17 @@ struct ComposerBar: View {
     }
 }
 
+struct MarbleTranscriptEnd: View {
+    enum ID: Hashable { case latest }
+
+    var body: some View {
+        Color.clear
+            .frame(height: 1)
+            .accessibilityHidden(true)
+            .id(ID.latest)
+    }
+}
+
 extension View {
     func marbleComposerInset(@ViewBuilder content: () -> some View) -> some View {
         safeAreaInset(edge: .bottom, spacing: 0, content: content)
@@ -496,8 +507,12 @@ extension View {
         }
     }
 
-    func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil) -> some View {
-        modifier(MarbleFollowLatest(hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing))
+    func marbleFollowsLatest(
+        hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil, hasEndTarget: Bool = false
+    ) -> some View {
+        modifier(MarbleFollowLatest(
+            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, hasEndTarget: hasEndTarget
+        ))
     }
 }
 
@@ -505,6 +520,7 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
+    let hasEndTarget: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position = ScrollPosition()
     @State private var follow = MarbleScrollFollow()
@@ -556,7 +572,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
                 if follow.following && !userScrolling && abs(new.distanceFromBottom) > 1
                     && (resized || (initialLayout && searchJump == nil)) {
-                    position.scrollTo(edge: .bottom)
+                    scrollToEnd()
                 }
             }
             .task(id: hasMessages) {
@@ -567,7 +583,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 await Task.yield()
                 guard !Task.isCancelled, !positionedHistory else { return }
                 positionedHistory = true
-                if searchJump == nil && follow.following { position.scrollTo(edge: .bottom) }
+                if searchJump == nil && follow.following { scrollToEnd() }
             }
             .onChange(of: searchJump, initial: true) { _, target in
                 if target != nil {
@@ -599,6 +615,14 @@ private struct MarbleFollowLatest: ViewModifier {
     private func jumpToLatest() {
         follow.jumpToLatest()
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
+            scrollToEnd()
+        }
+    }
+
+    private func scrollToEnd() {
+        if hasEndTarget {
+            position.scrollTo(id: MarbleTranscriptEnd.ID.latest, anchor: .bottom)
+        } else {
             position.scrollTo(edge: .bottom)
         }
     }

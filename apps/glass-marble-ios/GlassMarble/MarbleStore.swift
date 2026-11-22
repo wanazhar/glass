@@ -11,6 +11,7 @@ final class MarbleStore: ObservableObject {
     #if DEBUG
     private var fixtureThreads: [String: MarbleThreadPage]?
     private var fixturePendingEveryone: [MarbleEntry]?
+    private var fixtureEveryoneSend = false
     #endif
     /// Kept for the views' tone mapping; the label itself comes from the
     /// Core reducer so every surface says the same word.
@@ -857,7 +858,12 @@ final class MarbleStore: ObservableObject {
     func send(_ text: String, to target: MarbleSendTarget, entries: [MarbleEntry],
               onConversation: ((String) -> Void)? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard client != nil, !trimmed.isEmpty,
+        #if DEBUG
+        let isFixtureSend = fixtureEveryoneSend && target == .everyone()
+        #else
+        let isFixtureSend = false
+        #endif
+        guard client != nil || isFixtureSend, !trimmed.isEmpty,
               canSend(to: target) else { return false }
         let responders: [String]
         switch target {
@@ -869,7 +875,7 @@ final class MarbleStore: ObservableObject {
         let message = MarbleOutgoing(target: target, text: trimmed, responders: responders, entries: entries)
         if let onConversation { draftResolutions[message.id] = onConversation }
         outgoing.append(message)
-        transmit(message)
+        if !isFixtureSend { transmit(message) }
         return true
     }
 
@@ -2078,6 +2084,7 @@ extension MarbleStore {
         store.connectionPaused = false
         store.onboarded = true
         store.loaded = true
+        store.fixtureEveryoneSend = ProcessInfo.processInfo.arguments.contains("-MarbleUITestEveryoneSend")
         store.status.streamOpened()
         var state = MarbleState.empty
         let now = UInt64(Date().timeIntervalSince1970)

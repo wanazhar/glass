@@ -49,6 +49,29 @@ final class GlassMarbleUITests: XCTestCase {
         assertHittable("Everyone history row 59")
     }
 
+    func testEveryoneSendKeepsHistoryAndThreeWorkingAgentsVisible() {
+        app.terminate()
+        app.launchArguments.append("-MarbleUITestEveryoneSend")
+        app.launch()
+        app.tabBars.buttons["Everyone"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Everyone,'")).firstMatch.tap()
+        assertHittable("Everyone history row 59")
+
+        let message = "@everyone whats the system time?"
+        let field = app.textFields.firstMatch
+        field.tap()
+        field.typeText(message)
+        app.buttons["Send"].tap()
+
+        assertHittable(message)
+        for name in ["Marble", "Ada", "Ben"] {
+            let indicator = app.descendants(matching: .any)["\(name) is working"].firstMatch
+            XCTAssertTrue(indicator.waitForExistence(timeout: 3))
+            XCTAssertTrue(indicator.isHittable)
+        }
+        assertHittable("Everyone history row 59")
+    }
+
     func testColdOpenShowsLatestNamedAndDefaultHistoryWithoutScrolling() {
         app.tabBars.buttons["Marbles"].tap()
         app.staticTexts["Ada"].tap()

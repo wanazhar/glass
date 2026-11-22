@@ -45,7 +45,7 @@ struct DesktopView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             model.attach(app.api)
-            model.isVisible = true
+            model.appear()
             await model.watch()
         }
         .onDisappear {
@@ -136,7 +136,14 @@ struct DesktopView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .scaleEffect(zoom)
                     .offset(pan)
-                    if model.frame != nil, !model.switchingWidth, model.picture == .connecting || model.picture == .idle {
+                    if model.disconnected {
+                        Button("Reconnect", systemImage: "arrow.clockwise") { model.reconnect() }
+                            .font(.callout.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .floatingGlass()
+                            .accessibilityIdentifier("desktop.disconnected")
+                    } else if model.frame != nil, !model.switchingWidth, model.picture == .connecting || model.picture == .idle {
                         Label("Reconnecting", systemImage: "arrow.triangle.2.circlepath")
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
@@ -271,7 +278,7 @@ struct DesktopView: View {
         switch model.picture {
         case .live: "Live"
         case .stills: "Live view unavailable. Updating twice a second."
-        case .connecting, .idle: "Connecting…"
+        case .connecting, .idle: model.disconnected ? "Disconnected" : "Connecting…"
         }
     }
 

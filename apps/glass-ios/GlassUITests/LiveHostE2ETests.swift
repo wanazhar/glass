@@ -1069,6 +1069,16 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(kept.contains("alerted while away true"), "a reply arriving after a long time away still alerts")
         XCTAssertTrue(kept.hasSuffix("new event streams 0"), "the same stream carried on, with no reconnect")
 
+        // The desktop picture joins the held connection, so Disconnect has to close it too.
+        _ = try call("desktop/fake?on=1&kbps=0&rtt=0", method: "POST")
+        defer { _ = try? call("desktop/fake?on=0", method: "POST") }
+        app.tabBars.buttons["Desktop"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["desktop.screen"].firstMatch.waitForExistence(timeout: 20))
+        func desktopStreams() throws -> Int {
+            let report = try JSONSerialization.jsonObject(with: Data(call("desktop/report").utf8)) as? [String: Any]
+            return report?["streamsAfterMark"] as? Int ?? -1
+        }
+
         // The Live Activity's Disconnect closes the connection from the Dynamic Island.
         XCUIDevice.shared.press(.home)
         sleep(2)
@@ -1081,6 +1091,18 @@ final class LiveHostE2ETests: XCTestCase {
         add(shot)
         disconnect.tap()
         XCTAssertTrue(waitUntil(10) { !springboard.buttons["Disconnect"].exists }, "the Live Activity ends")
+
+        // Back in Glass with Desktop still showing, the status poll must not quietly reopen the picture.
+        _ = try call("desktop/mark", method: "POST")
+        app.activate()
+        let reconnect = app.buttons["desktop.disconnected"].firstMatch
+        XCTAssertTrue(reconnect.waitForExistence(timeout: 10), "Desktop shows it was disconnected")
+        sleep(8)
+        attach(app, "e2e-keepalive-desktop-disconnected")
+        XCTAssertEqual(try desktopStreams(), 0, "no new desktop stream after Disconnect")
+        reconnect.tap()
+        XCTAssertTrue(waitUntil(15) { ((try? desktopStreams()) ?? 0) > 0 }, "Reconnect opens the picture again")
+        XCTAssertTrue(waitUntil(10) { !reconnect.exists })
     }
 
     @MainActor

@@ -66,6 +66,8 @@ final class DesktopModel {
     /// The live picture only runs while the Desktop screen is showing.
     var isVisible = false
     private var frameTask: Task<Void, Never>?
+    /// Disconnect was tapped: the picture stays off until you reopen Desktop or tap Reconnect.
+    private(set) var disconnected = false
     private var pictureSession: String?
     /// Inputs waiting to be sent, in order. A newer pointer move replaces a waiting one, so a slow
     /// network never replays a backlog of stale moves.
@@ -94,6 +96,12 @@ final class DesktopModel {
 
     func attach(_ api: GlassClient?) { self.api = api }
 
+    /// The Desktop screen is showing again, so a picture closed by Disconnect may start.
+    func appear() {
+        isVisible = true
+        disconnected = false
+    }
+
     func watch() async {
         while !Task.isCancelled {
             await refresh()
@@ -114,7 +122,7 @@ final class DesktopModel {
             AccessibilityNotification.Announcement(status.controlSummary).post()
         }
         if status?.isRunning == true {
-            guard isVisible else { return }
+            guard isVisible, !disconnected else { return }
             if frameTask != nil, pictureSession != status?.sessionId { reconnect() } else { startPicture() }
         } else {
             stopPicture()
@@ -163,6 +171,7 @@ final class DesktopModel {
     // MARK: Picture
 
     func reconnect() {
+        disconnected = false
         stopPicture()
         guard isVisible else { return }
         startPicture()
@@ -173,6 +182,14 @@ final class DesktopModel {
         frameTask?.cancel()
         frameTask = nil
         picture = .idle
+    }
+
+    /// The Live Activity's Disconnect: close the picture and keep it closed.
+    func disconnect() {
+        disconnected = true
+        backgrounded = false
+        resumeOnReturn = false
+        stopPicture()
     }
 
     /// Leaving the app. Kept alive, the stream stays open; otherwise it closes now, keeping the last frame
@@ -222,7 +239,7 @@ final class DesktopModel {
                     let frames = try await api.desktopStream(width: self?.streamWidth ?? 1280)
                     self?.picture = .live
                     self?.switchingWidth = false
-                    KeepAlive.shared.hold("desktop") { [weak self] in self?.stopPicture() }
+                    KeepAlive.shared.hold("desktop") { [weak self] in self?.disconnect() }
                     failures = 0
                     for try await frame in frames { self?.show(frame) }
                 } catch {

@@ -14,6 +14,7 @@ pub(crate) fn engine_input(
         state.routines.offset_minutes,
     )];
     context.push(crate::everyone::addressing(state, text, owner));
+    context.push(crate::conversation::REPLY_PRIVACY_GUIDANCE.into());
     if let Some(previous) = conversation_id.filter(|id| !id.is_empty()).and_then(|id| {
         state.tasks.iter().rev().find(|task| {
             task.conversation_id == id
@@ -115,6 +116,23 @@ mod tests {
 
     fn has_withdrawal(input: TurnInput) -> bool {
         input.text.contains("withdrawn")
+    }
+
+    #[test]
+    fn resumed_conversations_receive_the_reply_privacy_instruction_each_turn() {
+        let mut state = ProductState::default();
+        state.conversation_mut("existing");
+        for owner in ["marble", "ada"] {
+            for text in ["private question", "@everyone question"] {
+                let input = engine_input(&state, Some("existing"), owner, text);
+                assert!(
+                    input
+                        .text
+                        .contains(crate::conversation::REPLY_PRIVACY_GUIDANCE)
+                );
+                assert!(input.text.ends_with(text));
+            }
+        }
     }
 
     #[test]

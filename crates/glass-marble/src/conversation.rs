@@ -40,7 +40,9 @@ pub const SESSION_INSTRUCTIONS: &str = "You are a durable collaborator working i
      attribution when you act on the human's behalf.";
 
 const TOOL_GUIDANCE: &str = "Use your tools (web_search/web_fetch) whenever the user asks for current or factual information you cannot be sure of. Never say you searched or checked without actually calling the tool.";
-const CONVERSATIONAL_GUIDANCE: &str = "Match the length of the message: greetings and small talk get one or two sentences, with no unsolicited speeches or monologues. Expand only when asked or when the task needs it. Keep reasoning and planning private; put only the final answer in your reply.";
+const CONVERSATIONAL_GUIDANCE: &str = "Match the length of the message: greetings and small talk get one or two sentences, with no unsolicited speeches or monologues. Expand only when asked or when the task needs it.";
+pub(crate) const REPLY_PRIVACY_GUIDANCE: &str =
+    "Keep reasoning and planning private; put only the final answer in your reply.";
 
 /// Session instructions for one conversation: the product posture, plus what the
 /// workspace is made of so the marble does not infer crate ownership from a file
@@ -51,6 +53,8 @@ fn session_instructions(cwd: &Path) -> String {
     instructions.push_str(TOOL_GUIDANCE);
     instructions.push('\n');
     instructions.push_str(CONVERSATIONAL_GUIDANCE);
+    instructions.push('\n');
+    instructions.push_str(REPLY_PRIVACY_GUIDANCE);
     if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
         instructions.push('\n');
         instructions.push_str(&briefing);
@@ -1539,6 +1543,7 @@ mod tests {
             assert!(prompt.starts_with("You are Marble."));
             assert!(prompt.contains("Keep reasoning and planning private"));
             assert!(prompt.contains(CONVERSATIONAL_GUIDANCE));
+            assert!(prompt.contains(REPLY_PRIVACY_GUIDANCE));
             assert!(!prompt.contains("You are Glass Marble"));
         }
         let mut roster = crate::PrismState::default();

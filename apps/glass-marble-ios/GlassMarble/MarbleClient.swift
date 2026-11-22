@@ -101,12 +101,12 @@ final class MarbleClient: @unchecked Sendable {
         }
     }
 
-    private func post(_ path: String, body: Encodable? = nil) async throws {
+    private func post(_ path: String, body: Encodable? = nil, acceptsNotFound: Bool = false) async throws {
         let data = try body.map { try JSONEncoder().encode($0) }
         let request = try makeRequest(path: path, method: "POST", body: data)
         do {
             let (responseData, response) = try await session.data(for: request)
-            try marbleValidate(response, data: responseData)
+            try marbleValidate(response, data: responseData, acceptsNotFound: acceptsNotFound)
         } catch let error as MarbleClientError {
             throw error
         } catch {
@@ -177,7 +177,7 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     func deleteConversation(id: String) async throws {
-        try await post("/api/conversations/\(encoded(id))/delete")
+        try await post("/api/conversations/\(encoded(id))/delete", acceptsNotFound: true)
     }
 
     func cancel(taskId: String) async throws {

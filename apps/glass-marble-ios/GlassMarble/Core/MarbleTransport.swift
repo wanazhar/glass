@@ -327,11 +327,11 @@ enum MarbleClientError: LocalizedError, Equatable {
 }
 
 /// Validate a completed HTTP response; throws the mapped error.
-func marbleValidate(_ response: URLResponse, data: Data) throws {
+func marbleValidate(_ response: URLResponse, data: Data, acceptsNotFound: Bool = false) throws {
     guard let http = response as? HTTPURLResponse else {
         throw MarbleClientError.offline("The host did not answer over HTTP.")
     }
-    guard (200..<300).contains(http.statusCode) else {
+    guard (200..<300).contains(http.statusCode) || (acceptsNotFound && http.statusCode == 404) else {
         let body = String(data: data, encoding: .utf8) ?? ""
         throw MarbleClientError.status(http.statusCode, body: body)
     }

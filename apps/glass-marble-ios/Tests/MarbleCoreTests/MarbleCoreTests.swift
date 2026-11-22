@@ -223,14 +223,14 @@ final class SSEParserTests: XCTestCase {
 }
 
 final class ErrorMappingTests: XCTestCase {
-    private func validate(status: Int, body: String = "") throws {
+    private func validate(status: Int, body: String = "", acceptsNotFound: Bool = false) throws {
         let response = HTTPURLResponse(
             url: URL(string: "http://h/api")!,
             statusCode: status,
             httpVersion: nil,
             headerFields: nil
         )!
-        try marbleValidate(response, data: Data(body.utf8))
+        try marbleValidate(response, data: Data(body.utf8), acceptsNotFound: acceptsNotFound)
     }
 
     func testStatusMapping() {
@@ -248,6 +248,23 @@ final class ErrorMappingTests: XCTestCase {
     func testNotFound() {
         XCTAssertThrowsError(try validate(status: 404)) {
             XCTAssertEqual($0 as? MarbleClientError, .notFound)
+        }
+    }
+
+    func testIdempotentDeleteAcceptsMissingConversation() {
+        XCTAssertNoThrow(try validate(status: 200, acceptsNotFound: true))
+        XCTAssertNoThrow(try validate(status: 404, body: #"{"error":"unknown_conversation"}"#, acceptsNotFound: true))
+    }
+
+    func testIdempotentDeleteStillRejectsOtherFailures() {
+        XCTAssertThrowsError(try validate(status: 409, body: #"{"error":"conversation_busy"}"#, acceptsNotFound: true)) {
+            XCTAssertEqual($0 as? MarbleClientError, .conflict("conversation_busy"))
+        }
+        XCTAssertThrowsError(try validate(status: 401, acceptsNotFound: true)) {
+            XCTAssertEqual($0 as? MarbleClientError, .unauthorized)
+        }
+        XCTAssertThrowsError(try validate(status: 503, acceptsNotFound: true)) {
+            XCTAssertEqual($0 as? MarbleClientError, .server(503, ""))
         }
     }
 

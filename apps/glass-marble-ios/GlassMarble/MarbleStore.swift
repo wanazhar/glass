@@ -1468,8 +1468,7 @@ final class MarbleStore: ObservableObject {
         deletedConversationIDs.contains(id)
     }
 
-    func delete(_ conversation: MarbleConversation) async -> Bool {
-        let id = conversation.id
+    func delete(conversationId id: String) async -> Bool {
         let generation = hostGeneration.current
         guard !isDeletedConversation(id), conversationDeletions[id] != generation else { return false }
         guard !outgoing.contains(where: { $0.target.conversationId == id && $0.delivery == .sending }) else {

@@ -300,10 +300,10 @@ struct MarbleChatView: View {
         }
         .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
-                if let conversation = store.state.conversation(conversationId ?? "") {
+                if let conversationId {
                     Task {
-                        if await store.delete(conversation) {
-                            navigation.deleted(conversation.id)
+                        if await store.delete(conversationId: conversationId) {
+                            navigation.deleted(conversationId)
                         }
                     }
                 }

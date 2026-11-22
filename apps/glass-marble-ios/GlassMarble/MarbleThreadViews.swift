@@ -309,10 +309,11 @@ private struct MarbleJumpTimeline: View {
             .scrollDismissesKeyboard(.interactively)
             .marbleFollowsLatest(hasMessages: !entries.isEmpty, searchJump: jump?.requestId, outgoing: outgoing)
             .task(id: jump.flatMap { target in entries.contains { $0.id == target.entryId } ? target : nil }) {
-                guard let jump, entries.contains(where: { $0.id == jump.entryId }) else { return }
+                guard let jump, let row = transcript.standalone.first(where: { $0.id == jump.entryId }) else { return }
                 highlight = jump.entryId
                 await Task.yield()
-                proxy.scrollTo(entries.first { $0.id == jump.entryId }?.rowID, anchor: .center)
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(row.rowID, anchor: .center)
                 try? await Task.sleep(for: .seconds(1.6))
                 guard !Task.isCancelled else { return }
                 withAnimation(reduceMotion ? nil : .easeOut) { highlight = nil }

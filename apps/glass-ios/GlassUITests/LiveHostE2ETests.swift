@@ -899,6 +899,7 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     /// Drags the chat back by about a screen and lets go without a fling.
+    @MainActor
     private func readBack(_ screen: XCUIElement) {
         screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).press(
             forDuration: 0.01,
@@ -997,9 +998,12 @@ final class LiveHostE2ETests: XCTestCase {
         app.openSettings("notifications")
         let alerts = app.switches["settings.notifications"].firstMatch
         XCTAssertTrue(alerts.waitForExistence(timeout: 10))
-        alerts.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
-        if springboard.alerts.firstMatch.waitForExistence(timeout: 10) { springboard.alerts.firstMatch.buttons["Allow"].tap() }
-        XCTAssertTrue(waitUntil(10) { (alerts.value as? String) == "1" }, "alerts turn on")
+        for _ in 0..<2 where (alerts.value as? String) != "1" {
+            alerts.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+            if springboard.alerts.firstMatch.waitForExistence(timeout: 5) { springboard.alerts.firstMatch.buttons["Allow"].tap() }
+            _ = waitUntil(5) { (alerts.value as? String) == "1" }
+        }
+        XCTAssertEqual(alerts.value as? String, "1", "alerts turn on")
 
         let banner = springboard.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS 'Reply ready' AND label CONTAINS 'Kept alive'")).firstMatch
@@ -1030,6 +1034,10 @@ final class LiveHostE2ETests: XCTestCase {
         }
 
         let baseline = try away("off")
+        let first = XCTAttachment(string: baseline)
+        first.name = "keepalive-baseline"
+        first.lifetime = .keepAlways
+        add(first)
         XCTAssertTrue(waitUntil(20) { !banner.exists })
 
         app.openSettings("connection")

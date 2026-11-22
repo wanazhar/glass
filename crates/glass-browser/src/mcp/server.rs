@@ -1572,7 +1572,7 @@ async fn mutation_lease_error(
     } else if !tool_requires_mutation_lease(tool_name) {
         return None;
     }
-    let arguments = request.params.get("arguments")?;
+    let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
     let lease = arguments.get("mutationLease").and_then(Value::as_object);
     let token = lease
         .and_then(|lease| lease.get("token"))
@@ -7977,6 +7977,26 @@ mod tests {
             lease_context_for_request(true, "tools/list", None),
             Ok(None)
         ));
+    }
+
+    #[tokio::test]
+    async fn daemon_mutation_alias_requires_lease_without_arguments() {
+        let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
+        for params in [
+            json!({"name":"browser_download"}),
+            json!({"name":"browser_download","arguments":null}),
+            json!({"name":"browser_download","arguments":{}}),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call", "params":params
+            }))
+            .unwrap();
+            assert!(
+                mutation_lease_error(&request, &manager, "session", "client")
+                    .await
+                    .is_some()
+            );
+        }
     }
 
     #[tokio::test]

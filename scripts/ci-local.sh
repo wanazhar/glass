@@ -195,11 +195,11 @@ ensure_tools() {
   fi
   if ! tool_version_matches "$CARGO_DENY_VERSION" cargo deny --version; then
     install_cargo_deny \
-      || echo "warning: cargo-deny ${CARGO_DENY_VERSION} not installed; audit step will fail" >&2
+      || { echo "cargo-deny ${CARGO_DENY_VERSION} is required" >&2; exit 1; }
   fi
   if ! tool_version_matches "${CARGO_AUDIT_VERSION#v}" cargo audit --version; then
     install_cargo_audit \
-      || echo "warning: cargo-audit ${CARGO_AUDIT_VERSION} not installed; audit step will fail" >&2
+      || { echo "cargo-audit ${CARGO_AUDIT_VERSION} is required" >&2; exit 1; }
   fi
 }
 

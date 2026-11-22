@@ -92,6 +92,22 @@ fi
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((root / "cargo/bin/test-tool").exists())
 
+    def test_required_tools_abort_ci_on_hash_mismatch(self):
+        for tool in ["DENY", "AUDIT"]:
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as scratch:
+                root = Path(scratch)
+                archive, digest = self.archive(root)
+                extra = '''
+tool_version_matches() { [[ "$1" != "${CARGO_''' + tool + '''_VERSION#v}" ]]; }
+ensure_tools
+echo UNEXPECTED_GATE >&2
+exit 0
+'''
+                result = self.run_installer(root, archive, digest, extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SHA-256 mismatch", result.stderr)
+                self.assertNotIn("UNEXPECTED_GATE", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,6 +81,9 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+tokio::task_local! {
+    static INTERNAL_LOGIN_CALL: bool;
+}
 #[cfg(feature = "native-engine")]
 const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(feature = "native-engine")]
@@ -2151,7 +2154,10 @@ async fn handle_request_with_viewport_unredacted(
     }
     macro_rules! inner_result {
         ($tool:expr, $arguments:expr) => {{
-            match call_inner!($tool, $arguments).and_then(|response| response.result) {
+            let response = INTERNAL_LOGIN_CALL
+                .scope(true, async { call_inner!($tool, $arguments) })
+                .await;
+            match response.and_then(|response| response.result) {
                 Some(result) => {
                     let text = result["content"][0]["text"]
                         .as_str()
@@ -2168,6 +2174,16 @@ async fn handle_request_with_viewport_unredacted(
         }};
     }
     if agent_tool == "browser_logins" {
+        if let Err(error) =
+            policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)
+        {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({
+                    "content":[{"type":"text","text":error.to_string()}], "isError":true
+                }),
+            ));
+        }
         let name = agent_arguments["name"].as_str().unwrap_or_default();
         let outcome = match agent_arguments["action"].as_str().unwrap_or_default() {
             "list" => agent_tools::list_logins(),
@@ -2185,10 +2201,11 @@ async fn handle_request_with_viewport_unredacted(
                     async {
                         inner_result!("setCookies", json!({"cookies": login["cookies"]}))?;
                         inner_result!("navigate", json!({"url": login["url"]}))?;
-                        inner_result!(
+                        let restored = inner_result!(
                             "evaluate",
                             json!({"expression": agent_tools::write_login_storage(&login)})
                         )?;
+                        agent_tools::check_login_storage_restore(&restored)?;
                         inner_result!("reload", json!({}))?;
                         Ok::<_, String>(agent_tools::loaded_login(name, &login))
                     }
@@ -8090,6 +8107,12 @@ fn serialized_result_mode<T: Serialize + ?Sized>(
     value: &T,
     mode: ResponseMode,
 ) -> BrowserResult<Value> {
+    if INTERNAL_LOGIN_CALL
+        .try_with(|internal| *internal)
+        .unwrap_or(false)
+    {
+        return serialized_result(value);
+    }
     let value = serde_json::to_value(value)?;
     let projected = project_and_store(value, mode, "mcp", default_result_store_path())?;
     Ok(text_result(serde_json::to_string(&projected)?))
@@ -9560,6 +9583,81 @@ mod tests {
         )
         .await
         .expect("native MCP tool should return a response")
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_logins_round_trip_without_internal_diagnostics() {
+        const CHILD: &str = "GLASS_LOGIN_REGRESSION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = PdfTestDirectory::new();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mcp::server::tests::native_logins_round_trip_without_internal_diagnostics",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("GLASS_CONFIG_HOME", root.path())
+                .env("XDG_CACHE_HOME", root.path().join("cache"))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}/", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let mut first = true;
+                    loop {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let mut request = [0;4096];
+                        let _ = stream.read(&mut request).await;
+                        let body = "<!doctype html><title>Login</title><body>Account</body>";
+                        let cookie = if first { "Set-Cookie: sid=login-cookie-value; Path=/\r\n" } else { "" };
+                        first = false;
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    }
+                });
+                let (mut session, mut native) = (None, None);
+                let options = SessionOptions {incognito:true, ..SessionOptions::default()};
+                let policy = BrowserPolicy::development(std::env::temp_dir()).unwrap();
+                let navigation = invoke_native_mcp_tool("navigate", json!({"url":url}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(navigation.result.unwrap()["isError"], true);
+                native.as_ref().unwrap().script("localStorage.setItem('login-token', 'storage-value')").await.unwrap();
+                let count = || std::fs::read_dir(default_result_store_path()).map(|entries| entries.count()).unwrap_or(0);
+                let before = count();
+                let saved = invoke_native_mcp_tool("browser_logins", json!({"action":"save","name":"work"}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(saved.result.as_ref().unwrap()["isError"], true, "{saved:?}");
+                assert_eq!(count(), before);
+                assert_eq!(super::super::agent_tools::read_login("work").unwrap()["storage"]["login-token"], "storage-value");
+                native.take().unwrap().close().await.unwrap();
+                let loaded = invoke_native_mcp_tool("browser_logins", json!({"action":"load","name":"work"}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(loaded.result.as_ref().unwrap()["isError"], true, "{loaded:?}");
+                let fresh = native.as_ref().unwrap();
+                assert_eq!(fresh.script("localStorage.getItem('login-token')").await.unwrap().value, "storage-value");
+                assert!(fresh.native_cookies().await.unwrap().iter().any(|c| c.name=="sid" && c.value=="login-cookie-value"));
+                let denied = BrowserPolicy::ci(std::env::temp_dir()).unwrap();
+                for action in ["list", "delete"] {
+                    let result = invoke_native_mcp_tool("browser_logins", json!({"action":action,"name":"work"}), &mut session, &mut native, &options, &denied).await.result.unwrap();
+                    assert_eq!(result["isError"], true);
+                    assert!(result["content"][0]["text"].as_str().unwrap().contains("PersistentProfile"));
+                }
+                assert!(super::super::agent_tools::read_login("work").is_ok());
+                for html in ["<div id=onetrust-banner-sdk><button id=onetrust-accept-btn-handler>Accept</button></div>", "<div id=cookie-notice><button>Accept all</button></div>"] {
+                    let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+                    let navigated = invoke_native_mcp_tool("navigate", json!({"url":format!("data:text/html,{encoded}")}), &mut session, &mut native, &options, &policy).await;
+                    assert_ne!(navigated.result.unwrap()["isError"], true);
+                    let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
+                    assert_ne!(result["isError"], true, "{result}");
+                }
+                native.take().unwrap().close().await.unwrap();
+                server.abort();
+            });
+        }).unwrap().join().unwrap();
     }
 
     #[cfg(feature = "native-engine")]

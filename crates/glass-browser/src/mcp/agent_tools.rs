@@ -641,15 +641,18 @@ fn login_path(name: &str) -> Result<std::path::PathBuf, String> {
 }
 
 /// Page script returning the URL, origin and full localStorage as JSON.
-pub(crate) const READ_LOGIN_STORAGE: &str = "JSON.stringify({url: location.href, origin: location.origin, storage: Object.fromEntries(Object.keys(localStorage).slice(0, 256).map(k => [k, localStorage.getItem(k)]))})";
+pub(crate) const READ_LOGIN_STORAGE: &str = "JSON.stringify({url: location.href, origin: location.origin, storage: Object.fromEntries(Array.from({length: Math.min(localStorage.length, 256)}, (_, i) => localStorage.key(i)).filter(k => k !== null).map(k => [k, localStorage.getItem(k)]))})";
 
 /// Write a login file from the `cookies` result and [`READ_LOGIN_STORAGE`].
 pub(crate) fn save_login(name: &str, cookies: &str, page: &str) -> Result<String, String> {
     let path = login_path(name)?;
-    let cookies: Value = serde_json::from_str(cookies)
+    let cookies = evaluation_value(cookies)
         .map_err(|error| format!("browser_logins: could not read cookies: {error}"))?;
-    let page: Value = serde_json::from_str(&unquote(page))
+    let page = evaluation_value(page)
         .map_err(|error| format!("browser_logins: could not read the page state: {error}"))?;
+    if !cookies.is_array() || !page["storage"].is_object() {
+        return Err("browser_logins: invalid cookie or localStorage snapshot".into());
+    }
     let origin = page["origin"].as_str().unwrap_or("null");
     if !origin.starts_with("http") {
         return Err(
@@ -694,6 +697,14 @@ pub(crate) fn write_login_storage(login: &Value) -> String {
             "{}".into()
         }
     )
+}
+
+pub(crate) fn check_login_storage_restore(raw: &str) -> Result<(), String> {
+    if evaluation_value(raw)? == "ok" {
+        Ok(())
+    } else {
+        Err("browser_logins: localStorage was not restored (origin mismatch or redirect); sign in at the saved origin and retry".into())
+    }
 }
 
 pub(crate) fn loaded_login(name: &str, login: &Value) -> String {
@@ -850,7 +861,8 @@ pub(crate) fn read_report(
 }
 
 fn consent_report(raw: &str) -> Result<String, String> {
-    match unquote(raw).as_str() {
+    let value = evaluation_value(raw)?;
+    match value.as_str().unwrap_or_default() {
         "dismissed" => Ok("Dismissed the cookie banner. Retry the action it was covering.".into()),
         "unrecognized_framework" => {
             Err("browser_dismiss_consent found a consent banner but not its accept button.".into())
@@ -1712,6 +1724,10 @@ mod tests {
     #[test]
     fn consent_report_says_what_happened() {
         assert!(
+            consent_report(&json!({"result":"dismissed","detailAvailability":{}}).to_string())
+                .is_ok()
+        );
+        assert!(
             consent_report("\"dismissed\"")
                 .unwrap()
                 .starts_with("Dismissed")
@@ -1723,6 +1739,20 @@ mod tests {
 
     #[test]
     fn logins_validate_names_and_keep_values_out_of_messages() {
+        assert!(check_login_storage_restore("\"ok\"").is_ok());
+        assert!(
+            check_login_storage_restore(
+                &json!({"result":"ok","detailAvailability":{}}).to_string()
+            )
+            .is_ok()
+        );
+        for result in ["\"origin mismatch\"", "false", "null"] {
+            assert!(
+                check_login_storage_restore(result)
+                    .unwrap_err()
+                    .contains("not restored")
+            );
+        }
         assert!(login_path("github.com").is_ok());
         for bad in ["", ".hidden", "../etc", "a/b", &"x".repeat(65)] {
             assert!(login_path(bad).is_err(), "{bad}");

@@ -3125,6 +3125,260 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn client_message_ids_correlate_and_deduplicate_all_chat_send_paths() {
+    if !python3_available() {
+        return;
+    }
+    for target in [
+        "default-first",
+        "default-private",
+        "named-first",
+        "named-private",
+        "dispatch",
+        "everyone",
+    ] {
+        for threaded in [false, true] {
+            let mut fixture = NamedTurnFixture::with_persistence(
+                &format!("client-send-{target}-{threaded}"),
+                vec![],
+                true,
+            );
+            fixture.install_default_worker();
+            let everyone = target == "everyone";
+            let named = target.starts_with("named") || target == "dispatch";
+            let path = if everyone {
+                "/api/everyone"
+            } else if target == "dispatch" {
+                "/api/prism/dispatch"
+            } else {
+                "/api/turns"
+            };
+            let mut request =
+                json!({"text":if everyone { "@everyone client send" } else { "client send" }});
+            if named {
+                if target == "dispatch" {
+                    request["marbles"] = json!([fixture.marble_id]);
+                } else {
+                    request["marbleId"] = json!(fixture.marble_id);
+                }
+            }
+            if threaded || target.ends_with("private") {
+                let mut bootstrap = request.clone();
+                bootstrap["text"] = json!(if everyone { "@Ada parent" } else { "parent" });
+                let (status, response) = fixture.post(path, bootstrap.clone());
+                assert_eq!(status, 202, "{response}");
+                assert!(response.get("client_message_id").is_none());
+                assert!(response.get("entry_id").is_none());
+                let task = fixture.completed(bootstrap["text"].as_str().unwrap());
+                let cv = if everyone {
+                    "everyone"
+                } else {
+                    &task.conversation_id
+                };
+                if target.ends_with("private") {
+                    request["conversationId"] = json!(cv);
+                }
+                if threaded {
+                    let parent = fixture
+                        .state
+                        .lock()
+                        .unwrap()
+                        .transcript
+                        .iter()
+                        .find(|entry| entry.conversation_id == cv && entry.kind == "user")
+                        .unwrap()
+                        .id
+                        .clone();
+                    let (status, thread) = fixture.post(
+                        "/api/threads",
+                        json!({"conversation_id":cv,"parent_entry_id":parent}),
+                    );
+                    assert_eq!(status, 200, "{thread}");
+                    request["thread_id"] = thread["thread"]["id"].clone();
+                }
+            }
+            request[if threaded {
+                "clientMessageId"
+            } else {
+                "client_message_id"
+            }] = json!("ios-send-1");
+            let ((status, accepted), (duplicate_status, duplicate)) = std::thread::scope(|scope| {
+                let first = scope.spawn(|| fixture.post(path, request.clone()));
+                let second = scope.spawn(|| fixture.post(path, request.clone()));
+                (first.join().unwrap(), second.join().unwrap())
+            });
+            assert_eq!(status, 202, "{accepted}");
+            assert_eq!(duplicate_status, status);
+            assert_eq!(duplicate, accepted);
+            assert_eq!(accepted["client_message_id"], "ios-send-1");
+            assert!(accepted["entry_id"].is_string());
+            let prompt = request["text"].as_str().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let state = fixture.state.lock().unwrap();
+                let tasks: Vec<_> = state
+                    .tasks
+                    .iter()
+                    .filter(|task| task.prompt == prompt)
+                    .collect();
+                if tasks.len() == if everyone { 2 } else { 1 }
+                    && tasks.iter().all(|task| task.status == "completed")
+                {
+                    break;
+                }
+                drop(state);
+                assert!(
+                    Instant::now() < deadline,
+                    "send did not complete: {target} {threaded}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let saved = fixture.store.as_ref().unwrap().load().unwrap();
+            let entries: Vec<_> = saved
+                .transcript
+                .iter()
+                .filter(|entry| entry.client_message_id.as_deref() == Some("ios-send-1"))
+                .collect();
+            assert_eq!(entries.len(), 1, "{target} {threaded}: {entries:?}");
+            let entry = entries[0];
+            assert_eq!(entry.id, accepted["entry_id"]);
+            assert_eq!(entry.kind, "user");
+            assert_eq!(entry.thread_id.as_deref(), request["thread_id"].as_str());
+            let serialized = serde_json::to_value(entry).unwrap();
+            assert_eq!(serialized["client_message_id"], "ios-send-1");
+            assert!(serialized.get("clientMessageId").is_none());
+            let view = if threaded {
+                format!("/api/threads/{}", request["thread_id"].as_str().unwrap())
+            } else if everyone {
+                "/api/everyone".into()
+            } else {
+                format!("/api/transcript?conversationId={}", entry.conversation_id)
+            };
+            let (view_status, view_body) = fixture.server.handle("GET", &view, "");
+            assert_eq!(view_status, 200, "{view_body}");
+            let view: Value = serde_json::from_str(&view_body).unwrap();
+            assert_eq!(
+                view["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["id"] == entry.id)
+                    .unwrap()["client_message_id"],
+                "ios-send-1"
+            );
+            let events = fixture.events.since(0);
+            let entry_events: Vec<_> = events
+                .iter()
+                .filter(|event| event.kind == "entry" && event.data["id"] == entry.id)
+                .collect();
+            assert_eq!(entry_events.len(), 1, "{target} {threaded}");
+            assert_eq!(entry_events[0].data["client_message_id"], "ios-send-1");
+            let restarted = free_server(saved);
+            let (status, replay) = restarted.handle("POST", path, &request.to_string());
+            assert_eq!(status, 202, "{replay}");
+            assert_eq!(serde_json::from_str::<Value>(&replay).unwrap(), accepted);
+            let (status, replay) = fixture.post(path, request.clone());
+            assert_eq!(status, 202, "{replay}");
+            assert_eq!(replay, accepted);
+            let mut altered = request.clone();
+            altered["text"] = json!("different text on a retried request");
+            assert_eq!(fixture.post(path, altered).1, accepted);
+        }
+    }
+}
+
+#[test]
+fn client_message_ids_survive_paused_admission_and_remain_chat_scoped() {
+    if !python3_available() {
+        return;
+    }
+    for named in [false, true] {
+        let mut fixture =
+            NamedTurnFixture::with_persistence(&format!("client-send-held-{named}"), vec![], true);
+        fixture.install_default_worker();
+        fixture.state.lock().unwrap().control.paused = true;
+        let request = json!({"text":"held client message", "marbleId":named.then_some(&fixture.marble_id), "client_message_id":"held-ios"});
+        let (status, accepted) = fixture.post("/api/turns", request.clone());
+        assert_eq!(status, 202, "{accepted}");
+        assert_eq!(accepted["paused"], true);
+        assert_eq!(fixture.post("/api/turns", request.clone()).1, accepted);
+        let saved = fixture.store.as_ref().unwrap().load().unwrap();
+        assert_eq!(saved.control.queue.len(), 1);
+        let restarted = free_server(saved);
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &restarted
+                    .handle("POST", "/api/turns", &request.to_string())
+                    .1
+            )
+            .unwrap(),
+            accepted
+        );
+        assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+        let task = fixture.completed("held client message");
+        let state = fixture.store.as_ref().unwrap().load().unwrap();
+        let entries: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|entry| entry.client_message_id.as_deref() == Some("held-ios"))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, accepted["entry_id"]);
+        assert_eq!(entries[0].task_id, task.id);
+        assert_eq!(fixture.post("/api/turns", request.clone()).1, accepted);
+        let mut explicit = request.clone();
+        explicit["conversationId"] = json!(task.conversation_id);
+        assert_eq!(fixture.post("/api/turns", explicit).1, accepted);
+        let other = json!({"text":"other chat", "client_message_id":"held-ios"});
+        let (status, response) = fixture.post("/api/everyone", other);
+        assert_eq!(status, 202, "{response}");
+        assert_ne!(response["entry_id"], accepted["entry_id"]);
+    }
+}
+
+#[test]
+fn invalid_client_message_ids_are_rejected_without_side_effects() {
+    for path in ["/api/turns", "/api/everyone", "/api/prism/dispatch"] {
+        let server = free_server(ProductState::default());
+        for invalid in [
+            json!(""),
+            json!("x".repeat(129)),
+            json!("bad\nvalue"),
+            json!("bad\u{7f}"),
+            json!("é"),
+            json!(12),
+            Value::Null,
+        ] {
+            let (status, body) = server.handle(
+                "POST",
+                path,
+                &json!({"text":"hello", "client_message_id":invalid}).to_string(),
+            );
+            assert_eq!(status, 400, "{body}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&body).unwrap()["error"],
+                "invalid_client_message_id"
+            );
+        }
+        let (status, _) = server.handle(
+            "POST",
+            path,
+            &json!({"text":"hello", "client_message_id":"one", "clientMessageId":"two"})
+                .to_string(),
+        );
+        assert_eq!(status, 400);
+        let (status, _) = server.handle(
+            "POST",
+            path,
+            &json!({"text":" ", "client_message_id":"empty"}).to_string(),
+        );
+        assert_eq!(status, 400);
+        assert!(server.state().client_sends.is_empty());
+        assert!(server.state().transcript.is_empty());
+    }
+}
+
+#[test]
 fn governed_tools_emit_one_lifecycle_per_private_and_everyone_row() {
     if !python3_available() {
         return;

@@ -162,6 +162,13 @@ pub struct ObservedTool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptEntry {
+    #[serde(
+        default,
+        rename = "client_message_id",
+        alias = "clientMessageId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_message_id: Option<String>,
     #[serde(default)]
     pub id: String,
     #[serde(
@@ -216,10 +223,26 @@ pub struct HandoffEntry {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMessage {
+    pub id: String,
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientSend {
+    pub message: ClientMessage,
+    pub scopes: Vec<String>,
+    pub status: u16,
+    pub response: Option<Value>,
+}
+
 /// Whole local product state served to the UI and encoded for the client.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_sends: Vec<ClientSend>,
     #[serde(default)]
     pub threads: Vec<crate::threads::Thread>,
     #[serde(default)]
@@ -562,6 +585,20 @@ impl ProductState {
 
     /// Append one transcript entry.
     pub fn push_transcript(&mut self, mut entry: TranscriptEntry) {
+        if entry.kind == "user"
+            && entry.client_message_id.is_none()
+            && !entry.task_id.is_empty()
+            && let Some(send) = self.client_sends.iter().find(|send| {
+                !send.scopes.iter().any(|scope| scope == "everyone")
+                    && send
+                        .response
+                        .as_ref()
+                        .is_some_and(|response| response["taskId"] == entry.task_id)
+            })
+        {
+            entry.id = send.message.entry_id.clone();
+            entry.client_message_id = Some(send.message.id.clone());
+        }
         if entry.id.is_empty() {
             entry.id = format!("entry-{}", crate::next_request_id());
         }
@@ -584,7 +621,24 @@ impl ProductState {
             return;
         }
         let thread = entry.thread_id.clone();
-        self.transcript.push(entry);
+        if let Some(send) = self
+            .client_sends
+            .iter_mut()
+            .find(|send| send.message.entry_id == entry.id)
+            && !entry.conversation_id.is_empty()
+            && !send.scopes.contains(&entry.conversation_id)
+        {
+            send.scopes.push(entry.conversation_id.clone());
+        }
+        if let Some(existing) = self
+            .transcript
+            .iter_mut()
+            .find(|existing| existing.id == entry.id)
+        {
+            *existing = entry;
+        } else {
+            self.transcript.push(entry);
+        }
         if let Some(id) = thread {
             if let Some(thread) = self.threads.iter_mut().find(|t| t.id == id) {
                 thread.last_activity_at = thread.last_activity_at.max(now_millis());

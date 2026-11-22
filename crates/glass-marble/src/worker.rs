@@ -35,6 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// One message waiting for the durable turn worker.
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
+    pub client_message: Option<crate::state::ClientMessage>,
     pub thread_id: Option<String>,
     pub conversation_id: Option<String>,
     pub text: String,
@@ -1068,6 +1069,15 @@ fn run_command(
                 routine_id: routine_id.clone().unwrap_or_default(),
             });
             guard.push_transcript(TranscriptEntry {
+                id: request
+                    .client_message
+                    .as_ref()
+                    .map(|message| message.entry_id.clone())
+                    .unwrap_or_default(),
+                client_message_id: request
+                    .client_message
+                    .as_ref()
+                    .map(|message| message.id.clone()),
                 conversation_id: conversation_id.to_string(),
                 kind: "user".into(),
                 text: prompt.clone(),
@@ -1093,6 +1103,19 @@ fn run_command(
         // engine that owns the session instead of guessing lane zero.
         if let Some(sender) = sender.take() {
             let _ = sender.send(Ok(identity));
+        }
+        if let Some(client) = &request.client_message
+            && let Some(entry) = snapshot
+                .transcript
+                .iter()
+                .find(|entry| entry.id == client.entry_id)
+        {
+            events.publish(
+                conversation_id,
+                task_id,
+                "entry",
+                serde_json::to_value(entry).unwrap(),
+            );
         }
         events.publish(
             conversation_id,
@@ -1309,6 +1332,7 @@ fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
 impl TurnRequest {
     pub fn new(conversation_id: Option<String>, text: impl Into<String>) -> Self {
         Self {
+            client_message: None,
             thread_id: None,
             conversation_id,
             text: text.into(),

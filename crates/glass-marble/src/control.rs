@@ -215,6 +215,8 @@ pub struct ControlEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message: Option<crate::state::ClientMessage>,
     #[serde(default)]
     pub thread_id: Option<String>,
     pub id: String,
@@ -477,6 +479,7 @@ impl ControlState {
             ));
         }
         let entry = QueuedTurn {
+            client_message: None,
             thread_id: None,
             id: next_id("queued"),
             marble_id,

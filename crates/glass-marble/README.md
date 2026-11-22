@@ -100,6 +100,24 @@ data directory.
 The full product guide, HTTP surface, Tailscale setup, and the iOS client are
 documented in [docs/marble.md](../../docs/marble.md).
 
+## Optimistic sends
+
+Chat sends (`POST /api/turns`, `/api/everyone`, and `/api/prism/dispatch`) accept
+`client_message_id` or `clientMessageId`. IDs must be 1–128 printable ASCII
+characters (spaces allowed); invalid IDs, including conflicting aliases, return
+`400 invalid_client_message_id` without sending. IDs are scoped to the chat,
+not the thread. New default chats use an initial-send scope until the engine
+assigns their conversation ID; first named sends also retain their initial
+Marble scope. Reusing an ID returns the original successful response without
+another send, even after restart. Omit the field for the existing behavior.
+
+Successful responses add `client_message_id` and `entry_id` (the stable user
+entry ID), including Everyone multi-agent responses. User entries expose
+`client_message_id` in history, thread detail, and `entry` SSE event data. The
+host saves the send receipt before returning success. If it restarts during
+admission before a response was saved, retry returns `409 client_message_pending`
+rather than risk executing the message twice.
+
 ## Checks
 
 ```text

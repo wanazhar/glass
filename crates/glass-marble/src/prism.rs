@@ -694,7 +694,7 @@ impl PrismPool {
         text: &str,
         requested: Option<&[String]>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
-        self.dispatch_inner(text, requested, None, None)
+        self.dispatch_inner(text, requested, None, None, None)
     }
 
     pub fn dispatch_in_thread(
@@ -703,7 +703,17 @@ impl PrismPool {
         requested: Option<&[String]>,
         thread: Option<&str>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
-        self.dispatch_inner(text, requested, None, thread)
+        self.dispatch_inner(text, requested, None, thread, None)
+    }
+
+    pub(crate) fn dispatch_client_in_thread(
+        self: &Arc<Self>,
+        text: &str,
+        requested: Option<&[String]>,
+        thread: Option<&str>,
+        client: Option<crate::state::ClientMessage>,
+    ) -> Result<PrismDispatch, DispatchRefusal> {
+        self.dispatch_inner(text, requested, None, thread, client)
     }
 
     pub fn resume_held(self: &Arc<Self>) -> usize {
@@ -719,6 +729,7 @@ impl PrismPool {
                         Some(&[id]),
                         Some(&entry.id),
                         entry.thread_id.as_deref(),
+                        entry.client_message.clone(),
                     )
                     .is_ok()
             {
@@ -734,6 +745,7 @@ impl PrismPool {
         requested: Option<&[String]>,
         queue_id: Option<&str>,
         thread_id: Option<&str>,
+        client: Option<crate::state::ClientMessage>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
         let targets = {
             let state = self.lock_state();
@@ -808,16 +820,23 @@ impl PrismPool {
                 "revision": snapshot.revision,
             }),
         );
-        for (marble, root) in planned {
+        for (index, (marble, root)) in planned.into_iter().enumerate() {
             let pool = Arc::clone(self);
             let prompt = prompt.clone();
             let marble_id = marble.id.clone();
             let marble_name = marble.name.clone();
             let target = marble.clone();
             let thread = thread_id.map(str::to_string);
+            let mut identity = client.clone();
+            if index > 0
+                && let Some(identity) = &mut identity
+            {
+                identity.entry_id = format!("{}-{}", identity.entry_id, marble.id);
+            }
+            let turn_identity = identity.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("glass-marble-prism-{marble_id}"))
-                .spawn(move || pool.run_marble(&target, root, &prompt, thread));
+                .spawn(move || pool.run_marble(&target, root, &prompt, thread, turn_identity));
             if let Err(error) = spawned {
                 tracing::error!(%error, marble = %marble_name, "could not start a prism turn");
                 self.fail_before_acceptance(
@@ -825,6 +844,7 @@ impl PrismPool {
                     text,
                     &format!("could not start the turn: {error}"),
                     thread_id,
+                    identity.as_ref(),
                 );
             }
         }
@@ -934,7 +954,7 @@ impl PrismPool {
                 .unwrap_or_else(|error| error.into_inner())
                 .insert(marble.id.clone(), depth);
         }
-        self.run_marble(marble, root, text, thread_id);
+        self.run_marble(marble, root, text, thread_id, None);
     }
 
     /// Runs an ask from the marble that owns `scope`.
@@ -1167,11 +1187,18 @@ impl PrismPool {
         root: PathBuf,
         text: &str,
         thread_id: Option<String>,
+        client: Option<crate::state::ClientMessage>,
     ) {
         let engine = match self.engine(marble, &root) {
             Ok(engine) => engine,
             Err(error) => {
-                self.fail_before_acceptance(marble, text, &error, thread_id.as_deref());
+                self.fail_before_acceptance(
+                    marble,
+                    text,
+                    &error,
+                    thread_id.as_deref(),
+                    client.as_ref(),
+                );
                 self.resume_held();
                 return;
             }
@@ -1250,6 +1277,11 @@ impl PrismPool {
                 });
                 state.bind_thread(task_id, thread_id.as_deref());
                 state.push_transcript(TranscriptEntry {
+                    id: client
+                        .as_ref()
+                        .map(|message| message.entry_id.clone())
+                        .unwrap_or_default(),
+                    client_message_id: client.as_ref().map(|message| message.id.clone()),
                     conversation_id: conversation_id.to_string(),
                     kind: "user".into(),
                     text: text.to_string(),
@@ -1263,6 +1295,19 @@ impl PrismPool {
                 state.clone()
             };
             self.persist(&snapshot);
+            if let Some(client) = &client
+                && let Some(entry) = snapshot
+                    .transcript
+                    .iter()
+                    .find(|entry| entry.id == client.entry_id)
+            {
+                self.events.publish(
+                    conversation_id,
+                    task_id,
+                    "entry",
+                    serde_json::to_value(entry).unwrap(),
+                );
+            }
             self.events.publish(
                 conversation_id,
                 task_id,
@@ -1412,6 +1457,7 @@ impl PrismPool {
         text: &str,
         error: &str,
         thread_id: Option<&str>,
+        client: Option<&crate::state::ClientMessage>,
     ) {
         let task_id = format!("failed-{}", crate::next_request_id());
         let snapshot = {
@@ -1439,6 +1485,18 @@ impl PrismPool {
                 ..Default::default()
             });
             state.bind_thread(&task_id, thread_id);
+            if let Some(client) = client {
+                state.push_transcript(TranscriptEntry {
+                    id: client.entry_id.clone(),
+                    client_message_id: Some(client.id.clone()),
+                    conversation_id: conversation_id.clone(),
+                    kind: "user".into(),
+                    text: text.into(),
+                    task_id: task_id.clone(),
+                    at: now,
+                    ..Default::default()
+                });
+            }
             state.record_failure(&conversation_id, &task_id, error);
             crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), &task_id);
             crate::everyone::mirror_settlement(&mut state, &task_id, "", "failed");

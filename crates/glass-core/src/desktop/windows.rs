@@ -51,7 +51,7 @@ fn parse(value: &Value) -> Result<(&str, Request<'_>), String> {
 }
 
 /// Parses `wmctrl -l -x -G`: id, desktop, x, y, width, height, class, host,
-/// title. Sticky windows (desktop -1) are panels and the desktop background.
+/// title. Desktop -1 includes ordinary applications pinned to all workspaces.
 fn parse_list(output: &str) -> Vec<Value> {
     let round = |value: f64| (value * 10_000.0).round() / 10_000.0;
     output
@@ -64,9 +64,6 @@ fn parse_list(output: &str) -> Vec<Value> {
                 let end = rest.find(char::is_whitespace)?;
                 fields.push(&rest[..end]);
                 rest = &rest[end..];
-            }
-            if fields[1] == "-1" {
-                return None;
             }
             let number = |index: usize| fields[index].parse::<f64>().ok();
             let (x, y, w, h) = (number(2)?, number(3)?, number(4)?, number(5)?);
@@ -84,7 +81,16 @@ fn parse_list(output: &str) -> Vec<Value> {
 }
 
 fn wmctrl(display: &str, xauthority: &Path, args: &[&str]) -> Result<String, String> {
-    let mut child = Command::new("wmctrl")
+    x11_command("wmctrl", display, xauthority, args)
+}
+
+fn x11_command(
+    program: &str,
+    display: &str,
+    xauthority: &Path,
+    args: &[&str],
+) -> Result<String, String> {
+    let mut child = Command::new(program)
         .args(args)
         .env("DISPLAY", display)
         .env("XAUTHORITY", xauthority)
@@ -94,10 +100,10 @@ fn wmctrl(display: &str, xauthority: &Path, args: &[&str]) -> Result<String, Str
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
+            if error.kind() == std::io::ErrorKind::NotFound && program == "wmctrl" {
                 WMCTRL_MISSING.to_owned()
             } else {
-                format!("Could not run wmctrl: {error}")
+                format!("Could not run {program}: {error}")
             }
         })?;
     let status = wait_bounded(&mut child)?;
@@ -113,6 +119,28 @@ fn wmctrl(display: &str, xauthority: &Path, args: &[&str]) -> Result<String, Str
                 .into(),
         )
     }
+}
+
+fn application_windows(
+    windows: Vec<Value>,
+    mut properties: impl FnMut(&str) -> Result<String, String>,
+) -> Result<Vec<Value>, String> {
+    let mut applications = Vec::new();
+    for window in windows {
+        let types = properties(window["id"].as_str().ok_or("missing window id")?)?;
+        if !types
+            .split(|c: char| c.is_whitespace() || matches!(c, ',' | '='))
+            .any(|atom| {
+                matches!(
+                    atom,
+                    "_NET_WM_WINDOW_TYPE_DOCK" | "_NET_WM_WINDOW_TYPE_DESKTOP"
+                )
+            })
+        {
+            applications.push(window);
+        }
+    }
+    Ok(applications)
 }
 
 impl Desktop {
@@ -163,7 +191,17 @@ fn run(
     session_id: &str,
     request: Request<'_>,
 ) -> Result<Value, String> {
-    let windows = parse_list(&wmctrl(display, xauthority, &["-l", "-x", "-G"])?);
+    let windows = application_windows(
+        parse_list(&wmctrl(display, xauthority, &["-l", "-x", "-G"])?),
+        |id| {
+            x11_command(
+                "xprop",
+                display,
+                xauthority,
+                &["-id", id, "_NET_WM_WINDOW_TYPE"],
+            )
+        },
+    )?;
     let (flag, id, done) = match request {
         Request::List => return Ok(json!({"sessionId": session_id, "windows": windows})),
         Request::Focus(id) => ("-a", id, "focused"),
@@ -272,16 +310,37 @@ mod tests {
     }
 
     #[test]
-    fn wmctrl_listing_skips_sticky_windows_and_normalizes_geometry() {
+    fn wmctrl_listing_keeps_pinned_apps_but_excludes_panels_by_type() {
         let output = "0x00e00003 -1 0    0    1280 800  xfdesktop.Xfdesktop  host Desktop\n\
-                      0x01a00007  0 320  200  640  400  mousepad.Mousepad  host Untitled 1 - Mousepad\n";
-        let windows = parse_list(output);
+                      0x01a00007 -1 320  200  640  400  mousepad.Mousepad  host Untitled 1 - Mousepad\n";
+        assert_eq!(parse_list(output).len(), 2);
+        let windows = application_windows(parse_list(output), |id| {
+            Ok(if id == "0x00e00003" {
+                "_NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DESKTOP".into()
+            } else {
+                "_NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_NORMAL".into()
+            })
+        })
+        .unwrap();
         assert_eq!(windows.len(), 1);
         assert_eq!(windows[0]["id"], "0x01a00007");
         assert_eq!(windows[0]["title"], "Untitled 1 - Mousepad");
         assert_eq!(windows[0]["app"], "mousepad.Mousepad");
         assert_eq!(windows[0]["x"], 0.25);
         assert_eq!(windows[0]["height"], 0.5);
+        assert!(application_windows(parse_list(output), |_| Err("display closed".into())).is_err());
+        assert!(
+            application_windows(Vec::new(), |_| panic!("no windows"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            application_windows(parse_list(output), |_| Ok(
+                "_NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DOCK".into()
+            ))
+            .unwrap()
+            .is_empty()
+        );
     }
 }
 

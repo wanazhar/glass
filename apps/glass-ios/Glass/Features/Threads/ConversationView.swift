@@ -102,7 +102,7 @@ struct ConversationView: View {
                 if following {
                     // Text growing in place stays pinned by the bottom size-change anchor; jumping on
                     // every delta would fight a finger that is just landing on the chat.
-                    if new.count != old.count, !touching { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                    if new.count != old.count { pinToBottom(proxy) } else if !touching, !atBottom { proxy.scrollTo(Self.bottom, anchor: .bottom) }
                 } else if !touching, conversation.timeline.isActive, ContinuousClock.now - lastTouch >= Self.resumeAfter {
                     resume(proxy)
                 }
@@ -316,6 +316,20 @@ struct ConversationView: View {
             try? await Task.sleep(for: Self.resumeAfter)
             guard !Task.isCancelled, !touching, conversation.timeline.isActive else { return }
             resume(proxy)
+        }
+    }
+
+    /// Lazy rows below the fold only get their real height once laid out, so one jump can land short of
+    /// the end. Jump again as they settle, unless you've touched the chat since.
+    private func pinToBottom(_ proxy: ScrollViewProxy) {
+        guard !touching else { return }
+        proxy.scrollTo(Self.bottom, anchor: .bottom)
+        Task {
+            for delay in [100, 400] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard following, !touching, !atBottom else { return }
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            }
         }
     }
 

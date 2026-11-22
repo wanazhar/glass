@@ -2202,7 +2202,7 @@ mod tests {
         assert_eq!(status["frameTimeMs"], Value::Null);
     }
 
-    fn desktop_with_test_session(workspace: &Path, session_id: &str) -> Desktop {
+    pub(super) fn desktop_with_test_session(workspace: &Path, session_id: &str) -> Desktop {
         let desktop = Desktop::new(workspace.to_path_buf());
         *desktop.session.lock().unwrap() = Some(ManagedSession {
             id: session_id.to_owned(),

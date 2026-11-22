@@ -1436,6 +1436,24 @@ impl PrismPool {
                         let _ = waiter.send(Err(crate::failure::MESSAGE.to_string()));
                     }
                 }
+                if accepted.is_none() {
+                    if conversation.transport_failed() {
+                        self.lock_state()
+                            .presence
+                            .runtime
+                            .note_engine_failure(conversation.engine_id(), error.to_string());
+                    }
+                    self.fail_before_acceptance(
+                        marble,
+                        text,
+                        &error.to_string(),
+                        thread_id.as_deref(),
+                        client.as_ref(),
+                    );
+                    drop(guard);
+                    self.resume_held();
+                    return;
+                }
                 let snapshot = {
                     let mut state = self.lock_state();
                     let now = now_millis();

@@ -5194,6 +5194,63 @@ fn everyone_cold_default_retries_transient_admission_once_without_duplicate_send
 }
 
 #[test]
+fn named_core_admission_failures_settle_private_and_everyone_entries_with_retry() {
+    if !python3_available() {
+        return;
+    }
+    for flag in ["--reject-create-once", "--reject-submit-once"] {
+        for everyone in [false, true] {
+            let fixture = NamedTurnFixture::with_persistence(
+                &format!("named-admission-{flag}-{everyone}"),
+                vec![flag.into()],
+                true,
+            );
+            let path = if everyone {
+                "/api/everyone"
+            } else {
+                "/api/turns"
+            };
+            let prompt = if everyone {
+                "@Ada first admission"
+            } else {
+                "first admission"
+            };
+            let (status, response) = fixture.post(path, json!({"text":prompt, "marbleId":fixture.marble_id, "client_message_id":"admission-id"}));
+            assert_eq!(status, 202, "{response}");
+            let failed = fixture.settled(prompt);
+            assert_eq!(failed.status, "failed");
+            let state = fixture.store.as_ref().unwrap().load().unwrap();
+            assert!(state.control.queue.is_empty());
+            assert!(state.everyone_pending.is_empty());
+            assert!(!state.transcript.iter().any(|e| e.kind == "pending"));
+            let failure = state
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.task_id == failed.id
+                        && e.kind == "failure"
+                        && (!everyone || e.conversation_id == "everyone")
+                })
+                .unwrap();
+            assert!(failure.failure.as_ref().unwrap().retryable);
+            let user = state
+                .transcript
+                .iter()
+                .find(|e| e.id == response["entry_id"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(user.client_message_id.as_deref(), Some("admission-id"));
+            assert_eq!(
+                fixture
+                    .post("/api/turns/retry", json!({"taskId":failed.id}))
+                    .0,
+                202
+            );
+            fixture.completed(prompt);
+        }
+    }
+}
+
+#[test]
 fn everyone_thread_search_returns_only_the_jumpable_reply() {
     if !python3_available() {
         return;

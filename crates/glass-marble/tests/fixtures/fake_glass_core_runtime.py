@@ -334,6 +334,12 @@ def main():
             save_history()
             reply(identifier, {"conversationId": conversation_id})
         elif method == "durable/submit":
+            marker = os.path.join(STORAGE_DIR, "fixture-submit-rejected")
+            if "--reject-submit-once" in sys.argv and not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write("rejected")
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "fixture refuses first submission"}})
+                continue
             conversation_id = params.get("conversationId")
             if "--strict-conversations" in sys.argv and conversation_id not in KNOWN_CONVERSATIONS:
                 send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown conversation"}})

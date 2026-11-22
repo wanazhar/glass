@@ -105,7 +105,7 @@ install_from_tarball() {
     echo "SHA-256 mismatch for $bin_name: got $actual, expected $sha256" >&2
     return 1
   fi
-  tar -xzf "$tmp/tool.tar.gz" -C "$tmp"
+  tar -xzf "$tmp/tool.tar.gz" -C "$tmp" || return 1
   local found
   found="$(find "$tmp" -type f -name "$bin_name" | head -n 1)"
   if [[ -z "$found" ]]; then
@@ -226,6 +226,10 @@ core_binary() {
   fi
   return 1
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return
+fi
 
 setup_local_speed
 ensure_tools

@@ -136,14 +136,7 @@ struct DesktopView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .scaleEffect(zoom)
                     .offset(pan)
-                    if model.disconnected {
-                        Button("Reconnect", systemImage: "arrow.clockwise") { model.reconnect() }
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .floatingGlass()
-                            .accessibilityIdentifier("desktop.disconnected")
-                    } else if model.frame != nil, !model.switchingWidth, model.picture == .connecting || model.picture == .idle {
+                    if !model.disconnected, model.frame != nil, !model.switchingWidth, model.picture == .connecting || model.picture == .idle {
                         Label("Reconnecting", systemImage: "arrow.triangle.2.circlepath")
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
@@ -163,11 +156,11 @@ struct DesktopView: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .gesture(drag(viewport, control: status.youHaveControl))
+                .gesture(drag(viewport, control: status.youHaveControl && !model.disconnected))
                 .simultaneousGesture(magnify(viewport))
                 .gesture(TouchCounter { fingers = $0 })
                 .gesture(TwoFingerScroll { location, delta in
-                    guard status.youHaveControl, pointer != .pan else { return }
+                    guard status.youHaveControl, !model.disconnected, pointer != .pan else { return }
                     let point = pointer == .trackpad ? model.cursor : viewport.desktopPoint(at: location, clamped: true)
                     if let point { model.scroll(at: point, by: CGSize(width: -delta.width, height: -delta.height)) }
                 })
@@ -175,12 +168,23 @@ struct DesktopView: View {
                 .accessibilityLabel("Desktop screen")
                 .accessibilityValue(status.controlSummary)
                 .accessibilityIdentifier("desktop.screen")
+                // Outside the picture's gestures and accessibility element, so VoiceOver reaches it.
+                .overlay {
+                    if model.disconnected {
+                        Button("Reconnect", systemImage: "arrow.clockwise") { model.reconnect() }
+                            .font(.callout.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .floatingGlass()
+                            .accessibilityIdentifier("desktop.disconnected")
+                    }
+                }
             }
             .clipped()
-            .focusable(status.youHaveControl)
+            .focusable(status.youHaveControl && !model.disconnected)
             .focused($keyboardFocus)
             .onKeyPress(phases: .down) { press in
-                guard status.youHaveControl else { return .ignored }
+                guard status.youHaveControl, !model.disconnected else { return .ignored }
                 return handle(press) ? .handled : .ignored
             }
             controls(status)

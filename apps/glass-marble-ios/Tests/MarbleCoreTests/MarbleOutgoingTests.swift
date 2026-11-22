@@ -3,6 +3,21 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleOutgoingTests: XCTestCase {
+    func testOnlyOneUnresolvedDraftSendCanStart() {
+        let draft = MarbleSendTarget.conversation(nil)
+        let resolved = MarbleSendTarget.conversation("created-chat")
+        var first = MarbleOutgoing(target: draft, text: "first message", responders: ["marble"], entries: [])
+        XCTAssertTrue(MarbleOutgoing.canStart(draft, alongside: []))
+        XCTAssertFalse(MarbleOutgoing.canStart(draft, alongside: [first]))
+        first.delivery = .pending
+        XCTAssertFalse(MarbleOutgoing.canStart(draft, alongside: [first]))
+        XCTAssertTrue(MarbleOutgoing.canStart(resolved, alongside: [first]))
+        first.delivery = .failed
+        XCTAssertTrue(MarbleOutgoing.canStart(draft, alongside: [first]))
+        first.target = resolved
+        XCTAssertTrue(MarbleOutgoing.canStart(draft, alongside: [first]))
+    }
+
     func testBubbleAndRespondersAreProjectedFromTheSameSend() {
         let send = MarbleOutgoing(target: .everyone(), text: "@Ada @Ben hi", responders: ["ada", "ben"], entries: [])
         let draft = MarbleOutgoingPresentation(durable: [], outgoing: [send], conversationId: "everyone")

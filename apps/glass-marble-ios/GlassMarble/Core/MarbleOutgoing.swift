@@ -32,6 +32,11 @@ struct MarbleOutgoing: Identifiable, Equatable {
 
     var rowID: String { "outgoing-\(id.uuidString.lowercased())" }
 
+    static func canStart(_ target: MarbleSendTarget, alongside outgoing: [Self]) -> Bool {
+        guard target == .conversation(nil) else { return true }
+        return !outgoing.contains { $0.target == target && $0.delivery != .failed }
+    }
+
     init(id: UUID = UUID(), target: MarbleSendTarget, text: String, responders: [String], entries: [MarbleEntry]) {
         self.id = id
         self.target = target

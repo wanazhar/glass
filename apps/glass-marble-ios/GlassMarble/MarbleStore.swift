@@ -836,7 +836,8 @@ final class MarbleStore: ObservableObject {
     func send(_ text: String, to target: MarbleSendTarget, entries: [MarbleEntry],
               onConversation: ((String) -> Void)? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard client != nil, !trimmed.isEmpty else { return false }
+        guard client != nil, !trimmed.isEmpty,
+              MarbleOutgoing.canStart(target, alongside: outgoing) else { return false }
         let responders: [String]
         switch target {
         case .everyone: responders = MarbleMentions.responders(in: trimmed, roster: prism.marbles)
@@ -853,7 +854,8 @@ final class MarbleStore: ObservableObject {
 
     func retrySend(_ id: UUID) {
         guard client != nil,
-              let index = outgoing.firstIndex(where: { $0.id == id && $0.delivery == .failed }) else { return }
+              let index = outgoing.firstIndex(where: { $0.id == id && $0.delivery == .failed }),
+              MarbleOutgoing.canStart(outgoing[index].target, alongside: outgoing) else { return }
         outgoing[index].delivery = .sending
         transmit(outgoing[index])
     }

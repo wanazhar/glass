@@ -426,13 +426,28 @@ impl CdpBrowserSession {
                 let url = normalize_url(url);
                 self.policy.require_url(&url).await?;
                 self.enforce_polite_navigation(&url).await?;
+                let started = tokio::time::Instant::now();
+                let navigation_session = self.cdp.current_session_id();
+                let mut navigation_frame = None;
                 if let Some(interception) = &self.policy_interception {
-                    if let Some(frame) = self.cdp.active_frame() {
+                    let tree =
+                        tokio::time::timeout(deadline, self.cdp.send("Page.getFrameTree", None))
+                            .await
+                            .map_err(|_| {
+                                wait_timeout("lifecycle", deadline, "navigation_frame_pending")
+                            })??;
+                    navigation_frame = Some(
+                        tree["frameTree"]["frame"]["id"]
+                            .as_str()
+                            .ok_or("Page.getFrameTree did not identify the navigation destination")?
+                            .to_owned(),
+                    );
+                    if let Some(frame) = navigation_frame.as_ref() {
                         interception
                             .document_denials
                             .lock()
                             .await
-                            .remove(&(self.cdp.current_session_id(), frame));
+                            .remove(&(navigation_session.clone(), frame.clone()));
                     }
                     if let Some(error) = interception.last_denial.lock().await.take() {
                         return Err(error.into());
@@ -440,7 +455,6 @@ impl CdpBrowserSession {
                 }
 
                 let result = async {
-                    let started = tokio::time::Instant::now();
                     let mut events = self.cdp.subscribe_events();
                     let payload_events = self.cdp.subscribe_events_with_params();
                     let route_session_id = self.cdp.current_session_id();
@@ -501,6 +515,7 @@ impl CdpBrowserSession {
                         };
 
                     if let Some(frame_id) = navigation.frame_id.as_deref() {
+                        navigation_frame = Some(frame_id.to_owned());
                         if let Err(error) = validate_topology_id(frame_id) {
                             collector_task.stop().await;
                             return Err(error);
@@ -651,7 +666,11 @@ impl CdpBrowserSession {
                 }
                 .await;
                 if let Some(error) = match &self.policy_interception {
-                    Some(interception) => interception.take_denial().await,
+                    Some(interception) => {
+                        interception
+                            .take_navigation_denial(navigation_session, navigation_frame.as_deref())
+                            .await
+                    }
                     None => None,
                 } {
                     return Err(error.into());

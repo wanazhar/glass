@@ -2432,7 +2432,7 @@ async fn assert_policy_blocks_request(
     let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
         .await
         .unwrap();
-    cdp.set_active_route(Some("route-1".into()), Some("frame-1".into()), None);
+    cdp.set_active_route(Some("route-1".into()), Some("selected-iframe".into()), None);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(1);
@@ -2447,9 +2447,12 @@ async fn assert_policy_blocks_request(
         record_policy_event_receiver_error(receiver_error, &interception.lagged_events),
         Some(1)
     );
+    assert!(interception.take_denial().await.is_none());
     assert_eq!(
         matches!(
-            interception.take_denial().await,
+            interception
+                .take_navigation_denial(Some("route-1".into()), Some("frame-1"))
+                .await,
             Some(PolicyError::Denied { .. })
         ),
         denied

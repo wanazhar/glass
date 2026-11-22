@@ -614,7 +614,7 @@ private struct MarbleFollowLatest: ViewModifier {
         // Give the first layout the bottom position with the cached rows
         // already present. Uncached screens still reposition as rows arrive.
         _position = State(initialValue: hasMessages && startAtCachedLatest
-            ? ScrollPosition(idType: String.self, edge: .bottom) : ScrollPosition(idType: String.self))
+            ? ScrollPosition(id: MarbleTranscriptEnd.rowID, anchor: .bottom) : ScrollPosition(idType: String.self))
     }
 
     // ScrollPosition retains the top row during a prepend but aligns it flush

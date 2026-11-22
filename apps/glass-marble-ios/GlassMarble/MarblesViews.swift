@@ -123,10 +123,12 @@ struct EveryoneView: View {
         let responders = presentation.responders + store.prism.marbles.map(\.id).filter {
             serverWorking.contains($0) && !reservedAgents.contains($0) && !presentation.responders.contains($0)
         }
-        ScrollView {
-                // The host pages history. Lay out the loaded rows together
-                // so estimated heights cannot empty the viewport as the
-                // keyboard changes size or several live rows settle.
+        let turns = store.everyoneTurns
+        VStack(spacing: 0) {
+            header
+            ScrollView {
+                // Lay out the loaded window together so a resize can keep
+                // the visible messages in place using their actual heights.
                 VStack(alignment: .leading, spacing: 16) {
                     if entries.isEmpty && store.everyoneHistoryLoading {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
@@ -148,7 +150,7 @@ struct EveryoneView: View {
                             reasoning: transcript.attached[entry.id]
                         )
                     }
-                    ForEach(store.everyoneTurns.filter { $0.isRunning || $0.id == store.everyoneTurns.last?.id }) { task in
+                    ForEach(turns.filter { $0.isRunning || $0.id == turns.last?.id }) { task in
                         let reasoning = store.reasoning(for: task.id)
                         if store.isTaskWorking(task) && !reasoning.isEmpty
                             && !entries.contains(where: {
@@ -170,16 +172,16 @@ struct EveryoneView: View {
                 .padding(.top, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(
-            hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), startAtCachedLatest: true
-        ) { beforePrepend in
-            await store.loadOlderHistory(everyoneConversationId, beforePrepend: beforePrepend)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .marbleFollowsLatest(
+                hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), startAtCachedLatest: true
+            ) { beforePrepend in
+                await store.loadOlderHistory(everyoneConversationId, beforePrepend: beforePrepend)
+            }
+            composer
         }
         .task { await store.openEveryoneHistory() }
-        .safeAreaInset(edge: .top, spacing: 0) { header }
-        .marbleComposerInset { composer }
         .toolbarVisibility(.hidden, for: .tabBar)
         .navigationTitle("Everyone")
         .navigationBarTitleDisplayMode(.inline)
@@ -204,9 +206,7 @@ struct EveryoneView: View {
         }
     }
 
-    /// Who's in the room, on the same bar as the title so messages scroll
-    /// under material rather than behind bare avatars; plus a line when
-    /// something needs a decision.
+    /// Who's in the room and whether a request needs a decision.
     private var header: some View {
         VStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {

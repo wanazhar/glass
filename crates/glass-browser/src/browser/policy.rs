@@ -101,8 +101,43 @@ fn decision_events() -> &'static Mutex<VecDeque<PolicyDecisionEvent>> {
     STORE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
+#[cfg(test)]
+mod decision_test_isolation {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ACCESS: Mutex<()> = Mutex::new(());
+    thread_local! { static OWNER: Cell<bool> = const { Cell::new(false) }; }
+
+    pub(super) fn access() -> Option<MutexGuard<'static, ()>> {
+        if OWNER.get() {
+            None
+        } else {
+            Some(ACCESS.lock().unwrap_or_else(|error| error.into_inner()))
+        }
+    }
+
+    pub(super) struct Sequence {
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Sequence {
+        fn drop(&mut self) {
+            OWNER.set(false);
+        }
+    }
+
+    pub(super) fn sequence() -> Sequence {
+        let guard = ACCESS.lock().unwrap_or_else(|error| error.into_inner());
+        OWNER.set(true);
+        Sequence { _guard: guard }
+    }
+}
+
 /// Emit one policy decision outcome without changing enforcement.
 pub fn emit_policy_decision(capability: PolicyCapability, decision: &PolicyDecision) {
+    #[cfg(test)]
+    let _access = decision_test_isolation::access();
     let event = PolicyDecisionEvent::new(capability, decision.clone());
     let Ok(mut events) = decision_events().lock() else {
         return;
@@ -115,6 +150,8 @@ pub fn emit_policy_decision(capability: PolicyCapability, decision: &PolicyDecis
 
 /// Bounded policy decision events emitted so far.
 pub fn policy_decision_events() -> Vec<PolicyDecisionEvent> {
+    #[cfg(test)]
+    let _access = decision_test_isolation::access();
     decision_events()
         .lock()
         .map(|events| events.iter().cloned().collect())
@@ -123,6 +160,8 @@ pub fn policy_decision_events() -> Vec<PolicyDecisionEvent> {
 
 /// Drop emitted policy decision events.
 pub fn clear_policy_decisions() {
+    #[cfg(test)]
+    let _access = decision_test_isolation::access();
     decision_events()
         .lock()
         .map(|mut events| events.clear())
@@ -968,6 +1007,7 @@ mod tests {
 
     #[test]
     fn hardened_denial_emits_policy_decision_event_and_grants_nothing() {
+        let _sequence = decision_test_isolation::sequence();
         clear_policy_decisions();
         let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
         assert!(policy.require(PolicyCapability::Evaluate).is_err());
@@ -988,6 +1028,7 @@ mod tests {
 
     #[test]
     fn policy_decision_events_evict_oldest_entry_at_capacity() {
+        let _sequence = decision_test_isolation::sequence();
         clear_policy_decisions();
         for index in 1..=257 {
             emit_policy_decision(

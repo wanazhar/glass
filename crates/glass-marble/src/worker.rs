@@ -535,13 +535,29 @@ pub fn spawn_turn_pool(
         .name("glass-marble-turns".into())
         .spawn(move || {
             let mut next = 1;
-            while let Some(command) = inbox.recv() {
-                let lane = choose_lane(
+            let mut everyone_lane = None;
+            while let Some(mut command) = inbox.recv() {
+                let everyone = lock(&wiring.state).everyone_pending.contains_key(
+                    &format!("queued-{}", command.request.request_id),
+                );
+                let lane = if everyone {
+                    *everyone_lane.get_or_insert_with(|| choose_lane(
+                        &wiring.state,
+                        command.request.conversation_id.as_deref(),
+                        &runtimes,
+                        &mut next,
+                    ))
+                } else { choose_lane(
                     &wiring.state,
                     command.request.conversation_id.as_deref(),
                     &runtimes,
                     &mut next,
-                );
+                ) };
+                if everyone && command.request.conversation_id.as_ref().is_some_and(|id| {
+                    lock(&wiring.state).conversations.iter().any(|record| record.id == *id && usize::from(record.lane) != lane)
+                }) {
+                    command.request.conversation_id = None;
+                }
                 if runtimes[lane].is_none() {
                     // Starting an engine launches a subprocess and greets it,
                     // which can take seconds. Doing that here would hold up
@@ -1015,6 +1031,12 @@ fn run_command(
             .contains_key(&queued_id)
             .then(|| crate::everyone::default_conversation(&state))
             .flatten()
+            .filter(|id| {
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == *id && record.lane == lane)
+            })
     });
     let mut turn = MarbleTurn {
         conversation_id: conversation_id.clone(),

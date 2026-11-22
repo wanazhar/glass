@@ -485,6 +485,88 @@ fn two_chats_run_at_the_same_time_on_separate_lanes() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn everyone_waiting_for_its_first_conversation_stays_on_one_engine() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("everyone-first-lane");
+    let script = write_fake_runtime(&root);
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let (release, waiting) = mpsc::channel();
+    let gate = Arc::new(Mutex::new(Some(waiting)));
+    let begun = Arc::new(AtomicBool::new(false));
+    let factory: LaneFactory = {
+        let root = root.clone();
+        let state = state.clone();
+        let begun = begun.clone();
+        Arc::new(move |lane| {
+            if lane == 1 {
+                begun.store(true, Ordering::SeqCst);
+                if let Some(waiting) = gate.lock().unwrap().take() {
+                    waiting.recv_timeout(Duration::from_secs(30)).unwrap();
+                }
+            }
+            let mut command = Command::new("python3");
+            command
+                .arg(&script)
+                .arg("runtime")
+                .arg("--strict-conversations")
+                .arg("--id-prefix")
+                .arg(format!("lane-{lane}-"));
+            Conversation::spawn_with_router(
+                command,
+                &root,
+                &root.join(format!("sessions-{lane}")),
+                HostPolicy::approving(),
+                ApprovalInbox::default(),
+                ToolRouter::new(&root)?,
+                EventBus::default(),
+            )
+            .map(|conversation| conversation.with_product(state.clone()))
+        })
+    };
+    let pool = spawn_turn_pool(
+        2,
+        factory,
+        state.clone(),
+        None,
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .unwrap();
+    let send = |text: &str| {
+        let request = TurnRequest::new(None, text);
+        state
+            .lock()
+            .unwrap()
+            .everyone_pending
+            .insert(format!("queued-{}", request.request_id), "marble".into());
+        let (accepted, answer) = mpsc::channel();
+        pool.sender.send(TurnCommand { request, accepted }).unwrap();
+        answer
+    };
+    let first = send("first Everyone turn");
+    wait_until("Everyone engine startup", || begun.load(Ordering::SeqCst));
+    let second = send("second Everyone turn");
+    release.send(()).unwrap();
+    let first = first
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    let second = second
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.conversation_id, second.conversation_id);
+    wait_for_settled(&state, &first.task_id);
+    wait_for_settled(&state, &second.task_id);
+    assert_eq!(state.lock().unwrap().tasks.len(), 2);
+    drop(pool);
+}
+
 /// The lane a conversation was admitted on is durable, so a restarted process
 /// rebuilds that lane instead of opening the chat somewhere else.
 #[test]

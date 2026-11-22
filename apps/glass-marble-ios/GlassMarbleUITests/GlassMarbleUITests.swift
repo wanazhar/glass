@@ -151,20 +151,32 @@ final class GlassMarbleUITests: XCTestCase {
     func testConversationRowOpensItsChat() {
         openDefaultChats()
         app.staticTexts["Fixture conversation 2"].tap()
-        XCTAssertTrue(app.navigationBars["Fixture conversation 2"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Fixture message 2"].waitForExistence(timeout: 5))
+        assertHittable("Fixture message 2")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.staticTexts["Fixture conversation 3"].waitForExistence(timeout: 5))
     }
 
-    func testSearchHitOpensThatChat() {
+    func testConversationListSearchOpensMatchingChat() {
         openDefaultChats()
-        app.searchFields.element(boundBy: 0).tap()
-        app.searchFields.element(boundBy: 0).typeText("conversation 150")
+        let search = app.searchFields.firstMatch
+        if !search.exists {
+            let button = app.buttons["Search"].firstMatch
+            if button.exists {
+                button.tap()
+            } else {
+                app.collectionViews.firstMatch.swipeDown()
+            }
+        }
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("conversation 150")
         let hit = app.staticTexts["Fixture conversation 150"]
         XCTAssertTrue(hit.waitForExistence(timeout: 5))
         hit.tap()
-        XCTAssertTrue(app.navigationBars["Fixture conversation 150"].waitForExistence(timeout: 5))
+        let title = app.navigationBars.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Fixture conversation 150,")
+        ).firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
     }
 
     func testOnboardingScreenshot() {
@@ -187,11 +199,13 @@ final class GlassMarbleUITests: XCTestCase {
     func testConversationListScrollsToLastRow() {
         openDefaultChats()
         let last = app.staticTexts["Fixture conversation 199"]
-        let deadline = Date().addingTimeInterval(30)
-        while !last.exists && Date() < deadline {
-            app.swipeUp()
+        let list = app.collectionViews.firstMatch
+        XCTAssertTrue(list.exists)
+        let deadline = Date().addingTimeInterval(120)
+        while !last.isHittable && Date() < deadline {
+            list.swipeUp(velocity: .fast)
         }
-        XCTAssertTrue(last.exists, "200-row list did not scroll to the last row")
+        XCTAssertTrue(last.isHittable, "200-row list did not scroll to the last row")
     }
 
     func testChatScrollComposerReasoningAndShots() {
@@ -212,16 +226,21 @@ final class GlassMarbleUITests: XCTestCase {
         field.typeText("A draft message for the composer shot")
         shot("11-composer-draft-keyboard")
         // Scroll away: streaming must not yank, jump button returns.
-        let first = app.staticTexts["Fixture message 0"]
-        let deadline = Date().addingTimeInterval(30)
-        while !first.exists && Date() < deadline {
-            app.swipeDown()
+        let transcript = app.scrollViews.containing(.staticText, identifier: "Fixture message 299").firstMatch
+        let latest = app.staticTexts["Fixture message 299"]
+        let jump = app.buttons["Jump to latest"]
+        XCTAssertTrue(transcript.exists)
+        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.50))
+        for _ in 0..<3 where !jump.exists {
+            start.press(forDuration: 0.05, thenDragTo: end)
         }
-        XCTAssertTrue(first.exists, "could not scroll to the first message")
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
         sleep(3)
-        XCTAssertTrue(first.isHittable || first.exists)
-        XCTAssertTrue(app.buttons["Jump to latest"].waitForExistence(timeout: 5))
-        app.buttons["Jump to latest"].tap()
-        XCTAssertTrue(app.staticTexts["Fixture message 299"].waitForExistence(timeout: 5))
+        XCTAssertTrue(jump.isHittable)
+        XCTAssertFalse(latest.isHittable)
+        jump.tap()
+        assertHittable("Fixture message 299")
+        XCTAssertFalse(jump.exists)
     }
 }

@@ -84,8 +84,8 @@ struct ThinkSplitter {
 }
 
 impl ThinkSplitter {
-    const OPEN_TAGS: [&'static str; 2] = ["<thinking>", "<think>"];
-    const CLOSE_TAGS: [&'static str; 2] = ["</thinking>", "</think>"];
+    const OPEN_TAGS: [&'static str; 4] = ["<thinking>", "<think>", "<thought>", "<reasoning>"];
+    const CLOSE_TAGS: [&'static str; 4] = ["</thinking>", "</think>", "</thought>", "</reasoning>"];
 
     /// Feed one delta; returns (text, reasoning) produced by it.
     fn feed(&mut self, delta: &str) -> (String, String) {

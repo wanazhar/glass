@@ -132,6 +132,15 @@ def run_turn(identifier, task, text, conversation, request):
     text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if "--reasoning-channels" in sys.argv:
+        event(turn, "reasoning", {"text": "Channel secret."})
+        for tag in ["think", "thinking", "thought", "reasoning"]:
+            for chunk in ["<" + tag[:2], tag[2:] + ">", "Tagged secret.", "</" + tag[:2], tag[2:] + ">"]:
+                event(turn, "text", {"text": chunk})
+        event(turn, "text", {"text": "Public answer."})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
     if argument("--pre-tool-text"):
         event(turn, "text", {"text": argument("--pre-tool-text")})
     if "--native-date" in sys.argv:

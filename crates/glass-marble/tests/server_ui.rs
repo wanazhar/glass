@@ -3542,6 +3542,76 @@ fn everyone_default_keeps_history_after_a_new_private_chat() {
 }
 
 #[test]
+fn explicit_reasoning_is_private_for_all_agents_and_chats() {
+    if !python3_available() {
+        return;
+    }
+    let args = vec!["--reasoning-channels".into()];
+    let mut fixture = NamedTurnFixture::with_persistence("reasoning-channels", args.clone(), true);
+    fixture.install_default_worker_with_args(args);
+    for id in ["marble".to_string(), fixture.marble_id.clone()] {
+        let text = format!("private reasoning {id}");
+        let (status, body) = fixture.post(
+            "/api/turns",
+            json!({"text":text,"marbleId":(id != "marble").then_some(id)}),
+        );
+        assert_eq!(status, 202, "{body}");
+        fixture.completed(&text);
+    }
+    let (status, body) = fixture.post("/api/everyone", json!({"text":"@everyone reasoning"}));
+    assert_eq!(status, 202, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture
+        .events
+        .since(0)
+        .iter()
+        .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+        .count()
+        < 2
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let state = fixture.store.as_ref().unwrap().load().unwrap();
+    for conversation in ["everyone".to_string()]
+        .into_iter()
+        .chain(state.tasks.iter().map(|t| t.conversation_id.clone()))
+    {
+        let entries: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|e| e.conversation_id == conversation)
+            .collect();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.kind == "assistant" && e.text == "Public answer.")
+        );
+        if conversation != "everyone" {
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e.kind == "reasoning" && e.text.contains("secret."))
+            );
+        }
+        assert!(
+            entries
+                .iter()
+                .filter(|e| e.kind == "assistant")
+                .all(|e| e.text == "Public answer.")
+        );
+    }
+    for event in fixture
+        .events
+        .since(0)
+        .iter()
+        .filter(|e| matches!(e.kind.as_str(), "text" | "reply"))
+    {
+        assert!(!event.data.to_string().contains("secret."));
+    }
+}
+
+#[test]
 fn everyone_and_private_agents_share_native_tools_and_finish_visible_rows() {
     if !python3_available() {
         return;

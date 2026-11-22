@@ -917,6 +917,25 @@ fn check_reconnected_account(existing: Option<&Credential>, subject: &str) -> Re
     Ok(())
 }
 
+fn device_sign_in_lines(verification_uri: &str, user_code: &str, size: (u16, u16)) -> Vec<String> {
+    let (width, height) = size;
+    let width = usize::from(width.max(1));
+    let width = if width >= 24 && height >= 12 {
+        width.saturating_sub(6).clamp(1, 100)
+    } else {
+        width
+    };
+    let mut lines = vec!["Open on any device:".into()];
+    lines.extend(glass_tui::text::wrap(verification_uri, width));
+    lines.push("Enter code:".into());
+    lines.extend(glass_tui::text::wrap(user_code, width));
+    lines.extend(glass_tui::text::wrap_words(
+        "Approve ChatGPT access, then wait for sign-in to finish.",
+        width,
+    ));
+    lines
+}
+
 fn chatgpt_device(
     keys: &KeyReader,
     existing: Option<&Credential>,
@@ -939,12 +958,12 @@ fn chatgpt_device(
         }
         screen.draw(
             "ChatGPT device sign-in",
-            &[
-                format!("Open {} on any device.", attempt.verification_uri),
-                format!("Enter code: {}", attempt.user_code),
-                "Approve ChatGPT access, then wait for sign-in to finish.".into(),
-            ],
-            "O open verification page · Esc cancel",
+            &device_sign_in_lines(
+                &attempt.verification_uri,
+                &attempt.user_code,
+                glass_tui::crossterm::terminal::size().unwrap_or((80, 24)),
+            ),
+            "O open page · Esc cancel",
             0,
         );
         if std::time::Instant::now() >= next_poll {
@@ -1136,6 +1155,36 @@ pub fn chatgpt(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn device_sign_in_preserves_the_url_and_code_at_40_by_24() {
+        for (uri, code) in [
+            (DEVICE_VERIFICATION_URI.to_string(), "ABCD-EFGH".to_string()),
+            (
+                format!("{DEVICE_VERIFICATION_URI}?routing={}", "abcdef".repeat(8)),
+                "ABCD-EFGH-".repeat(6),
+            ),
+            (String::new(), String::new()),
+        ] {
+            let lines = device_sign_in_lines(&uri, &code, (40, 24));
+            assert!(lines.len() + 3 <= 20, "all rows must fit the framed modal");
+            assert!(lines.iter().all(|line| glass_tui::text::width(line) <= 34));
+            let visible: Vec<_> = lines
+                .iter()
+                .map(|line| glass_tui::text::clip(line, 34))
+                .collect();
+            let code_label = visible
+                .iter()
+                .position(|line| line == "Enter code:")
+                .unwrap();
+            let approval = visible
+                .iter()
+                .position(|line| line.starts_with("Approve"))
+                .unwrap();
+            assert_eq!(visible[1..code_label].concat(), uri);
+            assert_eq!(visible[code_label + 1..approval].concat(), code);
+        }
+    }
+
     #[test]
     fn reconnect_routes_device_credentials_without_reusing_the_loopback_client() {
         assert!(!use_device_sign_in(None));

@@ -19,6 +19,7 @@ struct ChangesView: View {
                         ForEach(changes.files) { file in
                             NavigationLink {
                                 DiffView(conversation: conversation, file: file, hunks: changes.hunks(for: file.path),
+                                         changesMode: changes.changesMode(for: file.path),
                                          expected: changes.expected, reload: load)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -58,6 +59,7 @@ struct DiffView: View {
     let conversation: ConversationModel
     let file: WorkspaceChanges.File
     let hunks: [DiffHunk]
+    let changesMode: Bool
     let expected: String?
     let reload: () async -> Void
     @Environment(\.dismiss) private var dismiss
@@ -130,7 +132,7 @@ struct DiffView: View {
                 .disabled(!canAct)
                 .accessibilityIdentifier("changes.stageFile")
             }
-            if !file.isStaged, hunks.contains(where: \.changesMode) {
+            if !file.isStaged, changesMode {
                 ToolbarItem(placement: .secondaryAction) {
                     Button("Discard File", role: .destructive) { discardingFile = true }
                         .disabled(!canAct)

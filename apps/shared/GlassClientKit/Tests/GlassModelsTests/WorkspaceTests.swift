@@ -69,4 +69,12 @@ import Testing
         let plain = DiffHunk.parse("diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
         #expect(!plain[0].changesMode)
     }
+
+    @Test func modeOnlyChangesAreSeenWithoutHunks() throws {
+        let json = #"{"files":[],"diff":"diff --git a/build.sh b/build.sh\nold mode 100644\nnew mode 100755\n"}"#
+        let changes = try JSONDecoder().decode(WorkspaceChanges.self, from: Data(json.utf8))
+        #expect(changes.hunks(for: "build.sh").isEmpty)
+        #expect(changes.changesMode(for: "build.sh"))
+        #expect(!changes.changesMode(for: "other.sh"))
+    }
 }

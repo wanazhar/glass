@@ -91,6 +91,11 @@ fn label(value: &Value, key: &str) -> Result<String, String> {
     }
     Ok(s.into())
 }
+/// Status paths are relative to the repository root, while Git runs in the conversation folder,
+/// which may be a subdirectory; this pathspec makes Git resolve the path from the root, literally.
+fn top_path(path: &str) -> String {
+    format!(":(top,literal){path}")
+}
 /// The selected Git patch, byte for byte: `git apply` rejects a patch whose last line lost its newline.
 fn patch_text(value: &Value) -> Result<&str, String> {
     let patch = value["patch"].as_str().unwrap_or("");
@@ -1360,9 +1365,9 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
                 return Err("Supply a path or commit message".into());
             }
             let output = match action.as_str() {
-                "stage" => capture(&["add", "--", &arg])?,
-                "unstage" => capture(&["restore", "--staged", "--", &arg])?,
-                "revert-file" => capture(&["restore", "--", &arg])?,
+                "stage" => capture(&["add", "--", &top_path(&arg)])?,
+                "unstage" => capture(&["restore", "--staged", "--", &top_path(&arg)])?,
+                "revert-file" => capture(&["restore", "--", &top_path(&arg)])?,
                 "stage-patch" | "unstage-patch" | "revert-patch" => {
                     let patch = patch_text(v)?;
                     let mut options = vec!["apply"];
@@ -1900,6 +1905,15 @@ mod mutation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn whole_file_git_actions_resolve_from_the_repository_root() {
+        assert_eq!(
+            super::top_path("tools/build.sh"),
+            ":(top,literal)tools/build.sh"
+        );
+        assert_eq!(super::top_path("a*b.txt"), ":(top,literal)a*b.txt");
+    }
+
     #[test]
     fn selected_patches_keep_their_final_newline() {
         let patch = "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-hello\n+world\n";

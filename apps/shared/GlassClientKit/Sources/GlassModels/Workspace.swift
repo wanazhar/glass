@@ -98,6 +98,19 @@ public struct WorkspaceChanges: Sendable, Hashable, Decodable {
 
     /// Hunks of the unstaged patch for one file, each with the file header it needs to apply alone.
     public func hunks(for path: String) -> [DiffHunk] { DiffHunk.parse(diff).filter { $0.path == path } }
+
+    /// The unstaged diff changes this file's mode, with or without line changes.
+    public func changesMode(for path: String) -> Bool {
+        var current = ""
+        for line in diff.split(separator: "\n") {
+            if line.hasPrefix("diff --git ") {
+                current = line.components(separatedBy: " b/").last ?? ""
+            } else if current == path, line.hasPrefix("old mode ") || line.hasPrefix("new mode ") {
+                return true
+            }
+        }
+        return false
+    }
 }
 
 /// One `@@` hunk of a unified diff, carrying its file header so it can be staged or reverted alone.

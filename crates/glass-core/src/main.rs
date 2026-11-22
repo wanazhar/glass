@@ -13,6 +13,7 @@ mod attempt_log;
 mod attention;
 mod auth;
 mod blobs;
+mod browser_tools;
 mod btw;
 mod budget;
 #[allow(dead_code)]

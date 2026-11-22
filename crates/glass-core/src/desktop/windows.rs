@@ -521,6 +521,13 @@ mod xvfb_tests {
         super::super::input::inject(
             &display,
             &cookie,
+            "pointer-triple-click",
+            &json!({"x": x, "y": y}),
+        )
+        .unwrap();
+        super::super::input::inject(
+            &display,
+            &cookie,
             "pointer-drag",
             &json!({"x": x - 0.05, "y": y, "toX": x + 0.05, "toY": y + 0.05}),
         )
@@ -528,11 +535,11 @@ mod xvfb_tests {
         let events = eventually(
             || {
                 let text = std::fs::read_to_string(&log).ok()?;
-                (text.matches("ButtonRelease").count() >= 3).then_some(text)
+                (text.matches("ButtonRelease").count() >= 6).then_some(text)
             },
             "xev button events",
         );
-        assert_eq!(events.matches("ButtonPress").count(), 3, "{events}");
+        assert_eq!(events.matches("ButtonPress").count(), 6, "{events}");
         assert!(events.matches("MotionNotify").count() >= 10, "{events}");
 
         // xev ignores WM_DELETE_WINDOW, so close a window that honours it.

@@ -50,10 +50,13 @@ const CONSENT_DISMISS_FUNCTION: &str = r#"function() {
         const label = ['id', 'class', 'aria-label'].map(name => box.getAttribute(name) || '').join(' ');
         const context = box.cloneNode(true);
         context.querySelectorAll('button,a,[role=button],input,script,style').forEach(el => el.remove());
-        if (!/cookie/i.test(label) && !/\bcookies?\b/i.test(context.textContent || '')) continue;
+        const cookieContext = /cookie/i.test(label) || /\bcookies?\b/i.test(context.textContent || '');
         const button = [...box.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')]
             .filter(visible)
-            .find(b => accept.test((b.innerText || b.value || '').trim()));
+            .find(b => {
+                const text = (b.innerText || b.value || '').trim();
+                return accept.test(text) && (cookieContext || /\bcookies?\b/i.test(text));
+            });
         if (button) { button.click(); return JSON.stringify({framework:'generic', dismissed:true}); }
     }
     return JSON.stringify({framework:null, dismissed:false});

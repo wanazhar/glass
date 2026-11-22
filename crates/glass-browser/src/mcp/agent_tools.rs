@@ -658,7 +658,9 @@ if (kind === "table") return JSON.stringify(all(TABLE).slice(0, 10).map(t => {{
   const width = Math.max(headers.length, ...body.map(r => cells(r).length));
   const columns = Array.from({{length: width}}, (_, i) => {{ const base = headers[i] || "column" + (i + 1); let key = base, n = 2; while (used.has(key)) key = base + "_" + n++; used.add(key); return key; }});
   const out = body.slice(0, max).map(r => {{ const c = cells(r); if (!headers.length) return c; const o = {{}}; c.forEach((v, i) => o[columns[i]] = v); return o; }});
-  return {{caption, headers, columns, rows: out, totalRows: body.length}};
+  const result = {{caption, headers, rows: out, totalRows: body.length}};
+  if (columns.length !== headers.length || columns.some((key, i) => key !== headers[i])) result.columns = columns;
+  return result;
 }}));
 if (kind === "list") return JSON.stringify(all("ul,ol,[role=list]").slice(0, 20).map(l => {{
   const items = kids(l, "li,[role=listitem]").filter(visible);
@@ -1327,6 +1329,29 @@ mod tests {
             let value: Value = serde_json::from_str(&result).unwrap();
             assert_eq!(value[0]["columns"], json!(["Price","Price_2","column4","column4_2"]));
             assert_eq!(value[0]["rows"][0], json!({"Price":"5","Price_2":"8","column4":"9","column4_2":"10"}));
+        });
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn wide_unique_headers_fit_the_full_extraction_report() {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            ctx.eval::<(), _>(r#"
+                const cell = (text, header) => ({innerText:text, matches:s=>s==='th,[role=columnheader]' ? header : true});
+                const table = {offsetWidth:1, caption:null, getAttribute:()=>null};
+                const row = children => ({children, offsetWidth:1, closest:()=>table});
+                const headers = Array.from({length:40}, (_, i) => String(i).padEnd(300,'x'));
+                const rows = [row(headers.map(t=>cell(t,true))), row(headers.map(()=>cell('yes',false)))];
+                table.querySelectorAll = () => rows;
+                globalThis.document = {querySelectorAll:()=>[table]};
+            "#).unwrap();
+            let result: String = ctx.eval(extract_script("table", None, 1)).unwrap();
+            let report = extract_report(&json!(result).to_string()).unwrap();
+            let value: Value = serde_json::from_str(&report).unwrap();
+            assert!(value[0].get("columns").is_none());
+            assert_eq!(value[0]["rows"][0].as_object().unwrap().len(), 40);
         });
     }
 

@@ -89,6 +89,21 @@ Prebuilt archives are attached starting with the first tagged release
 after the Release binaries workflow lands; `v0.3.14` remains source-only.
 To compile from source, use `cargo install` as above.
 
+Official GNU Linux prebuilt archives require **glibc 2.34 or newer**.
+Check your host with `ldd --version` before installing an archive. Older
+systems, including RHEL 8, must build from source with a supported Rust
+toolchain instead:
+
+```console
+cargo install glass-dev --locked
+# Or install only the browser control plane:
+cargo install glass-browser --locked
+```
+
+Source installation links against the host's libraries. Supporting a lower
+glibc floor for official binaries requires a separate release-engineering
+decision; the current workflow does not provide a compatibility sysroot.
+
 `glass-dev` owns both executable names for the complete product. `glass-browser`
 owns only `glass-browser` and exports the `glass_browser` Rust library. Cargo
 does not allow both packages to install that same executable into one root.

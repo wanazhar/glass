@@ -117,7 +117,7 @@ else:
 
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
 checksum = archive.with_name(archive.name + ".sha256")
-checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+checksum.write_bytes(f"{digest}  {archive.name}\n".encode("utf-8"))
 print(f"wrote {archive.name} ({archive.stat().st_size} bytes)")
 print(f"sha256 {digest}")
 PY

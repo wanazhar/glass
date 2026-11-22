@@ -31,6 +31,9 @@ every change in this tree is part of a published release. The
 were published. The [feature parity guide](feature-parity.md) records platform
 checks and their limits.
 
+The [installation guide](installation.md#install-from-source) documents the
+official GNU Linux binaries' glibc 2.34+ requirement and source-install fallback.
+
 The release evidence records `glass-dev` and `glass-browser` as the Glass
 `0.3.14` registry products. The root workspace also contains the `glass-core`
 resident engine and `glass-browser-core`, an internal browser implementation

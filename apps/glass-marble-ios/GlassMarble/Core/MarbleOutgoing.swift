@@ -5,6 +5,11 @@ enum MarbleSendTarget: Hashable {
     case everyone(thread: String? = nil)
     case marble(String)
 
+    var conversationId: String? {
+        guard case .conversation(let id, _) = self else { return nil }
+        return id
+    }
+
     var threadId: String? {
         switch self {
         case let .conversation(_, thread), let .everyone(thread): return thread

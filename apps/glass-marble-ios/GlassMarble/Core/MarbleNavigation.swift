@@ -139,12 +139,24 @@ public struct MarbleNavigation: Sendable, Equatable {
         if !chatPath.isEmpty { chatPath.removeLast() }
     }
 
-    /// Deleting the chat on screen pops back to the list.
+    /// Remove every path to the deleted conversation, including destinations
+    /// pushed from it and search results on the other tab.
     public mutating func deleted(_ id: String) {
-        chatPath.removeAll { route in
-            if case let .conversation(existing) = route { return existing == id }
-            return false
+        func belongsToConversation(_ route: ChatRoute) -> Bool {
+            switch route {
+            case .conversation(let existing), .threadInbox(let existing), .searchHit(let existing, _, _):
+                return existing == id
+            default:
+                return false
+            }
         }
+        if let index = chatPath.firstIndex(where: belongsToConversation) {
+            chatPath.removeSubrange(index...)
+        }
+        if let index = everyonePath.firstIndex(where: belongsToConversation) {
+            everyonePath.removeSubrange(index...)
+        }
+        if pendingOpen == id { pendingOpen = nil }
     }
 
     /// A notification tap takes the person straight to that chat.

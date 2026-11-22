@@ -77,7 +77,7 @@ struct MarbleRootView: View {
             showsIntroduction = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .marbleOpenConversation)) { note in
-            guard let id = note.object as? String else { return }
+            guard let id = note.object as? String, !store.isDeletedConversation(id) else { return }
             navigation.notificationTapped(id)
         }
         .onChange(of: store.onboarded) { _, onboarded in
@@ -201,7 +201,7 @@ struct MarblesTabView: View {
         .onAppear {
             // A notification that launched the app arrived before this stack
             // existed; honour it now that the path can hold it.
-            if let id = navigation.drainPendingOpen() {
+            if let id = navigation.drainPendingOpen(), !store.isDeletedConversation(id) {
                 navigation.notificationTapped(id)
             }
         }
@@ -301,11 +301,9 @@ struct MarbleChatView: View {
         .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 if let conversation = store.state.conversation(conversationId ?? "") {
-                    let id = conversation.id
                     Task {
-                        await store.delete(conversation)
-                        if !store.state.conversations.contains(where: { $0.id == id }) {
-                            navigation.deleted(id)
+                        if await store.delete(conversation) {
+                            navigation.deleted(conversation.id)
                         }
                     }
                 }

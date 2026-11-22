@@ -35,8 +35,7 @@ struct ConversationListView: View {
                 guard let conversation = deleting else { return }
                 deleting = nil
                 Task {
-                    await store.delete(conversation)
-                    if !store.state.conversations.contains(where: { $0.id == conversation.id }) {
+                    if await store.delete(conversation) {
                         navigation.deleted(conversation.id)
                     }
                 }

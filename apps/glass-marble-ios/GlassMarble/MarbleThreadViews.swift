@@ -202,16 +202,17 @@ struct MarbleSearchSection<Row: View>: View {
     @State private var failed = false
 
     var body: some View {
+        let visibleHits = hits.filter { !store.isDeletedConversation($0.conversationId) }
         Section("Message matches") {
             if loadedQuery != query {
                 ProgressView()
             } else if failed {
                 Text("Couldn’t search messages.")
-            } else if hits.isEmpty {
+            } else if visibleHits.isEmpty {
                 Text("No messages found.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(hits) { row($0) }
+                ForEach(visibleHits) { row($0) }
             }
         }
         .task(id: query) {

@@ -762,6 +762,35 @@ final class MarbleNavigationTests: XCTestCase {
         XCTAssertTrue(nav.chatPath.isEmpty)
     }
 
+    func testDeletingChatFromSearchLatestClosesBothSearchRoutes() {
+        var nav = MarbleNavigation()
+        nav.openMarble("marble")
+        // Latest swaps the content of the search destination without replacing its route.
+        nav.chatPath.append(.searchHit(conversationId: "a", threadId: nil, entryId: "message"))
+        nav.everyonePath = [.searchHit(conversationId: "a", threadId: "thread", entryId: "reply")]
+        nav.selectTab(.everyone)
+        nav.queuePendingOpen("a")
+
+        nav.deleted("a")
+
+        XCTAssertEqual(nav.chatPath, [.marbleChats])
+        XCTAssertTrue(nav.everyonePath.isEmpty)
+        XCTAssertEqual(nav.tab, .everyone)
+        XCTAssertNil(nav.drainPendingOpen())
+    }
+
+    func testDeletingChatPopsItsDescendantsAndPreservesUnrelatedRoutes() {
+        var nav = MarbleNavigation()
+        let unrelated = ChatRoute.searchHit(conversationId: "b", threadId: nil, entryId: "message")
+        nav.chatPath = [.marbleChats, .conversation("a"), .threadInbox("a"), .thread("thread")]
+        nav.everyonePath = [unrelated]
+
+        nav.deleted("a")
+
+        XCTAssertEqual(nav.chatPath, [.marbleChats])
+        XCTAssertEqual(nav.everyonePath, [unrelated])
+    }
+
     func testNotificationTappedReplacesPath() {
         var nav = MarbleNavigation()
         nav.openConversation("a")

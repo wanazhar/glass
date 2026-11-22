@@ -78,6 +78,7 @@ final class MarbleStore: ObservableObject {
     @Published private var everyoneHistoryLoaded = false
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
     private var deletedConversationIDs: Set<String> = []
+    private var conversationDeletions: [String: UInt64] = [:]
     @Published private(set) var historyErrors: Set<String> = []
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
     @Published private(set) var threadEventSequences: [String: UInt64] = [:]
@@ -605,6 +606,7 @@ final class MarbleStore: ObservableObject {
         everyoneHistoryLoaded = false
         marbleTranscripts = [:]
         deletedConversationIDs = []
+        conversationDeletions = [:]
         everyoneHistoryRevision = -1
         marbleHistoryRevisions = [:]
         historyErrors = []
@@ -845,7 +847,7 @@ final class MarbleStore: ObservableObject {
               onConversation: ((String) -> Void)? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard client != nil, !trimmed.isEmpty,
-              MarbleOutgoing.canStart(target, alongside: outgoing) else { return false }
+              canSend(to: target) else { return false }
         let responders: [String]
         switch target {
         case .everyone: responders = MarbleMentions.responders(in: trimmed, roster: prism.marbles)
@@ -863,9 +865,17 @@ final class MarbleStore: ObservableObject {
     func retrySend(_ id: UUID) {
         guard client != nil,
               let index = outgoing.firstIndex(where: { $0.id == id && $0.delivery == .failed }),
-              MarbleOutgoing.canStart(outgoing[index].target, alongside: outgoing) else { return }
+              canSend(to: outgoing[index].target) else { return }
         outgoing[index].delivery = .sending
         transmit(outgoing[index])
+    }
+
+    private func canSend(to target: MarbleSendTarget) -> Bool {
+        if let id = target.conversationId,
+           isDeletedConversation(id) || conversationDeletions[id] == hostGeneration.current {
+            return false
+        }
+        return MarbleOutgoing.canStart(target, alongside: outgoing)
     }
 
     private func transmit(_ message: MarbleOutgoing) {
@@ -1454,17 +1464,36 @@ final class MarbleStore: ObservableObject {
         await perform { try await client.renameConversation(id: conversation.id, title: trimmed) }
     }
 
-    func delete(_ conversation: MarbleConversation) async {
-        do {
-            try await withChatClient { try await $0.deleteConversation(id: conversation.id) }
-            purgeConversation(conversation.id)
-            errorMessage = nil
-        } catch is CancellationError {
-            return
-        } catch {
-            errorMessage = error.localizedDescription
+    func isDeletedConversation(_ id: String) -> Bool {
+        deletedConversationIDs.contains(id)
+    }
+
+    func delete(_ conversation: MarbleConversation) async -> Bool {
+        let id = conversation.id
+        let generation = hostGeneration.current
+        guard !isDeletedConversation(id), conversationDeletions[id] != generation else { return false }
+        guard !outgoing.contains(where: { $0.target.conversationId == id && $0.delivery == .sending }) else {
+            errorMessage = "Wait for the message to send before deleting this chat."
+            return false
         }
-        await refresh()
+        conversationDeletions[id] = generation
+        defer {
+            if conversationDeletions[id] == generation { conversationDeletions.removeValue(forKey: id) }
+        }
+        do {
+            try await withChatClient { try await $0.deleteConversation(id: id) }
+            purgeConversation(id)
+            errorMessage = nil
+            scheduleEventRefresh()
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            guard hostGeneration.isCurrent(generation) else { return false }
+            errorMessage = error.localizedDescription
+            await refresh()
+            return false
+        }
     }
 
     private func removeDeletedConversations(from snapshot: inout MarbleState) {
@@ -1511,10 +1540,7 @@ final class MarbleStore: ObservableObject {
         threadTaskIds.subtract(taskIDs)
         retryingTurns.subtract(taskIDs)
         retryFailures.subtract(taskIDs)
-        outgoing.removeAll {
-            if case let .conversation(conversation, _) = $0.target { return conversation == id }
-            return false
-        }
+        outgoing.removeAll { $0.target.conversationId == id }
         let removedThreads = threadUpdates.values.filter { $0.conversationId == id }.map(\.id)
         for threadID in removedThreads {
             threadUpdates.removeValue(forKey: threadID)

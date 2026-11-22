@@ -9,3 +9,4 @@ pub mod prompts;
 pub mod resources;
 pub(crate) mod secrets;
 pub mod server;
+pub(crate) mod workflows;

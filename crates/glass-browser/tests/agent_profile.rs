@@ -94,6 +94,18 @@ impl Mcp {
     }
 }
 
+fn reference_named(value: &Value, name: &str) -> Option<String> {
+    match value {
+        Value::Object(object) if object.get("name").and_then(Value::as_str) == Some(name) => object
+            .get("reference")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        Value::Object(object) => object.values().find_map(|v| reference_named(v, name)),
+        Value::Array(items) => items.iter().find_map(|v| reference_named(v, name)),
+        _ => None,
+    }
+}
+
 fn text(result: &Value) -> String {
     result["content"]
         .as_array()
@@ -180,7 +192,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.len() <= 30, "{names:?}");
+    assert!(names.len() <= 31, "{names:?}");
     assert!(
         names.iter().all(|name| name.starts_with("browser_")),
         "{names:?}"
@@ -576,6 +588,42 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .await;
     assert!(loaded.contains("Loaded login \"fixture\""), "{loaded}");
     assert!(!loaded.contains("s3ss10n") && !saved.contains("s3ss10n"));
+
+    mcp.ok("browser_workflow", json!({"action":"start"})).await;
+    mcp.ok("browser_navigate", json!({"url": url})).await;
+    let snapshot: Value =
+        serde_json::from_str(&mcp.ok("browser_snapshot", json!({})).await).unwrap();
+    let reference = reference_named(&snapshot, "Full name").expect("Full name ref");
+    mcp.ok(
+        "browser_fill_form",
+        json!({"fields":[{"target":reference,"value":"Nurul Huda"}]}),
+    )
+    .await;
+    mcp.ok("browser_click", json!({"target":"text=Save draft"}))
+        .await;
+    let recorded = mcp
+        .ok("browser_workflow", json!({"action":"save","name":"draft"}))
+        .await;
+    assert!(
+        recorded.contains("with 3 steps: navigate, fill_form, click."),
+        "{recorded}"
+    );
+    let file = std::fs::read_to_string(config_home.join("glass/workflows/draft.json")).unwrap();
+    assert!(file.contains("role=textbox;name=Full name"), "{file}");
+    mcp.ok("browser_navigate", json!({"url": url})).await;
+    let replayed = mcp
+        .ok("browser_workflow", json!({"action":"run","name":"draft"}))
+        .await;
+    assert!(
+        replayed.contains("Replayed workflow \"draft\": 3 of 3 steps"),
+        "{replayed}"
+    );
+    assert!(replayed.contains("Draft saved at 10:42"), "{replayed}");
+    let missing = mcp
+        .call("browser_workflow", json!({"action":"run","name":"nope"}))
+        .await;
+    assert_eq!(missing["isError"], true, "{missing}");
+    assert!(missing.to_string().contains("action"), "{missing}");
     let _ = std::fs::remove_dir_all(&config_home);
 
     drop(mcp);

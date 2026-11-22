@@ -1992,10 +1992,13 @@ async fn handle_request_with_viewport(
         development_sessions,
         host_backend,
         elicitation,
+        agent_profile,
     )
     .await?;
-    if let Some(result) = response.result.as_mut() {
-        super::secrets::redact_value(result);
+    if request.method != "tools/list"
+        && let Some(result) = response.result.as_mut()
+    {
+        super::secrets::redact_mcp_result(result);
     }
     if let Some(error) = response.error.as_mut() {
         error.message = super::secrets::redact(&error.message);
@@ -2020,6 +2023,7 @@ async fn handle_request_with_viewport_unredacted(
     development_sessions: &DevelopmentSessionStore,
     host_backend: Option<&dyn HostMcpToolBackend>,
     elicitation: Option<&McpElicitationClient>,
+    agent_profile: bool,
 ) -> Option<JsonRpcResponse> {
     use super::agent_tools;
     if request.method == "tools/list" && agent_profile {
@@ -8378,6 +8382,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_discovery_preserves_protocol_fields_with_matching_secrets() {
+        const MARKER: &str = "GLASS_DISCOVERY_REDACTION_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::server::tests::tool_discovery_preserves_protocol_fields_with_matching_secrets", "--nocapture"])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_FIELD", "name")
+                .env("GLASS_SECRET_TOOL", "browser_snapshot")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let request: JsonRpcRequest =
+            serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request_with_viewport(
+            &request,
+            &mut None,
+            &mut None,
+            false,
+            None,
+            &SessionOptions::default(),
+            &policy,
+            None,
+            None,
+            &(),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert!(
+            result["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "browser_snapshot")
+        );
+        assert!(result["tools"][0]["inputSchema"].is_object());
+    }
+
+    #[tokio::test]
     async fn daemon_aliases_classify_reads_and_accept_validated_lease_metadata() {
         let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
         let lease = manager
@@ -8803,6 +8851,7 @@ mod tests {
                 &DevelopmentSessionStore::default(),
                 Some(&Reads),
                 None,
+                false,
             )
             .await
             .unwrap();

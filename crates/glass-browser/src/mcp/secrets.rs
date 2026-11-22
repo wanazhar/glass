@@ -130,14 +130,40 @@ pub(crate) fn inject(tool: &str, arguments: &Value) -> Result<Value, String> {
 }
 
 fn redact_with(secrets: &Secrets, text: &str) -> String {
-    let mut text = text.to_owned();
+    let mut patterns = Vec::with_capacity(secrets.len() * 2);
     for (name, value) in secrets {
         let placeholder = format!("{OPEN}{name}}}}}");
         let escaped = serde_json::to_string(value).expect("string serialization");
-        text = text.replace(&escaped[1..escaped.len() - 1], &placeholder);
-        text = text.replace(value.as_str(), &placeholder);
+        patterns.push((value.clone(), placeholder.clone()));
+        patterns.push((escaped[1..escaped.len() - 1].to_owned(), placeholder));
     }
-    text
+    patterns.sort_by_key(|pattern| std::cmp::Reverse(pattern.0.len()));
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix(OPEN)
+            && let Some(end) = after.find("}}")
+            && !after[..end].is_empty()
+            && after[..end].len() <= 64
+            && after[..end]
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            let length = OPEN.len() + end + 2;
+            out.push_str(&rest[..length]);
+            rest = &rest[length..];
+        } else if let Some((value, placeholder)) =
+            patterns.iter().find(|(value, _)| rest.starts_with(value))
+        {
+            out.push_str(placeholder);
+            rest = &rest[value.len()..];
+        } else {
+            let ch = rest.chars().next().expect("nonempty text");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
 }
 
 /// Replace every secret value in a tool result with its placeholder.
@@ -146,17 +172,42 @@ pub(crate) fn redact(text: &str) -> String {
 }
 
 pub(crate) fn redact_value(value: &mut Value) {
+    redact_value_with(loaded(), value);
+}
+
+fn redact_value_with(secrets: &Secrets, value: &mut Value) {
     match value {
-        Value::String(text) => *text = redact(text),
-        Value::Array(values) => values.iter_mut().for_each(redact_value),
+        Value::String(text) => *text = redact_with(secrets, text),
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| redact_value_with(secrets, value)),
         Value::Object(object) => {
             let original = std::mem::take(object);
             for (key, mut value) in original {
-                redact_value(&mut value);
-                object.insert(redact(&key), value);
+                redact_value_with(secrets, &mut value);
+                object.insert(redact_with(secrets, &key), value);
             }
         }
         _ => {}
+    }
+}
+
+pub(crate) fn redact_mcp_result(value: &mut Value) {
+    redact_mcp_result_with(loaded(), value);
+}
+
+fn redact_mcp_result_with(secrets: &Secrets, value: &mut Value) {
+    if let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) {
+        for item in content {
+            if item["type"] == "text"
+                && let Some(text) = item.get_mut("text")
+            {
+                redact_value_with(secrets, text);
+            }
+        }
+    }
+    if let Some(content) = value.get_mut("structuredContent") {
+        redact_value_with(secrets, content);
     }
 }
 
@@ -164,6 +215,42 @@ pub(crate) fn redact_value(value: &mut Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn redaction_does_not_rewrite_inserted_or_existing_placeholders() {
+        let secrets = vec![
+            ("PASSWORD".into(), "secret".into()),
+            ("TOKEN".into(), "PASSWORD".into()),
+        ];
+        let expected = "{{secret:PASSWORD}} {{secret:TOKEN}} {{secret:PASSWORD}}";
+        assert_eq!(
+            redact_with(&secrets, "secret PASSWORD {{secret:PASSWORD}}"),
+            expected
+        );
+        assert_eq!(redact_with(&secrets, expected), expected);
+        assert_eq!(redact_with(&secrets, ""), "");
+    }
+
+    #[test]
+    fn mcp_redaction_preserves_content_tags_and_opaque_image_data() {
+        let secrets = vec![
+            ("TYPE".into(), "text".into()),
+            ("IMAGE".into(), "iVBO".into()),
+            ("VALUE".into(), "credential".into()),
+        ];
+        let mut value = json!({"content":[{"type":"text","text":"credential text"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}],"isError":false});
+        redact_mcp_result_with(&secrets, &mut value);
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(
+            value["content"][0]["text"],
+            "{{secret:VALUE}} {{secret:TYPE}}"
+        );
+        assert_eq!(value["content"][1]["data"], "iVBORw0KGgo=");
+        assert_eq!(value["content"][1]["mimeType"], "image/png");
+        let mut empty = json!({});
+        redact_mcp_result_with(&secrets, &mut empty);
+        assert_eq!(empty, json!({}));
+    }
 
     #[cfg(unix)]
     #[test]

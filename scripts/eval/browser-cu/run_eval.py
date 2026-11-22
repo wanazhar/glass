@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -143,13 +144,47 @@ def check(task, answer, calls, base, workspace=None, existing_files=()):
     return bool(results) and all(results)
 
 
+def output_identity(path):
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    return [metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns]
+
+
+def write_eval_outputs(workspace, paths):
+    records = [{"path": str(path.relative_to(workspace)), "identity": output_identity(path)}
+               for path in paths]
+    descriptor, temporary = tempfile.mkstemp(prefix=".browser-cu-outputs-", dir=workspace)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(records, output)
+        os.replace(temporary, workspace / ".browser-cu-outputs.json")
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def clear_eval_outputs(workspace):
     manifest = workspace / ".browser-cu-outputs.json"
-    if manifest.is_file() and not manifest.is_symlink():
-        for relative in json.loads(manifest.read_text()):
-            path = workspace / relative
-            if path.resolve().is_relative_to(workspace.resolve()) and path.is_file():
+    try:
+        descriptor = os.open(manifest, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor) as source:
+            records = json.load(source)
+    except (OSError, ValueError):
+        return
+    if not isinstance(records, list):
+        return
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            continue
+        path = workspace / record["path"]
+        if Path(record["path"]).is_absolute() or not path.resolve().is_relative_to(workspace.resolve()):
+            continue
+        try:
+            identity = output_identity(path)
+            if identity is not None and identity == record.get("identity"):
                 path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def run_task(task, families, args, base, data_dir, workspace, bin_dir):
@@ -189,9 +224,9 @@ def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     used_family = any(any_match(c, family) for c in calls)
     ideal = task.get("ideal")
     ideal_hit = None if not ideal else any(any_match(c, ideal) for c in calls)
-    outputs = [str(p.relative_to(workspace)) for p in workspace.glob(pattern)
+    outputs = [p for p in workspace.glob(pattern)
                if p.is_file() and p not in existing_files] if pattern else []
-    (workspace / ".browser-cu-outputs.json").write_text(json.dumps(outputs))
+    write_eval_outputs(workspace, outputs)
     infrastructure_error = None
     try:
         success = check(task, answer, calls, base, workspace, existing_files)

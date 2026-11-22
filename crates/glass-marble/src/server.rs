@@ -1222,15 +1222,6 @@ impl MarbleServer {
     /// Dispatch one Everyone line to each named marble, reporting busy ones
     /// visibly rather than letting them fall silent.
     fn dispatch_everyone(&self, text: &str, ids: Vec<String>) -> Response {
-        let Some(pool) = self.prism.as_ref() else {
-            return Response::json(
-                503,
-                json!({
-                    "error": "prism_unavailable",
-                    "message": "this host did not start a Prism pool",
-                }),
-            );
-        };
         if ids.is_empty() {
             let mut guard = self.lock_state();
             crate::everyone::mirror(
@@ -1249,19 +1240,69 @@ impl MarbleServer {
         }
         let mut answering = Vec::new();
         let mut busy = Vec::new();
+        let group = crate::next_request_id();
         for id in &ids {
+            if id == crate::everyone::DEFAULT_SPEAKER {
+                let request = TurnRequest::new(None, text.to_string());
+                let key = format!("queued-{}", request.request_id);
+                {
+                    let mut state = self.lock_state();
+                    state.everyone_pending.insert(key.clone(), id.clone());
+                    state
+                        .everyone_orders
+                        .entry(group.clone())
+                        .or_default()
+                        .push_back(key.clone());
+                }
+                let response = self.submit_request(request);
+                if response.status < 400 {
+                    answering.push("Marble".to_string());
+                } else {
+                    busy.push("Marble".to_string());
+                    let mut state = self.lock_state();
+                    state.everyone_pending.remove(&key);
+                    state.flush_everyone();
+                }
+                continue;
+            }
             let marble = {
                 let guard = self.lock_state();
                 guard.prism.get(id).cloned()
             };
             let Some(marble) = marble else { continue };
+            if marble.state == "working" || self.prism.is_none() {
+                let mut state = self.lock_state();
+                crate::everyone::mirror(
+                    &mut state,
+                    &marble.id,
+                    &marble.name,
+                    "system",
+                    format!("{} is busy with another task", marble.name),
+                    "",
+                    None,
+                );
+                state.bump();
+                drop(state);
+                self.save_state();
+                busy.push(marble.name.clone());
+                continue;
+            }
             {
                 let mut guard = self.lock_state();
                 guard
                     .everyone_pending
                     .insert(format!("marble:{}", marble.id), marble.id.clone());
+                guard
+                    .everyone_orders
+                    .entry(group.clone())
+                    .or_default()
+                    .push_back(format!("marble:{}", marble.id));
                 guard.bump();
             }
+            let Some(pool) = self.prism.as_ref() else {
+                busy.push(marble.name.clone());
+                continue;
+            };
             match pool.dispatch(text, Some(std::slice::from_ref(&marble.id))) {
                 Ok(_) => answering.push(marble.name.clone()),
                 Err(refusal) => {
@@ -1270,6 +1311,7 @@ impl MarbleServer {
                         guard
                             .everyone_pending
                             .remove(&format!("marble:{}", marble.id));
+                        guard.flush_everyone();
                         crate::everyone::mirror(
                             &mut guard,
                             &marble.id,

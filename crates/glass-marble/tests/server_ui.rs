@@ -3720,6 +3720,14 @@ fn an_everyone_mention_routes_to_the_named_marble() {
     }
     let entries = everyone_entries(&state);
     assert!(
+        state
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .all(|task| !task.marble_id.is_empty())
+    );
+    assert!(
         entries
             .iter()
             .any(|entry| entry.kind == "user" && entry.speaker == "user")

@@ -32,16 +32,32 @@ pub enum EveryoneTarget {
 /// `@someone` the person mistyped does not silently become a dispatch.
 pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
     let lowered = text.to_lowercase();
-    if mentioned(&lowered, "everyone") {
-        return EveryoneTarget::All;
-    }
-    let named: Vec<String> = state
-        .prism
-        .marbles
-        .iter()
-        .filter(|marble| mentioned(&lowered, &marble.name.to_lowercase()))
-        .map(|marble| marble.id.clone())
+    let default = state.prism.default_marble();
+    let roster = std::iter::once(&default).chain(state.prism.marbles.iter());
+    let mut mentions: Vec<_> = roster
+        .filter_map(|marble| {
+            let at = mention_position(&lowered, &marble.name.to_lowercase());
+            let at = if marble.id == DEFAULT_SPEAKER {
+                at.into_iter()
+                    .chain(mention_position(&lowered, "marble"))
+                    .min()
+            } else {
+                at
+            };
+            at.map(|at| (at, marble.id.clone()))
+        })
         .collect();
+    mentions.sort_by_key(|(at, _)| *at);
+    let mut named: Vec<String> = mentions.into_iter().map(|(_, id)| id).collect();
+    if mentioned(&lowered, "everyone") {
+        for id in std::iter::once(DEFAULT_SPEAKER.to_string())
+            .chain(state.prism.marbles.iter().map(|m| m.id.clone()))
+        {
+            if !named.contains(&id) {
+                named.push(id);
+            }
+        }
+    }
     if named.is_empty() {
         EveryoneTarget::Default
     } else {
@@ -52,6 +68,10 @@ pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
 /// Whether `@word` appears in `text` bounded by non-word characters, so `@Ada`
 /// matches but `radar` and `@adaptive` do not.
 fn mentioned(text: &str, word: &str) -> bool {
+    mention_position(text, word).is_some()
+}
+
+fn mention_position(text: &str, word: &str) -> Option<usize> {
     let needle = format!("@{word}");
     let mut rest = text;
     while let Some(at) = rest.find(&needle) {
@@ -61,11 +81,39 @@ fn mentioned(text: &str, word: &str) -> bool {
             .next()
             .is_none_or(|next| !next.is_alphanumeric() && next != '-' && next != '_');
         if bounded {
-            return true;
+            return Some(text.len() - rest.len() + at);
         }
         rest = after;
     }
-    false
+    None
+}
+
+pub(crate) fn addressing(state: &ProductState, text: &str, owner: &str) -> String {
+    let ids = match plan(state, text) {
+        EveryoneTarget::Named(ids) => ids,
+        _ => vec![owner.to_string()],
+    };
+    let name = |id: &str| {
+        if id == DEFAULT_SPEAKER {
+            state.prism.default_marble().name
+        } else {
+            state
+                .prism
+                .get(id)
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| id.to_string())
+        }
+    };
+    let names = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!("{}{}", name(id), if i == 0 { " (lead)" } else { "" }))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "This message is addressed to: {names}. You are {}.",
+        name(owner)
+    )
 }
 
 /// The conversation record the shared plane needs in the document.
@@ -105,6 +153,13 @@ pub fn mirror(
 /// Returns whether the turn belongs to the shared plane.
 pub fn claim(state: &mut ProductState, placeholder: &str, task_id: &str) -> bool {
     if let Some(speaker) = state.everyone_pending.remove(placeholder) {
+        for order in state.everyone_orders.values_mut() {
+            for key in order.iter_mut() {
+                if key == placeholder {
+                    *key = format!("task:{task_id}");
+                }
+            }
+        }
         state
             .everyone_pending
             .insert(format!("task:{task_id}"), speaker);
@@ -213,7 +268,14 @@ mod tests {
     fn mentions_route_to_the_named_marbles() {
         let state = roster();
         assert_eq!(plan(&state, "hi there"), EveryoneTarget::Default);
-        assert_eq!(plan(&state, "@everyone ship it"), EveryoneTarget::All);
+        assert_eq!(
+            plan(&state, "@everyone ship it"),
+            EveryoneTarget::Named(vec![
+                "marble".into(),
+                state.prism.marbles[0].id.clone(),
+                state.prism.marbles[1].id.clone()
+            ])
+        );
         match plan(&state, "@ada please draft this") {
             EveryoneTarget::Named(ids) => assert_eq!(ids.len(), 1),
             other => panic!("expected a named target: {other:?}"),
@@ -225,6 +287,65 @@ mod tests {
         // A mistyped or partial name is plain text, not a mention.
         assert_eq!(plan(&state, "@adaptive thing"), EveryoneTarget::Default);
         assert_eq!(plan(&state, "asked by radar"), EveryoneTarget::Default);
+    }
+
+    #[test]
+    fn default_and_named_mentions_keep_the_explicit_leader() {
+        let state = roster();
+        let ada = state.prism.marbles[0].id.clone();
+        let ben = state.prism.marbles[1].id.clone();
+        assert_eq!(
+            plan(&state, "@Ada hi"),
+            EveryoneTarget::Named(vec![ada.clone()])
+        );
+        assert_eq!(
+            plan(&state, "@Marble take the lead @everyone"),
+            EveryoneTarget::Named(vec!["marble".into(), ada.clone(), ben.clone()])
+        );
+        assert_eq!(
+            plan(&state, "@mArBlE and @Ada help"),
+            EveryoneTarget::Named(vec!["marble".into(), ada.clone()])
+        );
+        assert_eq!(
+            plan(&state, "@Ben @everyone @Ada @Ben"),
+            EveryoneTarget::Named(vec![ben, ada.clone(), "marble".into()])
+        );
+        assert_eq!(plan(&state, ""), EveryoneTarget::Default);
+        assert_eq!(plan(&state, "hello"), EveryoneTarget::Default);
+        assert!(
+            addressing(&state, "@Marble @everyone", &ada)
+                .starts_with("This message is addressed to: Marble (lead), Ada, Ben. You are Ada.")
+        );
+    }
+
+    #[test]
+    fn everyone_replies_are_mirrored_in_mention_order_not_completion_order() {
+        let mut state = roster();
+        state.everyone_orders.insert(
+            "message".into(),
+            ["marble:lead".into(), "marble:next".into()].into(),
+        );
+        state
+            .everyone_pending
+            .insert("marble:lead".into(), "marble".into());
+        state
+            .everyone_pending
+            .insert("marble:next".into(), state.prism.marbles[0].id.clone());
+        claim(&mut state, "marble:lead", "first");
+        claim(&mut state, "marble:next", "second");
+        mirror_settlement(&mut state, "second", "Second answer", "completed");
+        assert!(state.transcript.is_empty());
+        mirror_settlement(&mut state, "first", "Lead answer", "completed");
+        assert_eq!(
+            state
+                .transcript
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Lead answer", "Second answer"]
+        );
+        assert!(state.everyone_orders.is_empty());
+        assert!(state.everyone_ready.is_empty());
     }
 
     #[test]

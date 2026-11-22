@@ -13,6 +13,7 @@ pub(crate) fn engine_input(
         crate::worker::now_millis(),
         state.routines.offset_minutes,
     )];
+    context.push(crate::everyone::addressing(state, text, owner));
     if let Some(previous) = conversation_id.filter(|id| !id.is_empty()).and_then(|id| {
         state.tasks.iter().rev().find(|task| {
             task.conversation_id == id

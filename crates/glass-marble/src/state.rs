@@ -217,6 +217,10 @@ pub struct ProductState {
     /// only; a settled turn past a restart keeps nothing to mirror.
     #[serde(skip)]
     pub everyone_pending: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    pub everyone_orders: std::collections::HashMap<String, std::collections::VecDeque<String>>,
+    #[serde(skip)]
+    pub everyone_ready: std::collections::HashMap<String, TranscriptEntry>,
     /// Whether the assistant is up, what it is doing, and what it recovered.
     #[serde(default)]
     pub presence: PresenceState,
@@ -417,6 +421,8 @@ impl ProductState {
         self.transcript
             .retain(|entry| entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION);
         self.everyone_pending.clear();
+        self.everyone_orders.clear();
+        self.everyone_ready.clear();
         before - self.transcript.len()
     }
 
@@ -475,7 +481,41 @@ impl ProductState {
 
     /// Append one transcript entry.
     pub fn push_transcript(&mut self, entry: TranscriptEntry) {
+        let key = format!("task:{}", entry.task_id);
+        if entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+            && matches!(entry.kind.as_str(), "assistant" | "failure")
+            && self
+                .everyone_orders
+                .values()
+                .any(|order| order.contains(&key))
+        {
+            self.everyone_ready.insert(key, entry);
+            self.flush_everyone();
+            return;
+        }
         self.transcript.push(entry);
+    }
+
+    pub(crate) fn flush_everyone(&mut self) {
+        let groups: Vec<_> = self.everyone_orders.keys().cloned().collect();
+        for group in groups {
+            while let Some(key) = self
+                .everyone_orders
+                .get(&group)
+                .and_then(|q| q.front())
+                .cloned()
+            {
+                if let Some(entry) = self.everyone_ready.remove(&key) {
+                    self.everyone_orders.get_mut(&group).unwrap().pop_front();
+                    self.push_transcript(entry);
+                } else if !self.everyone_pending.contains_key(&key) {
+                    self.everyone_orders.get_mut(&group).unwrap().pop_front();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.everyone_orders.retain(|_, order| !order.is_empty());
     }
 
     /// Transcript entries for one conversation, newest last.

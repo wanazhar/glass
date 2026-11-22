@@ -11,8 +11,19 @@
         return false;
     }
     function whoAnswers(text, people) {
-        if (mentioned(text, 'everyone')) return named(people);
-        const chosen = named(people).filter(p => mentioned(text, p.name));
+        const lower = String(text).toLowerCase();
+        const position = name => {
+            const needle = '@' + name.toLowerCase();
+            for (let at = lower.indexOf(needle); at !== -1; at = lower.indexOf(needle, at + needle.length)) {
+                if (!/^[\p{L}\p{N}_-]/u.test(lower.slice(at + needle.length))) return at;
+            }
+            return Infinity;
+        };
+        const chosen = people.map(person => ({ person, at: Math.min(position(person.name), person.isDefault || person.id === 'marble' ? position('marble') : Infinity) }))
+            .filter(item => Number.isFinite(item.at)).sort((a, b) => a.at - b.at).map(item => item.person);
+        if (mentioned(text, 'everyone')) for (const person of [...people.filter(p => p.isDefault || p.id === 'marble'), ...named(people)]) {
+            if (!chosen.includes(person)) chosen.push(person);
+        }
         return chosen.length ? chosen : people.filter(p => p.isDefault || p.id === 'marble');
     }
     function answerHint(text, people) {

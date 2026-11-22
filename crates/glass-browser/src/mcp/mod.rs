@@ -7,4 +7,5 @@
 pub(crate) mod agent_tools;
 pub mod prompts;
 pub mod resources;
+pub(crate) mod secrets;
 pub mod server;

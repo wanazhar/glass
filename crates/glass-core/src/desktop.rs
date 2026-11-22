@@ -1545,13 +1545,16 @@ pub fn is_tool(name: &str) -> bool {
 }
 
 pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools::Outcome {
-    let args = match serde_json::from_str::<Value>(&call.arguments) {
+    let mut args = match serde_json::from_str::<Value>(&call.arguments) {
         Ok(value) if value.is_object() => value,
         Ok(_) => return crate::tools::Outcome::err("arguments must be a JSON object"),
         Err(error) => {
             return crate::tools::Outcome::err(format!("invalid JSON arguments: {error}"));
         }
     };
+    if let Err(error) = crate::secret_placeholders::inject(&call.name, &mut args) {
+        return crate::tools::Outcome::err(error);
+    }
     let result = match call.name.as_str() {
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
@@ -1576,8 +1579,10 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         _ => Err("unknown desktop tool".into()),
     };
     match result {
-        Ok(body) => crate::tools::Outcome::ok(body),
-        Err(error) => crate::tools::Outcome::err(with_next_step(error)),
+        Ok(body) => crate::tools::Outcome::ok(crate::secret_placeholders::redact(&body)),
+        Err(error) => {
+            crate::tools::Outcome::err(crate::secret_placeholders::redact(&with_next_step(error)))
+        }
     }
 }
 

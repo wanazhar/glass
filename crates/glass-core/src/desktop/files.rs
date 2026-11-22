@@ -1,7 +1,7 @@
 //! Moves files between the workspace and the managed desktop's private
 //! Downloads folder, which the workspace-scoped file tools cannot reach.
 
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -43,24 +43,31 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
         .map_err(|_| "Secure random unavailable".to_owned())?;
     let partial = to.with_file_name(format!(".{:032x}.gc-partial", u128::from_ne_bytes(nonce)));
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&partial)
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&partial)
         .map_err(|error| format!("Could not stage the file: {error}"))?;
+    let staged = partial.join("file");
     let result = (|| {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o777)
+            .open(&staged)?;
+        let allowed = output.metadata()?.permissions().mode() & 0o777;
+        output.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         let mut input = std::fs::File::open(from)?;
         std::io::copy(&mut input, &mut output)?;
         output.set_permissions(std::fs::Permissions::from_mode(
-            input.metadata()?.permissions().mode() & 0o777,
+            input.metadata()?.permissions().mode() & allowed,
         ))?;
         output.sync_all()?;
-        std::fs::rename(&partial, to)
+        std::fs::rename(&staged, to)
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&partial);
+        let _ = std::fs::remove_file(&staged);
     }
+    let _ = std::fs::remove_dir(&partial);
     result.map_err(|error| format!("Could not copy the file: {error}"))
 }
 
@@ -213,6 +220,40 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfers_respect_restrictive_umask() {
+        const MARKER: &str = "GLASS_TRANSFER_UMASK_TEST";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "desktop::files::tests::transfers_respect_restrictive_umask",
+                ])
+                .env(MARKER, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        // SAFETY: this isolated subprocess runs only this test.
+        unsafe {
+            libc::umask(0o077);
+        }
+        let root = scratch("umask");
+        let source = root.join("source");
+        std::fs::write(&source, b"private").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let target = root.join("target");
+        copy(&source, &target).unwrap();
+        assert_eq!(
+            std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(copy(&root.join("missing"), &root.join("failed")).is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn transfers_preserve_private_and_executable_permissions() {

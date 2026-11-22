@@ -1558,7 +1558,9 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
     }
     let result = match call.name.as_str() {
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
-        "desktop_input" if args["action"] == "paste" => paste(&args).map(|value| value.to_string()),
+        "desktop_input" if args["action"] == "paste" => {
+            paste(&args, workspace).map(|value| value.to_string())
+        }
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
         "desktop_wait" => wait_for_desktop(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
@@ -1607,7 +1609,7 @@ fn host_session() -> &'static str {
 /// Appends a concrete recovery step to errors whose text does not already
 /// tell the model what to call next.
 /// `desktop_input` `paste`: write the clipboard, then press Control+V.
-fn paste(args: &Value) -> Result<Value, String> {
+fn paste(args: &Value, workspace: &Path) -> Result<Value, String> {
     let session_id = args["sessionId"]
         .as_str()
         .ok_or("sessionId is required from desktop_status")?;
@@ -1615,7 +1617,10 @@ fn paste(args: &Value) -> Result<Value, String> {
         .as_str()
         .filter(|text| !text.is_empty())
         .ok_or("paste needs non-empty text")?;
-    Desktop::agent_clipboard(&json!({"action":"write","sessionId":session_id,"text":text}))?;
+    Desktop::agent_clipboard(
+        &json!({"action":"write","sessionId":session_id,"text":text}),
+        workspace,
+    )?;
     Desktop::agent_input(
         &json!({"action":"key-chord","sessionId":session_id,"keys":["Control","V"]}),
     )?;
@@ -2293,7 +2298,11 @@ mod tests {
         ));
         let error = super::wait_for_desktop(&json!({"until":"soon","sessionId":"s"})).unwrap_err();
         assert!(error.contains("change or text"), "{error}");
-        let error = super::paste(&json!({"sessionId":"s","text":""})).unwrap_err();
+        let error = super::paste(
+            &json!({"sessionId":"s","text":""}),
+            Path::new("/nonexistent"),
+        )
+        .unwrap_err();
         assert!(error.contains("non-empty"), "{error}");
     }
 

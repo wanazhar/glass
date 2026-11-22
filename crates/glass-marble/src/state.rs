@@ -1004,6 +1004,7 @@ impl ProductState {
             })
             .collect();
         for (task, status, reply) in settled_slots {
+            crate::everyone::claim(self, &task, &task);
             crate::everyone::mirror_settlement(
                 self,
                 &task,
@@ -1211,6 +1212,59 @@ mod tests {
         state.prune(1);
         assert!(state.tasks.iter().any(|task| task.id == "running"));
         assert!(state.tasks.len() <= TASK_LIMIT);
+    }
+
+    #[test]
+    fn queued_default_group_slots_fail_with_their_original_identity_after_reload() {
+        for conversation_id in ["", "chat"] {
+            let mut state = ProductState::default();
+            if !conversation_id.is_empty() {
+                state.conversation_mut(conversation_id);
+            }
+            crate::everyone::mirror(
+                &mut state,
+                "user",
+                "You",
+                "user",
+                "@Marble queued",
+                "",
+                None,
+            );
+            let group = state.transcript.last().unwrap().id.clone();
+            let thread = state.create_thread("everyone", &group).unwrap();
+            crate::everyone::reserve(
+                &mut state,
+                &group,
+                "queued-default",
+                "marble",
+                "Marble",
+                Some(&thread.id),
+            );
+            let slot = state.transcript.last().unwrap().clone();
+            state.upsert_task(TaskRecord {
+                id: "queued-default".into(),
+                conversation_id: conversation_id.into(),
+                status: "queued".into(),
+                owner: "agent".into(),
+                prompt: "@Marble queued".into(),
+                ..Default::default()
+            });
+            state.bind_thread("queued-default", Some(&thread.id));
+            let mut state: ProductState =
+                serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            assert_eq!(state.recover_interrupted(), 1);
+            assert_eq!(state.recover_interrupted(), 0);
+            assert_eq!(state.tasks[0].status, "failed");
+            let row = state.transcript.iter().find(|e| e.id == slot.id).unwrap();
+            assert_eq!(row.kind, "failure");
+            assert_eq!(row.task_id, "queued-default");
+            assert_eq!(row.at, slot.at);
+            assert_eq!(row.thread_id, slot.thread_id);
+            assert!(row.failure.as_ref().unwrap().retryable);
+            assert!(state.everyone_pending.is_empty());
+            assert!(state.everyone_orders.is_empty());
+            assert!(!state.transcript.iter().any(|e| e.kind == "pending"));
+        }
     }
 
     #[test]

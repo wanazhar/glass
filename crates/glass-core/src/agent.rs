@@ -4704,7 +4704,8 @@ mod warm_integration {
                 "desktop_observe",
                 "desktop_act",
                 "desktop_input",
-                "desktop_launch_app"
+                "desktop_launch_app",
+                "desktop_clipboard"
             ]
         );
         assert_eq!(

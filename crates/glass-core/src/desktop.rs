@@ -24,6 +24,7 @@ use std::{
 mod accessibility;
 mod apps;
 mod capture;
+mod clipboard;
 mod input;
 mod process;
 mod supervisor;
@@ -259,6 +260,8 @@ impl Desktop {
                 "frameTimeMs": null,
                 "error": restore_error,
                 "regionUpdates": 1,
+                "displayServer": "x11",
+                "hostSession": host_session(),
                 "capabilities": capabilities
             });
         };
@@ -289,6 +292,8 @@ impl Desktop {
                 restore_error.as_deref()
             },
             "regionUpdates": 1,
+            "displayServer": "x11",
+            "hostSession": host_session(),
                 "capabilities": capabilities
         })
     }
@@ -1192,6 +1197,10 @@ impl Desktop {
         Self::agent_request(&json!({"action":"start"}))
     }
 
+    pub fn agent_clipboard(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"clipboard","value":value}))
+    }
+
     pub fn agent_launch_app(value: &Value) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"launch_app","value":value}))
     }
@@ -1455,6 +1464,7 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_observe"
             | "desktop_act"
             | "desktop_launch_app"
+            | "desktop_clipboard"
     )
 }
 
@@ -1470,6 +1480,7 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
+        "desktop_clipboard" => Desktop::agent_clipboard(&args).map(|value| value.to_string()),
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
@@ -1486,8 +1497,48 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
     };
     match result {
         Ok(body) => crate::tools::Outcome::ok(body),
-        Err(error) => crate::tools::Outcome::err(error),
+        Err(error) => crate::tools::Outcome::err(with_next_step(error)),
     }
+}
+
+/// The human's own graphical session type. Managed desktops always run on a
+/// private Xvfb X11 display, so a Wayland host only changes what the human
+/// sees, never what the agent controls.
+fn host_session() -> &'static str {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland");
+    if wayland {
+        "wayland"
+    } else if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
+        "x11"
+    } else {
+        "none"
+    }
+}
+
+/// Appends a concrete recovery step to errors whose text does not already
+/// tell the model what to call next.
+fn with_next_step(error: String) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("call desktop_") || lower.contains("install") {
+        return error;
+    }
+    let next = if lower.contains("desktop service is unavailable")
+        || lower.contains("no managed desktop session")
+    {
+        "no managed desktop is running. Ask the human to start one (`gc desktop quick`, or /desktop quick in the TUI); for web pages use the browser_* tools instead."
+    } else if lower.contains("held by the other participant") {
+        "the human has desktop control. Wait, then call desktop_status until lease is \"agent\" before sending input."
+    } else if lower.contains("read-only") {
+        "input is disabled in read-only mode; use desktop_observe or desktop_screenshot to report what you see."
+    } else if lower.contains("sessionid") {
+        "call desktop_status and pass its current sessionId."
+    } else if lower.contains("frame") && lower.contains("stale") {
+        "the capture is not producing frames; call desktop_status, and use desktop_observe, which does not need frames."
+    } else {
+        return error;
+    };
+    format!("{error}\nNext: {next}")
 }
 
 fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
@@ -1681,6 +1732,7 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         },
         Some("act") => desktop.act_accessibility(&request["value"]),
         Some("launch_app") => desktop.launch_app(&request["value"]),
+        Some("clipboard") => desktop.clipboard(&request["value"]),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
@@ -1710,6 +1762,24 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_errors_name_the_next_call() {
+        let next = |error: &str| super::with_next_step(error.to_owned());
+        assert!(
+            next("Connect desktop service is unavailable: refused").contains("gc desktop quick")
+        );
+        assert!(
+            next("Desktop input lease is held by the other participant")
+                .contains("lease is \"agent\"")
+        );
+        assert!(
+            next("sessionId is required from desktop_status").contains("Next: call desktop_status")
+        );
+        let already = "Accessibility target is stale; call desktop_observe again";
+        assert_eq!(next(already), already);
+        assert_eq!(next("unexpected failure"), "unexpected failure");
+    }
+
     use super::*;
     use std::{
         collections::BTreeMap,

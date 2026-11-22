@@ -463,7 +463,10 @@ Each has a closed JSON schema with an example, says when to use it and when
 not to, and failed calls end with a `Next:` hint naming the tool to try.
 Glass Core offers this profile as typed tools when `glass-browser` is on
 `PATH` (`GC_BROWSER_TOOLS=0` disables it, `GC_BROWSER_BIN` and
-`GC_BROWSER_RUNTIME` override the binary and runtime).
+`GC_BROWSER_RUNTIME` override the binary and runtime). Without an override,
+Core picks `chromium` when the host's bubblewrap is older than 0.8 and cannot
+lock user namespaces, because the native runtime refuses to start there and
+says so with a `SandboxUnavailable` error.
 
 ```console
 glass-browser --browser-runtime chromium --mcp --tool-profile agent

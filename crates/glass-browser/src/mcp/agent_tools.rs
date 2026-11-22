@@ -424,7 +424,9 @@ pub(crate) fn normalize_key(key: &str) -> String {
 /// Add the next step a model should take after an agent tool failed.
 pub(crate) fn recovery_hint(tool: &str, error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase().replace(['_', '-'], " ");
-    if lower.contains("dialog") {
+    if lower.contains("sandboxunavailable") || lower.contains("bubblewrap") {
+        "Next: the browser runtime cannot start on this host, so retrying will not help; tell the user to restart glass-browser with --browser-runtime chromium (GC_BROWSER_RUNTIME=chromium for Glass Core) or upgrade bubblewrap."
+    } else if lower.contains("dialog") {
         "Next: a JavaScript dialog is blocking the page; call browser_handle_dialog with {\"accept\":true} or {\"accept\":false}."
     } else if lower.contains("stale") || lower.contains("revision") || lower.contains("reference") {
         "Next: the page changed since your last snapshot; call browser_snapshot and use a fresh ref."
@@ -537,6 +539,13 @@ mod tests {
 
     #[test]
     fn recovery_hints_name_the_next_tool() {
+        assert!(
+            recovery_hint(
+                "browser_navigate",
+                "connection failure during content sandbox: SandboxUnavailable: bubblewrap at /usr/bin/bwrap does not support --disable-userns"
+            )
+            .contains("--browser-runtime chromium")
+        );
         assert!(
             recovery_hint(
                 "browser_click",

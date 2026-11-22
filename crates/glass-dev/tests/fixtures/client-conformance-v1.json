@@ -5,6 +5,7 @@
   "tools": [
     "acceptDialog",
     "actAndVerify",
+    "back",
     "backendStatus",
     "backendTest",
     "batch",
@@ -40,6 +41,7 @@
     "extractWebIr",
     "fillForm",
     "findTarget",
+    "forward",
     "getDOM",
     "getText",
     "glass.agent.abort",
@@ -314,6 +316,7 @@
     "project.run",
     "reconcileReferences",
     "recoverRun",
+    "reload",
     "replayAttach",
     "replayDiff",
     "replayInspect",

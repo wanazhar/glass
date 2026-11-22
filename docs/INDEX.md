@@ -255,7 +255,7 @@ current user instructions.
   cancellation, concurrency, errors, security, and response modes.
 - [MCP tool catalog](mcp-tools.md) — every tool in the current checkout's
   negotiated conformance inventory grouped by domain.
-- [MCP schema budget and live source measurements](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
+- [MCP schema budget and live source measurements, including history tools](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
 - [Browser and computer-use audit](BROWSER-CU-AUDIT.md) — Linux tool surfaces,
   gaps, prioritized plan, and the tool-selection eval.

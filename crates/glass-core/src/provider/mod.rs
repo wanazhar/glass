@@ -518,7 +518,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/width, y=py/height using desktop_status width and height. For web pages use browser_screenshot.".to_string(),
+            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/(width - 1), y=py/(height - 1) using desktop_status width and height. For web pages use browser_screenshot.".to_string(),
             serde_json::json!({"type":"object","properties":{"sessionId":{"type":"string","maxLength":64}},"required":["sessionId"],"additionalProperties":false}).to_string(),
         ),
         (
@@ -559,8 +559,8 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 "properties":{
                     "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from desktop_status; the manager rejects stale sessions."},
                     "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","key-tap","key-chord","text","scroll"]},
-                    "x":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen width: 0 is the left edge, 1 the right, 0.5 the center. From a desktop_screenshot pixel, x = px / desktop_status.width."},
-                    "y":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen height: 0 is the top edge, 1 the bottom. From a desktop_screenshot pixel, y = py / desktop_status.height."},
+                    "x":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen width: 0 is the left edge, 1 the right, 0.5 the center. From a desktop_screenshot pixel, x = px / (desktop_status.width - 1)."},
+                    "y":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen height: 0 is the top edge, 1 the bottom. From a desktop_screenshot pixel, y = py / (desktop_status.height - 1)."},
                     "button":{"type":"string","enum":["left","middle","right"]},
                     "pressed":{"type":"boolean"},
                     "key":{"type":"string","maxLength":16},
@@ -601,7 +601,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 "properties":{
                     "action":{"type":"string","enum":["read","write"]},
                     "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
-                    "text":{"type":"string","maxLength":4096,"description":"Text to place on the clipboard; required for write. Newline and tab are allowed."}
+                    "text":{"type":"string","maxLength":4096,"description":"Text to place on the clipboard; required for write. Maximum 4096 UTF-8 bytes, not characters. Newline and tab are allowed."}
                 },
                 "allOf":[{"if":{"properties":{"action":{"const":"write"}}},"then":{"required":["text"]}}]
             }).to_string(),

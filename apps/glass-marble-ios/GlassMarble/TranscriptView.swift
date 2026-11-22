@@ -115,7 +115,6 @@ struct MarbleEntryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var creatingThread = false
     @State private var threadError = false
-    @State private var streamedHeight: CGFloat = 0
     var entry: MarbleEntry
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
@@ -125,10 +124,6 @@ struct MarbleEntryView: View {
     var allowsThreads = true
 
     private var isUser: Bool { entry.kind == "user" }
-    private var isStreaming: Bool {
-        entry.kind == "pending" ||
-            (entry.kind == "assistant" && entry.serverID == nil && entry.presentationID != nil)
-    }
     private var task: MarbleTask? {
         guard !entry.taskId.isEmpty else { return nil }
         return store.state.tasks.first { $0.id == entry.taskId }
@@ -147,12 +142,6 @@ struct MarbleEntryView: View {
             }
             entryContent(isFailure: failure)
         }
-        .onGeometryChange(for: CGFloat.self) { geometry in
-            geometry.size.height
-        } action: { height in
-            if isStreaming && height > streamedHeight { streamedHeight = height }
-        }
-        .frame(minHeight: isStreaming ? streamedHeight : nil, alignment: .topLeading)
         .background {
             GeometryReader { geometry in
                 Color.clear.preference(
@@ -277,8 +266,19 @@ struct MarbleEntryView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(speaker.name) said")
             }
-            MarbleMarkdownView(text: text).equatable()
-                .textSelection(.enabled)
+            let blocks = store.retractedReplyBlocks(for: entry)
+            if blocks.isEmpty {
+                MarbleMarkdownView(text: text).equatable().textSelection(.enabled)
+            } else {
+                ZStack(alignment: .topLeading) {
+                    ForEach(blocks.indices, id: \.self) { index in
+                        MarbleMarkdownView(text: blocks[index]).equatable()
+                            .hidden()
+                            .accessibilityHidden(true)
+                    }
+                    MarbleMarkdownView(text: text).equatable().textSelection(.enabled)
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)

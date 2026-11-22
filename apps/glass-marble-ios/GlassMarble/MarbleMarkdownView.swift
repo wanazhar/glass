@@ -17,7 +17,8 @@ struct MarbleMarkdownView: View {
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
-        return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+        let readable = MarbleMath.inline(in: value)
+        return (try? AttributedString(markdown: readable, options: options)) ?? AttributedString(readable)
     }
 }
 
@@ -78,6 +79,12 @@ private struct MarbleMarkdownBlocks: View {
             }
         case .code(let language, let code):
             MarbleCodeBlock(code: code, language: language)
+        case .math(let value):
+            Text(value)
+                .font(.system(.body, design: .serif))
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
         case .table(let header, let alignments, let rows):
             MarbleTableBlock(header: header, alignments: alignments, rows: rows)
         case .rule:

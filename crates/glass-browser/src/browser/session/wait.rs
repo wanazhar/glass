@@ -16,6 +16,11 @@ struct VerificationBaseline {
     download_sequence: u64,
 }
 
+pub(crate) struct NetworkQuietTracker {
+    events: tokio::sync::broadcast::Receiver<crate::browser::cdp::CdpEventWithParams>,
+    guard: NetworkDomainGuard,
+}
+
 pub(crate) fn is_ignored_network_resource_type(resource_type: Option<&str>) -> bool {
     matches!(
         resource_type,
@@ -356,18 +361,37 @@ impl CdpBrowserSession {
         Ok((matched, value.to_string(), geometry))
     }
 
+    pub(crate) async fn start_network_quiet_tracking(&self) -> BrowserResult<NetworkQuietTracker> {
+        let events = self.cdp.subscribe_events_with_params();
+        let guard =
+            NetworkDomainGuard::acquire(self.cdp.clone(), Arc::clone(&self.network_wait_leases))
+                .await?;
+        Ok(NetworkQuietTracker { events, guard })
+    }
+
     async fn wait_for_network_quiet(
         &self,
+        quiet: Duration,
+        deadline: Duration,
+    ) -> BrowserResult<WaitOutcome> {
+        let tracker = self.start_network_quiet_tracking().await?;
+        self.wait_for_tracked_network_quiet(tracker, quiet, deadline)
+            .await
+    }
+
+    pub(crate) async fn wait_for_tracked_network_quiet(
+        &self,
+        tracker: NetworkQuietTracker,
         quiet: Duration,
         deadline: Duration,
     ) -> BrowserResult<WaitOutcome> {
         if quiet.is_zero() {
             return Err("network quiet duration must be positive".into());
         }
-        let mut events = self.cdp.subscribe_events_with_params();
-        let mut guard =
-            NetworkDomainGuard::acquire(self.cdp.clone(), Arc::clone(&self.network_wait_leases))
-                .await?;
+        let NetworkQuietTracker {
+            mut events,
+            mut guard,
+        } = tracker;
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
         let mut empty_since = started;

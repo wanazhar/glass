@@ -1801,6 +1801,68 @@ async fn diagnostics_snapshot_includes_session_readiness_metadata() {
 }
 
 #[tokio::test]
+async fn action_network_tracking_includes_requests_started_before_the_wait() {
+    for (request, completes) in [(true, true), (false, true), (true, false)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, mut reader) = accept_async(stream).await.unwrap().split();
+            let writer = Arc::new(Mutex::new(writer));
+            while let Some(Ok(Message::Text(text))) = reader.next().await {
+                let command: Value = serde_json::from_str(&text).unwrap();
+                if command["method"] == "Runtime.evaluate" && request {
+                    writer.lock().await.send(Message::Text(json!({"method":"Network.requestWillBeSent","params":{"requestId":"save","type":"Fetch"}}).to_string().into())).await.unwrap();
+                    if completes {
+                        let writer = Arc::clone(&writer);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(900)).await;
+                            let _ = writer.lock().await.send(Message::Text(json!({"method":"Network.loadingFinished","params":{"requestId":"save"}}).to_string().into())).await;
+                        });
+                    }
+                }
+                writer
+                    .lock()
+                    .await
+                    .send(Message::Text(
+                        json!({"id":command["id"],"result":{}}).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                if command["method"] == "Network.disable" {
+                    break;
+                }
+            }
+        });
+        let cdp = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let session = test_session(cdp.clone());
+        let tracker = session.start_network_quiet_tracking().await.unwrap();
+        cdp.send("Runtime.evaluate", Some(json!({"expression":"save()"})))
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let deadline = if completes {
+            Duration::from_millis(1500)
+        } else {
+            Duration::from_millis(50)
+        };
+        let result = session
+            .wait_for_tracked_network_quiet(tracker, Duration::from_millis(250), deadline)
+            .await;
+        assert_eq!(result.is_ok(), completes);
+        if request && completes {
+            assert!(started.elapsed() >= Duration::from_millis(900));
+        }
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn diagnostic_cancellation_disables_every_scoped_domain() {
     let (url, server) = diagnostic_cleanup_server().await;
     let cdp = CdpClient::connect(&url).await.unwrap();

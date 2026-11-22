@@ -2052,6 +2052,21 @@ async fn handle_request_with_viewport(
     } else {
         None
     };
+    let network_tracker = if before.is_some() && !native_runtime {
+        if let Some(session) = session.as_ref() {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                session.start_network_quiet_tracking(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut response = call_inner!(tool, arguments)?;
     let succeeded = response
         .result
@@ -2078,10 +2093,24 @@ async fn handle_request_with_viewport(
             "wait",
             json!({"condition": agent_tools::WATCH_MUTATIONS, "timeoutMs": 1000})
         );
-        let _ = inner_text!(
-            "wait",
-            json!({"condition": "network-quiet=250", "timeoutMs": 1500})
-        );
+        if let Some(tracker) = network_tracker {
+            if let Some(session) = session.as_ref() {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(1500),
+                    session.wait_for_tracked_network_quiet(
+                        tracker,
+                        Duration::from_millis(250),
+                        Duration::from_millis(1500),
+                    ),
+                )
+                .await;
+            }
+        } else {
+            let _ = inner_text!(
+                "wait",
+                json!({"condition": "network-quiet=250", "timeoutMs": 1500})
+            );
+        }
         let _ = inner_text!(
             "wait",
             json!({"condition": agent_tools::DOM_QUIET, "timeoutMs": 1000})

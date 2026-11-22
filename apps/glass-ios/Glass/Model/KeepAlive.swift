@@ -46,8 +46,14 @@ final class KeepAlive: NSObject {
         center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { KeepAlive.shared.endActivitiesBeforeExit() }
         }
-        center.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { KeepAlive.shared.endActivitiesBeforeExit() }
+        // On iPad one window can close while another keeps its connection; only the last one ends the activity.
+        center.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { note in
+            let closing = (note.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                let others = UIApplication.shared.connectedScenes.filter { ObjectIdentifier($0) != closing }
+                guard others.isEmpty else { return }
+                KeepAlive.shared.endActivitiesBeforeExit()
+            }
         }
         // An activity left over from a previous run describes a connection that no longer exists.
         Task {

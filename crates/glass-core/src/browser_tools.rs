@@ -79,6 +79,9 @@ fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
     {
         command.args(["--port", &port.to_string()]);
     }
+    for host in allowed_hosts(&std::env::var("GC_BROWSER_ALLOW_HOSTS").unwrap_or_default()) {
+        command.args(["--policy-allow-host", &host]);
+    }
     command
         .args(["--mcp", "--tool-profile", "agent", "--incognito"])
         .stdin(Stdio::piped())
@@ -88,6 +91,17 @@ fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
         command.current_dir(workspace);
     }
     command
+}
+
+/// Hosts from `GC_BROWSER_ALLOW_HOSTS`, separated by commas or whitespace.
+/// When set, the browser refuses to open any other host.
+fn allowed_hosts(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `GC_BROWSER_RUNTIME` wins. Otherwise Linux hosts whose bubblewrap cannot
@@ -715,6 +729,15 @@ for line in sys.stdin:
             2
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn allowed_hosts_split_on_commas_and_spaces() {
+        assert_eq!(
+            allowed_hosts(" example.com, docs.rs\nlocalhost ,,"),
+            ["example.com", "docs.rs", "localhost"]
+        );
+        assert!(allowed_hosts("").is_empty());
     }
 
     #[test]

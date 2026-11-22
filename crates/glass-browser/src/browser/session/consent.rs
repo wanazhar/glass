@@ -38,16 +38,27 @@ const CONSENT_DISMISS_FUNCTION: &str = r#"function() {
             '#CybotCookiebotDialogBodyLevelButtonAccept', '#CybotCookiebotDialogBodyButtonDecline'
         ])});
     }
+    const named = '[id*=cookie i],[class*=cookie i],[id*=consent i],[class*=consent i],[aria-label*=cookie i],[aria-label*=consent i],[id*=gdpr i]';
+    const accept = /^(accept|accept all|allow all|allow cookies|i agree|agree|got it|ok|okay|reject all|decline)\b/i;
+    for (const box of [...document.querySelectorAll(named)].filter(visible).slice(0, 20)) {
+        const button = [...box.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')]
+            .filter(visible)
+            .find(b => accept.test((b.innerText || b.value || '').trim()));
+        if (button) { button.click(); return JSON.stringify({framework:'generic', dismissed:true}); }
+    }
     return JSON.stringify({framework:null, dismissed:false});
 }"#;
 
 impl CdpBrowserSession {
     /// Dismiss a visible OneTrust/Cookiebot consent control, if recognized.
-    /// This only clicks documented consent controls; it does not bypass bot
-    /// protection or search arbitrary page buttons.
+    /// This only clicks documented consent controls, or an accept/reject
+    /// button inside an element named as a cookie or consent banner; it does
+    /// not bypass bot protection or search arbitrary page buttons.
     pub async fn dismiss_consent(&self) -> BrowserResult<ConsentDismissalOutcome> {
         self.policy.require(PolicyCapability::ConsentDismissal)?;
-        let raw = self.evaluate_value(CONSENT_DISMISS_FUNCTION).await?;
+        let raw = self
+            .evaluate_value(&format!("({CONSENT_DISMISS_FUNCTION})()"))
+            .await?;
         let value = raw.as_str().unwrap_or_default();
         let parsed: Value = serde_json::from_str(value).unwrap_or_default();
         let outcome = match (

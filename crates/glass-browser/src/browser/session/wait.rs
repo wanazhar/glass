@@ -543,6 +543,7 @@ impl CdpBrowserSession {
             tokio::select! {
                 _ = changed => {},
                 _ = tokio::time::sleep_until(wake) => {},
+                _ = tokio::time::sleep(WAIT_POLL_INTERVAL) => {},
             }
         }
     }

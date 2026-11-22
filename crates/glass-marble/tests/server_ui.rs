@@ -672,6 +672,36 @@ fn event_stream_greets_a_quiet_connection_immediately() {
 }
 
 #[test]
+fn health_and_cli_report_the_embedded_host_build() {
+    let build = glass_marble::build_info::document();
+    assert_eq!(build["version"], env!("CARGO_PKG_VERSION"));
+    let commit = build["gitCommit"].as_str().unwrap();
+    let short = build["gitCommitShort"].as_str().unwrap();
+    if commit == "unknown" {
+        assert_eq!(short, "unknown");
+    } else {
+        assert!(matches!(commit.len(), 40 | 64));
+        assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(short, &commit[..12]);
+    }
+    let server = free_server(ProductState::default());
+    let (status, body) = server.handle("GET", "/healthz", "");
+    assert_eq!(status, 200, "{body}");
+    let health: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(health["build"], build);
+    assert_eq!(health["version"], build["version"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_glass-marble"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        format!("glass-marble {}", glass_marble::build_info::CLI_VERSION)
+    );
+}
+
+#[test]
 fn event_stream_replays_from_a_cursor() {
     let events = EventBus::default();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -712,10 +742,16 @@ fn event_stream_replays_from_a_cursor() {
             }
         }
         assert!(response.contains("text/event-stream"), "{response}");
-        assert!(
-            response.contains("event: hello\ndata: {\"cursor\":1}"),
-            "{response}"
-        );
+        let hello = response
+            .split("event: hello\ndata: ")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap();
+        let hello: Value = serde_json::from_str(hello).unwrap();
+        assert_eq!(hello["cursor"], 1);
+        assert_eq!(hello["build"], glass_marble::build_info::document());
         assert!(response.contains("event: text"), "{response}");
         assert!(response.contains("streamed"), "{response}");
     }

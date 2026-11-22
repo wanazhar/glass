@@ -100,6 +100,62 @@ data directory.
 The full product guide, HTTP surface, Tailscale setup, and the iOS client are
 documented in [docs/marble.md](../../docs/marble.md).
 
+## Updating an existing source-checkout host
+
+The host binary is `glass-marble`, not `glass` or `glass-core`. The installer
+records the absolute path of the executable used to run `install-service`:
+the documented `cargo run` installation therefore normally points at
+`target/debug/glass-marble`. Check the existing definition before rebuilding:
+
+```sh
+# Linux: inspect ExecStart
+systemctl --user cat dev.glass.marble.service
+# macOS: inspect ProgramArguments[0]
+plutil -p "$HOME/Library/LaunchAgents/dev.glass.marble.plist"
+```
+
+From the checkout, on `fix/marble-round2`, for a service using `target/debug`:
+
+```sh
+git pull --rebase
+cargo build -p glass-marble --locked
+systemctl --user restart dev.glass.marble.service  # Linux
+# macOS, instead of systemctl, for an already loaded login agent:
+launchctl kickstart -k "gui/$(id -u)/dev.glass.marble"
+```
+
+For a service using `target/release/glass-marble`, build with `--release`
+instead. For a Cargo-installed host at `~/.cargo/bin/glass-marble`, replace the
+build command with `cargo install --path crates/glass-marble --locked --force`.
+For a manually copied executable, stop the service, replace that executable
+with the new build, then start it. Restarting a foreground host means stopping
+the old process and repeating its original `serve` invocation with the same
+workspace, data directory, token, and engine settings. Rebuilding alone does
+not update a running process. No unit rewrite or `daemon-reload` is needed if
+only the executable changed.
+
+Marble state/settings remain in `--data-dir` / `GLASS_MARBLE_DATA_DIR`, defaulting
+to `$XDG_DATA_HOME/glass-marble` or `~/.local/share/glass-marble`. Core provider
+configuration is separate: `$XDG_CONFIG_HOME/glass-core/config.toml` or
+`~/.config/glass-core/config.toml`. Preserve the existing service environment;
+Core is selected by `--core-binary`, `GLASS_CORE_BINARY`, or `glass-core` on PATH.
+
+Confirm the running host (use its configured host, port, and HTTP/HTTPS scheme):
+
+```sh
+curl -sS http://127.0.0.1:4783/healthz | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["build"]))'
+git rev-parse HEAD
+```
+
+`build` is `{ "version": "0.3.14", "gitCommit": "<full SHA>",
+"gitCommitShort": "<12-character SHA>" }`; compare `gitCommit` to the checkout's
+HEAD. `/healthz` needs no token and includes the build even when health is 503.
+The authenticated SSE `hello` event adds the same `build` object next to its
+existing `cursor`. `glass-marble --version` prints the version and both SHAs,
+but checks the executable on disk, not the running service. Git metadata is
+captured at build time; source archives or builds without Git report `unknown`
+for both SHAs.
+
 ## Optimistic sends
 
 Chat sends (`POST /api/turns`, `/api/everyone`, and `/api/prism/dispatch`) accept

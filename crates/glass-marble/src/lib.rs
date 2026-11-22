@@ -8,6 +8,7 @@
 //! own tools, and only `glass.*` integrations come back to this process for an
 //! explicit decision.
 
+pub mod build_info;
 pub mod control;
 pub mod conversation;
 pub mod crates;

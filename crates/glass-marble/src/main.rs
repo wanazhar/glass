@@ -23,7 +23,7 @@ const CHAT_LANES: usize = 3;
 #[command(
     name = "glass-marble",
     about = "Always-on, self-hosted personal assistant built on Glass Core",
-    version
+    version = glass_marble::build_info::CLI_VERSION
 )]
 struct Cli {
     /// One-shot message. Omit when using a subcommand.

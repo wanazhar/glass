@@ -615,6 +615,7 @@ impl MarbleServer {
                 json!({
                     "ok": healthy,
                     "version": env!("CARGO_PKG_VERSION"),
+                    "build": crate::build_info::document(),
                     "pid": std::process::id(),
                     "revision": revision,
                     "sequence": self.events.sequence(),
@@ -4132,7 +4133,7 @@ impl MarbleServer {
         write!(
             stream,
             "event: hello\ndata: {}\n\n",
-            json!({"cursor": cursor})
+            json!({"cursor": cursor, "build": crate::build_info::document()})
         )?;
         stream.flush()?;
         let since = if since > cursor { 0 } else { since };

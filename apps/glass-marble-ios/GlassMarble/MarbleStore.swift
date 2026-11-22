@@ -26,23 +26,15 @@ final class MarbleStore: ObservableObject {
         case offline
     }
 
-    struct LiveTool: Identifiable, Equatable {
-        let id = UUID()
-        var name: String
-        var summary: String
-        var isError: Bool
-    }
-
     /// One conversation's in-flight reply parts; several chats can stream at
     /// once, so each keeps its own instead of sharing one buffer.
     private struct LiveBuffers: Equatable {
         var text = ""
         var reasoning = ""
-        var tools: [LiveTool] = []
         var taskId: String?
 
         var isEmpty: Bool {
-            text.isEmpty && reasoning.isEmpty && tools.isEmpty && taskId == nil
+            text.isEmpty && reasoning.isEmpty && taskId == nil
         }
     }
 
@@ -94,7 +86,9 @@ final class MarbleStore: ObservableObject {
     private var hostGeneration = MarbleConnectionGeneration()
     @Published private(set) var liveText = ""
     @Published private(set) var liveReasoning = ""
-    @Published private(set) var liveTools: [LiveTool] = []
+    @Published private var toolsByTurn: [String: [MarbleToolActivity]] = [:]
+    private var recentToolTurnIDs: [String] = []
+    var liveTools: [MarbleToolActivity] { activeTaskId.map(tools(for:)) ?? [] }
     @Published private(set) var activeTaskId: String?
     @Published var errorMessage: String?
     /// Last accepted Prism change, shown inside the Prism sheet.
@@ -110,7 +104,7 @@ final class MarbleStore: ObservableObject {
     private var sequence: UInt64 = 0
     private var started = false
     /// Per-conversation live buffers; `liveText` & friends mirror the selected one.
-    private var live: [String: LiveBuffers] = [:]
+    @Published private var live: [String: LiveBuffers] = [:]
     private var backoffSeconds: Double = 1
     private var reconnectInFlight = false
     private var lastReconnectAt: TimeInterval = 0
@@ -119,8 +113,7 @@ final class MarbleStore: ObservableObject {
     /// real changes after that are worth a reconnect.
     private var pathMonitorSeenFirst = false
     private var appActive = true
-    /// Dedupe keys for local alerts (see MarbleAttention).
-    private var notifiedKeys: Set<String> = []
+    private var notificationCursor: MarbleNotificationCursor?
 
     /// Local-notification opt-in, persisted between launches (default off).
     private static let localNotificationsKey = "marble.localNotifications"
@@ -243,6 +236,7 @@ final class MarbleStore: ObservableObject {
         onboarded = true
         streamTask?.cancel()
         sequence = 0
+        notificationCursor = nil
         needsToken = false
         conversationTranscript = []
         transcriptConversationId = nil
@@ -273,6 +267,7 @@ final class MarbleStore: ObservableObject {
         onboarded = false
         started = false
         sequence = 0
+        notificationCursor = nil
         state = .empty
         conversationTranscript = []
         transcriptConversationId = nil
@@ -325,6 +320,13 @@ final class MarbleStore: ObservableObject {
     // MARK: - On-device cache
 
     private static let cursorKeyPrefix = "marble.eventCursor."
+    private static let notificationCursorKeyPrefix = "marble.notificationCursor."
+
+    private func saveNotificationCursor() {
+        guard let endpoint, let notificationCursor,
+              let data = try? JSONEncoder().encode(notificationCursor) else { return }
+        UserDefaults.standard.set(data, forKey: Self.notificationCursorKeyPrefix + endpoint.baseURL.absoluteString)
+    }
 
     private static func cacheURL(for endpoint: MarbleEndpoint) -> URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
@@ -339,6 +341,9 @@ final class MarbleStore: ObservableObject {
     /// Show the last fetched chats for this host straight away, and resume
     /// its event stream from the last event seen.
     private func restoreCache(for endpoint: MarbleEndpoint) {
+        if let data = UserDefaults.standard.data(forKey: Self.notificationCursorKeyPrefix + endpoint.baseURL.absoluteString) {
+            notificationCursor = try? JSONDecoder().decode(MarbleNotificationCursor.self, from: data)
+        }
         sequence = UInt64(UserDefaults.standard.integer(
             forKey: Self.cursorKeyPrefix + endpoint.baseURL.absoluteString
         ))
@@ -409,7 +414,6 @@ final class MarbleStore: ObservableObject {
             if let health = try? await healthFetch {
                 hostVersion = health.version
                 engineHealth = health.runtime
-                sequence = MarbleResumeCursor.resume(saved: sequence, hostSequence: health.sequence)
             }
             // Navigation owns which chat is on screen. A refresh may only
             // clear a selection whose conversation disappeared — never choose
@@ -459,6 +463,10 @@ final class MarbleStore: ObservableObject {
 
     private func resetChats() {
         everyoneTaskIds = []
+        toolsByTurn = [:]
+        recentToolTurnIDs = []
+        retryingTurns = []
+        retryFailures = []
         everyoneTimeline = []
         marbleTranscripts = [:]
         chatsRevision = -1
@@ -591,15 +599,37 @@ final class MarbleStore: ObservableObject {
     }
 
     /// Repeat a failed, cancelled, or interrupted turn.
+    @Published private(set) var retryingTurns: Set<String> = []
+    @Published private(set) var retryFailures: Set<String> = []
+
     func retry(_ task: MarbleTask) async {
-        guard let client else { return }
+        guard let client, retryingTurns.insert(task.id).inserted else { return }
+        let generation = hostGeneration.current
+        retryFailures.remove(task.id)
         do {
             try await client.retry(taskId: task.id)
-            errorMessage = nil
+            guard hostGeneration.isCurrent(generation) else { return }
+            await refresh()
         } catch {
-            errorMessage = error.localizedDescription
+            guard hostGeneration.isCurrent(generation) else { return }
+            retryFailures.insert(task.id)
         }
-        await refresh()
+        guard hostGeneration.isCurrent(generation) else { return }
+        retryingTurns.remove(task.id)
+    }
+
+    func tools(for taskID: String) -> [MarbleToolActivity] { toolsByTurn[taskID] ?? [] }
+
+    func liveReasoning(for conversationID: String) -> String { live[conversationID]?.reasoning ?? "" }
+
+    func latestTurn(in conversationID: String?) -> MarbleTask? {
+        guard let conversationID, !conversationID.isEmpty else { return nil }
+        return state.tasks.last { $0.conversationId == conversationID }
+    }
+
+    var everyoneTurns: [MarbleTask] {
+        let ids = Set(everyoneEntries.map(\.taskId)).union(everyoneTaskIds)
+        return state.tasks.filter { ids.contains($0.id) || $0.conversationId == everyoneConversationId }
     }
 
     /// Transcript search across every conversation.
@@ -1099,13 +1129,13 @@ final class MarbleStore: ObservableObject {
     }
 
     /// Alert for an event that happened off-screen so a person can pull it back.
-    private func postLocalNotification(conversationId: String, title: String, body: String) {
+    private func postLocalNotification(conversationId: String, taskId: String, title: String, body: String) {
         guard localNotificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
-        content.userInfo = ["marble": ["conversationId": conversationId]]
+        content.userInfo = ["marble": ["conversationId": conversationId, "taskId": taskId]]
         let request = UNNotificationRequest(
             identifier: "marble.\(UUID().uuidString)",
             content: content,
@@ -1114,16 +1144,17 @@ final class MarbleStore: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 
-    /// Alerts only when the surface is not already looking at the result, and
-    /// only once per turn — the host publishes two `settled` frames.
+    /// Consume before presenting so muted, visible and replayed alerts all
+    /// advance the same per-host cursor.
     private func notifyIfNeeded(event: MarbleEvent) {
-        guard let alert = MarbleAttention.alert(for: event, seen: &notifiedKeys),
-              !event.conversationId.isEmpty else { return }
-        let visible = appActive && event.conversationId == (selectedConversationId ?? "")
-        guard !visible else { return }
+        let previous = notificationCursor
+        let alert = notificationCursor?.consume(event)
+        if previous != notificationCursor { saveNotificationCursor() }
+        guard let alert else { return }
         let conversationTitle = state.conversation(event.conversationId)?.title ?? ""
         postLocalNotification(
             conversationId: event.conversationId,
+            taskId: event.data.taskId ?? event.taskId,
             title: alert.title,
             body: conversationTitle.isEmpty ? alert.body : conversationTitle
         )
@@ -1145,9 +1176,22 @@ final class MarbleStore: ObservableObject {
         streamTask?.cancel()
         status.reconnectStarted()
         let client = self.client
+        let generation = hostGeneration.current
         streamTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, let client else { return }
+                let health = try? await client.health()
+                guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
+                if let health {
+                    self.sequence = MarbleResumeCursor.resume(saved: self.sequence, hostSequence: health.sequence)
+                    if self.notificationCursor == nil {
+                        self.notificationCursor = MarbleNotificationCursor(hostSequence: health.sequence, hostPID: health.pid)
+                    } else if self.notificationCursor?.align(hostSequence: health.sequence, hostPID: health.pid) == true {
+                        // The old process's sequence no longer identifies an event.
+                        self.sequence = 0
+                    }
+                    self.saveNotificationCursor()
+                }
                 let since = self.sequence
                 var endedReason: String? = nil
                 do {
@@ -1157,6 +1201,7 @@ final class MarbleStore: ObservableObject {
                         onActivity: { Task { @MainActor in self.status.streamEvent() } }
                     )
                     for try await event in events {
+                        guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
                         self.backoffSeconds = 1
                         self.handle(event)
                     }
@@ -1183,12 +1228,26 @@ final class MarbleStore: ObservableObject {
         let buffers = live[selectedConversationId ?? ""] ?? LiveBuffers()
         liveText = buffers.text
         liveReasoning = buffers.reasoning
-        liveTools = buffers.tools
         activeTaskId = buffers.taskId
     }
 
+    private func recordTool(_ event: MarbleEvent) {
+        guard !event.taskId.isEmpty else { return }
+        var calls = tools(for: event.taskId)
+        MarbleToolActivity.apply(event, to: &calls)
+        guard !calls.isEmpty else { return }
+        if toolsByTurn[event.taskId] == nil {
+            if recentToolTurnIDs.count >= 64 {
+                toolsByTurn.removeValue(forKey: recentToolTurnIDs.removeFirst())
+            }
+            recentToolTurnIDs.append(event.taskId)
+        }
+        toolsByTurn[event.taskId] = calls
+    }
+
     private func handle(_ event: MarbleEvent) {
-        sequence = max(sequence, event.sequence)
+        guard event.sequence > sequence else { return }
+        sequence = event.sequence
         var buffers = live[event.conversationId] ?? LiveBuffers()
         let forActive = event.conversationId.isEmpty
             || event.conversationId == (selectedConversationId ?? "")
@@ -1197,24 +1256,8 @@ final class MarbleStore: ObservableObject {
             buffers.text += event.data.text ?? ""
         case "reasoning":
             buffers.reasoning += event.data.text ?? ""
-        case "tool_start":
-            buffers.tools.append(
-                LiveTool(name: event.data.tool ?? "tool", summary: "running…", isError: false)
-            )
-        case "tool_end":
-            let name = event.data.tool ?? "tool"
-            let summary = (event.data.isError == true ? "failed · " : "done · ")
-                + String((event.data.text ?? "").prefix(160))
-            if let index = buffers.tools.firstIndex(where: {
-                $0.name == name && $0.summary == "running…"
-            }) {
-                buffers.tools[index].summary = summary
-                buffers.tools[index].isError = event.data.isError == true
-            } else {
-                buffers.tools.append(
-                    LiveTool(name: name, summary: summary, isError: event.data.isError == true)
-                )
-            }
+        case "tool_start", "tool_end":
+            recordTool(event)
         case "approval_pending":
             Task { await refresh() }
         case "approval_resolved", "state":
@@ -1233,7 +1276,11 @@ final class MarbleStore: ObservableObject {
                 if !reply.isEmpty { await speak(reply) }
             }
         case "error":
-            if let message = event.data.message { errorMessage = message }
+            if event.taskId.isEmpty {
+                errorMessage = "Marble couldn’t finish the request."
+            } else if buffers.taskId == event.taskId {
+                buffers = LiveBuffers()
+            }
             Task { await refresh() }
         case "cancel_requested":
             errorMessage = nil

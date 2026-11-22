@@ -140,6 +140,13 @@ struct EveryoneView: View {
                             speaker: store.speakerStyle(for: entry)
                         )
                     }
+                    ForEach(store.everyoneTurns.filter { $0.isRunning || $0.id == store.everyoneTurns.last?.id }) { task in
+                        let reasoning = store.liveReasoning(for: task.conversationId)
+                        if task.isRunning && !reasoning.isEmpty {
+                            MarbleReasoningRow(text: reasoning)
+                        }
+                        MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
+                    }
                     ForEach(store.everyoneThinking, id: \.self) { name in
                         MarbleThinkingBubble(name: name)
                     }
@@ -177,7 +184,8 @@ struct EveryoneView: View {
             .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: follow.following)
         }
         .safeAreaInset(edge: .top, spacing: 0) { header }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .marbleComposerInset { composer }
+        .toolbarVisibility(.hidden, for: .tabBar)
         .navigationTitle("Everyone")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.visible, for: .navigationBar)
@@ -494,6 +502,7 @@ struct MarbleChatScreen: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarVisibility(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: marble?.name ?? "Marble")
@@ -525,6 +534,11 @@ struct MarbleChatScreen: View {
                     ForEach(entries) { entry in
                         MarbleEntryView(entry: entry)
                     }
+                    let reasoning = store.liveReasoning(for: marble.conversationId)
+                    if marble.isWorking && !reasoning.isEmpty {
+                        MarbleReasoningRow(text: reasoning)
+                    }
+                    MarbleTurnTail(task: store.latestTurn(in: marble.conversationId), entries: entries, showsLiveTools: true)
                     if marble.isWorking {
                         MarbleThinkingBubble(name: marble.name)
                     }
@@ -549,7 +563,7 @@ struct MarbleChatScreen: View {
             }
             .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: true)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
                 isWorking: marble.isWorking,

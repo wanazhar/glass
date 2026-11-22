@@ -17,6 +17,8 @@ public enum MarbleTab: String, Sendable, CaseIterable {
 /// holds marble screens and the default assistant's chats; the Everyone
 /// stack only needs a marble's info card when an avatar is tapped.
 public enum ChatRoute: Hashable, Sendable {
+    /// The shared chat, pushed from the Everyone inbox.
+    case everyoneChat
     /// A not-yet-created conversation. It gains a real id on the first send.
     case draft
     case conversation(String)
@@ -38,6 +40,20 @@ public struct MarbleNavigation: Sendable, Equatable {
     public var viewingConversationId: String? {
         chatPath.last.flatMap { route in
             if case let .conversation(id) = route { return id }
+            return nil
+        }
+    }
+
+    /// Visible chat for foreground notifications. Inactive tabs can retain
+    /// their paths even while another screen is on top.
+    func visibleChat(namedConversation: (String) -> String?) -> String? {
+        switch tab {
+        case .everyone:
+            return everyonePath.last == .everyoneChat ? everyoneConversationId : nil
+        case .marbles:
+            if case .marbleChat(let id) = chatPath.last { return namedConversation(id) }
+            return viewingConversationId
+        case .settings:
             return nil
         }
     }
@@ -110,6 +126,11 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     /// A notification tap takes the person straight to that chat.
     public mutating func notificationTapped(_ id: String) {
+        if id == everyoneConversationId {
+            tab = .everyone
+            everyonePath = [.everyoneChat]
+            return
+        }
         tab = .marbles
         chatPath = [.marbleChats, .conversation(id)]
     }

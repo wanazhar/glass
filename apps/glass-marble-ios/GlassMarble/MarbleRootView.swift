@@ -44,18 +44,21 @@ struct MarbleRootView: View {
                     Tab(value: MarbleTab.everyone) {
                         EveryoneTabView()
                     } label: {
-                        MarbleTabIcon(title: "Everyone", systemImage: "bubble.left.and.bubble.right")
+                        MarbleTabIcon(title: "Everyone", systemImage: "bubble.left.and.text.bubble.right.fill")
                     }
+                    .accessibilityIdentifier("tab.everyone")
                     Tab(value: MarbleTab.marbles) {
                         MarblesTabView()
                     } label: {
-                        MarbleTabIcon(title: "Marbles", systemImage: "circle.hexagongrid")
+                        MarbleTabIcon(title: "Marbles", systemImage: "person.2.fill")
                     }
+                    .accessibilityIdentifier("tab.marbles")
                     Tab(value: MarbleTab.settings) {
                         NavigationStack { SettingsView() }
                     } label: {
-                        MarbleTabIcon(title: "Settings", systemImage: "gearshape")
+                        MarbleTabIcon(title: "Settings", systemImage: "gearshape.fill")
                     }
+                    .accessibilityIdentifier("tab.settings")
                     .badge(store.state.approvals.count + store.memory.suggestions.count)
                 }
             } else {
@@ -116,15 +119,41 @@ private struct MarbleTabIcon: View {
 
 /// The Everyone tab: the shared chat; avatar taps push a marble's info.
 struct EveryoneTabView: View {
+    @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
 
     var body: some View {
         NavigationStack(path: everyonePath) {
-            EveryoneView()
+            List {
+                NavigationLink(value: ChatRoute.everyoneChat) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Everyone")
+                            if let last = store.everyoneEntries.last(where: {
+                                ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
+                            }) {
+                                Text(last.text)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    } icon: {
+                        Image(systemName: "bubble.left.and.text.bubble.right")
+                    }
+                }
+            }
+                .listStyle(.sidebar)
+                .navigationTitle("Chats")
                 .navigationDestination(for: ChatRoute.self) { route in
                     switch route {
-                    case .marbleInfo(let id): MarbleInfoView(marbleId: id)
-                    default: EveryoneView()
+                    case .marbleInfo(let id):
+                        MarbleInfoView(marbleId: id)
+                            .toolbarVisibility(.hidden, for: .tabBar)
+                    case .everyoneChat:
+                        EveryoneView()
+                    default:
+                        EmptyView()
                     }
                 }
         }
@@ -203,7 +232,7 @@ struct MarbleChatView: View {
         .safeAreaInset(edge: .top) {
             approvalRail
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
                 isWorking: store.isWorking,
@@ -215,6 +244,7 @@ struct MarbleChatView: View {
             )
             .marbleComposerBackground()
         }
+        .toolbarVisibility(.hidden, for: .tabBar)
         .onAppear { store.selectedConversationId = conversationId }
         .onDisappear {
             if store.selectedConversationId == conversationId {

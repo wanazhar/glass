@@ -32,14 +32,22 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         completionHandler()
     }
 
-    /// Marble is an assistant, not a background daemon: show its banner even
-    /// while the app is in front.
+    /// The open chat already shows its own updates.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([.banner, .sound, .list])
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        let userInfo = notification.request.content.userInfo
+        let target = marbleConversationId(from: userInfo)
+        let taskID = (userInfo["marble"] as? [String: Any])?["taskId"] as? String
+        return await MainActor.run {
+            let shouldSuppress = UIApplication.shared.connectedScenes.contains { scene in
+                guard scene.activationState == .foregroundActive,
+                      let delegate = scene.delegate as? MarbleSceneDelegate else { return false }
+                return !delegate.shouldPresentNotification(target: target, taskID: taskID)
+            }
+            return shouldSuppress ? [] : [.banner, .sound, .list]
+        }
     }
 
     /// The device token is handed to the product store, which registers it with
@@ -89,6 +97,22 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private let store = MarbleStore()
     #endif
     private let navigation = MarbleNavigationModel()
+
+    func shouldPresentNotification(target: String?, taskID: String?) -> Bool {
+        guard store.onboarded, !store.needsToken,
+              window?.rootViewController?.presentedViewController == nil else { return true }
+        let visibleChat = navigation.state.visibleChat { id in
+            store.prism.marbles.first { $0.id == id }?.conversationId
+        }
+        // The host can address a mirrored Everyone turn by its engine chat.
+        let mirrored = taskID.map { id in
+            !id.isEmpty && (store.everyoneTaskIds.contains(id) || store.everyoneEntries.contains { $0.taskId == id })
+        } ?? false
+        return MarbleNotificationCursor.shouldPresent(
+            target: visibleChat == everyoneConversationId && mirrored ? everyoneConversationId : target,
+            visibleChat: visibleChat
+        )
+    }
 
     func scene(
         _ scene: UIScene,

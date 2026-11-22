@@ -57,15 +57,7 @@ struct TranscriptView: View {
                     if !store.liveText.isEmpty {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
                     }
-                    if let task = retryableTask {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(footnote(task))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            Button("Retry") { Task { await store.retry(task) } }
-                                .font(.footnote.weight(.semibold))
-                        }
-                    }
+                    MarbleTurnTail(task: store.latestTurn(in: store.selectedConversationId), entries: store.transcript)
                     Color.clear
                         .frame(height: 1)
                         .id(Self.bottomAnchor)
@@ -129,24 +121,6 @@ struct TranscriptView: View {
 
     private static let bottomAnchor = "marble-bottom"
 
-    /// The newest turn for this chat that ended without a reply.
-    private var retryableTask: MarbleTask? {
-        let conversationId = store.selectedConversationId
-        return store.state.tasks.reversed().first { task in
-            ["failed", "cancelled", "interrupted"].contains(task.status)
-                && task.conversationId == conversationId
-                && !task.prompt.isEmpty
-        }
-    }
-
-    private func footnote(_ task: MarbleTask) -> String {
-        switch task.status {
-        case "cancelled": return "Cancelled before replying"
-        case "interrupted": return "Interrupted before replying"
-        default: return "Failed before replying"
-        }
-    }
-
     private func now() -> TimeInterval {
         Date().timeIntervalSinceReferenceDate
     }
@@ -163,15 +137,32 @@ struct TranscriptView: View {
 /// the right; replies read as full-width Markdown under a clear speaker line
 /// with the marble's avatar and name in its colour.
 struct MarbleEntryView: View {
+    @EnvironmentObject private var store: MarbleStore
     var entry: MarbleEntry
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
     var speaker: MarbleSpeakerStyle? = nil
 
     private var isUser: Bool { entry.kind == "user" }
-    private var isMuted: Bool { entry.kind == "reasoning" || entry.kind == "system" }
+    private var task: MarbleTask? {
+        guard !entry.taskId.isEmpty else { return nil }
+        return store.state.tasks.first { $0.id == entry.taskId }
+    }
 
     var body: some View {
+        let failure = MarbleTurnFailure.representsFailure(entry, status: task?.status)
+        if entry.kind == "assistant" || failure {
+            ForEach(store.tools(for: entry.taskId)) { MarbleToolRow(tool: $0) }
+        }
+        if failure {
+            MarbleFailedTurnRow(task: task)
+        } else {
+            message
+        }
+    }
+
+    @ViewBuilder
+    private var message: some View {
         if isUser {
             Text(entry.text)
                 .font(.body)
@@ -189,16 +180,8 @@ struct MarbleEntryView: View {
             HandoffLine(handoff: handoff)
         } else if entry.kind == "reasoning" {
             // Thinking stays tucked away — never inline with the reply.
-            DisclosureGroup("Reasoning") {
-                Text(entry.text)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        } else if isMuted {
+            MarbleReasoningRow(text: entry.text)
+        } else if entry.kind == "system" || entry.kind == "tool" {
             Text(entry.text)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -225,20 +208,78 @@ struct MarbleEntryView: View {
 }
 
 struct MarbleToolRow: View {
-    var tool: MarbleStore.LiveTool
+    var tool: MarbleToolActivity
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: tool.isError ? "exclamationmark.triangle" : "wrench.and.screwdriver")
-                .font(.caption)
-                .foregroundStyle(tool.isError ? .red : .secondary)
-            Text(MarbleDecisionWords.action(tool: tool.name))
-                .font(.caption.weight(.semibold))
-            Text(tool.summary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            Image(systemName: tool.isWebSearch ? "magnifyingglass" : "wrench.and.screwdriver")
+            Text(tool.title + (tool.query.map { " · " + $0 } ?? ""))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(tool.status.rawValue)
         }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct MarbleReasoningRow: View {
+    var text: String
+
+    var body: some View {
+        DisclosureGroup("Thought for a moment") {
+            Text(text)
+                .font(.footnote)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+struct MarbleTurnTail: View {
+    @EnvironmentObject private var store: MarbleStore
+    var task: MarbleTask?
+    var entries: [MarbleEntry]
+    var showsLiveTools = false
+
+    var body: some View {
+        if let task {
+            let rows = entries.filter { $0.taskId == task.id }
+            let hasFailure = rows.contains { MarbleTurnFailure.representsFailure($0, status: task.status) }
+            let hasAnswer = rows.contains { $0.kind == "assistant" }
+            if !hasFailure && !hasAnswer && (showsLiveTools || !task.isRunning) {
+                ForEach(store.tools(for: task.id)) { MarbleToolRow(tool: $0) }
+            }
+            if !hasFailure && MarbleTurnFailure.message(for: task.status) != nil {
+                MarbleFailedTurnRow(task: task)
+            }
+        }
+    }
+}
+
+private struct MarbleFailedTurnRow: View {
+    @EnvironmentObject private var store: MarbleStore
+    var task: MarbleTask?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(task.flatMap { MarbleTurnFailure.message(for: $0.status) } ?? "Marble couldn’t finish this reply.",
+                  systemImage: "exclamationmark.circle")
+                .foregroundStyle(.secondary)
+            if let task, MarbleTurnFailure.message(for: task.status) != nil,
+               !task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("Retry") { Task { await store.retry(task) } }
+                    .disabled(store.retryingTurns.contains(task.id))
+                if store.retryFailures.contains(task.id) {
+                    Text("Couldn’t retry. Try again in a moment.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .font(.footnote)
     }
 }
 
@@ -351,6 +392,15 @@ struct ComposerBar: View {
 }
 
 extension View {
+    @ViewBuilder
+    func marbleComposerInset(@ViewBuilder content: () -> some View) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: .bottom, spacing: 0, content: content)
+        } else {
+            safeAreaInset(edge: .bottom, spacing: 0, content: content)
+        }
+    }
+
     /// A solid bar behind the composer so messages never show through it,
     /// reaching down under the home indicator and the keyboard.
     func marbleComposerBackground() -> some View {

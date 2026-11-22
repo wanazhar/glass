@@ -495,6 +495,8 @@ struct MarbleEvent: Decodable, Equatable {
 struct MarbleEventData: Decodable, Equatable {
     var text: String?
     var tool: String?
+    var callId: String? = nil
+    var arguments: MarbleJSON? = nil
     var isError: Bool?
     var message: String?
     var status: String?
@@ -616,6 +618,7 @@ struct MarbleHealth: Decodable, Equatable {
     var authRequired: Bool
     var status: String?
     var runtime: RuntimeHealth?
+    var pid: Int? = nil
 
     struct RuntimeHealth: Decodable, Equatable {
         var health: String

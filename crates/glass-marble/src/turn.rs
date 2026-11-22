@@ -322,7 +322,10 @@ fn run_attempt(
             );
         }
     };
-    let reset_text = || {
+    let reset_text = |live: Option<&mut LiveTurn>, reasoning: &str| {
+        if let Some(turn) = live {
+            turn.progress("", reasoning);
+        }
         if streaming {
             events.publish(
                 &conversation_id,
@@ -402,18 +405,15 @@ fn run_attempt(
                 splitter = ThinkSplitter::default();
                 last_segment.clear();
             }
-            reset_text();
+            reset_text(live.as_deref_mut(), &reasoning);
             publish_reasoning(&commentary);
             reasoning_boundary = true;
-            if let Some(turn) = live.as_deref_mut() {
-                turn.progress("", &reasoning);
-            }
         }
         "usage" => usage = Some(event.data.clone()),
         _ => {}
     });
     if let Err(error) = outcome {
-        reset_text();
+        reset_text(live.as_deref_mut(), &reasoning);
         conversation.publish("error", serde_json::json!({ "message": error.to_string() }));
         return Err(error);
     }
@@ -430,7 +430,7 @@ fn run_attempt(
     }
     text = conversation.clean_reply(&text);
     if text.trim_start().starts_with("[Generation failed]") {
-        reset_text();
+        reset_text(live, &reasoning);
         return Err(MarbleError::Protocol(
             "provider_rejected: model returned a generation failure".into(),
         ));

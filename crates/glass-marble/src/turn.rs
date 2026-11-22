@@ -311,6 +311,27 @@ fn run_attempt(
     let mut last_segment = String::new();
     let mut usage: Option<Value> = None;
     let events = conversation.events().clone();
+    let streaming = conversation.streams_text_blocks();
+    let publish_text = |delta: &str| {
+        if streaming && !delta.is_empty() {
+            events.publish(
+                &conversation_id,
+                &task_id,
+                "text",
+                serde_json::json!({"text":delta}),
+            );
+        }
+    };
+    let reset_text = || {
+        if streaming {
+            events.publish(
+                &conversation_id,
+                &task_id,
+                "text_reset",
+                serde_json::json!({"text":""}),
+            );
+        }
+    };
     let publish_reasoning = |delta: &str| {
         if !delta.is_empty() {
             events.publish(
@@ -340,8 +361,9 @@ fn run_attempt(
                     &thought,
                 ));
                 text.push_str(&visible);
+                publish_text(&visible);
                 if let Some(turn) = live.as_deref_mut() {
-                    turn.progress("", &reasoning);
+                    turn.progress(if streaming { &text } else { "" }, &reasoning);
                 }
             }
         }
@@ -353,11 +375,21 @@ fn run_attempt(
                     delta,
                 ));
                 if let Some(turn) = live.as_deref_mut() {
-                    turn.progress("", &reasoning);
+                    turn.progress(if streaming { &text } else { "" }, &reasoning);
                 }
             }
         }
-        "tool_start" => {
+        "text_block_start" | "tool_start" => {
+            if event.kind == "text_block_start"
+                && (!streaming
+                    || event
+                        .data
+                        .get("blockId")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty))
+            {
+                return;
+            }
             let (visible, thought) = splitter.flush();
             text.push_str(&visible);
             publish_reasoning(&append_reasoning(
@@ -366,6 +398,11 @@ fn run_attempt(
                 &thought,
             ));
             let commentary = take_commentary(&mut text, &mut reasoning, &mut last_segment);
+            if event.kind == "text_block_start" {
+                splitter = ThinkSplitter::default();
+                last_segment.clear();
+            }
+            reset_text();
             publish_reasoning(&commentary);
             reasoning_boundary = true;
             if let Some(turn) = live.as_deref_mut() {
@@ -376,6 +413,7 @@ fn run_attempt(
         _ => {}
     });
     if let Err(error) = outcome {
+        reset_text();
         conversation.publish("error", serde_json::json!({ "message": error.to_string() }));
         return Err(error);
     }
@@ -386,16 +424,18 @@ fn run_attempt(
         &thought,
     ));
     text.push_str(&visible);
+    publish_text(&visible);
     if text.trim().is_empty() {
         text = last_segment;
     }
     text = conversation.clean_reply(&text);
     if text.trim_start().starts_with("[Generation failed]") {
+        reset_text();
         return Err(MarbleError::Protocol(
             "provider_rejected: model returned a generation failure".into(),
         ));
     }
-    if !text.is_empty() {
+    if !streaming && !text.is_empty() {
         conversation.publish("text", serde_json::json!({"text": text}));
     }
     let cancelled = options

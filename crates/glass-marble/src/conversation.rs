@@ -353,6 +353,7 @@ fn call_path(call: &ToolRequest) -> String {
 
 /// Durable conversation handle over the local runtime.
 pub struct Conversation {
+    text_block_boundaries: bool,
     speaker: String,
     engine_id: u64,
     client: RuntimeClient,
@@ -454,11 +455,12 @@ impl Conversation {
         command.current_dir(cwd);
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
-            .initialize_mixed(storage_dir)
+            .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":storage_dir}))
             .map_err(MarbleError::Io)?;
         let init = Self::wait_response(&mut client, &router, &events, &init_id)?;
         Self::require_capabilities(&init)?;
         Ok(Self {
+            text_block_boundaries: init["capabilities"]["textBlockBoundaries"] == true,
             speaker: "Marble".into(),
             client,
             cwd: cwd.to_path_buf(),
@@ -570,6 +572,10 @@ impl Conversation {
         Ok(true)
     }
 
+    pub fn streams_text_blocks(&self) -> bool {
+        self.text_block_boundaries
+    }
+
     /// Spawn a fresh engine, negotiate capabilities, and adopt it.
     pub fn restart(&mut self) -> Result<(), MarbleError> {
         let Some(factory) = self.respawn.as_ref() else {
@@ -581,10 +587,11 @@ impl Conversation {
         command.current_dir(&self.cwd);
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
-            .initialize_mixed(&self.storage_dir)
+            .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":self.storage_dir}))
             .map_err(MarbleError::Io)?;
         let init = Self::wait_response(&mut client, &self.router, &self.events, &init_id)?;
         Self::require_capabilities(&init)?;
+        self.text_block_boundaries = init["capabilities"]["textBlockBoundaries"] == true;
         let previous = std::mem::replace(&mut self.client, client);
         drop(previous);
         self.set_active("", "");
@@ -1051,7 +1058,10 @@ impl Conversation {
                         self.record_tool_rows(&tools);
                     }
                     self.note_engine_tool(&event);
-                    if !matches!(event.kind.as_str(), "text" | "reasoning") {
+                    if !matches!(
+                        event.kind.as_str(),
+                        "text" | "reasoning" | "text_block_start"
+                    ) {
                         self.publish(&event.kind, event.data.clone());
                     }
                     sink(&event);

@@ -174,6 +174,28 @@ host saves the send receipt before returning success. If it restarts during
 admission before a response was saved, retry returns `409 client_message_pending`
 rather than risk executing the message twice.
 
+## Structural text blocks and live replies
+
+Marble requests Core protocol v2 with
+`optionalCapabilities: ["textBlockBoundaries"]`. It streams visible text live
+only when Core acknowledges `capabilities.textBlockBoundaries: true`; an older
+Core retains the existing buffered behavior. Core's internal `text_block_start`
+notifications do not pass through to Marble clients.
+
+At each new block (or tool boundary), the host publishes `text_reset` with
+`data: {"text":""}` under the same `conversationId` and `taskId`, followed by
+existing `reasoning` deltas containing the previous block. Paragraphs are
+separated with `\n\n`. Subsequent `text` deltas append the new current block;
+the final `reply.data.text` and assistant entry contain only the final block.
+Empty or failed final blocks never fall back to an earlier planning block.
+
+Clients must handle `text_reset` by clearing the matching task's visible live
+text and streamed reply, without clearing reasoning, tools or task identity.
+The bundled web client implements this. Marble iOS needs the equivalent handler
+in `MarbleStore.handle`; its existing `reasoning` handling remains unchanged and
+collapsed by default. Until that handler ships, its append-only live buffer can
+retain earlier block text until the authoritative final `reply` arrives.
+
 ## Everyone settlement
 
 Everyone reserves one `kind: "pending"` transcript row per addressed agent before

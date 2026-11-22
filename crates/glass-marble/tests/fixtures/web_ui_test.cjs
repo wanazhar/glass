@@ -7,6 +7,20 @@ const root = path.join(__dirname, '../../src/static');
 const L = require(path.join(root, 'logic.js'));
 const people = [{ id: 'marble', name: 'Marble', isDefault: true }, { id: 'a', name: 'Ada' }, { id: 'b', name: 'Ben' }];
 
+test('text block resets retract the previous live answer without losing reasoning', () => {
+  const state = { sequence: 0, live: new Map(), approvalChats: new Map() };
+  const onEvent = appFunction('function onEvent(', 'function connect()', { s: state, L, drawSoon() {}, refreshSoon() {} }, 'onEvent');
+  let sequence = 0;
+  const send = (kind, text) => onEvent({ type: kind, data: JSON.stringify({ sequence: ++sequence, conversationId: 'chat', taskId: 'task', kind, data: { text } }) });
+  send('text', 'Planning.');
+  assert.equal(state.live.get('task').text, 'Planning.');
+  send('text_reset', ''); send('reasoning', 'Planning.'); send('text', 'Answer.');
+  assert.equal(state.live.get('task').text, 'Answer.');
+  assert.equal(state.live.get('task').reasoning, 'Planning.');
+  send('text_reset', '');
+  assert.equal(state.live.get('task').text, '');
+});
+
 function appFunction(start, end, context, name) {
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
   return vm.runInNewContext(source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))) + ';' + name, context);

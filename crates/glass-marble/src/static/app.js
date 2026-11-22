@@ -12,7 +12,7 @@
         defaultChat: undefined, missing: false, transcriptError: '', live: new Map(), drafts: new Map(),
         errors: new Map(), open: new Set(), loaded: false, busy: false, tools: null, crates: null, approvalChats: new Map(),
     };
-    const events = ['hello', 'turn_start', 'waiting', 'text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress',
+    const events = ['hello', 'turn_start', 'waiting', 'text', 'text_reset', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress',
         'tool_cancel', 'usage', 'compacted', 'steered', 'queued', 'notice', 'error', 'settled', 'cancel_requested',
         'approval', 'approval_pending', 'approval_resolved', 'state', 'control_denied', 'control', 'memory',
         'memory_suggestion', 'routine', 'retention', 'steer_queued', 'steer_rejected', 'conversation', 'prism', 'everyone', 'handoff', 'runtime'];
@@ -662,9 +662,10 @@
         const kind = payload.kind || event.type; const data = payload.data || {}; const taskId = payload.taskId;
         if (['approval', 'approval_pending'].includes(kind) && data.requestId && payload.conversationId) s.approvalChats.set(data.requestId, payload.conversationId);
         if (kind === 'approval_resolved') s.approvalChats.delete(data.requestId);
-        if (taskId && ['text', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress', 'tool_cancel'].includes(kind)) {
+        if (taskId && ['text', 'text_reset', 'reasoning', 'tool', 'tool_start', 'tool_end', 'tool_progress', 'tool_cancel'].includes(kind)) {
             const live = s.live.get(taskId) || { conversationId: payload.conversationId, text: '', reasoning: '', tools: [] };
-            if (kind === 'text' || kind === 'reasoning') live[kind] += L.messagePart(data, data.text || data.delta);
+            if (kind === 'text_reset') live.text = '';
+            else if (kind === 'text' || kind === 'reasoning') live[kind] += L.messagePart(data, data.text || data.delta);
             else {
                 const id = data.callId || data.call_id;
                 const existing = live.tools.find(tool => id && tool.callId === id);

@@ -3612,6 +3612,185 @@ fn explicit_reasoning_is_private_for_all_agents_and_chats() {
 }
 
 #[test]
+fn plain_text_blocks_reclassify_live_replies_for_all_agents_and_chats() {
+    if !python3_available() {
+        return;
+    }
+    let args = vec!["--text-blocks".into()];
+    let mut fixture = NamedTurnFixture::with_persistence("plain-text-blocks", args.clone(), true);
+    let dietrich = fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Dietrich", "tester", "square", 200, "", "")
+        .unwrap()
+        .id
+        .clone();
+    fixture.install_default_worker_with_args(args);
+    for id in ["marble".to_string(), fixture.marble_id.clone(), dietrich] {
+        let text = format!("private blocks {id}");
+        assert_eq!(
+            fixture
+                .post(
+                    "/api/turns",
+                    json!({"text":text,"marbleId":(id != "marble").then_some(id)})
+                )
+                .0,
+            202
+        );
+        fixture.completed(&text);
+    }
+    assert_eq!(
+        fixture
+            .post("/api/everyone", json!({"text":"@everyone blocks"}))
+            .0,
+        202
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture
+        .events
+        .since(0)
+        .iter()
+        .filter(|event| event.kind == "reply" && event.conversation_id == "everyone")
+        .count()
+        < 3
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let state = fixture.store.as_ref().unwrap().load().unwrap();
+    assert_eq!(state.tasks.len(), 6);
+    for task in &state.tasks {
+        let rows: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|row| row.task_id == task.id && row.conversation_id == task.conversation_id)
+            .collect();
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == "assistant" && row.text == "Public answer.")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == "reasoning"
+                    && row.text == "Planning secret.\n\nMore planning.")
+        );
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        let mut resets = 0;
+        for event in fixture.events.since(0).iter().filter(|event| {
+            event.task_id == task.id && event.conversation_id == task.conversation_id
+        }) {
+            match event.kind.as_str() {
+                "text" => text.push_str(event.data["text"].as_str().unwrap()),
+                "text_reset" => {
+                    assert!(!text.is_empty());
+                    text.clear();
+                    resets += 1;
+                }
+                "reasoning" => reasoning.push_str(event.data["text"].as_str().unwrap()),
+                "reply" => assert_eq!(event.data["text"], "Public answer."),
+                _ => {}
+            }
+        }
+        assert_eq!(text, "Public answer.");
+        assert_eq!(resets, 2);
+        assert_eq!(reasoning, "Planning secret.\n\nMore planning.");
+    }
+    assert!(
+        state
+            .transcript
+            .iter()
+            .filter(|row| row.kind == "assistant")
+            .all(|row| row.text == "Public answer.")
+    );
+}
+
+#[test]
+fn empty_or_failed_final_blocks_never_fall_back_to_planning_text() {
+    if !python3_available() {
+        return;
+    }
+    for mode in ["--text-blocks-empty", "--text-blocks-error"] {
+        let args = vec!["--text-blocks".into(), mode.into()];
+        let mut fixture =
+            NamedTurnFixture::with_persistence(&format!("blocks-{mode}"), args.clone(), true);
+        fixture.install_default_worker_with_args(args);
+        for id in ["marble".to_string(), fixture.marble_id.clone()] {
+            let prompt = format!("empty blocks {id}");
+            assert_eq!(
+                fixture
+                    .post(
+                        "/api/turns",
+                        json!({"text":prompt,"marbleId":(id != "marble").then_some(id)})
+                    )
+                    .0,
+                202
+            );
+            let task = fixture.settled(&prompt);
+            assert_eq!(task.status, "failed");
+            assert!(
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .transcript
+                    .iter()
+                    .filter(|row| row.task_id == task.id
+                        && matches!(row.kind.as_str(), "assistant" | "failure"))
+                    .all(|row| !row.text.contains("planning") && !row.text.contains("Planning"))
+            );
+            let mut visible = String::new();
+            for event in fixture.events.since(0).iter().filter(|event| {
+                event.task_id == task.id && event.conversation_id == task.conversation_id
+            }) {
+                if event.kind == "text" {
+                    visible.push_str(event.data["text"].as_str().unwrap());
+                }
+                if event.kind == "text_reset" {
+                    visible.clear();
+                }
+            }
+            assert!(visible.is_empty(), "{visible}");
+        }
+    }
+}
+
+#[test]
+fn text_blocks_have_independent_reasoning_tag_state() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence(
+        "blocks-open-tag",
+        vec!["--text-blocks".into(), "--text-blocks-open-tag".into()],
+        true,
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"text":"blocks reset tag state","marbleId":fixture.marble_id})
+            )
+            .0,
+        202
+    );
+    let task = fixture.completed("blocks reset tag state");
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .transcript
+            .iter()
+            .any(|entry| entry.task_id == task.id
+                && entry.kind == "assistant"
+                && entry.text == "Public answer.")
+    );
+}
+
+#[test]
 fn everyone_and_private_agents_share_native_tools_and_finish_visible_rows() {
     if !python3_available() {
         return;

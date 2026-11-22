@@ -139,6 +139,22 @@ def run_turn(identifier, task, text, conversation, request):
     text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if "--text-blocks" in sys.argv:
+        if "--text-blocks-open-tag" in sys.argv:
+            event(turn, "text", {"text":"<thinking>"})
+        for delta in ["Planning ", "secret."]:
+            event(turn, "text", {"text": delta})
+        event(turn, "text_block_start", {"blockId":"block-1"})
+        event(turn, "text", {"text":"More planning."})
+        event(turn, "text_block_start", {"blockId":"block-2"})
+        if "--text-blocks-error" in sys.argv:
+            send({"jsonrpc":"2.0","id":identifier,"error":{"code":-32000,"message":"HTTP 400 provider_rejected"}})
+            return
+        for delta in ([] if "--text-blocks-empty" in sys.argv else ["Public ", "answer."]):
+            event(turn, "text", {"text": delta})
+        event(turn, "settled", {"reason":"completed"})
+        reply(identifier, {"settled":True})
+        return
     if "--reasoning-channels" in sys.argv:
         event(turn, "reasoning", {"text": "Channel secret."})
         for tag in ["think", "thinking", "thought", "reasoning"]:
@@ -273,6 +289,7 @@ def main():
                     "protocolVersion": protocol or 1,
                     "runtime": {"name": "glass-core", "version": "0.3.14"},
                     "capabilities": {
+                        "textBlockBoundaries": "--text-blocks" in sys.argv and "textBlockBoundaries" in params.get("optionalCapabilities", []),
                         "hostTools": True,
                         "localTools": True,
                         "mixedTools": True,

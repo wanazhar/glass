@@ -40,7 +40,7 @@ pub const SESSION_INSTRUCTIONS: &str = "You are a durable collaborator working i
      attribution when you act on the human's behalf.";
 
 const TOOL_GUIDANCE: &str = "Use your tools (web_search/web_fetch) whenever the user asks for current or factual information you cannot be sure of. Never say you searched or checked without actually calling the tool.";
-const CONVERSATIONAL_GUIDANCE: &str = "Match the length of the message: greetings and small talk get one or two sentences, with no unsolicited speeches or monologues. Expand only when asked or when the task needs it.";
+const CONVERSATIONAL_GUIDANCE: &str = "Match the length of the message: greetings and small talk get one or two sentences, with no unsolicited speeches or monologues. Expand only when asked or when the task needs it. Keep reasoning and planning private; put only the final answer in your reply.";
 
 /// Session instructions for one conversation: the product posture, plus what the
 /// workspace is made of so the marble does not infer crate ownership from a file
@@ -1533,6 +1533,7 @@ mod tests {
         for persona in ["", "warm and witty"] {
             let prompt = default_assistant_instructions(persona, Path::new("."));
             assert!(prompt.starts_with("You are Marble."));
+            assert!(prompt.contains("Keep reasoning and planning private"));
             assert!(prompt.contains(CONVERSATIONAL_GUIDANCE));
             assert!(!prompt.contains("You are Glass Marble"));
         }

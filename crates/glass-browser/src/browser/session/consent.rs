@@ -38,9 +38,14 @@ const CONSENT_DISMISS_FUNCTION: &str = r#"function() {
             '#CybotCookiebotDialogBodyLevelButtonAccept', '#CybotCookiebotDialogBodyButtonDecline'
         ])});
     }
-    const named = [...document.querySelectorAll('[id],[class],[aria-label]')].filter(el =>
-        /cookie|consent|gdpr/i.test(['id', 'class', 'aria-label'].map(name => el.getAttribute(name) || '').join(' ')));
-    const accept = /^(accept|accept all|allow all|allow cookies|i agree|agree|got it|ok|okay|reject all|decline)\b/i;
+    const named = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[role=banner],dialog,[id],[class],[aria-label]')].filter(el => {
+        const label = ['id', 'class', 'aria-label'].map(name => el.getAttribute(name) || '').join(' ');
+        const role = el.getAttribute('role');
+        return /cookie|consent|gdpr/i.test(label) &&
+            (role === 'dialog' || role === 'alertdialog' || role === 'banner' ||
+             /(?:cookie|consent|gdpr)[-_ ]*(?:banner|dialog|notice)|(?:banner|dialog|notice)[-_ ]*(?:cookie|consent|gdpr)/i.test(label));
+    });
+    const accept = /^(accept|accept all|accept cookies|accept all cookies|allow all|allow cookies|i agree|agree|got it|ok|okay|reject all|reject all cookies|decline)$/i;
     for (const box of named.filter(visible).slice(0, 20)) {
         const button = [...box.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')]
             .filter(visible)

@@ -426,10 +426,17 @@ impl CdpBrowserSession {
                 let url = normalize_url(url);
                 self.policy.require_url(&url).await?;
                 self.enforce_polite_navigation(&url).await?;
-                if let Some(interception) = &self.policy_interception
-                    && let Some(error) = interception.take_denial().await
-                {
-                    return Err(error.into());
+                if let Some(interception) = &self.policy_interception {
+                    if let Some(frame) = self.cdp.active_frame() {
+                        interception
+                            .document_denials
+                            .lock()
+                            .await
+                            .remove(&(self.cdp.current_session_id(), frame));
+                    }
+                    if let Some(error) = interception.last_denial.lock().await.take() {
+                        return Err(error.into());
+                    }
                 }
 
                 let result = async {

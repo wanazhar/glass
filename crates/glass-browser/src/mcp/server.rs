@@ -2174,46 +2174,41 @@ async fn handle_request_with_viewport_unredacted(
         }};
     }
     if agent_tool == "browser_logins" {
-        if let Err(error) =
-            policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)
-        {
-            return Some(success_response(
-                request.id.response_value(),
-                json!({
-                    "content":[{"type":"text","text":error.to_string()}], "isError":true
-                }),
-            ));
-        }
         let name = agent_arguments["name"].as_str().unwrap_or_default();
-        let outcome = match agent_arguments["action"].as_str().unwrap_or_default() {
-            "list" => agent_tools::list_logins(),
-            "delete" => agent_tools::delete_login(name),
-            "save" => match inner_result!("cookies", json!({})) {
-                Ok(cookies) => inner_result!(
-                    "evaluate",
-                    json!({"expression": agent_tools::READ_LOGIN_STORAGE})
-                )
-                .and_then(|page| agent_tools::save_login(name, &cookies, &page)),
-                Err(error) => Err(error),
-            },
-            _ => match agent_tools::read_login(name) {
-                Ok(login) => {
-                    async {
-                        inner_result!("setCookies", json!({"cookies": login["cookies"]}))?;
-                        inner_result!("navigate", json!({"url": login["url"]}))?;
-                        let restored = inner_result!(
-                            "evaluate",
-                            json!({"expression": agent_tools::write_login_storage(&login)})
-                        )?;
-                        agent_tools::check_login_storage_restore(&restored)?;
-                        inner_result!("reload", json!({}))?;
-                        Ok::<_, String>(agent_tools::loaded_login(name, &login))
+        let outcome =
+            policy
+                .with_authorized_profile(async {
+                    match agent_arguments["action"].as_str().unwrap_or_default() {
+                        "list" => agent_tools::list_logins(),
+                        "delete" => agent_tools::delete_login(name),
+                        "save" => match inner_result!("cookies", json!({})) {
+                            Ok(cookies) => inner_result!(
+                                "evaluate",
+                                json!({"expression": agent_tools::READ_LOGIN_STORAGE})
+                            )
+                            .and_then(|page| agent_tools::save_login(name, &cookies, &page)),
+                            Err(error) => Err(error),
+                        },
+                        _ => match agent_tools::read_login(name) {
+                            Ok(login) => async {
+                                inner_result!("setCookies", json!({"cookies": login["cookies"]}))?;
+                                inner_result!("navigate", json!({"url": login["url"]}))?;
+                                let restored = inner_result!(
+                                    "evaluate",
+                                    json!({"expression": agent_tools::write_login_storage(&login)})
+                                )?;
+                                agent_tools::check_login_storage_restore(&restored)?;
+                                inner_result!("reload", json!({}))?;
+                                Ok::<_, String>(agent_tools::loaded_login(name, &login))
+                            }
+                            .await,
+                            Err(error) => Err(error),
+                        },
                     }
-                    .await
-                }
-                Err(error) => Err(error),
-            },
-        };
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|outcome| outcome);
         let (text, is_error) = match outcome {
             Ok(text) => (text, false),
             Err(error) => {
@@ -9626,7 +9621,7 @@ mod tests {
                 let options = SessionOptions {incognito:true, ..SessionOptions::default()};
                 let policy = BrowserPolicy::development(std::env::temp_dir()).unwrap();
                 let navigation = invoke_native_mcp_tool("navigate", json!({"url":url}), &mut session, &mut native, &options, &policy).await;
-                assert_ne!(navigation.result.unwrap()["isError"], true);
+                assert_ne!(navigation.result.as_ref().unwrap()["isError"], true, "{navigation:?}");
                 native.as_ref().unwrap().script("localStorage.setItem('login-token', 'storage-value')").await.unwrap();
                 let count = || std::fs::read_dir(default_result_store_path()).map(|entries| entries.count()).unwrap_or(0);
                 let before = count();
@@ -9653,6 +9648,19 @@ mod tests {
                     assert_ne!(navigated.result.unwrap()["isError"], true);
                     let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
                     assert_ne!(result["isError"], true, "{result}");
+                }
+                for html in [
+                    "<div class=cookie-consent-pending><button onclick=\"document.body.setAttribute('data-choice','invitation')\">Accept invitation</button></div>",
+                    "<div class=cookie-consent-pending><button onclick=\"document.body.setAttribute('data-choice','invitation')\">Accept invitation</button><div role=dialog aria-label='Cookie consent'>We use cookies<button onclick=\"document.body.setAttribute('data-choice','cookies')\">Accept all</button></div></div>",
+                ] {
+                    let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+                    let navigated = invoke_native_mcp_tool("navigate", json!({"url":format!("data:text/html,{encoded}")}), &mut session, &mut native, &options, &policy).await;
+                    assert_ne!(navigated.result.unwrap()["isError"], true);
+                    let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
+                    assert_eq!(result["isError"] == true, !html.contains("role=dialog"), "{result}");
+                    let choice = native.as_ref().unwrap().script("document.body.getAttribute('data-choice')").await.unwrap().value;
+                    assert_ne!(choice, "invitation");
+                    if html.contains("role=dialog") { assert_eq!(choice, "cookies"); }
                 }
                 native.take().unwrap().close().await.unwrap();
                 server.abort();

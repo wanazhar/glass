@@ -2338,6 +2338,21 @@ async fn development_host_allowlist_intercepts_redirects_before_following() {
 }
 
 async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
+    for (resource, frame, denied) in [
+        ("Document", "frame-1", true),
+        ("Image", "frame-1", false),
+        ("Document", "child-frame", false),
+    ] {
+        assert_policy_blocks_request(policy.clone(), resource, frame, denied).await;
+    }
+}
+
+async fn assert_policy_blocks_request(
+    policy: BrowserPolicy,
+    resource: &'static str,
+    frame: &'static str,
+    denied: bool,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2371,6 +2386,8 @@ async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
                     "sessionId": "route-1",
                     "params": {
                         "requestId": "redirect-1",
+                        "resourceType": resource,
+                        "frameId": frame,
                         "request": {"url": "http://127.0.0.1/private"}
                     }
                 })
@@ -2415,6 +2432,7 @@ async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
     let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
         .await
         .unwrap();
+    cdp.set_active_route(Some("route-1".into()), Some("frame-1".into()), None);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(1);
@@ -2429,10 +2447,13 @@ async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
         record_policy_event_receiver_error(receiver_error, &interception.lagged_events),
         Some(1)
     );
-    assert!(matches!(
-        interception.take_denial().await,
-        Some(PolicyError::Denied { .. })
-    ));
+    assert_eq!(
+        matches!(
+            interception.take_denial().await,
+            Some(PolicyError::Denied { .. })
+        ),
+        denied
+    );
     assert_eq!(interception.take_lagged_events(), 1);
     assert_eq!(interception.take_lagged_events(), 0);
     interception.shutdown().await;

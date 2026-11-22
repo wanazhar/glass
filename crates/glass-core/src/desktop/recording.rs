@@ -101,13 +101,13 @@ fn start(
     seconds: u64,
 ) -> Result<Value, String> {
     let mut active = ACTIVE.lock().map_err(|_| "Recording state unavailable")?;
-    if let Some(recording) = active.as_mut() {
-        if recording.child.try_wait().ok().flatten().is_none() {
-            return Err(format!(
-                "A recording is already running ({}); call desktop_record with action stop first",
-                recording.relative
-            ));
-        }
+    if let Some(recording) = active.as_mut()
+        && recording.child.try_wait().ok().flatten().is_none()
+    {
+        return Err(format!(
+            "A recording is already running ({}); call desktop_record with action stop first",
+            recording.relative
+        ));
     }
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -39,6 +39,28 @@ const MAX_CACHED_ACCESSIBILITY_WINDOWS: usize = 64;
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
 type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Arc<capture::Frame>);
+
+/// One streamed frame with its timing: capture sequence and clock, JPEG bytes, encode time, and age at send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimedFrame {
+    pub seq: u64,
+    pub time_ms: u64,
+    pub jpeg: Vec<u8>,
+    pub encode_ms: u64,
+    pub age_ms: u64,
+}
+
+impl From<(u64, u64, Vec<u8>)> for TimedFrame {
+    fn from((seq, time_ms, jpeg): (u64, u64, Vec<u8>)) -> Self {
+        Self {
+            seq,
+            time_ms,
+            jpeg,
+            encode_ms: 0,
+            age_ms: 0,
+        }
+    }
+}
 const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1056,6 +1078,31 @@ impl Desktop {
         Ok(Some(update))
     }
 
+    /// Like `frame_after`, plus how old the frame is when it leaves and how long JPEG encoding took,
+    /// so viewers can see where desktop latency comes from.
+    pub fn timed_frame_after(
+        &self,
+        after: u64,
+        timeout: Duration,
+    ) -> Result<Option<TimedFrame>, String> {
+        self.frame_after_for_session(None, after, timeout)
+            .and_then(|frame| {
+                frame
+                    .map(|(_, _, seq, captured, frame)| {
+                        let encoding = Instant::now();
+                        let jpeg = frame.jpeg()?.to_vec();
+                        Ok(TimedFrame {
+                            seq,
+                            time_ms: captured,
+                            encode_ms: encoding.elapsed().as_millis() as u64,
+                            age_ms: frame.captured_at.elapsed().as_millis() as u64,
+                            jpeg,
+                        })
+                    })
+                    .transpose()
+            })
+    }
+
     pub fn frame_after(
         &self,
         after: u64,
@@ -1113,7 +1160,8 @@ impl Desktop {
             if Instant::now() >= deadline {
                 return Ok(None);
             }
-            thread::sleep(Duration::from_millis(40));
+            // A new frame lands every ~33 ms; checking often keeps waiting out of the latency budget.
+            thread::sleep(Duration::from_millis(4));
         };
         let guard = self
             .session

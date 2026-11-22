@@ -10,6 +10,7 @@ struct DesktopView: View {
 
     @Environment(AppModel.self) private var app
     @State private var model = DesktopModel()
+    @AppStorage("glass.desktop.stats") private var showStats = false
     @State private var pointer: Pointer = .tap
     @State private var zoom: CGFloat = 1
     @State private var baseZoom: CGFloat = 1
@@ -153,6 +154,8 @@ struct DesktopView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Reconnect view", systemImage: "arrow.clockwise") { model.reconnect() }
+                    Toggle(isOn: $showStats) { Label("Connection details", systemImage: "speedometer") }
+                        .accessibilityIdentifier("desktop.stats.toggle")
                     Button("Actual size", systemImage: "arrow.down.right.and.arrow.up.left") { resetZoom() }
                         .disabled(zoom == 1)
                     if status.lease != "read-only" {
@@ -179,6 +182,12 @@ struct DesktopView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(status.controlSummary).font(.subheadline.weight(.semibold))
                     Text(pictureSummary).font(.footnote).foregroundStyle(.secondary)
+                    if showStats {
+                        Text(model.stats.summary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("desktop.stats")
+                    }
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("desktop.state")

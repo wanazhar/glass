@@ -14,6 +14,9 @@ struct ConversationView: View {
     @State private var actionError: String?
     @State private var pendingEdit: TimelineEntry?
     @State private var previewPage: PreviewPage?
+    @State private var keyboardShown = false
+    @State private var dragging = false
+    @State private var dragStartOffset: CGFloat?
     @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
     @Environment(AppModel.self) private var app
 
@@ -37,6 +40,9 @@ struct ConversationView: View {
                     ForEach(conversation.timeline.entries) { entry in
                         TimelineRow(entry: entry).id(entry.id)
                     }
+                    if let working = workingLabel {
+                        WorkingBubble(label: working).id("timeline.working")
+                    }
                     Color.clear.frame(height: 1).id(Self.bottom)
                 }
                 .padding(.horizontal, 16)
@@ -46,6 +52,18 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .scrollDismissesKeyboard(.interactively)
+            .onScrollPhaseChange { _, phase in
+                dragging = phase == .interacting
+                if !dragging { dragStartOffset = nil }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                // Pulling the chat down to read back puts the keyboard away, as in Messages.
+                guard dragging, keyboardShown else { return }
+                let start = dragStartOffset ?? offset
+                dragStartOffset = start
+                if start - offset > 16 { hideKeyboard() }
+            }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height <= geometry.containerSize.height
                     || geometry.visibleRect.maxY >= geometry.contentSize.height - 80
@@ -78,9 +96,7 @@ struct ConversationView: View {
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(conversation.title).font(.headline).lineLimit(1)
-            }
+            ToolbarItem(placement: .principal) { titleView }
             ToolbarItem(placement: .primaryAction) {
                 Button("Commands", systemImage: "command") { conversation.composer.showingCommands = true }
                     .accessibilityIdentifier("conversation.commands")
@@ -156,10 +172,16 @@ struct ConversationView: View {
         }
         .environment(\.attachmentLoader) { [composer = conversation.composer] id in await composer.attachment(id) }
         .task { await conversation.start() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardShown = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardShown = false }
         .onChange(of: scenePhase) { _, phase in
-            // iOS suspends sockets in the background; resume from the last cursor on return.
-            if phase == .active { Task { await conversation.start() } }
-            if phase != .active { conversation.composer.flushDraft() }
+            // iOS suspends sockets in the background. The cached chat stays on screen and a fresh
+            // stream resumes from the last event id the moment Glass is active again.
+            switch phase {
+            case .active: Task { await conversation.resumeNow() }
+            case .background: conversation.suspend()
+            default: conversation.composer.flushDraft()
+            }
         }
     }
 
@@ -224,15 +246,6 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation.notice")
             }
             HStack(spacing: 8) {
-                statusPill
-                if let activity = conversation.timeline.activity {
-                    HStack(spacing: 6) {
-                        ActivityIndicator()
-                        Text(activity).font(.caption.weight(.medium))
-                    }
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("conversation.activity")
-                }
                 Spacer()
                 if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
                     Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
@@ -248,6 +261,12 @@ struct ConversationView: View {
                     .glassButtonStyle()
                     .accessibilityIdentifier("conversation.latest")
                 }
+                if keyboardShown {
+                    Button("Hide Keyboard", systemImage: "keyboard.chevron.compact.down") { hideKeyboard() }
+                    .labelStyle(.iconOnly)
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.hideKeyboard")
+                }
             }
             ComposerView(conversation: conversation)
         }
@@ -262,19 +281,77 @@ struct ConversationView: View {
         return nil
     }
 
-    private var statusPill: some View {
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    /// The chat title with the connection state beside it, where the eye already is.
+    private var titleView: some View {
         let (title, tint): (String, Color) = switch conversation.connection {
         case .live: ("Live", .green)
         case .connecting, .idle: ("Connecting", .secondary)
         case .reconnecting: ("Reconnecting", .orange)
         case .readOnly: ("Read-only", .secondary)
         }
-        return StatusLabel(title: title, color: tint)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("conversation.connection")
-            .accessibilityValue("\(title), \(conversation.resets) resets")
+        return VStack(spacing: 1) {
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(conversation.title).font(.headline).lineLimit(1)
+            }
+            if conversation.connection != .live {
+                Text(title).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(conversation.title)
+        .accessibilityValue("\(title), \(conversation.resets) resets\(conversation.lastReconnect.map { ", reconnect \($0) ms" } ?? "")")
+        .accessibilityIdentifier("conversation.connection")
+    }
+
+    /// Plain words for what Glass is doing, shown in the chat where the reply will appear.
+    private var workingLabel: String? {
+        let timeline = conversation.timeline
+        guard timeline.isActive, timeline.interaction == nil else { return nil }
+        if case .assistant(_, _, true)? = timeline.entries.last { return nil }
+        switch timeline.activity {
+        case "Reasoning": return "Glass is thinking"
+        case "Running command": return "Glass is running a command"
+        case let activity? where activity.hasPrefix("Using "): return "Glass is using " + activity.dropFirst(6)
+        default: return "Glass is working"
+        }
+    }
+}
+
+/// A small grey bubble with three softly pulsing dots, like someone typing in Messages.
+struct WorkingBubble: View {
+    var label: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 10) {
+            TimelineView(.animation(minimumInterval: 0.05, paused: reduceMotion)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                HStack(spacing: 5) {
+                    ForEach(0..<3) { dot in
+                        Circle()
+                            .fill(Color(.secondaryLabel))
+                            .frame(width: 7, height: 7)
+                            .opacity(reduceMotion ? 0.6 : 0.35 + 0.65 * max(0, sin((phase * 2.4 - Double(dot) * 0.5) * .pi)))
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Color(.secondarySystemBackground), in: Capsule())
+            Text(label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("conversation.activity")
     }
 }
 

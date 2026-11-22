@@ -8,6 +8,9 @@ struct ComposerTextField: UIViewRepresentable {
     @Binding var text: String
     var isEnabled: Bool
     var maxLines = 6
+    /// The height the text needs, up to `maxLines`; reported by the text view as it lays out.
+    var height: CGFloat = 0
+    var onHeight: (CGFloat) -> Void = { _ in }
     /// A new pending decision puts the keyboard away so the request is visible.
     var dismissFor: String?
     /// ⌘K and ⌘/ while typing open the command palette.
@@ -34,6 +37,8 @@ struct ComposerTextField: UIViewRepresentable {
         view.textColor = isEnabled ? .label : .secondaryLabel
         view.onReturn = onReturn
         view.onCommands = onCommands
+        view.maxLines = maxLines
+        view.onHeight = onHeight
         view.placeholder = placeholder
         if context.coordinator.dismissedFor != dismissFor {
             context.coordinator.dismissedFor = dismissFor
@@ -42,11 +47,10 @@ struct ComposerTextField: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: ComposerTextView, context: Context) -> CGSize? {
+        // Grows with the text like Messages, then scrolls inside past `maxLines`.
         let width = proposal.width ?? 240
-        let fitting = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        let limit = ceil((uiView.font?.lineHeight ?? 22) * CGFloat(maxLines))
-        uiView.isScrollEnabled = fitting > limit
-        return CGSize(width: width, height: min(fitting, limit))
+        let fitting = uiView.fittingHeight(width: width)
+        return CGSize(width: width, height: max(fitting, height, uiView.font?.lineHeight ?? 22))
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -57,6 +61,7 @@ struct ComposerTextField: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
             (textView as? ComposerTextView)?.refreshPlaceholder()
+            (textView as? ComposerTextView)?.reportHeight()
         }
     }
 }
@@ -64,6 +69,9 @@ struct ComposerTextField: UIViewRepresentable {
 final class ComposerTextView: UITextView {
     var onReturn: (() -> Void)?
     var onCommands: (() -> Void)?
+    var onHeight: ((CGFloat) -> Void)?
+    var maxLines = 6
+    private var reported: CGFloat = 0
     var placeholder = "" {
         didSet {
             placeholderLabel.text = placeholder
@@ -71,7 +79,7 @@ final class ComposerTextView: UITextView {
         }
     }
     override var text: String! {
-        didSet { refreshPlaceholder() }
+        didSet { refreshPlaceholder(); setNeedsLayout() }
     }
     /// UIKit derives the editing traits on the fly, so a read-only field adds `.notEnabled` here rather than
     /// storing a fixed set.
@@ -118,6 +126,30 @@ final class ComposerTextView: UITextView {
     }
 
     @objc private func openCommands() { onCommands?() }
+
+    /// The height for `width`, capped at `maxLines`; scrolling turns on once the text is taller.
+    func fittingHeight(width: CGFloat) -> CGFloat {
+        guard width > 0 else { return font?.lineHeight ?? 22 }
+        let fitting = ceil(sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+        let limit = ceil((font?.lineHeight ?? 22) * CGFloat(maxLines))
+        let scrolls = fitting > limit
+        if isScrollEnabled != scrolls { isScrollEnabled = scrolls }
+        return min(fitting, limit)
+    }
+
+    func reportHeight() {
+        let height = fittingHeight(width: bounds.width)
+        guard abs(height - reported) > 0.5 else { return }
+        reported = height
+        let onHeight = onHeight
+        DispatchQueue.main.async { onHeight?(height) }
+        if isScrollEnabled { scrollRangeToVisible(selectedRange) }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        reportHeight()
+    }
 
     func refreshPlaceholder() { placeholderLabel.isHidden = !(text ?? "").isEmpty }
 

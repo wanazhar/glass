@@ -252,16 +252,18 @@ final class LiveHostE2ETests: XCTestCase {
         typeAndSend(app, "slow 240")
         let stop = app.buttons["composer.stop"]
         XCTAssertTrue(stop.waitForExistence(timeout: 20), "stop appears while a turn runs")
-        let mode = app.segmentedControls["composer.mode"]
-        XCTAssertTrue(mode.exists, "steer or queue is offered while working")
-        let queue = mode.buttons["Queue"]
-        XCTAssertTrue(waitUntil(10) {
-            if !queue.isSelected { queue.tap() }
-            return queue.isSelected
-        }, "queue mode is selected")
         let field2 = composerField(app)
         field2.tap()
         field2.typeText("queued after stop")
+        let mode = app.buttons["composer.mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5), "steer or queue is offered while working")
+        XCTAssertTrue(waitUntil(10) {
+            if (mode.value as? String)?.hasPrefix("Queue") == true { return true }
+            mode.tap()
+            let queue = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Queue")).firstMatch
+            if waitUntil(3, { queue.exists && queue.isHittable }) { queue.tap() }
+            return (mode.value as? String)?.hasPrefix("Queue") == true
+        }, "queue mode is selected: \(mode.value ?? "")")
         app.buttons["composer.send"].tap()
         attach(app, "e2e-composer-queue")
         XCTAssertTrue(stop.waitForExistence(timeout: 10))
@@ -650,6 +652,139 @@ final class LiveHostE2ETests: XCTestCase {
                       "form answers go into the message box")
         XCTAssertEqual(try call("thread/count?id=\(thread)", method: "POST"), saved, "nothing is sent until the owner sends it")
         attach(app, "e2e-components-form-answer")
+    }
+
+    // MARK: M10
+
+    @MainActor
+    func testIOSTurnsTellTheModelWhichComponentsItCanDraw() throws {
+        let thread = try call("thread/new?title=Capabilities", method: "POST")
+        _ = try call("thread/send?id=\(thread)&text=from%20a%20client%20that%20says%20nothing&wait=1", method: "POST")
+        XCTAssertFalse(try call("provider/system").contains("[Glass client]"), "a turn without client details gets no component guidance")
+
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        typeAndSend(app, "which components can you draw")
+        XCTAssertTrue(text(app, containing: "Echo from the host: which components").waitForExistence(timeout: 30))
+        let system = try call("provider/system")
+        XCTAssertTrue(system.contains("For this turn the user is on the Glass iOS app"), "the model is told it is answering the iOS app")
+        XCTAssertTrue(system.contains("glass-ui"), "the model gets the component format")
+        for kind in ["table", "chart", "form", "weather", "writing"] {
+            XCTAssertTrue(system.contains("- \(kind):"), "the catalog lists \(kind)")
+        }
+    }
+
+    @MainActor
+    func testEverydayMarkdownDrawsNatively() throws {
+        let thread = try call("thread/new?title=Markdown", method: "POST")
+        _ = try call("thread/markdown?id=\(thread)", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["markdown.table"].firstMatch.waitForExistence(timeout: 20), "a Markdown table draws as a table")
+        for _ in 0..<6 where !any["markdown.table"].firstMatch.isHittable { app.swipeDown() }
+        XCTAssertTrue(text(app, containing: "Alice").exists)
+        XCTAssertFalse(text(app, containing: "|------").exists, "no raw table syntax")
+        attach(app, "e2e-markdown-table")
+        XCTAssertFalse(text(app, containing: "<details>").exists, "no raw details tag")
+        let details = any["markdown.details"].firstMatch
+        XCTAssertTrue(details.waitForExistence(timeout: 10))
+        XCTAssertFalse(text(app, containing: "Hidden details inside").exists, "details start collapsed")
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Full report")).firstMatch.tap()
+        XCTAssertTrue(text(app, containing: "Hidden").waitForExistence(timeout: 5), "details expand")
+        XCTAssertTrue(text(app, containing: "∑").exists, "inline math is drawn, not shown as LaTeX")
+        XCTAssertFalse(text(app, containing: "\\frac").exists)
+        XCTAssertTrue(text(app, containing: "costs $5 and $10").exists, "money is not mistaken for math")
+        attach(app, "e2e-markdown-details-math")
+        for _ in 0..<3 { app.swipeUp() }
+        XCTAssertEqual(any.matching(identifier: "markdown.task").count, 2, "task list items draw with checkboxes")
+        XCTAssertFalse(text(app, containing: "[x]").exists, "no raw task syntax")
+        XCTAssertTrue(any["markdown.quote"].firstMatch.exists, "quotes draw with a bar")
+        XCTAssertFalse(any.matching(NSPredicate(format: "label == %@", "Image")).firstMatch.exists, "no stray image label")
+        attach(app, "e2e-markdown-lists-quotes")
+    }
+
+    @MainActor
+    func testWorkingBubbleSteerMenuAndKeyboardHiding() throws {
+        let thread = try call("thread/new?title=Working", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        typeAndSend(app, "pause 6 then reply")
+        let bubble = app.descendants(matching: .any)["conversation.activity"].firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "a working bubble sits where the reply will appear")
+        XCTAssertEqual(bubble.label, "Glass is working")
+        XCTAssertFalse(text(app, containing: "Waiting for provider").exists)
+        let field = composerField(app)
+        field.tap()
+        field.typeText("also check logs")
+        XCTAssertTrue(app.descendants(matching: .any)["composer.mode"].firstMatch.waitForExistence(timeout: 5),
+                      "while working, a typed message shows whether it steers or queues")
+        attach(app, "e2e-working-bubble")
+        let hide = app.buttons["conversation.hideKeyboard"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5), "an obvious control hides the keyboard")
+        hide.tap()
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "the keyboard goes away")
+        field.tap()
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count > 0 })
+        // Drag the conversation down into the keyboard, as in Messages.
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "scrolling the chat dismisses the keyboard")
+        XCTAssertTrue(text(app, containing: "Echo from the host").waitForExistence(timeout: 30))
+        XCTAssertTrue(waitUntil(10) { !bubble.exists }, "the bubble goes once the reply arrives")
+    }
+
+    @MainActor
+    func testMessageBoxGrowsThenScrolls() throws {
+        let thread = try call("thread/new?title=Growing", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let field = composerField(app)
+        XCTAssertTrue(waitUntil(10) { field.isEnabled })
+        field.tap()
+        let one = field.frame.height
+        field.typeText("line 1\nline 2\nline 3")
+        let three = field.frame.height
+        XCTAssertGreaterThan(three, one * 2, "the box grows with the text")
+        field.typeText("\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9")
+        let many = field.frame.height
+        XCTAssertLessThan(many, one * 7.5, "it stops growing at about six lines")
+        XCTAssertGreaterThan(many, three)
+        attach(app, "e2e-composer-grown")
+    }
+
+    /// The phone sleeps with the stream open: its socket stops carrying bytes without closing.
+    /// Measures how long the app takes after it is active again to show a reply sent meanwhile.
+    @MainActor
+    func testReturningToTheAppShowsMissedRepliesQuickly() throws {
+        let thread = try call("thread/new?title=Return", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        var timings: [Double] = []
+        for round in 1...3 {
+            XCUIDevice.shared.press(.home)
+            _ = try call("net/stall", method: "POST")
+            _ = try call("thread/send?id=\(thread)&text=missed%20reply%20\(round)&wait=1", method: "POST")
+            let start = Date()
+            app.activate()
+            XCTAssertTrue(text(app, containing: "missed reply \(round)").waitForExistence(timeout: 120), "round \(round) shows the missed reply")
+            timings.append(Date().timeIntervalSince(start))
+            XCTAssertTrue(waitForConnection(app, "Live"))
+        }
+        let report = "RECONNECT_SECONDS " + timings.map { String(format: "%.2f", $0) }.joined(separator: " ") + " | \(connectionValue(app))"
+        print(report)
+        let attachment = XCTAttachment(string: report)
+        attachment.name = "reconnect-timings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if ProcessInfo.processInfo.environment["GLASS_E2E_MEASURE_ONLY", default: ""].isEmpty {
+            XCTAssertLessThan(timings.max() ?? 99, 5, report)
+        }
     }
 
     @MainActor

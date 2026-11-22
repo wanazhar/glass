@@ -14,6 +14,7 @@ final class ComposerModel {
         case queue
         var id: String { rawValue }
         var title: String { self == .steer ? "Steer" : "Queue" }
+        var explanation: String { self == .steer ? "Steer: change what Glass is doing now" : "Queue: send after this reply" }
     }
 
     struct Upload: Identifiable, Equatable {

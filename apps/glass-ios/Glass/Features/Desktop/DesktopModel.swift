@@ -65,7 +65,14 @@ final class DesktopModel {
     private var api: GlassClient?
     private var frameTask: Task<Void, Never>?
     private var pictureSession: String?
-    private var inputs: AsyncStream<DesktopInput>.Continuation?
+    /// Inputs waiting to be sent, in order. A newer pointer move replaces a waiting one, so a slow
+    /// network never replays a backlog of stale moves.
+    private var pendingInputs: [DesktopInput] = []
+    private var sending = false
+    private var decoding = false
+    private var latestJPEG: (Data, DesktopFrame?)?
+    /// Where the time goes, for the connection details readout.
+    private(set) var stats = DesktopStats()
     private var lastMove = ContinuousClock.now
     private var pendingScroll = CGSize.zero
 
@@ -156,7 +163,9 @@ final class DesktopModel {
             var failures = 0
             while !Task.isCancelled {
                 self?.picture = .connecting
-                if let session = self?.status?.sessionId, self?.status?.supportsRegionUpdates == true, failures < 2 {
+                // The pushed stream is the lowest-latency path: each frame costs one trip, not a request
+                // and a response. Changed-tile updates are the fallback when the stream can't connect.
+                if failures >= 2, let session = self?.status?.sessionId, self?.status?.supportsRegionUpdates == true, failures < 4 {
                     do {
                         try await self?.followRegions(api, session: session)
                     } catch {
@@ -168,7 +177,7 @@ final class DesktopModel {
                     let frames = try await api.desktopStream(width: 1280)
                     self?.picture = .live
                     failures = 0
-                    for try await frame in frames { self?.show(frame.jpeg) }
+                    for try await frame in frames { self?.show(frame) }
                 } catch {
                     failures += 1
                 }
@@ -176,7 +185,7 @@ final class DesktopModel {
                 self?.picture = .stills
                 for _ in 0..<(failures > 3 ? 20 : 4) {
                     guard !Task.isCancelled else { return }
-                    if let still = try? await api.desktopFrame() { self?.show(still.jpeg) }
+                    if let still = try? await api.desktopFrame() { self?.show(still) }
                     try? await Task.sleep(for: .milliseconds(500))
                 }
             }
@@ -196,15 +205,60 @@ final class DesktopModel {
         }
     }
 
-    private func show(_ jpeg: Data) {
-        if let image = UIImage(data: jpeg) { frame = image }
+    /// Decodes off the main thread with the system's hardware-backed JPEG path, always the newest
+    /// frame: one that arrives mid-decode replaces any frame still waiting.
+    private func show(_ frame: DesktopFrame) {
+        stats.received(frame)
+        latestJPEG = (frame.jpeg, frame)
+        guard !decoding else { return }
+        decodeNext()
+    }
+
+    private func decodeNext() {
+        guard let (jpeg, _) = latestJPEG else { return }
+        latestJPEG = nil
+        decoding = true
+        Task { [weak self] in
+            let started = ContinuousClock.now
+            let image = await Task.detached(priority: .userInitiated) {
+                UIImage(data: jpeg)?.preparingForDisplay()
+            }.value
+            guard let self else { return }
+            self.decoding = false
+            if let image {
+                self.frame = image
+                self.stats.decoded(in: ContinuousClock.now - started)
+            }
+            self.decodeNext()
+        }
     }
 
     // MARK: Input
 
     func send(_ input: DesktopInput) {
-        if inputs == nil { startInputs() }
-        inputs?.yield(input)
+        if case .move = input, case .move? = pendingInputs.last {
+            pendingInputs[pendingInputs.count - 1] = input
+        } else {
+            pendingInputs.append(input)
+        }
+        guard !sending else { return }
+        sending = true
+        Task { [weak self] in await self?.drainInputs() }
+    }
+
+    private func drainInputs() async {
+        defer { sending = false }
+        while !pendingInputs.isEmpty {
+            let input = pendingInputs.removeFirst()
+            guard let api else { continue }
+            let started = ContinuousClock.now
+            do {
+                try await api.sendDesktopInput(input)
+                stats.inputSent(in: ContinuousClock.now - started)
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     /// Pointer moves are coalesced to about 30 a second; `force` always sends.
@@ -244,18 +298,43 @@ final class DesktopModel {
         }
     }
 
-    private func startInputs() {
-        let (stream, continuation) = AsyncStream<DesktopInput>.makeStream(bufferingPolicy: .bufferingNewest(128))
-        inputs = continuation
-        Task { [weak self] in
-            for await input in stream {
-                guard let api = self?.api else { continue }
-                do {
-                    try await api.sendDesktopInput(input)
-                } catch {
-                    self?.error = error.localizedDescription
-                }
-            }
+}
+
+/// Rolling desktop timings: what the host spends (frame age at send, JPEG encode), what the network
+/// carries (frame rate and size, input round trip) and what this iPhone spends decoding.
+struct DesktopStats: Equatable {
+    private(set) var framesPerSecond: Double = 0
+    private(set) var frameKilobytes: Double = 0
+    private(set) var hostAgeMs: Double?
+    private(set) var encodeMs: Double?
+    private(set) var decodeMs: Double?
+    private(set) var inputMs: Double?
+    private var lastArrival: ContinuousClock.Instant?
+
+    private static func blend(_ old: Double?, _ new: Double) -> Double { old.map { $0 * 0.8 + new * 0.2 } ?? new }
+    private static func ms(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
+    }
+
+    mutating func received(_ frame: DesktopFrame) {
+        let now = ContinuousClock.now
+        if let lastArrival {
+            let gap = Self.ms(now - lastArrival)
+            if gap > 0 { framesPerSecond = Self.blend(framesPerSecond == 0 ? nil : framesPerSecond, 1000 / gap) }
         }
+        lastArrival = now
+        frameKilobytes = Self.blend(frameKilobytes == 0 ? nil : frameKilobytes, Double(frame.jpeg.count) / 1024)
+        if let age = frame.ageMs { hostAgeMs = Self.blend(hostAgeMs, Double(age)) }
+        if let encode = frame.encodeMs { encodeMs = Self.blend(encodeMs, Double(encode)) }
+    }
+
+    mutating func decoded(in duration: Duration) { decodeMs = Self.blend(decodeMs, Self.ms(duration)) }
+    mutating func inputSent(in duration: Duration) { inputMs = Self.blend(inputMs, Self.ms(duration)) }
+
+    var summary: String {
+        func value(_ number: Double?) -> String { number.map { String(Int($0.rounded())) } ?? "–" }
+        return "\(value(framesPerSecond)) fps · \(value(frameKilobytes)) KB a frame\n"
+            + "Host \(value(hostAgeMs)) ms old when sent (encode \(value(encodeMs)) ms)\n"
+            + "Decode \(value(decodeMs)) ms · Input round trip \(value(inputMs)) ms"
     }
 }

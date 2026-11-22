@@ -7,7 +7,7 @@ Starts a real glass-core gateway in a disposable workspace in two modes:
   * local: `connect --local` on loopback.
 Then serves a control API the UI tests call:
   GET /link/owner | /link/secret | /link/local, POST /revoke (restart = new token),
-  POST /thread/new | /thread/send | /thread/seed | /thread/components | /thread/wait, POST /net/drop | /net/restore,
+  POST /thread/new | /thread/send | /thread/seed | /thread/components | /thread/wait, POST /net/drop | /net/stall | /net/restore,
   POST /control/claim | /control/release (a second session client, like another device taking control),
   GET /thread/context.
 A scripted OpenAI-compatible provider answers every turn so threads stream real events.
@@ -75,6 +75,13 @@ class Proxy:
         self.live = set()
         self.live_lock = threading.Lock()
         self.event_requests = []
+        self.frozen = set()
+
+    def stall(self):
+        """Simulates a phone that slept: open tunnels stop carrying bytes but stay open, like a socket
+        iOS suspended whose NAT mapping is gone. New connections work normally."""
+        with self.live_lock:
+            self.frozen = set(self.live)
 
     def drop(self):
         """Simulates the network going away: closes every tunnel and refuses new ones."""
@@ -149,6 +156,9 @@ class Proxy:
             upstream.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + rest)
             pair = {client: upstream, upstream: client}
             while True:
+                if client in self.frozen:
+                    time.sleep(0.2)
+                    continue
                 readable, _, _ = select.select(list(pair), [], [], 120)
                 if not readable:
                     return
@@ -169,6 +179,8 @@ class Proxy:
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
+    last_system = ""
+
     """Scripted OpenAI chat-completions stream. `flood N` streams N one-char deltas as fast as it can;
     `slow N` streams N short words half a second apart, a long turn that stays cheap to render."""
     protocol_version = "HTTP/1.1"
@@ -179,6 +191,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
         last, tool_result = "", None
+        system = [m.get("content") for m in body.get("messages", []) if m.get("role") == "system"]
+        if system and isinstance(system[0], str):
+            Provider.last_system = system[0]
         for message in body.get("messages", []):
             content = message.get("content")
             text = content if isinstance(content, str) else " ".join(
@@ -188,6 +203,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             elif message.get("role") == "tool":
                 tool_result = text
         flood = re.search(r"flood (\d+)", last)
+        pause = re.search(r"pause (\d+)", last)
+        if pause and tool_result is None:
+            time.sleep(int(pause.group(1)))
         slow = re.search(r"slow (\d+)", last)
         call = None
         if tool_result is None and "ask question" in last:
@@ -383,6 +401,8 @@ class Control(http.server.BaseHTTPRequestHandler):
                 if self.path.startswith("/thread/context?"):
                     thread = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)["id"][0]
                     return self.reply(json.dumps(gateway.request("GET", f"/api/context?id={thread}")))
+                if self.path == "/provider/system":
+                    return self.reply(Provider.last_system)
                 if self.path == "/health":
                     return self.reply("ok")
             self.reply("not found", 404)
@@ -399,6 +419,9 @@ class Control(http.server.BaseHTTPRequestHandler):
             if url.path == "/net/drop":
                 proxy.drop()
                 return self.reply("dropped")
+            if url.path == "/net/stall":
+                proxy.stall()
+                return self.reply("stalled")
             if url.path == "/net/restore":
                 proxy.dropped = False
                 return self.reply("restored")
@@ -415,6 +438,21 @@ class Control(http.server.BaseHTTPRequestHandler):
                     f.write(json.dumps({"k": "user", "t": "Show the maths"}) + "\n")
                     f.write(json.dumps({"k": "assistant", "t": "Area:\n\n$$\\pi r^2$$\n\n```mermaid\ngraph TD\n  A[Pair] --> B[Work]\n```\n"}) + "\n")
                 return self.reply("rich")
+            if url.path == "/thread/markdown":
+                # A saved reply using everyday Markdown the app must draw natively.
+                markdown = "\n".join([
+                    "## Tables", "", "| Name | Role | Status |", "|------|:----:|-------:|",
+                    "| Alice | Admin | Active |", "| Bob | Editor | Inactive |", "",
+                    "<details>", "<summary>Full report</summary>", "", "Hidden **details** inside.", "", "</details>", "",
+                    "Inline math: $\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$ costs $5 and $10.", "",
+                    "- [x] Set up project", "- [ ] Deploy to production", "",
+                    "> This is a blockquote.", "> > Level two", "",
+                    "1. First item", "   - Nested bullet", "2. Second item", "",
+                    "![Image](sample_gradient.png)", "", "Done."])
+                with open(os.path.join(data_dir("remote"), f"{q['id']}.jsonl"), "a") as f:
+                    f.write(json.dumps({"k": "user", "t": "Show markdown"}) + "\n")
+                    f.write(json.dumps({"k": "assistant", "t": markdown}) + "\n")
+                return self.reply("markdown")
             if url.path == "/thread/count":
                 return self.reply(str(gateway.assistant_count(q["id"])))
             if url.path == "/thread/components":

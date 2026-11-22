@@ -3,6 +3,7 @@ import GlassAPI
 import GlassModels
 import GlassTransport
 import Observation
+import UIKit
 
 /// One conversation: history windows plus the live `/api/events` stream.
 @MainActor @Observable
@@ -24,6 +25,10 @@ final class ConversationModel {
     private(set) var loadingOlder = false
     private(set) var cursor: EventCursor?
     private(set) var resets = 0
+    /// Milliseconds from returning to the app until the stream was live again, for the last return.
+    private(set) var lastReconnect: Int?
+    private var resumeStarted: ContinuousClock.Instant?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     var error: String?
 
     private let app: AppModel
@@ -103,6 +108,38 @@ final class ConversationModel {
         }
     }
 
+    /// Leaving the app: a turn in progress keeps its stream for as long as iOS allows, so "Reply ready"
+    /// can still arrive; otherwise the stream closes now instead of dying silently while suspended.
+    func suspend() {
+        composer.flushDraft()
+        guard liveTask != nil else { return }
+        guard timeline.isActive else { return stop() }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Glass reply") { [weak self] in
+            MainActor.assumeIsolated {
+                self?.stop()
+                self?.endBackgroundTask()
+            }
+        }
+    }
+
+    /// Back in the app: the cached chat is already on screen; open a fresh stream right away from the
+    /// last event id, rather than waiting for a socket iOS suspended to time out.
+    func resumeNow() async {
+        endBackgroundTask()
+        guard loadedHistory, connection != .readOnly else { return await start() }
+        resumeStarted = .now
+        liveTask?.cancel()
+        liveTask = nil
+        drawPendingFrames()
+        await start()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
     func stop() {
         liveTask?.cancel()
         liveTask = nil
@@ -164,6 +201,11 @@ final class ConversationModel {
         case .connected:
             connection = .live
             error = nil
+            if let started = resumeStarted {
+                let elapsed = ContinuousClock.now - started
+                lastReconnect = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
+                resumeStarted = nil
+            }
         case .frame(let frame, let id):
             let resumed = cursor != nil
             if let id { cursor = id }
@@ -179,6 +221,10 @@ final class ConversationModel {
                 for event in frame.live + frame.events {
                     composer.observe(event)
                     alert(for: event)
+                    if case .done = event, backgroundTask != .invalid {
+                        stop()
+                        endBackgroundTask()
+                    }
                 }
                 return
             }

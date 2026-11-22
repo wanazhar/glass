@@ -132,7 +132,7 @@ public struct Timeline: Sendable, Hashable {
             notice = nil
             activity = nil
         case .waiting:
-            activity = "Waiting for provider"
+            activity = "Waiting for the model"
         case .queued:
             notice = Notice(text: "Follow-up saved on the host. It will run after the current turn.", isError: false)
         case .duplicate(let message):

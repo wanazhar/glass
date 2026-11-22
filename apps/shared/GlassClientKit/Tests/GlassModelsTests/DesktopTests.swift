@@ -14,6 +14,14 @@ import Testing
         #expect(frames == [DesktopFrame(jpeg: jpeg, sequence: 7)])
     }
 
+    @Test func readsHostAgeAndEncodeTime() throws {
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        var wire = Data("--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpeg.count)\r\nX-Frame-Seq: 3\r\n".utf8)
+        wire += Data("X-Frame-Time-Ms: 10\r\nX-Frame-Age-Ms: 41\r\nX-Frame-Encode-Ms: 9\r\n\r\n".utf8) + jpeg + Data("\r\n".utf8)
+        var parser = DesktopStreamParser()
+        #expect(try parser.feed(wire) == [DesktopFrame(jpeg: jpeg, sequence: 3, ageMs: 41, encodeMs: 9)])
+    }
+
     @Test func rejectsMalformedStreams() {
         var parser = DesktopStreamParser()
         #expect(throws: DesktopStreamParser.Failure.malformed) { try parser.feed(Data("HTTP garbage that is long enough".utf8)) }

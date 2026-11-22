@@ -11,6 +11,7 @@ struct ComposerView: View {
     @State private var choosingPhotos = false
     @State private var importingFiles = false
     @State private var showsControlPrompt = false
+    @State private var fieldHeight: CGFloat = 0
 
     private var composer: ComposerModel { conversation.composer }
     private var canWrite: Bool { conversation.canWrite }
@@ -23,12 +24,8 @@ struct ComposerView: View {
             }
             if !composer.uploads.isEmpty { uploadList }
             if !composer.context.isEmpty { contextChips }
-            if active, canWrite {
-                Picker("While working", selection: Bindable(composer).mode) {
-                    ForEach(ComposerModel.SendMode.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("composer.mode")
+            if active, canWrite, !composer.trimmed.isEmpty {
+                sendModeMenu
             }
             if dictation.isListening {
                 RecordingBar(dictation: dictation)
@@ -87,9 +84,36 @@ struct ComposerView: View {
         .accessibilityIdentifier("composer.readOnly")
     }
 
+    /// While Glass works, a message either steers the current reply or waits for the next turn.
+    private var sendModeMenu: some View {
+        Menu {
+            Picker("Send", selection: Bindable(composer).mode) {
+                ForEach(ComposerModel.SendMode.allCases) { mode in
+                    Text(mode.title)
+                        .badge(Text(mode.explanation))
+                        .tag(mode)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(composer.mode.explanation)
+                Image(systemName: "chevron.up.chevron.down").imageScale(.small)
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        }
+        .tint(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 52)
+        .accessibilityLabel("While Glass is working")
+        .accessibilityValue(composer.mode.title + ". " + composer.mode.explanation)
+        .accessibilityIdentifier("composer.mode")
+    }
+
     private var field: some View {
-        ComposerTextField(placeholder: canWrite ? (active ? (composer.mode == .steer ? "Steer this turn" : "Queue a message") : "Message") : "Read-only",
+        ComposerTextField(placeholder: canWrite ? (active ? (composer.mode == .steer ? "Steer this reply" : "Queue a message") : "Message") : "Read-only",
                           text: Bindable(composer).text, isEnabled: canWrite,
+                          height: fieldHeight, onHeight: { fieldHeight = $0 },
                           dismissFor: conversation.timeline.interaction?.id,
                           onCommands: { composer.showingCommands = true }) {
             Task { await composer.send(active: active, canWrite: canWrite) }

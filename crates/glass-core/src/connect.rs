@@ -449,6 +449,7 @@ const CONNECT_CAPABILITIES: &[&str] = &[
     "files",
     "export",
     "desktop",
+    "reply-components",
 ];
 
 /// Renders `text` as a QR code of half-block characters, two modules per line.
@@ -3662,8 +3663,8 @@ fn stream_frame_after(
     desktop: &crate::desktop::Desktop,
     after: &mut u64,
     timeout: Duration,
-) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
-    match desktop.frame_after(*after, timeout) {
+) -> Result<Option<crate::desktop::TimedFrame>, String> {
+    match desktop.timed_frame_after(*after, timeout) {
         Err(error) if error == "Desktop frame source is stale" => {
             if let Some(current) = desktop.status()["frameSeq"].as_u64() {
                 *after = (*after).max(current);
@@ -3676,19 +3677,25 @@ fn stream_frame_after(
 
 fn write_desktop_stream_frames<W, F>(
     stream: &mut W,
-    first: (u64, u64, Vec<u8>),
+    first: crate::desktop::TimedFrame,
     width: u32,
     mut frame_after: F,
 ) -> Result<(), String>
 where
     W: Write,
-    F: FnMut(&mut u64, Duration) -> Result<Option<(u64, u64, Vec<u8>)>, String>,
+    F: FnMut(&mut u64, Duration) -> Result<Option<crate::desktop::TimedFrame>, String>,
 {
     let mut next = Some(first);
     let mut sequence = 0;
-    let mut after = next.as_ref().map_or(0, |frame| frame.0);
+    let mut after = next.as_ref().map_or(0, |frame| frame.seq);
     loop {
-        let (seq, time_ms, jpeg) = match next.take() {
+        let crate::desktop::TimedFrame {
+            seq,
+            time_ms,
+            jpeg,
+            mut encode_ms,
+            age_ms,
+        } = match next.take() {
             Some(frame) => frame,
             None => match frame_after(&mut after, Duration::from_secs(2)) {
                 Ok(Some(frame)) => frame,
@@ -3714,15 +3721,19 @@ where
         if seq <= sequence {
             return Ok(());
         }
+        let resizing = Instant::now();
         let jpeg = if width == 1280 {
             jpeg
         } else {
-            resize_stream_frame(&jpeg, width)?
+            let resized = resize_stream_frame(&jpeg, width)?;
+            encode_ms += resizing.elapsed().as_millis() as u64;
+            resized
         };
+        let age_ms = age_ms + resizing.elapsed().as_millis() as u64;
         write!(
             stream,
-            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\n\r\n",
-            jpeg.len(), seq, time_ms
+            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\nX-Frame-Age-Ms: {}\r\nX-Frame-Encode-Ms: {}\r\n\r\n",
+            jpeg.len(), seq, time_ms, age_ms, encode_ms
         )
         .map_err(|e| e.to_string())?;
         stream.write_all(&jpeg).map_err(|e| e.to_string())?;
@@ -3934,7 +3945,7 @@ mod tests {
     fn desktop_stream_stays_open_across_a_temporary_frame_gap() {
         let mut polls = 0;
         let mut body = Vec::new();
-        write_desktop_stream_frames(&mut body, (1, 100, b"first".to_vec()), 1280, |after, _| {
+        write_desktop_stream_frames(&mut body, (1, 100, b"first".to_vec()).into(), 1280, |after, _| {
             polls += 1;
             match polls {
                 1 => {
@@ -3943,7 +3954,7 @@ mod tests {
                 }
                 2 => {
                     assert_eq!(*after, 1, "the stale frame watermark must be skipped");
-                    Ok(Some((2, 3_000, b"after-gap".to_vec())))
+                    Ok(Some((2, 3_000, b"after-gap".to_vec()).into()))
                 }
                 _ => Err("test stream closed".into()),
             }
@@ -3961,10 +3972,29 @@ mod tests {
     }
 
     #[test]
+    fn desktop_stream_frames_report_host_age_and_encode_time() {
+        let mut body = Vec::new();
+        let first = crate::desktop::TimedFrame {
+            seq: 1,
+            time_ms: 100,
+            jpeg: b"jpeg".to_vec(),
+            encode_ms: 7,
+            age_ms: 12,
+        };
+        write_desktop_stream_frames(&mut body, first, 1280, |_, _| {
+            Err("test stream closed".into())
+        })
+        .unwrap();
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("X-Frame-Encode-Ms: 7\r\n"));
+        assert!(body.contains("X-Frame-Age-Ms: 12\r\n"));
+    }
+
+    #[test]
     fn desktop_stream_wire_headers_use_opaque_fetch_type_and_keep_custom_frame_protocol() {
         let mut wire = Vec::new();
         write_desktop_stream_headers(&mut wire).unwrap();
-        write_desktop_stream_frames(&mut wire, (1, 100, b"jpeg".to_vec()), 1280, |_, _| {
+        write_desktop_stream_frames(&mut wire, (1, 100, b"jpeg".to_vec()).into(), 1280, |_, _| {
             Err("test stream closed".into())
         })
         .unwrap();

@@ -52,6 +52,8 @@ Core decides for each turn, not for the whole conversation:
 - Unknown types are dropped. A client on another schema version is treated as
   drawing none.
 - Queued follow-ups keep the capabilities of the client that queued them.
+- Connect lists `reply-components` in `/api/status` capabilities, so a client
+  can tell when its host is too old to pass capabilities to the model.
 
 The instructions tell the model to use tools for live data, never to invent
 it, and to mark made-up values with `"example":true`. Writing drafts are never

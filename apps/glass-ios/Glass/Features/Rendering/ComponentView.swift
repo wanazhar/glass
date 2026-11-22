@@ -34,33 +34,42 @@ struct ComponentView: View {
     var component: ReplyComponent
     private var data: JSONValue { component.data }
 
-    private static let titles = [
-        "table": "Table", "chart": "Chart", "form": "Form", "choices": "Choose", "writing": "Draft",
-        "sources": "Sources", "flights": "Flights", "hotels": "Hotels", "jobs": "Jobs", "news": "News",
-        "weather": "Weather", "sports": "Score", "currency": "Currency", "flow": "How it works",
-        "map": "Map", "timeline": "Timeline", "html": "Interactive view",
+    /// Self-contained objects (a forecast, a draft, a form) sit on a quiet outlined card; tables, charts,
+    /// lists and links flow straight into the reply like the surrounding text.
+    private static let carded: Set<String> = [
+        "kpi", "counter", "copy", "choices", "form", "product", "business", "reservation", "video", "file",
+        "writing", "weather", "sports", "currency", "flights", "jobs", "news",
     ]
 
     var body: some View {
+        let title = data["title"]?.text
+        let isCard = Self.carded.contains(component.type)
         VStack(alignment: .leading, spacing: 10) {
-            let title = data["title"]?.text ?? Self.titles[component.type]
             if title != nil || component.example {
                 HStack(alignment: .firstTextBaseline) {
-                    if let title { Text(title).font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader) }
+                    if let title { Text(title).font(.headline).accessibilityAddTraits(.isHeader) }
                     Spacer(minLength: 8)
                     if component.example {
                         Text("Example data")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .overlay(Capsule().strokeBorder(Color(.separator)))
                             .accessibilityLabel("Example data, not live")
                     }
                 }
             }
             content
         }
-        .padding(12)
+        .padding(isCard ? 14 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background {
+            if isCard {
+                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemBackground))
+                RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color(.separator), lineWidth: 0.75)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("component.\(component.type)")
     }
@@ -375,8 +384,11 @@ private struct ChoicesView: View {
                         Spacer()
                         Image(systemName: on ? "checkmark.circle.fill" : "circle").foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     }
-                    .padding(10)
-                    .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(.rect)
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(on ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.separator)), lineWidth: on ? 1.5 : 0.75))
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(on ? .isSelected : [])
@@ -479,19 +491,8 @@ private struct TableView: View {
                 }
                 .pickerStyle(.menu)
             }
-            ScrollView(.horizontal) {
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                    GridRow {
-                        ForEach(columns, id: \.key) { Text($0.label).font(.footnote.weight(.semibold)).foregroundStyle(.secondary) }
-                    }
-                    Divider()
-                    ForEach(Array(shown.enumerated()), id: \.offset) { _, row in
-                        GridRow {
-                            ForEach(columns, id: \.key) { Text(row[$0.key]?.text ?? "").font(.callout).textSelection(.enabled) }
-                        }
-                    }
-                }
-            }
+            DataTable(header: columns.map { AttributedString($0.label) },
+                      rows: shown.map { row in columns.map { AttributedString(row[$0.key]?.text ?? "") } })
         }
     }
 }
@@ -794,10 +795,9 @@ private struct WritingView: View {
                     .font(.subheadline)
                 }
             }
+            Divider()
             Text(body).textSelection(.enabled)
-                .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             HStack {
                 Button("Copy", systemImage: "doc.on.doc") { copy(full) }
                 ShareLink(item: full) { Label("Share", systemImage: "square.and.arrow.up") }

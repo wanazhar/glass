@@ -151,7 +151,13 @@ public enum DesktopInput: Sendable, Hashable {
 public struct DesktopFrame: Sendable, Hashable {
     public var jpeg: Data
     public var sequence: Int
-    public init(jpeg: Data, sequence: Int) { self.jpeg = jpeg; self.sequence = sequence }
+    /// How old the frame was when the host sent it (capture plus encode), in milliseconds.
+    public var ageMs: Int?
+    /// How long the host took to encode it as JPEG, in milliseconds.
+    public var encodeMs: Int?
+    public init(jpeg: Data, sequence: Int, ageMs: Int? = nil, encodeMs: Int? = nil) {
+        self.jpeg = jpeg; self.sequence = sequence; self.ageMs = ageMs; self.encodeMs = encodeMs
+    }
 }
 
 /// Splits `GET /api/desktop/stream` (`--glassframe` parts) into frames; heartbeats yield nothing.
@@ -188,7 +194,9 @@ public struct DesktopStreamParser: Sendable {
             guard buffer.distance(from: bodyStart, to: buffer.endIndex) >= length + 2 else { break }
             let bodyEnd = buffer.index(bodyStart, offsetBy: length)
             if length > 0, fields["x-glass-heartbeat"] == nil {
-                frames.append(DesktopFrame(jpeg: Data(buffer[bodyStart..<bodyEnd]), sequence: fields["x-frame-seq"].flatMap(Int.init) ?? 0))
+                frames.append(DesktopFrame(jpeg: Data(buffer[bodyStart..<bodyEnd]), sequence: fields["x-frame-seq"].flatMap(Int.init) ?? 0,
+                                           ageMs: fields["x-frame-age-ms"].flatMap(Int.init),
+                                           encodeMs: fields["x-frame-encode-ms"].flatMap(Int.init)))
             }
             buffer = Data(buffer[buffer.index(bodyEnd, offsetBy: 2)...])
         }

@@ -60,7 +60,16 @@ curl -sf --cacert "$root/tls/ca.pem" "https://$host/api/status" -o /dev/null -w 
 
 cd "$app"
 rm -rf build/results/e2e.xcresult
+# GLASS_E2E_ONLY may list several tests separated by commas.
+only=()
+if [[ -n ${GLASS_E2E_ONLY:-} ]]; then
+  IFS=, read -ra names <<<"$GLASS_E2E_ONLY"
+  for name in "${names[@]}"; do only+=("-only-testing:GlassUITests/LiveHostE2ETests/$name"); done
+else
+  only=("-only-testing:GlassUITests/LiveHostE2ETests")
+fi
 TEST_RUNNER_GLASS_E2E_CONTROL="http://127.0.0.1:${GLASS_E2E_CONTROL_PORT:-51999}" \
+TEST_RUNNER_GLASS_E2E_MEASURE_ONLY="${GLASS_E2E_MEASURE_ONLY:-}" \
   xcodebuild test -project Glass.xcodeproj -scheme Glass -collect-test-diagnostics never -destination "platform=iOS Simulator,id=$udid" \
   -derivedDataPath build/test -resultBundlePath build/results/e2e.xcresult \
-  -only-testing:GlassUITests/LiveHostE2ETests${GLASS_E2E_ONLY:+/$GLASS_E2E_ONLY} -quiet
+  "${only[@]}" -quiet

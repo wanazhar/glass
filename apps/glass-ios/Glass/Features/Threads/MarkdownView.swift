@@ -611,7 +611,15 @@ enum InlineMath {
             switch name {
             case "frac", "dfrac", "tfrac":
                 let top = argument(), bottom = argument()
-                let wrap = { (part: String) in part.count > 1 && part.contains(where: { "+-·× ".contains($0) }) ? "(\(part))" : part }
+                // Parenthesise only when an operator sits outside any brackets: "a+b" → "(a+b)", "n(n+1)" stays.
+                let wrap = { (part: String) -> String in
+                    var depth = 0
+                    for character in part {
+                        if character == "(" { depth += 1 } else if character == ")" { depth -= 1 }
+                        else if depth == 0, "+-·× ".contains(character) { return "(\(part))" }
+                    }
+                    return part
+                }
                 return wrap(top) + "⁄" + wrap(bottom)
             case "sqrt":
                 var degree = ""

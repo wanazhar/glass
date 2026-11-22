@@ -1,7 +1,7 @@
 import Testing
 @testable import Glass
 
-@Suite struct MarkdownTests {
+@MainActor @Suite struct MarkdownTests {
     @Test func tablesBecomeTablesWithAlignment() {
         let blocks = MarkdownView.blocks("| Name | Role | Status |\n|------|:----:|-------:|\n| Alice | Admin | Active |\n| Bob | `a|b` | Off |")
         #expect(blocks == [.table(header: ["Name", "Role", "Status"], alignments: [.leading, .center, .trailing],

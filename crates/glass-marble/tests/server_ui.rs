@@ -5251,6 +5251,95 @@ fn named_core_admission_failures_settle_private_and_everyone_entries_with_retry(
 }
 
 #[test]
+fn rejected_named_retry_keeps_the_original_pre_input_checkpoint() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence(
+        "retry-admission-checkpoint",
+        vec![
+            "--fail-once".into(),
+            "--generation-failure-once".into(),
+            "--reject-retry-submit-once".into(),
+        ],
+        true,
+    );
+    let prompt = "FAIL once then reject retry";
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"text":prompt,"marbleId":fixture.marble_id})
+            )
+            .0,
+        202
+    );
+    let original = fixture.settled(prompt);
+    assert_eq!(original.status, "failed");
+    assert_eq!(
+        fixture
+            .post("/api/turns/retry", json!({"taskId":original.id}))
+            .0,
+        202
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let rejected = loop {
+        let task = fixture.settled(prompt);
+        if task.id != original.id {
+            break task;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(rejected.status, "failed");
+    {
+        let state = fixture.state.lock().unwrap();
+        let record = state
+            .conversations
+            .iter()
+            .find(|c| c.id == original.conversation_id)
+            .unwrap();
+        assert_eq!(
+            record.checkpoints.get(&rejected.id),
+            record.checkpoints.get(&original.id)
+        );
+    }
+    assert_eq!(
+        fixture
+            .post("/api/turns/retry", json!({"taskId":rejected.id}))
+            .0,
+        202
+    );
+    let completed = fixture.completed(prompt);
+    let engine = fixture
+        .state
+        .lock()
+        .unwrap()
+        .conversations
+        .iter()
+        .find(|c| c.id == completed.conversation_id)
+        .unwrap()
+        .engine_conversation_id
+        .clone();
+    let history: Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .root
+                .join("prism-sessions")
+                .join(&fixture.marble_id)
+                .join("fixture-history.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        history["conversations"][&engine].as_array().unwrap().len(),
+        1,
+        "{history}"
+    );
+}
+
+#[test]
 fn everyone_thread_search_returns_only_the_jumpable_reply() {
     if !python3_available() {
         return;

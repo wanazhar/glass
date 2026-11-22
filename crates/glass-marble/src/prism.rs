@@ -1515,7 +1515,27 @@ impl PrismPool {
                 marble.conversation_id.clone()
             };
             let now = now_millis();
+            let checkpoint = state
+                .conversations
+                .iter()
+                .find(|record| record.id == conversation_id)
+                .and_then(|record| {
+                    state
+                        .tasks
+                        .iter()
+                        .rev()
+                        .find(|task| {
+                            task.conversation_id == conversation_id
+                                && task.status != "queued"
+                                && !task.id.starts_with("queued-")
+                        })
+                        .filter(|task| task.id == record.retry_task_id && task.prompt == text)
+                        .and_then(|task| record.checkpoints.get(&task.id).copied())
+                });
             let conversation = state.conversation_mut(&conversation_id);
+            if let Some(checkpoint) = checkpoint {
+                conversation.checkpoints.insert(task_id.clone(), checkpoint);
+            }
             if conversation.title.is_empty() {
                 conversation.title = format!("{} · {}", marble.name, truncate(text, 64));
             }

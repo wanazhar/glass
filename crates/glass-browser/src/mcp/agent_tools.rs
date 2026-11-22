@@ -7,6 +7,19 @@
 
 use serde_json::{Value, json};
 
+pub(crate) fn live_diagnostics_supported(tool: &str, native: bool) -> bool {
+    !native || !matches!(tool, "browser_console" | "browser_network")
+}
+
+pub(crate) fn tools_for_runtime(native: bool) -> Vec<Value> {
+    agent_tools()
+        .into_iter()
+        .filter(|tool| {
+            live_diagnostics_supported(tool["name"].as_str().unwrap_or_default(), native)
+        })
+        .collect()
+}
+
 const TARGET: &str = "Element to act on. Prefer the `ref` from the latest browser_snapshot (e.g. \"e12\"). Otherwise: \"role=button;name=Save\", \"name=Email\" (accessible name or label), \"text=Sign in\", \"css=#email\".";
 
 fn target_schema() -> Value {
@@ -641,8 +654,11 @@ if (kind === "table") return JSON.stringify(all(TABLE).slice(0, 10).map(t => {{
   let headers = [], body = rows;
   if (rows[0] && kids(rows[0], CELL).every(c => c.matches("th,[role=columnheader]"))) {{ headers = cells(rows[0]); body = rows.slice(1); }}
   const caption = clip(t.caption ? t.caption.innerText : t.getAttribute("aria-label"));
-  const out = body.slice(0, max).map(r => {{ const c = cells(r); if (!headers.length) return c; const o = {{}}; c.forEach((v, i) => o[headers[i] || "column" + (i + 1)] = v); return o; }});
-  return {{caption, headers, rows: out, totalRows: body.length}};
+  const used = new Set();
+  const width = Math.max(headers.length, ...body.map(r => cells(r).length));
+  const columns = Array.from({{length: width}}, (_, i) => {{ const base = headers[i] || "column" + (i + 1); let key = base, n = 2; while (used.has(key)) key = base + "_" + n++; used.add(key); return key; }});
+  const out = body.slice(0, max).map(r => {{ const c = cells(r); if (!headers.length) return c; const o = {{}}; c.forEach((v, i) => o[columns[i]] = v); return o; }});
+  return {{caption, headers, columns, rows: out, totalRows: body.length}};
 }}));
 if (kind === "list") return JSON.stringify(all("ul,ol,[role=list]").slice(0, 20).map(l => {{
   const items = kids(l, "li,[role=listitem]").filter(visible);
@@ -688,6 +704,22 @@ fn unquote(raw: &str) -> String {
         Ok(Value::String(text)) => text,
         _ => raw.to_owned(),
     }
+}
+
+pub(crate) fn evaluation_value(raw: &str) -> Result<Value, String> {
+    let mut value: Value = serde_json::from_str(raw).map_err(|_| "invalid browser JSON result")?;
+    for _ in 0..4 {
+        let next = match &value {
+            Value::String(text) => serde_json::from_str(text).ok(),
+            Value::Object(map) if map.contains_key("detailAvailability") => {
+                map.get("result").cloned()
+            }
+            _ => None,
+        };
+        let Some(next) = next else { break };
+        value = next;
+    }
+    Ok(value)
 }
 
 fn collect_targets<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
@@ -777,13 +809,7 @@ fn find_report(arguments: &Value, observation: &str, page_text: &str) -> Result<
 }
 
 fn extract_report(raw: &str) -> Result<String, String> {
-    let json = unquote(raw);
-    let value: Value = serde_json::from_str(&json).map_err(|_| {
-        format!(
-            "browser_extract: unexpected page result: {}",
-            json.chars().take(200).collect::<String>()
-        )
-    })?;
+    let mut value = evaluation_value(raw)?;
     if let Some(error) = value["error"].as_str() {
         return Err(format!("browser_extract: {error}."));
     }
@@ -797,7 +823,12 @@ fn extract_report(raw: &str) -> Result<String, String> {
                 .into(),
         );
     }
-    Ok(clip_report(json))
+    super::secrets::redact_value(&mut value);
+    let json = value.to_string();
+    if json.len() > MAX_REPORT_BYTES {
+        return Err("browser_extract: result exceeds 32 KiB; pass a smaller maxItems or a `within` selector".into());
+    }
+    Ok(json)
 }
 
 fn console_report(arguments: &Value, raw: &str) -> String {
@@ -1252,9 +1283,51 @@ mod tests {
         let huge = json!("x".repeat(40_000)).to_string();
         assert!(
             extract_report(&json!(format!("[{huge}]")).to_string())
-                .unwrap()
-                .ends_with("`within` selector]")
+                .unwrap_err()
+                .contains("exceeds 32 KiB")
         );
+        for inner in [rows, "[]".into(), r#"{"error":"missing selector"}"#.into()] {
+            let projected = json!({"result": inner, "detailAvailability":{}}).to_string();
+            assert_eq!(
+                extract_report(&projected),
+                extract_report(&json!(inner).to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn native_catalog_omits_unavailable_live_diagnostics() {
+        assert!(tools_for_runtime(true).iter().all(|t| !matches!(
+            t["name"].as_str(),
+            Some("browser_console" | "browser_network")
+        )));
+        assert!(
+            tools_for_runtime(false)
+                .iter()
+                .any(|t| t["name"] == "browser_console")
+        );
+        assert!(!live_diagnostics_supported("browser_network", true));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn extraction_keeps_duplicate_and_generated_column_values() {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            ctx.eval::<(), _>(r#"
+                const cell = (text, header) => ({innerText:text, matches:s=>s==='th,[role=columnheader]' ? header : true});
+                const table = {offsetWidth:1, caption:null, getAttribute:()=>null};
+                const row = children => ({children, offsetWidth:1, closest:()=>table});
+                const rows = [row([cell('Price',true),cell('Price',true),cell('column4',true)]), row(['5','8','9','10'].map(t=>cell(t,false)))];
+                table.querySelectorAll = () => rows;
+                globalThis.document = {querySelectorAll:()=>[table]};
+            "#).unwrap();
+            let result: String = ctx.eval(extract_script("table", None, 50)).unwrap();
+            let value: Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(value[0]["columns"], json!(["Price","Price_2","column4","column4_2"]));
+            assert_eq!(value[0]["rows"][0], json!({"Price":"5","Price_2":"8","column4":"9","column4_2":"10"}));
+        });
     }
 
     #[test]

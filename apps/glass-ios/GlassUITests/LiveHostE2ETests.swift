@@ -1124,7 +1124,10 @@ final class LiveHostE2ETests: XCTestCase {
         screen.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.8)).tap()
         sleep(2)
         XCTAssertEqual(try desktopReport("inputs"), inputsBefore, "no input reaches the host after Disconnect")
+        let keys = app.buttons["desktop.keys"].firstMatch
+        XCTAssertTrue(keys.exists && !keys.isEnabled, "Keys is off while disconnected")
         reconnect.tap()
+        XCTAssertTrue(waitUntil(10) { keys.isEnabled }, "Keys comes back after Reconnect")
         XCTAssertTrue(waitUntil(15) { ((try? desktopStreams()) ?? 0) > 0 }, "Reconnect opens the picture again")
         XCTAssertTrue(waitUntil(10) { !reconnect.exists })
     }

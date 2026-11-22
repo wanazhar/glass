@@ -237,6 +237,7 @@ struct DesktopView: View {
                         Label("Keys", systemImage: "keyboard")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(model.disconnected)
                     .accessibilityIdentifier("desktop.keys")
                     Button("Give back") { Task { await model.giveBackControl() } }
                         .buttonStyle(.bordered)
@@ -264,7 +265,7 @@ struct DesktopView: View {
                      : "Tap to click. Two-finger tap or touch and hold to right-click. Two fingers scroll. Pinch to zoom.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if showKeys { keys }
+                if showKeys, !model.disconnected { keys }
             } else {
                 Text(status.lease == "read-only" ? "Nobody can use the mouse or keyboard. Take control to use them."
                                                  : "Glass is using the mouse and keyboard. Take control to use them yourself.")
@@ -293,7 +294,11 @@ struct DesktopView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.send)
-                .onSubmit { model.type(typed); typed = "" }
+                .onSubmit {
+                    guard !model.disconnected else { return }
+                    model.type(typed)
+                    typed = ""
+                }
                 .accessibilityIdentifier("desktop.text")
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {

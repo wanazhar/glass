@@ -8,7 +8,11 @@
 
 use base64::Engine;
 use serde_json::{Value, json};
+use std::ffi::CString;
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -292,28 +296,22 @@ fn save_image(item: &Value, workspace: &Path) -> Result<String, String> {
     let root = workspace
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let mut directory = root.clone();
+    let mut directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&root)
+        .map_err(|error| error.to_string())?;
     for component in [".gc-artifacts", "browser"] {
-        directory.push(component);
-        if !directory.exists() {
-            std::fs::create_dir(&directory).map_err(|error| error.to_string())?;
-        }
-        directory = directory
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        if !directory.starts_with(&root) {
-            return Err("browser screenshot directory escapes the workspace".into());
-        }
+        directory = screenshot_subdirectory(&directory, component).map_err(|error| {
+            format!("browser screenshot directory escapes or is unavailable: {error}")
+        })?;
     }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     let filename = format!("browser-{stamp}-{}.{extension}", std::process::id());
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(directory.join(&filename))
+    screenshot_file(&directory, &filename)
         .and_then(|mut file| file.write_all(&bytes))
         .map_err(|error| error.to_string())?;
     Ok(format!(
@@ -321,9 +319,75 @@ fn save_image(item: &Value, workspace: &Path) -> Result<String, String> {
     ))
 }
 
+fn screenshot_subdirectory(parent: &File, name: &str) -> std::io::Result<File> {
+    let name = CString::new(name)?;
+    // SAFETY: name is NUL-terminated and parent remains open for both calls.
+    let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+    if created < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat returns an owned descriptor; no symlink is followed.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // SAFETY: the successful openat descriptor is uniquely owned here.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
+fn screenshot_file(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = CString::new(name)?;
+    // SAFETY: name is NUL-terminated; directory stays open during openat.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // SAFETY: the successful openat descriptor is uniquely owned here.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_descriptors_survive_directory_symlink_substitution() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("gc-browser-dirfd-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        let parent = File::open(&root).unwrap();
+        let directory = screenshot_subdirectory(&parent, "browser").unwrap();
+        std::fs::rename(root.join("browser"), root.join("original")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("browser")).unwrap();
+        let mut image = screenshot_file(&directory, "image.png").unwrap();
+        image.write_all(b"private").unwrap();
+        assert_eq!(
+            image.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read(root.join("original/image.png")).unwrap(),
+            b"private"
+        );
+        assert_eq!(std::fs::read_dir(root.join("outside")).unwrap().count(), 0);
+        assert!(screenshot_file(&directory, "image.png").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

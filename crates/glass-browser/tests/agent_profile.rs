@@ -17,6 +17,7 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <h1>Join the beta</h1>
 <label for="n">Full name</label><input id="n" oninput="state.name=this.value;show()">
 <label for="e">Email</label><input id="e" oninput="state.email=this.value;show()">
+<label for="city">City</label><input id="city" list="cities" oninput="state.city=this.value;show()"><datalist id="cities"><option>Paris</option><option>Berlin</option></datalist>
 <a href="/report.csv" download="report.csv">Download report</a>
 <label for="p">Plan</label><select id="p" role="combobox listbox" onchange="state.plan=this.value;show()"><option>Solo</option><option>Team</option></select>
 <label><input type="checkbox" id="t" onchange="state.terms=this.checked;show()"> I agree to the terms</label>
@@ -220,6 +221,23 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     let filled = mcp.ok("browser_get_text", json!({})).await;
     assert!(filled.contains("\"plan\":\"Solo\""), "{filled}");
     mcp.ok(
+        "browser_fill_form",
+        json!({"fields":[{"target":"name=City","value":"Paris"}]}),
+    )
+    .await;
+    let filled = mcp.ok("browser_get_text", json!({})).await;
+    assert!(filled.contains("\"city\":\"Paris\""), "{filled}");
+    let snapshot: Value =
+        serde_json::from_str(&mcp.ok("browser_snapshot", json!({})).await).unwrap();
+    let city_reference = reference_named(&snapshot, "City").unwrap();
+    mcp.ok(
+        "browser_fill_form",
+        json!({"fields":[{"target":city_reference,"value":"Berlin"}]}),
+    )
+    .await;
+    let filled = mcp.ok("browser_get_text", json!({})).await;
+    assert!(filled.contains("\"city\":\"ParisBerlin\""), "{filled}");
+    mcp.ok(
         "browser_select_option",
         json!({"target":"name=Plan","value":"Team"}),
     )
@@ -259,7 +277,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     let state: Value = serde_json::from_str(&state_line["STATE ".len()..]).unwrap();
     assert_eq!(
         state,
-        json!({"name":"Aisyah Karim","email":"a@example.test","plan":"Team","terms":true,"key":"Escape","deleted":true})
+        json!({"name":"Aisyah Karim","email":"a@example.test","plan":"Team","city":"ParisBerlin","terms":true,"key":"Escape","deleted":true})
     );
 
     let missing = mcp

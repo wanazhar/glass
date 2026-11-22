@@ -186,7 +186,7 @@ impl CdpBrowserSession {
             .unwrap_or("")
             .to_lowercase();
 
-        if metadata["tag"] == "SELECT" || matches!(role.as_str(), "listbox" | "combobox") {
+        if metadata["tag"] == "SELECT" {
             match self.select_option(reference, value).await {
                 Ok(_) => ("select".to_string(), true, None),
                 Err(e) => ("select".to_string(), false, Some(e.to_string())),

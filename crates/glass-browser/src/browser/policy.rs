@@ -422,6 +422,14 @@ impl BrowserPolicy {
         &self.workspace_root
     }
 
+    pub(crate) fn requires_network_interception(&self) -> bool {
+        matches!(
+            self.preset,
+            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+        ) || !self.allowed_hosts.is_empty()
+            || !self.denied_hosts.is_empty()
+    }
+
     pub async fn prepare_hardened_session(
         &mut self,
         attached: bool,
@@ -966,6 +974,30 @@ fn ipv6_in_prefix(value: u128, network: u128, prefix: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn development_host_rules_require_redirect_interception() {
+        let root = std::env::temp_dir();
+        let policy = BrowserPolicy::development(&root).unwrap();
+        assert!(!policy.requires_network_interception());
+        let policy = policy.with_host_rules(["allowed.test".into()], []).unwrap();
+        assert!(policy.requires_network_interception());
+        assert!(
+            policy
+                .require_existing_target_url("https://allowed.test/")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .require_existing_target_url("https://blocked.test/redirect")
+                .is_err()
+        );
+        let denied = BrowserPolicy::development(root)
+            .unwrap()
+            .with_host_rules([], ["blocked.test".into()])
+            .unwrap();
+        assert!(denied.requires_network_interception());
+    }
 
     #[test]
     fn hardened_capabilities_are_typed_denials_or_confirmations() {

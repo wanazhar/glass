@@ -262,10 +262,7 @@ impl CdpBrowserSession {
                 "Target.setAutoAttach",
                 Some(serde_json::json!({
                     "autoAttach": true,
-                    "waitForDebuggerOnStart": matches!(
-                        self.policy.preset(),
-                        PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-                    ),
+                    "waitForDebuggerOnStart": self.policy.requires_network_interception(),
                     "flatten": true
                 })),
             )

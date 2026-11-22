@@ -2321,6 +2321,23 @@ async fn compact_observation_bounds_accessibility_while_snapshot_remains_full() 
 
 #[tokio::test]
 async fn hardened_navigation_intercepts_private_redirects_before_following() {
+    assert_policy_blocks_redirect(
+        BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn development_host_allowlist_intercepts_redirects_before_following() {
+    let policy = BrowserPolicy::development(std::env::current_dir().unwrap())
+        .unwrap()
+        .with_host_rules(["allowed.test".into()], [])
+        .unwrap();
+    assert!(policy.requires_network_interception());
+    assert_policy_blocks_redirect(policy).await;
+}
+
+async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2395,7 +2412,6 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
     let cdp = CdpClient::connect(&format!("ws://{address}"))
         .await
         .unwrap();
-    let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
     let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
         .await
         .unwrap();

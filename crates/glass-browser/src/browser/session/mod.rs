@@ -57,7 +57,7 @@ use super::dom::{
     CompactInteractiveElement, CompactRanking, DomNode, parse_accessibility_tree, parse_dom_tree,
 };
 use super::mouse::{MouseEngine, Point};
-use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
+use super::policy::{BrowserPolicy, PolicyCapability, PolicyError};
 use super::profile::{ProfileLock, ProfileManager};
 
 mod classification;
@@ -947,10 +947,7 @@ impl CdpBrowserSession {
         }
         let event_setup_ms = startup_elapsed_ms(event_setup_started);
         let policy_arm_started = Instant::now();
-        let policy_interception = if matches!(
-            policy.preset(),
-            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-        ) {
+        let policy_interception = if policy.requires_network_interception() {
             Some(PolicyInterception::start(cdp.clone(), policy.clone(), session_id.clone()).await?)
         } else {
             None
@@ -986,10 +983,7 @@ impl CdpBrowserSession {
         // popup) until they are resumed, even without waitForDebuggerOnStart,
         // and the opener's click never completes meanwhile. The hardened
         // presets resume them after arming interception instead.
-        let resume_attached_targets = !matches!(
-            policy.preset(),
-            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-        );
+        let resume_attached_targets = !policy.requires_network_interception();
         tokio::spawn(async move {
             loop {
                 match topology_events.recv().await {
@@ -1055,10 +1049,7 @@ impl CdpBrowserSession {
             "Target.setAutoAttach",
             Some(serde_json::json!({
                 "autoAttach": true,
-                "waitForDebuggerOnStart": matches!(
-                    policy.preset(),
-                    PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-                ),
+                "waitForDebuggerOnStart": policy.requires_network_interception(),
                 "flatten": true
             })),
         )

@@ -8177,9 +8177,35 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
+
+    struct PdfTestDirectory(std::path::PathBuf);
+
+    impl PdfTestDirectory {
+        fn new() -> Self {
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).unwrap();
+            let path = std::env::temp_dir()
+                .join(format!("glass-mcp-pdf-{:032x}", u128::from_le_bytes(nonce)));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for PdfTestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn pdf_outputs_decode_native_projection_and_reject_invalid_data() {
-        let workspace = tempfile::tempdir().unwrap();
+        let workspace = PdfTestDirectory::new();
         let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
         let output = workspace.path().join("native.pdf");
         let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":output}}})).unwrap();
@@ -8204,8 +8230,8 @@ mod tests {
 
     #[test]
     fn pdf_outputs_follow_workspace_policy() {
-        let workspace = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let workspace = PdfTestDirectory::new();
+        let outside = PdfTestDirectory::new();
         let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
         let result = serde_json::json!({"content":[{"text":"\"JVBERi0=\""}]});
         let save = |path: &std::path::Path, result: &serde_json::Value| {
@@ -8233,9 +8259,6 @@ mod tests {
             assert!(!outside.path().join("new.pdf").exists());
         }
     }
-
-    use super::*;
-    use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
 
     #[test]
     fn cancellation_map_poison_is_recovered_for_cleanup_and_cancellation() {

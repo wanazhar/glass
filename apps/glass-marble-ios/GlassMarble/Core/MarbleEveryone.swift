@@ -164,7 +164,7 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
         entry: MarbleEntry,
         marbles: [MarblePrismMarble]
     ) -> MarbleSpeakerStyle? {
-        guard ["assistant", "handoff", "failure", "tool"].contains(entry.kind),
+        guard ["assistant", "pending", "handoff", "failure", "tool"].contains(entry.kind),
               !entry.speaker.isEmpty || !entry.speakerName.isEmpty
         else { return nil }
         if let marble = marbles.first(where: { $0.id == entry.speaker || $0.name == entry.speakerName }) {
@@ -183,6 +183,39 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
 
 /// How a host `everyone` event changes a fetched Everyone timeline.
 enum MarbleEveryoneTimeline {
+    static func settling(_ event: MarbleEvent, reserved: MarbleEntry?, at: UInt64) -> MarbleEntry? {
+        guard let id = event.data.entryId, let kind = event.data.entryKind,
+              ["assistant", "failure"].contains(kind), let text = event.data.text else { return nil }
+        var entry = reserved ?? MarbleEntry(
+            conversationId: event.conversationId, kind: kind, text: text, taskId: event.taskId, at: at
+        )
+        entry.serverID = id
+        entry.threadId = event.data.threadId ?? entry.threadId
+        entry.kind = kind
+        entry.text = text
+        entry.taskId = event.taskId
+        if let sender = event.data.sender, !sender.isEmpty { entry.speakerName = sender }
+        entry.failure = event.data.failure
+        return entry
+    }
+
+    static func applying(_ updates: [MarbleEntry], to entries: [MarbleEntry]) -> [MarbleEntry] {
+        var rows = entries
+        for update in updates {
+            if let index = rows.firstIndex(where: { $0.id == update.id }) {
+                if update.kind != "pending" || rows[index].kind == "pending" {
+                    rows[index] = update
+                }
+            } else {
+                let index = update.kind == "user" ? rows.firstIndex {
+                    $0.kind == "pending" && $0.at >= update.at
+                } : nil
+                rows.insert(update, at: index ?? rows.endIndex)
+            }
+        }
+        return rows
+    }
+
     /// The state and transcript are fetched separately. Keep a bubble through
     /// that transition, then let the visible outcome replace it.
     static func showsThinking(

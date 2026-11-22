@@ -25,6 +25,17 @@ final class MarbleOutgoingTests: XCTestCase {
         XCTAssertEqual(draft.responders, ["ada", "ben"])
     }
 
+    func testGroupReservationReplacesOnlyItsOptimisticIndicator() {
+        let send = MarbleOutgoing(target: .everyone(), text: "@everyone hello",
+                                  responders: ["marble", "ada", "ben"], entries: [])
+        var reserved = MarbleEntry(conversationId: "everyone", kind: "pending",
+                                   text: "", taskId: "queued", at: 3, speaker: "ada", speakerName: "Ada")
+        reserved.serverID = "ada-reservation"
+        let presentation = MarbleOutgoingPresentation(durable: [reserved], outgoing: [send], conversationId: "everyone")
+        XCTAssertEqual(presentation.entries.map(\.rowID), [send.rowID, reserved.rowID])
+        XCTAssertEqual(presentation.responders, ["marble", "ben"])
+    }
+
     func testEchoedIDReconcilesEvenIfHistoryArrivesBeforePostReturns() {
         let send = MarbleOutgoing(target: .everyone(), text: "same message", responders: ["ada"], entries: [])
         let optimistic = MarbleOutgoingPresentation(durable: [], outgoing: [send], conversationId: "everyone")

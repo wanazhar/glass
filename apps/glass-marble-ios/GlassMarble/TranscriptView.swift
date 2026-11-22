@@ -130,10 +130,11 @@ struct MarbleEntryView: View {
     var body: some View {
         let failure = MarbleTurnFailure.representsFailure(entry, status: task?.status)
         VStack(alignment: .leading, spacing: 6) {
-            if entry.kind == "assistant" || failure {
+            if entry.kind == "assistant" || entry.kind == "pending" || failure {
                 let thought = reasoning ?? store.reasoning(for: entry.taskId)
                 if !thought.isEmpty { MarbleReasoningRow(text: thought, speaker: speaker?.name) }
-                if entry.threadId == nil && !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId) {
+                if entry.kind != "pending", entry.threadId == nil,
+                   !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId) {
                     ForEach(store.tools(for: entry.taskId)) { MarbleToolRow(tool: $0) }
                 }
             }
@@ -217,6 +218,14 @@ struct MarbleEntryView: View {
                 )
                 .padding(.leading, 48)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if entry.kind == "pending" {
+            let text = store.pendingReplyText(for: entry.taskId)
+            let retrying = store.automaticRetries.contains(entry.taskId)
+            if !text.isEmpty && !retrying {
+                replyBubble(text)
+            } else {
+                MarbleThinkingBubble(name: speaker?.name ?? "Marble", retrying: retrying)
+            }
         } else if entry.kind == "handoff", let handoff = entry.handoff {
             HandoffLine(handoff: handoff)
         } else if entry.kind == "reasoning" {
@@ -231,29 +240,33 @@ struct MarbleEntryView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .multilineTextAlignment(.center)
         } else {
-            let hue = speaker?.hue ?? replyHue
-            VStack(alignment: .leading, spacing: 6) {
-                if let speaker {
-                    HStack(spacing: 7) {
-                        MarbleAvatar(glyph: speaker.glyph, hue: hue, size: 20)
-                        Text(speaker.name)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(MarbleTheme.marble(hue: hue, brightness: colorScheme == .dark ? 1 : 0.38))
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("\(speaker.name) said")
-                }
-                MarbleMarkdownView(text: entry.text).equatable()
-                    .textSelection(.enabled)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                MarbleTheme.marble(hue: hue).opacity(colorScheme == .dark ? 0.17 : 0.09),
-                in: RoundedRectangle(cornerRadius: 14)
-            )
+            replyBubble(entry.text)
         }
+    }
+
+    private func replyBubble(_ text: String) -> some View {
+        let hue = speaker?.hue ?? replyHue
+        return VStack(alignment: .leading, spacing: 6) {
+            if let speaker {
+                HStack(spacing: 7) {
+                    MarbleAvatar(glyph: speaker.glyph, hue: hue, size: 20)
+                    Text(speaker.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(MarbleTheme.marble(hue: hue, brightness: colorScheme == .dark ? 1 : 0.38))
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(speaker.name) said")
+            }
+            MarbleMarkdownView(text: text).equatable()
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            MarbleTheme.marble(hue: hue).opacity(colorScheme == .dark ? 0.17 : 0.09),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
     }
 }
 
@@ -306,7 +319,8 @@ struct MarbleTurnTail: View {
                 && (showsLiveTools || !task.isRunning) {
                 ForEach(store.tools(for: task.id)) { MarbleToolRow(tool: $0) }
             }
-            if !hasFailure && MarbleTurnFailure.message(for: task.status) != nil {
+            if !hasFailure && !hasAnswer && !rows.contains(where: { $0.kind == "pending" })
+                && MarbleTurnFailure.message(for: task.status) != nil {
                 MarbleFailedTurnRow(task: task)
             }
         }

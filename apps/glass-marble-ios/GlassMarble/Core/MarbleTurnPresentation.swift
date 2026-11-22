@@ -157,7 +157,7 @@ struct MarbleReasoningAssociation {
 
     init(_ entries: [MarbleEntry], keepVisible entryId: String? = nil) {
         let outcomes = Dictionary(entries.compactMap { entry -> (String, String)? in
-            guard !entry.taskId.isEmpty, ["assistant", "failure", "error"].contains(entry.kind) else { return nil }
+            guard !entry.taskId.isEmpty, ["pending", "assistant", "failure", "error"].contains(entry.kind) else { return nil }
             return (entry.taskId, entry.id)
         }, uniquingKeysWith: { first, _ in first })
         var attached: [String: String] = [:]

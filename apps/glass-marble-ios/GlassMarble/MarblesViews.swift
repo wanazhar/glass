@@ -119,8 +119,9 @@ struct EveryoneView: View {
         let presentation = store.outgoingPresentation(store.everyoneEntries, to: target, conversationId: everyoneConversationId)
         let entries = store.withLiveToolRows(presentation.entries, conversationId: everyoneConversationId)
         let serverWorking = Set(store.everyoneThinking.map(\.id))
+        let reservedAgents = Set(entries.lazy.filter { $0.kind == "pending" }.map(\.speaker))
         let responders = presentation.responders + store.prism.marbles.map(\.id).filter {
-            serverWorking.contains($0) && !presentation.responders.contains($0)
+            serverWorking.contains($0) && !reservedAgents.contains($0) && !presentation.responders.contains($0)
         }
         ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
@@ -148,7 +149,7 @@ struct EveryoneView: View {
                         let reasoning = store.reasoning(for: task.id)
                         if store.isTaskWorking(task) && !reasoning.isEmpty
                             && !entries.contains(where: {
-                                $0.taskId == task.id && ["reasoning", "assistant", "failure"].contains($0.kind)
+                                $0.taskId == task.id && ["reasoning", "pending", "assistant", "failure"].contains($0.kind)
                             }) {
                             MarbleReasoningRow(text: reasoning, speaker: store.agentName(for: task.id))
                         }

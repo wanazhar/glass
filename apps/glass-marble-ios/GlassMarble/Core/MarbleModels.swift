@@ -519,7 +519,11 @@ struct MarbleEvent: Decodable, Equatable {
     var taskId: String
     var kind: String
     var data: MarbleEventData
-    var userEntry: MarbleEntry? = nil
+    var entryUpdate: MarbleEntry? = nil
+    var userEntry: MarbleEntry? {
+        guard entryUpdate?.kind == "user", entryUpdate?.clientMessageID != nil else { return nil }
+        return entryUpdate
+    }
 }
 
 extension MarbleEvent {
@@ -533,9 +537,9 @@ extension MarbleEvent {
         kind = try fields.decode(String.self, forKey: .kind)
         data = try fields.decode(MarbleEventData.self, forKey: .data)
         if kind == "entry", var entry = try? fields.decode(MarbleEntry.self, forKey: .data),
-           entry.kind == "user", entry.serverID != nil, entry.clientMessageID != nil {
+           entry.serverID != nil {
             entry.conversationId = conversationId
-            userEntry = entry
+            entryUpdate = entry
         }
     }
 }
@@ -561,12 +565,13 @@ struct MarbleEventData: Decodable, Equatable {
     var cancelled: Bool?
     var requestId: String?
     var approved: Bool?
+    var failure: MarbleFailureInfo? = nil
     /// On an `everyone` event, how many entries a clear removed.
     var cleared: Int? = nil
 
     private enum CodingKeys: String, CodingKey {
         case thread, text, tool, name, callId, arguments, isError, message, status, revision
-        case taskId, reason, cancelled, requestId, approved, cleared, sender
+        case taskId, reason, cancelled, requestId, approved, cleared, sender, failure
         case threadId = "thread_id"
         case entryId = "id"
         case toolEntryId = "entry_id"

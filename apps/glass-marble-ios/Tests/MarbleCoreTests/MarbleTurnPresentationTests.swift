@@ -3,6 +3,42 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleTurnPresentationTests: XCTestCase {
+    func testGroupReservationRekeysAndSettlesInItsOriginalSlot() throws {
+        func event(_ kind: String, task: String, data: String) throws -> MarbleEvent {
+            let json = """
+            {"sequence":1,"conversationId":"everyone","taskId":"\(task)","kind":"\(kind)","data":\(data)}
+            """
+            return try JSONDecoder().decode(MarbleEvent.self, from: Data(json.utf8))
+        }
+        let initiallyReserved = try event("entry", task: "queued-ada", data: """
+            {"id":"ada-row","kind":"pending","conversationId":"everyone","text":"","at":32,
+             "taskId":"queued-ada","speaker":"ada","speakerName":"Ada","thread_id":"thread"}
+            """)
+        let rekeyed = try event("entry", task: "turn-ada", data: """
+            {"id":"ada-row","kind":"pending","conversationId":"everyone","text":"","at":32,
+             "taskId":"turn-ada","speaker":"ada","speakerName":"Ada","thread_id":"thread"}
+            """)
+        let reservation = try XCTUnwrap(initiallyReserved.entryUpdate)
+        let update = try XCTUnwrap(rekeyed.entryUpdate)
+        var other = reservation
+        other.serverID = "ben-row"
+        let rows = MarbleEveryoneTimeline.applying([update], to: [reservation, other])
+        XCTAssertEqual(rows.map(\.rowID), ["ada-row", "ben-row"])
+        XCTAssertEqual(rows.first?.taskId, "turn-ada")
+        let failure = try event("reply", task: "turn-ada", data: """
+            {"id":"ada-row","kind":"failure","text":"Couldn’t finish the reply.","sender":"Ada",
+             "failure":{"category":"transient","retryable":true,"diagnostics":"Timed out"}}
+            """)
+        let settled = try XCTUnwrap(MarbleEveryoneTimeline.settling(failure, reserved: rows.first, at: 999))
+        let finished = MarbleEveryoneTimeline.applying([settled], to: rows)
+        XCTAssertEqual(finished.map(\.rowID), rows.map(\.rowID))
+        XCTAssertEqual(finished.first?.at, 32)
+        XCTAssertEqual(finished.first?.threadId, "thread")
+        XCTAssertEqual(finished.first?.speaker, "ada")
+        XCTAssertEqual(MarbleTurnFailure.retryID(entry: settled, task: nil), "turn-ada")
+        XCTAssertEqual(MarbleEveryoneTimeline.applying([update], to: finished), finished)
+    }
+
     private func toolEvent(_ kind: String, data: String) throws -> MarbleEvent {
         let json = """
         {"sequence":1,"conversationId":"chat","taskId":"turn","kind":"\(kind)","data":\(data)}

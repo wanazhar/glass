@@ -148,6 +148,9 @@ struct MarbleWorkingDots: View {
 /// quiet line saying who is working.
 struct MarbleThinkingBubble: View {
     var name: String = "Marble"
+    var retrying = false
+
+    private var title: String { retrying ? "\(name) is retrying" : "\(name) is working" }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -158,12 +161,12 @@ struct MarbleThinkingBubble: View {
                     Color(.secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous)
                 )
-            Text("\(name) is working")
+            Text(title)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(name) is working")
+        .accessibilityLabel(title)
     }
 }

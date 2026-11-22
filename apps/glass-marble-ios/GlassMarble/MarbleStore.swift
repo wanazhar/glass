@@ -659,6 +659,8 @@ final class MarbleStore: ObservableObject {
         threadEventSequences = [:]
         threadTaskIds = []
         liveEntries = [:]
+        automaticRetries = []
+        groupReplyText = [:]
         streamedReplies = [:]
         streamedTaskIDs = []
         pendingEventRefresh?.cancel()
@@ -892,9 +894,8 @@ final class MarbleStore: ObservableObject {
             return message
         }
         let liveRows = conversationId.flatMap { liveEntries[$0] } ?? []
-        let ids = Set(entries.map(\.id))
-        let missing = liveRows.filter { $0.threadId == target.threadId && !ids.contains($0.id) }
-        var presentation = MarbleOutgoingPresentation(durable: entries + missing, outgoing: messages,
+        let visible = MarbleEveryoneTimeline.applying(liveRows.filter { $0.threadId == target.threadId }, to: entries)
+        var presentation = MarbleOutgoingPresentation(durable: visible, outgoing: messages,
                                                       conversationId: conversationId ?? "")
         if let conversationId, target.threadId == nil, conversationId != everyoneConversationId,
            let preview = streamedReplies[conversationId],
@@ -902,7 +903,8 @@ final class MarbleStore: ObservableObject {
             presentation.entries.append(preview)
             presentation.responders = []
         }
-        for index in presentation.entries.indices where presentation.entries[index].kind == "assistant" {
+        for index in presentation.entries.indices where presentation.entries[index].kind == "assistant"
+            && presentation.entries[index].conversationId != everyoneConversationId {
             let row = presentation.entries[index]
             if streamedTaskIDs.contains(row.taskId) {
                 presentation.entries[index].presentationID = "reply-\(row.taskId)"
@@ -928,7 +930,10 @@ final class MarbleStore: ObservableObject {
         case .conversation(let id, _):
             responders = [prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
         }
-        let message = MarbleOutgoing(target: target, text: trimmed, responders: responders, entries: entries)
+        let previous = target.isEveryone
+            ? outgoingPresentation(entries, to: target, conversationId: everyoneConversationId).entries
+            : entries
+        let message = MarbleOutgoing(target: target, text: trimmed, responders: responders, entries: previous)
         if let onConversation { draftResolutions[message.id] = onConversation }
         outgoing.append(message)
         if !isFixtureSend { transmit(message) }
@@ -1132,7 +1137,12 @@ final class MarbleStore: ObservableObject {
         }.sorted { $0.0 < $1.0 }
         var rows = entries
         for (_, entry) in live {
-            let index = rows.firstIndex { $0.taskId == entry.taskId && ["assistant", "failure"].contains($0.kind) }
+            // A reservation occupies its dispatch slot even when tools
+            // arrive later. Keep tool rows in the same order as the host.
+            let index = rows.firstIndex {
+                $0.taskId == entry.taskId && ["assistant", "failure"].contains($0.kind)
+                    && $0.conversationId != everyoneConversationId
+            }
             rows.insert(entry, at: index ?? rows.endIndex)
         }
         return rows
@@ -1934,7 +1944,13 @@ final class MarbleStore: ObservableObject {
     private var streamedTaskIDs: Set<String> = []
 
     @Published private var liveEntries: [String: [MarbleEntry]] = [:]
+    @Published private(set) var automaticRetries: Set<String> = []
+    @Published private var groupReplyText: [String: String] = [:]
     private var pendingEventRefresh: Task<Void, Never>?
+
+    func pendingReplyText(for taskId: String) -> String {
+        groupReplyText[taskId] ?? ""
+    }
 
     private func scheduleEventRefresh() {
         guard pendingEventRefresh == nil else { return }
@@ -1948,16 +1964,19 @@ final class MarbleStore: ObservableObject {
     }
 
     private func presentReply(_ event: MarbleEvent) {
-        guard let id = event.data.entryId, event.data.entryKind == "assistant",
-              let text = event.data.text else { return }
-        var entry = MarbleEntry(conversationId: event.conversationId, kind: "assistant",
-                                text: text, taskId: event.taskId,
-                                at: UInt64(Date().timeIntervalSince1970),
-                                speaker: prism.marbles.first { $0.name == event.data.sender }?.id ?? "",
-                                speakerName: event.data.sender ?? "")
-        entry.serverID = id
-        entry.threadId = event.data.threadId
+        guard let id = event.data.entryId else { return }
+        let durable = event.data.threadId.flatMap { threadPages[$0]?.entries } ?? historyEntries(event.conversationId)
+        let reserved = liveEntries[event.conversationId]?.first { $0.id == id }
+            ?? durable.first { $0.id == id }
+        guard var entry = MarbleEveryoneTimeline.settling(
+            event, reserved: reserved, at: UInt64(Date().timeIntervalSince1970 * 1000)
+        ) else { return }
+        if entry.speaker.isEmpty {
+            entry.speaker = prism.marbles.first { $0.name == entry.speakerName }?.id ?? ""
+        }
         presentEntry(entry)
+        if automaticRetries.contains(entry.taskId) { automaticRetries.remove(entry.taskId) }
+        if groupReplyText[entry.taskId] != nil { groupReplyText.removeValue(forKey: entry.taskId) }
         if entry.threadId == nil && live[event.conversationId]?.taskId == event.taskId {
             live.removeValue(forKey: event.conversationId)
             streamedReplies.removeValue(forKey: event.conversationId)
@@ -1966,10 +1985,9 @@ final class MarbleStore: ObservableObject {
     }
 
     private func presentEntry(_ entry: MarbleEntry) {
-        var rows = liveEntries[entry.conversationId] ?? []
-        if rows.contains(where: { $0.id == entry.id }) { return }
-        rows.append(entry)
-        liveEntries[entry.conversationId] = rows
+        let previous = liveEntries[entry.conversationId] ?? []
+        let rows = MarbleEveryoneTimeline.applying([entry], to: previous)
+        if rows != previous { liveEntries[entry.conversationId] = rows }
     }
 
     private func presentOutgoingEntry(_ entry: MarbleEntry) {
@@ -1997,8 +2015,11 @@ final class MarbleStore: ObservableObject {
 
     private func confirmEntries(_ entries: [MarbleEntry], conversationId: String) {
         if let rows = liveEntries[conversationId] {
-            let ids = Set(entries.map(\.id))
-            let remaining = rows.filter { !ids.contains($0.id) }
+            let durable = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let remaining = rows.filter { update in
+                guard let saved = durable[update.id] else { return true }
+                return saved.kind == "pending" && (update.kind != "pending" || saved.taskId != update.taskId)
+            }
             if remaining != rows { liveEntries[conversationId] = remaining.isEmpty ? nil : remaining }
         }
         if let buffers = live[conversationId], let taskId = buffers.taskId,
@@ -2051,9 +2072,23 @@ final class MarbleStore: ObservableObject {
         guard !deletedConversationIDs.contains(event.conversationId) else { return }
         if ["settled", "reply", "error"].contains(event.kind) { finishTools(for: event.taskId) }
         if ["tool_start", "tool_end"].contains(event.kind) { recordTool(event) }
+        let taskId = event.data.taskId ?? event.taskId
+        if event.kind == "task_retry" {
+            if !taskId.isEmpty { automaticRetries.insert(taskId) }
+            return
+        }
+        if event.kind == "reasoning" { recordReasoning(event.data.text ?? "", taskId: event.taskId) }
+        if event.kind == "text", let text = event.data.text, !text.isEmpty, hasPendingGroupReply(taskId) {
+            groupReplyText[taskId, default: ""] += text
+        }
         if event.kind == "entry" {
+            if let entry = event.entryUpdate, entry.kind == "pending" || entry.kind == "system",
+               liveAfter.map({ event.sequence > $0 }) == true {
+                presentEntry(entry)
+                if entry.kind == "system" { automaticRetries.remove(entry.taskId) }
+            }
             if let entry = event.userEntry { presentOutgoingEntry(entry) }
-            if let threadId = event.userEntry?.threadId { threadEventSequences[threadId] = event.sequence }
+            if let threadId = event.entryUpdate?.threadId { threadEventSequences[threadId] = event.sequence }
             scheduleEventRefresh()
             return
         }
@@ -2103,7 +2138,6 @@ final class MarbleStore: ObservableObject {
             if buffers.taskId == event.taskId || event.taskId.isEmpty {
                 buffers.reasoning += text
             }
-            recordReasoning(text, taskId: event.taskId)
         case "approval_pending":
             scheduleEventRefresh()
         case "approval_resolved", "state":
@@ -2153,6 +2187,19 @@ final class MarbleStore: ObservableObject {
         }
         live[event.conversationId] = buffers.isEmpty ? nil : buffers
         if forActive { syncLive() }
+    }
+
+    private func hasPendingGroupReply(_ taskId: String) -> Bool {
+        guard !taskId.isEmpty else { return false }
+        let live = liveEntries[everyoneConversationId] ?? []
+        if let update = live.first(where: { $0.taskId == taskId && $0.kind != "user" }) {
+            return update.kind == "pending"
+        }
+        return everyoneTimeline.contains { $0.taskId == taskId && $0.kind == "pending" }
+            || threadPages.values.contains { page in
+                page.thread.conversationId == everyoneConversationId
+                    && page.entries.contains { $0.taskId == taskId && $0.kind == "pending" }
+            }
     }
 
     private func markUnauthorized() {

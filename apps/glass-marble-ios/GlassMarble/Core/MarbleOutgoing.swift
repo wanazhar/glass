@@ -5,6 +5,11 @@ enum MarbleSendTarget: Hashable {
     case everyone(thread: String? = nil)
     case marble(String)
 
+    var isEveryone: Bool {
+        if case .everyone = self { return true }
+        return false
+    }
+
     var conversationId: String? {
         guard case .conversation(let id, _) = self else { return nil }
         return id
@@ -48,7 +53,7 @@ struct MarbleOutgoing: Identifiable, Equatable {
         self.text = text
         self.responders = responders
         previousUserIDs = Set(entries.lazy.filter { $0.kind == "user" && $0.text == text }.map(\.id))
-        previousOutcomeIDs = Set(entries.lazy.filter(\.isReplyOutcome).map(\.id))
+        previousOutcomeIDs = Set(entries.lazy.filter(\.representsReply).map(\.id))
     }
 
     func presentationEntry(in conversationId: String) -> MarbleEntry {
@@ -127,13 +132,20 @@ struct MarbleOutgoingPresentation {
         }
         for send in outgoing {
             let match = matches[send.id]
+            let newReplyRows = durable.filter { $0.representsReply && !send.previousOutcomeIDs.contains($0.id) }
             if let match,
                let index = entries.firstIndex(where: { $0.id == match.id }) {
                 entries[index].presentationID = send.rowID
             } else if send.confirmedEntryID == nil {
                 let row = send.presentationEntry(in: conversationId)
                 if case let .accepted(taskId?, _) = send.delivery,
-                   let index = entries.firstIndex(where: { $0.taskId == taskId && $0.isReplyOutcome }) {
+                   let index = entries.firstIndex(where: { $0.taskId == taskId && $0.representsReply }) {
+                    entries.insert(row, at: index)
+                } else if case .everyone = send.target,
+                          let reservation = newReplyRows.first(where: {
+                              $0.kind == "pending" && send.responders.contains($0.speaker)
+                          }),
+                          let index = entries.firstIndex(where: { $0.id == reservation.id }) {
                     entries.insert(row, at: index)
                 } else {
                     entries.append(row)
@@ -141,15 +153,14 @@ struct MarbleOutgoingPresentation {
             }
             if match == nil && send.confirmedEntryID != nil { continue }
             guard send.delivery != .failed || match != nil else { continue }
-            let outcomes = durable.filter { $0.isReplyOutcome && !send.previousOutcomeIDs.contains($0.id) }
             let settledTask: Bool
             if case let .accepted(taskID?, _) = send.delivery {
-                settledTask = outcomes.contains { $0.taskId == taskID }
+                settledTask = newReplyRows.contains { $0.kind != "pending" && $0.taskId == taskID }
             } else {
                 settledTask = false
             }
             if !settledTask {
-                for responder in send.responders where !responders.contains(responder) && !outcomes.contains(where: {
+                for responder in send.responders where !responders.contains(responder) && !newReplyRows.contains(where: {
                     $0.speaker == responder || (
                         send.responders.count == 1 && $0.speaker.isEmpty && conversationId != everyoneConversationId
                     )
@@ -162,5 +173,5 @@ struct MarbleOutgoingPresentation {
 }
 
 private extension MarbleEntry {
-    var isReplyOutcome: Bool { ["assistant", "failure", "error"].contains(kind) }
+    var representsReply: Bool { ["assistant", "pending", "failure", "error"].contains(kind) }
 }

@@ -597,6 +597,7 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
+    let startAtCachedLatest: Bool
     let loadOlder: MarbleOlderHistoryLoader?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position: ScrollPosition
@@ -610,6 +611,7 @@ private struct MarbleFollowLatest: ViewModifier {
         self.hasMessages = hasMessages
         self.searchJump = searchJump
         self.outgoing = outgoing
+        self.startAtCachedLatest = startAtCachedLatest
         self.loadOlder = loadOlder
         // Give the first layout the bottom position with the cached rows
         // already present. Uncached screens still reposition as rows arrive.
@@ -647,6 +649,10 @@ private struct MarbleFollowLatest: ViewModifier {
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
+            .defaultScrollAnchor(
+                startAtCachedLatest && follow.following && !phase.isUserScrolling ? .bottom : nil,
+                for: .sizeChanges
+            )
             .scrollPosition($position, anchor: .top)
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase

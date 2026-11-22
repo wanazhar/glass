@@ -5,11 +5,11 @@ enum MarbleTheme {
     /// AccentColor carries the same values), used for interactive tint only.
     static let tint = Color.accentColor
 
-    /// A marble's own colour, from its roster hue.
-    static func marble(hue: Int?) -> Color {
+    /// The shared hue for a marble's avatar, name and reply.
+    static func marble(hue: Int, brightness: Double = 0.72) -> Color {
         Color(
-            hue: Double(((hue ?? 210) % 360 + 360) % 360) / 360,
-            saturation: 0.55, brightness: 0.72
+            hue: Double((hue % 360 + 360) % 360) / 360,
+            saturation: 0.55, brightness: brightness
         )
     }
 

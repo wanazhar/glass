@@ -12,10 +12,7 @@ struct MarbleAvatar: View {
             .foregroundStyle(.white)
             .frame(width: size, height: size)
             .background(
-                Color(
-                    hue: Double((hue % 360 + 360) % 360) / 360,
-                    saturation: 0.55, brightness: 0.72
-                ),
+                MarbleTheme.marble(hue: hue),
                 in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
             )
             .accessibilityHidden(true)
@@ -516,7 +513,7 @@ struct MarbleChatScreen: View {
                     }
                     let transcript = MarbleReasoningAssociation(entries)
                     ForEach(transcript.standalone, id: \.rowID) { entry in
-                        MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
+                        MarbleEntryView(entry: entry, replyHue: marble.hue, reasoning: transcript.attached[entry.id])
                     }
                     let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
                     if working && !reasoning.isEmpty

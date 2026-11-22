@@ -106,12 +106,14 @@ struct MarbleHistoryUnavailable: View {
 struct MarbleEntryView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var creatingThread = false
     @State private var threadError = false
     var entry: MarbleEntry
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
     var speaker: MarbleSpeakerStyle? = nil
+    var replyHue: Int = MarbleSpeakerStyle.defaultHue
     var reasoning: String? = nil
     var allowsThreads = true
 
@@ -225,13 +227,14 @@ struct MarbleEntryView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .multilineTextAlignment(.center)
         } else {
+            let hue = speaker?.hue ?? replyHue
             VStack(alignment: .leading, spacing: 6) {
                 if let speaker {
                     HStack(spacing: 7) {
-                        MarbleAvatar(glyph: speaker.glyph, hue: speaker.hue ?? MarbleSpeakerStyle.defaultHue, size: 20)
+                        MarbleAvatar(glyph: speaker.glyph, hue: hue, size: 20)
                         Text(speaker.name)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(MarbleTheme.marble(hue: speaker.hue))
+                            .foregroundStyle(MarbleTheme.marble(hue: hue, brightness: colorScheme == .dark ? 1 : 0.38))
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("\(speaker.name) said")
@@ -239,7 +242,13 @@ struct MarbleEntryView: View {
                 MarbleMarkdownView(text: entry.text).equatable()
                     .textSelection(.enabled)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                MarbleTheme.marble(hue: hue).opacity(colorScheme == .dark ? 0.17 : 0.09),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
         }
     }
 }

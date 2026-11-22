@@ -151,8 +151,29 @@ fn write(display: &str, xauthority: &Path, text: &str) -> Result<(), String> {
 
 impl Desktop {
     pub(super) fn clipboard(&self, value: &Value) -> Result<Value, String> {
+        self.clipboard_with(value, |display, xauthority, request| {
+            let session_id = &value["sessionId"];
+            match request {
+                Request::Read => {
+                    let text = read(display, xauthority)?;
+                    let kept = truncate(&text);
+                    Ok(json!({"sessionId":session_id,"text":kept,"bytes":text.len(),"truncated":kept.len()<text.len()}))
+                }
+                Request::Write(text) => {
+                    write(display, xauthority, text)?;
+                    Ok(json!({"sessionId":session_id,"written":true,"bytes":text.len()}))
+                }
+            }
+        })
+    }
+
+    fn clipboard_with(
+        &self,
+        value: &Value,
+        operation: impl FnOnce(&str, &Path, Request<'_>) -> Result<Value, String>,
+    ) -> Result<Value, String> {
         let (session_id, request) = parse(value)?;
-        let (display, xauthority) = {
+        {
             let guard = self
                 .session
                 .lock()
@@ -169,26 +190,11 @@ impl Desktop {
             if matches!(request, Request::Write(_)) && session.lease != Lease::Agent {
                 return Err("Desktop input lease is held by the other participant".into());
             }
-            (
-                session.display.clone(),
-                session.directory.join("Xauthority"),
+            operation(
+                &session.display,
+                &session.directory.join("Xauthority"),
+                request,
             )
-        };
-        match request {
-            Request::Read => {
-                let text = read(&display, &xauthority)?;
-                let kept = truncate(&text);
-                Ok(json!({
-                    "sessionId": session_id,
-                    "text": kept,
-                    "bytes": text.len(),
-                    "truncated": kept.len() < text.len(),
-                }))
-            }
-            Request::Write(text) => {
-                write(&display, &xauthority, text)?;
-                Ok(json!({"sessionId": session_id, "written": true, "bytes": text.len()}))
-            }
         }
     }
 }
@@ -196,6 +202,38 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_holds_the_session_lease_across_the_write() {
+        let desktop = super::super::tests::desktop_with_test_session(&std::env::temp_dir(), "s");
+        let request = json!({"action":"write","sessionId":"s","text":"copy"});
+        desktop
+            .clipboard_with(&request, |_, _, _| {
+                assert!(desktop.session.try_lock().is_err());
+                Ok(json!({"written":true}))
+            })
+            .unwrap();
+        desktop.session.lock().unwrap().as_mut().unwrap().lease = Lease::Human;
+        assert!(
+            desktop
+                .clipboard_with(&request, |_, _, _| panic!("stale holder wrote"))
+                .unwrap_err()
+                .contains("lease")
+        );
+        assert!(
+            desktop
+                .clipboard_with(
+                    &json!({"action":"read","sessionId":"stale"}),
+                    |_, _, _| panic!("stale session read")
+                )
+                .is_err()
+        );
+        desktop
+            .clipboard_with(&json!({"action":"read","sessionId":"s"}), |_, _, _| {
+                Ok(json!({"text":""}))
+            })
+            .unwrap();
+    }
 
     #[test]
     fn clipboard_arguments_are_closed_and_bounded() {

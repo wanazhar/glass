@@ -524,6 +524,8 @@ pub enum Commands {
         /// Emit the stable machine-readable diagnostic contract.
         #[arg(long)]
         json: bool,
+        #[arg(long, hide = true)]
+        browser_discovery_only: bool,
     },
 
     /// Read the current workspace's local, privacy-safe tool error log.
@@ -2863,7 +2865,7 @@ mod tests {
         let cli = try_parse_cli(["glass", "doctor"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Doctor { json: false })
+            Some(Commands::Doctor { json: false, .. })
         ));
     }
 

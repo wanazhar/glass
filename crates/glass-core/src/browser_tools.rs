@@ -69,8 +69,9 @@ fn command(workspace: Option<&Path>) -> Option<Command> {
 }
 
 fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
+    let runtime = runtime(&binary);
     let mut command = Command::new(binary);
-    if let Some(runtime) = runtime() {
+    if let Some(runtime) = runtime {
         command.args(["--browser-runtime", &runtime]);
     }
     if let Some(port) = free_port() {
@@ -89,12 +90,31 @@ fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
 
 /// `GC_BROWSER_RUNTIME` wins. Otherwise Linux hosts whose bubblewrap cannot
 /// lock user namespaces (Ubuntu 22.04 ships 0.6) use Chromium, because the
-/// native runtime would refuse every page there.
-fn runtime() -> Option<String> {
+/// native runtime would refuse network pages there. Local pages still work
+/// without bubblewrap, so do not select an unavailable Chromium runtime.
+fn runtime(binary: &Path) -> Option<String> {
     match std::env::var("GC_BROWSER_RUNTIME") {
         Ok(runtime) if !runtime.is_empty() => Some(runtime),
-        _ => (!native_sandbox_available()).then(|| "chromium".to_owned()),
+        _ => {
+            if native_sandbox_available() {
+                return None;
+            }
+            let report = Command::new(binary)
+                .args(["doctor", "--json", "--browser-discovery-only"])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok());
+            fallback_runtime(false, report.as_ref())
+        }
     }
+}
+
+fn fallback_runtime(native_available: bool, report: Option<&Value>) -> Option<String> {
+    (!native_available && report.is_some_and(|report| report["browser"]["chromeAvailable"] == true))
+        .then(|| "chromium".to_owned())
 }
 
 #[cfg(target_os = "linux")]
@@ -607,6 +627,19 @@ for line in sys.stdin:
 
     #[test]
     fn old_bubblewrap_selects_the_chromium_runtime() {
+        assert_eq!(fallback_runtime(false, None), None);
+        assert_eq!(
+            fallback_runtime(false, Some(&json!({"browser":{"chromeAvailable":false}}))),
+            None
+        );
+        assert_eq!(
+            fallback_runtime(false, Some(&json!({"browser":{"chromeAvailable":true}}))),
+            Some("chromium".to_owned())
+        );
+        assert_eq!(
+            fallback_runtime(true, Some(&json!({"browser":{"chromeAvailable":true}}))),
+            None
+        );
         assert!(!bwrap_help_supports_native(
             "usage: bwrap [OPTIONS...] [--] COMMAND [ARGS...]\n    --unshare-user"
         ));

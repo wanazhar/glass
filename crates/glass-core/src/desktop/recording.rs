@@ -1,10 +1,14 @@
 //! MP4 recordings of the managed X11 desktop, written into the workspace so
 //! the model's file tools and the user can reach them.
 
-use std::path::{Path, PathBuf};
+use std::ffi::{CStr, CString};
+use std::fs::File;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -17,7 +21,7 @@ const MAX_SECONDS: u64 = 600;
 struct Recording {
     session_id: String,
     child: Child,
-    path: PathBuf,
+    file: File,
     relative: String,
     started: Instant,
     limit: u64,
@@ -25,11 +29,65 @@ struct Recording {
 
 static ACTIVE: Mutex<Option<Recording>> = Mutex::new(None);
 
-fn spawn(display: &str, xauthority: &Path, path: &Path, seconds: u64) -> Result<Child, String> {
+fn recording_directory(workspace: &Path) -> std::io::Result<File> {
+    let mut directory = File::open(workspace)?;
+    for component in RECORDING_DIRECTORY.split('/') {
+        let name = CString::new(component).unwrap();
+        // SAFETY: the live parent descriptor and component name remain valid.
+        if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(error);
+            }
+        }
+        // SAFETY: openat returns a new descriptor and refuses symlink components.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: successful openat returned a uniquely owned descriptor.
+        directory = unsafe { File::from_raw_fd(fd) };
+        // SAFETY: geteuid has no preconditions or side effects.
+        if directory.metadata()?.uid() != unsafe { libc::geteuid() } {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "recording directory belongs to another user",
+            ));
+        }
+        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(directory)
+}
+
+fn recording_file(directory: &File, name: &CStr) -> std::io::Result<File> {
+    // SAFETY: exclusive creation is relative to the held private directory.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful openat returned a uniquely owned descriptor.
+    let file = unsafe { File::from_raw_fd(fd) };
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+fn spawn(display: &str, xauthority: &Path, file: &File, seconds: u64) -> Result<Child, String> {
     let size = format!("{WIDTH}x{HEIGHT}");
     let input = format!("{display}.0");
     let limit = seconds.to_string();
-    let output = path.to_string_lossy();
     process::command(
         "ffmpeg",
         &[
@@ -56,13 +114,17 @@ fn spawn(display: &str, xauthority: &Path, path: &Path, seconds: u64) -> Result<
             "yuv420p",
             "-movflags",
             "+faststart",
+            "-f",
+            "mp4",
             "-y",
-            &output,
+            "/dev/stdout",
         ],
     )
     .env("DISPLAY", display)
     .env("XAUTHORITY", xauthority)
-    .stdout(Stdio::null())
+    .stdout(Stdio::from(
+        file.try_clone().map_err(|error| error.to_string())?,
+    ))
     .spawn()
     .map_err(|error| {
         format!("Starting the desktop recording failed: {error}; install ffmpeg with libx264")
@@ -84,9 +146,7 @@ fn finish(recording: &mut Recording) -> Result<u64, String> {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    let bytes = std::fs::metadata(&recording.path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let bytes = recording.file.metadata().map(|m| m.len()).unwrap_or(0);
     if bytes == 0 {
         return Err("The recording produced no video; check that ffmpeg has libx264".into());
     }
@@ -109,21 +169,19 @@ fn start(
             recording.relative
         ));
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or_default();
-    let relative = format!("{RECORDING_DIRECTORY}/desktop-{stamp}.mp4");
-    let path = workspace.join(&relative);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Could not create {RECORDING_DIRECTORY}: {error}"))?;
-    }
-    let child = spawn(display, xauthority, &path, seconds)?;
+    let directory = recording_directory(workspace).map_err(|error| error.to_string())?;
+    let mut nonce = [0u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
+        .map_err(|_| "Secure random unavailable".to_owned())?;
+    let name = format!("desktop-{:032x}.mp4", u128::from_ne_bytes(nonce));
+    let file = recording_file(&directory, &CString::new(name.as_str()).unwrap())
+        .map_err(|error| error.to_string())?;
+    let relative = format!("{RECORDING_DIRECTORY}/{name}");
+    let child = spawn(display, xauthority, &file, seconds)?;
     *active = Some(Recording {
         session_id: session_id.to_owned(),
         child,
-        path,
+        file,
         relative: relative.clone(),
         started: Instant::now(),
         limit: seconds,
@@ -223,7 +281,81 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::process::Command;
+
+    fn scratch(label: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("glass-record-{label}-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn recording_permissions_are_private_under_shared_umask() {
+        const MARKER: &str = "GLASS_RECORDING_UMASK_TEST";
+        if std::env::var_os(MARKER).is_none() {
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "desktop::recording::tests::recording_permissions_are_private_under_shared_umask", "--nocapture"])
+                .env(MARKER, "1")
+                .status().unwrap().success());
+            return;
+        }
+        // SAFETY: this subprocess runs only this test, without other filesystem callers.
+        unsafe {
+            libc::umask(0o022);
+        }
+        let root = scratch("permissions");
+        let directory = recording_directory(&root).unwrap();
+        let name = c"private.mp4";
+        let file = recording_file(&directory, name).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        let mut path = root.clone();
+        for component in RECORDING_DIRECTORY.split('/') {
+            path.push(component);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(recording_directory(&root).is_ok());
+        assert_eq!(
+            directory.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(recording_file(&directory, name).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recording_creation_stays_anchored_and_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch("substitution");
+        let outside = scratch("outside");
+        symlink(&outside, root.join(".gc-artifacts")).unwrap();
+        assert!(recording_directory(&root).is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        std::fs::remove_file(root.join(".gc-artifacts")).unwrap();
+        let directory = recording_directory(&root).unwrap();
+        let original = root.join("owned");
+        std::fs::rename(root.join(RECORDING_DIRECTORY), &original).unwrap();
+        symlink(&outside, root.join(RECORDING_DIRECTORY)).unwrap();
+        let mut file = recording_file(&directory, c"private.mp4").unwrap();
+        std::io::Write::write_all(&mut file, b"private recording").unwrap();
+        assert_eq!(
+            std::fs::read(original.join("private.mp4")).unwrap(),
+            b"private recording"
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        symlink(outside.join("victim"), original.join("blocked.mp4")).unwrap();
+        assert!(recording_file(&directory, c"blocked.mp4").is_err());
+        assert!(!outside.join("victim").exists());
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
 
     #[test]
     fn record_rejects_unknown_fields_and_bounds_duration() {
@@ -264,6 +396,7 @@ mod tests {
         }
         let workspace = std::env::temp_dir().join(format!("glass-record-{number}"));
         let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir(&workspace).unwrap();
         let xauthority = Path::new("/nonexistent-xauthority");
         let started = start("s", &display, xauthority, &workspace, 30).unwrap();
         assert!(
@@ -284,6 +417,10 @@ mod tests {
                 .starts_with(RECORDING_DIRECTORY)
         );
         let file = workspace.join(stopped["path"].as_str().unwrap());
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let probe = Command::new("ffprobe")
             .args([
                 "-v",

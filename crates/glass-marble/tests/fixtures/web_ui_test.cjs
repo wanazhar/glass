@@ -101,6 +101,12 @@ test('Marble status attributes attention and work to the right chat', () => {
   assert.equal(L.marbleStatus({ ...person, lastError: 'connection closed' }, [], []), "Couldn't finish: connection closed");
 });
 
+test('per-agent task ids never make the default Marble work for Ada', () => {
+    const tasks = [{ id: 'a', owner: 'prism', marbleId: 'ada', conversationId: 'chat-a', status: 'running', prompt: 'Research' }];
+    assert.equal(L.marbleStatus({ id: 'marble', isDefault: true, activeTaskIds: [], state: 'idle' }, tasks, []), 'Idle');
+    assert.equal(L.marbleStatus({ id: 'ada', activeTaskIds: ['a'], state: 'working' }, tasks, []), 'Working on Research');
+});
+
 test('visible interface copy does not expose internal vocabulary', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8').replace(/<[^>]*>/g, ' ');
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');

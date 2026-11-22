@@ -255,6 +255,49 @@ pub struct ProductState {
 }
 
 impl ProductState {
+    pub fn agent_tasks(&self, id: &str) -> Vec<&TaskRecord> {
+        self.tasks
+            .iter()
+            .filter(|task| {
+                let named = self.prism.marbles.iter().find(|m| {
+                    !m.conversation_id.is_empty() && m.conversation_id == task.conversation_id
+                });
+                let owner = if !task.marble_id.is_empty() {
+                    task.marble_id.as_str()
+                } else if let Some(marble) = named {
+                    marble.id.as_str()
+                } else if task.owner == "prism" {
+                    ""
+                } else {
+                    "marble"
+                };
+                task.status == "running" && owner == id
+            })
+            .collect()
+    }
+
+    pub fn prism_document(&self) -> Value {
+        let mut document = self.prism.document();
+        if let Some(marbles) = document["marbles"].as_array_mut() {
+            for marble in marbles.iter_mut() {
+                let tasks = self.agent_tasks(marble["id"].as_str().unwrap_or_default());
+                marble["isWorking"] = serde_json::json!(!tasks.is_empty());
+                marble["activeTaskIds"] =
+                    serde_json::json!(tasks.iter().map(|t| &t.id).collect::<Vec<_>>());
+                marble["taskId"] =
+                    serde_json::json!(tasks.last().map(|t| t.id.as_str()).unwrap_or_default());
+                if !tasks.is_empty() {
+                    marble["state"] = serde_json::json!("working");
+                } else if marble["state"] == "working" {
+                    marble["state"] = serde_json::json!("idle");
+                }
+            }
+            let working = marbles.iter().filter(|m| m["isWorking"] == true).count();
+            document["working"] = serde_json::json!(working);
+        }
+        document
+    }
+
     /// Encode state into the JSON shape served to and accepted from the UI.
     pub fn encode(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
@@ -762,6 +805,41 @@ impl ProductState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_presence_only_counts_the_owning_agents_running_tasks() {
+        let mut state = super::ProductState::default();
+        let ada = state
+            .prism
+            .add("Ada", "writer", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        state.tasks.push(super::TaskRecord {
+            id: "a".into(),
+            marble_id: ada.clone(),
+            owner: "prism".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        let doc = state.prism_document();
+        assert_eq!(doc["marbles"][0]["state"], "idle");
+        assert_eq!(doc["marbles"][1]["state"], "working");
+        assert_eq!(
+            state.presence.document(&state)["agents"][&ada]["activeTaskIds"][0],
+            "a"
+        );
+        state.tasks.push(super::TaskRecord {
+            id: "d".into(),
+            owner: "agent".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        assert_eq!(state.prism_document()["marbles"][0]["state"], "working");
+        state.tasks[0].status = "failed".into();
+        assert_eq!(state.prism_document()["marbles"][1]["isWorking"], false);
+        state.tasks.clear();
+        assert_eq!(state.prism_document()["working"], 0);
+    }
     use super::*;
 
     #[test]

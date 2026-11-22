@@ -229,6 +229,7 @@ impl PresenceState {
             .find(|task| task.status == "running");
         json!({
             "status": self.status(state),
+            "agents": state.prism_document()["marbles"].as_array().unwrap().iter().map(|m| (m["id"].as_str().unwrap_or_default().to_string(), json!({"status": if m["isWorking"] == true { "working" } else { "idle" }, "activeTaskIds": m["activeTaskIds"]}))).collect::<serde_json::Map<String, Value>>(),
             "summary": self.summary(state),
             "instance": if self.instance.is_empty() { instance_name() } else { self.instance.clone() },
             "startedAt": self.started_at,

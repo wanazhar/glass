@@ -934,7 +934,7 @@ impl MarbleServer {
 
     /// `GET /api/prism` — the marble roster and what it has done.
     fn prism_response(&self) -> Response {
-        let mut document = { self.lock_state().prism.document() };
+        let mut document = { self.lock_state().prism_document() };
         if let Value::Object(map) = &mut document {
             map.insert("engine".into(), json!(self.prism.is_some()));
         }
@@ -979,7 +979,7 @@ impl MarbleServer {
         self.save_state();
         self.events
             .publish("", "", "prism", json!({"marble": marble.id, "added": true}));
-        let roster = { self.lock_state().prism.document() };
+        let roster = { self.lock_state().prism_document() };
         Response::json(202, json!({"ok": true, "marble": marble, "prism": roster}))
     }
 
@@ -1025,7 +1025,7 @@ impl MarbleServer {
                     pool.shutdown_marble(id);
                 }
                 self.save_state();
-                let roster = { self.lock_state().prism.document() };
+                let roster = { self.lock_state().prism_document() };
                 Response::json(200, json!({"ok": true, "marble": marble, "prism": roster}))
             }
             Err(message) => Response::json(
@@ -1385,7 +1385,7 @@ impl MarbleServer {
                 let mut document = dispatch.document();
                 if let Value::Object(map) = &mut document {
                     map.insert("ok".into(), json!(true));
-                    map.insert("prism".into(), self.lock_state().prism.document());
+                    map.insert("prism".into(), self.lock_state().prism_document());
                 }
                 Response::json(202, document)
             }
@@ -1469,7 +1469,7 @@ impl MarbleServer {
             }
             // Derived documents: the raw counters are not the whole story.
             map.insert("presence".into(), snapshot.presence.document(&snapshot));
-            map.insert("prism".into(), snapshot.prism.document());
+            map.insert("prism".into(), snapshot.prism_document());
             map.insert("memory".into(), snapshot.memory.document());
             map.insert("routines".into(), snapshot.routines.document());
             map.insert("notifications".into(), snapshot.notifications.document());

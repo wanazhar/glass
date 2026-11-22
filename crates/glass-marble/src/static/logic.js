@@ -92,8 +92,8 @@
         flush(); if (code !== null) blocks.push({ tag: 'pre', text: code.join('\n') }); return blocks;
     }
     function marbleStatus(person, tasks, approvals) {
-        const task = tasks.find(t => t.conversationId === person.conversationId && t.status === 'running') ||
-            (person.isDefault ? tasks.find(t => t.owner === 'agent' && t.status === 'running') : null);
+        const task = tasks.find(t => t.status === 'running' && (person.activeTaskIds ? person.activeTaskIds.includes(t.id) :
+            (t.marbleId ? t.marbleId === person.id : person.isDefault ? t.owner === 'agent' : !!person.conversationId && t.conversationId === person.conversationId)));
         if (task && approvals.some(a => a.conversationId === task.conversationId || a.owner === person.id)) return 'Needs you';
         if (person.state === 'working' || task) return 'Working on ' + (task?.prompt || 'a reply');
         if (person.lastError) return "Couldn't finish: " + person.lastError;

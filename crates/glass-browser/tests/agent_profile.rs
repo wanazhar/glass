@@ -248,7 +248,8 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
                 json!({"fields":[{"target":target,"value":"Premium"}]}),
             )
             .await;
-        let outcome: Value = serde_json::from_str(&text(&result)).unwrap();
+        let outcome: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(outcome["filled"], 0, "{outcome}");
         assert_eq!(outcome["fields"][0]["success"], false, "{outcome}");
         assert!(
@@ -281,7 +282,8 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
                 json!({"fields":[{"target":target,"value":value}]}),
             )
             .await;
-        let outcome: Value = serde_json::from_str(&text(&result)).unwrap();
+        let outcome: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(outcome["filled"], 0, "{outcome}");
         assert_eq!(outcome["fields"][0]["success"], false, "{outcome}");
         assert!(

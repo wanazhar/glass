@@ -1329,10 +1329,10 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     entry.entry_id = Some(scope_id.clone());
                     parent_tool_scopes.insert(scope_id, scope);
                 }
-                if tool_name(&event.payload) == "run_subagents" {
-                    if let Some(text) = delegation_tool_rail_line(&event) {
-                        rail.push(ConversationEntry::system(text, None));
-                    }
+                if tool_name(&event.payload) == "run_subagents"
+                    && let Some(text) = delegation_tool_rail_line(event)
+                {
+                    rail.push(ConversationEntry::system(text, None));
                 }
             }
             "tool_progress" => {
@@ -1391,10 +1391,10 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     &mut items,
                     None,
                 );
-                if tool_name(&event.payload) == "run_subagents" {
-                    if let Some(text) = delegation_tool_rail_line(&event) {
-                        rail.push(ConversationEntry::system(text, None));
-                    }
+                if tool_name(&event.payload) == "run_subagents"
+                    && let Some(text) = delegation_tool_rail_line(event)
+                {
+                    rail.push(ConversationEntry::system(text, None));
                 }
             }
             "completed" => {
@@ -1675,7 +1675,8 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
 /// hosts render delegation activity without re-deriving child state. The event
 /// family list is closed for this slice; later families can extend the same
 /// rail without changing the shared projection contract.
-pub fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
+#[cfg(test)]
+fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
     const RAIL_LIMIT: usize = 8;
     let mut rows = Vec::new();
     for event in events {
@@ -1687,6 +1688,7 @@ pub fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<Conversation
     rows
 }
 
+#[cfg(test)]
 fn event_rail_line(event: &crate::AgentEvent) -> Option<String> {
     if event.kind == "subagent_event" {
         let activity = parse_subagent_activity_event(event)?;

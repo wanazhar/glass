@@ -169,6 +169,8 @@ def run_turn(identifier, task, text, conversation, request):
         tool_name = "glass.marble.ask"
         tool_args = {"to": target.strip(), "instruction": instruction.strip() or "help"}
     frame_id = "host:" + SESSION_ID + ":" + task + ":call-1"
+    if "--core-tool-progress" in sys.argv:
+        event(turn, "tool_start", {"callId": "call-1", "name": tool_name})
     send(
         {
             "jsonrpc": "2.0",

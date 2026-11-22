@@ -1032,6 +1032,13 @@ impl Conversation {
                 }
                 Incoming::Event(mut event) => {
                     tools.normalize(&mut event);
+                    if matches!(event.kind.as_str(), "tool_start" | "tool_end")
+                        && ToolRouter::catalog()
+                            .iter()
+                            .any(|tool| event.data["tool"] == tool.name)
+                    {
+                        continue;
+                    }
                     if tools.observe(&event) {
                         self.record_tool_rows(&tools);
                     }

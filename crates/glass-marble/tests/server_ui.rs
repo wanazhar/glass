@@ -3125,6 +3125,89 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn governed_tools_emit_one_lifecycle_per_private_and_everyone_row() {
+    if !python3_available() {
+        return;
+    }
+    for (tool, expected, path) in [
+        ("glass.workspace.list", "ok", "."),
+        ("glass.workspace.read", "failed", "missing-file"),
+    ] {
+        let args = vec![
+            "--core-tool-progress".into(),
+            "--tool".into(),
+            tool.into(),
+            "--path".into(),
+            path.into(),
+        ];
+        let mut fixture = NamedTurnFixture::with_persistence(
+            &format!("everyone-governed-events-{expected}"),
+            args.clone(),
+            true,
+        );
+        fixture.install_default_worker_with_args(args);
+        for (text, named, everyone) in [
+            ("private default tool", false, false),
+            ("private named tool", true, false),
+            ("@Marble shared tool", false, true),
+            ("@Ada shared tool", true, true),
+        ] {
+            let path = if everyone {
+                "/api/everyone"
+            } else {
+                "/api/turns"
+            };
+            let (status, body) = fixture.post(
+                path,
+                json!({"text":text, "marbleId":named.then_some(&fixture.marble_id)}),
+            );
+            assert_eq!(status, 202, "{body}");
+            let task = fixture.completed(text);
+            let state = fixture.store.as_ref().unwrap().load().unwrap();
+            let rows: Vec<_> = state
+                .transcript
+                .iter()
+                .filter(|e| e.task_id == task.id && e.kind == "tool")
+                .collect();
+            assert_eq!(rows.len(), if everyone { 2 } else { 1 });
+            let events = fixture.events.since(0);
+            for row in rows {
+                assert!(
+                    row.text.ends_with(&format!(" · {expected}")),
+                    "{}",
+                    row.text
+                );
+                let lifecycle: Vec<_> = events
+                    .iter()
+                    .filter(|event| {
+                        event.task_id == task.id
+                            && event.conversation_id == row.conversation_id
+                            && event.data["entry_id"] == row.id
+                            && matches!(event.kind.as_str(), "tool_start" | "tool_end")
+                    })
+                    .collect();
+                assert_eq!(
+                    lifecycle.len(),
+                    2,
+                    "duplicate lifecycle for {text} in {}",
+                    row.conversation_id
+                );
+                assert_eq!(lifecycle[0].kind, "tool_start");
+                assert_eq!(lifecycle[1].kind, "tool_end");
+                assert_eq!(
+                    lifecycle[0].data["requestId"],
+                    lifecycle[1].data["requestId"]
+                );
+                assert!(lifecycle[0].data["requestId"].is_string());
+                assert_eq!(lifecycle[0].data["callId"], lifecycle[1].data["callId"]);
+                assert_eq!(lifecycle[1].data["tool"], tool);
+                assert_eq!(lifecycle[1].data["isError"], expected == "failed");
+            }
+        }
+    }
+}
+
+#[test]
 fn everyone_default_keeps_history_after_a_new_private_chat() {
     if !python3_available() {
         return;

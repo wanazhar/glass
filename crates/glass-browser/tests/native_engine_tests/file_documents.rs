@@ -1539,6 +1539,22 @@ async fn native_file_download_link_transfers_rooted_bytes_inner() {
             .await
             .is_err()
     );
+    fs::remove_file(&asset_path).unwrap();
+    assert!(
+        engine
+            .wait_for_download_id_async(
+                &download_directory,
+                Duration::from_secs(5),
+                Some("native-download-2")
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        engine.download_ids().unwrap(),
+        vec!["native-download-1", "native-download-2"]
+    );
+    fs::write(&asset_path, b"rooted-file-download").unwrap();
     let selected = engine
         .wait_for_download_id_async(
             &download_directory,

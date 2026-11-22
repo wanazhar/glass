@@ -18,7 +18,7 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <label for="n">Full name</label><input id="n" oninput="state.name=this.value;show()">
 <label for="e">Email</label><input id="e" oninput="state.email=this.value;show()">
 <a href="/report.csv" download="report.csv">Download report</a>
-<label for="p">Plan</label><select id="p" onchange="state.plan=this.value;show()"><option>Solo</option><option>Team</option></select>
+<label for="p">Plan</label><select id="p" role="combobox listbox" onchange="state.plan=this.value;show()"><option>Solo</option><option>Team</option></select>
 <label><input type="checkbox" id="t" onchange="state.terms=this.checked;show()"> I agree to the terms</label>
 <button id="load" onclick="setTimeout(()=>{document.getElementById('out').textContent='Net revenue: RM 48,213'},800)">Load report</button>
 <p id="out"></p>
@@ -204,6 +204,21 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     .await;
     let filled = mcp.ok("browser_get_text", json!({})).await;
     assert!(filled.contains("\"terms\":true"), "{filled}");
+    mcp.ok(
+        "browser_fill_form",
+        json!({"fields":[{"target":"name=Plan","value":"Team"}]}),
+    )
+    .await;
+    let snapshot: Value =
+        serde_json::from_str(&mcp.ok("browser_snapshot", json!({})).await).unwrap();
+    let plan_reference = reference_named(&snapshot, "Plan").unwrap();
+    mcp.ok(
+        "browser_fill_form",
+        json!({"fields":[{"target":plan_reference,"value":"Solo"}]}),
+    )
+    .await;
+    let filled = mcp.ok("browser_get_text", json!({})).await;
+    assert!(filled.contains("\"plan\":\"Solo\""), "{filled}");
     mcp.ok(
         "browser_select_option",
         json!({"target":"name=Plan","value":"Team"}),

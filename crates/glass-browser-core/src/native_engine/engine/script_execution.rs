@@ -447,7 +447,11 @@ impl NativeEngine {
                 .position(|download| download.guid == id),
             None => Some(0),
         };
-        let Some(pending) = index.and_then(|index| self.pending_downloads.remove(index)) else {
+        let Some((index, pending)) = index.and_then(|index| {
+            self.pending_downloads
+                .remove(index)
+                .map(|pending| (index, pending))
+        }) else {
             return Err(NativeEngineError::Network {
                 operation: "download".into(),
                 reason: "no native download is pending; activate a download link first".into(),
@@ -462,12 +466,12 @@ impl NativeEngine {
         {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
-                self.pending_downloads.push_front(pending);
+                self.pending_downloads.insert(index, pending);
                 self.request_ledger.finish();
                 return Err(error);
             }
             Err(_) => {
-                self.pending_downloads.push_front(pending);
+                self.pending_downloads.insert(index, pending);
                 self.request_ledger.finish();
                 return Err(NativeEngineError::Network {
                     operation: "download".into(),
@@ -477,7 +481,7 @@ impl NativeEngine {
         };
         self.request_ledger.finish();
         if !(200..=299).contains(&response.status) {
-            self.pending_downloads.push_front(pending);
+            self.pending_downloads.insert(index, pending);
             return Err(NativeEngineError::Network {
                 operation: "download".into(),
                 reason: format!("server returned HTTP {}", response.status),
@@ -487,7 +491,7 @@ impl NativeEngine {
         {
             Ok(_) => {}
             Err(error) => {
-                self.pending_downloads.push_front(pending);
+                self.pending_downloads.insert(index, pending);
                 return Err(error);
             }
         };

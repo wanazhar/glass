@@ -38,13 +38,24 @@ fn regular_file(path: &Path, label: &str) -> Result<u64, String> {
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
-    let partial = to.with_extension("gc-partial");
-    std::fs::copy(from, &partial)
-        .and_then(|_| std::fs::rename(&partial, to))
-        .map_err(|error| {
-            let _ = std::fs::remove_file(&partial);
-            format!("Could not copy the file: {error}")
-        })
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+    let partial = to.with_file_name(format!(".{:032x}.gc-partial", u128::from_ne_bytes(nonce)));
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial)
+        .map_err(|error| format!("Could not stage the file: {error}"))?;
+    let result = (|| {
+        let mut input = std::fs::File::open(from)?;
+        std::io::copy(&mut input, &mut output)?;
+        output.sync_all()?;
+        std::fs::rename(&partial, to)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    result.map_err(|error| format!("Could not copy the file: {error}"))
 }
 
 fn export_directory(workspace: &Path) -> Result<PathBuf, String> {
@@ -187,6 +198,22 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staging_preserves_siblings_and_cleans_up_failed_copies() {
+        let root = scratch("staging");
+        let source = root.join("source");
+        let target = root.join("report.csv");
+        let sibling = root.join("report.gc-partial");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&sibling, "untouched").unwrap();
+        copy(&source, &target).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert!(copy(&root.join("missing"), &target).is_err());
+        assert_eq!(std::fs::read_to_string(&sibling).unwrap(), "untouched");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 3);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

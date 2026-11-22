@@ -47,6 +47,14 @@ pub(crate) fn prepare_worker_command(
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     #[cfg(target_os = "linux")]
     {
+        if let Some(bwrap) = find_executable("bwrap")
+            && !bwrap_locks_user_namespaces(&bwrap)
+        {
+            return Err(sandbox_error(format!(
+                "bubblewrap at {} does not support --disable-userns (bubblewrap 0.8 or newer is required); upgrade bubblewrap, or start glass-browser with --browser-runtime chromium",
+                bwrap.display()
+            )));
+        }
         prepare_linux(
             worker_path,
             storage_path,
@@ -402,6 +410,29 @@ fn apply_linux_address_space_limit() -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+/// Older bubblewrap releases (Ubuntu 22.04 ships 0.6) reject the
+/// user-namespace lock the content sandbox depends on, and the worker would
+/// otherwise die with an opaque spawn failure.
+#[cfg(target_os = "linux")]
+fn bwrap_locks_user_namespaces(bwrap: &Path) -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        std::process::Command::new(bwrap)
+            .arg("--help")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|output| {
+                let help = [output.stdout, output.stderr].concat();
+                help_lists_userns_lock(&String::from_utf8_lossy(&help))
+            })
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn help_lists_userns_lock(help: &str) -> bool {
+    help.contains("--disable-userns") && help.contains("--assert-userns-disabled")
+}
+
 fn find_executable(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -436,6 +467,16 @@ mod tests {
         }
         command.arg("--").arg(executable).args(arguments);
         command
+    }
+
+    #[test]
+    fn bubblewrap_help_must_list_the_user_namespace_lock() {
+        assert!(!help_lists_userns_lock(
+            "usage: bwrap [OPTIONS...]\n    --unshare-user Create new user namespace"
+        ));
+        assert!(help_lists_userns_lock(
+            "    --disable-userns  Disable further use of user namespaces\n    --assert-userns-disabled  Fail unless further use of user namespace inside sandbox is disabled"
+        ));
     }
 
     #[test]

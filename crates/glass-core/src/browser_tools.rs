@@ -70,9 +70,7 @@ fn command(workspace: Option<&Path>) -> Option<Command> {
 
 fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
     let mut command = Command::new(binary);
-    if let Ok(runtime) = std::env::var("GC_BROWSER_RUNTIME")
-        && !runtime.is_empty()
-    {
+    if let Some(runtime) = runtime() {
         command.args(["--browser-runtime", &runtime]);
     }
     if let Some(port) = free_port() {
@@ -87,6 +85,49 @@ fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
         command.current_dir(workspace);
     }
     command
+}
+
+/// `GC_BROWSER_RUNTIME` wins. Otherwise Linux hosts whose bubblewrap cannot
+/// lock user namespaces (Ubuntu 22.04 ships 0.6) use Chromium, because the
+/// native runtime would refuse every page there.
+fn runtime() -> Option<String> {
+    match std::env::var("GC_BROWSER_RUNTIME") {
+        Ok(runtime) if !runtime.is_empty() => Some(runtime),
+        _ => (!native_sandbox_available()).then(|| "chromium".to_owned()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn native_sandbox_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let Some(bwrap) = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("bwrap"))
+                .find(|candidate| candidate.is_file())
+        }) else {
+            return false;
+        };
+        Command::new(bwrap)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|output| {
+                bwrap_help_supports_native(&String::from_utf8_lossy(
+                    &[output.stdout, output.stderr].concat(),
+                ))
+            })
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn native_sandbox_available() -> bool {
+    true
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn bwrap_help_supports_native(help: &str) -> bool {
+    help.contains("--disable-userns") && help.contains("--assert-userns-disabled")
 }
 
 /// A per-process CDP port, so a Chrome the user already runs on 9222 never
@@ -562,6 +603,16 @@ for line in sys.stdin:
             2
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_bubblewrap_selects_the_chromium_runtime() {
+        assert!(!bwrap_help_supports_native(
+            "usage: bwrap [OPTIONS...] [--] COMMAND [ARGS...]\n    --unshare-user"
+        ));
+        assert!(bwrap_help_supports_native(
+            "    --disable-userns\n    --assert-userns-disabled"
+        ));
     }
 
     #[test]

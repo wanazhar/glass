@@ -2262,6 +2262,12 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
     {
         return Some(error.to_string());
     }
+    if let Some(crate::browser_backend::BrowserBackendError::Connection { reason, .. }) =
+        error.downcast_ref::<crate::browser_backend::BrowserBackendError>()
+        && reason.starts_with("SandboxUnavailable:")
+    {
+        return Some(error.to_string());
+    }
     if let Some(error) = error.downcast_ref::<crate::web_ir::WebIrValidationError>() {
         return serde_json::to_string(&json!({
             "kind": "webIrValidation",

@@ -435,7 +435,13 @@ fn diagnostic_hint(error: &str) -> Option<String> {
     if reason == "geometry_changed" {
         return Some("Next: the element moved while it was being clicked because the page was still updating; retry the same call once, or browser_wait_for the content you expect first.".to_owned());
     }
-    if reason == "hit_test_blocked" || diagnostics["recommendation"] == "inspectOverlay" {
+    if reason == "disabled" {
+        return Some("Next: the target is disabled; complete its required fields or wait for it to become enabled before retrying.".to_owned());
+    }
+    if reason == "unstable_geometry" {
+        return Some("Next: the target is moving; browser_wait_for the page to settle, then retry with a fresh ref from browser_snapshot.".to_owned());
+    }
+    if reason == "hit_test_blocked" {
         let owner = &diagnostics["hitTestOwner"];
         let label = owner["name"]
             .as_str()
@@ -703,6 +709,26 @@ mod tests {
         assert!(error.contains("target"), "{error}");
         let error = translate("browser_open", &json!({})).unwrap_err();
         assert!(error.contains("browser_navigate"), "{error}");
+    }
+
+    #[test]
+    fn diagnostic_hints_prefer_actionability_reason_to_overlay_recommendation() {
+        for (reason, expected) in [
+            ("disabled", "target is disabled"),
+            ("unstable_geometry", "target is moving"),
+        ] {
+            let error = json!({"reason":reason,"diagnostics":{"recommendation":"inspectOverlay","hitTestOwner":{"tag":"button","name":"Save"}}}).to_string();
+            let hint = recovery_hint("browser_click", &error);
+            assert!(hint.contains(expected), "{hint}");
+            assert!(!hint.contains("overlay"), "{hint}");
+        }
+        for error in [
+            "{}",
+            "not JSON",
+            r#"{"diagnostics":{"recommendation":"inspectOverlay"}}"#,
+        ] {
+            assert!(!recovery_hint("browser_click", error).contains("overlay"));
+        }
     }
 
     #[test]

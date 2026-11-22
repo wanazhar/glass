@@ -127,55 +127,62 @@ struct EveryoneView: View {
         VStack(spacing: 0) {
             header
             ScrollView {
-                // Lay out the loaded window together so a resize can keep
-                // the visible messages in place using their actual heights.
+                // Lay out newest first and flip the viewport and each row.
+                // The latest message then starts at offset zero at any size.
                 VStack(alignment: .leading, spacing: 16) {
+                    MarbleTranscriptEnd(bottomPadding: 12)
+                    ForEach(responders.reversed(), id: \.self) { id in
+                        MarbleThinkingBubble(name: store.prism.marbles.first(where: { $0.id == id })?.name ?? "Marble")
+                            .scaleEffect(x: 1, y: -1)
+                    }
+                    ForEach(turns.filter { $0.isRunning || $0.id == turns.last?.id }.reversed()) { task in
+                        VStack(alignment: .leading, spacing: 16) {
+                            let reasoning = store.reasoning(for: task.id)
+                            if store.isTaskWorking(task) && !reasoning.isEmpty
+                                && !entries.contains(where: {
+                                    $0.taskId == task.id && ["reasoning", "pending", "assistant", "failure"].contains($0.kind)
+                                }) {
+                                MarbleReasoningRow(text: reasoning, speaker: store.agentName(for: task.id))
+                            }
+                            MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
+                        }
+                        .scaleEffect(x: 1, y: -1)
+                    }
+                    let transcript = MarbleReasoningAssociation(entries)
+                    ForEach(transcript.standalone.reversed(), id: \.rowID) { entry in
+                        MarbleEntryView(
+                            entry: entry,
+                            speaker: store.speakerStyle(for: entry),
+                            reasoning: transcript.attached[entry.id],
+                            measuresHistoryPosition: false
+                        )
+                        .scaleEffect(x: 1, y: -1)
+                    }
                     if entries.isEmpty && store.everyoneHistoryLoading {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
                             .accessibilityLabel("Loading messages")
+                            .scaleEffect(x: 1, y: -1)
                     } else if entries.isEmpty && store.historyErrors.contains(everyoneConversationId) {
                         MarbleHistoryUnavailable { await store.openEveryoneHistory() }
+                            .scaleEffect(x: 1, y: -1)
                     } else if entries.isEmpty {
                         ContentUnavailableView {
                             Text("No one has spoken yet")
                         } description: {
                             Text("Say something, or name a Marble with @ to call on it.")
                         }
+                        .scaleEffect(x: 1, y: -1)
                     }
-                    let transcript = MarbleReasoningAssociation(entries)
-                    ForEach(transcript.standalone, id: \.rowID) { entry in
-                        MarbleEntryView(
-                            entry: entry,
-                            speaker: store.speakerStyle(for: entry),
-                            reasoning: transcript.attached[entry.id]
-                        )
-                    }
-                    ForEach(turns.filter { $0.isRunning || $0.id == turns.last?.id }) { task in
-                        let reasoning = store.reasoning(for: task.id)
-                        if store.isTaskWorking(task) && !reasoning.isEmpty
-                            && !entries.contains(where: {
-                                $0.taskId == task.id && ["reasoning", "pending", "assistant", "failure"].contains($0.kind)
-                            }) {
-                            MarbleReasoningRow(text: reasoning, speaker: store.agentName(for: task.id))
-                        }
-                        MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
-                    }
-                    ForEach(responders, id: \.self) { id in
-                        MarbleThinkingBubble(name: store.prism.marbles.first(where: { $0.id == id })?.name ?? "Marble")
-                    }
-                    // A fixed scroll target survives the simultaneous insert
-                    // of the sent bubble, working rows and composer resize.
-                    MarbleTranscriptEnd(bottomPadding: 12)
                 }
                 .marbleHistoryScrollTargets()
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.bottom, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
             .marbleFollowsLatest(
-                hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), startAtCachedLatest: true
+                hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), newestFirst: true
             ) { beforePrepend in
                 await store.loadOlderHistory(everyoneConversationId, beforePrepend: beforePrepend)
             }

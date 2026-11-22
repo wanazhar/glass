@@ -4962,9 +4962,10 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
                     "--pre-tool-text".into(),
                     "Step commentary".into(),
                     "--fail-once".into(),
+                    "--generation-failure-once".into(),
                 ],
             );
-            fixture.install_default_worker();
+            fixture.install_default_worker_with_args(vec!["--generation-failure-once".into()]);
             let prefix = if everyone && named { "@Ada " } else { "" };
             let root_prompt = format!("{prefix}root");
             let path = if everyone {
@@ -5061,6 +5062,12 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
             );
             let failed = fixture.settled(&failed_prompt);
             assert_eq!(failed.status, "failed");
+            assert!(fixture.state.lock().unwrap().transcript.iter().any(|e| {
+                e.task_id == failed.id
+                    && e.failure
+                        .as_ref()
+                        .is_some_and(|f| f.category == "provider_rejected")
+            }));
             assert!(
                 fixture
                     .state
@@ -5075,7 +5082,7 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
             store.save(&fixture.state.lock().unwrap()).unwrap();
             *fixture.state.lock().unwrap() = store.load().unwrap();
             fixture.pool.shutdown_marble(&fixture.marble_id);
-            fixture.install_default_worker();
+            fixture.install_default_worker_with_args(vec!["--generation-failure-once".into()]);
             assert_eq!(
                 fixture
                     .post("/api/turns/retry", json!({"taskId":failed.id}))

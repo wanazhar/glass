@@ -489,6 +489,9 @@ class Control(http.server.BaseHTTPRequestHandler):
                 with open(path, "a") as f:
                     f.write("added from the harness\n")
                 return self.reply("changed")
+            if url.path == "/workspace/read":
+                with open(os.path.join(WS, os.path.basename(q["path"]))) as f:
+                    return self.reply(f.read())
             if url.path == "/workspace/status":
                 out = subprocess.run(["git", "-C", WS, "status", "--porcelain"], check=True, capture_output=True, text=True)
                 return self.reply(out.stdout)

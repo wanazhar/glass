@@ -206,6 +206,8 @@ struct FileEditorView: View {
     @State private var text = ""
     @State private var saved = ""
     @State private var revision: String?
+    @State private var writePath: String?
+    @FocusState private var focused: Bool
     @State private var saving = false
     @State private var error: String?
 
@@ -227,6 +229,7 @@ struct FileEditorView: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .disabled(revision == nil)
+                    .focused($focused)
                     .accessibilityIdentifier("editor.text")
             }
             .navigationTitle((path as NSString).lastPathComponent)
@@ -251,6 +254,9 @@ struct FileEditorView: View {
             text = file.text
             saved = file.text
             revision = file.revision
+            // The host answers with the workspace-relative path that `file write` accepts.
+            writePath = file.path
+            focused = conversation.canWrite
         } catch {
             self.error = error.localizedDescription
         }
@@ -262,7 +268,7 @@ struct FileEditorView: View {
         defer { saving = false }
         do {
             let result = try await conversation.composer.command("file", [
-                "action": .string("write"), "path": .string(path), "expected": .string(revision),
+                "action": .string("write"), "path": .string(writePath ?? path), "expected": .string(revision),
                 "text": .string(text), "confirmed": .bool(true),
             ], timeout: .seconds(60))
             saved = text

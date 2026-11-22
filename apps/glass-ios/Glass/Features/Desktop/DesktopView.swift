@@ -41,11 +41,13 @@ struct DesktopView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             model.attach(app.api)
+            model.isVisible = true
             await model.watch()
         }
         .onDisappear {
-            if model.status?.youHaveControl == true { Task { await model.giveBackControl() } }
+            model.isVisible = false
             model.stopPicture()
+            if model.status?.youHaveControl == true { Task { await model.giveBackControl() } }
         }
         .sensoryFeedback(trigger: model.status?.lease) { _, lease in lease == "human" ? .start : .stop }
     }

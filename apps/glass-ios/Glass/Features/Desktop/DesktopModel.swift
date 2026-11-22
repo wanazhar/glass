@@ -63,6 +63,8 @@ final class DesktopModel {
     var alt = false
 
     private var api: GlassClient?
+    /// The live picture only runs while the Desktop screen is showing.
+    var isVisible = false
     private var frameTask: Task<Void, Never>?
     private var pictureSession: String?
     /// Inputs waiting to be sent, in order. A newer pointer move replaces a waiting one, so a slow
@@ -98,6 +100,7 @@ final class DesktopModel {
             AccessibilityNotification.Announcement(status.controlSummary).post()
         }
         if status?.isRunning == true {
+            guard isVisible else { return }
             if frameTask != nil, pictureSession != status?.sessionId { reconnect() } else { startPicture() }
         } else {
             stopPicture()
@@ -147,6 +150,7 @@ final class DesktopModel {
 
     func reconnect() {
         stopPicture()
+        guard isVisible else { return }
         startPicture()
     }
 

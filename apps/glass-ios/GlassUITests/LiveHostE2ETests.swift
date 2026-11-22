@@ -596,6 +596,15 @@ final class LiveHostE2ETests: XCTestCase {
         notes.tap()
         XCTAssertTrue(text(app, containing: "first line").waitForExistence(timeout: 15), "the file opens")
         attach(app, "e2e-file")
+        app.buttons["file.edit"].firstMatch.tap()
+        let editor = app.textViews["editor.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitUntil(15) { (editor.value as? String)?.contains("first line") == true }, "the editor loads the file")
+        XCTAssertTrue(waitUntil(10) { (editor.value(forKey: "hasKeyboardFocus") as? Bool) == true }, "the editor opens ready to type")
+        editor.typeText("saved from iPhone ")
+        app.buttons["editor.save"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(20) { (try? self.call("workspace/read?path=notes.md", method: "POST"))?.contains("saved from iPhone") == true },
+                      "Save writes the file on the host: \(app.descendants(matching: .any)["editor.error"].firstMatch.label)")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
 

@@ -91,6 +91,17 @@ fn label(value: &Value, key: &str) -> Result<String, String> {
     }
     Ok(s.into())
 }
+/// The selected Git patch, byte for byte: `git apply` rejects a patch whose last line lost its newline.
+fn patch_text(value: &Value) -> Result<&str, String> {
+    let patch = value["patch"].as_str().unwrap_or("");
+    if patch.len() > 60000 {
+        return Err("Command value exceeds 60000 bytes".into());
+    }
+    if patch.trim().is_empty() {
+        return Err("Supply the selected patch with its diff header".into());
+    }
+    Ok(patch)
+}
 fn checkpoint_dir(s: &Session) -> std::path::PathBuf {
     config::data_dir().join("checkpoints").join(&s.id)
 }
@@ -1353,10 +1364,7 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
                 "unstage" => capture(&["restore", "--staged", "--", &arg])?,
                 "revert-file" => capture(&["restore", "--", &arg])?,
                 "stage-patch" | "unstage-patch" | "revert-patch" => {
-                    let patch = label(v, "patch")?;
-                    if patch.is_empty() {
-                        return Err("Supply the selected patch with its diff header".into());
-                    }
+                    let patch = patch_text(v)?;
                     let mut options = vec!["apply"];
                     if action != "revert-patch" {
                         options.push("--cached");
@@ -1892,6 +1900,13 @@ mod mutation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_patches_keep_their_final_newline() {
+        let patch = "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-hello\n+world\n";
+        assert_eq!(super::patch_text(&json!({"patch": patch})).unwrap(), patch);
+        assert!(super::patch_text(&json!({"patch": "  \n"})).is_err());
+    }
+
     #[test]
     fn every_native_command_has_a_browser_route() {
         let local = [

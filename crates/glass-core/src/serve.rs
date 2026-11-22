@@ -2524,7 +2524,13 @@ mod followup_regression {
         let mut queue = VecDeque::new();
         let client = json!({"name":"ios","schema":1,"components":["table"]});
         let message = json!({"t":"prompt","text":"Compare","request_id":"c","client":client});
-        accept_followup(&path, &mut queue, &message, &std::collections::HashMap::new()).unwrap();
+        accept_followup(
+            &path,
+            &mut queue,
+            &message,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(queue[0]["client"], client);
         let render = crate::components::ClientRender::from_message(&queue[0]).unwrap();
         assert_eq!(render.components, ["table"]);

@@ -168,6 +168,20 @@ mod tests {
     }
     #[test]
     fn git_inspection_rejects_stub_and_does_not_refresh_index_or_run_monitor() {
+        const CHILD: &str = "GC_INSPECTION_MONITOR_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "inspect::tests::git_inspection_rejects_stub_and_does_not_refresh_index_or_run_monitor",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let root = std::env::temp_dir().join(format!("gc-inspect-git-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -197,7 +211,11 @@ mod tests {
         );
         assert!(
             std::process::Command::new("git")
-                .args(["config", "core.fsmonitor", "touch monitor-ran"])
+                .args([
+                    "config",
+                    "core.fsmonitor",
+                    "if test \"$GC_INSPECTION_MONITOR_TEST_CHILD\" = 1; then touch monitor-ran; fi",
+                ])
                 .current_dir(&root)
                 .status()
                 .unwrap()

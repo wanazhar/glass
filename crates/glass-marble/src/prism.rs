@@ -722,18 +722,40 @@ impl PrismPool {
         let mut dispatched = 0;
         for entry in queued {
             let Some(id) = entry.marble_id else { continue };
-            if seen.insert(id.clone())
-                && self
-                    .dispatch_inner(
-                        &entry.text,
-                        Some(&[id]),
-                        Some(&entry.id),
-                        entry.thread_id.as_deref(),
-                        entry.client_message.clone(),
-                    )
-                    .is_ok()
-            {
-                dispatched += 1;
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            match self.dispatch_inner(
+                &entry.text,
+                Some(std::slice::from_ref(&id)),
+                Some(&entry.id),
+                entry.thread_id.as_deref(),
+                entry.client_message.clone(),
+            ) {
+                Ok(_) => dispatched += 1,
+                Err(error)
+                    if !matches!(
+                        error.code,
+                        "marble_busy" | "admission_paused" | "unknown_queue_entry"
+                    ) =>
+                {
+                    let marble = {
+                        let mut state = self.lock_state();
+                        state.control.queue.retain(|queued| queued.id != entry.id);
+                        crate::everyone::rekey(&mut state, &entry.id, &format!("marble:{id}"));
+                        state.prism.get(&id).cloned()
+                    };
+                    if let Some(marble) = marble {
+                        self.fail_before_acceptance(
+                            &marble,
+                            &entry.text,
+                            &error.message,
+                            entry.thread_id.as_deref(),
+                            entry.client_message.as_ref(),
+                        );
+                    }
+                }
+                Err(_) => {}
             }
         }
         dispatched
@@ -805,6 +827,9 @@ impl PrismPool {
             }
             if let Some(id) = queue_id {
                 state.control.queue.retain(|entry| entry.id != id);
+                for marble in &targets {
+                    crate::everyone::rekey(&mut state, id, &format!("marble:{}", marble.id));
+                }
             }
             state.bump();
             state.clone()
@@ -1238,7 +1263,11 @@ impl PrismPool {
         };
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut on_accepted = |conversation_id: &str, task_id: &str| {
-            accepted = Some((conversation_id.to_string(), task_id.to_string()));
+            if let Some((_, previous)) =
+                accepted.replace((conversation_id.to_string(), task_id.to_string()))
+            {
+                self.cancels.forget(&previous);
+            }
             if let Some(depth) = self
                 .pending_depths
                 .lock()

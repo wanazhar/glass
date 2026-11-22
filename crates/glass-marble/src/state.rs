@@ -513,6 +513,7 @@ impl ProductState {
             entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION
                 || entry.task_id.is_empty()
                 || tasks.contains(entry.task_id.as_str())
+                || (entry.kind == "pending" && self.everyone_pending.contains_key(&entry.task_id))
         });
         before - self.transcript.len()
     }
@@ -585,6 +586,32 @@ impl ProductState {
 
     /// Append one transcript entry.
     pub fn push_transcript(&mut self, mut entry: TranscriptEntry) {
+        let pending = matches!(entry.kind.as_str(), "assistant" | "failure" | "system")
+            .then(|| {
+                self.transcript.iter().find(|previous| {
+                    previous.kind == "pending"
+                        && previous.conversation_id == entry.conversation_id
+                        && previous.task_id == entry.task_id
+                })
+            })
+            .flatten();
+        let replacing_pending = pending.is_some();
+        if let Some(previous) = pending {
+            entry.id = previous.id.clone();
+            entry.at = previous.at;
+            entry.thread_id = previous.thread_id.clone();
+        }
+        if entry.kind == "user"
+            && !entry.task_id.is_empty()
+            && let Some(previous) = self.transcript.iter().find(|previous| {
+                previous.kind == "user"
+                    && previous.conversation_id == entry.conversation_id
+                    && previous.task_id == entry.task_id
+            })
+        {
+            entry.id = previous.id.clone();
+            entry.at = previous.at;
+        }
         if entry.kind == "user"
             && entry.client_message_id.is_none()
             && !entry.task_id.is_empty()
@@ -610,6 +637,7 @@ impl ProductState {
         }
         let key = format!("task:{}", entry.task_id);
         if entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+            && !replacing_pending
             && matches!(entry.kind.as_str(), "assistant" | "failure" | "system")
             && self
                 .everyone_orders

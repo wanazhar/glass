@@ -1468,21 +1468,20 @@ impl MarbleServer {
                 let key = format!("queued-{}", request.request_id);
                 {
                     let mut guard = self.lock_state();
-                    guard
-                        .everyone_pending
-                        .insert(key.clone(), crate::everyone::DEFAULT_SPEAKER.to_string());
-                    guard
-                        .everyone_orders
-                        .entry(entry_id)
-                        .or_default()
-                        .push_back(key.clone());
+                    crate::everyone::reserve(
+                        &mut guard,
+                        &entry_id,
+                        &key,
+                        "marble",
+                        "Marble",
+                        thread.as_deref(),
+                    );
                     guard.bump();
                 }
+                self.save_state();
                 let response = self.submit_request(request);
                 if response.status >= 400 {
-                    let mut guard = self.lock_state();
-                    guard.everyone_pending.remove(&key);
-                    guard.flush_everyone();
+                    self.fail_everyone_dispatch("marble", &key, &text, "default admission failed");
                 }
                 response
             }
@@ -1504,8 +1503,7 @@ impl MarbleServer {
         }
     }
 
-    /// Dispatch one Everyone line to each named marble, reporting busy ones
-    /// visibly rather than letting them fall silent.
+    /// Reserve replies before dispatch; busy named engines drain their queue.
     fn dispatch_everyone(
         &self,
         text: &str,
@@ -1529,9 +1527,12 @@ impl MarbleServer {
             self.save_state();
             return Response::json(200, json!({"ok": true, "answering": [], "busy": []}));
         }
-        let mut answering = Vec::new();
-        let mut busy = Vec::new();
+        let mut prepared = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for id in &ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
             if id == crate::everyone::DEFAULT_SPEAKER {
                 let mut request = TurnRequest::new(
                     crate::everyone::default_conversation(&self.lock_state()),
@@ -1539,97 +1540,63 @@ impl MarbleServer {
                 );
                 request.thread_id = thread.map(str::to_string);
                 let key = format!("queued-{}", request.request_id);
-                {
-                    let mut state = self.lock_state();
-                    state.everyone_pending.insert(key.clone(), id.clone());
-                    state
-                        .everyone_orders
-                        .entry(entry_id.to_string())
-                        .or_default()
-                        .push_back(key.clone());
-                }
-                let response = self.submit_request(request);
+                let mut state = self.lock_state();
+                crate::everyone::reserve(&mut state, entry_id, &key, id, "Marble", thread);
+                prepared.push((id.clone(), "Marble".to_string(), key, Some(request)));
+            } else {
+                let mut state = self.lock_state();
+                let Some(marble) = state.prism.get(id).cloned() else {
+                    continue;
+                };
+                let queued = state.control.enqueue_marble(
+                    id.clone(),
+                    Some(marble.conversation_id.clone()),
+                    text.to_string(),
+                );
+                let key = match queued {
+                    Ok(entry) => {
+                        state
+                            .control
+                            .queue
+                            .iter_mut()
+                            .find(|e| e.id == entry.id)
+                            .unwrap()
+                            .thread_id = thread.map(str::to_string);
+                        entry.id
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, marble = %id, "Everyone queue is full");
+                        format!("failed-{}", crate::next_request_id())
+                    }
+                };
+                crate::everyone::reserve(&mut state, entry_id, &key, id, &marble.name, thread);
+                prepared.push((id.clone(), marble.name, key, None));
+            }
+        }
+        self.lock_state().bump();
+        self.save_state();
+        let mut answering = Vec::new();
+        let mut busy = Vec::new();
+        for (id, name, key, request) in prepared {
+            if id == crate::everyone::DEFAULT_SPEAKER {
+                let response = self.submit_request(request.unwrap());
                 if response.status < 400 {
                     answering.push("Marble".to_string());
                 } else {
                     busy.push("Marble".to_string());
-                    let mut state = self.lock_state();
-                    state.everyone_pending.remove(&key);
-                    state.flush_everyone();
+                    self.fail_everyone_dispatch(&id, &key, text, "default admission failed");
                 }
                 continue;
             }
-            let marble = {
-                let guard = self.lock_state();
-                guard.prism.get(id).cloned()
-            };
-            let Some(marble) = marble else { continue };
-            if marble.state == "working" || self.prism.is_none() {
-                let mut state = self.lock_state();
-                crate::everyone::mirror(
-                    &mut state,
-                    &marble.id,
-                    &marble.name,
-                    "system",
-                    format!("{} is busy with another task", marble.name),
-                    "",
-                    None,
-                );
-                state.bump();
-                drop(state);
-                self.save_state();
-                busy.push(marble.name.clone());
+            if self.prism.is_none() || key.starts_with("failed-") {
+                self.fail_everyone_dispatch(&id, &key, text, "named admission unavailable");
+                busy.push(name);
                 continue;
             }
-            {
-                let mut guard = self.lock_state();
-                guard
-                    .everyone_pending
-                    .insert(format!("marble:{}", marble.id), marble.id.clone());
-                guard
-                    .everyone_orders
-                    .entry(entry_id.to_string())
-                    .or_default()
-                    .push_back(format!("marble:{}", marble.id));
-                guard.bump();
-            }
-            let Some(pool) = self.prism.as_ref() else {
-                busy.push(marble.name.clone());
-                continue;
-            };
-            match pool.dispatch_in_thread(text, Some(std::slice::from_ref(&marble.id)), thread) {
-                Ok(_) => answering.push(marble.name.clone()),
-                Err(refusal) => {
-                    {
-                        let mut guard = self.lock_state();
-                        guard
-                            .everyone_pending
-                            .remove(&format!("marble:{}", marble.id));
-                        guard.flush_everyone();
-                        crate::everyone::mirror(
-                            &mut guard,
-                            &marble.id,
-                            &marble.name,
-                            "system",
-                            format!("{} is busy with another task", marble.name),
-                            "",
-                            None,
-                        );
-                        guard.bump();
-                    }
-                    self.save_state();
-                    self.events.publish(
-                        crate::everyone::EVERYONE_CONVERSATION,
-                        "",
-                        "everyone",
-                        json!({"kind": "busy", "marble": marble.id}),
-                    );
-                    busy.push(marble.name.clone());
-                    if refusal.status >= 500 {
-                        tracing::warn!(marble = %marble.name, %refusal.message, "everyone dispatch failed");
-                    }
-                }
-            }
+            answering.push(name);
+        }
+        if let Some(pool) = &self.prism {
+            pool.resume_held();
         }
         self.events.publish(
             crate::everyone::EVERYONE_CONVERSATION,
@@ -1641,6 +1608,55 @@ impl MarbleServer {
             202,
             json!({"ok": true, "answering": answering, "busy": busy}),
         )
+    }
+
+    fn fail_everyone_dispatch(&self, speaker: &str, source: &str, prompt: &str, error: &str) {
+        let mut state = self.lock_state();
+        if !state.everyone_pending.contains_key(source) {
+            return;
+        }
+        state.control.queue.retain(|entry| entry.id != source);
+        let conversation_id = state
+            .prism
+            .get(speaker)
+            .map(|m| m.conversation_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| format!("recovered-{source}"));
+        let thread = state
+            .transcript
+            .iter()
+            .find(|e| e.kind == "pending" && e.task_id == source)
+            .and_then(|e| e.thread_id.clone());
+        state.bind_thread(source, thread.as_deref());
+        state
+            .conversation_mut(&conversation_id)
+            .task_ids
+            .push(source.into());
+        state.upsert_task(crate::TaskRecord {
+            id: source.into(),
+            conversation_id: conversation_id.clone(),
+            marble_id: if speaker == "marble" {
+                String::new()
+            } else {
+                speaker.into()
+            },
+            owner: if speaker == "marble" {
+                "agent"
+            } else {
+                "prism"
+            }
+            .into(),
+            status: "failed".into(),
+            prompt: prompt.into(),
+            at: crate::worker::now_millis(),
+            ..Default::default()
+        });
+        crate::everyone::claim(&mut state, source, source);
+        state.record_failure(&conversation_id, source, error);
+        crate::everyone::mirror_settlement(&mut state, source, "", "failed");
+        state.bump();
+        drop(state);
+        self.save_state();
     }
 
     /// `POST /api/prism/dispatch` — hand one prompt to several marbles at once.

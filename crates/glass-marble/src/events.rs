@@ -29,6 +29,7 @@ pub struct TurnEvent {
 #[derive(Debug, Default)]
 struct BusState {
     reply_ids: HashSet<String>,
+    pending_ids: std::collections::HashMap<String, String>,
     reply_revision: u64,
     replies_initialized: bool,
     task_threads: std::collections::HashMap<String, String>,
@@ -48,8 +49,20 @@ impl EventBus {
         state.ensure_entry_ids();
         let mut bus = self.lock();
         if !bus.replies_initialized || state.thread_events.0.is_none() {
-            bus.reply_ids
-                .extend(state.transcript.iter().map(|e| e.id.clone()));
+            bus.reply_ids.extend(
+                state
+                    .transcript
+                    .iter()
+                    .filter(|e| matches!(e.kind.as_str(), "assistant" | "failure"))
+                    .map(|e| e.id.clone()),
+            );
+            bus.pending_ids.extend(
+                state
+                    .transcript
+                    .iter()
+                    .filter(|e| e.kind == "pending")
+                    .map(|e| (e.id.clone(), e.task_id.clone())),
+            );
             bus.reply_revision = state.revision;
             bus.replies_initialized = true;
         }
@@ -64,7 +77,31 @@ impl EventBus {
         bus.reply_revision = snapshot.revision;
         let ids: HashSet<_> = snapshot.transcript.iter().map(|e| e.id.as_str()).collect();
         bus.reply_ids.retain(|id| ids.contains(id.as_str()));
+        bus.pending_ids.retain(|id, _| ids.contains(id.as_str()));
         for entry in &snapshot.transcript {
+            if entry.kind == "pending" {
+                if bus.pending_ids.get(&entry.id) != Some(&entry.task_id) {
+                    bus.pending_ids
+                        .insert(entry.id.clone(), entry.task_id.clone());
+                    Self::publish_locked(
+                        &mut bus,
+                        &entry.conversation_id,
+                        &entry.task_id,
+                        "entry",
+                        serde_json::to_value(entry).unwrap(),
+                    );
+                }
+                continue;
+            }
+            if bus.pending_ids.remove(&entry.id).is_some() && entry.kind == "system" {
+                Self::publish_locked(
+                    &mut bus,
+                    &entry.conversation_id,
+                    &entry.task_id,
+                    "entry",
+                    serde_json::to_value(entry).unwrap(),
+                );
+            }
             if !matches!(entry.kind.as_str(), "assistant" | "failure")
                 || !bus.reply_ids.insert(entry.id.clone())
             {
@@ -74,6 +111,9 @@ impl EventBus {
                 continue;
             };
             let mut data = json!({"id":entry.id, "kind":entry.kind, "text":entry.text, "sender":snapshot.entry_sender(entry), "task_id":entry.task_id});
+            if let Some(failure) = &entry.failure {
+                data["failure"] = json!(failure);
+            }
             if let Some(thread) = &entry.thread_id {
                 data["thread_id"] = json!(thread);
             }

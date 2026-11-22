@@ -14,6 +14,53 @@ pub const EVERYONE_CONVERSATION: &str = "everyone";
 pub const USER_SPEAKER: &str = "user";
 pub const DEFAULT_SPEAKER: &str = "marble";
 
+pub(crate) fn reserve(
+    state: &mut ProductState,
+    group: &str,
+    source: &str,
+    speaker: &str,
+    name: &str,
+    thread: Option<&str>,
+) {
+    state.everyone_pending.insert(source.into(), speaker.into());
+    state
+        .everyone_orders
+        .entry(group.into())
+        .or_default()
+        .push_back(source.into());
+    state.push_transcript(TranscriptEntry {
+        conversation_id: EVERYONE_CONVERSATION.into(),
+        task_id: source.into(),
+        kind: "pending".into(),
+        speaker: speaker.into(),
+        speaker_name: name.into(),
+        thread_id: thread.map(str::to_string),
+        at: crate::worker::now_millis(),
+        ..Default::default()
+    });
+}
+
+pub(crate) fn rekey(state: &mut ProductState, source: &str, target: &str) {
+    if let Some(speaker) = state.everyone_pending.remove(source) {
+        state.everyone_pending.insert(target.into(), speaker);
+    }
+    for order in state.everyone_orders.values_mut() {
+        for key in order {
+            if key == source {
+                *key = target.into();
+            }
+        }
+    }
+    for entry in &mut state.transcript {
+        if entry.conversation_id == EVERYONE_CONVERSATION
+            && entry.kind == "pending"
+            && entry.task_id == source
+        {
+            entry.task_id = target.strip_prefix("task:").unwrap_or(target).into();
+        }
+    }
+}
+
 pub(crate) fn default_conversation(state: &ProductState) -> Option<String> {
     state
         .tasks
@@ -209,6 +256,14 @@ pub fn claim(state: &mut ProductState, placeholder: &str, task_id: &str) -> bool
         state
             .everyone_pending
             .insert(format!("task:{task_id}"), speaker);
+        for entry in &mut state.transcript {
+            if entry.conversation_id == EVERYONE_CONVERSATION
+                && entry.kind == "pending"
+                && entry.task_id == placeholder
+            {
+                entry.task_id = task_id.into();
+            }
+        }
         // Stamp the person's line with the task now answering it, so
         // deleting that turn's chat takes the line it triggered too.
         if let Some(entry) = state.transcript.iter_mut().find(|entry| {

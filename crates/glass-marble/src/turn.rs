@@ -177,6 +177,88 @@ impl ThinkSplitter {
 pub fn run_turn(
     turn: &MarbleTurn,
     conversation: &mut Conversation,
+    mut options: TurnOptions<'_>,
+) -> Result<MarbleReply, MarbleError> {
+    let result = run_with_retry(turn, conversation, &mut options);
+    if let Some(live) = options.live {
+        live.finish();
+    }
+    result
+}
+
+fn run_with_retry(
+    turn: &MarbleTurn,
+    conversation: &mut Conversation,
+    options: &mut TurnOptions<'_>,
+) -> Result<MarbleReply, MarbleError> {
+    let product = conversation.product_state();
+    let mut next = turn.clone();
+    let mut logical_task: Option<String> = None;
+    for attempt in 0..=1 {
+        let mut accepted = None;
+        let mut on_accepted = |conversation_id: &str, task_id: &str| {
+            accepted = Some((conversation_id.to_string(), task_id.to_string()));
+            if let Some(hook) = options.on_accepted.as_deref_mut() {
+                hook(conversation_id, task_id);
+            }
+        };
+        let result = run_attempt(
+            &next,
+            conversation,
+            logical_task.as_deref(),
+            TurnOptions {
+                cancel: options.cancel,
+                timeout: options.timeout,
+                on_accepted: Some(&mut on_accepted),
+                live: options.live.as_deref_mut(),
+            },
+        );
+        let Err(error) = &result else {
+            return result;
+        };
+        if attempt == 1
+            || !crate::failure::transient(&error.to_string())
+            || error.to_string().contains("waiting for runtime response")
+            || options
+                .cancel
+                .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return result;
+        }
+        let (Some(product), Some((conversation_id, task_id))) = (&product, accepted) else {
+            return result;
+        };
+        {
+            let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+            if !state
+                .everyone_pending
+                .contains_key(&format!("task:{task_id}"))
+                || state
+                    .transcript
+                    .iter()
+                    .any(|e| e.task_id == task_id && e.kind == "tool")
+                || !state
+                    .conversation_mut(&conversation_id)
+                    .checkpoints
+                    .contains_key(&task_id)
+            {
+                return result;
+            }
+            state.conversation_mut(&conversation_id).retry_task_id = task_id.clone();
+        }
+        conversation.publish("task_retry", serde_json::json!({"attempt":1,"phase":"generation","reason":"transient_failure","taskId":task_id}));
+        conversation.ensure_runtime()?;
+        next.conversation_id = Some(conversation_id);
+        next.request_id = format!("{}-retry-1", turn.request_id);
+        logical_task = Some(task_id);
+    }
+    unreachable!()
+}
+
+fn run_attempt(
+    turn: &MarbleTurn,
+    conversation: &mut Conversation,
+    logical_task: Option<&str>,
     options: TurnOptions<'_>,
 ) -> Result<MarbleReply, MarbleError> {
     let mut live = options.live;
@@ -199,9 +281,6 @@ pub fn run_turn(
         }) {
             Ok(id) => id,
             Err(error) => {
-                if let Some(turn) = live.as_deref_mut() {
-                    turn.finish();
-                }
                 return Err(error);
             }
         },
@@ -210,15 +289,22 @@ pub fn run_turn(
     // resumed conversation keeps its submission identity, while each new turn
     // still carries a distinct id.
     let request_id = format!("marble-{conversation_id}-{}", turn.request_id);
-    let task_id = match conversation.submit(&conversation_id, &request_id, &turn.input) {
+    let engine_task_id = match conversation.submit(&conversation_id, &request_id, &turn.input) {
         Ok(task_id) => task_id,
         Err(error) => {
-            if let Some(turn) = live.as_deref_mut() {
-                turn.finish();
-            }
             return Err(error);
         }
     };
+    let task_id = logical_task.unwrap_or(&engine_task_id).to_string();
+    if logical_task.is_some()
+        && let Some(product) = conversation.product_state()
+    {
+        let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+        let record = state.conversation_mut(&conversation_id);
+        if let Some(checkpoint) = record.checkpoints.get(&engine_task_id).copied() {
+            record.checkpoints.insert(task_id.clone(), checkpoint);
+        }
+    }
     conversation.set_active(&conversation_id, &task_id);
     if let Some(on_accepted) = options.on_accepted {
         on_accepted(&conversation_id, &task_id);
@@ -226,12 +312,9 @@ pub fn run_turn(
     if let Some(turn) = live.as_deref_mut() {
         turn.note_task(&conversation_id, &task_id);
     }
-    let run_id = match conversation.start(&task_id) {
+    let run_id = match conversation.start(&engine_task_id) {
         Ok(run_id) => run_id,
         Err(error) => {
-            if let Some(turn) = live.as_deref_mut() {
-                turn.finish();
-            }
             return Err(error);
         }
     };
@@ -255,7 +338,7 @@ pub fn run_turn(
     };
     let cancel = options.cancel.map(|requested| CancelToken {
         requested,
-        task_id: &task_id,
+        task_id: &engine_task_id,
     });
     let outcome = conversation.pump(&run_id, deadline, cancel, &mut |event| match event
         .kind
@@ -308,16 +391,8 @@ pub fn run_turn(
         _ => {}
     });
     if let Err(error) = outcome {
-        if let Some(turn) = live.as_deref_mut() {
-            turn.finish();
-        }
         conversation.publish("error", serde_json::json!({ "message": error.to_string() }));
         return Err(error);
-    }
-    // The turn settled, so the journal entry has nothing left to recover; the
-    // product document records the outcome instead.
-    if let Some(turn) = live {
-        turn.finish();
     }
     let (visible, thought) = splitter.flush();
     publish_reasoning(&append_reasoning(
@@ -342,6 +417,11 @@ pub fn run_turn(
         .cancel
         .map(|requested| requested.load(Ordering::Relaxed))
         .unwrap_or(false);
+    if !cancelled && text.trim().is_empty() {
+        return Err(MarbleError::Protocol(
+            "provider returned an empty reply".into(),
+        ));
+    }
     let reply = MarbleReply {
         conversation_id,
         task_id,

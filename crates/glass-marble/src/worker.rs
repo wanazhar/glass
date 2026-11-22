@@ -1008,12 +1008,20 @@ fn run_command(
         guard.model.trim().to_string()
     };
     conversation.set_model((!model.is_empty()).then_some(model));
+    let conversation_id = request.conversation_id.clone().or_else(|| {
+        let state = lock(state);
+        state
+            .everyone_pending
+            .contains_key(&queued_id)
+            .then(|| crate::everyone::default_conversation(&state))
+            .flatten()
+    });
     let mut turn = MarbleTurn {
-        conversation_id: request.conversation_id.clone(),
+        conversation_id: conversation_id.clone(),
         request_id: request.request_id.clone(),
         input: crate::normalize::engine_input(
             &lock(state),
-            request.conversation_id.as_deref(),
+            conversation_id.as_deref(),
             "marble",
             &prompt,
         ),
@@ -1033,7 +1041,9 @@ fn run_command(
             conversation_id: conversation_id.to_string(),
             task_id: task_id.to_string(),
         };
-        accepted_turn = Some(identity.clone());
+        if let Some(previous) = accepted_turn.replace(identity.clone()) {
+            cancels.forget(&previous.task_id);
+        }
         // The worker registers the flag, so every admitted turn is cancellable —
         // including one a routine fired or one a resume dispatched.
         cancels.register(task_id, Arc::clone(&cancel));

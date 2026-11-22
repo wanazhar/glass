@@ -174,6 +174,34 @@ host saves the send receipt before returning success. If it restarts during
 admission before a response was saved, retry returns `409 client_message_pending`
 rather than risk executing the message twice.
 
+## Everyone settlement
+
+Everyone reserves one `kind: "pending"` transcript row per addressed agent before
+dispatch. Its `id`, position and `at` remain unchanged when it becomes an
+`assistant`, `failure`, or cancellation `system` row. `entry` SSE events announce
+pending rows and their assigned task IDs; clients must upsert by entry ID, not
+append a second row on `reply`. Failure replies include the entry's `failure`
+object. Existing tool rows and lifecycle events remain separate.
+
+Busy named agents wait in the persisted admission queue instead of losing their
+answer. `answering` includes queued agents; `busy` reports unavailable admission
+(for example, no pool or a full queue). Each engine sees its own durable history,
+not other agents' current or previous Everyone replies. A thread adds only its
+parent message. Successful earlier answers, including incorrect ones, remain in
+that agent's history. A latest failed request retries from its pre-input checkpoint.
+
+Before any tool has started, transient generation failures (network/provider
+timeouts and HTTP 429/502/503/504) retry once automatically for Everyone. The
+logical task/user/reply entry identities remain stable; the second Core attempt
+uses a checkpoint fork and a distinct durable submission. `task_retry` reports
+`attempt: 1`, `phase: "generation"`, and `reason: "transient_failure"`. Cold
+conversation creation also retries transient admission once. Provider rejections,
+empty replies, and exhausted retries become structured failures with manual
+`POST /api/turns/retry` available. `failure.retryable` continues to describe manual
+Retry availability, not automatic replay eligibility. Completed tool side effects
+and an unresponsive host-level runtime deadline are not automatically replayed;
+they require an explicit Retry rather than risking duplicate side effects.
+
 ## Checks
 
 ```text

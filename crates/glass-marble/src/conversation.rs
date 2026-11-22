@@ -517,6 +517,10 @@ impl Conversation {
         self
     }
 
+    pub(crate) fn product_state(&self) -> Option<Arc<Mutex<ProductState>>> {
+        self.product.clone()
+    }
+
     pub(crate) fn set_store(&mut self, store: Option<&crate::store::StateStore>) {
         self.store = store.cloned();
     }

@@ -119,11 +119,18 @@ def run_turn(identifier, task, text, conversation, request):
     HISTORY["sequence"] += 1
     HISTORY["conversations"].setdefault(conversation, []).append({"sequence": HISTORY["sequence"], "text": str(text)})
     save_history()
+    if "--transient-error-always" in sys.argv or "--permanent-error" in sys.argv:
+        message = "HTTP 400 provider_rejected secret-token" if "--permanent-error" in sys.argv else "connection reset secret-token"
+        send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": message}})
+        return
+    if "--empty-reply" in sys.argv:
+        reply(identifier, {"settled": True})
+        return
     failed = os.path.join(STORAGE_DIR, "fixture-failed-once") if STORAGE_DIR else None
     if "--fail-once" in sys.argv and "FAIL" in text and failed and not os.path.exists(failed):
         with open(failed, "w", encoding="utf-8") as handle:
             handle.write("failed")
-        if "--error-once" in sys.argv:
+        if "--error-once" in sys.argv and "--generation-failure-once" not in sys.argv:
             send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "connection reset secret-token"}})
             return
         event("turn-1", "text", {"text": "[Generation failed] Reason: provider's requirements secret-token"})
@@ -322,6 +329,7 @@ def main():
         elif method == "durable/fork":
             HISTORY["sequence"] += 1
             conversation_id = ID_PREFIX + "fork-" + str(HISTORY["sequence"])
+            KNOWN_CONVERSATIONS.add(conversation_id)
             HISTORY["conversations"][conversation_id] = [entry for entry in HISTORY["conversations"].get(params["conversationId"], []) if entry["sequence"] <= params["asOf"]]
             save_history()
             reply(identifier, {"conversationId": conversation_id})

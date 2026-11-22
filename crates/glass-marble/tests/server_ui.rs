@@ -3995,7 +3995,9 @@ fn durable_reply_events_match_visible_entries_for_default_named_and_everyone_tur
                         true,
                     );
                     if !named {
-                        fixture.install_default_worker();
+                        fixture.install_default_worker_with_args(vec![
+                            "--generation-failure-once".into(),
+                        ]);
                     }
                     let store = fixture.store.as_ref().unwrap();
                     let receiver = fixture.events.subscribe();
@@ -4481,7 +4483,7 @@ fn cancelling_queued_everyone_turns_does_not_claim_a_later_busy_message() {
                 .iter()
                 .find(|e| e.id == later_id)
                 .expect("deleting the cancelled chat removed an unrelated busy message");
-            assert!(later.task_id.is_empty());
+            assert_ne!(later.task_id, id);
             assert!(
                 !state
                     .transcript
@@ -4571,6 +4573,223 @@ fn everyone_default_recovers_after_first_admission_fails() {
             .iter()
             .any(|t| t.id == failed.id && t.status == "failed")
     );
+}
+
+#[test]
+fn everyone_reserves_reply_order_even_when_the_last_agent_finishes_first() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::with_persistence(
+        "group-out-of-order",
+        vec!["--reasoning-channels".into()],
+        true,
+    );
+    fixture.install_default_worker_with_args(vec!["--delay-ms".into(), "1800".into()]);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        glass_marble::everyone::mirror(
+            &mut state,
+            "other",
+            "Other",
+            "assistant",
+            "FOREIGN_IN_FLIGHT_OR_EARLIER_REPLY",
+            "",
+            None,
+        );
+    }
+    let (code, body) = fixture.post("/api/everyone", json!({"text":"@everyone next question"}));
+    assert_eq!(code, 202, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let ids = loop {
+        let state = fixture.state.lock().unwrap();
+        if state
+            .tasks
+            .iter()
+            .any(|t| t.marble_id == fixture.marble_id && t.status == "completed")
+        {
+            assert!(
+                state
+                    .tasks
+                    .iter()
+                    .any(|t| t.owner == "agent" && t.status == "running")
+            );
+            let rows: Vec<_> = state
+                .transcript
+                .iter()
+                .filter(|e| {
+                    e.conversation_id == "everyone" && e.speaker != "other" && e.kind != "user"
+                })
+                .collect();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].kind, "pending");
+            assert_eq!(rows[0].speaker, "marble");
+            assert_eq!(rows[1].kind, "assistant");
+            assert_eq!(rows[1].speaker, fixture.marble_id);
+            break rows.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        }
+        assert!(Instant::now() < deadline);
+        drop(state);
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture
+        .state
+        .lock()
+        .unwrap()
+        .tasks
+        .iter()
+        .any(|t| t.status == "running")
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let state = fixture.store.as_ref().unwrap().load().unwrap();
+    let replies: Vec<_> = state
+        .transcript
+        .iter()
+        .filter(|e| {
+            e.conversation_id == "everyone" && e.speaker != "other" && e.kind == "assistant"
+        })
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(replies, ids);
+    for sessions in [
+        fixture.root.join("default-sessions"),
+        fixture.root.join("prism-sessions").join(&fixture.marble_id),
+    ] {
+        let input: Value =
+            serde_json::from_slice(&std::fs::read(sessions.join("fixture-input.json")).unwrap())
+                .unwrap();
+        let text = input["input"]["text"].as_str().unwrap();
+        assert!(!text.contains("FOREIGN_IN_FLIGHT_OR_EARLIER_REPLY"));
+        assert!(!text.contains("Public answer."));
+    }
+}
+
+#[test]
+fn everyone_retries_transient_generation_once_with_stable_entries_and_tasks() {
+    if !python3_available() {
+        return;
+    }
+    for (label, args, attempts, status) in [
+        (
+            "once",
+            vec!["--fail-once", "--error-once", "--strict-conversations"],
+            2,
+            "completed",
+        ),
+        ("always", vec!["--transient-error-always"], 2, "failed"),
+        ("permanent", vec!["--permanent-error"], 1, "failed"),
+        ("empty", vec!["--empty-reply"], 1, "failed"),
+    ] {
+        let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+        let mut fixture =
+            NamedTurnFixture::with_persistence(&format!("group-retry-{label}"), args.clone(), true);
+        fixture.install_default_worker_with_args(args);
+        let prompt = format!("@everyone FAIL {label}");
+        let request = json!({"text":prompt,"client_message_id":format!("group-{label}")});
+        let (code, response) = fixture.post("/api/everyone", request.clone());
+        assert_eq!(code, 202, "{response}");
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            let state = fixture.state.lock().unwrap();
+            let tasks: Vec<_> = state.tasks.iter().filter(|t| t.prompt == prompt).collect();
+            if tasks.len() == 2 && tasks.iter().all(|t| t.status == status) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{label}: {tasks:?}");
+            drop(state);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fixture.post("/api/everyone", request).1, response);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while fixture
+            .events
+            .since(0)
+            .iter()
+            .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+            .count()
+            < 2
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let state = fixture.store.as_ref().unwrap().load().unwrap();
+        let expected_kind = if status == "completed" {
+            "assistant"
+        } else {
+            "failure"
+        };
+        let replies: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|e| e.conversation_id == "everyone" && e.kind == expected_kind)
+            .collect();
+        assert_eq!(replies.len(), 2, "{label}: {:?}", state.transcript);
+        assert_eq!(replies[0].speaker, "marble");
+        assert_eq!(replies[1].speaker, fixture.marble_id);
+        assert!(!state.transcript.iter().any(|e| e.kind == "pending"));
+        assert!(state.everyone_pending.is_empty());
+        for reply in replies {
+            let created = fixture
+                .events
+                .since(0)
+                .into_iter()
+                .find(|e| {
+                    e.kind == "entry" && e.data["kind"] == "pending" && e.data["id"] == reply.id
+                })
+                .expect("reply was not reserved before dispatch");
+            assert_eq!(created.data["at"], reply.at);
+            let accepted = fixture
+                .events
+                .since(0)
+                .into_iter()
+                .find(|e| {
+                    e.kind == "entry"
+                        && e.data["id"] == reply.id
+                        && e.data["taskId"] == reply.task_id
+                })
+                .expect("accepted task changed identity");
+            assert_eq!(accepted.data["id"], reply.id);
+            assert_eq!(
+                state
+                    .transcript
+                    .iter()
+                    .filter(|e| e.kind == "user"
+                        && e.task_id == reply.task_id
+                        && e.conversation_id != "everyone")
+                    .count(),
+                1
+            );
+            if status == "failed" {
+                assert!(reply.failure.is_some());
+            }
+        }
+        for sessions in [
+            fixture.root.join("default-sessions"),
+            fixture.root.join("prism-sessions").join(&fixture.marble_id),
+        ] {
+            let submissions: Value = serde_json::from_slice(
+                &std::fs::read(sessions.join("fixture-submissions.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(submissions.as_object().unwrap().len(), attempts, "{label}");
+        }
+        let events = fixture.events.since(0);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+                .count(),
+            2
+        );
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains("secret-token")
+        );
+    }
 }
 
 #[test]
@@ -5012,7 +5231,7 @@ fn everyone_failures_retry_on_a_checkpoint_fork_or_keep_later_turns_across_resta
                 &format!("fork-retry-{named}-{later}"),
                 vec!["--fail-once".into()],
             );
-            fixture.install_default_worker();
+            fixture.install_default_worker_with_args(vec!["--generation-failure-once".into()]);
             let prefix = if named { "@Ada " } else { "" };
             let before = format!("{prefix}hello");
             assert_eq!(fixture.post("/api/everyone", json!({"text":before})).0, 202);
@@ -5037,12 +5256,7 @@ fn everyone_failures_retry_on_a_checkpoint_fork_or_keep_later_turns_across_resta
                     failures
                         .iter()
                         .all(|e| e.text == glass_marble::failure::MESSAGE
-                            && e.failure.as_ref().unwrap().category
-                                == if named {
-                                    "provider_rejected"
-                                } else {
-                                    "network"
-                                })
+                            && e.failure.as_ref().unwrap().category == "provider_rejected")
                 );
                 assert!(
                     !serde_json::to_string(&state.transcript)
@@ -5680,9 +5894,9 @@ fn an_everyone_mention_routes_to_the_named_marble() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A busy marble does not go silent: the shared timeline says it is busy.
+/// Everyone work waits for a busy marble rather than dropping its answer.
 #[test]
-fn a_busy_marble_says_so_on_the_shared_plane() {
+fn everyone_queues_a_busy_marble_and_preserves_reply_slots() {
     if !python3_available() {
         return;
     }
@@ -5732,16 +5946,35 @@ fn a_busy_marble_says_so_on_the_shared_plane() {
     assert_eq!(status, 202, "{body}");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap()["busy"],
-        json!(["ben"]),
+        json!([]),
         "{body}"
     );
     let entries = everyone_entries(&state);
-    assert!(
-        entries
+    let slots: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.kind == "pending")
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(slots.len(), 2, "{entries:?}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let entries = everyone_entries(&state);
+        let replies: Vec<_> = entries
             .iter()
-            .any(|entry| entry.text.contains("busy with another task")),
-        "{entries:?}"
-    );
+            .filter(|entry| entry.kind == "assistant")
+            .collect();
+        if replies.len() == 2 {
+            assert_eq!(
+                replies.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+                slots
+            );
+            assert_eq!(replies[0].text, "handled @ben first");
+            assert_eq!(replies[1].text, "handled @ben second");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{entries:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let _ = std::fs::remove_dir_all(&root);
 }

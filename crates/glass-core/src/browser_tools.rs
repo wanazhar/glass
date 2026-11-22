@@ -289,14 +289,33 @@ fn save_image(item: &Value, workspace: &Path) -> Result<String, String> {
         Some("image/webp") => "webp",
         _ => "png",
     };
-    let directory = workspace.join(".gc-artifacts").join("browser");
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let root = workspace
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let mut directory = root.clone();
+    for component in [".gc-artifacts", "browser"] {
+        directory.push(component);
+        if !directory.exists() {
+            std::fs::create_dir(&directory).map_err(|error| error.to_string())?;
+        }
+        directory = directory
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !directory.starts_with(&root) {
+            return Err("browser screenshot directory escapes the workspace".into());
+        }
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis();
-    let filename = format!("browser-{stamp}.{extension}");
-    std::fs::write(directory.join(&filename), bytes).map_err(|error| error.to_string())?;
+        .as_nanos();
+    let filename = format!("browser-{stamp}-{}.{extension}", std::process::id());
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join(&filename))
+        .and_then(|mut file| file.write_all(&bytes))
+        .map_err(|error| error.to_string())?;
     Ok(format!(
         "Screenshot saved to `.gc-artifacts/browser/{filename}`. Use `view_image` with that path to see it; pixel positions are CSS pixels for browser_click_at."
     ))
@@ -305,6 +324,47 @@ fn save_image(item: &Value, workspace: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_screenshot_artifacts_reject_symlink_escapes_and_do_not_clobber_siblings() {
+        let root = std::env::temp_dir().join(format!("gc-browser-confine-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let image = json!({"type":"image","mimeType":"image/png","data":"aW1hZ2U="});
+        let artifacts = workspace.join(".gc-artifacts");
+        std::os::unix::fs::symlink(&outside, &artifacts).unwrap();
+        assert!(
+            save_image(&image, &workspace)
+                .unwrap_err()
+                .contains("escapes")
+        );
+        assert!(!outside.join("browser").exists());
+        std::fs::remove_file(&artifacts).unwrap();
+        std::fs::create_dir(&artifacts).unwrap();
+        std::os::unix::fs::symlink(&outside, artifacts.join("browser")).unwrap();
+        assert!(
+            save_image(&image, &workspace)
+                .unwrap_err()
+                .contains("escapes")
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        std::fs::remove_file(artifacts.join("browser")).unwrap();
+        assert!(save_image(&json!({"data":"%%%"}), &workspace).is_err());
+        assert!(save_image(&json!({}), &workspace).is_err());
+        let first = save_image(&image, &workspace).unwrap();
+        let second = save_image(&image, &workspace).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            std::fs::read_dir(artifacts.join("browser"))
+                .unwrap()
+                .count(),
+            2
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn render_saves_images_and_keeps_text_order() {

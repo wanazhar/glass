@@ -117,33 +117,39 @@ fn wmctrl(display: &str, xauthority: &Path, args: &[&str]) -> Result<String, Str
 
 impl Desktop {
     pub(super) fn windows(&self, value: &Value) -> Result<Value, String> {
+        self.windows_with(value, run)
+    }
+
+    fn windows_with(
+        &self,
+        value: &Value,
+        operation: impl FnOnce(&str, &Path, &str, Request<'_>) -> Result<Value, String>,
+    ) -> Result<Value, String> {
         let (session_id, request) = parse(value)?;
-        let (display, xauthority) = {
-            let guard = self
-                .session
-                .lock()
-                .map_err(|_| "Desktop state unavailable")?;
-            let session = guard
-                .as_ref()
-                .ok_or("No managed desktop session is running")?;
-            if session.id != session_id {
-                return Err(
-                    "The managed desktop session changed; call desktop_status and observe again"
-                        .into(),
-                );
-            }
-            if request != Request::List && session.lease != Lease::Agent {
-                return Err("Desktop input lease is held by the other participant".into());
-            }
-            (
-                session.display.clone(),
-                session.directory.join("Xauthority"),
-            )
-        };
-        run(&display, &xauthority, session_id, request).inspect(|_| {
-            if let Ok(mut guard) = self.session.lock()
-                && let Some(session) = guard.as_mut().filter(|session| session.id == session_id)
-            {
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| "Desktop state unavailable")?;
+        let session = guard
+            .as_mut()
+            .ok_or("No managed desktop session is running")?;
+        if session.id != session_id {
+            return Err(
+                "The managed desktop session changed; call desktop_status and observe again".into(),
+            );
+        }
+        if request != Request::List && session.lease != Lease::Agent {
+            return Err("Desktop input lease is held by the other participant".into());
+        }
+        let changes_windows = request != Request::List;
+        operation(
+            &session.display,
+            &session.directory.join("Xauthority"),
+            session_id,
+            request,
+        )
+        .inspect(|_| {
+            if changes_windows {
                 session.accessibility_revision = session.accessibility_revision.saturating_add(1);
                 session.accessibility_targets.clear();
             }
@@ -181,6 +187,65 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_operations_hold_the_lease_and_only_mutations_invalidate_targets() {
+        let desktop = super::super::tests::desktop_with_test_session(&std::env::temp_dir(), "s");
+        let list = json!({"action":"list","sessionId":"s"});
+        desktop
+            .windows_with(&list, |_, _, _, _| {
+                assert!(desktop.session.try_lock().is_err());
+                Ok(json!({"windows":[]}))
+            })
+            .unwrap();
+        assert_eq!(
+            desktop
+                .session
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .accessibility_revision,
+            1
+        );
+        let focus = json!({"action":"focus","sessionId":"s","id":"0x01"});
+        assert!(
+            desktop
+                .windows_with(&focus, |_, _, _, _| Err("failed".into()))
+                .is_err()
+        );
+        assert_eq!(
+            desktop
+                .session
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .accessibility_revision,
+            1
+        );
+        desktop
+            .windows_with(&focus, |_, _, _, _| {
+                assert!(desktop.session.try_lock().is_err());
+                Ok(json!({"focused":true}))
+            })
+            .unwrap();
+        {
+            let mut guard = desktop.session.lock().unwrap();
+            let session = guard.as_mut().unwrap();
+            assert_eq!(session.accessibility_revision, 2);
+            session.lease = Lease::Human;
+        }
+        assert!(
+            desktop
+                .windows_with(&focus, |_, _, _, _| panic!("stale holder acted"))
+                .unwrap_err()
+                .contains("lease")
+        );
+        desktop
+            .windows_with(&list, |_, _, _, _| Ok(json!({"windows":[]})))
+            .unwrap();
+    }
 
     #[test]
     fn window_arguments_are_closed_and_ids_are_checked() {

@@ -336,12 +336,16 @@ mod managed_tests {
         let name = format!("glass-files-{}.txt", std::process::id());
         let workspace = PathBuf::from(status["workspaceRoot"].as_str().unwrap());
         std::fs::write(workspace.join(&name), "desktop transfer").unwrap();
-        let imported =
-            Desktop::agent_files(&json!({"action":"import","sessionId":session_id,"path":name}))
-                .unwrap();
-        let exported =
-            Desktop::agent_files(&json!({"action":"export","sessionId":session_id,"name":name}))
-                .unwrap();
+        let imported = Desktop::agent_files(
+            &json!({"action":"import","sessionId":session_id,"path":name}),
+            &workspace,
+        )
+        .unwrap();
+        let exported = Desktop::agent_files(
+            &json!({"action":"export","sessionId":session_id,"name":name}),
+            &workspace,
+        )
+        .unwrap();
         let path = workspace.join(exported["path"].as_str().unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "desktop transfer");
         let _ = std::fs::remove_file(imported["desktopPath"].as_str().unwrap());

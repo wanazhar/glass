@@ -168,7 +168,7 @@ pub(super) fn transfer(home: &Path, workspace: &Path, value: &Value) -> Result<V
 }
 
 impl Desktop {
-    pub(super) fn files(&self, value: &Value) -> Result<Value, String> {
+    pub(super) fn files(&self, value: &Value, thread_workspace: &Path) -> Result<Value, String> {
         let session_id = value["sessionId"]
             .as_str()
             .ok_or("sessionId is required from desktop_status")?;
@@ -191,6 +191,15 @@ impl Desktop {
             };
             (home, session.workspace.clone())
         };
+        let root = workspace
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let workspace = thread_workspace
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !workspace.starts_with(root) {
+            return Err("thread workspace escapes the desktop workspace".into());
+        }
         transfer(&home, &workspace, value)
     }
 }
@@ -198,6 +207,56 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_transfers_use_the_trusted_nested_thread_workspace() {
+        let root = scratch("thread-root");
+        let thread = root.join("project");
+        std::fs::create_dir(&thread).unwrap();
+        std::fs::write(root.join("report.csv"), "wrong").unwrap();
+        std::fs::write(thread.join("report.csv"), "thread").unwrap();
+        let desktop = super::super::tests::desktop_with_test_session(&root, "s");
+        let imported = desktop
+            .files(
+                &json!({"action":"import","sessionId":"s","path":"report.csv"}),
+                &thread,
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(imported["desktopPath"].as_str().unwrap()).unwrap(),
+            "thread"
+        );
+        let exported = desktop
+            .files(
+                &json!({"action":"export","sessionId":"s","name":"report.csv"}),
+                &thread,
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(thread.join(exported["path"].as_str().unwrap())).unwrap(),
+            "thread"
+        );
+        assert!(!root.join(EXPORT_DIRECTORY).exists());
+        assert!(
+            desktop
+                .files(
+                    &json!({"action":"list","sessionId":"s"}),
+                    root.parent().unwrap()
+                )
+                .unwrap_err()
+                .contains("escapes")
+        );
+        assert!(
+            desktop
+                .files(
+                    &json!({"action":"list","sessionId":"s","workspace":"/"}),
+                    &thread
+                )
+                .unwrap_err()
+                .contains("only action")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn staging_preserves_siblings_and_cleans_up_failed_copies() {

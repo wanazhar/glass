@@ -29,6 +29,7 @@ mod config;
 mod connect;
 mod context_audit;
 mod contracts;
+mod browser_tools;
 mod desktop;
 #[allow(dead_code)]
 mod desktop_contract;

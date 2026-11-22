@@ -699,6 +699,9 @@ impl<'a> Agent<'a> {
             }
             tools
         };
+        if !self.read_only && self.mixed_hosted.is_none() {
+            tools.extend(crate::browser_tools::schemas());
+        }
         tools.extend(desktop_schemas_for_state(desktop_state, self.read_only));
         if crate::team::actor_context(&self.session.id).is_some() {
             tools.push(crate::team::schema());
@@ -2540,6 +2543,7 @@ impl<'a> Agent<'a> {
         } else if call.name == "bash"
             || crate::web_tools::is_tool(&call.name)
             || crate::desktop::is_tool(&call.name)
+            || crate::browser_tools::is_tool(&call.name)
             || self.extensions.has_tool(&call.name)
         {
             self.run_tool_pumped(call, pump);
@@ -2671,6 +2675,7 @@ impl<'a> Agent<'a> {
         if call.name != "bash"
             && !crate::web_tools::is_tool(&call.name)
             && !crate::desktop::is_tool(&call.name)
+            && !crate::browser_tools::is_tool(&call.name)
             && !self.extensions.has_tool(&call.name)
         {
             self.run_tool(call);
@@ -2736,6 +2741,10 @@ impl<'a> Agent<'a> {
         }
         if crate::desktop::is_tool(&call.name) {
             self.run_desktop_observably(call, pump);
+            return;
+        }
+        if crate::browser_tools::is_tool(&call.name) {
+            self.run_browser_observably(call, pump);
             return;
         }
         // Read-before-write is checked here rather than in `run_tool`, because a
@@ -2811,6 +2820,37 @@ impl<'a> Agent<'a> {
     /// Keep the terminal responsive while a read-only web request is in flight.
     /// A steer does not cancel or repeat the request; its bounded result is
     /// recorded once when the HTTP/MCP operation settles.
+    fn run_browser_observably(
+        &mut self,
+        call: &ToolCall,
+        pump: &mut impl FnMut(&mut Option<String>),
+    ) {
+        let inner = call.clone();
+        let workspace = self.workspace.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::browser_tools::execute(&inner, &workspace));
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.finish_tool(call, result);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.finish_tool(
+                        call,
+                        tools::Outcome::err("browser worker ended without a result"),
+                    );
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            pump(&mut self.steer);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     fn run_web_observably(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
         let inner = call.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -3355,6 +3395,7 @@ impl<'a> Agent<'a> {
             || call.name == "web_secret_request"
             || call.name == "revoke_secret"
             || crate::desktop::is_tool(&call.name)
+            || crate::browser_tools::is_tool(&call.name)
             || (self.checkpoint_tools
                 && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait"))
             || self.extensions.has_tool(&call.name)
@@ -3440,6 +3481,8 @@ impl<'a> Agent<'a> {
             outcome = crate::web_tools::execute(call);
         } else if crate::desktop::is_tool(&call.name) {
             outcome = crate::desktop::execute_tool(call, self.workspace);
+        } else if crate::browser_tools::is_tool(&call.name) {
+            outcome = crate::browser_tools::execute(call, self.workspace);
         } else if self.checkpoint_tools
             && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait")
         {

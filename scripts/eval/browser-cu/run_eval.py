@@ -134,7 +134,9 @@ def check(task, answer, calls, base):
 
 def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     reset_fixture(base)
-    shutil.copy(HERE / "fixtures" / "receipt-0921.txt", workspace / "receipt-0921.txt")
+    if task["id"] == "upload-receipt":
+        with (workspace / "receipt-0921.txt").open("xb") as receipt:
+            receipt.write((HERE / "fixtures" / "receipt-0921.txt").read_bytes())
     prompt = task["prompt"].format(base=base)
     env = dict(os.environ, XDG_DATA_HOME=str(data_dir), PATH=f"{bin_dir}:{os.environ['PATH']}")
     command = [args.glass_core, "--yolo", "run", "--json"]
@@ -164,13 +166,19 @@ def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     used_family = any(any_match(c, family) for c in calls)
     ideal = task.get("ideal")
     ideal_hit = None if not ideal else any(any_match(c, ideal) for c in calls)
-    success = check(task, answer, calls, base)
+    infrastructure_error = None
+    try:
+        success = check(task, answer, calls, base)
+    except (OSError, subprocess.SubprocessError) as error:
+        success = False
+        infrastructure_error = f"Verification failed: {error}"
     return {
         "task": task["id"], "family": task["family"], "capability": task["capability"],
         "session": session, "exit": code, "status": result.get("status"), "error": result.get("error"),
         "cost_usd": result.get("cost_usd"), "seconds": round(elapsed, 1),
         "right_first": first_ok, "used_family": used_family, "ideal": ideal_hit,
         "success": success, "steps": len(calls),
+        "infrastructure_error": infrastructure_error,
         "tools": [c["name"] if c["name"] != "bash" else "bash:" + c["args"][:120] for c in calls],
         "answer": answer[-600:], "stderr_tail": stderr[-400:],
     }
@@ -198,6 +206,36 @@ def summarize(rows):
     return out
 
 
+def write_browser_wrapper(wrapper, browser, runtime):
+    wrapper.write_text(f'''#!{sys.executable}
+import os
+import sys
+arguments = []
+index = 1
+while index < len(sys.argv):
+    argument = sys.argv[index]
+    if argument == "--":
+        arguments.extend(sys.argv[index:])
+        break
+    if argument == "--browser-runtime":
+        index += 2
+        continue
+    if not argument.startswith("--browser-runtime="):
+        arguments.append(argument)
+    index += 1
+os.execv({str(browser)!r}, [{str(browser)!r}, "--browser-runtime", {runtime!r}, *arguments])
+''')
+    wrapper.chmod(0o755)
+
+
+def eval_data_dir(override, tasks, root):
+    if override:
+        return Path(override).resolve()
+    if any(task["family"] == "desktop" for task in tasks):
+        return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share").resolve()
+    return root / "data"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--glass-core", required=True)
@@ -212,15 +250,18 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--workspace", help="persistent workspace; desktop tasks need the one the desktop manager serves")
-    parser.add_argument("--data-dir", help="XDG_DATA_HOME for glass-core; desktop tasks need the manager's data dir")
+    parser.add_argument("--data-dir", help="XDG_DATA_HOME for glass-core; desktop runs default to inherited XDG_DATA_HOME or ~/.local/share")
     args = parser.parse_args()
 
     spec = json.loads((HERE / "tasks.json").read_text())
     tasks = [t for t in spec["tasks"] if (not args.only or t["family"] == args.only)
              and (not args.task or t["id"] in args.task)]
+    for key, executable in [("desktop_clipboard", "xclip"), ("desktop_window", "xdotool")]:
+        if any(key in task["check"] for task in tasks) and not shutil.which(executable):
+            parser.error(f"Selected tasks require the {executable} verifier; install it before running")
     root = Path(tempfile.mkdtemp(prefix="glass-cu-eval-"))
     workspace = Path(args.workspace or root / "workspace").resolve()
-    data_dir = Path(args.data_dir or root / "data").resolve()
+    data_dir = eval_data_dir(args.data_dir, tasks, root)
     workspace.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
     bin_dir = root / "bin"
@@ -228,8 +269,7 @@ def main():
     browser = Path(args.glass_browser).resolve()
     if args.browser_runtime:
         wrapper = bin_dir / "glass-browser"
-        wrapper.write_text(f'#!/bin/sh\nexec "{browser}" --browser-runtime {args.browser_runtime} "$@"\n')
-        wrapper.chmod(0o755)
+        write_browser_wrapper(wrapper, browser, args.browser_runtime)
     else:
         (bin_dir / "glass-browser").symlink_to(browser)
     args.glass_core = str(Path(args.glass_core).resolve())

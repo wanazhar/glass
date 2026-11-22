@@ -72,6 +72,15 @@ class ArtifactTests(unittest.TestCase):
             (workspace / "new.mp4").write_bytes(b"video")
             self.assertTrue(runner.check(task, "", [], "", workspace, {stale}))
 
+    def test_browser_only_cleanup_preserves_existing_artifact_tree(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root)
+            keep = workspace / ".gc-artifacts/desktop/downloads/human.txt"
+            keep.parent.mkdir(parents=True)
+            keep.write_text("human-owned")
+            runner.clear_eval_outputs(workspace)
+            self.assertEqual(keep.read_text(), "human-owned")
+
 
 if __name__ == "__main__":
     unittest.main()

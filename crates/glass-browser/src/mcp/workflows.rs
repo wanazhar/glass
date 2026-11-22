@@ -18,9 +18,17 @@ const MAX_REFERENCES: usize = 4096;
 
 static REPLAYING: AtomicBool = AtomicBool::new(false);
 
-/// Marks a replay in progress so replayed steps are not recorded again.
-pub(crate) fn set_replaying(on: bool) {
-    REPLAYING.store(on, Ordering::SeqCst);
+pub(crate) struct ReplayGuard;
+
+impl Drop for ReplayGuard {
+    fn drop(&mut self) {
+        REPLAYING.store(false, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn replay_guard() -> ReplayGuard {
+    REPLAYING.store(true, Ordering::SeqCst);
+    ReplayGuard
 }
 
 #[derive(Default)]
@@ -63,9 +71,10 @@ pub(crate) fn records(tool: &str, arguments: &Value) -> bool {
 
 /// Remember the role and name behind each ref in a snapshot or find result.
 pub(crate) fn learn_references(raw: &str) {
-    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+    let Ok(mut value) = serde_json::from_str::<Value>(raw) else {
         return;
     };
+    super::secrets::redact_value(&mut value);
     let mut found = Vec::new();
     collect(&value, &mut found);
     let mut recorder = recorder();
@@ -83,9 +92,16 @@ fn collect(value: &Value, out: &mut Vec<(String, String)>) {
                 (field("reference"), field("role"), field("name"))
                 && !role.is_empty()
                 && !name.trim().is_empty()
-                && !name.contains(';')
             {
-                out.push((reference.to_owned(), format!("role={role};name={name}")));
+                let locator = if name.contains([';', '|', '"', '\\']) {
+                    use base64::Engine;
+                    let encode =
+                        |value: &str| base64::engine::general_purpose::STANDARD.encode(value);
+                    format!("role64={};name64={}", encode(role), encode(name))
+                } else {
+                    format!("role={role};name={name}")
+                };
+                out.push((reference.to_owned(), locator));
             }
             object.values().for_each(|value| collect(value, out));
         }
@@ -298,19 +314,34 @@ pub(crate) fn run_report(
                 .map_or("", |step| step["tool"].as_str().unwrap_or_default()),
             clip(last, 1500)
         )),
-        Some((index, error)) => Err(format!(
-            "Workflow \"{name}\" stopped at step {} of {} ({} {}): {}\n{}",
+        Some((index, _)) => Err(format!(
+            "Workflow \"{name}\" stopped at step {} of {} ({}). Step details omitted to protect recorded values; inspect the page with browser_snapshot.\n{}",
             index + 1,
             steps.len(),
             steps[index]["tool"].as_str().unwrap_or_default(),
-            steps[index]["arguments"],
-            clip(&error, 1500),
             if index == 0 {
                 "No steps completed.".to_owned()
             } else {
                 format!("Steps 1-{index} completed.")
             }
         )),
+    }
+}
+
+pub(crate) fn verification_failed(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields
+                .get("status")
+                .is_some_and(|status| status == "completed_with_verification_failure")
+                || fields.values().any(verification_failed)
+        }
+        Value::Array(items) => items.iter().any(verification_failed),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .as_ref()
+            .is_some_and(verification_failed),
+        _ => false,
     }
 }
 
@@ -328,6 +359,34 @@ fn clip(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reflected_secrets_do_not_enter_cached_locators_or_workflow_files() {
+        const CHILD: &str = "GLASS_WORKFLOW_SECRET_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let root =
+                std::env::temp_dir().join(format!("glass-workflow-secret-{}", std::process::id()));
+            std::fs::create_dir(&root).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::workflows::tests::reflected_secrets_do_not_enter_cached_locators_or_workflow_files"])
+                .env(CHILD, "1").env("GLASS_SECRET_REFLECTED", "workflow-private-label")
+                .env("GLASS_CONFIG_HOME", &root).status().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            assert!(status.success());
+            return;
+        }
+        learn_references(
+            &json!({"reference":"e8","role":"button","name":"workflow-private-label"}).to_string(),
+        );
+        assert!(!recorder().references["e8"].contains("workflow-private-label"));
+        start();
+        record("browser_click", &json!({"target":"e8"}));
+        save("private").unwrap();
+        let saved =
+            std::fs::read_to_string(named_path("workflows", TOOL, "private").unwrap()).unwrap();
+        assert!(!saved.contains("workflow-private-label"));
+        assert!(saved.contains("{{secret:REFLECTED}}"));
+    }
 
     #[test]
     fn workflow_steps_replace_snapshot_refs_with_role_and_name() {
@@ -386,10 +445,49 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("Steps 1-1 completed."), "{error}");
+        let sensitive =
+            vec![json!({"tool":"browser_type","arguments":{"value":"earlier-session-private"}})];
+        let error = run_report(
+            "typing",
+            &sensitive,
+            "",
+            Some((0, "cannot type earlier-session-private".into())),
+        )
+        .unwrap_err();
+        assert!(!error.contains("earlier-session-private"));
+        assert!(verification_failed(
+            &json!({"content":[{"text":"{\"result\":{\"status\":\"completed_with_verification_failure\"}}"}]})
+        ));
+        assert!(!verification_failed(&json!({"status":"succeeded"})));
         let done = run_report("pay", &steps, "Clicked", None).unwrap();
         assert!(
             done.starts_with("Replayed workflow \"pay\": 2 of 2 steps"),
             "{done}"
         );
+    }
+
+    #[test]
+    fn recorded_names_round_trip_locator_delimiters() {
+        use crate::browser::session::Locator;
+        for name in [
+            "Export | CSV",
+            "Save; name=other",
+            "Say \"hello\"",
+            "C:\\folder",
+        ] {
+            let mut found = Vec::new();
+            collect(
+                &json!({"reference":"r1:c1:b1","role":"button","name":name}),
+                &mut found,
+            );
+            assert!(!found[0].1.contains(" | "));
+            assert_eq!(
+                Locator::parse(&found[0].1).unwrap(),
+                Locator::RoleAndName {
+                    role: "button".into(),
+                    name: name.into()
+                }
+            );
+        }
     }
 }

@@ -81,17 +81,33 @@ pub(crate) fn learn_references(raw: &str) {
     if recorder.references.len() + found.len() > MAX_REFERENCES {
         recorder.references.clear();
     }
-    recorder.references.extend(found);
+    for (reference, locator) in found {
+        if locator.is_empty() {
+            recorder.references.remove(&reference);
+        } else {
+            recorder.references.insert(reference, locator);
+        }
+    }
 }
 
 fn collect(value: &Value, out: &mut Vec<(String, String)>) {
     match value {
         Value::Object(object) => {
             let field = |key: &str| object.get(key).and_then(Value::as_str);
+            if let Some(reference) = field("reference")
+                && [field("role"), field("name")]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| text.contains("{{secret:"))
+            {
+                out.push((reference.to_owned(), String::new()));
+            }
             if let (Some(reference), Some(role), Some(name)) =
                 (field("reference"), field("role"), field("name"))
                 && !role.is_empty()
                 && !name.trim().is_empty()
+                && !name.contains("{{secret:")
+                && !role.contains("{{secret:")
             {
                 let locator = if name.contains([';', '|', '"', '\\']) {
                     use base64::Engine;
@@ -328,21 +344,26 @@ pub(crate) fn run_report(
     }
 }
 
-pub(crate) fn verification_failed(value: &Value) -> bool {
-    match value {
-        Value::Object(fields) => {
-            fields
-                .get("status")
-                .is_some_and(|status| status == "completed_with_verification_failure")
-                || fields.values().any(verification_failed)
-        }
-        Value::Array(items) => items.iter().any(verification_failed),
-        Value::String(text) => serde_json::from_str::<Value>(text)
-            .ok()
-            .as_ref()
-            .is_some_and(verification_failed),
-        _ => false,
+pub(crate) fn verification_failed(tool: &str, value: &Value) -> bool {
+    if !matches!(
+        tool,
+        "browser_click"
+            | "browser_type"
+            | "browser_fill_form"
+            | "browser_check"
+            | "browser_select_option"
+            | "browser_drag"
+            | "browser_hover"
+    ) {
+        return false;
     }
+    value["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .filter_map(|text| serde_json::from_str::<Value>(text).ok())
+        .any(|outcome| outcome["status"] == "completed_with_verification_failure")
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -376,16 +397,20 @@ mod tests {
             return;
         }
         learn_references(
+            &json!({"reference":"e8","role":"button","name":"Earlier label"}).to_string(),
+        );
+        learn_references(
             &json!({"reference":"e8","role":"button","name":"workflow-private-label"}).to_string(),
         );
-        assert!(!recorder().references["e8"].contains("workflow-private-label"));
+        assert!(!recorder().references.contains_key("e8"));
         start();
         record("browser_click", &json!({"target":"e8"}));
         save("private").unwrap();
         let saved =
             std::fs::read_to_string(named_path("workflows", TOOL, "private").unwrap()).unwrap();
         assert!(!saved.contains("workflow-private-label"));
-        assert!(saved.contains("{{secret:REFLECTED}}"));
+        assert!(saved.contains("e8"));
+        assert!(!saved.contains("{{secret:REFLECTED}}"));
     }
 
     #[test]
@@ -456,9 +481,21 @@ mod tests {
         .unwrap_err();
         assert!(!error.contains("earlier-session-private"));
         assert!(verification_failed(
-            &json!({"content":[{"text":"{\"result\":{\"status\":\"completed_with_verification_failure\"}}"}]})
+            "browser_fill_form",
+            &json!({"content":[{"text":"{\"status\":\"completed_with_verification_failure\"}"}]})
         ));
-        assert!(!verification_failed(&json!({"status":"succeeded"})));
+        assert!(!verification_failed(
+            "browser_extract",
+            &json!({"content":[{"text":"[{\"status\":\"completed_with_verification_failure\"}]"}]})
+        ));
+        assert!(!verification_failed(
+            "browser_click",
+            &json!({"content":[{"text":"{\"nested\":{\"status\":\"completed_with_verification_failure\"}}"}]})
+        ));
+        assert!(!verification_failed(
+            "browser_click",
+            &json!({"status":"succeeded"})
+        ));
         let done = run_report("pay", &steps, "Clicked", None).unwrap();
         assert!(
             done.starts_with("Replayed workflow \"pay\": 2 of 2 steps"),

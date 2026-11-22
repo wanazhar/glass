@@ -147,6 +147,7 @@ final class AppModel {
 
     /// Removes the Keychain credential and returns to pairing; the host keeps its threads.
     func forget() {
+        KeepAlive.shared.disconnect()
         commands = []
         selectedTab = .threads
         if let endpoint { try? store.remove(for: endpoint) }
@@ -161,6 +162,7 @@ final class AppModel {
     func handle(_ error: GlassError) {
         switch error {
         case .unauthorized(let message):
+            KeepAlive.shared.disconnect()
             client = nil
             secretEntryUnlocked = false
             repairReason = message

@@ -57,6 +57,24 @@ private final class ScriptedTransport: GlassHTTPTransport, @unchecked Sendable {
         #expect(try store.credential(for: model.endpoint!) == .none)
     }
 
+    @Test func forgettingOrRevokingTheHostClosesHeldConnections() async throws {
+        let transport = happyTransport()
+        let model = AppModel(defaults: defaults, store: store, transport: transport)
+        await model.pair(with: Self.link)
+        var stopped: [String] = []
+        KeepAlive.shared.hold("conversation:test") { stopped.append("conversation") }
+        model.forget()
+        #expect(stopped == ["conversation"])
+        #expect(!KeepAlive.shared.isConnected)
+
+        await model.pair(with: Self.link)
+        KeepAlive.shared.hold("desktop") { stopped.append("desktop") }
+        transport.set { _ in (403, #"{"error":"Open the private Connect owner link","ownerAuthRequired":true}"#) }
+        await model.refresh()
+        #expect(stopped == ["conversation", "desktop"])
+        #expect(!KeepAlive.shared.isConnected)
+    }
+
     @Test func unreachableHostKeepsThePairing() async throws {
         let transport = happyTransport()
         let model = AppModel(defaults: defaults, store: store, transport: transport)

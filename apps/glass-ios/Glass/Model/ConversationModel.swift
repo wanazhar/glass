@@ -280,6 +280,7 @@ final class ConversationModel {
             connection = .reconnecting(reason)
         case .unauthorized(let message):
             liveTask = nil
+            KeepAlive.shared.release(keepAliveKey)
             app.handle(.unauthorized(message))
         }
     }

@@ -22,6 +22,7 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <div role="listbox" tabindex="0" aria-label="Billing"><div role="option" aria-selected="true">Monthly billing</div></div>
 <input role="combobox" aria-label="Editable option" oninput="document.getElementById('edited-value').textContent='EDITED '+this.value"><p id="edited-value"></p>
 <input role="combobox" aria-label="Reverting option" value="Standard" oninput="this.value='Standard';document.getElementById('reverted-value').textContent='REVERTED '+this.value"><p id="reverted-value"></p>
+<input role="combobox" aria-label="Saved city" value="Paris" onclick="this.select()" oninput="document.getElementById('saved-city-value').textContent='SAVED '+this.value"><p id="saved-city-value"></p>
 <a href="/report.csv" download="report.csv">Download report</a>
 <label for="p">Plan</label><select id="p" role="combobox listbox" onchange="state.plan=this.value;show()"><option>Solo</option><option>Team</option></select>
 <label><input type="checkbox" id="t" onchange="state.terms=this.checked;show()"> I agree to the terms</label>
@@ -299,6 +300,19 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     let unchanged = mcp.ok("browser_get_text", json!({})).await;
     assert!(unchanged.contains("EDITED Premium"), "{unchanged}");
     assert!(unchanged.contains("REVERTED Standard"), "{unchanged}");
+    let result = mcp
+        .call(
+            "browser_fill_form",
+            json!({"fields":[{"target":"name=Saved city","value":"Paris"}]}),
+        )
+        .await;
+    assert_ne!(result["isError"], true, "{result}");
+    let outcome: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(outcome["filled"], 1, "{outcome}");
+    assert_eq!(outcome["fields"][0]["success"], true, "{outcome}");
+    let saved = mcp.ok("browser_get_text", json!({})).await;
+    assert!(saved.contains("SAVED Paris"), "{saved}");
     mcp.ok(
         "browser_select_option",
         json!({"target":"name=Plan","value":"Team"}),

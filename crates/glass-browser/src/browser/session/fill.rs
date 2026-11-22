@@ -212,7 +212,12 @@ impl CdpBrowserSession {
             }
             match self.type_text(value, Some(reference)).await {
                 Ok(_) if dropdown => match self.form_control_metadata(element).await {
-                    Ok(after) if after["value"] != metadata["value"] => ("type".into(), true, None),
+                    Ok(after)
+                        if after["value"] != metadata["value"]
+                            || (!value.is_empty() && after["value"].as_str() == Some(value)) =>
+                    {
+                        ("type".into(), true, None)
+                    }
                     Ok(_) => (
                         "type".into(),
                         false,

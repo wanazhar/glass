@@ -33,6 +33,10 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <button onclick="window.open('about:blank')">Open preview</button>
 <button onclick="state.deleted=confirm('Delete the draft?');show()">Delete draft</button>
 <input aria-label="Shortcut box" onkeydown="state.key=event.key;show()">
+<p ondblclick="state.renamed=true;show()">Rename me</p>
+<div id="card" onmousedown="state.dragging=true">Card A</div>
+<div style="margin-top:40px;height:60px;border:1px solid" onmouseup="if(state.dragging){state.dropped=true;show()}">Done lane</div>
+<iframe srcdoc="<p>Inside frame</p>"></iframe>
 <p id="state"></p>
 </main>
 <script>const state={};function show(){document.getElementById('state').textContent='STATE '+JSON.stringify(state)}</script>"#;
@@ -160,7 +164,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.len() <= 20, "{names:?}");
+    assert!(names.len() <= 24, "{names:?}");
     assert!(
         names.iter().all(|name| name.starts_with("browser_")),
         "{names:?}"
@@ -388,7 +392,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     let wrong_argument = mcp.call("browser_click", json!({"selector":"#n"})).await;
     assert_eq!(wrong_argument["isError"], true);
     assert!(
-        text(&wrong_argument).contains("Allowed: target"),
+        text(&wrong_argument).contains("Allowed: double, target"),
         "{wrong_argument}"
     );
 
@@ -412,6 +416,75 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     );
     std::fs::remove_file(download_dir.join("report.csv")).unwrap();
     std::fs::remove_dir(download_dir).unwrap();
+
+    mcp.ok(
+        "browser_click",
+        json!({"target":"text=Rename me","double":true}),
+    )
+    .await;
+    mcp.ok(
+        "browser_drag",
+        json!({"source":"text=Card A","destination":"text=Done lane"}),
+    )
+    .await;
+    let page = mcp.ok("browser_get_text", json!({})).await;
+    assert!(page.contains("\"renamed\":true"), "{page}");
+    assert!(page.contains("\"dropped\":true"), "{page}");
+
+    let frames: Value =
+        serde_json::from_str(&mcp.ok("browser_frames", json!({"action":"list"})).await).unwrap();
+    let frames = frames.as_array().unwrap();
+    let child_frame = frames
+        .iter()
+        .find(|frame| frame["parent_id"].is_string())
+        .unwrap();
+    let main_frame = frames
+        .iter()
+        .find(|frame| frame["parent_id"].is_null())
+        .unwrap();
+    mcp.ok(
+        "browser_frames",
+        json!({"action":"select","id":child_frame["id"]}),
+    )
+    .await;
+    let inside = mcp.ok("browser_get_text", json!({})).await;
+    assert!(inside.contains("Inside frame"), "{inside}");
+    mcp.ok(
+        "browser_frames",
+        json!({"action":"select","id":main_frame["id"]}),
+    )
+    .await;
+
+    let verified = mcp
+        .ok(
+            "browser_verify",
+            json!({"text":"Net revenue","title":"Agent fixture"}),
+        )
+        .await;
+    assert!(verified.contains("satisfied"), "{verified}");
+    let failed = mcp
+        .call(
+            "browser_verify",
+            json!({"text":"Order confirmed","timeoutMs":300}),
+        )
+        .await;
+    assert_eq!(failed["isError"], true, "{failed}");
+    assert!(text(&failed).contains("do not report success"), "{failed}");
+
+    let pdf = std::env::temp_dir().join(format!("glass-agent-{port}.pdf"));
+    let saved_pdf = mcp
+        .ok("browser_save_pdf", json!({"path": pdf.to_str().unwrap()}))
+        .await;
+    assert!(saved_pdf.contains("\"bytes\""), "{saved_pdf}");
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+    let _ = std::fs::remove_file(&pdf);
+
+    let second = format!("{url}?step=2");
+    mcp.ok("browser_navigate", json!({"url": second})).await;
+    let back = mcp.ok("browser_history", json!({"action":"back"})).await;
+    assert!(back.contains("Page after action: URL is now"), "{back}");
+    mcp.ok("browser_verify", json!({"url": url})).await;
+    mcp.ok("browser_history", json!({"action":"reload"})).await;
 
     drop(mcp);
     let _ = child.wait().await;

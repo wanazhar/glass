@@ -463,6 +463,16 @@ impl BrowserRuntimeSession {
         .await
     }
 
+    /// Reload the active native history entry.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_reload(&self) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.reload().await?),
+            _ => Err("native reload is only available on the native runtime".into()),
+        }
+    }
+
     /// Reload the active native history entry only when its observation is current.
     #[cfg(feature = "native-engine")]
     pub async fn reload_with_revision(

@@ -27,6 +27,11 @@ pub(crate) fn agent_tools() -> Vec<Value> {
             json!({"type":"object","properties":{"url":{"type":"string","minLength":1,"maxLength":8192,"description":"Absolute http(s) or file URL.","examples":["https://example.com"]},"timeoutMs":timeout_schema(20000,120000)},"required":["url"],"additionalProperties":false}),
         ),
         tool(
+            "browser_history",
+            "Go back, go forward or reload the current tab, like the browser's toolbar buttons. Use to return to a results list after opening an item, or to reload a page that shows stale data. To open a new URL use browser_navigate. Example: {\"action\":\"back\"}.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["back","forward","reload"]}},"required":["action"],"additionalProperties":false}),
+        ),
+        tool(
             "browser_snapshot",
             "Read the current page as an accessibility snapshot: headings, text, links, buttons and form fields with a `ref` for each interactive element. Use after navigating or after any action that changes the page, before clicking or typing, and to read page content. Use browser_screenshot instead only for canvas, images or visual layout. Example: {}.",
             json!({"type":"object","properties":{"region":{"type":"string","minLength":1,"maxLength":128,"description":"Optional semantic region to focus, such as \"main\" or \"form\"."}},"additionalProperties":false}),
@@ -38,8 +43,8 @@ pub(crate) fn agent_tools() -> Vec<Value> {
         ),
         tool(
             "browser_click",
-            "Click a link, button, checkbox, tab or menu item identified by ref, role and name, label or text. Use for normal page controls. For canvas or map surfaces with no element, use browser_click_at; for select dropdowns use browser_select_option. Example: {\"target\":\"role=button;name=Create account\"}.",
-            json!({"type":"object","properties":{"target":target_schema()},"required":["target"],"additionalProperties":false}),
+            "Click a link, button, checkbox, tab or menu item identified by ref, role and name, label or text. Set `double` for controls that need a double-click (open a file row, edit a cell). For canvas or map surfaces with no element, use browser_click_at; for select dropdowns use browser_select_option. Example: {\"target\":\"role=button;name=Create account\"}.",
+            json!({"type":"object","properties":{"target":target_schema(),"double":{"type":"boolean","default":false,"description":"Double-click instead of a single click."}},"required":["target"],"additionalProperties":false}),
         ),
         tool(
             "browser_type",
@@ -87,6 +92,11 @@ pub(crate) fn agent_tools() -> Vec<Value> {
             json!({"type":"object","properties":{"x":{"type":"number","minimum":0,"maximum":20000},"y":{"type":"number","minimum":0,"maximum":20000}},"required":["x","y"],"additionalProperties":false}),
         ),
         tool(
+            "browser_drag",
+            "Drag one element onto another with a real pointer press, move and release: reorder list items, move kanban cards, drop onto a drop zone, move a slider handle. Both ends accept the same targets as browser_click. Not for file uploads; use browser_upload_file. Example: {\"source\":\"text=Write tests\",\"destination\":\"text=Done\"}.",
+            json!({"type":"object","properties":{"source":target_schema(),"destination":target_schema()},"required":["source","destination"],"additionalProperties":false}),
+        ),
+        tool(
             "browser_hover",
             "Move the pointer over an element to reveal hover menus or tooltips. Example: {\"target\":\"text=Products\"}.",
             json!({"type":"object","properties":{"target":target_schema()},"required":["target"],"additionalProperties":false}),
@@ -95,6 +105,11 @@ pub(crate) fn agent_tools() -> Vec<Value> {
             "browser_tabs",
             "List, open, switch to or close browser tabs. Use when a link opens a new tab or window (target=_blank): call with action \"list\", then \"select\" the new tab's id before reading it. Example: {\"action\":\"select\",\"id\":\"8F2C…\"}.",
             json!({"type":"object","properties":{"action":{"type":"string","enum":["list","new","select","close"]},"id":{"type":"string","minLength":1,"maxLength":128,"description":"Tab id from action \"list\"; required for select and close."},"url":{"type":"string","minLength":1,"maxLength":8192,"description":"URL for action \"new\"."}},"required":["action"],"additionalProperties":false}),
+        ),
+        tool(
+            "browser_frames",
+            "List the page's frames, or switch later browser_* calls into one iframe (embedded payment forms, editors, widgets) and back. Use when browser_snapshot shows an iframe whose content you need, or a target is not found but is visibly inside an embedded box. Select the frame with no `parent_id` to return to the main page. Example: {\"action\":\"select\",\"id\":\"F3A1…\"}.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["list","select"]},"id":{"type":"string","minLength":1,"maxLength":128,"description":"Frame id from action \"list\"; required for select."}},"required":["action"],"additionalProperties":false}),
         ),
         tool(
             "browser_handle_dialog",
@@ -110,6 +125,16 @@ pub(crate) fn agent_tools() -> Vec<Value> {
             "browser_download",
             "Capture a file download into an existing directory. Supply target to authorize before clicking its link in this same operation; do not click first or try a concurrent click. Omit target only for an independently triggered download. Example: {\"directory\":\".\",\"target\":\"name=Download report\"}.",
             json!({"type":"object","properties":{"directory":{"type":"string","minLength":1,"maxLength":4096,"default":"."},"target":target_schema(),"timeoutMs":timeout_schema(30000,30000)},"additionalProperties":false}),
+        ),
+        tool(
+            "browser_verify",
+            "Check that the page is in an expected state: returns \"satisfied\", or an error with the actual state. Use as the last step to confirm a task worked (order placed, setting saved, URL reached) before reporting success. Give one or more conditions; all must hold. `url` must match exactly, `title` and `text` are substrings, `visible` is a target. To wait for something to appear use browser_wait_for. Example: {\"text\":\"Order confirmed\"}.",
+            json!({"type":"object","properties":{"url":{"type":"string","minLength":1,"maxLength":8192},"title":{"type":"string","minLength":1,"maxLength":1024},"text":{"type":"string","minLength":1,"maxLength":1024},"visible":target_schema(),"timeoutMs":timeout_schema(5000,60000)},"minProperties":1,"additionalProperties":false}),
+        ),
+        tool(
+            "browser_save_pdf",
+            "Print the current page to a PDF file and return its path and size. Use when the user wants a page saved, archived or attached as a document (invoice, receipt, article). For an image of the page use browser_screenshot; for a file the site offers as a download use browser_download. Example: {\"path\":\"invoice.pdf\"}.",
+            json!({"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Output file, absolute or relative to the working directory; its directory must exist."}},"required":["path"],"additionalProperties":false}),
         ),
         tool(
             "browser_clipboard",
@@ -203,7 +228,68 @@ pub(crate) fn translate(name: &str, arguments: &Value) -> Result<(&'static str, 
             ("observe", out)
         }
         "browser_get_text" => ("getText", json!({})),
-        "browser_click" => ("click", json!({"target": need(a, "target", name)?})),
+        "browser_click" => (
+            if a.get("double").and_then(Value::as_bool) == Some(true) {
+                "doubleClick"
+            } else {
+                "click"
+            },
+            json!({"target": need(a, "target", name)?}),
+        ),
+        "browser_history" => match need(a, "action", name)? {
+            "back" => ("back", json!({})),
+            "forward" => ("forward", json!({})),
+            "reload" => ("reload", json!({})),
+            other => {
+                return Err(format!(
+                    "{name} action must be back, forward or reload, not `{other}`."
+                ));
+            }
+        },
+        "browser_drag" => (
+            "drag",
+            json!({"source": need(a, "source", name)?, "destination": need(a, "destination", name)?}),
+        ),
+        "browser_frames" => match need(a, "action", name)? {
+            "list" => ("listFrames", json!({})),
+            "select" => ("selectFrame", json!({"id": need(a, "id", name)?})),
+            other => {
+                return Err(format!(
+                    "{name} action must be list or select, not `{other}`."
+                ));
+            }
+        },
+        "browser_verify" => {
+            let mut checks = Vec::new();
+            for (key, predicate) in [
+                ("url", "urlEquals"),
+                ("title", "titleContains"),
+                ("text", "textContains"),
+                ("visible", "visible"),
+            ] {
+                if let Some(value) = string(a, key) {
+                    checks.push(json!({ predicate: value }));
+                }
+            }
+            let predicate = match checks.len() {
+                0 => {
+                    return Err(format!(
+                        "{name} needs at least one of url, title, text or visible. Example: {}",
+                        example(name)
+                    ));
+                }
+                1 => checks.remove(0),
+                _ => json!({"all": checks}),
+            };
+            (
+                "verify",
+                json!({"predicate": predicate, "timeoutMs": a.get("timeoutMs").and_then(Value::as_u64).unwrap_or(5000)}),
+            )
+        }
+        "browser_save_pdf" => {
+            pdf_path(need(a, "path", name)?)?;
+            ("printToPdf", json!({"printBackground": true}))
+        }
         "browser_hover" => ("hover", json!({"target": need(a, "target", name)?})),
         "browser_type" => {
             let mut out = json!({"text": need(a, "text", name)?});
@@ -393,6 +479,25 @@ pub(crate) fn translate(name: &str, arguments: &Value) -> Result<(&'static str, 
     })
 }
 
+/// Resolve where browser_save_pdf writes, refusing a missing directory up front.
+pub(crate) fn pdf_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let path = std::path::Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "working directory is unavailable".to_string())?
+            .join(path)
+    };
+    match absolute.parent() {
+        Some(parent) if parent.is_dir() => Ok(absolute),
+        _ => Err(format!(
+            "browser_save_pdf cannot write {}: its directory does not exist. Use an existing directory such as \".\".",
+            absolute.display()
+        )),
+    }
+}
+
 /// Accept the key spellings models commonly use.
 pub(crate) fn normalize_key(key: &str) -> String {
     key.split('+')
@@ -499,6 +604,8 @@ pub(crate) fn mutates_page(tool: &str) -> bool {
     matches!(
         tool,
         "browser_click"
+            | "browser_history"
+            | "browser_drag"
             | "browser_click_at"
             | "browser_type"
             | "browser_fill_form"
@@ -600,6 +707,10 @@ fn generic_hint(tool: &str, error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase().replace(['_', '-'], " ");
     if error.starts_with("connection failure during content sandbox: SandboxUnavailable:") {
         "Next: the browser runtime cannot start on this host, so retrying will not help; tell the user to restart glass-browser with --browser-runtime chromium (GC_BROWSER_RUNTIME=chromium for Glass Core) or upgrade bubblewrap."
+    } else if lower.contains("predicate not satisfied") {
+        "Next: the page is not in the expected state, so do not report success yet; call browser_snapshot to see what happened and finish the step that is missing."
+    } else if lower.contains("history entry") {
+        "Next: this tab has no page in that direction; use browser_navigate with the URL you want instead."
     } else if lower.contains("dialog") {
         "Next: a JavaScript dialog is blocking the page; call browser_handle_dialog with {\"accept\":true} or {\"accept\":false}."
     } else if lower.contains("stale") || lower.contains("revision") || lower.contains("reference") {
@@ -639,7 +750,7 @@ mod tests {
     #[test]
     fn agent_tools_have_when_to_use_text_examples_and_closed_schemas() {
         let tools = agent_tools();
-        assert!(tools.len() <= 20, "agent profile must stay small");
+        assert!(tools.len() <= 24, "agent profile must stay small");
         for tool in &tools {
             let name = tool["name"].as_str().unwrap();
             assert!(name.starts_with("browser_"), "{name}");
@@ -656,6 +767,43 @@ mod tests {
             translate(name, &example)
                 .unwrap_or_else(|error| panic!("{name} example fails: {error}"));
         }
+    }
+
+    #[test]
+    fn translate_maps_completeness_tools_onto_full_catalog_tools() {
+        assert_eq!(
+            translate("browser_click", &json!({"target":"e4","double":true})).unwrap(),
+            ("doubleClick", json!({"target":"e4"}))
+        );
+        assert_eq!(
+            translate("browser_history", &json!({"action":"reload"})).unwrap(),
+            ("reload", json!({}))
+        );
+        assert_eq!(
+            translate("browser_frames", &json!({"action":"select","id":"F1"})).unwrap(),
+            ("selectFrame", json!({"id":"F1"}))
+        );
+        assert_eq!(
+            translate(
+                "browser_verify",
+                &json!({"text":"Saved","url":"https://a.test/"})
+            )
+            .unwrap(),
+            (
+                "verify",
+                json!({"predicate":{"all":[{"urlEquals":"https://a.test/"},{"textContains":"Saved"}]},"timeoutMs":5000})
+            )
+        );
+        assert!(
+            translate("browser_verify", &json!({"timeoutMs":100}))
+                .unwrap_err()
+                .contains("at least one")
+        );
+        assert!(
+            translate("browser_save_pdf", &json!({"path":"/no/such/dir/a.pdf"}))
+                .unwrap_err()
+                .contains("directory does not exist")
+        );
     }
 
     #[test]

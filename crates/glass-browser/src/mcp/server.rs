@@ -505,6 +505,10 @@ enum ToolInvocation<'a> {
     PrintToPdf {
         options: serde_json::Value,
     },
+    History {
+        action: &'static str,
+        expected_revision: Option<u64>,
+    },
     FillForm {
         fields: Vec<(String, String)>,
         expected_revision: Option<u64>,
@@ -1640,6 +1644,26 @@ fn workflow_status_error_code(message: &str) -> i32 {
     }
 }
 
+/// Write the base64 PDF from printToPdf to the path the agent asked for.
+fn save_pdf_result(request: &JsonRpcRequest, result: &Value) -> Result<String, String> {
+    use base64::Engine as _;
+    let path = request.params["arguments"]["path"]
+        .as_str()
+        .unwrap_or_default();
+    super::agent_tools::pdf_path(path).and_then(|path| {
+        let encoded = result["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<String>(text).ok())
+            .ok_or("printToPdf returned no PDF data")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("printToPdf returned invalid base64: {error}"))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        Ok(json!({"path": path, "bytes": bytes.len()}).to_string())
+    })
+}
+
 fn tool_requires_mutation_lease(tool_name: &str) -> bool {
     !matches!(
         tool_name,
@@ -2072,6 +2096,17 @@ async fn handle_request_with_viewport(
         .result
         .as_ref()
         .is_some_and(|result| result["isError"] != true);
+    if succeeded
+        && agent_tool == "browser_save_pdf"
+        && let Some(result) = response.result.as_mut()
+    {
+        match save_pdf_result(request, result) {
+            Ok(text) => result["content"] = json!([{"type": "text", "text": text}]),
+            Err(error) => {
+                *result = json!({"content": [{"type": "text", "text": format!("{error} | Next: pass a writable path such as \"page.pdf\".")}], "isError": true});
+            }
+        }
+    }
     let dialog_open = response.result.as_ref().is_some_and(|result| {
         result["content"][0]["text"]
             .as_str()
@@ -3299,6 +3334,21 @@ async fn call_tool(
                 .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result(&session.print_to_pdf(&opts).await?)
         }
+        ToolInvocation::History {
+            action,
+            expected_revision,
+        } => {
+            let revision = expected_revision.unwrap_or_else(|| {
+                session
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            });
+            serialized_result(&match action {
+                "back" => session.go_back_with_revision(revision).await?,
+                "forward" => session.go_forward_with_revision(revision).await?,
+                _ => session.reload_with_revision(revision).await?,
+            })
+        }
         ToolInvocation::FillForm {
             fields,
             expected_revision,
@@ -4073,6 +4123,14 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "sessionStorage" => Ok(ToolInvocation::SessionStorage),
         "printToPdf" => Ok(ToolInvocation::PrintToPdf {
             options: arguments.clone(),
+        }),
+        "back" | "forward" | "reload" => Ok(ToolInvocation::History {
+            action: match tool_name {
+                "back" => "back",
+                "forward" => "forward",
+                _ => "reload",
+            },
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "fillForm" => {
             let arr = arguments["fields"]
@@ -6459,6 +6517,20 @@ async fn call_native_tool_on_session_impl(
                 .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result_mode(&session.native_print_to_pdf(&options).await?, response_mode)
         }
+        ToolInvocation::History {
+            action,
+            expected_revision,
+        } => {
+            let outcome = match (action, expected_revision) {
+                ("back", None) => session.go_back().await?,
+                ("back", Some(revision)) => session.go_back_with_revision(revision).await?,
+                ("forward", None) => session.go_forward().await?,
+                ("forward", Some(revision)) => session.go_forward_with_revision(revision).await?,
+                (_, None) => session.native_reload().await?,
+                (_, Some(revision)) => session.reload_with_revision(revision).await?,
+            };
+            serialized_result_mode(&outcome, response_mode)
+        }
         ToolInvocation::FillForm {
             fields,
             expected_revision,
@@ -7519,6 +7591,21 @@ fn tools() -> Vec<Tool> {
             name: "sessionStorage",
             description: "Read sessionStorage items (bounded to 64 entries, 1 KiB per value). Requires persistent profile.",
             input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "back",
+            description: "Go one entry back in the active page's history.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
+            name: "forward",
+            description: "Go one entry forward in the active page's history.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
+            name: "reload",
+            description: "Reload the active page.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
         },
         Tool {
             name: "printToPdf",

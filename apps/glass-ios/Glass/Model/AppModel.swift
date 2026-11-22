@@ -177,6 +177,9 @@ final class AppModel {
         forget()
         allowLANHTTP = false
         Drafts.shared.removeAll()
+        for key in [Attention.key, Attention.notifiedKey, KeepAlive.key] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 }
 

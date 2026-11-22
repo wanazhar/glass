@@ -94,7 +94,8 @@ extension XCTestCase {
                 let advisory = element == nil || issue.compactDescription.contains("nearly") || issue.auditType == .dynamicType || issue.auditType == .textClipped
                     || (issue.auditType == .contrast && element?.isEnabled == false)
                     || (element?.elementType == .searchField && issue.auditType == .contrast)
-                    || (element.map { $0.frame.midY > chromeTop } ?? false)
+                    // Rows scrolled under the tab bar's edge blur are measured against the blur, not their own row.
+                    || (element.map { $0.frame.maxY > chromeTop - 24 } ?? false)
                 if advisory { notes.append(line) } else { issues.append(line) }
                 return true
             }

@@ -855,13 +855,22 @@ final class LiveHostE2ETests: XCTestCase {
         let app = try pairedApp(arguments: ["-GlassFollowResumeSeconds", "6"])
         open(app, thread: thread)
         XCTAssertTrue(waitForConnection(app, "Live"))
-        _ = try call("thread/send?id=\(thread)&text=lines%20220", method: "POST")
+        _ = try call("thread/send?id=\(thread)&text=lines%20400", method: "POST")
         let latest = app.buttons["conversation.latest"]
         let window = app.windows.firstMatch.frame
+        // One snapshot of the whole screen: querying each of hundreds of lines on its own takes longer
+        // than the waits below.
         func newestLine() -> Int {
-            let labels = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'of a long streamed reply'")).allElementsBoundByIndex
-                .filter { $0.frame.intersects(window) }.map(\.label)
-            return labels.flatMap { $0.matches(of: /Line (\d+) of/).compactMap { Int($0.1) } }.max() ?? 0
+            guard let root = try? app.snapshot() else { return 0 }
+            var newest = 0
+            var pending = [root]
+            while let node = pending.popLast() {
+                pending.append(contentsOf: node.children)
+                guard node.elementType == .staticText, node.frame.intersects(window),
+                      node.label.contains("of a long streamed reply") else { continue }
+                for match in node.label.matches(of: /Line (\d+) of/) { newest = max(newest, Int(match.1) ?? 0) }
+            }
+            return newest
         }
         XCTAssertTrue(waitUntil(30) { newestLine() >= 30 }, "the reply streams in")
         let followed = newestLine()

@@ -42,24 +42,30 @@ struct MarbleLiveActivity: Widget {
                 Image(systemName: "bubble.left.and.text.bubble.right.fill")
                     .accessibilityLabel("Marble")
             } compactTrailing: {
-                Image(systemName: context.isStale ? "wifi.exclamationmark" : "wifi")
-                    .accessibilityLabel(context.isStale ? "Connection unconfirmed" : "Connected")
+                connectionIcon(context)
             } minimal: {
-                Image(systemName: context.isStale ? "wifi.exclamationmark" : "wifi")
-                    .accessibilityLabel(context.isStale ? "Marble connection unconfirmed" : "Marble connected")
+                connectionIcon(context)
             }
         }
+    }
+
+    private func connectionIcon(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>) -> some View {
+        let connected = !context.isStale && context.state.connectedAt != nil
+        return Image(systemName: connected ? "wifi" : "wifi.exclamationmark")
+            .accessibilityLabel(connected ? "Marble connected" : "Marble connection unconfirmed")
     }
 
     private func status(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>) -> some View {
         HStack(spacing: 6) {
             if context.isStale {
                 Text("Connection unconfirmed")
-            } else {
+            } else if let connectedAt = context.state.connectedAt {
                 Text("Connected")
-                Text(timerInterval: context.state.connectedAt...Date.distantFuture, countsDown: false)
+                Text(timerInterval: connectedAt...Date.distantFuture, countsDown: false)
                     .monospacedDigit()
                     .accessibilityLabel("Connection uptime")
+            } else {
+                Text("Reconnecting")
             }
         }
         .font(.subheadline)

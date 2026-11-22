@@ -1,5 +1,29 @@
 import Foundation
 
+/// Tracks notification eligibility for one running stream task, including
+/// automatic retries while background keep-alive remains active.
+struct MarbleReplyDeliveryWindow {
+    private(set) var liveAfter: UInt64?
+
+    mutating func opened(at cursor: UInt64, keepingAlive: Bool) {
+        if !keepingAlive || liveAfter == nil { liveAfter = cursor }
+    }
+
+    mutating func interrupted(keepingAlive: Bool) {
+        if !keepingAlive { liveAfter = nil }
+    }
+
+    mutating func hostRestarted(keepingAlive: Bool) {
+        // The host's new event buffer starts empty. Durable history loaded
+        // into the new process never generates reply events.
+        if keepingAlive, liveAfter != nil {
+            liveAfter = 0
+        } else {
+            liveAfter = nil
+        }
+    }
+}
+
 /// The event stream's hello cursor separates replay from live replies.
 /// Stable entry IDs deduplicate replies within and across connections.
 struct MarbleNotificationCursor: Codable, Equatable {

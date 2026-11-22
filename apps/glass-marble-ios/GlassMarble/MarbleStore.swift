@@ -301,6 +301,8 @@ final class MarbleStore: ObservableObject {
     /// within a second of each other, and only one attempt should run.
     func reconnect(force: Bool = false) {
         guard onboarded, !appInBackground, !connectionPaused || force else { return }
+        // The live stream owns retries while background keep-alive is armed.
+        guard force || !backgroundConnection.isKeepingAlive else { return }
         if connectionPaused, let endpoint {
             client = MarbleClient(endpoint: endpoint)
             setConnectionPaused(false)
@@ -327,7 +329,7 @@ final class MarbleStore: ObservableObject {
         }
         activityStartedForTransition = false
         updateBackgroundConnection()
-        guard wasBackgrounded, streamConnectedAt == nil, !connectionPaused else { return }
+        guard wasBackgrounded, streamTask == nil, !connectionPaused else { return }
         status.resume()
         reconnect(force: true)
     }
@@ -361,7 +363,8 @@ final class MarbleStore: ObservableObject {
     }
 
     private func updateBackgroundConnection() {
-        let keepAlive = backgroundConnectionEnabled && streamConnectedAt != nil && !needsToken
+        let keepAlive = backgroundConnectionEnabled && !connectionPaused && !needsToken
+            && (streamConnectedAt != nil || backgroundConnection.isKeepingAlive)
         backgroundConnection.setLocationNeeded(keepAlive, canStart: !appInBackground)
         locationPermissionDenied = backgroundConnectionEnabled && backgroundConnection.permissionDenied
         if !backgroundConnection.isKeepingAlive {
@@ -373,9 +376,14 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    private func streamDisconnected() {
-        if streamConnectedAt != nil { Self.streamLog.debug("SSE disconnected") }
+    private func streamDisconnected(keepingAlive: Bool = false) {
+        let wasConnected = streamConnectedAt != nil
         streamConnectedAt = nil
+        if wasConnected { Self.streamLog.debug("SSE disconnected") }
+        if keepingAlive {
+            if wasConnected { backgroundConnection.showReconnecting() }
+            return
+        }
         backgroundConnection.setLocationNeeded(false, canStart: false)
         backgroundConnection.endActivity()
     }
@@ -1339,21 +1347,22 @@ final class MarbleStore: ObservableObject {
         let generation = hostGeneration.current
         streamTask = Task { [weak self] in
             var generation = generation
+            var delivery = MarbleReplyDeliveryWindow()
             while !Task.isCancelled {
                 guard let self, let client else { return }
                 var endedReason: String? = nil
                 do {
                     let health = try await client.health(timeout: 3)
                     guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
-                    self.prepareForStream(health)
+                    if self.prepareForStream(health) {
+                        delivery.hostRestarted(keepingAlive: self.backgroundConnection.isKeepingAlive)
+                    }
                     generation = self.hostGeneration.current
-                    var liveAfter: UInt64?
                     stream: for try await update in client.events(since: self.sequence) {
                         guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
                         switch update {
                         case .opened:
                             self.status.streamOpened()
-                            self.backoffSeconds = 1
                             self.threadHostRevision &+= 1
                             let openedGeneration = generation
                             // A newly restarted host may not send any live event.
@@ -1369,13 +1378,16 @@ final class MarbleStore: ObservableObject {
                         case .baseline(let cursor):
                             // A restart can land between /healthz and /api/events.
                             if cursor < self.sequence { break stream }
-                            liveAfter = cursor
-                            self.streamConnectedAt = .now
+                            delivery.opened(at: cursor, keepingAlive: self.backgroundConnection.isKeepingAlive)
+                            self.backoffSeconds = 1
+                            let connectedAt = Date.now
+                            self.streamConnectedAt = connectedAt
                             Self.streamLog.debug("SSE connected")
                             self.updateBackgroundConnection()
+                            self.backgroundConnection.refreshActivity(connectedAt: connectedAt, immediately: true)
                         case .event(let event):
                             self.status.streamEvent()
-                            self.handle(event, liveAfter: liveAfter)
+                            self.handle(event, liveAfter: delivery.liveAfter)
                         }
                     }
                 } catch MarbleClientError.unauthorized {
@@ -1388,10 +1400,12 @@ final class MarbleStore: ObservableObject {
                     self.markOffline(error)
                 }
                 if Task.isCancelled { return }
-                self.streamDisconnected()
+                let keepingAlive = self.backgroundConnection.isKeepingAlive
+                delivery.interrupted(keepingAlive: keepingAlive)
+                self.streamDisconnected(keepingAlive: keepingAlive)
                 self.status.streamEnded(endedReason)
                 self.loaded = true
-                if self.appInBackground {
+                if self.appInBackground && !keepingAlive {
                     self.streamTask = nil
                     return
                 }
@@ -1403,7 +1417,7 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    private func prepareForStream(_ health: MarbleHealth) {
+    private func prepareForStream(_ health: MarbleHealth) -> Bool {
         let resume = MarbleResumeCursor.resume(
             saved: sequence, hostSequence: health.sequence, previousPID: hostPID, hostPID: health.pid
         )
@@ -1425,6 +1439,7 @@ final class MarbleStore: ObservableObject {
                 UserDefaults.standard.set(pid, forKey: Self.hostPIDKeyPrefix + endpoint.baseURL.absoluteString)
             }
         }
+        return resume.restarted
     }
 
     /// Mirror the selected conversation's buffers into the published fields.

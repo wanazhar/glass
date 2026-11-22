@@ -39,6 +39,48 @@ final class MarbleNotificationTests: XCTestCase {
         XCTAssertNil(cursor.consume(reply(14, conversation: "private"), liveAfter: 10))
     }
 
+    func testAutomaticKeepAliveRetryDeliversMissedRepliesOnce() {
+        var delivery = MarbleReplyDeliveryWindow()
+        var cursor = MarbleNotificationCursor()
+        delivery.opened(at: 10, keepingAlive: false)
+        XCTAssertNotNil(cursor.consume(reply(11, id: "live"), liveAfter: delivery.liveAfter))
+
+        delivery.interrupted(keepingAlive: true)
+        delivery.interrupted(keepingAlive: true)
+        delivery.opened(at: 15, keepingAlive: true)
+        XCTAssertNil(cursor.consume(reply(9, id: "old history"), liveAfter: delivery.liveAfter))
+        XCTAssertNotNil(cursor.consume(reply(13, id: "missed"), liveAfter: delivery.liveAfter))
+        XCTAssertNil(cursor.consume(reply(14, id: "missed"), liveAfter: delivery.liveAfter))
+        XCTAssertNotNil(cursor.consume(reply(16, id: "new"), liveAfter: delivery.liveAfter))
+    }
+
+    func testKeepAliveRetryCanCatchUpAfterHostRestarts() {
+        var delivery = MarbleReplyDeliveryWindow()
+        var cursor = MarbleNotificationCursor()
+        delivery.opened(at: 100, keepingAlive: false)
+        delivery.interrupted(keepingAlive: true)
+        delivery.hostRestarted(keepingAlive: true)
+        delivery.opened(at: 5, keepingAlive: true)
+        XCTAssertNotNil(cursor.consume(reply(3), liveAfter: delivery.liveAfter))
+        XCTAssertNil(cursor.consume(reply(4), liveAfter: delivery.liveAfter))
+    }
+
+    func testUnarmedRetryAndFreshStreamBaselineSilently() {
+        var delivery = MarbleReplyDeliveryWindow()
+        var cursor = MarbleNotificationCursor()
+        delivery.opened(at: 10, keepingAlive: false)
+        delivery.interrupted(keepingAlive: false)
+        delivery.opened(at: 15, keepingAlive: false)
+        XCTAssertNil(cursor.consume(reply(13, id: "retry history"), liveAfter: delivery.liveAfter))
+
+        // Launch and manual reconnect start with a new stream task.
+        delivery = MarbleReplyDeliveryWindow()
+        delivery.hostRestarted(keepingAlive: false)
+        delivery.opened(at: 20, keepingAlive: false)
+        XCTAssertNil(cursor.consume(reply(18, id: "launch history"), liveAfter: delivery.liveAfter))
+        XCTAssertNotNil(cursor.consume(reply(21, id: "live"), liveAfter: delivery.liveAfter))
+    }
+
     func testOnlyPersistedAssistantAndFailureRepliesQualify() {
         var cursor = MarbleNotificationCursor()
         for kind in ["user", "tool", "reasoning"] {

@@ -83,15 +83,27 @@ final class MarbleBackgroundConnection: NSObject, @preconcurrency CLLocationMana
         }
     }
 
-    func refreshActivity(connectedAt: Date) {
-        guard let activity, Date.now.timeIntervalSince(lastActivityUpdate) >= 30 else { return }
+    func showReconnecting() {
+        updateActivity(connectedAt: nil, immediately: true)
+    }
+
+    func refreshActivity(connectedAt: Date, immediately: Bool = false) {
+        updateActivity(connectedAt: connectedAt, immediately: immediately)
+    }
+
+    private func updateActivity(connectedAt: Date?, immediately: Bool) {
+        guard let activity,
+              immediately || Date.now.timeIntervalSince(lastActivityUpdate) >= 30 else { return }
         lastActivityUpdate = .now
         let content = activityContent(connectedAt: connectedAt)
         Task { await activity.update(content) }
     }
 
-    private func activityContent(connectedAt: Date) -> ActivityContent<MarbleConnectionActivityAttributes.ContentState> {
-        .init(state: .init(connectedAt: connectedAt), staleDate: .now.addingTimeInterval(60))
+    private func activityContent(connectedAt: Date?) -> ActivityContent<MarbleConnectionActivityAttributes.ContentState> {
+        .init(
+            state: .init(connectedAt: connectedAt),
+            staleDate: connectedAt.map { _ in .now.addingTimeInterval(60) }
+        )
     }
 
     func endActivity() {

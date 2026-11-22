@@ -4,7 +4,8 @@ import Foundation
 
 struct MarbleConnectionActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
-        let connectedAt: Date
+        /// Nil while SSE is retrying.
+        let connectedAt: Date?
     }
 
     let host: String

@@ -2596,6 +2596,19 @@ impl NativeEngineBackend {
             .map_err(native_error)
     }
 
+    pub async fn wait_for_download_id(
+        &self,
+        destination: &std::path::Path,
+        deadline: std::time::Duration,
+        download_id: &str,
+    ) -> Result<crate::browser::session::DownloadOutcome, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Download)
+            .await?
+            .wait_for_download_id_async(destination, deadline, Some(download_id))
+            .await
+            .map_err(native_error)
+    }
+
     pub fn cancel_download(&self, download_id: &str) -> Result<bool, BrowserBackendError> {
         self.try_lock_engine(BackendOperation::Download)?
             .cancel_download(download_id)

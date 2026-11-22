@@ -100,7 +100,7 @@ struct JsonRpcRequest {
     id: RequestId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 enum RequestId {
     #[default]
     Missing,
@@ -479,6 +479,7 @@ enum ToolInvocation<'a> {
     Download {
         destination: std::path::PathBuf,
         timeout_ms: u64,
+        target: Option<&'a str>,
     },
     ListTargets,
     CreateTarget {
@@ -1198,6 +1199,7 @@ where
         let task_session = Arc::clone(&session);
         let task_native_session = Arc::clone(&native_session);
         let task_options = options.clone();
+        let task_agent_profile = cli.tool_profile == crate::cli::args::ToolProfile::Agent;
         let task_policy = policy.clone();
         let task_viewport = viewport;
         let task_knowledge_store = cli.knowledge_store.clone();
@@ -1256,6 +1258,7 @@ where
                     &task_development_sessions,
                     task_host_backend.as_deref(),
                     task_elicitation.as_ref(),
+                    task_agent_profile,
                 )
                 .await
             };
@@ -1571,7 +1574,7 @@ async fn mutation_lease_error(
     } else if !tool_requires_mutation_lease(tool_name) {
         return None;
     }
-    let arguments = request.params.get("arguments")?;
+    let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
     let lease = arguments.get("mutationLease").and_then(Value::as_object);
     let token = lease
         .and_then(|lease| lease.get("token"))
@@ -1640,7 +1643,10 @@ fn workflow_status_error_code(message: &str) -> i32 {
 fn tool_requires_mutation_lease(tool_name: &str) -> bool {
     !matches!(
         tool_name,
-        "screenshot"
+        "browser_snapshot"
+            | "browser_get_text"
+            | "browser_screenshot"
+            | "screenshot"
             | "observe"
             | "observeBootstrap"
             | "observeKnowledge"
@@ -1910,12 +1916,121 @@ async fn handle_request(
         &development_sessions,
         None,
         None,
+        false,
     )
     .await
 }
 
+/// Route `browser_*` agent-profile calls through the full catalog and add a
+/// next step to their failures.
 #[allow(clippy::too_many_arguments)]
 async fn handle_request_with_viewport(
+    request: &JsonRpcRequest,
+    session: &mut Option<CdpBrowserSession>,
+    native_session: &mut Option<BrowserRuntimeSession>,
+    native_runtime: bool,
+    persistent_native_session: Option<&str>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
+    knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
+    agent_profile: bool,
+) -> Option<JsonRpcResponse> {
+    use super::agent_tools;
+    if request.method == "tools/list" && agent_profile {
+        let mut tools = agent_tools::agent_tools();
+        if native_runtime {
+            tools.retain(|tool| tool["name"] != "browser_handle_dialog");
+        }
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"tools": tools}),
+        ));
+    }
+    let agent_tool = (request.method == "tools/call")
+        .then(|| request.params.get("name").and_then(Value::as_str))
+        .flatten()
+        .filter(|name| agent_tools::is_agent_tool(name))
+        .map(str::to_owned);
+    let Some(agent_tool) = agent_tool else {
+        return Box::pin(handle_request_inner(
+            request,
+            session,
+            native_session,
+            native_runtime,
+            persistent_native_session,
+            options,
+            policy,
+            viewport,
+            knowledge_store_path,
+            development_sessions,
+            host_backend,
+            elicitation,
+        ))
+        .await;
+    };
+    let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
+    if native_runtime && agent_tool == "browser_handle_dialog" {
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":"Manual dialog decisions require Chromium. Native dialogs use form elicitation during the original operation; a later decision cannot change an already returned confirm or prompt."}],"isError":true}),
+        ));
+    }
+    let (tool, arguments) = match agent_tools::translate(&agent_tool, arguments) {
+        Ok(translated) => translated,
+        Err(message) => {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({"content":[{"type":"text","text":message}],"isError":true}),
+            ));
+        }
+    };
+    let mut params = request.params.clone();
+    params["name"] = json!(tool);
+    params["arguments"] = arguments;
+    let translated = JsonRpcRequest {
+        jsonrpc: request.jsonrpc.clone(),
+        method: request.method.clone(),
+        params,
+        id: request.id.clone(),
+    };
+    let mut response = Box::pin(handle_request_inner(
+        &translated,
+        session,
+        native_session,
+        native_runtime,
+        persistent_native_session,
+        options,
+        policy,
+        viewport,
+        knowledge_store_path,
+        development_sessions,
+        host_backend,
+        elicitation,
+    ))
+    .await?;
+    if let Some(result) = response.result.as_mut()
+        && result["isError"] == true
+        && let Some(content) = result["content"].as_array_mut()
+    {
+        let error = content
+            .first()
+            .and_then(|item| item["text"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        content.push(json!({
+            "type": "text",
+            "text": agent_tools::recovery_hint(&agent_tool, &error)
+        }));
+    }
+    Some(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_inner(
     request: &JsonRpcRequest,
     session: &mut Option<CdpBrowserSession>,
     native_session: &mut Option<BrowserRuntimeSession>,
@@ -3027,9 +3142,10 @@ async fn call_tool(
         ToolInvocation::Download {
             destination,
             timeout_ms,
+            target,
         } => serialized_result(
             &session
-                .wait_for_download(&destination, Duration::from_millis(timeout_ms))
+                .capture_download(&destination, Duration::from_millis(timeout_ms), target)
                 .await?,
         ),
         ToolInvocation::ListTargets => serialized_result(&session.list_targets().await?),
@@ -3811,6 +3927,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "download" => Ok(ToolInvocation::Download {
             destination: std::path::PathBuf::from(required_string(arguments, "destination")?),
             timeout_ms: optional_u64(arguments, "timeoutMs", 30_000)?,
+            target: optional_string(arguments, "target")?,
         }),
         "listTargets" => Ok(ToolInvocation::ListTargets),
         "createTarget" => Ok(ToolInvocation::CreateTarget {
@@ -6139,11 +6256,24 @@ async fn call_native_tool_on_session_impl(
         ToolInvocation::Download {
             destination,
             timeout_ms,
+            target,
         } => {
             policy.require(crate::browser::policy::PolicyCapability::Download)?;
             let destination = policy.require_existing_path(&destination)?;
             if !destination.is_dir() {
                 return Err("native download destination must be an existing directory".into());
+            }
+            if let Some(target) = target {
+                return serialized_result_mode(
+                    &session
+                        .native_capture_download(
+                            &destination,
+                            Duration::from_millis(timeout_ms),
+                            target,
+                        )
+                        .await?,
+                    response_mode,
+                );
             }
             serialized_result_mode(
                 &session
@@ -7211,8 +7341,8 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "download",
-            description: "Wait for one download into an authorized existing directory.",
-            input_schema: json!({"type":"object","properties":{"destination":{"type":"string"},"timeoutMs":{"type":"integer","minimum":1,"maximum":30000,"default":30000}},"required":["destination"]}),
+            description: "Capture one download into an authorized existing directory. Give target to authorize and subscribe before clicking an immediate download link in the same operation.",
+            input_schema: json!({"type":"object","properties":{"destination":{"type":"string"},"target":{"type":"string"},"timeoutMs":{"type":"integer","minimum":1,"maximum":30000,"default":30000}},"required":["destination"]}),
         },
         Tool {
             name: "listTargets",
@@ -7879,6 +8009,136 @@ mod tests {
             lease_context_for_request(true, "tools/list", None),
             Ok(None)
         ));
+    }
+
+    #[tokio::test]
+    async fn daemon_aliases_classify_reads_and_accept_validated_lease_metadata() {
+        let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
+        let lease = manager
+            .lock()
+            .await
+            .acquire("session", "client", current_time_ms(), 30_000)
+            .unwrap();
+        for (name, arguments, needs_lease) in [
+            ("browser_snapshot", json!({}), false),
+            ("browser_click", json!({"target":"name=Save"}), true),
+            (
+                "browser_click",
+                json!({"target":"name=Save","leaseToken":"invalid"}),
+                true,
+            ),
+            (
+                "browser_click",
+                json!({"target":"name=Save","leaseToken":lease.token}),
+                false,
+            ),
+            (
+                "browser_click",
+                json!({"target":"name=Save","mutationLease":{"token":lease.token}}),
+                false,
+            ),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":name,"arguments":arguments}
+            })).unwrap();
+            assert_eq!(
+                mutation_lease_error(&request, &manager, "session", "client")
+                    .await
+                    .is_some(),
+                needs_lease
+            );
+            let (_, translated) = super::super::agent_tools::translate(name, &arguments).unwrap();
+            assert!(translated.get("mutationLease").is_none());
+            assert!(translated.get("leaseToken").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_catalog_is_request_scoped_and_native_manual_dialogs_are_unavailable() {
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let options = SessionOptions::default();
+        for (agent, native) in [(true, false), (false, false), (true, true), (false, false)] {
+            let request: JsonRpcRequest =
+                serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+                    .unwrap();
+            let response = handle_request_with_viewport(
+                &request,
+                &mut None,
+                &mut None,
+                native,
+                None,
+                &options,
+                &policy,
+                None,
+                None,
+                &(),
+                None,
+                None,
+                agent,
+            )
+            .await
+            .unwrap();
+            let tools = response.result.unwrap()["tools"]
+                .as_array()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                tools.iter().any(|tool| tool["name"] == "browser_snapshot"),
+                agent
+            );
+            assert_eq!(
+                tools
+                    .iter()
+                    .any(|tool| tool["name"] == "browser_handle_dialog"),
+                agent && !native
+            );
+        }
+        let request: JsonRpcRequest = serde_json::from_value(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_handle_dialog","arguments":{"accept":true}}})).unwrap();
+        let response = handle_request_with_viewport(
+            &request,
+            &mut None,
+            &mut None,
+            true,
+            None,
+            &options,
+            &policy,
+            None,
+            None,
+            &(),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("form elicitation")
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_mutation_alias_requires_lease_without_arguments() {
+        let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
+        for params in [
+            json!({"name":"browser_download"}),
+            json!({"name":"browser_download","arguments":null}),
+            json!({"name":"browser_download","arguments":{}}),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call", "params":params
+            }))
+            .unwrap();
+            assert!(
+                mutation_lease_error(&request, &manager, "session", "client")
+                    .await
+                    .is_some()
+            );
+        }
     }
 
     #[tokio::test]
@@ -8710,6 +8970,7 @@ mod tests {
             &development_sessions,
             None,
             None,
+            false,
         )
         .await
         .expect("native MCP tool should return a response")

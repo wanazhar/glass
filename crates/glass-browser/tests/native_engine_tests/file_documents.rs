@@ -1523,6 +1523,53 @@ async fn native_file_download_link_transfers_rooted_bytes_inner() {
         .await
         .unwrap();
     assert_eq!(engine.download_ids().unwrap(), vec!["native-download-1"]);
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=file".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .wait_for_download_id_async(
+                &download_directory,
+                Duration::from_secs(5),
+                Some("missing")
+            )
+            .await
+            .is_err()
+    );
+    fs::remove_file(&asset_path).unwrap();
+    assert!(
+        engine
+            .wait_for_download_id_async(
+                &download_directory,
+                Duration::from_secs(5),
+                Some("native-download-2")
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        engine.download_ids().unwrap(),
+        vec!["native-download-1", "native-download-2"]
+    );
+    fs::write(&asset_path, b"rooted-file-download").unwrap();
+    let selected = engine
+        .wait_for_download_id_async(
+            &download_directory,
+            Duration::from_secs(5),
+            Some("native-download-2"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.guid, "native-download-2");
+    assert!(
+        engine
+            .download_ids()
+            .unwrap()
+            .contains(&"native-download-1".to_owned())
+    );
     let outcome = engine
         .wait_for_download_async(&download_directory, Duration::from_secs(5))
         .await

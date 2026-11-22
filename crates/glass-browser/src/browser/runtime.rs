@@ -892,6 +892,37 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Capture exactly the download created by the target under the operation lock.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_capture_download(
+        &self,
+        destination: &std::path::Path,
+        deadline: Duration,
+        target: &str,
+    ) -> BrowserResult<DownloadOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        let BackendStartup::Native(backend) = &self.backend else {
+            return Err("native downloads are only available on the native runtime".into());
+        };
+        let before = backend.download_ids()?;
+        self.action_unlocked(SemanticAction::ClickWithModifiers {
+            target: target.to_owned(),
+            modifiers: Default::default(),
+        })
+        .await?;
+        let created: Vec<_> = backend
+            .download_ids()?
+            .into_iter()
+            .filter(|id| !before.contains(id))
+            .collect();
+        if created.len() != 1 {
+            return Err("target must create exactly one new native download".into());
+        }
+        Ok(backend
+            .wait_for_download_id(destination, deadline, &created[0])
+            .await?)
+    }
+
     /// Return the completed native download count for causal verification.
     #[cfg(feature = "native-engine")]
     pub async fn native_completed_download_count(&self) -> BrowserResult<u64> {

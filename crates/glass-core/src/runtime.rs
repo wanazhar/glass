@@ -552,6 +552,7 @@ impl Drop for ActiveSubagentGuard {
 }
 
 struct Wire {
+    text_block_boundaries: bool,
     rx: Receiver<Result<Value, String>>,
     pending: VecDeque<Value>,
     disconnected: bool,
@@ -1399,6 +1400,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         durable_task: None,
         protocol_version: None,
         human_secret_input_supported: false,
+        text_block_boundaries: false,
         human_input_counter: 0,
         pending_human_input: None,
         subagent_query: None,
@@ -1527,9 +1529,16 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 requested_protocol,
                 p["requiredCapabilities"].as_array().map(Vec::as_slice),
             );
-            reply(
-                &id,
-                json!({"protocolVersion":requested_protocol,"runtime":{"name":"glass-core","version":env!("CARGO_PKG_VERSION")},
+            let text_blocks = requested_protocol == 2
+                && p["optionalCapabilities"]
+                    .as_array()
+                    .is_some_and(|capabilities| {
+                        capabilities
+                            .iter()
+                            .any(|capability| capability == "textBlockBoundaries")
+                    });
+            wire.borrow_mut().text_block_boundaries = text_blocks;
+            let mut initialization = json!({"protocolVersion":requested_protocol,"runtime":{"name":"glass-core","version":env!("CARGO_PKG_VERSION")},
                 "capabilities":{"durable":true,"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
                     "mixedTools":requested_protocol >= 2,
                     "maskedSecretInput":wire.borrow().human_secret_input_supported,
@@ -1537,8 +1546,11 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     "hostInteractions":"host tools provide workspace capabilities and structured questions; Glass does not re-decide Core tool permissions","concurrentTurns":false,
                     "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"processCompletionNotifications":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true,"subagentsReadOnly":true},
                 "limits":{"frameBytes":MAX_FRAME,"toolResultBytes":512*1024,"queuedFollowUps":MAX_PENDING},
-                "storageDir":root}),
-            );
+                "storageDir":root});
+            if text_blocks {
+                initialization["capabilities"]["textBlockBoundaries"] = json!(true);
+            }
+            reply(&id, initialization);
             continue;
         }
         let Some(dir) = root.as_ref() else {
@@ -2456,6 +2468,15 @@ fn run(
                 _=>{},
             }
         });
+    if wire.borrow().text_block_boundaries {
+        agent = agent.with_text_blocks(|block_id| {
+            let data = json!({"blockId":block_id});
+            if durable.is_none_or(|context| context.publish("text_block_start", data.clone(), turn))
+            {
+                event(&sid, turn, "text_block_start", data);
+            }
+        });
+    }
     if wire.borrow().human_secret_input_supported {
         let io = wire.clone();
         let session = sid.clone();
@@ -2982,6 +3003,7 @@ mod tests {
             durable_task: None,
             protocol_version: Some(2),
             human_secret_input_supported: true,
+            text_block_boundaries: false,
             human_input_counter: 1,
             pending_human_input: Some(PendingHumanInput {
                 request_id: "human-1".into(),
@@ -3758,6 +3780,7 @@ mod tests {
             durable_task: None,
             protocol_version: None,
             human_secret_input_supported: false,
+            text_block_boundaries: false,
             human_input_counter: 0,
             pending_human_input: None,
             subagent_query: None,
@@ -3803,6 +3826,7 @@ mod tests {
             durable_task: None,
             protocol_version: Some(2),
             human_secret_input_supported: false,
+            text_block_boundaries: false,
             human_input_counter: 0,
             pending_human_input: None,
             subagent_query: None,

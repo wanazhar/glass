@@ -304,6 +304,14 @@ impl Provider for Metered {
         self.inner.estimate_tokens(m)
     }
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+        self.stream_text_blocks(req, false)
+    }
+
+    fn stream_text_blocks(
+        &self,
+        req: &Request<'_>,
+        enabled: bool,
+    ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let limit_enabled = lock(&self.ledger).limit.is_some();
         let mut reservation = if limit_enabled {
             match self.card {
@@ -332,7 +340,7 @@ impl Provider for Metered {
             }
             return Err(Error::Config("request max_tokens must be positive".into()));
         }
-        let iter = match self.inner.stream(req) {
+        let iter = match self.inner.stream_text_blocks(req, enabled) {
             Ok(iter) => iter,
             Err(error) => {
                 // The provider may have transmitted the request before the

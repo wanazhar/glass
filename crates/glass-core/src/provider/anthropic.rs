@@ -276,6 +276,14 @@ impl Provider for Anthropic {
     }
 
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+        self.stream_text_blocks(req, false)
+    }
+
+    fn stream_text_blocks(
+        &self,
+        req: &Request<'_>,
+        enabled: bool,
+    ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let body = self.build_body(req);
 
         let pacing_key =
@@ -336,7 +344,9 @@ impl Provider for Anthropic {
         }
 
         let key = self.api_key.clone();
-        Ok(Box::new(StreamEvents::new(reader).map(move |event| {
+        let mut stream = StreamEvents::new(reader);
+        stream.blocks.enabled = enabled;
+        Ok(Box::new(stream.map(move |event| {
             if let Event::Error(ref message) = event {
                 if super::pacing::rate_limited(message) {
                     super::pacing::observe(pacing_key, 429, |_| None);
@@ -368,6 +378,7 @@ fn extract_error(body: &str) -> String {
 /// and then emits incremental `input_json_delta` fragments, so partial
 /// arguments have to be accumulated across events and paired by block index.
 struct StreamEvents<R: Read> {
+    blocks: super::TextBlocks,
     reader: R,
     decoder: SseDecoder,
     pending_tool: Option<(usize, String, String)>,
@@ -383,6 +394,7 @@ struct StreamEvents<R: Read> {
 impl<R: Read> StreamEvents<R> {
     fn new(reader: R) -> Self {
         Self {
+            blocks: super::TextBlocks::default(),
             reader,
             decoder: SseDecoder::new(),
             pending_tool: None,
@@ -436,6 +448,10 @@ impl<R: Read> StreamEvents<R> {
                         if let Some(t) = block.get("text").and_then(Value::as_str)
                             && !t.is_empty()
                         {
+                            if self.blocks.enabled {
+                                self.outbox
+                                    .extend(self.blocks.start(format!("anthropic:{index}")));
+                            }
                             self.outbox.push_back(Event::Text(t.to_string()));
                         }
                     }
@@ -466,6 +482,10 @@ impl<R: Read> StreamEvents<R> {
                         if let Some(t) = delta.get("text").and_then(Value::as_str)
                             && !t.is_empty()
                         {
+                            if self.blocks.enabled {
+                                self.outbox
+                                    .extend(self.blocks.start(format!("anthropic:{index}")));
+                            }
                             self.outbox.push_back(Event::Text(t.to_string()));
                         }
                     }
@@ -624,6 +644,56 @@ impl<R: Read> Iterator for StreamEvents<R> {
 mod tests {
     use super::*;
     use glass_mod_api::Message;
+
+    #[test]
+    fn text_blocks_are_opt_in_and_leave_text_and_usage_unchanged() {
+        let frames = [
+            (
+                "content_block_start",
+                json!({"index":0,"content_block":{"type":"text","text":"Plan."}}),
+            ),
+            (
+                "content_block_delta",
+                json!({"index":0,"delta":{"type":"text_delta","text":" More."}}),
+            ),
+            (
+                "content_block_start",
+                json!({"index":2,"content_block":{"type":"thinking","thinking":"private"}}),
+            ),
+            (
+                "content_block_delta",
+                json!({"index":3,"delta":{"type":"text_delta","text":"Answer."}}),
+            ),
+            ("message_stop", json!({})),
+        ];
+        let collect = |enabled, count| {
+            let mut stream = StreamEvents::new(std::io::empty());
+            stream.blocks.enabled = enabled;
+            for (kind, data) in frames.iter().take(count) {
+                stream.process(crate::sse::SseEvent {
+                    event: Some((*kind).into()),
+                    data: data.to_string(),
+                });
+            }
+            stream.outbox.into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(collect(false, 2), collect(true, 2));
+        let opted_in = collect(true, frames.len());
+        assert_eq!(
+            opted_in
+                .iter()
+                .filter(|event| matches!(event, Event::TextBlockStart(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            collect(false, frames.len()),
+            opted_in
+                .into_iter()
+                .filter(|event| !matches!(event, Event::TextBlockStart(_)))
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn oversized_provider_usage_is_clamped_without_wrapping() {

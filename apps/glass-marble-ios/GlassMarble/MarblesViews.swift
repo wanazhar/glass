@@ -524,7 +524,9 @@ struct MarbleChatScreen: View {
                     }
                     let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
                     if working && !reasoning.isEmpty
-                        && !entries.contains(where: { $0.taskId == active?.id && $0.kind == "reasoning" }) {
+                        && !entries.contains(where: {
+                            $0.taskId == active?.id && ["reasoning", "assistant"].contains($0.kind)
+                        }) {
                         MarbleReasoningRow(text: reasoning)
                     }
                     MarbleTurnTail(task: active, entries: entries, showsLiveTools: true)

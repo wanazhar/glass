@@ -1,5 +1,20 @@
 import Foundation
 
+enum MarbleStreamingText {
+    static func updating(_ current: String, for taskId: String, from event: MarbleEvent) -> String? {
+        guard event.taskId == taskId else { return nil }
+        switch event.kind {
+        case "text":
+            guard let delta = event.data.text, !delta.isEmpty else { return nil }
+            return current + delta
+        case "text_reset":
+            return taskId.isEmpty || current.isEmpty ? nil : ""
+        default:
+            return nil
+        }
+    }
+}
+
 struct MarbleToolActivity: Identifiable, Equatable {
     enum Status: String {
         case running = "Running"

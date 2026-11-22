@@ -3,6 +3,34 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleTurnPresentationTests: XCTestCase {
+    func testTextResetClearsOnlyMatchingTaskAndKeepsItsRow() throws {
+        func event(_ kind: String, task: String, text: String) throws -> MarbleEvent {
+            let json = """
+            {"sequence":1,"conversationId":"private-chat","taskId":"\(task)","kind":"\(kind)","data":{"text":"\(text)"}}
+            """
+            return try JSONDecoder().decode(MarbleEvent.self, from: Data(json.utf8))
+        }
+        var row = MarbleEntry(conversationId: "everyone", kind: "pending", text: "Planning.",
+                              taskId: "ada-turn", at: 42, speaker: "ada", speakerName: "Ada")
+        row.serverID = "reserved-row"
+        let original = row
+        let otherReset = try event("text_reset", task: "marble-turn", text: "")
+        XCTAssertNil(MarbleStreamingText.updating(row.text, for: row.taskId, from: otherReset))
+        let reset = try event("text_reset", task: row.taskId, text: "")
+        row.text = try XCTUnwrap(MarbleStreamingText.updating(row.text, for: row.taskId, from: reset))
+        XCTAssertEqual(row.text, "")
+        let reasoning = try event("reasoning", task: row.taskId, text: "Planning.")
+        XCTAssertNil(MarbleStreamingText.updating(row.text, for: row.taskId, from: reasoning))
+        for delta in ["Public ", "answer."] {
+            let update = try event("text", task: row.taskId, text: delta)
+            row.text = try XCTUnwrap(MarbleStreamingText.updating(row.text, for: row.taskId, from: update))
+        }
+        XCTAssertEqual(row.text, "Public answer.")
+        XCTAssertEqual(row.rowID, original.rowID)
+        row.text = original.text
+        XCTAssertEqual(row, original)
+    }
+
     func testGroupReservationRekeysAndSettlesInItsOriginalSlot() throws {
         func event(_ kind: String, task: String, data: String) throws -> MarbleEvent {
             let json = """

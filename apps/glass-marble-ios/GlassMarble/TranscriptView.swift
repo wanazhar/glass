@@ -43,7 +43,9 @@ struct TranscriptView: View {
                         MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
-                    if !store.liveReasoning.isEmpty {
+                    if !store.liveReasoning.isEmpty && !entries.contains(where: {
+                        $0.taskId == store.activeTaskId && ["reasoning", "assistant"].contains($0.kind)
+                    }) {
                         MarbleEntryView(entry: .preview(kind: "reasoning", text: store.liveReasoning))
                     }
                     ForEach(store.liveTools) { tool in
@@ -113,6 +115,7 @@ struct MarbleEntryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var creatingThread = false
     @State private var threadError = false
+    @State private var streamedHeight: CGFloat = 0
     var entry: MarbleEntry
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
@@ -122,6 +125,10 @@ struct MarbleEntryView: View {
     var allowsThreads = true
 
     private var isUser: Bool { entry.kind == "user" }
+    private var isStreaming: Bool {
+        entry.kind == "pending" ||
+            (entry.kind == "assistant" && entry.serverID == nil && entry.presentationID != nil)
+    }
     private var task: MarbleTask? {
         guard !entry.taskId.isEmpty else { return nil }
         return store.state.tasks.first { $0.id == entry.taskId }
@@ -140,6 +147,12 @@ struct MarbleEntryView: View {
             }
             entryContent(isFailure: failure)
         }
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.height
+        } action: { height in
+            if isStreaming && height > streamedHeight { streamedHeight = height }
+        }
+        .frame(minHeight: isStreaming ? streamedHeight : nil, alignment: .topLeading)
         .background {
             GeometryReader { geometry in
                 Color.clear.preference(
@@ -227,9 +240,8 @@ struct MarbleEntryView: View {
                 .padding(.leading, 48)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if entry.kind == "pending" {
-            let text = store.pendingReplyText(for: entry.taskId)
             let retrying = store.automaticRetries.contains(entry.taskId)
-            if !text.isEmpty && !retrying {
+            if let text = store.pendingReplyText(for: entry.taskId), !retrying {
                 replyBubble(text)
             } else {
                 MarbleThinkingBubble(name: speaker?.name ?? "Marble", retrying: retrying)

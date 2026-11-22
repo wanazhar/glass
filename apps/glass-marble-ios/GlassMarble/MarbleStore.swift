@@ -1952,8 +1952,8 @@ final class MarbleStore: ObservableObject {
     @Published private var groupReplyText: [String: String] = [:]
     private var pendingEventRefresh: Task<Void, Never>?
 
-    func pendingReplyText(for taskId: String) -> String {
-        groupReplyText[taskId] ?? ""
+    func pendingReplyText(for taskId: String) -> String? {
+        groupReplyText[taskId]
     }
 
     private func scheduleEventRefresh() {
@@ -1980,11 +1980,17 @@ final class MarbleStore: ObservableObject {
         }
         presentEntry(entry)
         if automaticRetries.contains(entry.taskId) { automaticRetries.remove(entry.taskId) }
-        if groupReplyText[entry.taskId] != nil { groupReplyText.removeValue(forKey: entry.taskId) }
-        if entry.threadId == nil && live[event.conversationId]?.taskId == event.taskId {
-            live.removeValue(forKey: event.conversationId)
-            streamedReplies.removeValue(forKey: event.conversationId)
-            if selectedConversationId == event.conversationId { syncLive() }
+        if event.conversationId == everyoneConversationId, groupReplyText[entry.taskId] != nil {
+            groupReplyText.removeValue(forKey: entry.taskId)
+        }
+        if entry.threadId == nil {
+            if live[event.conversationId]?.taskId == event.taskId {
+                live.removeValue(forKey: event.conversationId)
+                if selectedConversationId == event.conversationId { syncLive() }
+            }
+            if streamedReplies[event.conversationId]?.taskId == event.taskId {
+                streamedReplies.removeValue(forKey: event.conversationId)
+            }
         }
     }
 
@@ -2082,14 +2088,20 @@ final class MarbleStore: ObservableObject {
             return
         }
         if event.kind == "reasoning" { recordReasoning(event.data.text ?? "", taskId: event.taskId) }
-        if event.kind == "text", let text = event.data.text, !text.isEmpty, hasPendingGroupReply(taskId) {
-            groupReplyText[taskId, default: ""] += text
+        if let text = MarbleStreamingText.updating(groupReplyText[taskId] ?? "", for: taskId, from: event),
+           groupReplyText[taskId] != nil || hasPendingGroupReply(taskId) {
+            groupReplyText[taskId] = text
         }
         if event.kind == "entry" {
             if let entry = event.entryUpdate, entry.kind == "pending" || entry.kind == "system",
                liveAfter.map({ event.sequence > $0 }) == true {
                 presentEntry(entry)
-                if entry.kind == "system" { automaticRetries.remove(entry.taskId) }
+                if entry.kind == "system" {
+                    automaticRetries.remove(entry.taskId)
+                    if entry.conversationId == everyoneConversationId, groupReplyText[entry.taskId] != nil {
+                        groupReplyText.removeValue(forKey: entry.taskId)
+                    }
+                }
             }
             if let entry = event.userEntry { presentOutgoingEntry(entry) }
             if let threadId = event.entryUpdate?.threadId { threadEventSequences[threadId] = event.sequence }
@@ -2125,14 +2137,24 @@ final class MarbleStore: ObservableObject {
         let forActive = event.conversationId.isEmpty
             || event.conversationId == (selectedConversationId ?? "")
         switch event.kind {
-        case "text":
-            if buffers.taskId == nil && !event.taskId.isEmpty { buffers.taskId = event.taskId }
-            buffers.text += event.data.text ?? ""
-            if (forActive || event.conversationId == displayedMarbleConversation) && !event.taskId.isEmpty {
+        case "text", "text_reset":
+            if event.kind == "text", buffers.taskId == nil, !event.taskId.isEmpty { buffers.taskId = event.taskId }
+            guard let text = MarbleStreamingText.updating(buffers.text, for: buffers.taskId ?? "", from: event) else {
+                break
+            }
+            buffers.text = text
+            let existing = streamedReplies[event.conversationId]
+            if var preview = existing, preview.taskId == event.taskId {
+                preview.text = text
+                streamedReplies[event.conversationId] = preview
+            } else if event.kind == "text", !event.taskId.isEmpty,
+                      forActive || event.conversationId == displayedMarbleConversation {
                 streamedTaskIDs.insert(event.taskId)
-                streamedReplies[event.conversationId] = MarbleEntry(
-                    conversationId: event.conversationId, kind: "assistant", text: buffers.text, taskId: event.taskId, at: 0
+                var preview = MarbleEntry(
+                    conversationId: event.conversationId, kind: "assistant", text: text, taskId: event.taskId, at: 0
                 )
+                preview.presentationID = "reply-\(event.taskId)"
+                streamedReplies[event.conversationId] = preview
             }
         case "reasoning":
             let text = event.data.text ?? ""

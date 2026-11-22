@@ -41,6 +41,7 @@ TASK_SEQ = {}
 SUBMISSIONS = {}
 TASK_COUNTER = [0]
 HISTORY = {"sequence": 0, "conversations": {}}
+KNOWN_CONVERSATIONS = set()
 
 
 def save_history():
@@ -214,6 +215,7 @@ def main():
             if history_file and os.path.exists(history_file):
                 with open(history_file, "r", encoding="utf-8") as handle:
                     HISTORY = json.load(handle)
+            KNOWN_CONVERSATIONS.update(HISTORY["conversations"])
             protocol = params.get("protocolVersion")
             required = params.get("requiredCapabilities") or []
             if protocol == 2 and "mixedTools" not in required:
@@ -248,6 +250,12 @@ def main():
                 return
         elif method == "durable/create":
             global CONVERSATION_SEQ
+            marker = os.path.join(STORAGE_DIR, "fixture-create-rejected")
+            if "--reject-create-once" in sys.argv and not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write("rejected")
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "fixture refuses first admission"}})
+                continue
             if STORAGE_DIR:
                 with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "w", encoding="utf-8") as handle:
                     json.dump(params, handle)
@@ -273,6 +281,7 @@ def main():
             else:
                 CONVERSATION_SEQ += 1
                 conversation_id = ID_PREFIX + "durable-fixture-" + str(CONVERSATION_SEQ)
+                KNOWN_CONVERSATIONS.add(conversation_id)
                 reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
         elif method == "durable/inspect":
             reply(identifier, {"sequence": HISTORY["sequence"], "items": [], "hasMore": False})
@@ -284,6 +293,9 @@ def main():
             reply(identifier, {"conversationId": conversation_id})
         elif method == "durable/submit":
             conversation_id = params.get("conversationId")
+            if "--strict-conversations" in sys.argv and conversation_id not in KNOWN_CONVERSATIONS:
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown conversation"}})
+                continue
             request_id = params.get("requestId")
             key = (conversation_id, request_id)
             task_id = SUBMISSIONS.get(key)

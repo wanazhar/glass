@@ -25,6 +25,10 @@ pub(crate) fn default_conversation(state: &ProductState) -> Option<String> {
                 .tasks
                 .iter()
                 .find(|task| task.id == entry.task_id)
+                .filter(|task| {
+                    !task.conversation_id.is_empty()
+                        && !task.conversation_id.starts_with("recovered-")
+                })
                 .map(|task| task.conversation_id.clone())
         })
 }

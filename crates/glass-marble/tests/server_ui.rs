@@ -2964,6 +2964,10 @@ struct NamedTurnFixture {
 
 impl NamedTurnFixture {
     fn install_default_worker(&mut self) {
+        self.install_default_worker_with_args(Vec::new());
+    }
+
+    fn install_default_worker_with_args(&mut self, args: Vec<String>) {
         let root = self.root.clone();
         let script = self.script.clone();
         let state = self.state.clone();
@@ -2978,7 +2982,8 @@ impl NamedTurnFixture {
                 .arg("--id-prefix")
                 .arg("default-")
                 .arg("--pre-tool-text")
-                .arg("Step commentary");
+                .arg("Step commentary")
+                .args(&args);
             Conversation::spawn_with_router(
                 command,
                 &root,
@@ -3335,6 +3340,41 @@ fn thread_routes_are_idempotent_searchable_and_paginated_with_stable_ids() {
         assert_eq!(locked.handle("GET", path, "").0, 401);
     }
     assert_eq!(locked.handle("POST", "/api/threads", "{}").0, 401);
+}
+
+#[test]
+fn everyone_default_recovers_after_first_admission_fails() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::new("everyone-first-admission-failure");
+    fixture.install_default_worker_with_args(vec![
+        "--reject-create-once".into(),
+        "--strict-conversations".into(),
+    ]);
+    let _ = fixture.post("/api/everyone", json!({"text":"first attempt"}));
+    let failed = fixture.settled("first attempt");
+    assert_eq!(failed.status, "failed");
+    assert!(failed.conversation_id.starts_with("recovered-"));
+    let store = StateStore::in_data_dir(&fixture.root);
+    store.save(&fixture.state.lock().unwrap()).unwrap();
+    *fixture.state.lock().unwrap() = store.load().unwrap();
+    for prompt in ["second attempt", "third attempt"] {
+        let (status, body) = fixture.post("/api/everyone", json!({"text":prompt}));
+        assert_eq!(status, 202, "{body}");
+        let task = fixture.settled(prompt);
+        assert_eq!(task.status, "completed");
+        assert!(!task.conversation_id.starts_with("recovered-"));
+    }
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .any(|t| t.id == failed.id && t.status == "failed")
+    );
 }
 
 #[test]

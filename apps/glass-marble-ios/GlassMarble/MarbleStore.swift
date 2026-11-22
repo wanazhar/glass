@@ -663,6 +663,8 @@ final class MarbleStore: ObservableObject {
         groupReplyText = [:]
         streamedReplies = [:]
         streamedTaskIDs = []
+        narration = MarbleReplyNarration()
+        if narratedTaskId != nil { speaker.stop(); narratedTaskId = nil }
         pendingEventRefresh?.cancel()
         pendingEventRefresh = nil
     }
@@ -1660,6 +1662,7 @@ final class MarbleStore: ObservableObject {
         for taskID in taskIDs {
             reasoningByTurn.removeValue(forKey: taskID)
             toolsByTurn.removeValue(forKey: taskID)
+            cancelNarration(for: taskID)
         }
         reasoningTurnIds.removeAll { taskIDs.contains($0) }
         recentToolTurnIDs.removeAll { taskIDs.contains($0) }
@@ -1761,24 +1764,49 @@ final class MarbleStore: ObservableObject {
 
     // MARK: - Voice and push
 
+    private var narration = MarbleReplyNarration()
+    private var narratedTaskId: String?
+
     func toggleVoice() async {
         guard let client else { return }
         let wasEnabled = voice.enabled
         await perform { _ = try await client.setVoice(enabled: !wasEnabled) }
-        if wasEnabled { speaker.stop() }
+        if wasEnabled {
+            narration = MarbleReplyNarration()
+            speaker.stop()
+            narratedTaskId = nil
+        }
     }
 
     func speakLastReply(_ text: String) {
         Task { await speak(text) }
     }
 
-    private func speak(_ text: String) async {
+    private func speak(_ text: String, utterance: MarbleReplyNarration.Utterance? = nil) async {
         guard let client, voice.enabled, !text.isEmpty else { return }
+        if let utterance, !narration.isQueued(utterance) { return }
         var spoken = text
         if let shaped = try? await client.speak(text: text), !shaped.isEmpty {
             spoken = shaped
         }
+        if let utterance, !narration.take(utterance) { return }
+        guard voice.enabled else { return }
+        narratedTaskId = utterance?.taskId
         speaker.speak(spoken, rate: Float(voice.rate))
+    }
+
+    private func cancelNarration(for taskId: String) {
+        narration.cancel(taskId: taskId)
+        if narratedTaskId == taskId {
+            speaker.stop()
+            narratedTaskId = nil
+        }
+    }
+
+    private func narrateFinalReply(_ entry: MarbleEntry) {
+        guard voice.enabled, entry.conversationId == selectedConversationId,
+              let utterance = narration.finalReply(entry) else { return }
+        Task { await speak(utterance.text, utterance: utterance) }
     }
 
     // MARK: - Local notifications
@@ -1979,6 +2007,11 @@ final class MarbleStore: ObservableObject {
             entry.speaker = prism.marbles.first { $0.name == entry.speakerName }?.id ?? ""
         }
         presentEntry(entry)
+        if entry.kind == "failure" {
+            cancelNarration(for: entry.taskId)
+        } else {
+            narrateFinalReply(entry)
+        }
         if automaticRetries.contains(entry.taskId) { automaticRetries.remove(entry.taskId) }
         if event.conversationId == everyoneConversationId, groupReplyText[entry.taskId] != nil {
             groupReplyText.removeValue(forKey: entry.taskId)
@@ -2024,6 +2057,9 @@ final class MarbleStore: ObservableObject {
     }
 
     private func confirmEntries(_ entries: [MarbleEntry], conversationId: String) {
+        if conversationId == selectedConversationId, voice.enabled {
+            for entry in entries { narrateFinalReply(entry) }
+        }
         if let rows = liveEntries[conversationId] {
             let durable = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let remaining = rows.filter { update in
@@ -2082,6 +2118,9 @@ final class MarbleStore: ObservableObject {
         guard !deletedConversationIDs.contains(event.conversationId) else { return }
         if ["settled", "reply", "error"].contains(event.kind) { finishTools(for: event.taskId) }
         if ["tool_start", "tool_end"].contains(event.kind) { recordTool(event) }
+        if event.kind == "text_reset" || event.kind == "error" {
+            cancelNarration(for: event.taskId)
+        }
         let taskId = event.data.taskId ?? event.taskId
         if event.kind == "task_retry" {
             if !taskId.isEmpty { automaticRetries.insert(taskId) }
@@ -2184,9 +2223,15 @@ final class MarbleStore: ObservableObject {
             }
         case "settled":
             guard buffers.taskId == nil || event.taskId.isEmpty || buffers.taskId == event.taskId else { break }
-            let reply = forActive ? buffers.text : ""
             if !event.taskId.isEmpty, !event.conversationId.isEmpty, event.data.cancelled != true {
                 awaitingTranscript[event.conversationId] = event.taskId
+                if forActive, voice.enabled, liveAfter.map({ event.sequence > $0 }) == true {
+                    // The durable reply follows settlement. Only its final
+                    // text (or the confirmed transcript) can be narrated.
+                    narration.awaitFinal(taskId: event.taskId, conversationId: event.conversationId)
+                }
+            } else if event.data.cancelled == true {
+                cancelNarration(for: event.taskId)
             }
             if buffers.text.isEmpty || event.data.cancelled == true { buffers = LiveBuffers() }
             if event.data.cancelled == true && streamedReplies[event.conversationId] != nil {
@@ -2194,7 +2239,6 @@ final class MarbleStore: ObservableObject {
             }
             saveCursor()
             scheduleEventRefresh()
-            if !reply.isEmpty { Task { await speak(reply) } }
         case "error":
             if event.taskId.isEmpty {
                 errorMessage = "Marble couldn’t finish the request."

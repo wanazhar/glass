@@ -15,6 +15,50 @@ enum MarbleStreamingText {
     }
 }
 
+struct MarbleReplyNarration {
+    struct Utterance {
+        let taskId: String
+        let text: String
+        fileprivate let id: UUID
+    }
+
+    private enum State {
+        case awaitingFinal(conversationId: String)
+        case queued(UUID)
+    }
+
+    private var tasks: [String: State] = [:]
+
+    mutating func awaitFinal(taskId: String, conversationId: String) {
+        guard !taskId.isEmpty, tasks[taskId] == nil else { return }
+        tasks[taskId] = .awaitingFinal(conversationId: conversationId)
+    }
+
+    mutating func finalReply(_ entry: MarbleEntry) -> Utterance? {
+        guard entry.kind == "assistant", entry.threadId == nil, !entry.text.isEmpty,
+              case let .awaitingFinal(conversationId) = tasks[entry.taskId],
+              entry.conversationId == conversationId else { return nil }
+        let utterance = Utterance(taskId: entry.taskId, text: entry.text, id: UUID())
+        tasks[entry.taskId] = .queued(utterance.id)
+        return utterance
+    }
+
+    func isQueued(_ utterance: Utterance) -> Bool {
+        guard case let .queued(id) = tasks[utterance.taskId] else { return false }
+        return id == utterance.id
+    }
+
+    mutating func take(_ utterance: Utterance) -> Bool {
+        guard isQueued(utterance) else { return false }
+        cancel(taskId: utterance.taskId)
+        return true
+    }
+
+    mutating func cancel(taskId: String) {
+        tasks.removeValue(forKey: taskId)
+    }
+}
+
 struct MarbleToolActivity: Identifiable, Equatable {
     enum Status: String {
         case running = "Running"

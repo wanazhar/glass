@@ -3,6 +3,37 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleTurnPresentationTests: XCTestCase {
+    func testNarrationUsesFinalReplyAndResetInvalidatesQueuedSpeechByTask() throws {
+        var narration = MarbleReplyNarration()
+        var entry = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Final answer.",
+                                taskId: "one", at: 2)
+        XCTAssertNil(narration.finalReply(entry))
+        narration.awaitFinal(taskId: "one", conversationId: "chat")
+        narration.awaitFinal(taskId: "two", conversationId: "other")
+        entry.kind = "reasoning"
+        entry.text = "Planning."
+        XCTAssertNil(narration.finalReply(entry))
+        entry.kind = "assistant"
+        entry.text = "Final answer."
+        let first = try XCTUnwrap(narration.finalReply(entry))
+        XCTAssertNil(narration.finalReply(entry), "SSE and the transcript can report the same reply")
+
+        narration.cancel(taskId: "one")
+        XCTAssertFalse(narration.isQueued(first))
+        XCTAssertFalse(narration.take(first))
+        narration.awaitFinal(taskId: "one", conversationId: "chat")
+        entry.text = "Replacement answer."
+        let replacement = try XCTUnwrap(narration.finalReply(entry))
+        XCTAssertFalse(narration.take(first), "A delayed speech request cannot consume its replacement")
+        XCTAssertEqual(replacement.text, "Replacement answer.")
+        XCTAssertTrue(narration.take(replacement))
+
+        entry.taskId = "two"
+        entry.conversationId = "other"
+        let other = try XCTUnwrap(narration.finalReply(entry))
+        XCTAssertTrue(narration.take(other))
+    }
+
     func testTextResetClearsOnlyMatchingTaskAndKeepsItsRow() throws {
         func event(_ kind: String, task: String, text: String) throws -> MarbleEvent {
             let json = """

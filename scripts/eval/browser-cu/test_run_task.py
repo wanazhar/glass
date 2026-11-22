@@ -14,8 +14,8 @@ spec.loader.exec_module(runner)
 
 
 class RunTaskTests(unittest.TestCase):
-    def run_task(self, workspace, outcome):
-        task = {"id": "probe", "family": "browser", "capability": "probe",
+    def run_task(self, workspace, outcome, task_id="probe"):
+        task = {"id": task_id, "family": "browser", "capability": "probe",
                 "prompt": "probe {base}", "check": {"answer_contains": ["ok"]}}
         args = SimpleNamespace(glass_core="unused", model=None, timeout=1)
         with patch.object(runner, "reset_fixture"), patch.object(runner.subprocess, "run") as run:
@@ -54,6 +54,25 @@ class RunTaskTests(unittest.TestCase):
             for arguments in [[], ["--browser-runtime", "native"], ["--browser-runtime=native"]]:
                 output = subprocess.check_output([str(wrapper), *arguments, "session", "start", "eval"], text=True)
                 self.assertEqual(json.loads(output), ["--browser-runtime", "chromium", "session", "start", "eval"])
+
+    def test_upload_receipt_is_created_exclusively(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root)
+            receipt = workspace / "receipt-0921.txt"
+            self.run_task(workspace, '{"text":"ok"}', "upload-receipt")
+            expected = (runner.HERE / "fixtures/receipt-0921.txt").read_bytes()
+            self.assertEqual(receipt.read_bytes(), expected)
+            receipt.write_text("human-owned")
+            with self.assertRaises(FileExistsError):
+                self.run_task(workspace, '{"text":"ok"}', "upload-receipt")
+            self.assertEqual(receipt.read_text(), "human-owned")
+            receipt.unlink()
+            target = workspace / "keep.txt"
+            target.write_text("untouched")
+            receipt.symlink_to(target)
+            with self.assertRaises(FileExistsError):
+                self.run_task(workspace, '{"text":"ok"}', "upload-receipt")
+            self.assertEqual(target.read_text(), "untouched")
 
     def test_desktop_data_dir_preserves_the_manager_default(self):
         with patch.dict(os.environ, {}, clear=True):

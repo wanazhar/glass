@@ -1504,6 +1504,54 @@ final class MarbleDecisionWordsTests: XCTestCase {
     }
 }
 
+final class MarbleResumeTests: XCTestCase {
+    func testResumesFromTheSavedCursor() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52), 40)
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 0, hostSequence: 52), 0)
+    }
+
+    func testRestartedHostRewindsTheCursor() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 900, hostSequence: 12), 12)
+    }
+
+    func testReturningToTheAppDoesNotFlashOffline() {
+        var status = MarbleConnectionStatus()
+        status.refreshSucceeded()
+        status.suspend()
+        status.streamEnded("The network connection was lost.")
+        XCTAssertTrue(status.isConnected)
+        status.resume()
+        XCTAssertFalse(status.refreshFailed("timed out"), "first failure after resume is retried")
+        XCTAssertTrue(status.isConnected)
+        XCTAssertTrue(status.refreshFailed("timed out"))
+        XCTAssertTrue(status.isOffline)
+    }
+
+    func testResumeFromOfflineReadsConnecting() {
+        var status = MarbleConnectionStatus()
+        status.refreshFailed("down")
+        status.resume()
+        XCTAssertEqual(status.label, "Connecting")
+        status.streamOpened()
+        XCTAssertTrue(status.isConnected)
+    }
+
+    func testChatCacheRoundTripsPerHost() throws {
+        let entry = MarbleEntry(
+            conversationId: "everyone", kind: "assistant", text: "> hi", taskId: "t",
+            at: 3, speaker: "marble", speakerName: "Marble"
+        )
+        let cache = MarbleChatCache(everyone: [entry], transcripts: ["c": [entry]])
+        XCTAssertEqual(MarbleChatCache.decoded(try cache.encoded()), cache)
+        XCTAssertNil(MarbleChatCache.decoded(Data("nope".utf8)))
+        XCTAssertNotEqual(
+            MarbleChatCache.fileName(for: "http://a:4783"),
+            MarbleChatCache.fileName(for: "http://b:4783")
+        )
+        XCTAssertEqual(MarbleChatCache.fileName(for: "http://a:1"), "marble-chats-http___a_1.json")
+    }
+}
+
 final class MarbleEveryoneThinkingTests: XCTestCase {
     func testDefaultMarbleThinksWhileItsEveryoneTurnRuns() {
         XCTAssertEqual(

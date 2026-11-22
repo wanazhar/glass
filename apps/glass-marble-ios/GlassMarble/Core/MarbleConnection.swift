@@ -73,6 +73,12 @@ public struct MarbleConnectionStatus: Equatable, Sendable {
     /// dropped. The status stays Connected during that attempt and only goes
     /// Offline if it — or a refresh — fails.
     private var probing = false
+    /// True while the app is in the background, where iOS tears connections
+    /// down; a stream ending then says nothing about the host.
+    public private(set) var suspended = false
+    /// Set on returning to the app: the first failed attempt retries instead
+    /// of showing Offline, because the network is often still waking up.
+    private var resumeGrace = false
 
     public init() {}
 
@@ -104,18 +110,42 @@ public struct MarbleConnectionStatus: Equatable, Sendable {
     public mutating func refreshSucceeded() {
         state = .connected
         probing = false
+        resumeGrace = false
     }
 
     /// A state poll failed: the clearest possible "the host is not there".
-    public mutating func refreshFailed(_ reason: String) {
+    /// Returns false when the failure came right after returning to the app
+    /// and the label was kept, so the caller retries once before Offline.
+    @discardableResult
+    public mutating func refreshFailed(_ reason: String) -> Bool {
+        if resumeGrace {
+            resumeGrace = false
+            return false
+        }
         state = .offline(reason: reason)
         probing = false
+        return true
+    }
+
+    /// The app went to the background.
+    public mutating func suspend() {
+        suspended = true
+    }
+
+    /// The app is active again and is reconnecting. The label stays as it
+    /// was, or reads Connecting after Offline, and one failure is forgiven.
+    public mutating func resume() {
+        suspended = false
+        resumeGrace = true
+        probing = false
+        if case .offline = state { state = .connecting }
     }
 
     /// `/api/events` answered 200: the stream is up before any event arrives.
     public mutating func streamOpened() {
         state = .connected
         probing = false
+        resumeGrace = false
     }
 
     /// An event arrived — including keepalive frames the parser drops; the
@@ -129,6 +159,7 @@ public struct MarbleConnectionStatus: Equatable, Sendable {
     /// this is not yet Offline: one immediate reconnect is attempted first.
     /// A second failure — or a drop from a stream that never opened — is.
     public mutating func streamEnded(_ reason: String?) {
+        if suspended || resumeGrace { return }
         switch state {
         case .connected where probing:
             state = .offline(reason: reason ?? "The connection dropped")
@@ -154,6 +185,8 @@ public struct MarbleConnectionStatus: Equatable, Sendable {
     public mutating func signedOut() {
         state = .signedOut
         probing = false
+        suspended = false
+        resumeGrace = false
     }
 }
 

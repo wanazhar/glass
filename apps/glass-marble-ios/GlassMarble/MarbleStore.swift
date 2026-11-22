@@ -141,6 +141,9 @@ final class MarbleStore: ObservableObject {
         self.localNotificationsEnabled = UserDefaults.standard.bool(
             forKey: Self.localNotificationsKey
         )
+        if let endpoint {
+            restoreCache(for: endpoint)
+        }
         NotificationCenter.default.addObserver(
             forName: .marblePushToken,
             object: nil,
@@ -247,6 +250,7 @@ final class MarbleStore: ObservableObject {
         transcriptRevision = -1
         hostGeneration.advance()
         resetChats()
+        restoreCache(for: endpoint)
         live = [:]
         syncLive()
         started = true
@@ -260,6 +264,7 @@ final class MarbleStore: ObservableObject {
 
     /// Forget host and token and return to onboarding.
     func signOut() {
+        if let endpoint { Self.removeCache(for: endpoint) }
         MarblePreferences.signOut()
         streamTask?.cancel()
         streamTask = nil
@@ -300,13 +305,62 @@ final class MarbleStore: ObservableObject {
         }
     }
 
+    /// Back in the app: keep showing what was there, reconnect at once, and
+    /// pick the stream up from the last event this iPhone saw.
     func appBecameActive() {
+        guard !appActive || status.suspended else { return }
         appActive = true
-        reconnect()
+        status.resume()
+        reconnect(force: true)
     }
 
     func appBecameInactive() {
+        guard appActive else { return }
         appActive = false
+        status.suspend()
+        saveCursor()
+        saveCache()
+    }
+
+    // MARK: - On-device cache
+
+    private static let cursorKeyPrefix = "marble.eventCursor."
+
+    private static func cacheURL(for endpoint: MarbleEndpoint) -> URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(MarbleChatCache.fileName(for: endpoint.baseURL.absoluteString))
+    }
+
+    private static func removeCache(for endpoint: MarbleEndpoint) {
+        if let url = cacheURL(for: endpoint) { try? FileManager.default.removeItem(at: url) }
+        UserDefaults.standard.removeObject(forKey: cursorKeyPrefix + endpoint.baseURL.absoluteString)
+    }
+
+    /// Show the last fetched chats for this host straight away, and resume
+    /// its event stream from the last event seen.
+    private func restoreCache(for endpoint: MarbleEndpoint) {
+        sequence = UInt64(UserDefaults.standard.integer(
+            forKey: Self.cursorKeyPrefix + endpoint.baseURL.absoluteString
+        ))
+        guard let url = Self.cacheURL(for: endpoint),
+              let data = try? Data(contentsOf: url),
+              let cache = MarbleChatCache.decoded(data) else { return }
+        everyoneTimeline = cache.everyone
+        marbleTranscripts = cache.transcripts
+    }
+
+    private func saveCache() {
+        guard let endpoint, let url = Self.cacheURL(for: endpoint) else { return }
+        let cache = MarbleChatCache(everyone: everyoneTimeline, transcripts: marbleTranscripts)
+        try? cache.encoded().write(to: url, options: .atomic)
+    }
+
+    private func saveCursor() {
+        guard let endpoint else { return }
+        UserDefaults.standard.set(
+            Int(clamping: sequence),
+            forKey: Self.cursorKeyPrefix + endpoint.baseURL.absoluteString
+        )
     }
 
     private func startPathMonitor() {
@@ -355,6 +409,7 @@ final class MarbleStore: ObservableObject {
             if let health = try? await healthFetch {
                 hostVersion = health.version
                 engineHealth = health.runtime
+                sequence = MarbleResumeCursor.resume(saved: sequence, hostSequence: health.sequence)
             }
             // Navigation owns which chat is on screen. A refresh may only
             // clear a selection whose conversation disappeared — never choose
@@ -389,8 +444,15 @@ final class MarbleStore: ObservableObject {
             loaded = true
         } catch {
             guard hostGeneration.isCurrent(generation) else { return }
-            status.refreshFailed(error.localizedDescription)
             loaded = true
+            guard status.refreshFailed(error.localizedDescription) else {
+                // Just back in the app: the network is often still waking up.
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    await self.refresh()
+                }
+                return
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -425,6 +487,7 @@ final class MarbleStore: ObservableObject {
             everyoneTimeline = timeline
             marbleTranscripts = transcripts
             chatsRevision = revision
+            saveCache()
         } catch {
             guard hostGeneration.isCurrent(generation) else { return }
             errorMessage = error.localizedDescription
@@ -1149,11 +1212,13 @@ final class MarbleStore: ObservableObject {
             Task { await refresh() }
         case "everyone":
             everyoneTimeline = MarbleEveryoneTimeline.applying(event, to: everyoneTimeline)
+            if everyoneTimeline.isEmpty { saveCache() }
             chatsRevision = -1
             Task { await refresh() }
         case "settled":
             let reply = forActive ? buffers.text : ""
             buffers = LiveBuffers()
+            saveCursor()
             Task {
                 await refresh()
                 if !reply.isEmpty { await speak(reply) }
@@ -1182,6 +1247,8 @@ final class MarbleStore: ObservableObject {
             needsToken = true
             return
         }
+        // iOS drops connections in the background; that is not news.
+        guard appActive, !status.suspended else { return }
         errorMessage = error.localizedDescription
     }
 }

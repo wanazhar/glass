@@ -47,6 +47,28 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
         })
 }
 
+fn export_directory(workspace: &Path) -> Result<PathBuf, String> {
+    let root = workspace
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let mut directory = root.clone();
+    for component in Path::new(EXPORT_DIRECTORY).components() {
+        directory.push(component);
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("Could not create {EXPORT_DIRECTORY}: {error}")),
+        }
+        directory = directory
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !directory.starts_with(&root) || !directory.is_dir() {
+            return Err("export path escapes the workspace or is not a directory".into());
+        }
+    }
+    Ok(directory)
+}
+
 pub(super) fn transfer(home: &Path, workspace: &Path, value: &Value) -> Result<Value, String> {
     let object = value
         .as_object()
@@ -81,10 +103,18 @@ pub(super) fn transfer(home: &Path, workspace: &Path, value: &Value) -> Result<V
             let name = file_name(value)?;
             let source = downloads.join(name);
             let bytes = regular_file(&source, &format!("Downloads/{name}"))?;
-            let directory = workspace.join(EXPORT_DIRECTORY);
-            std::fs::create_dir_all(&directory)
-                .map_err(|error| format!("Could not create {EXPORT_DIRECTORY}: {error}"))?;
-            copy(&source, &directory.join(name))?;
+            let directory = export_directory(workspace)?;
+            let target = directory.join(name);
+            if std::fs::symlink_metadata(&target).is_ok() {
+                let resolved = target.canonicalize().map_err(|error| error.to_string())?;
+                let root = workspace
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?;
+                if !resolved.starts_with(root) {
+                    return Err("export path escapes the workspace".into());
+                }
+            }
+            copy(&source, &target)?;
             Ok(json!({
                 "path": format!("{EXPORT_DIRECTORY}/{name}"),
                 "bytes": bytes,
@@ -157,6 +187,41 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn export_rejects_directory_and_file_symlink_escapes() {
+        use std::os::unix::fs::symlink;
+        let home = scratch("confined-home");
+        let workspace = scratch("confined-workspace");
+        let outside = scratch("confined-outside");
+        std::fs::create_dir(home.join("Downloads")).unwrap();
+        std::fs::write(home.join("Downloads/report.csv"), "new").unwrap();
+        std::fs::write(outside.join("report.csv"), "untouched").unwrap();
+        symlink(&outside, workspace.join(".gc-artifacts")).unwrap();
+        let request = json!({"action":"export","name":"report.csv"});
+        assert!(
+            transfer(&home, &workspace, &request)
+                .unwrap_err()
+                .contains("escapes")
+        );
+        assert!(!outside.join("desktop").exists());
+        std::fs::remove_file(workspace.join(".gc-artifacts")).unwrap();
+        let directory = export_directory(&workspace).unwrap();
+        symlink(outside.join("report.csv"), directory.join("report.csv")).unwrap();
+        assert!(
+            transfer(&home, &workspace, &request)
+                .unwrap_err()
+                .contains("escapes")
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("report.csv")).unwrap(),
+            "untouched"
+        );
+        for path in [home, workspace, outside] {
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
 
     fn scratch(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

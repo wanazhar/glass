@@ -598,6 +598,60 @@ fn named_profile_mcp(
 }
 
 #[tokio::test]
+async fn targeted_download_after_popup_and_dialog_keeps_the_opener_responsive() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    const HTML: &str = "<title>Download opener</title><button style='position:absolute;left:10px;top:10px' onclick=\"window.open('about:blank')\">Open preview</button><button style='position:absolute;left:10px;top:100px' onclick=\"confirm('Continue?')\">Confirm</button><a style='position:absolute;left:600px;top:400px' href='/report.csv' download='report.csv'>Download report</a>";
+    let fixture = FixtureServer::start(HTML).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let directory = std::env::current_dir()
+        .unwrap()
+        .join(format!(".popup-download-{}-{port}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let session = CdpBrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(required_chrome()),
+        profile: format!("popup-download-{port}"),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        headed: false,
+        interaction_mode: InteractionMode::Human,
+        audit: false,
+        policy: None,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture.url).await.unwrap();
+    session.click("text=Open preview").await.unwrap();
+    assert_eq!(session.list_targets().await.unwrap().len(), 2);
+    assert_eq!(
+        session.evaluate("document.title").await.unwrap(),
+        json!("Download opener")
+    );
+    session.click("text=Confirm").await.unwrap();
+    session.accept_dialog().await.unwrap();
+    let result = session
+        .capture_download(
+            &directory,
+            std::time::Duration::from_secs(10),
+            Some("text=Download report"),
+        )
+        .await;
+    session.close().await.unwrap();
+    fixture.close().await;
+    let bytes = std::fs::read(directory.join("report.csv"));
+    std::fs::remove_dir_all(directory).unwrap();
+    let outcome = result.unwrap();
+    assert_eq!(outcome.state, "completed");
+    assert_eq!(bytes.unwrap(), HTML.as_bytes());
+}
+
+#[tokio::test]
 async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");

@@ -264,18 +264,20 @@ struct FileEditorView: View {
 
     private func save() async {
         guard let revision else { return }
+        // The host writes this snapshot; anything typed while it saves stays in the editor, unsaved.
+        let submitted = text
         saving = true
         defer { saving = false }
         do {
             let result = try await conversation.composer.command("file", [
                 "action": .string("write"), "path": .string(writePath ?? path), "expected": .string(revision),
-                "text": .string(text), "confirmed": .bool(true),
+                "text": .string(submitted), "confirmed": .bool(true),
             ], timeout: .seconds(60))
-            saved = text
+            saved = submitted
             if let next = result["body"]?["revision"]?.stringValue ?? result["revision"]?.stringValue {
                 self.revision = next
             }
-            dismiss()
+            if text == submitted { dismiss() }
         } catch {
             self.error = "Couldn’t save: \(error.localizedDescription)"
         }

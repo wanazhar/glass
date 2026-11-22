@@ -94,16 +94,24 @@ struct DiffView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(Self.tint(line))
                         }
-                        HStack(spacing: 16) {
-                            Button("Stage these lines") { Task { await git("stage-patch", patch: hunk.patch) } }
-                                .accessibilityIdentifier("changes.stageHunk")
-                            Button("Discard", role: .destructive) { discarding = hunk }
-                                .accessibilityIdentifier("changes.discardHunk")
+                        if hunk.changesMode {
+                            Text("This file’s permissions changed too. Stage or discard the whole file.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                        } else {
+                            HStack(spacing: 16) {
+                                Button("Stage these lines") { Task { await git("stage-patch", patch: hunk.patch) } }
+                                    .accessibilityIdentifier("changes.stageHunk")
+                                Button("Discard", role: .destructive) { discarding = hunk }
+                                    .accessibilityIdentifier("changes.discardHunk")
+                            }
+                            .font(.footnote)
+                            .disabled(!canAct)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
                         }
-                        .font(.footnote)
-                        .disabled(!canAct)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
                         Divider().padding(.bottom, 4)
                     }
                 }

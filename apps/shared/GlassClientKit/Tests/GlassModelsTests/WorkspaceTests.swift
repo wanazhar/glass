@@ -59,3 +59,14 @@ import Testing
     }
 
 }
+
+@Suite struct DiffHunkModeTests {
+    @Test func hunksOfAFileWhoseModeChangedAreFlagged() {
+        let diff = "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\nindex 1..2\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-a\n+b\n"
+        let hunks = DiffHunk.parse(diff)
+        #expect(hunks.count == 1)
+        #expect(hunks[0].changesMode)
+        let plain = DiffHunk.parse("diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
+        #expect(!plain[0].changesMode)
+    }
+}

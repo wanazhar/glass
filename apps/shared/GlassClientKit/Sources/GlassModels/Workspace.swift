@@ -107,6 +107,12 @@ public struct DiffHunk: Sendable, Hashable, Identifiable {
     public var lines: [String]
     public var id: String { path + "\u{0}" + (lines.first ?? "") + "\(lines.count)" }
 
+    /// The file's header changes its mode, so applying any one hunk would change the mode too.
+    /// Like the web client, line actions are withheld for such files; whole-file actions remain.
+    public var changesMode: Bool {
+        header.split(separator: "\n").contains { $0.hasPrefix("old mode ") || $0.hasPrefix("new mode ") }
+    }
+
     /// The patch text the `git` command expects for `stage-patch`, `unstage-patch` and `revert-patch`.
     public var patch: String { header + lines.joined(separator: "\n") + "\n" }
 

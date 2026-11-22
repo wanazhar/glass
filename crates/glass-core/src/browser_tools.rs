@@ -99,7 +99,14 @@ fn runtime(binary: &Path) -> Option<String> {
         Ok(runtime) if !runtime.is_empty() => Some(runtime),
         _ => {
             if native_sandbox_available() {
-                return None;
+                return doctor_report(binary, true)
+                    .or_else(|| doctor_report(binary, false))
+                    .and_then(|report| {
+                        report["browser"]["defaultRuntime"]
+                            .as_str()
+                            .filter(|runtime| matches!(*runtime, "native" | "chromium"))
+                            .map(str::to_owned)
+                    });
             }
             let report = doctor_report(binary, true).or_else(|| doctor_report(binary, false));
             fallback_runtime(false, report.as_ref())
@@ -498,6 +505,53 @@ fn screenshot_file(directory: &File, name: &str) -> std::io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implicit_chromium_default_receives_an_ephemeral_port() {
+        const MARKER: &str = "GLASS_IMPLICIT_CHROMIUM_TEST";
+        if let Some(root) = std::env::var_os(MARKER) {
+            let command = command_for_binary(PathBuf::from(root).join("browser"), None);
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--browser-runtime", "chromium"])
+            );
+            assert!(args.iter().any(|arg| arg == "--port"));
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("gc-default-runtime-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, script) in [
+            (
+                "bwrap",
+                "#!/bin/sh\nprintf '%s' '--disable-userns --assert-userns-disabled'\n",
+            ),
+            (
+                "browser",
+                "#!/bin/sh\nprintf '%s' '{\"browser\":{\"chromeAvailable\":true,\"defaultRuntime\":\"chromium\"}}'\n",
+            ),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "browser_tools::tests::implicit_chromium_default_receives_an_ephemeral_port",
+            ])
+            .env(MARKER, &root)
+            .env("PATH", &root)
+            .env_remove("GC_BROWSER_RUNTIME")
+            .status()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn bare_browser_override_uses_path_not_workspace() {

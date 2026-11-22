@@ -5,7 +5,13 @@ struct ConversationView: View {
     @Bindable var conversation: ConversationModel
     var threads: ThreadsModel
     @Environment(\.scenePhase) private var scenePhase
+    /// The chat moves with a streaming reply until you touch it, and picks it up again after you've
+    /// left it alone for a few seconds or tap Latest.
     @State private var following = true
+    @State private var atBottom = true
+    @State private var touching = false
+    @State private var lastTouch = ContinuousClock.now
+    @State private var resumeFollowing: Task<Void, Never>?
     @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
@@ -26,7 +32,12 @@ struct ConversationView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     if conversation.hasEarlier {
                         Button {
-                            Task { await conversation.loadOlder() }
+                            Task {
+                                // Older messages go in above; keep the one you were reading in place.
+                                let first = conversation.timeline.entries.first?.id
+                                await conversation.loadOlder()
+                                if let first { proxy.scrollTo(first, anchor: .top) }
+                            }
                         } label: {
                             if conversation.loadingOlder { ProgressView() } else { Label("Earlier messages", systemImage: "arrow.up.circle") }
                         }
@@ -44,6 +55,10 @@ struct ConversationView: View {
                         WorkingBubble(label: working).id("timeline.working")
                     }
                     Color.clear.frame(height: 1).id(Self.bottom)
+                    // A lazy stack's content size is only an estimate, so "at the bottom" means this
+                    // strip covering the last 80 points is on screen.
+                    Color.clear.frame(height: 80).padding(.top, -96)
+                        .onScrollVisibilityChange(threshold: 0.01) { reachedBottom($0) }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -51,11 +66,22 @@ struct ConversationView: View {
                 .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             .scrollDismissesKeyboard(.interactively)
             .onScrollPhaseChange { _, phase in
                 dragging = phase == .interacting
                 if !dragging { dragStartOffset = nil }
+                switch phase {
+                case .tracking, .interacting:
+                    touching = true
+                    following = false
+                    resumeFollowing?.cancel()
+                case .idle where touching:
+                    touching = false
+                    lastTouch = .now
+                    if atBottom { following = true } else { scheduleResume(proxy) }
+                default: break
+                }
             }
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 // Pulling the chat down to read back puts the keyboard away, as in Messages.
@@ -63,12 +89,6 @@ struct ConversationView: View {
                 let start = dragStartOffset ?? offset
                 dragStartOffset = start
                 if start - offset > 16 { hideKeyboard() }
-            }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height <= geometry.containerSize.height
-                    || geometry.visibleRect.maxY >= geometry.contentSize.height - 80
-            } action: { _, atBottom in
-                following = atBottom
             }
             .onChange(of: conversation.timeline.interaction?.id) { _, id in
                 guard id != nil else { return }
@@ -78,10 +98,16 @@ struct ConversationView: View {
                     proxy.scrollTo(Self.bottom, anchor: .bottom)
                 }
             }
-            .onChange(of: conversation.timeline.entries) {
-                guard following else { return }
-                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            .onChange(of: conversation.timeline.entries) { old, new in
+                if following {
+                    // Text growing in place stays pinned by the bottom size-change anchor; jumping on
+                    // every delta would fight a finger that is just landing on the chat.
+                    if new.count != old.count, !touching { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                } else if !touching, conversation.timeline.isActive, ContinuousClock.now - lastTouch >= Self.resumeAfter {
+                    resume(proxy)
+                }
             }
+            .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
             .composerBar {
                 bottomBar(proxy)
                     .onGeometryChange(for: CGFloat.self, of: \.size.height) { _, _ in
@@ -245,34 +271,65 @@ struct ConversationView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("conversation.notice")
             }
-            HStack(spacing: 8) {
-                Spacer()
-                if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
-                    Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
-                        .font(.caption)
-                        .glassButtonStyle()
-                        .accessibilityIdentifier("conversation.checklist")
-                }
-                if !following {
-                    Button("Latest", systemImage: "arrow.down") {
-                        following = true
-                        withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-                    }
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.latest")
-                }
-                if keyboardShown {
-                    Button("Hide Keyboard", systemImage: "keyboard.chevron.compact.down") { hideKeyboard() }
-                    .labelStyle(.iconOnly)
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.hideKeyboard")
-                }
-            }
             ComposerView(conversation: conversation)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
         .frame(maxWidth: 760)
+    }
+
+    /// Floats on its own over the chat, just above the composer, with no panel behind it.
+    private func floatingControls(_ proxy: ScrollViewProxy) -> some View {
+        HStack(spacing: 8) {
+            if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
+                Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
+                    .font(.caption)
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.checklist")
+            }
+            if !following, !atBottom {
+                Button("Latest", systemImage: "arrow.down") { resume(proxy) }
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.latest")
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+            if keyboardShown {
+                Button("Hide Keyboard", systemImage: "keyboard.chevron.compact.down") { hideKeyboard() }
+                    .labelStyle(.iconOnly)
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.hideKeyboard")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .animation(.easeOut(duration: 0.2), value: following || atBottom)
+    }
+
+    private static var resumeAfter: Duration {
+        let seconds = UserDefaults.standard.double(forKey: "GlassFollowResumeSeconds")
+        return .seconds(seconds > 0 ? seconds : 3)
+    }
+
+    private func scheduleResume(_ proxy: ScrollViewProxy) {
+        resumeFollowing?.cancel()
+        resumeFollowing = Task {
+            try? await Task.sleep(for: Self.resumeAfter)
+            guard !Task.isCancelled, !touching, conversation.timeline.isActive else { return }
+            resume(proxy)
+        }
+    }
+
+    private func reachedBottom(_ bottom: Bool) {
+        atBottom = bottom
+        if bottom {
+            if !touching { following = true }
+        }
+    }
+
+    private func resume(_ proxy: ScrollViewProxy) {
+        resumeFollowing?.cancel()
+        following = true
+        withAnimation(.smooth(duration: 0.35)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
     }
 
     private var secretsBlocked: String? {

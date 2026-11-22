@@ -48,7 +48,7 @@ fn recording_directory(workspace: &Path) -> std::io::Result<File> {
             libc::mkdirat(
                 directory.as_raw_fd(),
                 name.as_ptr(),
-                if leaf { 0o700 } else { 0o777 },
+                if leaf { 0o700 } else { 0o755 },
             )
         } != 0
         {
@@ -314,18 +314,24 @@ mod tests {
     fn recording_permissions_are_private_under_shared_umask() {
         const MARKER: &str = "GLASS_RECORDING_UMASK_TEST";
         if std::env::var_os(MARKER).is_none() {
-            assert!(Command::new(std::env::current_exe().unwrap())
+            for mask in ["022", "002"] {
+                assert!(Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "desktop::recording::tests::recording_permissions_are_private_under_shared_umask", "--nocapture"])
-                .env(MARKER, "1")
+                .env(MARKER, mask)
                 .status().unwrap().success());
+            }
             return;
         }
+        let mask = u32::from_str_radix(&std::env::var(MARKER).unwrap(), 8).unwrap();
         // SAFETY: this subprocess runs only this test, without other filesystem callers.
         unsafe {
-            libc::umask(0o022);
+            libc::umask(mask);
         }
         let root = scratch("permissions");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!root.join(".gc-artifacts").exists());
         let directory = recording_directory(&root).unwrap();
+        assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o755);
         let name = c"private.mp4";
         let file = recording_file(&directory, name).unwrap();
         assert_eq!(file.metadata().unwrap().len(), 0);

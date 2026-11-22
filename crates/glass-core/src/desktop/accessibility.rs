@@ -995,6 +995,12 @@ async fn accessible_context_name(
 
 fn validate_query(query: &str) -> Result<Vec<String>, String> {
     let query = query.trim();
+    if let Some(name) = query.strip_prefix("name:") {
+        if !name.is_empty() && name.len() <= 120 && !name.chars().any(char::is_control) {
+            return Ok(vec![query.to_lowercase()]);
+        }
+        return Err("name search must contain 1–120 bytes without control characters".into());
+    }
     if query.is_empty()
         || query.len() > 120
         || query.chars().any(char::is_control)
@@ -1006,6 +1012,15 @@ fn validate_query(query: &str) -> Result<Vec<String>, String> {
 }
 
 fn query_matches(node: &Value, terms: &[String]) -> bool {
+    let name = node["name"].as_str().unwrap_or_default().to_lowercase();
+    if let [term] = terms
+        && let Some(text) = term.strip_prefix("name:")
+    {
+        return name.contains(text);
+    }
+    if terms.iter().all(|term| name.contains(term)) {
+        return true;
+    }
     let role = node["role"]
         .as_str()
         .unwrap_or_default()
@@ -1684,7 +1699,11 @@ mod tests {
         let text_copy = json!({"role":"static","name":"Observed target link"});
         let link = json!({"role":"link","name":"Observed target link"});
         let link_query = ["observed".into(), "target".into(), "link".into()];
-        assert!(!query_matches(&text_copy, &link_query));
+        assert!(query_matches(&text_copy, &link_query));
+        assert!(query_matches(
+            &json!({"role":"label","name":"Text saved"}),
+            &validate_query("name:Text saved").unwrap()
+        ));
         assert!(query_matches(&link, &link_query));
         assert!(role_matches_hint("push button", "button"));
         assert!(role_matches_hint("entry", "textbox"));

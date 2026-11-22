@@ -1477,6 +1477,7 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_clipboard"
             | "desktop_windows"
             | "desktop_files"
+            | "desktop_wait"
     )
 }
 
@@ -1560,13 +1561,27 @@ fn paste(args: &Value) -> Result<Value, String> {
 /// Whether any `name` in an observation contains `text`, case-insensitive.
 fn observation_names_contain(observation: &Value, text: &str) -> bool {
     match observation {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            (key == "name"
-                && value
-                    .as_str()
+        Value::Object(object) => {
+            let visible = object
+                .get("states")
+                .and_then(Value::as_array)
+                .is_some_and(|states| {
+                    ["visible", "showing"]
+                        .iter()
+                        .all(|state| states.iter().any(|value| value == state))
+                })
+                && object.get("onscreen") != Some(&Value::Bool(false));
+            (visible
+                && object
+                    .get("name")
+                    .and_then(Value::as_str)
                     .is_some_and(|name| name.to_lowercase().contains(&text.to_lowercase())))
-                || observation_names_contain(value, text)
-        }),
+                || ["nodes", "children"].iter().any(|key| {
+                    object
+                        .get(*key)
+                        .is_some_and(|value| observation_names_contain(value, text))
+                })
+        }
         Value::Array(items) => items
             .iter()
             .any(|item| observation_names_contain(item, text)),
@@ -1608,8 +1623,9 @@ fn wait_for_desktop(args: &Value) -> Result<Value, String> {
                 .filter(|text| !text.is_empty() && text.len() <= 120)
                 .ok_or("until=text needs text of 1-120 bytes")?;
             loop {
-                let observation =
-                    Desktop::agent_observe(&json!({"sessionId":session_id,"query":text}))?;
+                let observation = Desktop::agent_observe(
+                    &json!({"sessionId":session_id,"query":format!("name:{text}")}),
+                )?;
                 if observation_names_contain(&observation, text) {
                     return Ok(
                         json!({"found":true,"text":text,"waitedMs":waited(),"sessionId":session_id}),
@@ -2194,8 +2210,19 @@ mod tests {
 
     #[test]
     fn desktop_wait_matches_names_not_queries() {
-        let observation = json!({"query":"saved","nodes":[{"name":"Untitled","children":[{"name":"Document Saved"}]}]});
+        assert!(super::is_tool("desktop_wait"));
+        let observation = json!({"query":"saved","nodes":[{"name":"Untitled","children":[{"name":"Document Saved","states":["visible","showing"],"onscreen":true}]}]});
         assert!(super::observation_names_contain(&observation, "saved"));
+        for node in [
+            json!({"name":"Saved","states":["visible","showing"],"onscreen":false}),
+            json!({"name":"Saved","states":["visible"]}),
+            json!({"name":"Saved"}),
+        ] {
+            assert!(!super::observation_names_contain(
+                &json!({"nodes":[node]}),
+                "saved"
+            ));
+        }
         assert!(!super::observation_names_contain(
             &json!({"query":"saved","nodes":[{"name":"Untitled"}]}),
             "saved"

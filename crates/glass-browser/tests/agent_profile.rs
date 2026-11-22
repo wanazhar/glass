@@ -264,12 +264,14 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     assert!(unchanged.contains("Standard membership"), "{unchanged}");
     assert!(unchanged.contains("Monthly billing"), "{unchanged}");
     let result = mcp
-        .ok(
+        .call(
             "browser_fill_form",
             json!({"fields":[{"target":"name=Editable option","value":"Premium"}]}),
         )
         .await;
-    let outcome: Value = serde_json::from_str(&result).unwrap();
+    assert_ne!(result["isError"], true, "{result}");
+    let outcome: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(outcome["filled"], 1, "{outcome}");
     assert_eq!(outcome["fields"][0]["success"], true, "{outcome}");
     for (target, value) in [

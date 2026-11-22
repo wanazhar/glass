@@ -6264,19 +6264,16 @@ async fn call_native_tool_on_session_impl(
                 return Err("native download destination must be an existing directory".into());
             }
             if let Some(target) = target {
-                let result = native_action_result(
-                    session,
-                    crate::browser_backend::SemanticAction::ClickWithModifiers {
-                        target: target.to_owned(),
-                        modifiers: Default::default(),
-                    },
-                    None,
+                return serialized_result_mode(
+                    &session
+                        .native_capture_download(
+                            &destination,
+                            Duration::from_millis(timeout_ms),
+                            target,
+                        )
+                        .await?,
                     response_mode,
-                )
-                .await?;
-                if result["isError"] == true {
-                    return Ok(result);
-                }
+                );
             }
             serialized_result_mode(
                 &session

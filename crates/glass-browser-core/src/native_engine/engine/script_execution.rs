@@ -416,6 +416,17 @@ impl NativeEngine {
         destination: &Path,
         deadline: Duration,
     ) -> Result<DownloadOutcome, NativeEngineError> {
+        self.wait_for_download_id_async(destination, deadline, None)
+            .await
+    }
+
+    /// Transfer a selected queued download, or the oldest entry when omitted.
+    pub async fn wait_for_download_id_async(
+        &mut self,
+        destination: &Path,
+        deadline: Duration,
+        download_id: Option<&str>,
+    ) -> Result<DownloadOutcome, NativeEngineError> {
         self.require_running("download")?;
         if deadline.is_zero() || deadline > MAX_NATIVE_DOWNLOAD_DEADLINE {
             return Err(NativeEngineError::invalid(
@@ -429,7 +440,14 @@ impl NativeEngine {
                 "must be an existing directory",
             ));
         }
-        let Some(pending) = self.pending_downloads.pop_front() else {
+        let index = match download_id {
+            Some(id) => self
+                .pending_downloads
+                .iter()
+                .position(|download| download.guid == id),
+            None => Some(0),
+        };
+        let Some(pending) = index.and_then(|index| self.pending_downloads.remove(index)) else {
             return Err(NativeEngineError::Network {
                 operation: "download".into(),
                 reason: "no native download is pending; activate a download link first".into(),

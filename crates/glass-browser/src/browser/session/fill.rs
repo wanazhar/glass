@@ -147,9 +147,6 @@ impl CdpBrowserSession {
         value: &str,
         context_id: &str,
     ) -> (String, bool, Option<String>) {
-        let role = element.role.as_deref().unwrap_or("").to_lowercase();
-        let input_type = element.input_type.as_deref().unwrap_or("").to_lowercase();
-
         let current_context = match self.page_context_id().await {
             Ok(context) => context,
             Err(error) => return ("none".into(), false, Some(error.to_string())),
@@ -165,6 +162,28 @@ impl CdpBrowserSession {
             Err(error) => return ("none".into(), false, Some(error)),
         };
         let reference = reference.as_str();
+
+        let metadata = async {
+            let object = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
+            let result = self.cdp.call_on_object(&object,
+                "function() { return {role: this.getAttribute('role') || (this.tagName === 'SELECT' ? 'combobox' : ''), type: this.type || ''}; }").await;
+            let _ = self.cdp.release_object(&object).await;
+            result
+        }.await;
+        let metadata = match metadata {
+            Ok(metadata) => metadata.result.value.unwrap_or_default(),
+            Err(error) => return ("none".into(), false, Some(error.to_string())),
+        };
+        let role = metadata["role"]
+            .as_str()
+            .or(element.role.as_deref())
+            .unwrap_or("")
+            .to_lowercase();
+        let input_type = metadata["type"]
+            .as_str()
+            .or(element.input_type.as_deref())
+            .unwrap_or("")
+            .to_lowercase();
 
         if matches!(role.as_str(), "listbox" | "combobox") {
             match self.select_option(reference, value).await {

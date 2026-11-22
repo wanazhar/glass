@@ -174,8 +174,32 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     assert!(snapshot.contains("Load report"), "{snapshot}");
 
     mcp.ok(
+        "browser_check",
+        json!({"target":"name=I agree to the terms"}),
+    )
+    .await;
+    let snapshot: Value =
+        serde_json::from_str(&mcp.ok("browser_snapshot", json!({})).await).unwrap();
+    fn reference_named(value: &Value, name: &str) -> Option<String> {
+        if value["name"] == name
+            && let Some(reference) = value["reference"].as_str()
+        {
+            return Some(reference.to_owned());
+        }
+        match value {
+            Value::Object(object) => object
+                .values()
+                .find_map(|value| reference_named(value, name)),
+            Value::Array(array) => array.iter().find_map(|value| reference_named(value, name)),
+            _ => None,
+        }
+    }
+    let name_reference = reference_named(&snapshot, "Full name").unwrap();
+    let checkbox_reference = reference_named(&snapshot, "I agree to the terms").unwrap();
+
+    mcp.ok(
         "browser_fill_form",
-        json!({"fields":[{"target":"name=Full name","value":"Aisyah Karim"},{"target":"name=Email","value":"a@example.test"}]}),
+        json!({"fields":[{"target":name_reference,"value":"Aisyah Karim"},{"target":checkbox_reference,"value":"true"},{"target":"name=Email","value":"a@example.test"}]}),
     )
     .await;
     mcp.ok(

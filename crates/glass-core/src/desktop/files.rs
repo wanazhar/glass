@@ -1,7 +1,11 @@
 //! Moves files between the workspace and the managed desktop's private
 //! Downloads folder, which the workspace-scoped file tools cannot reach.
 
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::ffi::CString;
+use std::fs::File;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -39,21 +43,77 @@ fn regular_file(path: &Path, label: &str) -> Result<u64, String> {
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
+    copy_staged(from, to, |_| {})
+}
+
+fn copy_staged(from: &Path, to: &Path, staged: impl FnOnce(&Path)) -> Result<(), String> {
     let mut nonce = [0u8; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
         .map_err(|_| "Secure random unavailable".to_owned())?;
     let partial = to.with_file_name(format!(".{:032x}.gc-partial", u128::from_ne_bytes(nonce)));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&partial)
-        .map_err(|error| format!("Could not stage the file: {error}"))?;
-    let staged = partial.join("file");
+    let parent = File::open(to.parent().ok_or("destination needs a parent directory")?)
+        .map_err(|error| error.to_string())?;
+    let name = CString::new(partial.file_name().unwrap().as_bytes()).unwrap();
+    let target = CString::new(
+        to.file_name()
+            .ok_or("destination needs a file name")?
+            .as_bytes(),
+    )
+    .map_err(|error| error.to_string())?;
+    // SAFETY: the directory descriptor and NUL-terminated name remain valid.
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(format!(
+            "Could not stage the file: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    let access = libc::O_PATH;
+    #[cfg(not(target_os = "linux"))]
+    let access = libc::O_RDONLY;
+    // SAFETY: openat returns a new owned descriptor without following symlinks.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        // SAFETY: unlinkat removes only an empty directory at this name.
+        unsafe {
+            libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR);
+        }
+        return Err(format!(
+            "Could not open staging directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: fd is uniquely owned after successful openat.
+    let directory = unsafe { File::from_raw_fd(fd) };
     let result = (|| {
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o777)
-            .open(&staged)?;
+        #[cfg(target_os = "linux")]
+        std::fs::set_permissions(
+            format!("/proc/self/fd/{fd}"),
+            std::fs::Permissions::from_mode(0o700),
+        )?;
+        #[cfg(not(target_os = "linux"))]
+        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        staged(&partial);
+        // SAFETY: the held directory descriptor confines file creation.
+        let output = unsafe {
+            libc::openat(
+                fd,
+                c"file".as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o777,
+            )
+        };
+        if output < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: successful openat returned a uniquely owned descriptor.
+        let mut output = unsafe { File::from_raw_fd(output) };
         let allowed = output.metadata()?.permissions().mode() & 0o777;
         output.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         let mut input = std::fs::File::open(from)?;
@@ -62,12 +122,28 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
             input.metadata()?.permissions().mode() & allowed,
         ))?;
         output.sync_all()?;
-        std::fs::rename(&staged, to)
+        // SAFETY: both directories stay open and both names are NUL-terminated.
+        if unsafe { libc::renameat(fd, c"file".as_ptr(), parent.as_raw_fd(), target.as_ptr()) } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&staged);
+        // SAFETY: cleanup is relative to the owned directory, never a replacement path.
+        unsafe {
+            libc::unlinkat(fd, c"file".as_ptr(), 0);
+        }
     }
-    let _ = std::fs::remove_dir(&partial);
+    if let (Ok(owned), Ok(current)) = (directory.metadata(), std::fs::symlink_metadata(&partial))
+        && owned.dev() == current.dev()
+        && owned.ino() == current.ino()
+    {
+        // SAFETY: unlinkat cannot follow a replacement symlink or remove directory contents.
+        unsafe {
+            libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR);
+        }
+    }
     result.map_err(|error| format!("Could not copy the file: {error}"))
 }
 
@@ -222,6 +298,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn staging_cleanup_does_not_follow_directory_substitution() {
+        let root = scratch("staging-swap");
+        let outside = scratch("staging-outside");
+        std::fs::write(outside.join("file"), b"untouched").unwrap();
+        let target = root.join("target");
+        assert!(
+            copy_staged(&root.join("missing"), &target, |partial| {
+                std::fs::rename(partial, root.join("owned")).unwrap();
+                std::os::unix::fs::symlink(&outside, partial).unwrap();
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read(outside.join("file")).unwrap(), b"untouched");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
     fn transfers_respect_restrictive_umask() {
         const MARKER: &str = "GLASS_TRANSFER_UMASK_TEST";
         if std::env::var_os(MARKER).is_none() {
@@ -252,6 +346,19 @@ mod tests {
         );
         assert!(copy(&root.join("missing"), &root.join("failed")).is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        // SAFETY: this isolated subprocess runs only this test.
+        unsafe {
+            libc::umask(0o133);
+        }
+        copy(&source, &root.join("no-search-mask")).unwrap();
+        assert_eq!(
+            std::fs::metadata(root.join("no-search-mask"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -15,6 +15,7 @@ mod support;
 const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <main>
 <h1>Join the beta</h1>
+<button onclick="this.textContent='Title button clicked'">Agent fixture</button>
 <label for="n">Full name</label><input id="n" oninput="state.name=this.value;show()">
 <label for="e">Email</label><input id="e" oninput="state.email=this.value;show()">
 <label for="city">City</label><input id="city" list="cities" oninput="state.city=this.value;show()"><datalist id="cities"><option>Paris</option><option>Berlin</option></datalist>
@@ -372,6 +373,10 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     )
     .await;
 
+    let titled = mcp
+        .ok("browser_click", json!({"target":"Agent fixture"}))
+        .await;
+    assert!(titled.contains("Title button clicked"), "{titled}");
     mcp.ok("browser_click", json!({"target":"name=Shortcut box"}))
         .await;
     mcp.ok("browser_press_key", json!({"key":"esc"})).await;

@@ -566,9 +566,16 @@ final class MarbleStore: ObservableObject {
     }
 
     /// Send a correction into the turn that is running now.
-    func steer(_ text: String) async {
+    /// Returns whether the host accepted the correction, so the composer
+    /// keeps the draft when it did not.
+    @discardableResult
+    func steer(_ text: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, !trimmed.isEmpty, let taskId = activeTaskId else { return }
+        guard let client, !trimmed.isEmpty else { return false }
+        guard let taskId = activeTaskId else {
+            errorMessage = "Nothing is running to correct"
+            return false
+        }
         do {
             try await client.steer(
                 text: trimmed,
@@ -576,8 +583,10 @@ final class MarbleStore: ObservableObject {
                 taskId: taskId
             )
             errorMessage = nil
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 

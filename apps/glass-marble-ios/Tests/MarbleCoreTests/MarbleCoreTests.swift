@@ -1636,3 +1636,17 @@ final class MarbleEveryoneThinkingTests: XCTestCase {
         XCTAssertEqual(turn.answering, [])
     }
 }
+
+final class MarbleSteerTests: XCTestCase {
+    func testNamedMarblesOfferStopOnlyMidTurn() {
+        XCTAssertEqual(MarbleSteer.action(isWorking: true, canSteer: false), .stopOnly)
+        XCTAssertEqual(MarbleSteer.action(isWorking: true, canSteer: true), .steer)
+        XCTAssertEqual(MarbleSteer.action(isWorking: false, canSteer: false), .send)
+    }
+
+    func testDraftIsKeptUnlessTheHostAccepted() {
+        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it", accepted: false), "fix it")
+        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it", accepted: true), "")
+        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it now", accepted: true), "fix it now")
+    }
+}

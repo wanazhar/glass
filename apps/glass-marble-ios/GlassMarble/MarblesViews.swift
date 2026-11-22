@@ -554,9 +554,8 @@ struct MarbleChatScreen: View {
                 draft: $draft,
                 isWorking: marble.isWorking,
                 placeholder: "Message \(marble.name)",
-                workingPlaceholder: "Add to what \(marble.name) is doing",
+                canSteer: false,
                 onSend: { send(marble) },
-                onSteer: { steer(marble) },
                 onStop: { Task { await store.stop(marble) } }
             )
             .marbleComposerBackground()
@@ -567,14 +566,6 @@ struct MarbleChatScreen: View {
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
         }
-    }
-
-    /// Send the draft into the marble's running turn, keeping its context.
-    private func steer(_ marble: MarblePrismMarble) {
-        let text = draft
-        draft = ""
-        store.selectedConversationId = marble.conversationId
-        Task { await store.steer(text) }
     }
 
     private func send(_ marble: MarblePrismMarble) {

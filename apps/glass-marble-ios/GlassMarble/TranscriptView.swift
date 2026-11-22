@@ -251,6 +251,8 @@ struct ComposerBar: View {
     var isDictating: Bool = false
     var placeholder: String = "Message"
     var workingPlaceholder: String = "Add to what Marble is doing"
+    /// False where the host cannot take a correction mid-turn.
+    var canSteer: Bool = true
     var onSend: () -> Void
     /// Correct the running turn instead of starting a new one.
     var onSteer: () -> Void = {}
@@ -258,7 +260,24 @@ struct ComposerBar: View {
     var onDictate: (() -> Void)? = nil
     @FocusState private var focused: Bool
 
+    private var action: MarbleSteer.Action {
+        MarbleSteer.action(isWorking: isWorking, canSteer: canSteer)
+    }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if action == .stopOnly {
+                Text(MarbleSteer.unsupportedNote)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+            field
+        }
+    }
+
+    private var field: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if focused {
                 Button { focused = false } label: {
@@ -281,7 +300,7 @@ struct ComposerBar: View {
             }
 
             TextField(
-                isWorking ? workingPlaceholder : placeholder,
+                action == .steer ? workingPlaceholder : placeholder,
                 text: $draft,
                 axis: .vertical
             )
@@ -299,8 +318,8 @@ struct ComposerBar: View {
             )
             .accessibilityIdentifier("composer.field")
 
-            if !trimmed.isEmpty || !isWorking {
-                Button(action: isWorking ? onSteer : onSend) {
+            if action == .send || (action == .steer && !trimmed.isEmpty) {
+                Button(action: action == .steer ? onSteer : onSend) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 32))
                         .symbolRenderingMode(.palette)
@@ -309,7 +328,7 @@ struct ComposerBar: View {
                         .contentShape(Rectangle())
                 }
                 .disabled(trimmed.isEmpty)
-                .accessibilityLabel(isWorking ? "Steer" : "Send")
+                .accessibilityLabel(action == .steer ? "Steer" : "Send")
             }
             if isWorking {
                 Button(action: onStop) {

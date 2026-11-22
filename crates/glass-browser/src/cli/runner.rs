@@ -318,7 +318,7 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             if *browser_discovery_only {
                 let path = crate::browser::chrome::resolve_chrome_path(cli.chrome_path.clone());
                 print_json(
-                    &serde_json::json!({"browser":{"chromeAvailable":path.is_some(),"chromePath":path}}),
+                    &serde_json::json!({"browser":{"chromeAvailable":path.is_some(),"chromePath":path,"defaultRuntime":cli.browser_runtime.browser_family()}}),
                 )?;
                 return Ok(());
             }
@@ -2711,6 +2711,7 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         "platform": manifest.constraints.platform,
         "executable": executable,
         "browser": {
+            "defaultRuntime": cli.browser_runtime.browser_family(),
             "family": manifest.constraints.browser_family,
             "version": browser_version,
             "chromeAvailable": browser_available,

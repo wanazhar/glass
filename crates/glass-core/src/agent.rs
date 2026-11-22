@@ -6936,7 +6936,6 @@ mod recovery_tests {
 mod ext_cancel_tests {
     use super::*;
     use crate::ext::Registry;
-    use std::path::Path;
 
     fn python() -> Option<String> {
         for c in ["python3", "python"] {
@@ -6982,11 +6981,7 @@ for line in sys.stdin:
             ),
         )
         .unwrap();
-        let mut extensions = Registry::load(
-            &[format!("{py} {}", script.display())],
-            Path::new("."),
-            "mock",
-        );
+        let mut extensions = Registry::load(&[format!("{py} {}", script.display())], &dir, "mock");
 
         let provider = CapturingProviderWithToolCall::default();
         let mut session = Session::create(&dir).unwrap();
@@ -6998,7 +6993,7 @@ for line in sys.stdin:
             &mut state,
             &no_mods,
             &mut extensions,
-            Path::new("."),
+            &dir,
         )
         .with_prompt("turn".into(), None, None);
         // The provider asks for the slow tool; the steer arrives while the

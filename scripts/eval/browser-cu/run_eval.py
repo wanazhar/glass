@@ -134,10 +134,6 @@ def check(task, answer, calls, base):
 
 def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     reset_fixture(base)
-    for leftover in workspace.iterdir():
-        if leftover.name.startswith("."):
-            continue
-        shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()
     shutil.copy(HERE / "fixtures" / "receipt-0921.txt", workspace / "receipt-0921.txt")
     prompt = task["prompt"].format(base=base)
     env = dict(os.environ, XDG_DATA_HOME=str(data_dir), PATH=f"{bin_dir}:{os.environ['PATH']}")
@@ -151,6 +147,10 @@ def run_task(task, families, args, base, data_dir, workspace, bin_dir):
         stdout, stderr, code = output.stdout, output.stderr, output.returncode
     except subprocess.TimeoutExpired as error:
         stdout, stderr, code = error.stdout or "", error.stderr or "", "timeout"
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
     elapsed = time.monotonic() - started
     try:
         result = json.loads(stdout.strip().splitlines()[-1]) if stdout.strip() else {}

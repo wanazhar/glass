@@ -1556,7 +1556,8 @@ fn handle_incoming_message(
             method.as_str(),
             "Network.requestWillBeSent" | "Network.loadingFinished" | "Network.loadingFailed"
         );
-        if is_network && network_events.receiver_count() > 0
+        if is_network
+            && network_events.receiver_count() > 0
             && let Ok(payload) = serde_json::from_str::<IncomingEventParams>(text)
         {
             let _ = network_events.send(CdpEventWithParams {

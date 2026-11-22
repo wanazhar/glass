@@ -94,18 +94,6 @@ impl Mcp {
     }
 }
 
-fn reference_named(value: &Value, name: &str) -> Option<String> {
-    match value {
-        Value::Object(object) if object.get("name").and_then(Value::as_str) == Some(name) => object
-            .get("reference")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        Value::Object(object) => object.values().find_map(|v| reference_named(v, name)),
-        Value::Array(items) => items.iter().find_map(|v| reference_named(v, name)),
-        _ => None,
-    }
-}
-
 fn text(result: &Value) -> String {
     result["content"]
         .as_array()

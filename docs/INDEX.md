@@ -250,6 +250,8 @@ current user instructions.
   negotiated conformance inventory grouped by domain.
 - [MCP schema budget and live source measurements](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
+- [Browser and computer-use audit](BROWSER-CU-AUDIT.md) — Linux tool surfaces,
+  gaps, prioritized plan, and the tool-selection eval.
 - [Protocol](protocol.md) and [schema compatibility](schema-compatibility.md) —
   canonical request/response envelopes and additive version rules.
 - [Experience Layer CLI](cli/experience.md) — shared response projections and

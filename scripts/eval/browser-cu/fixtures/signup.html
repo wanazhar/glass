@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Join the beta</title></head>
+<body><main><h1>Join the beta</h1>
+<form id="f"><p><label for="n">Full name</label> <input id="n" name="name" required></p>
+<p><label for="e">Work email</label> <input id="e" name="email" type="email" required></p>
+<p><label for="p">Plan</label> <select id="p" name="plan"><option value="">Choose…</option><option>Starter</option><option>Team</option><option>Enterprise</option></select></p>
+<p><input id="t" type="checkbox" name="terms"> <label for="t">I agree to the terms</label></p>
+<button type="submit">Create account</button></form><p id="out" role="status"></p>
+<script>document.getElementById('f').addEventListener('submit',async ev=>{ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));d.terms=!!document.getElementById('t').checked;
+if(!d.terms){document.getElementById('out').textContent='You must agree to the terms.';return;}
+await fetch('/api/signup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});document.getElementById('out').textContent='Account created for '+d.email;});</script>
+</main></body></html>

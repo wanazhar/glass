@@ -138,10 +138,14 @@ struct TranscriptView: View {
 /// with the marble's avatar and name in its colour.
 struct MarbleEntryView: View {
     @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var creatingThread = false
+    @State private var threadError = false
     var entry: MarbleEntry
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
     var speaker: MarbleSpeakerStyle? = nil
+    var allowsThreads = true
 
     private var isUser: Bool { entry.kind == "user" }
     private var task: MarbleTask? {
@@ -151,13 +155,55 @@ struct MarbleEntryView: View {
 
     var body: some View {
         let failure = MarbleTurnFailure.representsFailure(entry, status: task?.status)
-        if entry.kind == "assistant" || failure {
+        if (entry.kind == "assistant" || failure) && entry.threadId == nil
+            && !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId) {
             ForEach(store.tools(for: entry.taskId)) { MarbleToolRow(tool: $0) }
         }
         if failure {
             MarbleFailedTurnRow(task: task)
+        } else if allowsThreads, entry.serverID != nil, ["user", "assistant", "handoff"].contains(entry.kind) {
+            VStack(alignment: .leading, spacing: 6) {
+                message
+                    .contextMenu {
+                        Button("Reply in thread", systemImage: "arrowshape.turn.up.left") {
+                            Task { await openThread() }
+                        }
+                        .disabled(creatingThread)
+                    }
+                if let thread = store.threadSummary(for: entry) {
+                    NavigationLink(value: ChatRoute.thread(thread.id)) {
+                        Label(thread.replyLabel, systemImage: "text.bubble")
+                            .font(.footnote.weight(.medium))
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .alert("Couldn’t open thread", isPresented: $threadError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Try again in a moment.")
+            }
         } else {
             message
+        }
+    }
+
+    private func openThread() async {
+        if let thread = store.threadSummary(for: entry) {
+            navigation.openThread(thread.id)
+            return
+        }
+        guard !creatingThread else { return }
+        creatingThread = true
+        let startingNavigation = navigation.state
+        defer { creatingThread = false }
+        do {
+            let thread = try await store.startThread(from: entry)
+            guard navigation.state == startingNavigation else { return }
+            navigation.openThread(thread.id)
+        } catch is CancellationError {
+        } catch {
+            threadError = true
         }
     }
 
@@ -181,6 +227,8 @@ struct MarbleEntryView: View {
         } else if entry.kind == "reasoning" {
             // Thinking stays tucked away — never inline with the reply.
             MarbleReasoningRow(text: entry.text)
+        } else if let tool = MarbleToolActivity.fromTranscript(entry) {
+            MarbleToolRow(tool: tool)
         } else if entry.kind == "system" || entry.kind == "tool" {
             Text(entry.text)
                 .font(.footnote)
@@ -250,7 +298,8 @@ struct MarbleTurnTail: View {
             let rows = entries.filter { $0.taskId == task.id }
             let hasFailure = rows.contains { MarbleTurnFailure.representsFailure($0, status: task.status) }
             let hasAnswer = rows.contains { $0.kind == "assistant" }
-            if !hasFailure && !hasAnswer && (showsLiveTools || !task.isRunning) {
+            if !hasFailure && !hasAnswer && !rows.contains(where: { $0.kind == "tool" })
+                && (showsLiveTools || !task.isRunning) {
                 ForEach(store.tools(for: task.id)) { MarbleToolRow(tool: $0) }
             }
             if !hasFailure && MarbleTurnFailure.message(for: task.status) != nil {

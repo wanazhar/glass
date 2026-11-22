@@ -22,6 +22,30 @@ struct MarbleToolActivity: Identifiable, Equatable {
         return MarbleDecisionWords.action(tool: name)
     }
 
+    /// The host stores transcript tool rows as "name · summary · status".
+    /// Split on the outside separators so a query may itself contain one.
+    static func fromTranscript(_ entry: MarbleEntry) -> Self? {
+        guard entry.kind == "tool", let statusSeparator = entry.text.range(of: " · ", options: .backwards) else {
+            return nil
+        }
+        let status: Status
+        switch entry.text[statusSeparator.upperBound...] {
+        case "ok": status = .completed
+        case "running": status = .running
+        case "failed": status = .failed
+        case "denied": status = .denied
+        default: return nil
+        }
+        let label = entry.text[..<statusSeparator.lowerBound]
+        guard let summarySeparator = label.range(of: " · ") else {
+            return Self(id: entry.id, name: String(label), query: nil, status: status)
+        }
+        return Self(
+            id: entry.id, name: String(label[..<summarySeparator.lowerBound]),
+            query: String(label[summarySeparator.upperBound...]), status: status
+        )
+    }
+
     static func apply(_ event: MarbleEvent, to calls: inout [Self]) {
         guard let name = event.data.tool else { return }
         let id = event.data.requestId ?? event.data.callId

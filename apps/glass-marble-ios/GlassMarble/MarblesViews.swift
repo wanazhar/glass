@@ -193,6 +193,9 @@ struct EveryoneView: View {
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: "Everyone")
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                MarbleThreadInboxLink(conversationId: everyoneConversationId)
+            }
         }
         .sheet(isPresented: $showsActivity) {
             NavigationStack {
@@ -512,6 +515,11 @@ struct MarbleChatScreen: View {
                     Image(systemName: "info.circle")
                 }
                 .accessibilityLabel("About this Marble")
+            }
+            if let conversationId = marble?.conversationId, !conversationId.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    MarbleThreadInboxLink(conversationId: conversationId)
+                }
             }
         }
     }

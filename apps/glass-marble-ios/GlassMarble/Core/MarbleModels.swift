@@ -84,6 +84,9 @@ struct MarbleApproval: Decodable, Identifiable, Equatable {
 }
 
 struct MarbleEntry: Codable, Identifiable, Equatable {
+    var serverID: String? = nil
+    var threadId: String? = nil
+    var thread: MarbleThreadSummary? = nil
     var conversationId: String
     var kind: String
     var text: String
@@ -98,10 +101,18 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
+        case serverID = "id"
+        case threadId, thread
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let threadFields = try decoder.container(keyedBy: MarbleThreadKey.self)
+        let id = try container.decodeIfPresent(String.self, forKey: .serverID)
+        serverID = id?.isEmpty == false ? id : nil
+        let membership: String? = try threadFields.optional("thread_id", "threadId")
+        threadId = membership?.isEmpty == false ? membership : nil
+        thread = try container.decodeIfPresent(MarbleThreadSummary.self, forKey: .thread)
         conversationId = try container.decode(String.self, forKey: .conversationId)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decode(String.self, forKey: .text)
@@ -127,7 +138,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         self.handoff = handoff
     }
 
-    var id: String { "\(conversationId)|\(taskId)|\(kind)|\(at)|\(text.count)|\(text.hashValue)" }
+    var id: String { serverID ?? "\(conversationId)|\(taskId)|\(kind)|\(at)|\(text.count)|\(text.hashValue)" }
 
     /// A streamed entry that has not reached the durable transcript yet.
     static func preview(kind: String, text: String) -> MarbleEntry {
@@ -493,6 +504,7 @@ struct MarbleEvent: Decodable, Equatable {
 }
 
 struct MarbleEventData: Decodable, Equatable {
+    var thread: MarbleThread? = nil
     var text: String?
     var tool: String?
     var callId: String? = nil
@@ -843,9 +855,16 @@ struct MarbleDevice: Decodable, Identifiable, Equatable {
 public struct MarbleTurnBody: Encodable, Equatable, Sendable {
     public var text: String
     public var conversationId: String?
+    public var threadId: String?
 
-    public init(text: String, conversationId: String?) {
+    enum CodingKeys: String, CodingKey {
+        case text, conversationId
+        case threadId = "thread_id"
+    }
+
+    public init(text: String, conversationId: String?, threadId: String? = nil) {
         self.text = text
         self.conversationId = conversationId
+        self.threadId = threadId
     }
 }

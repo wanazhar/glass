@@ -43,4 +43,12 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertTrue(MarbleTurnFailure.representsFailure(structured, status: "failed"))
         XCTAssertNil(MarbleTurnFailure.message(for: "completed"))
     }
+
+    func testDurableToolRowUsesSamePlainTitleAndStatusAsLiveTool() {
+        let entry = MarbleEntry.preview(kind: "tool", text: "web_search · riemann · hypothesis · ok")
+        let tool = MarbleToolActivity.fromTranscript(entry)
+        XCTAssertEqual(tool?.title, "Searched the web")
+        XCTAssertEqual(tool?.status, .completed)
+        XCTAssertEqual(tool?.query, "riemann · hypothesis")
+    }
 }

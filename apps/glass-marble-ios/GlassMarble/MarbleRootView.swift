@@ -14,6 +14,7 @@ final class MarbleNavigationModel: ObservableObject {
     func selectTab(_ tab: MarbleTab) { state.selectTab(tab) }
     func openConversation(_ id: String) { state.openConversation(id) }
     func openMarble(_ id: String) { state.openMarble(id) }
+    func openThread(_ id: String) { state.openThread(id) }
     func openMarbleInfo(_ id: String, fromEveryone: Bool = false) {
         state.openMarbleInfo(id, fromEveryone: fromEveryone)
     }
@@ -121,41 +122,55 @@ private struct MarbleTabIcon: View {
 struct EveryoneTabView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var query = ""
 
     var body: some View {
         NavigationStack(path: everyonePath) {
             List {
-                NavigationLink(value: ChatRoute.everyoneChat) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Everyone")
-                            if let last = store.everyoneEntries.last(where: {
-                                ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
-                            }) {
-                                Text(last.text)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    } icon: {
-                        Image(systemName: "bubble.left.and.text.bubble.right")
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    MarbleSearchSection(query: query) { hit in
+                        NavigationLink(value: ChatRoute.searchHit(
+                            conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
+                        )) { MarbleSearchRow(hit: hit) }
                     }
+                } else {
+                    everyoneLink
                 }
             }
-                .listStyle(.sidebar)
-                .navigationTitle("Chats")
-                .navigationDestination(for: ChatRoute.self) { route in
-                    switch route {
-                    case .marbleInfo(let id):
-                        MarbleInfoView(marbleId: id)
-                            .toolbarVisibility(.hidden, for: .tabBar)
-                    case .everyoneChat:
-                        EveryoneView()
-                    default:
-                        EmptyView()
+            .listStyle(.sidebar)
+            .navigationTitle("Chats")
+            .searchable(text: $query, prompt: "Search all chats")
+            .navigationDestination(for: ChatRoute.self) { route in
+                switch route {
+                case .marbleInfo(let id):
+                    MarbleInfoView(marbleId: id)
+                        .toolbarVisibility(.hidden, for: .tabBar)
+                case .everyoneChat:
+                    EveryoneView()
+                default:
+                    MarbleThreadDestination(route: route)
+                }
+            }
+        }
+    }
+
+    private var everyoneLink: some View {
+        NavigationLink(value: ChatRoute.everyoneChat) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Everyone")
+                    if let last = store.everyoneEntries.last(where: {
+                        ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
+                    }) {
+                        Text(last.text)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
+            } icon: {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+            }
         }
     }
 
@@ -184,8 +199,10 @@ struct MarblesTabView: View {
                         MarbleChatScreen(marbleId: id)
                     case .marbleInfo(let id):
                         MarbleInfoView(marbleId: id)
-                    default:
+                    case .conversation, .draft:
                         MarbleChatView(route: route)
+                    default:
+                        MarbleThreadDestination(route: route)
                     }
                 }
         }
@@ -272,6 +289,11 @@ struct MarbleChatView: View {
                         Image(systemName: "ellipsis")
                     }
                     .accessibilityLabel("Chat actions")
+                }
+            }
+            if let conversationId {
+                ToolbarItem(placement: .topBarTrailing) {
+                    MarbleThreadInboxLink(conversationId: conversationId)
                 }
             }
         }

@@ -4,8 +4,6 @@ struct ConversationListView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var searchText = ""
-    @State private var hits: [MarbleSearchHit] = []
-    @State private var searchTask: Task<Void, Never>?
     @State private var renaming: MarbleConversation?
     @State private var renameDraft = ""
     @State private var deleting: MarbleConversation?
@@ -18,7 +16,6 @@ struct ConversationListView: View {
         .navigationTitle("Glass Marble")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search conversations")
-        .onChange(of: searchText) { _, _ in debounceSearch() }
         .alert("Rename conversation", isPresented: renameBinding) {
             TextField("Title", text: $renameDraft)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -94,15 +91,10 @@ struct ConversationListView: View {
     @ViewBuilder
     private var searchSection: some View {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Section(header: Text("Transcript matches")) {
-                if hits.isEmpty {
-                    Text("No matches")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(hits) { hit in
-                    searchHitRow(hit)
-                }
+            MarbleSearchSection(query: searchText) { hit in
+                NavigationLink(value: ChatRoute.searchHit(
+                    conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
+                )) { MarbleSearchRow(hit: hit) }
             }
         }
     }
@@ -124,24 +116,6 @@ struct ConversationListView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 24)
             }
-        }
-    }
-
-    private func searchHitRow(_ hit: MarbleSearchHit) -> some View {
-        Button {
-            navigation.openConversation(hit.conversationId)
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(hit.title.isEmpty ? hit.conversationId : hit.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(hit.text)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            .padding(.vertical, 2)
         }
     }
 
@@ -186,21 +160,6 @@ struct ConversationListView: View {
             return store.state.tasks.contains { task in
                 task.conversationId == conversation.id && task.prompt.lowercased().contains(needle)
             }
-        }
-    }
-
-    /// Debounced server-side transcript search while the field has text.
-    private func debounceSearch() {
-        searchTask?.cancel()
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            hits = []
-            return
-        }
-        searchTask = Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            hits = (try? await store.search(query: query)) ?? []
         }
     }
 

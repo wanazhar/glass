@@ -136,9 +136,10 @@ struct MarbleRoute: Equatable {
     static let prism = MarbleRoute(path: "/api/prism")
 
     /// The shared chat's timeline, paged by `after` like a transcript page.
-    static func everyone(after: UInt64?) -> MarbleRoute {
+    static func everyone(after: UInt64?, main: Bool = false) -> MarbleRoute {
         var query: [URLQueryItem] = []
         if let after { query.append(URLQueryItem(name: "after", value: "\(after)")) }
+        if main { query.append(URLQueryItem(name: "main", value: "1")) }
         return MarbleRoute(path: "/api/everyone", query: query)
     }
     static let tools = MarbleRoute(path: "/api/tools")
@@ -148,12 +149,27 @@ struct MarbleRoute: Equatable {
     static let voice = MarbleRoute(path: "/api/voice")
     static let control = MarbleRoute(path: "/api/control")
 
-    static func transcript(conversationId: String, after: UInt64? = nil) -> MarbleRoute {
+    static func transcript(
+        conversationId: String, after: UInt64? = nil, main: Bool = false, around: String? = nil
+    ) -> MarbleRoute {
         var query = [URLQueryItem(name: "conversationId", value: conversationId)]
-        if let after, after > 0 {
+        if let around {
+            query.append(URLQueryItem(name: "around", value: around))
+        } else if let after, after > 0 {
             query.append(URLQueryItem(name: "after", value: String(after)))
         }
+        if main { query.append(URLQueryItem(name: "main", value: "1")) }
         return MarbleRoute(path: "/api/transcript", query: query)
+    }
+
+    static func threads(conversationId: String) -> MarbleRoute {
+        MarbleRoute(path: "/api/threads", query: [.init(name: "conversation_id", value: conversationId)])
+    }
+
+    static func messageSearch(_ query: String, threadId: String?, limit: Int) -> MarbleRoute {
+        var items = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: String(limit))]
+        if let threadId { items.append(.init(name: "thread_id", value: threadId)) }
+        return MarbleRoute(path: "/api/search", query: items)
     }
 
     static func search(_ q: String, limit: Int = 30) -> MarbleRoute {

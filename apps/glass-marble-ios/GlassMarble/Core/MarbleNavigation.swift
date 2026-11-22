@@ -19,6 +19,9 @@ public enum MarbleTab: String, Sendable, CaseIterable {
 public enum ChatRoute: Hashable, Sendable {
     /// The shared chat, pushed from the Everyone inbox.
     case everyoneChat
+    case threadInbox(String)
+    case thread(String)
+    case searchHit(conversationId: String, threadId: String?, entryId: String?)
     /// A not-yet-created conversation. It gains a real id on the first send.
     case draft
     case conversation(String)
@@ -70,6 +73,14 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     public mutating func selectTab(_ newTab: MarbleTab) {
         tab = newTab
+    }
+
+    mutating func openThread(_ id: String) {
+        if tab == .everyone {
+            everyonePath.append(.thread(id))
+        } else {
+            chatPath.append(.thread(id))
+        }
     }
 
     /// A list row or transcript-search hit; replaces any draft on top.

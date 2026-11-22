@@ -144,15 +144,15 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(route: .state))
     }
 
-    func transcript(conversationId: String, after: UInt64?) async throws -> MarbleTranscriptPage {
+    func transcript(conversationId: String, after: UInt64? = nil, around: String? = nil) async throws -> MarbleTranscriptPage {
         try await fetch(
-            try makeRequest(route: .transcript(conversationId: conversationId, after: after))
+            try makeRequest(route: .transcript(conversationId: conversationId, after: after, main: true, around: around))
         )
     }
 
-    func send(text: String, conversationId: String?) async throws -> MarbleAccepted {
+    func send(text: String, conversationId: String?, threadId: String? = nil) async throws -> MarbleAccepted {
         let data = try JSONEncoder().encode(
-            MarbleTurnBody(text: text, conversationId: conversationId)
+            MarbleTurnBody(text: text, conversationId: conversationId, threadId: threadId)
         )
         return try await fetch(
             try makeRequest(path: "/api/turns", method: "POST", body: data)
@@ -198,6 +198,59 @@ final class MarbleClient: @unchecked Sendable {
             try makeRequest(route: .search(query, limit: limit))
         )
         return reply.hits
+    }
+
+    func messageSearch(query: String, threadId: String?, limit: Int = 30) async throws -> [MarbleSearchResult] {
+        struct Reply: Decodable { var hits: [MarbleSearchResult] }
+        do {
+            let reply: Reply = try await fetch(
+                try makeRequest(route: .messageSearch(query, threadId: threadId, limit: limit))
+            )
+            return reply.hits
+        } catch MarbleClientError.notFound where threadId == nil {
+            return try await search(query: query, limit: limit).map(MarbleSearchResult.init(legacy:))
+        }
+    }
+
+    func threads(conversationId: String) async throws -> [MarbleThread] {
+        struct Reply: Decodable {
+            let threads: [MarbleThread]
+
+            init(from decoder: Decoder) throws {
+                if var list = try? decoder.unkeyedContainer() {
+                    var threads: [MarbleThread] = []
+                    while !list.isAtEnd { threads.append(try list.decode(MarbleThread.self)) }
+                    self.threads = threads
+                } else {
+                    self.threads = try decoder.container(keyedBy: MarbleThreadKey.self).required("threads")
+                }
+            }
+        }
+        let reply: Reply = try await fetch(try makeRequest(route: .threads(conversationId: conversationId)))
+        return reply.threads
+    }
+
+    func thread(id: String) async throws -> MarbleThreadPage {
+        try await fetch(try makeRequest(path: "/api/threads/\(encoded(id))"))
+    }
+
+    func createThread(conversationId: String, parentEntryId: String) async throws -> MarbleThread {
+        struct Body: Encodable {
+            var conversation_id: String
+            var parent_entry_id: String
+        }
+        struct Reply: Decodable {
+            let thread: MarbleThread
+            init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: MarbleThreadKey.self)
+                thread = try values.optional("thread") ?? MarbleThread(from: decoder)
+            }
+        }
+        let reply: Reply = try await postJSON(
+            "/api/threads",
+            body: Body(conversation_id: conversationId, parent_entry_id: parentEntryId)
+        )
+        return reply.thread
     }
 
     /// `GET /api/export` — the whole document, or one conversation's slice.
@@ -424,7 +477,7 @@ final class MarbleClient: @unchecked Sendable {
     /// The shared chat's timeline, newest entries after `after`.
     func everyone(after: UInt64? = nil) async throws -> [MarbleEntry] {
         struct Reply: Decodable { var entries: [MarbleEntry] }
-        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after)))
+        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after, main: true)))
         return reply.entries
     }
 
@@ -435,9 +488,8 @@ final class MarbleClient: @unchecked Sendable {
 
     /// One message on the shared plane; the marbles it names answer.
     @discardableResult
-    func sendEveryone(text: String) async throws -> MarbleEveryoneReply {
-        struct Body: Encodable { var text: String }
-        return try await postJSON("/api/everyone", body: Body(text: text))
+    func sendEveryone(text: String, threadId: String? = nil) async throws -> MarbleEveryoneReply {
+        try await postJSON("/api/everyone", body: MarbleTurnBody(text: text, conversationId: nil, threadId: threadId))
     }
 
     func removeMarble(id: String) async throws {

@@ -80,6 +80,7 @@ final class MarbleStore: ObservableObject {
     /// poll carries no transcript, so these never come from `state`.
     @Published private(set) var everyoneTimeline: [MarbleEntry] = []
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
+    @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
     private var chatsRevision: Int = -1
     /// Advanced on every host change or sign-out so late replies from the
     /// previous host are dropped rather than shown.
@@ -88,7 +89,11 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var liveReasoning = ""
     @Published private var toolsByTurn: [String: [MarbleToolActivity]] = [:]
     private var recentToolTurnIDs: [String] = []
-    var liveTools: [MarbleToolActivity] { activeTaskId.map(tools(for:)) ?? [] }
+    var liveTools: [MarbleToolActivity] {
+        guard let activeTaskId, let selectedConversationId,
+              !hasTranscriptToolRows(in: selectedConversationId, taskId: activeTaskId) else { return [] }
+        return tools(for: activeTaskId)
+    }
     @Published private(set) var activeTaskId: String?
     @Published var errorMessage: String?
     /// Last accepted Prism change, shown inside the Prism sheet.
@@ -159,9 +164,9 @@ final class MarbleStore: ObservableObject {
     var transcript: [MarbleEntry] {
         if transcriptConversationId == selectedConversationId,
            !conversationTranscript.isEmpty {
-            return conversationTranscript
+            return conversationTranscript.filter { $0.threadId == nil }
         }
-        return state.transcript(for: selectedConversationId)
+        return state.transcript(for: selectedConversationId).filter { $0.threadId == nil }
     }
 
     var isWorking: Bool { activeTaskId != nil }
@@ -467,6 +472,7 @@ final class MarbleStore: ObservableObject {
         recentToolTurnIDs = []
         retryingTurns = []
         retryFailures = []
+        threadUpdates = [:]
         everyoneTimeline = []
         marbleTranscripts = [:]
         chatsRevision = -1
@@ -521,32 +527,43 @@ final class MarbleStore: ObservableObject {
         guard transcriptRevision != state.revision || conversationTranscript.isEmpty else {
             return
         }
+        let generation = hostGeneration.current
+        let revision = state.revision
         do {
             let page = try await client.transcript(
                 conversationId: conversationId,
                 after: transcriptCursor == 0 ? nil : transcriptCursor
             )
-            guard selectedConversationId == conversationId else { return }
-            var known = Set(conversationTranscript.map(Self.transcriptKey))
-            for entry in page.entries where known.insert(Self.transcriptKey(entry)).inserted {
-                conversationTranscript.append(entry)
+            guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId,
+                  transcriptRevision <= revision else { return }
+            var offsets = Dictionary(conversationTranscript.enumerated().map {
+                (Self.transcriptKey($0.element), $0.offset)
+            }, uniquingKeysWith: { first, _ in first })
+            for entry in page.entries {
+                let key = Self.transcriptKey(entry)
+                if let index = offsets[key] {
+                    if conversationTranscript[index] != entry { conversationTranscript[index] = entry }
+                } else {
+                    offsets[key] = conversationTranscript.count
+                    conversationTranscript.append(entry)
+                }
             }
             transcriptCursor = max(transcriptCursor, page.cursor)
-            transcriptRevision = state.revision
+            transcriptRevision = revision
         } catch MarbleClientError.notFound {
-            guard selectedConversationId == conversationId else { return }
+            guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId else { return }
             state.conversations.removeAll { $0.id == conversationId }
             selectedConversationId = nil
             conversationTranscript = []
             errorMessage = "This chat no longer exists"
         } catch {
-            guard selectedConversationId == conversationId else { return }
+            guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId else { return }
             errorMessage = error.localizedDescription
         }
     }
 
     private static func transcriptKey(_ entry: MarbleEntry) -> String {
-        "\(entry.at)|\(entry.kind)|\(entry.taskId)|\(entry.text)"
+        entry.serverID ?? "\(entry.at)|\(entry.kind)|\(entry.taskId)|\(entry.text)"
     }
 
     func send(_ text: String) async {
@@ -620,6 +637,19 @@ final class MarbleStore: ObservableObject {
 
     func tools(for taskID: String) -> [MarbleToolActivity] { toolsByTurn[taskID] ?? [] }
 
+    func hasTranscriptToolRows(in conversationId: String, taskId: String) -> Bool {
+        guard !taskId.isEmpty else { return false }
+        let entries: [MarbleEntry]
+        if conversationId == everyoneConversationId {
+            entries = everyoneEntries
+        } else if conversationId == selectedConversationId {
+            entries = transcript
+        } else {
+            entries = marbleTranscripts[conversationId] ?? []
+        }
+        return entries.contains { $0.kind == "tool" && $0.taskId == taskId }
+    }
+
     func liveReasoning(for conversationID: String) -> String { live[conversationID]?.reasoning ?? "" }
 
     func latestTurn(in conversationID: String?) -> MarbleTask? {
@@ -633,9 +663,63 @@ final class MarbleStore: ObservableObject {
     }
 
     /// Transcript search across every conversation.
-    func search(query: String) async throws -> [MarbleSearchHit] {
-        guard let client else { return [] }
-        return try await client.search(query: query)
+    func search(query: String, threadId: String? = nil) async throws -> [MarbleSearchResult] {
+        try await withChatClient { try await $0.messageSearch(query: query, threadId: threadId) }
+    }
+
+    func threads(in conversationId: String) async throws -> [MarbleThread] {
+        try await withChatClient { try await $0.threads(conversationId: conversationId) }
+    }
+
+    func thread(id: String) async throws -> MarbleThreadPage {
+        try await withChatClient { try await $0.thread(id: id) }
+    }
+
+    func startThread(from entry: MarbleEntry) async throws -> MarbleThread {
+        guard let id = entry.serverID else { throw MarbleClientError.notFound }
+        let thread = try await withChatClient {
+            try await $0.createThread(conversationId: entry.conversationId, parentEntryId: id)
+        }
+        threadUpdates[thread.id] = thread
+        return thread
+    }
+
+    func threadSummary(for entry: MarbleEntry) -> MarbleThreadSummary? {
+        if let id = entry.thread?.id {
+            return threadUpdates[id]?.summary ?? entry.thread
+        }
+        guard let id = entry.serverID else { return nil }
+        return threadUpdates.values.first {
+            $0.conversationId == entry.conversationId && $0.parentEntryId == id
+        }?.summary
+    }
+
+    func transcript(conversationId: String, around entryId: String) async throws -> [MarbleEntry] {
+        let page = try await withChatClient {
+            try await $0.transcript(conversationId: conversationId, around: entryId)
+        }
+        return page.entries.filter { $0.threadId == nil }
+    }
+
+    func sendInThread(_ text: String, thread: MarbleThread) async throws {
+        try await withChatClient { client in
+            if thread.conversationId == everyoneConversationId {
+                let reply = try await client.sendEveryone(text: text, threadId: thread.id)
+                guard reply.ok else { throw MarbleClientError.conflict("The reply wasn’t accepted.") }
+            } else {
+                let reply = try await client.send(text: text, conversationId: thread.conversationId, threadId: thread.id)
+                guard reply.accepted else { throw MarbleClientError.conflict("The reply wasn’t accepted.") }
+            }
+        }
+    }
+
+    private func withChatClient<T>(_ operation: (MarbleClient) async throws -> T) async throws -> T {
+        guard let client else { throw MarbleClientError.offline("") }
+        let generation = hostGeneration.current
+        let result = try await operation(client)
+        try Task.checkCancellation()
+        guard hostGeneration.isCurrent(generation) else { throw CancellationError() }
+        return result
     }
 
     func addMarble(
@@ -708,7 +792,8 @@ final class MarbleStore: ObservableObject {
 
     /// The shared plane's timeline, as last fetched from the host.
     var everyoneEntries: [MarbleEntry] {
-        everyoneTimeline.isEmpty ? state.transcript(for: everyoneConversationId) : everyoneTimeline
+        let entries = everyoneTimeline.isEmpty ? state.transcript(for: everyoneConversationId) : everyoneTimeline
+        return entries.filter { $0.threadId == nil }
     }
 
     /// Settings → Data: wipe the shared plane's history on the host.
@@ -752,7 +837,8 @@ final class MarbleStore: ObservableObject {
 
     /// A marble's own chat transcript once it has a durable conversation.
     func marbleTranscript(_ marble: MarblePrismMarble) -> [MarbleEntry] {
-        marbleTranscripts[marble.conversationId] ?? state.transcript(for: marble.conversationId)
+        let entries = marbleTranscripts[marble.conversationId] ?? state.transcript(for: marble.conversationId)
+        return entries.filter { $0.threadId == nil }
     }
 
     /// Stop the turn a marble is working on in its own chat.
@@ -1267,6 +1353,8 @@ final class MarbleStore: ObservableObject {
             if everyoneTimeline.isEmpty { saveCache() }
             chatsRevision = -1
             Task { await refresh() }
+        case "thread":
+            if let thread = event.data.thread { threadUpdates[thread.id] = thread }
         case "settled":
             let reply = forActive ? buffers.text : ""
             buffers = LiveBuffers()

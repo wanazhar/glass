@@ -186,6 +186,11 @@ struct MarbleEntryView: View {
                         })
                         .confirmationDialog("Message actions", isPresented: $showsMessageActions) {
                             replyInThread
+                            if !entry.text.isEmpty {
+                                Button("Copy", systemImage: "doc.on.doc") {
+                                    UIPasteboard.general.string = entry.text
+                                }
+                            }
                         }
                         .accessibilityAction(named: Text("Reply in thread")) {
                             Task { await openThread() }

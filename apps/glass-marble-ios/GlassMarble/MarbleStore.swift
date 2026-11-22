@@ -2572,9 +2572,11 @@ extension MarbleStore {
             ),
         ])
         state.transcript += (0..<60).map { index in
-            MarbleEntry(conversationId: everyoneConversationId, kind: "assistant",
-                        text: "Everyone history row \(index)", taskId: "everyone-fixture-\(index)",
-                        at: now + UInt64(index), speaker: "m-ada", speakerName: "Ada")
+            var entry = MarbleEntry(conversationId: everyoneConversationId, kind: "assistant",
+                                    text: "Everyone history row \(index)", taskId: "everyone-fixture-\(index)",
+                                    at: now + UInt64(index), speaker: "m-ada", speakerName: "Ada")
+            entry.serverID = "everyone-fixture-entry-\(index)"
+            return entry
         }
         if ProcessInfo.processInfo.arguments.contains("-MarbleUITestDelayedEveryone") {
             store.fixturePendingEveryone = state.transcript(for: everyoneConversationId)

@@ -46,7 +46,27 @@ final class GlassMarbleUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label == 'Everyone' AND identifier != 'tab.everyone'")).firstMatch.tap()
         XCTAssertTrue(app.descendants(matching: .any)["Loading messages"].firstMatch.waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["No one has spoken yet"].exists)
-        assertHittable("Everyone history row 59")
+        // Allow an accessibility poll after the fixture's five-second delay.
+        assertHittable("Everyone history row 59", timeout: 10)
+    }
+
+    func testEveryoneSavedMessageCanBeCopied() {
+        app.tabBars.buttons["Everyone"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Everyone,'")).firstMatch.tap()
+        let text = "Everyone history row 59"
+        assertHittable(text)
+
+        app.staticTexts[text].firstMatch.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Reply in thread"].firstMatch.isHittable)
+        let copy = app.buttons["Copy"].firstMatch
+        XCTAssertTrue(copy.isHittable)
+        copy.tap()
+
+        let composer = app.textFields.firstMatch
+        composer.tap()
+        composer.press(forDuration: 1)
+        app.menuItems["Paste"].tap()
+        XCTAssertEqual(composer.value as? String, text)
     }
 
     func testEveryoneSendKeepsHistoryAndThreeWorkingAgentsVisible() {
@@ -90,11 +110,13 @@ final class GlassMarbleUITests: XCTestCase {
         app.staticTexts["Marble"].tap()
     }
 
-    private func assertHittable(_ text: String, file: StaticString = #filePath, line: UInt = #line) {
+    private func assertHittable(
+        _ text: String, timeout: TimeInterval = 5, file: StaticString = #filePath, line: UInt = #line
+    ) {
         let message = app.staticTexts[text].firstMatch
         let visible = NSPredicate { _, _ in message.exists && message.isHittable }
         let expectation = XCTNSPredicateExpectation(predicate: visible, object: nil)
-        let result = XCTWaiter.wait(for: [expectation], timeout: 5)
+        let result = XCTWaiter.wait(for: [expectation], timeout: timeout)
         if result != .completed {
             shot("Latest message missing")
             print(app.debugDescription)

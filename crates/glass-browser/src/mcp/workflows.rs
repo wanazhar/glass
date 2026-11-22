@@ -160,6 +160,7 @@ pub(crate) fn record(tool: &str, arguments: &Value) {
 }
 
 fn is_reference(target: &str) -> bool {
+    let target = target.strip_prefix("ref=").unwrap_or(target);
     let snapshot_ref = target.split_once(':').is_some_and(|(revision, _)| {
         revision.len() > 1
             && revision.starts_with('r')
@@ -209,21 +210,24 @@ pub(crate) fn save(name: &str) -> Result<String, String> {
             "{TOOL}: nothing recorded yet; do the task with browser_* tools first, then save."
         ));
     }
+    require_stable_targets(&steps)?;
     let workflow = json!({"version": 1, "steps": steps});
     write_private(&path, workflow.to_string().as_bytes())
         .map_err(|e| format!("{TOOL}: cannot write {}: {e}", path.display()))?;
-    let unstable = unstable_steps(&steps);
-    let warning = if unstable.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " Steps {unstable:?} use snapshot refs with no role and name, so they will fail on replay; redo them with \"role=<role>;name=<name>\" targets and save again."
-        )
-    };
     Ok(format!(
-        "Saved workflow \"{name}\" with {} steps: {}. Replay it with {{\"action\":\"run\",\"name\":\"{name}\"}}.{warning}",
+        "Saved workflow \"{name}\" with {} steps: {}. Replay it with {{\"action\":\"run\",\"name\":\"{name}\"}}.",
         steps.len(),
         outline(&steps)
+    ))
+}
+
+fn require_stable_targets(steps: &[Value]) -> Result<(), String> {
+    let unstable = unstable_steps(steps);
+    if unstable.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{TOOL}: steps {unstable:?} have non-replayable snapshot targets; record them again with stable, non-secret role/name locators."
     ))
 }
 
@@ -275,6 +279,7 @@ pub(crate) fn load(name: &str) -> Result<Vec<Value>, String> {
             step["tool"]
         ));
     }
+    require_stable_targets(&steps)?;
     Ok(steps)
 }
 
@@ -396,21 +401,35 @@ mod tests {
             assert!(status.success());
             return;
         }
-        learn_references(
-            &json!({"reference":"e8","role":"button","name":"Earlier label"}).to_string(),
-        );
-        learn_references(
-            &json!({"reference":"e8","role":"button","name":"workflow-private-label"}).to_string(),
-        );
-        assert!(!recorder().references.contains_key("e8"));
+        for reference in ["e8", "ref=r1:n8"] {
+            learn_references(
+                &json!({"reference":reference,"role":"button","name":"Earlier label"}).to_string(),
+            );
+            learn_references(
+                &json!({"reference":reference,"role":"button","name":"workflow-private-label"})
+                    .to_string(),
+            );
+            assert!(!recorder().references.contains_key(reference));
+            start();
+            record("browser_click", &json!({"target":reference}));
+            assert!(save("private").unwrap_err().contains("non-replayable"));
+            let path = named_path("workflows", TOOL, "private").unwrap();
+            assert!(!path.exists());
+            write_private(
+                &path,
+                json!({"version":1,"steps":recorder().steps})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+            assert!(load("private").unwrap_err().contains("non-replayable"));
+            std::fs::remove_file(path).unwrap();
+        }
         start();
-        record("browser_click", &json!({"target":"e8"}));
-        save("private").unwrap();
-        let saved =
-            std::fs::read_to_string(named_path("workflows", TOOL, "private").unwrap()).unwrap();
-        assert!(!saved.contains("workflow-private-label"));
-        assert!(saved.contains("e8"));
-        assert!(!saved.contains("{{secret:REFLECTED}}"));
+        record("browser_click", &json!({"target":"role=button;name=Save"}));
+        save("stable").unwrap();
+        assert_eq!(load("stable").unwrap().len(), 1);
+        assert!(require_stable_targets(&[]).is_ok());
     }
 
     #[test]
@@ -454,7 +473,7 @@ mod tests {
         ] {
             assert!(!records(tool, &json!({})), "{tool}");
         }
-        assert!(is_reference("e12") && is_reference("r10:c1:b3"));
+        assert!(is_reference("e12") && is_reference("r10:c1:b3") && is_reference("ref=r1:n8"));
         assert!(!is_reference("role=button;name=Save") && !is_reference("email"));
     }
 

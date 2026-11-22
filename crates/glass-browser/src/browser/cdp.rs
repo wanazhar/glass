@@ -14,7 +14,7 @@ use std::fmt::{Display, Formatter};
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -293,6 +293,7 @@ pub struct CdpClient {
     cdp_wait_nanos: Arc<AtomicU64>,
     timeout: Duration,
     active_route: Arc<std::sync::Mutex<CdpRoute>>,
+    foreground_stale: Arc<AtomicBool>,
 }
 
 struct RemoteObjectBatchGuard {
@@ -507,6 +508,7 @@ impl CdpClient {
             cdp_wait_nanos,
             timeout,
             active_route: Arc::new(std::sync::Mutex::new(CdpRoute::default())),
+            foreground_stale: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -655,6 +657,9 @@ impl CdpClient {
         session_id: Option<String>,
         timeout: Duration,
     ) -> Result<Value, CdpError> {
+        if method.starts_with("Input.") && self.foreground_stale.swap(false, Ordering::Relaxed) {
+            self.activate_route_target(timeout).await;
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = CdpRequest {
             id,
@@ -698,6 +703,30 @@ impl CdpClient {
             scope.fetch_add(elapsed_nanos, Ordering::Relaxed);
         }
         result
+    }
+
+    /// Note that another page may now be in front, for example a popup.
+    ///
+    /// Headless Chromium acknowledges input to a page behind another window
+    /// only about once a second, so the next input command first brings the
+    /// routed target to the front.
+    pub fn mark_foreground_stale(&self) {
+        self.foreground_stale.store(true, Ordering::Relaxed);
+    }
+
+    async fn activate_route_target(&self, timeout: Duration) {
+        let Some(target_id) = self.current_route().target_id else {
+            return;
+        };
+        let request = Box::pin(self.send_routed(
+            "Target.activateTarget",
+            Some(serde_json::json!({"targetId": target_id})),
+            None,
+            timeout,
+        ));
+        if let Err(error) = request.await {
+            tracing::debug!(%error, "could not bring the routed target to the front");
+        }
     }
 
     pub fn set_active_session(&self, session_id: Option<String>) {
@@ -748,10 +777,14 @@ impl CdpClient {
         frame_id: Option<String>,
         context_id: Option<i64>,
     ) {
-        *self
+        let mut route = self
             .active_route
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = CdpRoute {
+            .unwrap_or_else(|poison| poison.into_inner());
+        if target_id.is_some() && route.target_id != target_id {
+            self.foreground_stale.store(true, Ordering::Relaxed);
+        }
+        *route = CdpRoute {
             target_id,
             session_id,
             frame_id,
@@ -1697,6 +1730,80 @@ mod tests {
 
         client.close().await;
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn input_after_a_new_page_first_brings_the_routed_target_to_front() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            let mut seen = Vec::new();
+            for _ in 0..5 {
+                let request = websocket.next().await.unwrap().unwrap();
+                let request: Value = match request {
+                    Message::Text(text) => serde_json::from_str(text.as_ref()).unwrap(),
+                    _ => panic!("expected text frame"),
+                };
+                seen.push((
+                    request["method"].as_str().unwrap().to_owned(),
+                    request["params"]["targetId"].as_str().map(str::to_owned),
+                    request["sessionId"].as_str().map(str::to_owned),
+                ));
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({"id": request["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            seen
+        });
+
+        let client =
+            CdpClient::connect_with_timeout(&format!("ws://{address}"), Duration::from_secs(2))
+                .await
+                .unwrap();
+        client.set_active_target_route(Some("page".into()), Some("s1".into()), None, None);
+        client
+            .dispatch_mouse_event("mouseMoved", 1.0, 1.0, None, None)
+            .await
+            .unwrap();
+        client
+            .dispatch_mouse_event("mouseMoved", 2.0, 2.0, None, None)
+            .await
+            .unwrap();
+        client.mark_foreground_stale();
+        client
+            .dispatch_mouse_event("mouseMoved", 3.0, 3.0, None, None)
+            .await
+            .unwrap();
+
+        let seen = server.await.unwrap();
+        let activate = (
+            "Target.activateTarget".to_owned(),
+            Some("page".to_owned()),
+            None,
+        );
+        let input = (
+            "Input.dispatchMouseEvent".to_owned(),
+            None,
+            Some("s1".to_owned()),
+        );
+        assert_eq!(
+            seen,
+            vec![
+                activate.clone(),
+                input.clone(),
+                input.clone(),
+                activate,
+                input
+            ]
+        );
+        client.close().await;
     }
 
     #[tokio::test]

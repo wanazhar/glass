@@ -994,6 +994,11 @@ impl CdpBrowserSession {
             loop {
                 match topology_events.recv().await {
                     Ok(event) => {
+                        if event.method == "Target.targetCreated"
+                            && event.params["targetInfo"]["type"] == "page"
+                        {
+                            cdp_for_events.mark_foreground_stale();
+                        }
                         if resume_attached_targets
                             && event.method == "Target.attachedToTarget"
                             && let Some(attached) = event.params["sessionId"].as_str()

@@ -147,23 +147,41 @@ struct EveryoneTabView: View {
     }
 
     private var everyoneLink: some View {
-        NavigationLink(value: ChatRoute.everyoneChat) {
-            Label {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Everyone")
-                    if let last = store.everyoneEntries.last(where: {
-                        ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
-                    }) {
-                        Text(last.text)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            } icon: {
-                Image(systemName: "bubble.left.and.text.bubble.right")
+        Button {
+            // Commit the chat and hidden tab bar together so the first
+            // scroll layout uses the final viewport.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                navigation.setEveryonePath(navigation.state.everyonePath + [.everyoneChat])
             }
+        } label: {
+            HStack {
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Everyone")
+                        if let last = store.everyoneEntries.last(where: {
+                            ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
+                        }) {
+                            Text(last.text)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                } icon: {
+                    Image(systemName: "bubble.left.and.text.bubble.right")
+                        .foregroundStyle(.tint)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private var everyonePath: Binding<[ChatRoute]> {

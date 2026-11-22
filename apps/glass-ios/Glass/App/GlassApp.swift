@@ -8,6 +8,8 @@ struct GlassApp: App {
         return model
     }()
 
+    init() { Attention.install() }
+
     var body: some Scene {
         WindowGroup {
             RootView()

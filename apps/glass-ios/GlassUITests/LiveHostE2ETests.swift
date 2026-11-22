@@ -795,6 +795,60 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
+    func testRepliesAlertOnlyOutsideTheirConversationAndNeverReplay() throws {
+        let away = try call("thread/new?title=Alert%20away", method: "POST")
+        let here = try call("thread/new?title=Alert%20here", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("notifications")
+        let toggle = app.switches["settings.notifications"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 10) { permission.buttons["Allow"].tap() }
+        attach(app, "e2e-alerts-on")
+        XCTAssertTrue(waitUntil(10) { (app.switches["settings.notifications"].firstMatch.value as? String) == "1" }, "alerts turn on")
+
+        app.tabBars.buttons["Conversations"].tap()
+        open(app, thread: away)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open(app, thread: here)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let banner = { (title: String) in
+            springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Reply ready' AND label CONTAINS %@", title)).firstMatch
+        }
+
+        _ = try call("thread/send?id=\(away)&text=reply%20elsewhere&wait=1", method: "POST")
+        XCTAssertTrue(banner("Alert away").waitForExistence(timeout: 20), "a reply in another conversation alerts")
+        attach(app, "e2e-alert-banner")
+        XCTAssertTrue(waitUntil(15) { !banner("Alert away").exists }, "the banner goes away")
+
+        _ = try call("thread/send?id=\(here)&text=reply%20here&wait=1", method: "POST")
+        XCTAssertTrue(text(app, containing: "reply here").waitForExistence(timeout: 20))
+        XCTAssertFalse(banner("Alert here").waitForExistence(timeout: 5), "the conversation on screen doesn't alert")
+
+        // Replies that finished while iOS had Glass suspended are past: coming back never replays them.
+        XCUIDevice.shared.press(.home)
+        sleep(3)
+        _ = try call("net/stall", method: "POST")
+        _ = try call("thread/send?id=\(away)&text=finished%20while%20away&wait=1", method: "POST")
+        app.activate()
+        XCTAssertTrue(waitForConnection(app, "Live", timeout: 60))
+        XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 8), "catch-up after returning doesn't alert")
+        _ = try call("net/restore", method: "POST")
+
+        // Relaunching never replays either.
+        app.terminate()
+        app.launchArguments = []
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: away)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 5), "launch doesn't alert for old replies")
+    }
+
+    @MainActor
     func testDesktopTabShowsTheHostsDesktopChoices() throws {
         let app = try pairedApp()
         app.tabBars.buttons["Desktop"].tap()

@@ -19,7 +19,11 @@ struct ThreadsView: View {
 }
 
 private struct ThreadSplitView: View {
+    @Environment(AppModel.self) private var app
     @Bindable var threads: ThreadsModel
+
+    /// The conversation on screen: open, and on the Conversations tab.
+    private var onScreen: String? { app.selectedTab == .threads ? threads.selection : nil }
 
     var body: some View {
         NavigationSplitView {
@@ -32,6 +36,7 @@ private struct ThreadSplitView: View {
                 WelcomeView(newThread: { Task { await threads.newThread() } })
             }
         }
+        .onChange(of: onScreen, initial: true) { _, id in Attention.visibleThread = id }
     }
 }
 

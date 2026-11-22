@@ -164,7 +164,7 @@ struct NotificationSettingsView: View {
                 }))
                 .accessibilityIdentifier("settings.notifications")
             } footer: {
-                Text("Alerts you when a reply is ready or Glass needs an answer while the app is in the background. iPhone pauses the connection soon after you leave the app, so alerts stop then.")
+                Text("Alerts you when a reply is ready or Glass needs an answer in a conversation you aren't looking at. Alerts come only while Glass is running. iPhone pauses Glass soon after you leave it, and older replies never alert.")
             }
             if denied {
                 Section {

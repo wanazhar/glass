@@ -29,6 +29,12 @@ final class ConversationModel {
     private(set) var lastReconnect: Int?
     private var resumeStarted: ContinuousClock.Instant?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    /// The next frame is the host's catch-up after (re)connecting: events that already happened.
+    private var catchingUp = true
+    /// When Glass last came back from the background. A socket iOS froze delivers what it missed right
+    /// after this, and those replies are already past.
+    private var cameBack: ContinuousClock.Instant?
+    private var foregroundWatch: Task<Void, Never>?
     var error: String?
 
     private let app: AppModel
@@ -45,6 +51,12 @@ final class ConversationModel {
         self.thread = thread
         composer = ComposerModel(app: app, thread: thread)
         originLabel = thread.originLabel
+        foregroundWatch = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.willEnterForegroundNotification) {
+                guard let self else { return }
+                self.cameBack = .now
+            }
+        }
     }
 
     var title: String { thread.displayTitle }
@@ -199,6 +211,7 @@ final class ConversationModel {
     private func receive(_ update: LiveUpdate) async {
         switch update {
         case .connected:
+            catchingUp = true
             connection = .live
             error = nil
             if let started = resumeStarted {
@@ -208,6 +221,8 @@ final class ConversationModel {
             }
         case .frame(let frame, let id):
             let resumed = cursor != nil
+            let replayed = catchingUp || cameBack.map { ContinuousClock.now - $0 < .seconds(3) } == true
+            catchingUp = false
             if let id { cursor = id }
             if !frame.reset {
                 pendingFrames.append(frame)
@@ -218,13 +233,12 @@ final class ConversationModel {
                         self?.drawPendingFrames()
                     }
                 }
-                for event in frame.live + frame.events {
-                    composer.observe(event)
-                    alert(for: event)
-                    if case .done = event, backgroundTask != .invalid {
-                        stop()
-                        endBackgroundTask()
-                    }
+                let events = frame.live + frame.events
+                for event in events { composer.observe(event) }
+                if let id { alert(for: events, event: id.description, replayed: replayed) }
+                if events.contains(.done), backgroundTask != .invalid {
+                    stop()
+                    endBackgroundTask()
                 }
                 return
             }
@@ -252,14 +266,18 @@ final class ConversationModel {
         }
     }
 
-    private func alert(for event: GlassEvent) {
-        let title: String? = switch event {
-        case .done: "Reply ready"
-        case .interaction: "Glass needs your answer"
-        case .error(_, let settled, _, _) where settled: "Glass stopped with a problem"
-        default: nil
-        }
-        if let title { Attention.notify(title, conversation: thread.displayTitle, id: thread.id) }
+    /// One alert per frame, for the most recent reply outcome in it.
+    private func alert(for events: [GlassEvent], event: String, replayed: Bool) {
+        let title = events.reversed().lazy.compactMap { event -> String? in
+            switch event {
+            case .done: "Reply ready"
+            case .interaction: "Glass needs your answer"
+            case .error(_, let settled, _, _) where settled: "Glass stopped with a problem"
+            default: nil
+            }
+        }.first
+        guard let title else { return }
+        Attention.notify(title, conversation: thread.displayTitle, thread: thread.id, event: event, replayed: replayed)
     }
 
     private func fail(_ error: GlassError) {

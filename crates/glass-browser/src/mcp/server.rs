@@ -2173,6 +2173,76 @@ async fn handle_request_with_viewport_unredacted(
             }
         }};
     }
+    if agent_tool == "browser_workflow" {
+        use super::workflows;
+        let name = agent_arguments["name"].as_str().unwrap_or_default();
+        let outcome = match agent_arguments["action"].as_str().unwrap_or_default() {
+            "start" => Ok(workflows::start()),
+            "save" => workflows::save(name),
+            "list" => workflows::list(),
+            "delete" => workflows::delete(name),
+            _ => match workflows::load(name) {
+                Ok(steps) => {
+                    let mut last = String::new();
+                    let mut failure = None;
+                    workflows::set_replaying(true);
+                    for (index, step) in steps.iter().enumerate() {
+                        let mut params = request.params.clone();
+                        params["name"] = step["tool"].clone();
+                        params["arguments"] = step["arguments"].clone();
+                        let step_request = JsonRpcRequest {
+                            jsonrpc: request.jsonrpc.clone(),
+                            method: request.method.clone(),
+                            params,
+                            id: request.id.clone(),
+                        };
+                        let result = Box::pin(handle_request_with_viewport(
+                            &step_request,
+                            session,
+                            native_session,
+                            native_runtime,
+                            persistent_native_session,
+                            options,
+                            policy,
+                            viewport,
+                            knowledge_store_path,
+                            development_sessions,
+                            host_backend,
+                            elicitation,
+                        ))
+                        .await
+                        .and_then(|response| response.result)
+                        .unwrap_or_else(|| json!({"isError": true}));
+                        last = result["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|item| item["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if result["isError"] == true {
+                            failure = Some((index, last.clone()));
+                            break;
+                        }
+                    }
+                    workflows::set_replaying(false);
+                    workflows::run_report(name, &steps, &last, failure)
+                }
+                Err(error) => Err(error),
+            },
+        };
+        let (text, is_error) = match outcome {
+            Ok(text) => (text, false),
+            Err(error) => {
+                let hint = agent_tools::recovery_hint(&agent_tool, &error);
+                (format!("{error}\n{hint}"), true)
+            }
+        };
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":super::secrets::redact(&text)}],"isError":is_error}),
+        ));
+    }
     if agent_tool == "browser_logins" {
         let name = agent_arguments["name"].as_str().unwrap_or_default();
         let outcome =
@@ -2209,6 +2279,9 @@ async fn handle_request_with_viewport_unredacted(
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|outcome| outcome);
+        if outcome.is_ok() && super::workflows::records(&agent_tool, &agent_arguments) {
+            super::workflows::record(&agent_tool, &agent_arguments);
+        }
         let (text, is_error) = match outcome {
             Ok(text) => (text, false),
             Err(error) => {
@@ -2254,6 +2327,20 @@ async fn handle_request_with_viewport_unredacted(
         .result
         .as_ref()
         .is_some_and(|result| result["isError"] != true);
+    if succeeded {
+        if matches!(agent_tool.as_str(), "browser_snapshot" | "browser_find")
+            && let Some(raw) = response
+                .result
+                .as_ref()
+                .and_then(|result| result["content"][0]["text"].as_str())
+        {
+            super::workflows::learn_references(raw);
+        }
+        let model_arguments = request.params.get("arguments").unwrap_or(&Value::Null);
+        if super::workflows::records(&agent_tool, model_arguments) {
+            super::workflows::record(&agent_tool, model_arguments);
+        }
+    }
     if succeeded && agent_tools::reports(&agent_tool) {
         let raw = response
             .result

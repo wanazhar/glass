@@ -465,6 +465,29 @@ fn main() {
             }
             return;
         }
+        Some("desktop") => {
+            let json = args.iter().any(|a| a == "--json");
+            let action = args
+                .get(1)
+                .filter(|a| *a != "--json")
+                .map_or("status", String::as_str);
+            let result = config::load(&config::default_path())
+                .map_err(|e| e.to_string())
+                .and_then(|cfg| connect::desktop_for_tui(cfg, action));
+            match result {
+                Ok(status) if json => emit_json(status),
+                Ok(status) => cli::report("Desktop", &status),
+                Err(error) => {
+                    if json {
+                        emit_json(serde_json::json!({"error": error}));
+                    } else {
+                        cli::error("Desktop", &error);
+                    }
+                    std::process::exit(2);
+                }
+            }
+            return;
+        }
         Some("diagnostics") => {
             if let Err(error) = diagnostic_bundle::command(&args[1..]) {
                 cli::error("Diagnostics", &error);

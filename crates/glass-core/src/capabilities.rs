@@ -33,11 +33,15 @@ impl CapabilityDecision {
     }
 
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self::Deny { reason: reason.into() }
+        Self::Deny {
+            reason: reason.into(),
+        }
     }
 
     pub fn require(reason: impl Into<String>) -> Self {
-        Self::RequireConfirmation { reason: reason.into() }
+        Self::RequireConfirmation {
+            reason: reason.into(),
+        }
     }
 
     pub fn permits(&self) -> bool {
@@ -109,11 +113,7 @@ impl CapabilityGate {
     }
 
     /// Resolve one capability declaration into the decision emitted for it.
-    pub fn decide(
-        &self,
-        capability: Capability,
-        operation: &str,
-    ) -> CapabilityDecision {
+    pub fn decide(&self, capability: Capability, operation: &str) -> CapabilityDecision {
         let granted = self.granted.contains(&capability);
         let confirmed = self.confirmed.contains(&capability);
         let decision = if !granted {

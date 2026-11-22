@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Submit expense receipt</title></head>
+<body><main><h1>Submit expense receipt</h1>
+<form id="f"><label for="file">Receipt file</label> <input id="file" type="file" name="receipt"> <button type="submit">Upload receipt</button></form><p id="out" role="status"></p>
+<script>document.getElementById('f').addEventListener('submit',async ev=>{ev.preventDefault();const f=document.getElementById('file').files[0];if(!f){document.getElementById('out').textContent='Choose a file first.';return;}
+const text=await f.text();await fetch('/api/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:f.name,size:f.size,content:text.slice(0,200)})});document.getElementById('out').textContent='Uploaded '+f.name;});</script>
+</main></body></html>

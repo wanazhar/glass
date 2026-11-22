@@ -287,6 +287,7 @@ const COMMAND_ROOTS: &[&str] = &[
     "config",
     "connect",
     "context",
+    "desktop",
     "contract",
     "details",
     "diagnostics",
@@ -552,6 +553,7 @@ fn present_command_references_with_prefix(text: &str, prefix: &str) -> String {
         "config",
         "connect",
         "context",
+        "desktop",
         "contract",
         "details",
         "diagnostics",
@@ -866,6 +868,11 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc contract SCHEMA.json RESULT.json",
             "Validate a bounded local JSON result contract. Unsupported schema keywords fail explicitly; no provider request is made.",
             "gc contract result-schema.json result.json",
+        ),
+        "desktop" => (
+            "gc desktop quick|reusable|attach|status|stop [--json]",
+            "Start, inspect or stop the managed Linux desktop for this workspace without opening the terminal UI. Starts the local Connect manager when needed; agents then see the desktop tools.",
+            "gc desktop quick --json\ngc desktop status --json\ngc desktop stop",
         ),
         "diagnostics" => (
             "gc diagnostics --suite [--json] | gc diagnostics SESSION [--json] [--save FILE]",

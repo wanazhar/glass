@@ -1509,9 +1509,6 @@ impl Session {
             return;
         };
         let stamp = file_stamp(&metadata);
-        if stamp == *self.raw_stamp.borrow() {
-            return;
-        }
         let mut corrupt = false;
         let scan = visit_session_lines(&self.path, |_, _, line| {
             if !line.iter().all(|byte| byte.is_ascii_whitespace()) && !json_line_is_valid(line) {
@@ -2855,6 +2852,24 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&session.path).unwrap().lines().count(),
             1
+        );
+    }
+
+    #[test]
+    fn unchanged_file_stamp_does_not_authorize_rewritten_history() {
+        let dir = tmpdir("external-rewrite-stamp");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("original".into()));
+        fs::write(&session.path, "{\"k\":\"user\",\"t\":\"external\"}\n").unwrap();
+        *session.raw_stamp.borrow_mut() = file_stamp(&fs::metadata(&session.path).unwrap());
+
+        session.validate_writes();
+
+        assert!(session.write_error().is_some());
+        session.append(Record::Assistant("must not land".into()));
+        assert_eq!(
+            fs::read_to_string(&session.path).unwrap(),
+            "{\"k\":\"user\",\"t\":\"external\"}\n"
         );
     }
 

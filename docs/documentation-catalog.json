@@ -1900,6 +1900,79 @@
       ]
     },
     {
+      "path": "docs/BROWSER-CU-AUDIT.md",
+      "class": "current",
+      "topic": "workspace",
+      "audience": "glass-user",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#workspace-operations",
+      "route": "docs/BROWSER-CU-AUDIT.md#browser-and-computer-use-audit-linux",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Browser and computer-use audit (Linux)",
+          "anchor": "browser-and-computer-use-audit-linux"
+        },
+        {
+          "level": "2",
+          "title": "How the model reaches each surface",
+          "anchor": "how-the-model-reaches-each-surface"
+        },
+        {
+          "level": "2",
+          "title": "Browser tools today",
+          "anchor": "browser-tools-today"
+        },
+        {
+          "level": "3",
+          "title": "`glass-browser` runtime",
+          "anchor": "glass-browser-runtime"
+        },
+        {
+          "level": "3",
+          "title": "MCP catalog (`src/mcp/server.rs`)",
+          "anchor": "mcp-catalog-srcmcpserverrs"
+        },
+        {
+          "level": "3",
+          "title": "Glass mixed mode (`glass.browser.*`)",
+          "anchor": "glass-mixed-mode-glassbrowser"
+        },
+        {
+          "level": "3",
+          "title": "Standalone Core path (`bash` + CLI)",
+          "anchor": "standalone-core-path-bash-cli"
+        },
+        {
+          "level": "2",
+          "title": "Computer-use tools today (`glass-core`)",
+          "anchor": "computer-use-tools-today-glass-core"
+        },
+        {
+          "level": "2",
+          "title": "Gaps against strong agents",
+          "anchor": "gaps-against-strong-agents"
+        },
+        {
+          "level": "2",
+          "title": "Prioritized plan",
+          "anchor": "prioritized-plan"
+        },
+        {
+          "level": "2",
+          "title": "Tool-selection eval",
+          "anchor": "tool-selection-eval"
+        }
+      ]
+    },
+    {
       "path": "docs/INDEX.md",
       "class": "current",
       "topic": "reference",
@@ -1938,6 +2011,7 @@
         "crates/glass-mod-api/README.md",
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
+        "docs/BROWSER-CU-AUDIT.md",
         "docs/action-contract.md",
         "docs/actions.md",
         "docs/architecture/README.md",

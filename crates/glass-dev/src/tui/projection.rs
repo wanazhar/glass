@@ -1329,10 +1329,10 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     entry.entry_id = Some(scope_id.clone());
                     parent_tool_scopes.insert(scope_id, scope);
                 }
-                if tool_name(&event.payload) == "run_subagents" {
-                    if let Some(text) = delegation_tool_rail_line(&event) {
-                        rail.push(ConversationEntry::system(text, None));
-                    }
+                if tool_name(&event.payload) == "run_subagents"
+                    && let Some(text) = delegation_tool_rail_line(event)
+                {
+                    rail.push(ConversationEntry::system(text, None));
                 }
             }
             "tool_progress" => {
@@ -1391,10 +1391,10 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     &mut items,
                     None,
                 );
-                if tool_name(&event.payload) == "run_subagents" {
-                    if let Some(text) = delegation_tool_rail_line(&event) {
-                        rail.push(ConversationEntry::system(text, None));
-                    }
+                if tool_name(&event.payload) == "run_subagents"
+                    && let Some(text) = delegation_tool_rail_line(event)
+                {
+                    rail.push(ConversationEntry::system(text, None));
                 }
             }
             "completed" => {
@@ -1675,7 +1675,8 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
 /// hosts render delegation activity without re-deriving child state. The event
 /// family list is closed for this slice; later families can extend the same
 /// rail without changing the shared projection contract.
-pub fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
+#[cfg(test)]
+fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
     const RAIL_LIMIT: usize = 8;
     let mut rows = Vec::new();
     for event in events {
@@ -1687,6 +1688,7 @@ pub fn conversation_event_rail(events: &[crate::AgentEvent]) -> Vec<Conversation
     rows
 }
 
+#[cfg(test)]
 fn event_rail_line(event: &crate::AgentEvent) -> Option<String> {
     if event.kind == "subagent_event" {
         let activity = parse_subagent_activity_event(event)?;
@@ -1713,7 +1715,10 @@ fn delegation_tool_rail_line(event: &crate::AgentEvent) -> Option<String> {
 fn subagent_event_rail_line(activity: &SubagentActivityEvent) -> Option<String> {
     let task_position = format!("{}/{}", activity.task_index + 1, activity.task_count);
     let line = match &activity.kind {
-        SubagentActivityEventKind::Started { task_text, truncated } => {
+        SubagentActivityEventKind::Started {
+            task_text,
+            truncated,
+        } => {
             let task = task_text.trim();
             let task = if task.is_empty() {
                 "task details unavailable"
@@ -1730,13 +1735,17 @@ fn subagent_event_rail_line(activity: &SubagentActivityEvent) -> Option<String> 
         SubagentActivityEventKind::ToolStart { tool_name } => {
             format!("Delegated · subagent {task_position} tool {tool_name} started")
         }
-        SubagentActivityEventKind::ToolEnd { tool_name, is_error, .. } => format!(
+        SubagentActivityEventKind::ToolEnd {
+            tool_name,
+            is_error,
+            ..
+        } => format!(
             "Delegated · subagent {task_position} tool {tool_name} {}",
             if *is_error { "failed" } else { "completed" }
         ),
-        SubagentActivityEventKind::Finished { state, .. } => format!(
-            "Delegated · subagent {task_position} stopped · {state}"
-        ),
+        SubagentActivityEventKind::Finished { state, .. } => {
+            format!("Delegated · subagent {task_position} stopped · {state}")
+        }
         SubagentActivityEventKind::Text { .. } => return None,
     };
     Some(line)
@@ -2065,11 +2074,7 @@ mod tests {
             ),
             event(
                 4,
-                child(
-                    "finished",
-                    4,
-                    serde_json::json!({"state": "completed"}),
-                ),
+                child("finished", 4, serde_json::json!({"state": "completed"})),
             ),
         ];
 
@@ -2077,9 +2082,21 @@ mod tests {
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].kind, ConversationKind::System);
         assert!(rows[0].text.contains("Delegated · subagent 1/1 started"));
-        assert!(rows[1].text.contains("Delegated · subagent 1/1 tool bash started"));
-        assert!(rows[2].text.contains("Delegated · subagent 1/1 tool bash completed"));
-        assert!(rows[3].text.contains("Delegated · subagent 1/1 stopped · completed"));
+        assert!(
+            rows[1]
+                .text
+                .contains("Delegated · subagent 1/1 tool bash started")
+        );
+        assert!(
+            rows[2]
+                .text
+                .contains("Delegated · subagent 1/1 tool bash completed")
+        );
+        assert!(
+            rows[3]
+                .text
+                .contains("Delegated · subagent 1/1 stopped · completed")
+        );
 
         let delegated = vec![crate::AgentEvent {
             sequence: 0,

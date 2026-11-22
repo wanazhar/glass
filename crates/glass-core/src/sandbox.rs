@@ -2269,6 +2269,20 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn declared_extension_jail_denies_undeclared_writes_in_child_processes() {
+        const CHILD: &str = "GC_EXTENSION_JAIL_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sandbox::tests::declared_extension_jail_denies_undeclared_writes_in_child_processes",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         if landlock::abi().is_none() {
             return;
         }

@@ -2425,7 +2425,9 @@ fn run(
     let statuses = Rc::new(RefCell::new(BTreeMap::<String, bool>::new()));
     let emit_status = statuses.clone();
     let durable = c.durable.as_ref();
-    let task_id = durable.as_ref().map(|context| context.task_id().to_string());
+    let task_id = durable
+        .as_ref()
+        .map(|context| context.task_id().to_string());
     let mut agent=Agent::new(provider.as_ref(),&mut c.session,&mut c.state,&[],&mut c.extensions,&c.cfg.workspace)
         .with_image_input(c.cfg.image_input)
         .with_prompt(c.instructions.clone(),None,None)

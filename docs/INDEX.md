@@ -244,7 +244,7 @@ current user instructions.
 
 ## Interface references
 
-- [Rust SDK](rust-sdk.md) — crate setup, ownership, common API flows, modules,
+- [Rust SDK](rust-sdk.md) — crate setup, ownership, common API flows, public modules including web UI action and inspection contracts,
   Cargo features, errors, privacy, and shutdown.
 - [Runnable examples](examples.md) — all checked-in Cargo examples, inputs,
   environment requirements, and output/claim boundaries.
@@ -252,8 +252,10 @@ current user instructions.
   cancellation, concurrency, errors, security, and response modes.
 - [MCP tool catalog](mcp-tools.md) — every tool in the current checkout's
   negotiated conformance inventory grouped by domain.
-- [MCP schema budget](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
+- [MCP schema budget and live source measurements](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
+- [Browser and computer-use audit](BROWSER-CU-AUDIT.md) — Linux tool surfaces,
+  gaps, prioritized plan, and the tool-selection eval.
 - [Protocol](protocol.md) and [schema compatibility](schema-compatibility.md) —
   canonical request/response envelopes and additive version rules.
 - [Experience Layer CLI](cli/experience.md) — shared response projections and

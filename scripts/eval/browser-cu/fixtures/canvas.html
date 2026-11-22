@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Seat picker</title><style>body{margin:0;font-family:sans-serif}canvas{display:block;margin:20px}</style></head>
+<body><h1 style="margin:20px">Pick a seat</h1><p style="margin:20px">Click the green seat to reserve it. Seats are drawn on a canvas.</p>
+<canvas id="c" width="700" height="420"></canvas><p id="out" role="status" style="margin:20px"></p>
+<script>const c=document.getElementById('c'),g=c.getContext('2d');const seats=[];for(let r=0;r<5;r++)for(let k=0;k<9;k++)seats.push({x:50+k*72,y:40+r*76,free:false});
+const free=seats[3*9+6];free.free=true;for(const s of seats){g.fillStyle=s.free?'#1a9e3a':'#9a9a9a';g.fillRect(s.x,s.y,48,48);}
+c.addEventListener('click',async ev=>{const rc=c.getBoundingClientRect();const x=ev.clientX-rc.left,y=ev.clientY-rc.top;const hit=x>=free.x&&x<=free.x+48&&y>=free.y&&y<=free.y+48;
+await fetch('/api/seat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({hit,x,y})});document.getElementById('out').textContent=hit?'Seat reserved.':'That seat is taken.';});</script></body></html>

@@ -18,6 +18,7 @@ use crate::browser::native_engine::{
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
+use crate::browser::session::BatchMode;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, CdpBrowserSession, CheckpointV1, Cookie, InteractionMode,
     KnowledgeConfidence, KnowledgeStore, Locator, MAX_WORKFLOW_SOURCE_BYTES, PdfOptions,
@@ -28,7 +29,6 @@ use crate::browser::session::{
     compile_workflow, default_knowledge_store_path, diff_workflows, format_workflow_yaml,
     preview_workflow, record_semantic_events,
 };
-use crate::browser::session::BatchMode;
 use crate::browser::{BackendFactory, CdpSessionBackend};
 use crate::browser_backend::{
     ActionRequest, BackendProfile, BrowserBackendDispatcher, BrowserCapability, ClickModifiers,
@@ -1057,9 +1057,9 @@ fn validate_alternative_runtime_command(
         } if native => Ok(()),
         Commands::Batch { .. } if native => Ok(()),
         Commands::Script { .. } if native => Ok(()),
-        Commands::Script { .. } => Err(
-            "scripted browser checks currently require the native or Chromium runtime".into(),
-        ),
+        Commands::Script { .. } => {
+            Err("scripted browser checks currently require the native or Chromium runtime".into())
+        }
         Commands::Workflow { action: None, .. } if native => Ok(()),
         Commands::WorkflowResume { .. } if native => Ok(()),
         Commands::Navigate { .. }

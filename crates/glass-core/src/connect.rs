@@ -4501,10 +4501,14 @@ mod tests {
         assert!(feed.secret_submission.is_none());
         drop(feed);
         let mut forwarded = [0; 1];
-        assert!(matches!(
-            bridge_reader.read(&mut forwarded),
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
-        ));
+        let received = bridge_reader.read(&mut forwarded);
+        assert!(
+            matches!(
+                &received,
+                Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+            ),
+            "unexpected bridge read: {received:?}"
+        );
     }
 
     #[test]

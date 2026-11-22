@@ -184,6 +184,12 @@ pub fn mirror(
 /// Returns whether the turn belongs to the shared plane.
 pub fn claim(state: &mut ProductState, placeholder: &str, task_id: &str) -> bool {
     if let Some(speaker) = state.everyone_pending.remove(placeholder) {
+        let entry_id = state.everyone_orders.iter().find_map(|(entry_id, order)| {
+            order
+                .iter()
+                .any(|key| key == placeholder)
+                .then(|| entry_id.clone())
+        });
         for order in state.everyone_orders.values_mut() {
             for key in order.iter_mut() {
                 if key == placeholder {
@@ -196,12 +202,12 @@ pub fn claim(state: &mut ProductState, placeholder: &str, task_id: &str) -> bool
             .insert(format!("task:{task_id}"), speaker);
         // Stamp the person's line with the task now answering it, so
         // deleting that turn's chat takes the line it triggered too.
-        let thread = state.task_threads.get(task_id).cloned();
-        if let Some(entry) = state.transcript.iter_mut().rev().find(|entry| {
+        if let Some(entry) = state.transcript.iter_mut().find(|entry| {
             entry.conversation_id == EVERYONE_CONVERSATION
                 && entry.kind == "user"
-                && entry.task_id.is_empty()
-                && entry.thread_id == thread
+                && ((!entry.task_id.is_empty()
+                    && (entry.task_id == placeholder || entry.task_id == task_id))
+                    || (entry.task_id.is_empty() && entry_id.as_ref() == Some(&entry.id)))
         }) {
             entry.task_id = task_id.to_string();
         }
@@ -459,6 +465,10 @@ mod claim_tests {
     fn a_claimed_turn_stamps_the_persons_line() {
         let mut state = ProductState::default();
         mirror(&mut state, USER_SPEAKER, "You", "user", "@ben hi", "", None);
+        state.everyone_orders.insert(
+            state.transcript[0].id.clone(),
+            ["marble:m-ben".into(), "marble:m-ada".into()].into(),
+        );
         state
             .everyone_pending
             .insert("marble:m-ben".into(), "m-ben".into());
@@ -480,5 +490,59 @@ mod claim_tests {
             .find(|entry| entry.kind == "user")
             .unwrap();
         assert_eq!(line.task_id, "task-9");
+    }
+
+    #[test]
+    fn claim_does_not_stamp_unrelated_messages_when_the_source_is_missing() {
+        let mut state = ProductState::default();
+        mirror(
+            &mut state,
+            USER_SPEAKER,
+            "You",
+            "user",
+            "unrelated",
+            "",
+            None,
+        );
+        state
+            .everyone_orders
+            .insert("removed-entry".into(), ["queued-1".into()].into());
+        state
+            .everyone_pending
+            .insert("queued-1".into(), DEFAULT_SPEAKER.into());
+        assert!(claim(&mut state, "queued-1", "task-1"));
+        assert!(state.transcript[0].task_id.is_empty());
+        assert!(!claim(&mut state, "queued-1", "task-1"));
+    }
+
+    #[test]
+    fn claim_matches_an_existing_task_link_without_a_source_entry_id() {
+        for linked in ["queued-1", "task-1"] {
+            let mut state = ProductState::default();
+            mirror(
+                &mut state,
+                USER_SPEAKER,
+                "You",
+                "user",
+                "same text",
+                linked,
+                None,
+            );
+            mirror(
+                &mut state,
+                USER_SPEAKER,
+                "You",
+                "user",
+                "same text",
+                "",
+                None,
+            );
+            state
+                .everyone_pending
+                .insert("queued-1".into(), DEFAULT_SPEAKER.into());
+            assert!(claim(&mut state, "queued-1", "task-1"));
+            assert_eq!(state.transcript[0].task_id, "task-1");
+            assert!(state.transcript[1].task_id.is_empty());
+        }
     }
 }

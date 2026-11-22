@@ -1216,7 +1216,7 @@ impl MarbleServer {
                 Ok(id) => id,
                 Err(response) => return response,
             };
-        {
+        let entry_id = {
             let mut guard = self.lock_state();
             if thread
                 .as_ref()
@@ -1233,14 +1233,18 @@ impl MarbleServer {
                 "",
                 None,
             );
-            if let Some(entry) = guard.transcript.last_mut() {
-                entry.thread_id = thread.clone();
-            }
+            let entry = guard
+                .transcript
+                .last_mut()
+                .expect("the user entry was just mirrored");
+            entry.thread_id = thread.clone();
+            let entry_id = entry.id.clone();
             if let Some(id) = &thread {
                 guard.refresh_thread(id);
             }
             guard.bump();
-        }
+            entry_id
+        };
         self.save_state();
         self.events.publish(
             crate::everyone::EVERYONE_CONVERSATION,
@@ -1261,13 +1265,24 @@ impl MarbleServer {
                     let mut guard = self.lock_state();
                     guard
                         .everyone_pending
-                        .insert(key, crate::everyone::DEFAULT_SPEAKER.to_string());
+                        .insert(key.clone(), crate::everyone::DEFAULT_SPEAKER.to_string());
+                    guard
+                        .everyone_orders
+                        .entry(entry_id)
+                        .or_default()
+                        .push_back(key.clone());
                     guard.bump();
                 }
-                self.submit_request(request)
+                let response = self.submit_request(request);
+                if response.status >= 400 {
+                    let mut guard = self.lock_state();
+                    guard.everyone_pending.remove(&key);
+                    guard.flush_everyone();
+                }
+                response
             }
             crate::everyone::EveryoneTarget::Named(ids) => {
-                self.dispatch_everyone(&text, ids, thread.as_deref())
+                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
             }
             crate::everyone::EveryoneTarget::All => {
                 let ids: Vec<String> = {
@@ -1279,14 +1294,20 @@ impl MarbleServer {
                         .map(|marble| marble.id.clone())
                         .collect()
                 };
-                self.dispatch_everyone(&text, ids, thread.as_deref())
+                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
             }
         }
     }
 
     /// Dispatch one Everyone line to each named marble, reporting busy ones
     /// visibly rather than letting them fall silent.
-    fn dispatch_everyone(&self, text: &str, ids: Vec<String>, thread: Option<&str>) -> Response {
+    fn dispatch_everyone(
+        &self,
+        text: &str,
+        ids: Vec<String>,
+        thread: Option<&str>,
+        entry_id: &str,
+    ) -> Response {
         if ids.is_empty() {
             let mut guard = self.lock_state();
             crate::everyone::mirror(
@@ -1305,7 +1326,6 @@ impl MarbleServer {
         }
         let mut answering = Vec::new();
         let mut busy = Vec::new();
-        let group = crate::next_request_id();
         for id in &ids {
             if id == crate::everyone::DEFAULT_SPEAKER {
                 let mut request = TurnRequest::new(
@@ -1319,7 +1339,7 @@ impl MarbleServer {
                     state.everyone_pending.insert(key.clone(), id.clone());
                     state
                         .everyone_orders
-                        .entry(group.clone())
+                        .entry(entry_id.to_string())
                         .or_default()
                         .push_back(key.clone());
                 }
@@ -1363,7 +1383,7 @@ impl MarbleServer {
                     .insert(format!("marble:{}", marble.id), marble.id.clone());
                 guard
                     .everyone_orders
-                    .entry(group.clone())
+                    .entry(entry_id.to_string())
                     .or_default()
                     .push_back(format!("marble:{}", marble.id));
                 guard.bump();

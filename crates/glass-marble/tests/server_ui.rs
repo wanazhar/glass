@@ -3397,6 +3397,95 @@ fn clear_everyone_keeps_surviving_thread_replies_openable_in_private_chat() {
 }
 
 #[test]
+fn cancelling_queued_everyone_turns_does_not_claim_a_later_busy_message() {
+    for threaded in [false, true] {
+        let (turn_tx, inbox) = TurnInbox::channel();
+        let mut state = ProductState::default();
+        state
+            .prism
+            .add("Ada", "writer", "star", 40, "", "")
+            .unwrap();
+        let thread = if threaded {
+            glass_marble::everyone::mirror(
+                &mut state,
+                "user",
+                "You",
+                "user",
+                "thread parent",
+                "",
+                None,
+            );
+            let parent = state.transcript.last().unwrap().id.clone();
+            Some(state.create_thread("everyone", &parent).unwrap().id)
+        } else {
+            None
+        };
+        let server = server_with_turn_channel(state, turn_tx);
+        let post = |path: &str, body: Value| {
+            let (status, body) = server.handle("POST", path, &body.to_string());
+            assert!(status == 200 || status == 202, "{status}: {body}");
+            serde_json::from_str::<Value>(&body).unwrap()
+        };
+        let first = post(
+            "/api/everyone",
+            json!({"text":"first queued message", "thread_id":thread}),
+        );
+        let second = post(
+            "/api/everyone",
+            json!({"text":"@Marble second queued message", "thread_id":thread}),
+        );
+        let busy = post(
+            "/api/everyone",
+            json!({"text":"@Ada unrelated later message", "thread_id":thread}),
+        );
+        assert_eq!(busy["busy"], json!(["Ada"]));
+        let (_, body) = server.handle("GET", "/api/state", "");
+        let queued: ProductState = serde_json::from_str(&body).unwrap();
+        let later_id = queued
+            .transcript
+            .iter()
+            .find(|e| e.text == "@Ada unrelated later message")
+            .unwrap()
+            .id
+            .clone();
+        let first_id = first["taskId"].as_str().unwrap();
+        let second_id = queued
+            .tasks
+            .iter()
+            .find(|t| t.prompt == "@Marble second queued message")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(second["answering"], json!(["Marble"]));
+        for (id, prompt) in [
+            (first_id, "first queued message"),
+            (second_id.as_str(), "@Marble second queued message"),
+        ] {
+            post(&format!("/api/tasks/{id}/cancel"), json!({}));
+            post(
+                &format!("/api/conversations/recovered-{id}/delete"),
+                json!({}),
+            );
+            let (_, body) = server.handle("GET", "/api/state", "");
+            let state: ProductState = serde_json::from_str(&body).unwrap();
+            let later = state
+                .transcript
+                .iter()
+                .find(|e| e.id == later_id)
+                .expect("deleting the cancelled chat removed an unrelated busy message");
+            assert!(later.task_id.is_empty());
+            assert!(
+                !state
+                    .transcript
+                    .iter()
+                    .any(|e| e.kind == "user" && e.text == prompt)
+            );
+        }
+        assert!(inbox.try_recv().is_none());
+    }
+}
+
+#[test]
 fn cancelling_a_queued_everyone_lead_releases_buffered_replies() {
     let mut state = ProductState::default();
     state.conversation_mut("chat");

@@ -172,9 +172,7 @@ struct EveryoneView: View {
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(
-            hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), anchorsSizeChanges: true
-        ) { beforePrepend in
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
             await store.loadOlderHistory(everyoneConversationId, beforePrepend: beforePrepend)
         }
         .task { await store.openEveryoneHistory() }

@@ -311,13 +311,31 @@ struct MarbleToolRow: View {
 struct MarbleReasoningRow: View {
     var text: String
     var speaker: String? = nil
+    @State private var expanded = false
 
     var body: some View {
-        DisclosureGroup(speaker.map { "\($0) thought for a moment" } ?? "Thought for a moment") {
-            Text(text)
-                .font(.footnote)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                // Make the disclosure height and the transcript's bottom
+                // offset change in the same layout pass.
+                expanded.toggle()
+            } label: {
+                HStack {
+                    Text(speaker.map { "\($0) thought for a moment" } ?? "Thought for a moment")
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            if expanded {
+                Text(text)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -562,11 +580,9 @@ extension View {
     }
 
     func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil,
-                             anchorsSizeChanges: Bool = false,
                              loadOlder: MarbleOlderHistoryLoader? = nil) -> some View {
         modifier(MarbleFollowLatest(
-            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing,
-            anchorsSizeChanges: anchorsSizeChanges, loadOlder: loadOlder
+            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, loadOlder: loadOlder
         ))
     }
 }
@@ -575,7 +591,6 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
-    let anchorsSizeChanges: Bool
     let loadOlder: MarbleOlderHistoryLoader?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position = ScrollPosition(idType: String.self)
@@ -606,17 +621,14 @@ private struct MarbleFollowLatest: ViewModifier {
             topInset = geometry.contentInsets.top
         }
 
-        var bottomOffset: CGFloat { max(-topInset, bottom - viewport) }
-        var distanceFromBottom: Double { Double(bottomOffset - offset) }
+        var distanceFromBottom: Double {
+            Double(max(-topInset, bottom - viewport) - offset)
+        }
     }
 
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
-            .defaultScrollAnchor(
-                anchorsSizeChanges && follow.following && !phase.isUserScrolling ? .bottom : nil,
-                for: .sizeChanges
-            )
             .scrollPosition($position, anchor: .top)
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase
@@ -656,7 +668,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 let initialLayout = !positionedHistory
                 positionedHistory = true
                 if follow.following && !phase.isUserScrolling && abs(new.distanceFromBottom) > 1
-                    && ((!anchorsSizeChanges && resized) || (initialLayout && searchJump == nil)) {
+                    && (resized || (initialLayout && searchJump == nil)) {
                     correctBottomAfterLayout()
                 }
             }

@@ -4637,7 +4637,11 @@ fn everyone_reserves_reply_order_even_when_the_last_agent_finishes_first() {
         .events
         .since(0)
         .iter()
-        .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+        .filter(|e| {
+            e.kind == "reply"
+                && e.conversation_id == "everyone"
+                && ids.iter().any(|id| e.data["id"] == *id)
+        })
         .count()
         < 2
     {

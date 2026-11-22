@@ -1,7 +1,7 @@
 //! Clipboard access for the managed X11 session, through `xclip` on the
 //! session's private display.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -111,21 +111,26 @@ fn read(display: &str, xauthority: &Path) -> Result<String, String> {
         .spawn()
         .map_err(spawn_error)?;
     let mut stdout = child.stdout.take().ok_or("xclip produced no output")?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = std::io::Read::read_to_end(
-            &mut std::io::Read::take(&mut stdout, (MAX_CLIPBOARD_BYTES * 4) as u64),
-            &mut bytes,
-        );
-        bytes
-    });
+    let reader = std::thread::spawn(move || read_selection(&mut stdout));
     let status = wait_bounded(&mut child)?;
-    let bytes = reader.join().unwrap_or_default();
+    let bytes = reader
+        .join()
+        .map_err(|_| "Clipboard reader stopped")?
+        .map_err(|error| error.to_string())?;
     if !status.success() {
         // xclip exits non-zero when nothing owns the clipboard.
         return Ok(String::new());
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn read_selection(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_CLIPBOARD_BYTES * 4) as u64)
+        .read_to_end(&mut bytes)?;
+    std::io::copy(reader, &mut std::io::sink())?;
+    Ok(bytes)
 }
 
 fn write(display: &str, xauthority: &Path, text: &str) -> Result<(), String> {
@@ -224,6 +229,20 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_clipboard_reads_keep_a_bounded_prefix_and_drain_the_pipe() {
+        let data = vec![b'x'; MAX_CLIPBOARD_BYTES * 64];
+        let mut source = std::io::Cursor::new(&data);
+        let bytes = read_selection(&mut source).unwrap();
+        assert_eq!(bytes.len(), MAX_CLIPBOARD_BYTES * 4);
+        assert_eq!(source.position(), data.len() as u64);
+        assert_eq!(
+            truncate(std::str::from_utf8(&bytes).unwrap()).len(),
+            MAX_CLIPBOARD_BYTES
+        );
+        assert!(read_selection(&mut std::io::empty()).unwrap().is_empty());
+    }
 
     #[test]
     fn clipboard_rejects_unrelated_workspaces_before_reading() {
@@ -378,18 +397,22 @@ mod xvfb_tests {
         let Some(session_id) = status["sessionId"].as_str() else {
             return;
         };
+        let workspace = Path::new(status["workspaceRoot"].as_str().unwrap());
         assert_eq!(status["displayServer"], "x11");
         let written = Desktop::agent_clipboard(
             &json!({"action":"write","sessionId":session_id,"text":"from the agent"}),
+            workspace,
         )
         .unwrap();
         assert_eq!(written["written"], true);
         let read =
-            Desktop::agent_clipboard(&json!({"action":"read","sessionId":session_id})).unwrap();
+            Desktop::agent_clipboard(&json!({"action":"read","sessionId":session_id}), workspace)
+                .unwrap();
         assert_eq!(read["text"], "from the agent");
-        let stale = Desktop::agent_clipboard(&json!({"action":"read","sessionId":"stale"}))
-            .err()
-            .unwrap_or_default();
+        let stale =
+            Desktop::agent_clipboard(&json!({"action":"read","sessionId":"stale"}), workspace)
+                .err()
+                .unwrap_or_default();
         assert!(stale.contains("session changed"), "{stale}");
         eprintln!("desktop_clipboard verified on managed session {session_id}");
     }

@@ -1197,14 +1197,7 @@ impl Desktop {
         Self::agent_request(&json!({"action":"start"}))
     }
 
-    pub fn agent_clipboard(value: &Value) -> Result<Value, String> {
-        Self::agent_clipboard_in(
-            value,
-            &std::env::current_dir().map_err(|error| error.to_string())?,
-        )
-    }
-
-    fn agent_clipboard_in(value: &Value, workspace: &Path) -> Result<Value, String> {
+    pub fn agent_clipboard(value: &Value, workspace: &Path) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"clipboard","value":value,"workspace":workspace}))
     }
 
@@ -1488,7 +1481,7 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
         "desktop_clipboard" => {
-            Desktop::agent_clipboard_in(&args, workspace).map(|value| value.to_string())
+            Desktop::agent_clipboard(&args, workspace).map(|value| value.to_string())
         }
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),

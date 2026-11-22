@@ -1,5 +1,6 @@
 import ActivityKit
 import CoreLocation
+import os
 import UIKit
 
 /// Keeps Glass running in the background while it holds a live host connection, by asking iOS for the
@@ -36,7 +37,9 @@ final class KeepAlive: NSObject {
         center.addObserver(forName: .glassDisconnect, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { KeepAlive.shared.disconnect() }
         }
-        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+        // iOS only accepts a new Live Activity from the foreground, so ask while Glass is on its way out,
+        // not once it has reached the background.
+        center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { KeepAlive.shared.startActivity() }
         }
         // An activity left over from a previous run describes a connection that no longer exists.
@@ -114,9 +117,15 @@ final class KeepAlive: NSObject {
         guard running, activity == nil, let connectedSince,
               ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let state = ConnectionActivityAttributes.ContentState(status: status, connectedSince: connectedSince)
-        activity = try? Activity.request(attributes: ConnectionActivityAttributes(host: hostName),
-                                         content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+        do {
+            activity = try Activity.request(attributes: ConnectionActivityAttributes(host: hostName),
+                                            content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+        } catch {
+            Self.log.error("Live Activity not started: \(error.localizedDescription, privacy: .public)")
+        }
     }
+
+    private static let log = Logger(subsystem: "com.wanazhar.glass", category: "keep-alive")
 
     private func refreshActivity() {
         guard let activity, let connectedSince else { return }

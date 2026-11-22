@@ -381,8 +381,9 @@ extension MarbleLiveTests {
                 guard let chunk = socket.read() else { break }
                 pending = chunk
             }
-            for line in splitter.feed(pending) {
-                pending = []
+            let lines = splitter.feed(pending)
+            pending = []
+            for line in lines {
                 sawAnyLine = true
                 status.streamEvent()
                 if line.hasPrefix(":") { sawKeepalive = true }
@@ -422,8 +423,9 @@ extension MarbleLiveTests {
                 guard let chunk = socket.read() else { break }
                 pending = chunk
             }
-            for line in splitter.feed(pending) {
-                pending = []
+            let lines = splitter.feed(pending)
+            pending = []
+            for line in lines {
                 status.streamEvent()
                 if let frame = parser.feed(line),
                    let data = frame.data.data(using: .utf8),

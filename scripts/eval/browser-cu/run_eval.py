@@ -101,7 +101,7 @@ def desktop_env():
     return env
 
 
-def check(task, answer, calls, base, workspace=None):
+def check(task, answer, calls, base, workspace=None, existing_files=()):
     spec = task["check"]
     results = []
     if "answer_contains" in spec:
@@ -131,7 +131,8 @@ def check(task, answer, calls, base, workspace=None):
         results.append(bool(names.strip()))
     if "workspace_file" in spec:
         want = spec["workspace_file"]
-        found = sorted(Path(workspace).glob(want["glob"])) if workspace else []
+        found = sorted(p for p in Path(workspace).glob(want["glob"])
+                       if p.is_file() and p not in existing_files) if workspace else []
         data = found[-1].read_bytes() if found else b""
         ok = bool(found)
         if "starts_with" in want:
@@ -142,8 +143,20 @@ def check(task, answer, calls, base, workspace=None):
     return bool(results) and all(results)
 
 
+def clear_eval_outputs(workspace):
+    manifest = workspace / ".browser-cu-outputs.json"
+    if manifest.is_file() and not manifest.is_symlink():
+        for relative in json.loads(manifest.read_text()):
+            path = workspace / relative
+            if path.resolve().is_relative_to(workspace.resolve()) and path.is_file():
+                path.unlink()
+
+
 def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     reset_fixture(base)
+    clear_eval_outputs(workspace)
+    pattern = task["check"].get("workspace_file", {}).get("glob")
+    existing_files = set(workspace.glob(pattern)) if pattern else set()
     if task["id"] == "upload-receipt":
         with (workspace / "receipt-0921.txt").open("xb") as receipt:
             receipt.write((HERE / "fixtures" / "receipt-0921.txt").read_bytes())
@@ -176,9 +189,12 @@ def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     used_family = any(any_match(c, family) for c in calls)
     ideal = task.get("ideal")
     ideal_hit = None if not ideal else any(any_match(c, ideal) for c in calls)
+    outputs = [str(p.relative_to(workspace)) for p in workspace.glob(pattern)
+               if p.is_file() and p not in existing_files] if pattern else []
+    (workspace / ".browser-cu-outputs.json").write_text(json.dumps(outputs))
     infrastructure_error = None
     try:
-        success = check(task, answer, calls, base, workspace)
+        success = check(task, answer, calls, base, workspace, existing_files)
     except (OSError, subprocess.SubprocessError) as error:
         success = False
         infrastructure_error = f"Verification failed: {error}"

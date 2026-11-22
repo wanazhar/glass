@@ -4178,7 +4178,7 @@ fn connect_desktop_context(
                     let tool_names = if read_only {
                         "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
                     } else {
-                        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`, `desktop_clipboard`, `desktop_windows`, `desktop_files`"
+                        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`, `desktop_clipboard`, `desktop_windows`, `desktop_files`, `desktop_wait`"
                     };
                     let session_id: String = session_id
                         .chars()
@@ -4728,7 +4728,8 @@ mod warm_integration {
                 "desktop_launch_app",
                 "desktop_clipboard",
                 "desktop_windows",
-                "desktop_files"
+                "desktop_files",
+                "desktop_wait"
             ]
         );
         assert_eq!(

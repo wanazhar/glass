@@ -638,20 +638,20 @@ impl Attempt {
         let expected = url::Url::parse(&self.redirect).map_err(|e| e.to_string())?;
         let mut pairs = BTreeMap::new();
         let mut from_url = false;
-        if let Ok(url) = url::Url::parse(value) {
-            if matches!(url.scheme(), "http" | "https") {
-                from_url = true;
-                if url.scheme() != expected.scheme()
-                    || url.host_str().map(loopback_host) != expected.host_str().map(loopback_host)
-                    || url.port() != expected.port()
-                    || url.path() != expected.path()
-                {
-                    return Err("Callback address does not match this sign-in attempt".into());
-                }
-                for (k, v) in url.query_pairs().into_owned() {
-                    if pairs.insert(k, v).is_some() {
-                        return Err("Duplicate sign-in callback parameter".into());
-                    }
+        if let Ok(url) = url::Url::parse(value)
+            && matches!(url.scheme(), "http" | "https")
+        {
+            from_url = true;
+            if url.scheme() != expected.scheme()
+                || url.host_str().map(loopback_host) != expected.host_str().map(loopback_host)
+                || url.port() != expected.port()
+                || url.path() != expected.path()
+            {
+                return Err("Callback address does not match this sign-in attempt".into());
+            }
+            for (k, v) in url.query_pairs().into_owned() {
+                if pairs.insert(k, v).is_some() {
+                    return Err("Duplicate sign-in callback parameter".into());
                 }
             }
         }

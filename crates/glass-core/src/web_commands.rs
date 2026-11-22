@@ -1379,7 +1379,7 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
     }
 }
 enum LoginFlow {
-    Browser(crate::auth::Attempt),
+    Browser(Box<crate::auth::Attempt>),
     Device(crate::auth::DeviceAttempt),
 }
 struct LoginAttempt {
@@ -1443,7 +1443,7 @@ pub(crate) fn login(
                 LoginAttempt {
                     session: owner.to_string(),
                     created: std::time::Instant::now(),
-                    flow: LoginFlow::Browser(attempt),
+                    flow: LoginFlow::Browser(Box::new(attempt)),
                 },
             );
             Ok(

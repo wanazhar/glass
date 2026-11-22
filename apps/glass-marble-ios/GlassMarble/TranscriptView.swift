@@ -562,9 +562,11 @@ extension View {
     }
 
     func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil,
+                             anchorsSizeChanges: Bool = false,
                              loadOlder: MarbleOlderHistoryLoader? = nil) -> some View {
         modifier(MarbleFollowLatest(
-            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, loadOlder: loadOlder
+            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing,
+            anchorsSizeChanges: anchorsSizeChanges, loadOlder: loadOlder
         ))
     }
 }
@@ -573,6 +575,7 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
+    let anchorsSizeChanges: Bool
     let loadOlder: MarbleOlderHistoryLoader?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position = ScrollPosition(idType: String.self)
@@ -587,7 +590,6 @@ private struct MarbleFollowLatest: ViewModifier {
         var offset: CGFloat = 0
         var rowPositions: [String: CGFloat] = [:]
         var anchor: (id: String, rowY: CGFloat, offset: CGFloat)?
-        var layout: Layout?
         var followCorrection: Task<Void, Never>?
     }
 
@@ -611,6 +613,10 @@ private struct MarbleFollowLatest: ViewModifier {
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
+            .defaultScrollAnchor(
+                anchorsSizeChanges && follow.following && !phase.isUserScrolling ? .bottom : nil,
+                for: .sizeChanges
+            )
             .scrollPosition($position, anchor: .top)
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase
@@ -639,7 +645,6 @@ private struct MarbleFollowLatest: ViewModifier {
             .onScrollGeometryChange(for: Layout.self) { geometry in
                 Layout(geometry)
             } action: { old, new in
-                measurement.layout = new
                 // ScrollPosition's y coordinate starts after the top inset.
                 measurement.offset = new.offset + new.topInset
                 let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
@@ -651,7 +656,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 let initialLayout = !positionedHistory
                 positionedHistory = true
                 if follow.following && !phase.isUserScrolling && abs(new.distanceFromBottom) > 1
-                    && (resized || new.distanceFromBottom < -1 || (initialLayout && searchJump == nil)) {
+                    && ((!anchorsSizeChanges && resized) || (initialLayout && searchJump == nil)) {
                     correctBottomAfterLayout()
                 }
             }
@@ -732,15 +737,7 @@ private struct MarbleFollowLatest: ViewModifier {
             await Task.yield()
             guard !Task.isCancelled else { return }
             measurement.followCorrection = nil
-            guard follow.following, !phase.isUserScrolling, let layout = measurement.layout,
-                  abs(layout.distanceFromBottom) > 1 else { return }
-            if layout.distanceFromBottom < -1 {
-                // A shrinking disclosure can leave an offset past the new
-                // bottom. Request the new coordinate to clamp that offset.
-                position.scrollTo(y: layout.bottomOffset + layout.topInset)
-            } else {
-                scrollToEnd()
-            }
+            if follow.following && !phase.isUserScrolling { scrollToEnd() }
         }
     }
 }

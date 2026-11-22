@@ -395,7 +395,9 @@ pub struct PanelRegistry {
 impl PanelRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self { panels: BTreeMap::new() }
+        Self {
+            panels: BTreeMap::new(),
+        }
     }
 
     /// Register one panel. A repeated id replaces the earlier registration.
@@ -439,7 +441,9 @@ mod tests {
                 reason: "The review runs guarded checks".into(),
             },
         });
-        let panel = registry.get("review").expect("registered panel should be found");
+        let panel = registry
+            .get("review")
+            .expect("registered panel should be found");
         assert_eq!(panel.title, "Code review");
         assert_eq!(panel.command, "review");
         assert_eq!(panel.approval.title, "Run the review?");

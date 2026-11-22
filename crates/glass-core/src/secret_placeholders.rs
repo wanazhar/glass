@@ -113,6 +113,10 @@ pub fn redact(text: &str) -> String {
     redact_with(loaded(), text)
 }
 
+pub(crate) fn has_secrets() -> bool {
+    !loaded().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -131,6 +131,26 @@ pub(crate) fn bash_owned_sensitive(
     owner: Option<&str>,
     sensitive_capture: bool,
 ) -> Outcome {
+    let mut outcome = bash_owned_sensitive_inner(
+        call,
+        workspace,
+        cancel,
+        approvals,
+        owner,
+        sensitive_capture || crate::secret_placeholders::has_secrets(),
+    );
+    outcome.body = crate::secret_placeholders::redact(&outcome.body);
+    outcome
+}
+
+fn bash_owned_sensitive_inner(
+    call: &ToolCall,
+    workspace: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    approvals: &crate::sandbox::SessionApprovals,
+    owner: Option<&str>,
+    sensitive_capture: bool,
+) -> Outcome {
     if sensitive_capture
         && let Some(job) = call.arg_raw("job")
         && !serde_json::from_str::<serde_json::Value>(&job)
@@ -1057,6 +1077,38 @@ mod tests {
             name: "bash".into(),
             arguments: args.to_string(),
         }
+    }
+
+    #[test]
+    fn default_shell_scrubs_placeholder_environment_and_redacts_output() {
+        const MARKER: &str = "GLASS_SHELL_REDACTION_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tools::tests::default_shell_scrubs_placeholder_environment_and_redacts_output",
+                    "--nocapture",
+                ])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_TEST", "unique-shell-placeholder-value")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        assert_eq!(crate::sandbox::policy(), crate::sandbox::Policy::Off);
+        let command = "test -z \"${GLASS_SECRET_TEST+x}\" || exit 9; printf unique-shell-placeholder-value; printf unique-shell-placeholder-value >&2";
+        let outcome = bash(
+            &call(&serde_json::json!({"command":command}).to_string()),
+            &std::env::temp_dir(),
+        );
+        assert_eq!(outcome.exit_code, Some(0));
+        assert_eq!(outcome.body.matches("{{secret:TEST}}").count(), 2);
+        assert!(!outcome.body.contains("unique-shell"));
+        let overflow = bash(&call(&serde_json::json!({"command":format!("head -c {} /dev/zero | tr '\\0' x; printf unique-shell-placeholder-value", MAX_OUTPUT_BYTES + 20)}).to_string()), &std::env::temp_dir());
+        assert!(overflow.truncated);
+        assert!(overflow.spill.is_none());
+        assert!(!overflow.body.contains("unique-shell"));
     }
 
     #[test]

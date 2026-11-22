@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -71,10 +71,12 @@ fn command(workspace: Option<&Path>) -> Option<Command> {
 fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
     let runtime = runtime(&binary);
     let mut command = Command::new(binary);
-    if let Some(runtime) = runtime {
-        command.args(["--browser-runtime", &runtime]);
+    if let Some(runtime) = &runtime {
+        command.args(["--browser-runtime", runtime]);
     }
-    if let Some(port) = free_port() {
+    if runtime.as_deref() == Some("chromium")
+        && let Some(port) = free_port()
+    {
         command.args(["--port", &port.to_string()]);
     }
     command
@@ -99,15 +101,51 @@ fn runtime(binary: &Path) -> Option<String> {
             if native_sandbox_available() {
                 return None;
             }
-            let report = Command::new(binary)
-                .args(["doctor", "--json", "--browser-discovery-only"])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok());
+            let report = doctor_report(binary, true).or_else(|| doctor_report(binary, false));
             fallback_runtime(false, report.as_ref())
+        }
+    }
+}
+
+fn doctor_report(binary: &Path, discovery_only: bool) -> Option<Value> {
+    let mut command = Command::new(binary);
+    command.args(["doctor", "--json"]);
+    if discovery_only {
+        command.arg("--browser-discovery-only");
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (sender, receiver) = channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.take(1024 * 1024).read_to_end(&mut bytes);
+        let _ = sender.send(result.ok().map(|_| bytes));
+    });
+    let expires = std::time::Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let bytes = receiver
+                    .recv_timeout(expires.saturating_duration_since(std::time::Instant::now()))
+                    .ok()??;
+                return serde_json::from_slice(&bytes).ok();
+            }
+            Ok(None) if std::time::Instant::now() < expires => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
         }
     }
 }
@@ -646,6 +684,50 @@ for line in sys.stdin:
         assert!(bwrap_help_supports_native(
             "    --disable-userns\n    --assert-userns-disabled"
         ));
+    }
+
+    #[test]
+    fn mixed_version_discovery_and_native_ports() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("gc-browser-version-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let binary = root.join("browser");
+        std::fs::write(&binary, "#!/bin/sh\ncase \"$*\" in *--browser-discovery-only*) exit 2;; esac\nprintf '%s' '{\"browser\":{\"chromeAvailable\":true}}'\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(doctor_report(&binary, true).is_none());
+        assert_eq!(
+            fallback_runtime(false, doctor_report(&binary, false).as_ref()),
+            Some("chromium".into())
+        );
+        let marker = "GLASS_TEST_BROWSER_PORT";
+        if let Ok(runtime) = std::env::var(marker) {
+            let command = command_for_binary(binary, None);
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                args.iter().any(|arg| arg == "--port"),
+                runtime == "chromium"
+            );
+            assert!(args.iter().any(|arg| arg == "--incognito"));
+            return;
+        }
+        for runtime in ["native", "chromium"] {
+            assert!(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "browser_tools::tests::mixed_version_discovery_and_native_ports"
+                    ])
+                    .env(marker, runtime)
+                    .env("GC_BROWSER_RUNTIME", runtime)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

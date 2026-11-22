@@ -106,6 +106,7 @@ final class AppModel {
             repairReason = nil
             lastRefreshed = .now
             phase = .connected(result.status)
+            KeepAlive.shared.hostName = result.status.workspaceName
         } catch {
             pairingError = error.localizedDescription
         }

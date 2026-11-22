@@ -31,10 +31,27 @@ static ACTIVE: Mutex<Option<Recording>> = Mutex::new(None);
 
 fn recording_directory(workspace: &Path) -> std::io::Result<File> {
     let mut directory = File::open(workspace)?;
-    for component in RECORDING_DIRECTORY.split('/') {
+    let mut components = RECORDING_DIRECTORY.split('/').peekable();
+    while let Some(component) = components.next() {
+        let metadata = directory.metadata()?;
+        // SAFETY: geteuid has no preconditions or side effects.
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "recording parent must be owned by this user and not writable by others",
+            ));
+        }
+        let leaf = components.peek().is_none();
         let name = CString::new(component).unwrap();
         // SAFETY: the live parent descriptor and component name remain valid.
-        if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        if unsafe {
+            libc::mkdirat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                if leaf { 0o700 } else { 0o777 },
+            )
+        } != 0
+        {
             let error = std::io::Error::last_os_error();
             if error.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(error);
@@ -60,7 +77,9 @@ fn recording_directory(workspace: &Path) -> std::io::Result<File> {
                 "recording directory belongs to another user",
             ));
         }
-        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        if leaf {
+            directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        }
     }
     Ok(directory)
 }
@@ -316,7 +335,11 @@ mod tests {
             path.push(component);
             assert_eq!(
                 std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o700
+                if component == "recordings" {
+                    0o700
+                } else {
+                    0o755
+                }
             );
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -326,6 +349,42 @@ mod tests {
             0o700
         );
         assert!(recording_file(&directory, name).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recording_preserves_shared_parent_modes_and_rejects_writable_parents() {
+        let root = scratch("shared-parents");
+        let artifacts = root.join(".gc-artifacts");
+        let desktop = artifacts.join("desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        for parent in [&root, &artifacts, &desktop] {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(desktop.join("invoice.pdf"), b"shared export").unwrap();
+        let directory = recording_directory(&root).unwrap();
+        assert_eq!(directory.metadata().unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            recording_file(&directory, c"private.mp4")
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        for parent in [&root, &artifacts, &desktop] {
+            assert_eq!(std::fs::metadata(parent).unwrap().mode() & 0o777, 0o755);
+        }
+        assert_eq!(
+            std::fs::read(desktop.join("invoice.pdf")).unwrap(),
+            b"shared export"
+        );
+        for mode in [0o775, 0o757] {
+            std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(recording_directory(&root).is_err());
+            assert_eq!(std::fs::metadata(&artifacts).unwrap().mode() & 0o777, mode);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

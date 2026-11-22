@@ -124,7 +124,10 @@ struct EveryoneView: View {
             serverWorking.contains($0) && !reservedAgents.contains($0) && !presentation.responders.contains($0)
         }
         ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                // The host pages history. Lay out the loaded rows together
+                // so estimated heights cannot empty the viewport as the
+                // keyboard changes size or several live rows settle.
+                VStack(alignment: .leading, spacing: 16) {
                     if entries.isEmpty && store.everyoneHistoryLoading {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
                             .accessibilityLabel("Loading messages")

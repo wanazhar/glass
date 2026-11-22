@@ -2028,7 +2028,7 @@ async fn handle_request_with_viewport_unredacted(
 ) -> Option<JsonRpcResponse> {
     use super::agent_tools;
     if request.method == "tools/list" && agent_profile {
-        let mut tools = agent_tools::agent_tools();
+        let mut tools = agent_tools::tools_for_runtime(native_runtime);
         if native_runtime {
             tools.retain(|tool| tool["name"] != "browser_handle_dialog");
         }
@@ -2059,6 +2059,15 @@ async fn handle_request_with_viewport_unredacted(
         ))
         .await;
     };
+    if !agent_tools::live_diagnostics_supported(&agent_tool, native_runtime) {
+        return Some(success_response(
+            request.id.response_value(),
+            json!({
+                "content":[{"type":"text","text":"Live console/network capture is unsupported on native; use the Chromium runtime."}],
+                "isError":true
+            }),
+        ));
+    }
     let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
     if native_runtime && agent_tool == "browser_handle_dialog" {
         return Some(success_response(

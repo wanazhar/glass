@@ -1660,7 +1660,13 @@ fn save_pdf_result(
             .map_err(|error| error.to_string())?;
         let encoded = result["content"][0]["text"]
             .as_str()
-            .and_then(|text| serde_json::from_str::<String>(text).ok())
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .or_else(|| value["result"].as_str())
+                    .map(str::to_owned)
+            })
             .ok_or("printToPdf returned no PDF data")?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
@@ -8171,6 +8177,31 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pdf_outputs_decode_native_projection_and_reject_invalid_data() {
+        let workspace = tempfile::tempdir().unwrap();
+        let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
+        let output = workspace.path().join("native.pdf");
+        let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":output}}})).unwrap();
+        for payload in [
+            serde_json::json!("JVBERi0="),
+            serde_json::json!({"result":"JVBERi0=","detailAvailability":{}}),
+        ] {
+            let result = serde_json::json!({"content":[{"text":payload.to_string()}]});
+            let report = super::save_pdf_result(&request, &result, &policy).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&report).unwrap()["bytes"],
+                5
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        }
+        for text in ["not JSON", "{}", "null", "\"!invalid!\"", "{\"result\":42}"] {
+            let result = serde_json::json!({"content":[{"text":text}]});
+            assert!(super::save_pdf_result(&request, &result, &policy).is_err());
+            assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        }
+    }
+
     #[test]
     fn pdf_outputs_follow_workspace_policy() {
         let workspace = tempfile::tempdir().unwrap();

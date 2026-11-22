@@ -37,9 +37,11 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <div id="card" onmousedown="state.dragging=true">Card A</div>
 <div style="margin-top:40px;height:60px;border:1px solid" onmouseup="if(state.dragging){state.dropped=true;show()}">Done lane</div>
 <iframe srcdoc="<p>Inside frame</p>"></iframe>
+<table><tr><th>Order</th><th>Total</th></tr><tr><td>A-1</td><td>RM 10</td></tr><tr><td>B-2</td><td>RM 25</td></tr></table>
+<button onclick="console.error('Report failed: quota',7)">Report problem</button>
 <p id="state"></p>
 </main>
-<script>const state={};function show(){document.getElementById('state').textContent='STATE '+JSON.stringify(state)}</script>"#;
+<script>if(location.search.includes('reading'))fetch('/missing.json');const state={};function show(){document.getElementById('state').textContent='STATE '+JSON.stringify(state)}</script>"#;
 
 struct Mcp {
     stdin: ChildStdin,
@@ -104,6 +106,12 @@ async fn serve(listener: TcpListener) {
         tokio::spawn(async move {
             let mut request = [0; 4096];
             let count = stream.read(&mut request).await.unwrap_or(0);
+            if request.starts_with(b"GET /missing") {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                return;
+            }
             let response = if request[..count].starts_with(b"GET /report.csv ") {
                 "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=report.csv\r\nContent-Length: 6\r\nConnection: close\r\n\r\na,b\n1\n".to_string()
             } else {
@@ -165,7 +173,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.len() <= 24, "{names:?}");
+    assert!(names.len() <= 28, "{names:?}");
     assert!(
         names.iter().all(|name| name.starts_with("browser_")),
         "{names:?}"
@@ -505,6 +513,36 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         text(&unknown).contains("Secrets set: AGENT_NAME"),
         "{unknown}"
     );
+
+    mcp.ok(
+        "browser_navigate",
+        json!({"url": format!("{url}?reading=1")}),
+    )
+    .await;
+    let found = mcp
+        .ok("browser_find", json!({"text":"report problem"}))
+        .await;
+    assert!(found.contains("button \"Report problem\""), "{found}");
+    let missing = mcp
+        .call("browser_find", json!({"text":"zebra crossing"}))
+        .await;
+    assert_eq!(missing["isError"], true, "{missing}");
+    assert!(
+        text(&missing).contains("shorter or different word"),
+        "{missing}"
+    );
+    let table = mcp.ok("browser_extract", json!({"kind":"table"})).await;
+    assert!(
+        table.contains(r#"{"Order":"B-2","Total":"RM 25"}"#),
+        "{table}"
+    );
+    mcp.ok("browser_click", json!({"target":"text=Report problem"}))
+        .await;
+    let console = mcp.ok("browser_console", json!({"level":"errors"})).await;
+    assert!(console.contains("Report failed: quota 7"), "{console}");
+    let network = mcp.ok("browser_network", json!({"reload":true})).await;
+    assert!(network.contains("1 failed."), "{network}");
+    assert!(network.contains("/missing.json"), "{network}");
 
     drop(mcp);
     let _ = child.wait().await;

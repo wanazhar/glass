@@ -146,6 +146,26 @@ pub(crate) fn agent_tools() -> Vec<Value> {
             json!({"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Output file, absolute or relative to the working directory; its directory must exist."}},"required":["path"],"additionalProperties":false}),
         ),
         tool(
+            "browser_find",
+            "Search the current page for a word or phrase and return the matching elements (with refs to act on) and the matching lines of visible text with the lines around them. Use to locate one thing on a long page (a price, a button, an error message, a name in a list) instead of reading a whole browser_snapshot or browser_get_text. Case-insensitive substring match on element names, roles and visible text. To wait until text appears use browser_wait_for. Example: {\"text\":\"Add to cart\"}.",
+            json!({"type":"object","properties":{"text":{"type":"string","minLength":1,"maxLength":256,"description":"Word or phrase to find; not a regex."},"maxResults":{"type":"integer","minimum":1,"maximum":50,"default":20}},"required":["text"],"additionalProperties":false}),
+        ),
+        tool(
+            "browser_extract",
+            "Return the page's tables, lists or links as JSON. Use when the task needs rows of data (orders, prices, search results, schedules) or every link, instead of parsing browser_get_text. kind \"table\": headers and one object per row; \"list\": the items of each list; \"links\": text and absolute href. `within` is an optional CSS selector that limits the search to one part of the page. Example: {\"kind\":\"table\"}.",
+            json!({"type":"object","properties":{"kind":{"type":"string","enum":["table","list","links"]},"within":{"type":"string","minLength":1,"maxLength":512,"description":"CSS selector of the part of the page to read, e.g. \"#results\"."},"maxItems":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Rows per table, items per list, or links."}},"required":["kind"],"additionalProperties":false}),
+        ),
+        tool(
+            "browser_console",
+            "Read the page's console: errors, warnings, logs and uncaught exceptions. Use when a page looks broken or blank, or an action silently did nothing, to find out why. Messages logged since the page loaded are included; pass reload:true to reload and capture a fresh load. Messages that mention passwords, tokens or cookies are hidden. For failed requests use browser_network. Example: {\"level\":\"errors\"}.",
+            json!({"type":"object","properties":{"level":{"type":"string","enum":["all","errors"],"default":"all","description":"\"errors\" keeps errors and uncaught exceptions only."},"reload":{"type":"boolean","default":false},"durationMs":{"type":"integer","minimum":100,"maximum":10000,"default":1000,"description":"How long to listen for new messages."}},"additionalProperties":false}),
+        ),
+        tool(
+            "browser_network",
+            "Record the page's network requests for durationMs and report the failed ones (HTTP 4xx/5xx, blocked or aborted). Use when content does not load, a submit seems to fail, or browser_console shows \"Failed to load resource\". Only requests made while this call runs are seen: pass reload:true to record the page load, or a longer durationMs to catch polling. all:true lists every request. Query strings are redacted. Example: {\"reload\":true}.",
+            json!({"type":"object","properties":{"reload":{"type":"boolean","default":false},"all":{"type":"boolean","default":false,"description":"List successful requests too."},"durationMs":{"type":"integer","minimum":100,"maximum":10000,"default":2000}},"additionalProperties":false}),
+        ),
+        tool(
             "browser_clipboard",
             "Read or write the system clipboard text used by the browser, for copy and paste flows. Example: {\"action\":\"write\",\"text\":\"INV-42\"}.",
             json!({"type":"object","properties":{"action":{"type":"string","enum":["read","write"]},"text":{"type":"string","maxLength":8192}},"required":["action"],"additionalProperties":false}),
@@ -295,6 +315,32 @@ pub(crate) fn translate(name: &str, arguments: &Value) -> Result<(&'static str, 
                 json!({"predicate": predicate, "timeoutMs": a.get("timeoutMs").and_then(Value::as_u64).unwrap_or(5000)}),
             )
         }
+        "browser_find" => {
+            need(a, "text", name)?;
+            ("observe", json!({"level": "structured"}))
+        }
+        "browser_extract" => {
+            let kind = need(a, "kind", name)?;
+            if !matches!(kind, "table" | "list" | "links") {
+                return Err(format!(
+                    "{name} kind must be table, list or links, not `{kind}`."
+                ));
+            }
+            let max = a
+                .get("maxItems")
+                .and_then(Value::as_u64)
+                .unwrap_or(50)
+                .clamp(1, 200);
+            (
+                "evaluate",
+                json!({"expression": extract_script(kind, string(a, "within"), max)}),
+            )
+        }
+        "browser_console" => (
+            "diagnostics",
+            json!({"durationMs": duration(a, 1000), "consoleText": true}),
+        ),
+        "browser_network" => ("diagnostics", json!({"durationMs": duration(a, 2000)})),
         "browser_save_pdf" => {
             pdf_path(need(a, "path", name)?)?;
             ("printToPdf", json!({"printBackground": true}))
@@ -535,6 +581,307 @@ pub(crate) fn normalize_key(key: &str) -> String {
         .join("+")
 }
 
+fn duration(arguments: &Value, default: u64) -> u64 {
+    arguments
+        .get("durationMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(default)
+        .clamp(100, 10_000)
+}
+
+/// Whether the call reloads the page first, so the page load is recorded.
+pub(crate) fn reloads_first(tool: &str, arguments: &Value) -> bool {
+    matches!(tool, "browser_console" | "browser_network") && arguments["reload"] == true
+}
+
+/// The call that reloads the page before a reading tool listens. Console
+/// messages of a finished load are replayed, so the console reloads first;
+/// requests are not, so the network reload starts after listening begins.
+pub(crate) fn pre_reload(tool: &str, arguments: &Value) -> Option<(&'static str, Value)> {
+    if !reloads_first(tool, arguments) {
+        return None;
+    }
+    Some(if tool == "browser_console" {
+        ("reload", json!({}))
+    } else {
+        (
+            "evaluate",
+            json!({"expression": "setTimeout(() => location.reload(), 200); 'reloading'"}),
+        )
+    })
+}
+
+/// Agent tools whose raw result is rewritten by [`read_report`].
+pub(crate) fn reports(tool: &str) -> bool {
+    matches!(
+        tool,
+        "browser_find" | "browser_extract" | "browser_console" | "browser_network"
+    )
+}
+
+const MAX_REPORT_BYTES: usize = 32 * 1024;
+
+fn extract_script(kind: &str, within: Option<&str>, max: u64) -> String {
+    let within = serde_json::to_string(&within).unwrap_or_else(|_| "null".into());
+    let kind = serde_json::to_string(kind).unwrap_or_default();
+    format!(
+        r#"(() => {{
+const kind = {kind}, within = {within}, max = {max};
+const root = within ? document.querySelector(within) : document;
+if (!root) return JSON.stringify({{error: "no element matches the within selector " + within}});
+const clip = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 300);
+const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+const all = sel => [...(root.matches && root.matches(sel) ? [root] : []), ...root.querySelectorAll(sel)].filter(visible);
+const kids = (el, sel) => [...el.children].filter(c => c.matches(sel));
+const CELL = "th,td,[role=cell],[role=gridcell],[role=columnheader],[role=rowheader]";
+const TABLE = "table,[role=table],[role=grid]";
+if (kind === "table") return JSON.stringify(all(TABLE).slice(0, 10).map(t => {{
+  const rows = [...t.querySelectorAll("tr,[role=row]")].filter(r => r.closest(TABLE) === t && visible(r));
+  const cells = r => kids(r, CELL).map(c => clip(c.innerText));
+  let headers = [], body = rows;
+  if (rows[0] && kids(rows[0], CELL).every(c => c.matches("th,[role=columnheader]"))) {{ headers = cells(rows[0]); body = rows.slice(1); }}
+  const caption = clip(t.caption ? t.caption.innerText : t.getAttribute("aria-label"));
+  const out = body.slice(0, max).map(r => {{ const c = cells(r); if (!headers.length) return c; const o = {{}}; c.forEach((v, i) => o[headers[i] || "column" + (i + 1)] = v); return o; }});
+  return {{caption, headers, rows: out, totalRows: body.length}};
+}}));
+if (kind === "list") return JSON.stringify(all("ul,ol,[role=list]").slice(0, 20).map(l => {{
+  const items = kids(l, "li,[role=listitem]").filter(visible);
+  return {{label: clip(l.getAttribute("aria-label")), items: items.slice(0, max).map(i => clip(i.innerText)), totalItems: items.length}};
+}}).filter(l => l.items.length));
+const links = all("a[href]");
+return JSON.stringify({{links: links.slice(0, max).map(a => ({{text: clip(a.innerText || a.getAttribute("aria-label")), href: a.href}})), totalLinks: links.length}});
+}})()"#
+    )
+}
+
+fn clip_report(mut text: String) -> String {
+    if text.len() > MAX_REPORT_BYTES {
+        let mut end = MAX_REPORT_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n[truncated; pass a smaller maxItems or a `within` selector]");
+    }
+    text
+}
+
+/// Turn the full-catalog result of a reading tool into the agent report.
+/// `page_text` is the visible text, used by browser_find.
+pub(crate) fn read_report(
+    tool: &str,
+    arguments: &Value,
+    raw: &str,
+    page_text: Option<&str>,
+) -> Result<String, String> {
+    match tool {
+        "browser_find" => find_report(arguments, raw, page_text.unwrap_or_default()),
+        "browser_extract" => extract_report(raw),
+        "browser_console" => Ok(console_report(arguments, raw)),
+        "browser_network" => Ok(network_report(arguments, raw)),
+        _ => Ok(raw.to_owned()),
+    }
+}
+
+fn unquote(raw: &str) -> String {
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::String(text)) => text,
+        _ => raw.to_owned(),
+    }
+}
+
+fn collect_targets<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.contains_key("reference") && map.contains_key("role") {
+                out.push(value);
+            }
+            map.values().for_each(|child| collect_targets(child, out));
+        }
+        Value::Array(items) => items.iter().for_each(|child| collect_targets(child, out)),
+        _ => {}
+    }
+}
+
+fn find_report(arguments: &Value, observation: &str, page_text: &str) -> Result<String, String> {
+    let needle = string(arguments, "text").unwrap_or_default().to_lowercase();
+    let max = arguments
+        .get("maxResults")
+        .and_then(Value::as_u64)
+        .unwrap_or(20)
+        .clamp(1, 50) as usize;
+    let observation: Value = serde_json::from_str(observation).unwrap_or(Value::Null);
+    let mut targets = Vec::new();
+    collect_targets(&observation, &mut targets);
+    let mut seen = std::collections::HashSet::new();
+    let elements: Vec<String> = targets
+        .into_iter()
+        .filter(|t| {
+            let name = t["name"].as_str().unwrap_or_default().to_lowercase();
+            let role = t["role"].as_str().unwrap_or_default().to_lowercase();
+            (name.contains(&needle) || role == needle) && seen.insert(t["reference"].clone())
+        })
+        .map(|t| {
+            format!(
+                "- ref={} {} \"{}\"",
+                t["reference"].as_str().unwrap_or_default(),
+                t["role"].as_str().unwrap_or_default(),
+                t["name"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    let text = unquote(page_text);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let hits: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].to_lowercase().contains(&needle))
+        .collect();
+    if elements.is_empty() && hits.is_empty() {
+        return Err(format!(
+            "browser_find: no element or visible text on this page matches \"{}\".",
+            string(arguments, "text").unwrap_or_default()
+        ));
+    }
+    let mut out = Vec::new();
+    if !elements.is_empty() {
+        out.push(format!("Elements ({}):", elements.len()));
+        out.extend(elements.iter().take(max).cloned());
+        if elements.len() > max {
+            out.push(format!("… {} more elements", elements.len() - max));
+        }
+    }
+    if !hits.is_empty() {
+        out.push(format!("Text matches ({}):", hits.len()));
+        for &i in hits.iter().take(max) {
+            let mut context = Vec::new();
+            if i > 0 {
+                context.push(lines[i - 1]);
+            }
+            context.push(lines[i]);
+            if let Some(next) = lines.get(i + 1) {
+                context.push(next);
+            }
+            out.push(format!("- line {}: {}", i + 1, context.join(" ⏎ ")));
+        }
+        if hits.len() > max {
+            out.push(format!("… {} more text matches", hits.len() - max));
+        }
+    }
+    if elements.is_empty() {
+        out.push("Next: the text is not an interactive element; to act near it, call browser_snapshot and pick the nearest ref.".into());
+    }
+    Ok(clip_report(out.join("\n")))
+}
+
+fn extract_report(raw: &str) -> Result<String, String> {
+    let json = unquote(raw);
+    let value: Value = serde_json::from_str(&json).map_err(|_| {
+        format!(
+            "browser_extract: unexpected page result: {}",
+            json.chars().take(200).collect::<String>()
+        )
+    })?;
+    if let Some(error) = value["error"].as_str() {
+        return Err(format!("browser_extract: {error}."));
+    }
+    let empty = match &value {
+        Value::Array(items) => items.is_empty(),
+        _ => value["links"].as_array().is_some_and(Vec::is_empty),
+    };
+    if empty {
+        return Err(
+            "browser_extract: no visible element of that kind on this page (or inside `within`)."
+                .into(),
+        );
+    }
+    Ok(clip_report(json))
+}
+
+fn console_report(arguments: &Value, raw: &str) -> String {
+    let report: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let errors_only = string(arguments, "level") == Some("errors");
+    let entries: Vec<String> = report["console"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            !errors_only
+                || matches!(
+                    entry["level"].as_str(),
+                    Some("error" | "exception" | "assert")
+                )
+        })
+        .map(|entry| {
+            format!(
+                "[{}] {}",
+                entry["level"].as_str().unwrap_or("log"),
+                entry["text"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    let ms = report["duration_ms"].as_u64().unwrap_or_default();
+    if entries.is_empty() {
+        let what = if errors_only {
+            "console errors"
+        } else {
+            "console messages"
+        };
+        return format!(
+            "No {what} (listened {ms} ms, including messages since the page loaded). Next: if the page still misbehaves, try browser_network, or pass reload:true to watch a fresh load."
+        );
+    }
+    let dropped = report["dropped_events"].as_u64().unwrap_or_default();
+    let mut out = format!(
+        "Console messages ({}, listened {ms} ms):\n{}",
+        entries.len(),
+        entries.join("\n")
+    );
+    if dropped > 0 {
+        out.push_str(&format!("\n… {dropped} more events were dropped"));
+    }
+    clip_report(out)
+}
+
+fn network_report(arguments: &Value, raw: &str) -> String {
+    let report: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let requests: Vec<&Value> = report["network"].as_array().into_iter().flatten().collect();
+    let failed =
+        |r: &Value| r["failure"].is_string() || r["status"].as_u64().is_some_and(|s| s >= 400);
+    let ms = report["duration_ms"].as_u64().unwrap_or_default();
+    let failures = requests.iter().filter(|r| failed(r)).count();
+    if requests.is_empty() {
+        return format!(
+            "No requests in {ms} ms. Next: pass reload:true to record the page load, or a longer durationMs if the page polls."
+        );
+    }
+    let show_all = arguments["all"] == true;
+    let mut out = vec![format!(
+        "{} requests in {ms} ms, {failures} failed.",
+        requests.len()
+    )];
+    for r in requests.iter().filter(|r| show_all || failed(r)) {
+        let status = match (r["status"].as_u64(), r["failure"].as_str()) {
+            (_, Some(failure)) => format!("FAILED ({failure})"),
+            (Some(status), None) => status.to_string(),
+            (None, None) => "pending".into(),
+        };
+        out.push(format!(
+            "- {} {status} {}",
+            r["method"].as_str().unwrap_or("GET"),
+            r["url"].as_str().unwrap_or_default()
+        ));
+    }
+    if failures == 0 && !show_all {
+        out.push(
+            "Next: no request failed; pass all:true to list them, or check browser_console.".into(),
+        );
+    }
+    clip_report(out.join("\n"))
+}
+
 /// Add the next step a model should take after an agent tool failed.
 pub(crate) fn recovery_hint(tool: &str, error: &str) -> String {
     diagnostic_hint(error).unwrap_or_else(|| generic_hint(tool, error).to_owned())
@@ -724,7 +1071,11 @@ pub(crate) fn change_summary(tool: &str, before: &PageState, after: &PageState) 
 
 fn generic_hint(tool: &str, error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase().replace(['_', '-'], " ");
-    if error.starts_with("connection failure during content sandbox: SandboxUnavailable:") {
+    if tool == "browser_find" && lower.contains("no element or visible text") {
+        "Next: try a shorter or different word; if the content loads lazily, browser_scroll first; call browser_get_text to read the whole page."
+    } else if tool == "browser_extract" && !lower.contains("policy") {
+        "Next: call browser_snapshot to see how the data is laid out; drop or fix `within`, try another kind, or read it with browser_get_text."
+    } else if error.starts_with("connection failure during content sandbox: SandboxUnavailable:") {
         "Next: the browser runtime cannot start on this host, so retrying will not help; tell the user to restart glass-browser with --browser-runtime chromium (GC_BROWSER_RUNTIME=chromium for Glass Core) or upgrade bubblewrap."
     } else if lower.contains("predicate not satisfied") {
         "Next: the page is not in the expected state, so do not report success yet; call browser_snapshot to see what happened and finish the step that is missing."
@@ -769,7 +1120,7 @@ mod tests {
     #[test]
     fn agent_tools_have_when_to_use_text_examples_and_closed_schemas() {
         let tools = agent_tools();
-        assert!(tools.len() <= 24, "agent profile must stay small");
+        assert!(tools.len() <= 28, "agent profile must stay small");
         for tool in &tools {
             let name = tool["name"].as_str().unwrap();
             assert!(name.starts_with("browser_"), "{name}");
@@ -786,6 +1137,124 @@ mod tests {
             translate(name, &example)
                 .unwrap_or_else(|error| panic!("{name} example fails: {error}"));
         }
+    }
+
+    #[test]
+    fn reading_tools_map_onto_observe_diagnostics_and_evaluate() {
+        assert_eq!(
+            translate("browser_find", &json!({"text":"Pay"})).unwrap(),
+            ("observe", json!({"level":"structured"}))
+        );
+        assert_eq!(
+            translate("browser_console", &json!({"level":"errors"})).unwrap(),
+            ("diagnostics", json!({"durationMs":1000,"consoleText":true}))
+        );
+        assert_eq!(
+            translate("browser_network", &json!({"durationMs":50})).unwrap(),
+            ("diagnostics", json!({"durationMs":100}))
+        );
+        let (tool, args) =
+            translate("browser_extract", &json!({"kind":"table","within":"#a\"b"})).unwrap();
+        assert_eq!(tool, "evaluate");
+        let script = args["expression"].as_str().unwrap();
+        assert!(script.contains(r##"within = "#a\"b""##), "{script}");
+        assert!(script.contains("max = 50"));
+        assert!(
+            translate("browser_extract", &json!({"kind":"chart"}))
+                .unwrap_err()
+                .contains("table, list or links")
+        );
+        assert!(pre_reload("browser_console", &json!({})).is_none());
+        assert_eq!(
+            pre_reload("browser_console", &json!({"reload":true}))
+                .unwrap()
+                .0,
+            "reload"
+        );
+        assert_eq!(
+            pre_reload("browser_network", &json!({"reload":true}))
+                .unwrap()
+                .0,
+            "evaluate"
+        );
+    }
+
+    #[test]
+    fn find_report_lists_matching_refs_and_text_with_context() {
+        let observation = json!({"regions":[{"targets":[
+            {"reference":"r1:b2","role":"button","name":"Pay now"},
+            {"reference":"r1:b3","role":"link","name":"Help"}
+        ]}]});
+        let report = find_report(
+            &json!({"text":"pay"}),
+            &observation.to_string(),
+            "\"Basket\\nTotal RM 25\\nPay now\"",
+        )
+        .unwrap();
+        assert!(report.contains("ref=r1:b2 button \"Pay now\""), "{report}");
+        assert!(!report.contains("Help"), "{report}");
+        assert!(report.contains("line 3: Total RM 25 ⏎ Pay now"), "{report}");
+        let text_only = find_report(&json!({"text":"rm 25"}), "{}", "Basket\nTotal RM 25").unwrap();
+        assert!(text_only.contains("Next: the text is not an interactive element"));
+        let missing = find_report(&json!({"text":"zebra"}), "{}", "Basket").unwrap_err();
+        assert!(recovery_hint("browser_find", &missing).contains("shorter or different word"));
+    }
+
+    #[test]
+    fn diagnostic_reports_keep_errors_and_failed_requests() {
+        let raw = json!({"duration_ms":1000,"dropped_events":0,"console":[
+            {"level":"warning","text":"Deprecated"},
+            {"level":"exception","text":"Error: Boom"}
+        ],"network":[
+            {"method":"GET","url":"http://a.test/","status":200},
+            {"method":"POST","url":"http://a.test/api","status":500},
+            {"method":"GET","url":"http://cdn.test/x.js","failure":"net::ERR_BLOCKED_BY_CLIENT"}
+        ]})
+        .to_string();
+        let all = console_report(&json!({}), &raw);
+        assert!(all.contains("[warning] Deprecated") && all.contains("[exception] Error: Boom"));
+        let errors = console_report(&json!({"level":"errors"}), &raw);
+        assert!(
+            !errors.contains("Deprecated") && errors.contains("Boom"),
+            "{errors}"
+        );
+        let failed = network_report(&json!({}), &raw);
+        assert!(
+            failed.starts_with("3 requests in 1000 ms, 2 failed."),
+            "{failed}"
+        );
+        assert!(failed.contains("- POST 500 http://a.test/api"));
+        assert!(failed.contains("FAILED (net::ERR_BLOCKED_BY_CLIENT)"));
+        assert!(!failed.contains("200"));
+        assert!(network_report(&json!({"all":true}), &raw).contains("GET 200 http://a.test/"));
+        let quiet = json!({"duration_ms":5,"console":[],"network":[]}).to_string();
+        assert!(console_report(&json!({}), &quiet).starts_with("No console messages"));
+        assert!(network_report(&json!({}), &quiet).contains("reload:true"));
+    }
+
+    #[test]
+    fn extract_report_returns_json_or_an_actionable_error() {
+        let rows = json!([{"headers":["A"],"rows":[{"A":"1"}]}]).to_string();
+        assert_eq!(extract_report(&json!(rows).to_string()).unwrap(), rows);
+        assert!(
+            extract_report(&json!("[]").to_string())
+                .unwrap_err()
+                .contains("no visible element")
+        );
+        assert!(
+            extract_report(
+                &json!(json!({"error":"no element matches the within selector #x"}).to_string())
+                    .to_string()
+            )
+            .unwrap_err()
+            .contains("#x")
+        );
+        let huge = json!("x".repeat(40_000)).to_string();
+        assert!(
+            extract_report(&json!(format!("[{huge}]")).to_string())
+                .unwrap()
+                .ends_with("`within` selector]")
+        );
     }
 
     #[test]

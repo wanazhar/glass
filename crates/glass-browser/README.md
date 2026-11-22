@@ -455,9 +455,10 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
-For LLM agents, `--tool-profile agent` replaces the full catalog with 24
+For LLM agents, `--tool-profile agent` replaces the full catalog with 28
 task-level `browser_*` tools (`browser_navigate`, `browser_history`,
-`browser_snapshot`, `browser_click`, `browser_drag`, `browser_fill_form`,
+`browser_snapshot`, `browser_find`, `browser_extract`, `browser_console`,
+`browser_network`, `browser_click`, `browser_drag`, `browser_fill_form`,
 `browser_wait_for`, `browser_verify`, `browser_frames`, `browser_tabs`,
 `browser_handle_dialog`, `browser_upload_file`, `browser_download`,
 `browser_save_pdf`, and so on).
@@ -468,6 +469,13 @@ says so and names the covering control. Calls that can change the page
 (click, type, fill, select, check, key) wait for it to settle, at most 1.5 s
 of network quiet and 1 s of DOM quiet, then end with a `Page after action:`
 line listing new text, URL or title changes, new tabs or an opened dialog.
+`browser_find` returns the refs and text lines that contain a phrase, so a
+long page needs no full snapshot. `browser_extract` returns visible tables
+(headers and one object per row), lists or links as JSON. `browser_console`
+returns console messages and uncaught exceptions, hiding any that mention
+passwords, tokens or cookies; `browser_network` records requests for a bounded
+window and lists the 4xx/5xx and failed ones. Both accept `reload: true` to
+watch a fresh page load.
 For credentials, export `GLASS_SECRET_<NAME>` (uppercase letters, digits and
 `_`; values of at least 4 characters) before starting the server. The
 `browser_type` and `browser_fill_form` descriptions then list the secret names,

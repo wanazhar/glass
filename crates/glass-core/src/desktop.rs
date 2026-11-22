@@ -1199,8 +1199,8 @@ impl Desktop {
         Self::agent_request(&json!({"action":"start"}))
     }
 
-    pub fn agent_files(value: &Value) -> Result<Value, String> {
-        Self::agent_request(&json!({"action":"files","value":value}))
+    pub fn agent_files(value: &Value, workspace: &Path) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"files","value":value,"workspace":workspace}))
     }
 
     pub fn agent_windows(value: &Value) -> Result<Value, String> {
@@ -1496,7 +1496,7 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
             Desktop::agent_clipboard(&args, workspace).map(|value| value.to_string())
         }
         "desktop_windows" => Desktop::agent_windows(&args).map(|value| value.to_string()),
-        "desktop_files" => Desktop::agent_files(&args).map(|value| value.to_string()),
+        "desktop_files" => Desktop::agent_files(&args, workspace).map(|value| value.to_string()),
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
@@ -1765,7 +1765,9 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
             .ok_or_else(|| "trusted thread workspace is required".to_owned())
             .and_then(|workspace| desktop.clipboard(&request["value"], Path::new(workspace))),
         Some("windows") => desktop.windows(&request["value"]),
-        Some("files") => desktop.files(&request["value"]),
+        Some("files") => request["workspace"].as_str()
+            .ok_or_else(|| "trusted thread workspace is required".to_owned())
+            .and_then(|workspace| desktop.files(&request["value"], Path::new(workspace))),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))

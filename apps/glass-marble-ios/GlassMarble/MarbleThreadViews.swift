@@ -102,7 +102,6 @@ private struct MarbleThreadView: View {
     @State private var draft = ""
     @State private var jump: MarbleMessageJump?
     @State private var appliedInitialJump = false
-    @State private var sending = false
     @State private var loadFailed = false
     @State private var sendFailed = false
     @State private var loadGeneration = UUID()
@@ -150,8 +149,7 @@ private struct MarbleThreadView: View {
                             .padding(.top, 8)
                     }
                     ComposerBar(draft: $draft, isWorking: false, placeholder: "Reply in thread",
-                                onSend: { Task { await send() } }, onStop: {})
-                        .disabled(sending)
+                                onSend: send, onStop: {})
                 }
                 .marbleComposerBackground()
             }
@@ -177,22 +175,21 @@ private struct MarbleThreadView: View {
         }
     }
 
-    private func send() async {
-        guard let thread = page?.thread, !sending else { return }
-        let text = draft
+    private func send(_ text: String) async -> Bool {
+        guard let thread = page?.thread else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        sending = true
+        guard !trimmed.isEmpty else { return false }
         sendFailed = false
-        defer { sending = false }
         do {
             try await store.sendInThread(trimmed, thread: thread)
-            if text == draft { draft = "" }
             await load()
             jump = nil
+            return true
         } catch is CancellationError {
+            return false
         } catch {
             sendFailed = true
+            return false
         }
     }
 }

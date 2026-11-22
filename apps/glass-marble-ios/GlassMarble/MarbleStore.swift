@@ -656,14 +656,18 @@ final class MarbleStore: ObservableObject {
         entry.serverID ?? "\(entry.at)|\(entry.kind)|\(entry.taskId)|\(entry.text)"
     }
 
-    func send(_ text: String) async {
+    func send(_ text: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, !trimmed.isEmpty else { return }
+        guard let client, !trimmed.isEmpty else { return false }
         do {
             let accepted = try await client.send(
                 text: trimmed,
                 conversationId: selectedConversationId
             )
+            guard accepted.accepted else {
+                errorMessage = "The message wasn’t accepted."
+                return false
+            }
             selectedConversationId = accepted.conversationId
             // A marble answers in its own engine and reports its task through the
             // next state poll, so an empty id must not look like a live turn.
@@ -675,8 +679,10 @@ final class MarbleStore: ObservableObject {
                 prismNotice = "\(marble) is answering in its own conversation."
             }
             errorMessage = nil
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -931,28 +937,24 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    /// One message to Everyone; marbles it names answer, Marble answers
-    /// otherwise. Returns the plain reply so the composer can say who's busy.
-    @discardableResult
-    func sendEveryone(_ text: String) async -> MarbleEveryoneReply? {
+    /// One message to Everyone; marbles it names answer, Marble answers otherwise.
+    func sendEveryone(_ text: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, !trimmed.isEmpty else { return nil }
+        guard let client, !trimmed.isEmpty else { return false }
         do {
             let reply = try await client.sendEveryone(text: trimmed)
+            guard reply.ok else {
+                errorMessage = "The message wasn’t accepted."
+                return false
+            }
             if let taskId = reply.taskId, !taskId.isEmpty { everyoneTaskIds.insert(taskId) }
             errorMessage = nil
             Task { await refresh() }
-            return reply
+            return true
         } catch {
             errorMessage = error.localizedDescription
-            return nil
+            return false
         }
-    }
-
-    /// A one-to-one message for one marble: it answers in its own chat, which
-    /// is its durable conversation once the first turn creates it.
-    func sendToMarble(_ marble: MarblePrismMarble, text: String) async {
-        await dispatchSwarm(text: text, marbles: [marble.id])
     }
 
     /// The marble a transcript row is speaking as, for its label and dot.
@@ -990,20 +992,21 @@ final class MarbleStore: ObservableObject {
         await refresh()
     }
 
-    /// Fan one prompt out to the whole roster, or to the marbles named.
-    func dispatchSwarm(text: String, marbles: [String] = []) async {
+    /// Dispatch the first message to a named Marble before its chat exists.
+    func sendToMarble(_ marble: MarblePrismMarble, text: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, !trimmed.isEmpty else { return }
+        guard let client, !trimmed.isEmpty else { return false }
         do {
-            let reply = try await client.dispatchSwarm(text: trimmed, marbles: marbles)
+            let reply = try await client.dispatchSwarm(text: trimmed, marbles: [marble.id])
             errorMessage = nil
-            prismNotice = (reply.swarm ? "Sent to all Marbles: " : "Sent to ")
-                + reply.names.joined(separator: ", ") + "."
+            prismNotice = "Sent to " + reply.names.joined(separator: ", ") + "."
+            Task { await refresh() }
+            return true
         } catch {
             prismNotice = nil
             errorMessage = error.localizedDescription
+            return false
         }
-        await refresh()
     }
 
     func loadTools() async {

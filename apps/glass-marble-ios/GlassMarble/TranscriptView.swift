@@ -314,6 +314,8 @@ private struct MarbleFailedTurnRow: View {
 /// inside. Return adds a line; the arrow sends. While the keyboard is up a
 /// button beside the box hides it.
 struct ComposerBar: View {
+    @EnvironmentObject private var store: MarbleStore
+    @State private var submitting = false
     @Binding var draft: String
     var isWorking: Bool
     var isDictating: Bool = false
@@ -321,9 +323,9 @@ struct ComposerBar: View {
     var workingPlaceholder: String = "Add to what Marble is doing"
     /// False where the host cannot take a correction mid-turn.
     var canSteer: Bool = true
-    var onSend: () -> Void
+    var onSend: (String) async -> Bool
     /// Correct the running turn instead of starting a new one.
-    var onSteer: () -> Void = {}
+    var onSteer: (String) async -> Bool = { _ in false }
     var onStop: () -> Void
     var onDictate: (() -> Void)? = nil
     @FocusState private var focused: Bool
@@ -334,7 +336,17 @@ struct ComposerBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if action == .stopOnly {
+            if store.connectionPaused {
+                HStack {
+                    Text("Not connected")
+                        .foregroundStyle(.secondary)
+                    Button("Connect") { store.reconnect(force: true) }
+                        .buttonStyle(.borderless)
+                }
+                .font(.footnote)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            } else if action == .stopOnly {
                 Text(MarbleSteer.unsupportedNote)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -387,7 +399,7 @@ struct ComposerBar: View {
             .accessibilityIdentifier("composer.field")
 
             if action == .send || (action == .steer && !trimmed.isEmpty) {
-                Button(action: action == .steer ? onSteer : onSend) {
+                Button { submit() } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 32))
                         .symbolRenderingMode(.palette)
@@ -395,7 +407,7 @@ struct ComposerBar: View {
                         .frame(width: 38, height: 38)
                         .contentShape(Rectangle())
                 }
-                .disabled(trimmed.isEmpty)
+                .disabled(trimmed.isEmpty || submitting || store.connectionPaused)
                 .accessibilityLabel(action == .steer ? "Steer" : "Send")
             }
             if isWorking {
@@ -411,6 +423,18 @@ struct ComposerBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private func submit() {
+        guard !trimmed.isEmpty, !submitting, !store.connectionPaused else { return }
+        let sent = draft
+        let operation = action == .steer ? onSteer : onSend
+        submitting = true
+        Task {
+            defer { submitting = false }
+            let accepted = await operation(sent)
+            draft = MarbleDraft.draft(after: sent, current: draft, accepted: accepted)
+        }
     }
 
     private var trimmed: String {

@@ -19,9 +19,10 @@ enum MarbleSteer {
         guard isWorking else { return .send }
         return canSteer ? .steer : .stopOnly
     }
+}
 
-    /// The draft after a correction was sent: cleared only once the host
-    /// accepted it, and kept if the person typed more in the meantime.
+enum MarbleDraft {
+    /// Keep the text unless the host accepted this exact submission.
     static func draft(after sent: String, current: String, accepted: Bool) -> String {
         accepted && current == sent ? "" : current
     }

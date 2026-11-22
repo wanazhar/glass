@@ -1600,9 +1600,16 @@ final class MarbleSteerTests: XCTestCase {
         XCTAssertEqual(MarbleSteer.action(isWorking: false, canSteer: false), .send)
     }
 
-    func testDraftIsKeptUnlessTheHostAccepted() {
-        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it", accepted: false), "fix it")
-        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it", accepted: true), "")
-        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it now", accepted: true), "fix it now")
+}
+
+final class MarbleDraftTests: XCTestCase {
+    func testAnUnacceptedSendKeepsTheDraftVerbatim() {
+        let text = "  Try again later\n"
+        XCTAssertEqual(MarbleDraft.draft(after: text, current: text, accepted: false), text)
+    }
+
+    func testAnAcceptedSendClearsOnlyTheSubmittedText() {
+        XCTAssertEqual(MarbleDraft.draft(after: "fix it", current: "fix it", accepted: true), "")
+        XCTAssertEqual(MarbleDraft.draft(after: "fix it", current: "fix it now", accepted: true), "fix it now")
     }
 }

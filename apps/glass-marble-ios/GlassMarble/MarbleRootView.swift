@@ -366,26 +366,19 @@ struct MarbleChatView: View {
         }
     }
 
-    private func send() {
-        let text = draft
-        draft = ""
+    private func send(_ text: String) async -> Bool {
         if dictation.isRecording { dictation.stop() }
-        Task {
-            await store.send(text)
-            if case .draft = route, let id = store.selectedConversationId {
-                navigation.draftResolved(id)
-            }
+        guard await store.send(text) else { return false }
+        if case .draft = route, let id = store.selectedConversationId {
+            navigation.draftResolved(id)
         }
+        return true
     }
 
     /// Send the draft into the running turn, keeping its context.
-    private func steer() {
-        let text = draft
+    private func steer(_ text: String) async -> Bool {
         if dictation.isRecording { dictation.stop() }
-        Task {
-            let accepted = await store.steer(text)
-            draft = MarbleSteer.draft(after: text, current: draft, accepted: accepted)
-        }
+        return await store.steer(text)
     }
 }
 

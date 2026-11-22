@@ -293,18 +293,13 @@ struct EveryoneView: View {
                 draft: $draft,
                 isWorking: false,
                 placeholder: "Message Everyone",
-                onSend: send,
+                onSend: store.sendEveryone,
                 onStop: {}
             )
         }
         .marbleComposerBackground()
     }
 
-    private func send() {
-        let text = draft
-        draft = ""
-        Task { await store.sendEveryone(text) }
-    }
 }
 
 /// The roster: every marble with its look, one line of personality, and what
@@ -542,26 +537,20 @@ struct MarbleChatScreen: View {
                 isWorking: working,
                 placeholder: "Message \(marble.name)",
                 canSteer: false,
-                onSend: { send(marble) },
+                onSend: { await send($0, to: marble) },
                 onStop: { Task { await store.stop(marble) } }
             )
             .marbleComposerBackground()
         }
     }
 
-    private func send(_ marble: MarblePrismMarble) {
-        let text = draft
-        draft = ""
-        Task {
-            // A marble with no chat yet goes through Everyone's dispatch so
-            // its first turn creates its durable conversation.
-            if marble.conversationId.isEmpty {
-                await store.sendToMarble(marble, text: text)
-            } else {
-                store.selectedConversationId = marble.conversationId
-                await store.send(text)
-            }
+    private func send(_ text: String, to marble: MarblePrismMarble) async -> Bool {
+        // Dispatch creates a named Marble's durable conversation on its first turn.
+        if marble.conversationId.isEmpty {
+            return await store.sendToMarble(marble, text: text)
         }
+        store.selectedConversationId = marble.conversationId
+        return await store.send(text)
     }
 }
 

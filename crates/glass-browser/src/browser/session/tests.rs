@@ -1508,6 +1508,38 @@ fn verification_failures_are_bounded_and_typed() {
     assert_eq!(value["revision"], 4);
 }
 
+#[test]
+fn verification_urls_accept_the_advertised_byte_limit() {
+    for size in [1, 1024, 1025, 8192] {
+        assert!(
+            VerificationPredicate::UrlEquals {
+                value: "a".repeat(size)
+            }
+            .validate(0)
+            .is_ok()
+        );
+    }
+    for size in [0, 8193] {
+        assert!(
+            VerificationPredicate::UrlEquals {
+                value: "a".repeat(size)
+            }
+            .validate(0)
+            .is_err()
+        );
+    }
+    for predicate in [
+        VerificationPredicate::TitleContains {
+            value: "a".repeat(1025),
+        },
+        VerificationPredicate::TextContains {
+            value: "a".repeat(1025),
+        },
+    ] {
+        assert!(predicate.validate(0).is_err());
+    }
+}
+
 #[cfg(feature = "native-engine")]
 #[test]
 fn visible_text_verification_joins_visible_inline_nodes() {

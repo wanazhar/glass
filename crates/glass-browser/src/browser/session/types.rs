@@ -2317,9 +2317,12 @@ impl VerificationPredicate {
             return Err("verification predicate nesting exceeds four levels".into());
         }
         match self {
-            Self::UrlEquals { value }
-            | Self::TitleContains { value }
-            | Self::TextContains { value } => {
+            Self::UrlEquals { value } => {
+                if value.is_empty() || value.len() > 8192 {
+                    return Err("verification URL must be 1..=8192 bytes".into());
+                }
+            }
+            Self::TitleContains { value } | Self::TextContains { value } => {
                 if value.is_empty() || value.len() > 1024 {
                     return Err("verification text must be 1..=1024 bytes".into());
                 }

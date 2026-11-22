@@ -138,31 +138,46 @@ fn redact_with(secrets: &Secrets, text: &str) -> String {
         patterns.push((escaped[1..escaped.len() - 1].to_owned(), placeholder));
     }
     patterns.sort_by_key(|pattern| std::cmp::Reverse(pattern.0.len()));
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while !rest.is_empty() {
+    let mut spans: Vec<(usize, usize, &str)> = Vec::new();
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let rest = &text[cursor..];
         if let Some(after) = rest.strip_prefix(OPEN)
-            && let Some(end) = after.find("}}")
-            && !after[..end].is_empty()
-            && after[..end].len() <= 64
-            && after[..end]
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+            && let Some(end) = after
+                .as_bytes()
+                .iter()
+                .take(66)
+                .position(|byte| *byte == b'}')
+            && after.as_bytes().get(end + 1) == Some(&b'}')
+            && secrets
+                .iter()
+                .any(|(name, _)| name.as_bytes() == &after.as_bytes()[..end])
         {
-            let length = OPEN.len() + end + 2;
-            out.push_str(&rest[..length]);
-            rest = &rest[length..];
-        } else if let Some((value, placeholder)) =
-            patterns.iter().find(|(value, _)| rest.starts_with(value))
-        {
-            out.push_str(placeholder);
-            rest = &rest[value.len()..];
-        } else {
-            let ch = rest.chars().next().expect("nonempty text");
-            out.push(ch);
-            rest = &rest[ch.len_utf8()..];
+            cursor += OPEN.len() + end + 2;
+            continue;
         }
+        for (value, placeholder) in &patterns {
+            if !value.is_empty() && rest.starts_with(value) {
+                let end = cursor + value.len();
+                if let Some(last) = spans.last_mut()
+                    && cursor < last.1
+                {
+                    last.1 = last.1.max(end);
+                } else {
+                    spans.push((cursor, end, placeholder));
+                }
+            }
+        }
+        cursor += rest.chars().next().expect("nonempty text").len_utf8();
     }
+    let mut out = String::with_capacity(text.len());
+    let mut previous = 0;
+    for (start, end, placeholder) in spans {
+        out.push_str(&text[previous..start]);
+        out.push_str(placeholder);
+        previous = end;
+    }
+    out.push_str(&text[previous..]);
     out
 }
 
@@ -214,6 +229,26 @@ fn redact_mcp_result_with(secrets: &Secrets, value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn redaction_covers_untrusted_markers_and_overlapping_values() {
+        let secrets = vec![
+            ("FIRST".into(), "ABCD".into()),
+            ("SECOND".into(), "CDEF".into()),
+        ];
+        assert_eq!(
+            redact_with(&secrets, "{{secret:ABCD}}"),
+            "{{secret:{{secret:FIRST}}}}"
+        );
+        assert_eq!(redact_with(&secrets, "ABCDEF"), "{{secret:FIRST}}");
+        assert_eq!(redact_with(&secrets, "éABCDEF!"), "é{{secret:FIRST}}!");
+        assert_eq!(
+            redact_with(&secrets, "{{secret:FIRST}}"),
+            "{{secret:FIRST}}"
+        );
+        let malformed = "{{secret:".repeat(100_000);
+        assert_eq!(redact_with(&secrets, &malformed), malformed);
+        assert_eq!(redact_with(&secrets, ""), "");
+    }
     use serde_json::json;
 
     #[test]

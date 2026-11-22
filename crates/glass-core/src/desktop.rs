@@ -849,6 +849,16 @@ impl Desktop {
         query: Option<&str>,
         requested_window_id: Option<&str>,
     ) -> Result<Value, String> {
+        self.observe_accessibility_for(expected_session_id, query, requested_window_id, false)
+    }
+
+    fn observe_accessibility_for(
+        &self,
+        expected_session_id: Option<&str>,
+        query: Option<&str>,
+        requested_window_id: Option<&str>,
+        label_scan: bool,
+    ) -> Result<Value, String> {
         self.restore_reusable_session()?;
         let (session_id, session_bus_address, revision, window_root) = {
             let mut guard = self
@@ -892,6 +902,7 @@ impl Desktop {
             revision,
             query,
             window_root,
+            label_scan,
         )?;
         let mut guard = self
             .session
@@ -1707,17 +1718,36 @@ fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Resu
     if let Some(window_id) = labels.get("windowId") {
         observe["windowId"] = window_id.clone();
     }
-    let observation = Desktop::agent_observe(&observe)?;
-    let nodes: Vec<&Value> = observation["nodes"]
+    let observation =
+        Desktop::agent_request(&json!({"action":"observe","value":observe,"labelScan":true}))?;
+    let matches: Vec<Value> = observation["nodes"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|node| node["bounds"].is_object())
-        .take(capture::MAX_LABELS)
+        .cloned()
         .collect();
+    let stack = Desktop::agent_request(&json!({"action":"window_stack","sessionId":session_id}));
+    let stack = stack
+        .as_ref()
+        .ok()
+        .and_then(|value| value["windows"].as_array())
+        .map(Vec::as_slice);
+    let found = matches.len();
+    let mut nodes = match stack {
+        Some(stack) => uncovered_labels(matches, stack),
+        None => matches,
+    };
+    let hidden = found - nodes.len();
+    nodes.truncate(capture::MAX_LABELS);
     if nodes.is_empty() {
+        let reason = if hidden > 0 {
+            "every match is covered by another window"
+        } else {
+            "no onscreen control matched"
+        };
         return Err(format!(
-            "No onscreen control matched the query {query:?}, so nothing was labelled. Next: broaden the query, scope it with a windowId from desktop_observe, or call desktop_screenshot without labels."
+            "Nothing was labelled for the query {query:?}: {reason}. Next: bring the window forward with desktop_windows, broaden the query, scope it with a windowId from desktop_observe, or call desktop_screenshot without labels."
         ));
     }
     let boxes: Vec<&Value> = nodes.iter().map(|node| &node["bounds"]).collect();
@@ -1728,10 +1758,86 @@ fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Resu
         return Err(error.to_owned());
     }
     let saved = save_agent_frame(workspace, &frame)?;
-    Ok(format!("{saved}\n{}", label_legend(&observation, &nodes)))
+    let mut legend = label_legend(&observation, &nodes, hidden);
+    if stack.is_none() {
+        legend.push_str("\nWindow stacking could not be read, so a box may sit on a window covering its control; check the image before clicking.");
+    }
+    Ok(format!("{saved}\n{legend}"))
 }
 
-fn label_legend(observation: &Value, nodes: &[&Value]) -> String {
+/// Whether a window from `window_stack` covers a screen-fraction point.
+fn window_covers(window: &Value, x: f64, y: f64) -> bool {
+    let (Some(left), Some(top), Some(width), Some(height)) = (
+        window["x"].as_f64(),
+        window["y"].as_f64(),
+        window["width"].as_f64(),
+        window["height"].as_f64(),
+    ) else {
+        return false;
+    };
+    x >= left && x < left + width && y >= top && y < top + height
+}
+
+/// Drops matches whose control is fully covered by windows stacked above its
+/// own window, and the pointer of a match whose click point is covered.
+/// AT-SPI reports such controls as showing, so only X11 stacking reveals it.
+fn uncovered_labels(nodes: Vec<Value>, stack: &[Value]) -> Vec<Value> {
+    const SAMPLES: u32 = 5;
+    nodes
+        .into_iter()
+        .filter_map(|mut node| {
+            let bounds = &node["bounds"];
+            let (x, y, width, height) = (
+                bounds["x"].as_f64()?,
+                bounds["y"].as_f64()?,
+                bounds["width"].as_f64()?,
+                bounds["height"].as_f64()?,
+            );
+            let (center_x, center_y) = (x + width / 2.0, y + height / 2.0);
+            let title = node["owningWindow"]["name"].as_str().unwrap_or_default();
+            let owners: Vec<usize> = stack
+                .iter()
+                .enumerate()
+                .filter(|(_, window)| !title.is_empty() && window["title"] == title)
+                .map(|(index, _)| index)
+                .collect();
+            let Some(&owner) = owners
+                .iter()
+                .rev()
+                .find(|&&index| window_covers(&stack[index], center_x, center_y))
+                .or(owners.last())
+            else {
+                return Some(node);
+            };
+            let covered = |px: f64, py: f64| {
+                stack[owner + 1..]
+                    .iter()
+                    .any(|window| window_covers(window, px, py))
+            };
+            let visible = (0..SAMPLES * SAMPLES).any(|sample| {
+                let column = f64::from(sample % SAMPLES) + 0.5;
+                let row = f64::from(sample / SAMPLES) + 0.5;
+                !covered(
+                    x + width * column / f64::from(SAMPLES),
+                    y + height * row / f64::from(SAMPLES),
+                )
+            });
+            if !visible {
+                return None;
+            }
+            if let (Some(px), Some(py)) = (
+                node["pointerTarget"]["x"].as_f64(),
+                node["pointerTarget"]["y"].as_f64(),
+            ) && covered(px, py)
+            {
+                node["pointerTarget"] = Value::Null;
+            }
+            Some(node)
+        })
+        .collect()
+}
+
+fn label_legend(observation: &Value, nodes: &[Value], hidden: usize) -> String {
     let revision = &observation["revision"];
     let actionable = observation["queryAmbiguous"] != true && observation["truncated"] != true;
     let mut legend = format!(
@@ -1740,6 +1846,9 @@ fn label_legend(observation: &Value, nodes: &[&Value]) -> String {
     );
     if !actionable {
         legend.push_str(" The match is ambiguous or truncated, so no number can be acted on yet: refine labels.query or pass a windowId, then label again.");
+    }
+    if hidden > 0 {
+        legend.push_str(&format!(" {hidden} more match(es) are covered by other windows and were not labelled; bring their window forward with desktop_windows to see them."));
     }
     for (index, node) in nodes.iter().enumerate() {
         let mut line = format!(
@@ -1959,10 +2068,11 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
             None => Err("sessionId is required before stopping a desktop".into()),
         },
         Some("observe") => match request["value"]["sessionId"].as_str() {
-            Some(session_id) => desktop.observe_accessibility_scoped(
+            Some(session_id) => desktop.observe_accessibility_for(
                 Some(session_id),
                 request["value"]["query"].as_str(),
                 request["value"]["windowId"].as_str(),
+                request["labelScan"] == true,
             ),
             None => Err("sessionId is required from desktop_status".into()),
         },
@@ -1976,6 +2086,10 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         Some("files") => request["workspace"].as_str()
             .ok_or_else(|| "trusted thread workspace is required".to_owned())
             .and_then(|workspace| desktop.files(&request["value"], Path::new(workspace))),
+        Some("window_stack") => match request["sessionId"].as_str() {
+            Some(session_id) => desktop.window_stack(session_id),
+            None => Err("sessionId is required from desktop_status".into()),
+        },
         Some("record") => desktop.record(&request["value"]),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
@@ -2455,13 +2569,51 @@ mod tests {
         let observation = json!({"revision": 7, "queryAmbiguous": false, "truncated": false});
         let save = json!({"role":"push button","name":"Save","targetId":"t-1","pointerTarget":{"x":0.25,"y":0.5}});
         let label = json!({"role":"label","name":"Untitled","targetId":null,"pointerTarget":null});
-        let legend = label_legend(&observation, &[&save, &label]);
+        let legend = label_legend(&observation, &[save, label.clone()], 0);
         assert!(legend.contains("revision 7"));
         assert!(legend.contains("[1] push button \"Save\" targetId=t-1 pointer x=0.2500 y=0.5000"));
         assert!(legend.contains("[2] label \"Untitled\" (look only)"));
         assert!(!legend.contains("ambiguous"));
         let ambiguous = json!({"revision": 8, "queryAmbiguous": true});
-        assert!(label_legend(&ambiguous, &[&label]).contains("refine labels.query"));
+        assert!(
+            label_legend(&ambiguous, std::slice::from_ref(&label), 0)
+                .contains("refine labels.query")
+        );
+        assert!(label_legend(&observation, &[label], 2).contains("2 more match(es) are covered"));
+    }
+
+    #[test]
+    fn labels_skip_controls_covered_by_a_window_stacked_above() {
+        let window = |title: &str, x: f64, y: f64| json!({"title": title, "x": x, "y": y, "width": 0.5, "height": 0.5});
+        // Bottom to top: the editor, then a file manager over its right half.
+        let stack = [window("Editor", 0.0, 0.0), window("Files", 0.3, 0.0)];
+        let control = |name: &str, x: f64, pointer_x: f64| {
+            json!({
+                "name": name,
+                "owningWindow": {"name": "Editor"},
+                "bounds": {"x": x, "y": 0.1, "width": 0.1, "height": 0.05},
+                "pointerTarget": {"x": pointer_x, "y": 0.125},
+            })
+        };
+        let open = control("Open", 0.05, 0.1);
+        let edge = control("Edge", 0.25, 0.32);
+        let save = control("Save", 0.35, 0.4);
+        let unknown = json!({"name": "Unknown", "bounds": {"x": 0.35, "y": 0.1, "width": 0.1, "height": 0.05}});
+        let kept = uncovered_labels(vec![open, edge, save, unknown], &stack);
+        let names: Vec<&str> = kept
+            .iter()
+            .filter_map(|node| node["name"].as_str())
+            .collect();
+        assert_eq!(names, ["Open", "Edge", "Unknown"]);
+        assert_eq!(kept[0]["pointerTarget"]["x"], 0.1);
+        assert!(
+            kept[1]["pointerTarget"].is_null(),
+            "a covered click point is withheld"
+        );
+
+        let on_top = [window("Files", 0.3, 0.0), window("Editor", 0.0, 0.0)];
+        let save = control("Save", 0.35, 0.4);
+        assert_eq!(uncovered_labels(vec![save], &on_top).len(), 1);
     }
 
     #[test]
@@ -2511,6 +2663,12 @@ mod tests {
             labelled_screenshot(workspace, session_id, &json!({"labels":{"query":query}})).unwrap();
         assert!(result.contains("Numbered boxes mark"), "{result}");
         assert!(result.contains("\n[1] "), "{result}");
+        if mousepad {
+            assert!(
+                result.contains("\n[3] "),
+                "labels go past two matches: {result}"
+            );
+        }
         let path = result
             .split('`')
             .nth(1)

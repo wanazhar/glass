@@ -1488,13 +1488,13 @@ mod tests {
         use glass_runtime_client::protocol::ContextBlock;
         let mut product = ProductState::default();
         let plain = turn_input(&Arc::new(Mutex::new(product.clone())), "hello");
-        assert!(plain.context.is_empty());
+        assert_eq!(plain.context.len(), 1);
         product
             .memory
             .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
-        assert_eq!(with_memory.context.len(), 1);
+        assert_eq!(with_memory.context.len(), 2);
         assert_eq!(with_memory.text, "hello");
         match &with_memory.context[0] {
             ContextBlock::Text { text } => assert!(text.contains("my name is Azhar")),

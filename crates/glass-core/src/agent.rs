@@ -612,12 +612,6 @@ impl<'a> Agent<'a> {
         self
     }
 
-    /// Register the post-write hook registry; runs after a write and records
-    /// the result on the turn.
-    pub fn with_post_write_hooks(mut self, registry: crate::hooks_shell::HookRegistry) -> Self {
-        self.post_write_hooks = registry;
-        self
-    }
     /// Exclusive host execution: no built-ins, extensions, or local tool guards.
     /// The host owns authorization and every side effect.
     pub fn with_host_tools(

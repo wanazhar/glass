@@ -1000,21 +1000,23 @@ impl Desktop {
                 text,
             )
         };
-        let result =
-            accessibility::act(&session_bus_address, &target, action.as_str(), text.as_deref());
+        let result = accessibility::act(
+            &session_bus_address,
+            &target,
+            action.as_str(),
+            text.as_deref(),
+        );
         drop(control);
         // Bounded post-action wait for typed actions before the refreshed
         // observation reaches the caller.
         if matches!(action, DesktopAction::Focus | DesktopAction::SetText) {
             post_action_wait_until(
-                || {
-                    let verified = match &result {
-                        Ok(value) => {
-                            value.get("verified").and_then(Value::as_bool).unwrap_or(false)
-                        }
-                        Err(_) => false,
-                    };
-                    verified
+                || match &result {
+                    Ok(value) => value
+                        .get("verified")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    Err(_) => false,
                 },
                 Duration::from_secs(2),
             );
@@ -2398,8 +2400,11 @@ mod tests {
     fn typed_desktop_actions_and_bounded_post_action_waits_are_enforced() {
         assert_eq!(DesktopAction::parse("click").unwrap(), DesktopAction::Click);
         assert_eq!(DesktopAction::parse("focus").unwrap(), DesktopAction::Focus);
-        assert_eq!(DesktopAction::parse("set_text").unwrap(), DesktopAction::SetText);
-        let parse_error = DesktopAction::parse("drag").err().expect("typed parse must fail");
+        assert_eq!(
+            DesktopAction::parse("set_text").unwrap(),
+            DesktopAction::SetText
+        );
+        let parse_error = DesktopAction::parse("drag").expect_err("typed parse must fail");
         assert_eq!(parse_error, "action must be click, focus, or set_text");
         assert_eq!(DesktopAction::Click.as_str(), "click");
         assert_eq!(DesktopAction::Focus.as_str(), "focus");

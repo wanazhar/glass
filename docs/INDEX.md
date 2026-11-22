@@ -129,7 +129,8 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 - Workspace implementation packages: [`glass-core`](../crates/glass-core/README.md),
   [`glass-browser-core`](../crates/glass-browser-core/README.md),
   [`glass-runtime-client`](../crates/glass-runtime-client/README.md),
-  [`glass-mod-api`](../crates/glass-mod-api/README.md), and
+  [`glass-mod-api`](../crates/glass-mod-api/README.md),
+  [`glass-marble`](../crates/glass-marble/README.md), and
   [`glass-tui`](../crates/glass-tui/README.md). These are Cargo workspace
   members, not additional user-facing Glass products.
 

@@ -320,6 +320,11 @@ pub fn run_turn(
         text = last_segment;
     }
     text = conversation.clean_reply(&text);
+    if text.trim_start().starts_with("[Generation failed]") {
+        return Err(MarbleError::Protocol(
+            "provider_rejected: model returned a generation failure".into(),
+        ));
+    }
     if !text.is_empty() {
         conversation.publish("text", serde_json::json!({"text": text}));
     }

@@ -14,6 +14,21 @@ pub const EVERYONE_CONVERSATION: &str = "everyone";
 pub const USER_SPEAKER: &str = "user";
 pub const DEFAULT_SPEAKER: &str = "marble";
 
+pub(crate) fn default_conversation(state: &ProductState) -> Option<String> {
+    state
+        .transcript
+        .iter()
+        .rev()
+        .filter(|e| e.conversation_id == EVERYONE_CONVERSATION && e.speaker == DEFAULT_SPEAKER)
+        .find_map(|entry| {
+            state
+                .tasks
+                .iter()
+                .find(|task| task.id == entry.task_id)
+                .map(|task| task.conversation_id.clone())
+        })
+}
+
 /// Who should answer one Everyone message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EveryoneTarget {
@@ -136,6 +151,16 @@ pub fn mirror(
     handoff: Option<HandoffEntry>,
 ) {
     ensure_conversation(state);
+    let failure = if kind == "failure" {
+        state
+            .transcript
+            .iter()
+            .rev()
+            .find(|entry| entry.task_id == task_id && entry.kind == "failure")
+            .and_then(|entry| entry.failure.clone())
+    } else {
+        None
+    };
     state.push_transcript(TranscriptEntry {
         conversation_id: EVERYONE_CONVERSATION.to_string(),
         kind: kind.to_string(),
@@ -145,6 +170,7 @@ pub fn mirror(
         speaker: speaker.to_string(),
         speaker_name: speaker_name.to_string(),
         handoff,
+        failure,
     });
 }
 
@@ -197,6 +223,18 @@ pub fn mirror_settlement(state: &mut ProductState, task_id: &str, reply: &str, s
             .map(|marble| marble.name.clone())
             .unwrap_or_else(|| speaker.clone())
     };
+    if status == "failed" {
+        mirror(
+            state,
+            &speaker,
+            &name,
+            "failure",
+            crate::failure::MESSAGE,
+            task_id,
+            None,
+        );
+        return;
+    }
     let (kind, text) = match status {
         "completed" => ("assistant", reply.to_string()),
         _ => ("system", format!("{name} could not finish: {}", status)),
@@ -237,6 +275,7 @@ pub fn record_handoff(
             speaker: entry.from.clone(),
             speaker_name: entry.from_name.clone(),
             handoff: Some(entry.clone()),
+            ..Default::default()
         });
     }
     mirror(

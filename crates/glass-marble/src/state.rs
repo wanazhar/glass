@@ -93,6 +93,12 @@ pub struct ConversationRecord {
     /// admitted its first turn.
     #[serde(default)]
     pub lane: u8,
+    #[serde(default)]
+    pub engine_conversation_id: String,
+    #[serde(default)]
+    pub checkpoints: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub retry_task_id: String,
 }
 
 /// One durable generation task admitted for a conversation.
@@ -157,7 +163,7 @@ pub struct ObservedTool {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptEntry {
     pub conversation_id: String,
-    /// `user`, `assistant`, `reasoning`, `tool`, `system`, or `handoff`.
+    /// `user`, `assistant`, `reasoning`, `tool`, `system`, `failure`, or `handoff`.
     pub kind: String,
     pub text: String,
     #[serde(default)]
@@ -172,6 +178,8 @@ pub struct TranscriptEntry {
     /// One marble asking another for help, when this entry records a handoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<HandoffEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::failure::FailureInfo>,
 }
 
 /// One marble-to-marble handoff, kept on the transcript row that tells it.
@@ -255,6 +263,17 @@ pub struct ProductState {
 }
 
 impl ProductState {
+    pub fn record_failure(&mut self, conversation_id: &str, task_id: &str, error: &str) {
+        self.push_transcript(TranscriptEntry {
+            conversation_id: conversation_id.into(),
+            task_id: task_id.into(),
+            kind: "failure".into(),
+            text: crate::failure::MESSAGE.into(),
+            failure: Some(crate::failure::FailureInfo::of(error)),
+            at: crate::worker::now_millis(),
+            ..Default::default()
+        });
+    }
     pub fn agent_tasks(&self, id: &str) -> Vec<&TaskRecord> {
         self.tasks
             .iter()
@@ -622,6 +641,9 @@ impl ProductState {
                 conversation
                     .task_ids
                     .retain(|id| known.contains(id.as_str()));
+                conversation
+                    .checkpoints
+                    .retain(|id, _| known.contains(id.as_str()));
             }
         }
 
@@ -1134,6 +1156,7 @@ mod everyone_tests {
             speaker: "user".into(),
             speaker_name: "You".into(),
             handoff: None,
+            ..Default::default()
         }
     }
 
@@ -1146,6 +1169,7 @@ mod everyone_tests {
             task_ids: vec![],
             updated_at: 0,
             lane: 0,
+            ..Default::default()
         });
         state.tasks.push(TaskRecord {
             marble_id: String::new(),

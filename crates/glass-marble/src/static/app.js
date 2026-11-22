@@ -187,6 +187,10 @@
         return el('div', 'tool-step', icon('tool'), el('span', '', label, tool.text || tool.summary ? ' · ' + String(tool.text || tool.summary).slice(0, 240) : ''));
     }
     function entryNode(entry, fallback, key) {
+        if (entry.kind === 'failure') {
+            const task = tasks().find(task => task.id === entry.taskId);
+            return el('div', 'system-line', entry.text, ...(task ? [retry(task)] : []));
+        }
         if (entry.kind === 'handoff') return el('p', 'handoff', L.handoffLine(entry));
         if (entry.kind === 'system') return el('div', 'system-line', entry.text);
         if (entry.kind === 'reasoning') return disclosure(t('Thought'), prose(entry.text), key);

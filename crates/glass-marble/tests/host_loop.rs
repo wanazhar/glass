@@ -628,15 +628,28 @@ fn a_lane_that_cannot_start_does_not_disturb_another_chat() {
         started_lanes(&started).contains(&1),
         "the failing lane was tried before it refused"
     );
-    assert_eq!(
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .conversations
-            .len(),
-        1,
-        "the refused chat left no conversation behind"
-    );
+    {
+        let state = state.lock().unwrap();
+        let failed = state
+            .tasks
+            .iter()
+            .find(|t| t.prompt == "doomed chat")
+            .unwrap();
+        assert_eq!(failed.status, "failed");
+        assert!(
+            state
+                .conversations
+                .iter()
+                .any(|c| c.id == failed.conversation_id)
+        );
+        let entry = state
+            .transcript
+            .iter()
+            .find(|e| e.task_id == failed.id && e.kind == "failure")
+            .unwrap();
+        assert_eq!(entry.text, glass_marble::failure::MESSAGE);
+        assert!(entry.failure.as_ref().unwrap().retryable);
+    }
 
     drop(pool);
     let _ = std::fs::remove_dir_all(&root);

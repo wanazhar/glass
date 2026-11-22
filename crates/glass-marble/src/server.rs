@@ -1192,7 +1192,10 @@ impl MarbleServer {
         let plan = crate::everyone::plan(&self.lock_state(), &text);
         match plan {
             crate::everyone::EveryoneTarget::Default => {
-                let request = TurnRequest::new(None, text.clone());
+                let request = TurnRequest::new(
+                    crate::everyone::default_conversation(&self.lock_state()),
+                    text.clone(),
+                );
                 let key = format!("queued-{}", request.request_id);
                 {
                     let mut guard = self.lock_state();
@@ -1243,7 +1246,10 @@ impl MarbleServer {
         let group = crate::next_request_id();
         for id in &ids {
             if id == crate::everyone::DEFAULT_SPEAKER {
-                let request = TurnRequest::new(None, text.to_string());
+                let request = TurnRequest::new(
+                    crate::everyone::default_conversation(&self.lock_state()),
+                    text.to_string(),
+                );
                 let key = format!("queued-{}", request.request_id);
                 {
                     let mut state = self.lock_state();
@@ -2988,6 +2994,26 @@ impl MarbleServer {
     /// the immediate answer when the worker is free; when it is not, the `202`
     /// says where the message stands, and it is already in the worker's channel.
     fn submit_request(&self, request: TurnRequest) -> Response {
+        if let Some(id) = &request.conversation_id {
+            let mut state = self.lock_state();
+            let retry = state
+                .conversations
+                .iter()
+                .find(|c| &c.id == id)
+                .map(|c| c.retry_task_id.clone())
+                .unwrap_or_default();
+            if state.transcript.iter().any(|e| {
+                e.task_id == retry
+                    && e.kind == "failure"
+                    && e.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && e.speaker == crate::everyone::DEFAULT_SPEAKER
+            }) {
+                state.everyone_pending.insert(
+                    format!("queued-{}", request.request_id),
+                    crate::everyone::DEFAULT_SPEAKER.into(),
+                );
+            }
+        }
         let request_id = request.request_id.clone();
         let queued_id = format!("queued-{request_id}");
         let conversation_id = request.conversation_id.clone().unwrap_or_default();
@@ -3036,7 +3062,7 @@ impl MarbleServer {
                 self.forget_queued(&queued_id);
                 return Response::json(
                     502,
-                    json!({"error": "turn_failed", "message": error.to_string()}),
+                    json!({"error": "turn_failed", "message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&error.to_string())}),
                 );
             }
             Err(_) => {
@@ -3077,7 +3103,10 @@ impl MarbleServer {
         let removed = {
             let mut guard = self.lock_state();
             let before = guard.tasks.len();
-            guard.tasks.retain(|task| task.id != queued_id);
+            guard.tasks.retain(|task| {
+                task.id != queued_id
+                    || matches!(task.status.as_str(), "failed" | "cancelled" | "interrupted")
+            });
             let removed = guard.tasks.len() != before;
             if removed {
                 guard.bump();
@@ -3141,12 +3170,40 @@ impl MarbleServer {
             );
         }
         let retrying = task.id.clone();
+        let retry_conversation = task.conversation_id.clone();
+        {
+            let mut state = self.lock_state();
+            state.conversation_mut(&task.conversation_id).retry_task_id = task.id.clone();
+            if let Some(speaker) = state
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                        && e.task_id == task.id
+                        && e.kind == "failure"
+                })
+                .map(|e| e.speaker.clone())
+                && speaker != crate::everyone::DEFAULT_SPEAKER
+            {
+                state
+                    .everyone_pending
+                    .insert(format!("marble:{speaker}"), speaker);
+            }
+        }
+        self.save_state();
         // A turn recovered from a lost queue lives in a placeholder chat the
         // engine never created, so repeating it starts a fresh conversation.
         let conversation =
             (!task.conversation_id.starts_with("recovered-")).then_some(task.conversation_id);
         let marble_id = (!task.marble_id.is_empty()).then_some(task.marble_id);
         let mut response = self.submit_text_for(conversation, task.prompt, marble_id);
+        if response.status >= 400 {
+            self.lock_state()
+                .conversation_mut(&retry_conversation)
+                .retry_task_id
+                .clear();
+            self.save_state();
+        }
         // Name the turn being repeated, so a surface can say what it restarted.
         if let Ok(mut body) = serde_json::from_str::<Value>(&response.body)
             && let Value::Object(ref mut map) = body

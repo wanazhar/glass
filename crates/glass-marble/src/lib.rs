@@ -13,6 +13,7 @@ pub mod conversation;
 pub mod crates;
 pub mod events;
 pub mod everyone;
+pub mod failure;
 pub mod host;
 pub mod live;
 pub mod lock;

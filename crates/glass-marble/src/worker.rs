@@ -746,7 +746,10 @@ fn undelivered(
 ) {
     let TurnCommand { request, accepted } = command;
     let queued_id = format!("queued-{}", request.request_id);
-    let conversation_id = request.conversation_id.clone().unwrap_or_default();
+    let conversation_id = request
+        .conversation_id
+        .clone()
+        .unwrap_or_else(|| format!("recovered-{queued_id}"));
     let message = error.to_string();
     let snapshot = {
         let mut guard = lock(state);
@@ -757,7 +760,23 @@ fn undelivered(
         {
             return;
         }
-        guard.set_task_status(&queued_id, "failed");
+        guard.upsert_task(TaskRecord {
+            id: queued_id.clone(),
+            conversation_id: conversation_id.clone(),
+            status: "failed".into(),
+            owner: "agent".into(),
+            prompt: request.text.clone(),
+            at: now_millis(),
+            marble_id: String::new(),
+            routine_id: request.routine_id.clone().unwrap_or_default(),
+        });
+        guard.conversation_mut(&conversation_id);
+        if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
+            task.conversation_id = conversation_id.clone();
+        }
+        guard.record_failure(&conversation_id, &queued_id, &message);
+        crate::everyone::claim(&mut guard, &queued_id, &queued_id);
+        crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
         guard.bump();
         guard.clone()
     };
@@ -771,7 +790,7 @@ fn undelivered(
         &conversation_id,
         &queued_id,
         "error",
-        json!({"message": message, "revision": snapshot.revision}),
+        json!({"message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&message), "revision": snapshot.revision}),
     );
 }
 
@@ -1202,7 +1221,27 @@ fn run_command(
                 // outlive it and look like work that is still waiting.
                 let snapshot = {
                     let mut guard = lock(state);
-                    guard.tasks.retain(|task| task.id != queued_id);
+                    let conversation_id = request
+                        .conversation_id
+                        .clone()
+                        .unwrap_or_else(|| format!("recovered-{queued_id}"));
+                    guard.upsert_task(TaskRecord {
+                        id: queued_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                        status: "failed".into(),
+                        owner: "agent".into(),
+                        prompt: request.text.clone(),
+                        at: now_millis(),
+                        marble_id: String::new(),
+                        routine_id: request.routine_id.clone().unwrap_or_default(),
+                    });
+                    guard.conversation_mut(&conversation_id);
+                    if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
+                        task.conversation_id = conversation_id.clone();
+                    }
+                    guard.record_failure(&conversation_id, &queued_id, &error.to_string());
+                    crate::everyone::claim(&mut guard, &queued_id, &queued_id);
+                    crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
                     guard.bump();
                     guard.clone()
                 };
@@ -1220,14 +1259,12 @@ fn run_command(
                     guard.bump();
                     guard.set_task_status(&identity.task_id, "failed");
                     guard.routines.note_settled(&identity.task_id, "failed");
-                    guard.push_transcript(TranscriptEntry {
-                        conversation_id: identity.conversation_id.clone(),
-                        kind: "system".into(),
-                        text: error.to_string(),
-                        task_id: identity.task_id.clone(),
-                        at: now_millis(),
-                        ..Default::default()
-                    });
+                    guard.record_failure(
+                        &identity.conversation_id,
+                        &identity.task_id,
+                        &error.to_string(),
+                    );
+                    crate::everyone::mirror_settlement(&mut guard, &identity.task_id, "", "failed");
                     guard.clone()
                 };
                 if let Some(store) = store {
@@ -1237,7 +1274,7 @@ fn run_command(
                     &identity.conversation_id,
                     &identity.task_id,
                     "error",
-                    json!({"message": error.to_string(), "revision": snapshot.revision}),
+                    json!({"message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&error.to_string()), "revision": snapshot.revision}),
                 );
                 notify::spawn_delivery(
                     snapshot.notifications.clone(),
@@ -1245,13 +1282,18 @@ fn run_command(
                     Notification::new(
                         "failed",
                         "Marble hit a problem",
-                        error.to_string(),
+                        crate::failure::MESSAGE,
                         &identity.conversation_id,
                         &identity.task_id,
                     ),
                 );
             } else {
-                events.publish("", "", "error", json!({ "message": error.to_string() }));
+                events.publish(
+                    "",
+                    "",
+                    "error",
+                    json!({ "message": crate::failure::MESSAGE }),
+                );
             }
         }
     }

@@ -54,6 +54,7 @@ fn test_state() -> ProductState {
         task_ids: vec!["generation-fixture-1".into()],
         updated_at: 1,
         lane: 0,
+        ..Default::default()
     });
     state.tasks.push(TaskRecord {
         marble_id: String::new(),
@@ -2954,6 +2955,55 @@ struct NamedTurnFixture {
 }
 
 impl NamedTurnFixture {
+    fn install_default_worker(&mut self) {
+        let root = self.root.clone();
+        let script = self.script.clone();
+        let state = self.state.clone();
+        let factory: LaneFactory = Arc::new(move |_| {
+            let mut command = Command::new("python3");
+            command
+                .arg(&script)
+                .arg("runtime")
+                .arg("--fail-once")
+                .arg("--error-once")
+                .arg("--id-prefix")
+                .arg("default-");
+            Conversation::spawn_with_router(
+                command,
+                &root,
+                &root.join("default-sessions"),
+                HostPolicy::approving(),
+                ApprovalInbox::default(),
+                ToolRouter::new(&root)?,
+                EventBus::default(),
+            )
+            .map(|conversation| conversation.with_product(state.clone()))
+        });
+        let events = EventBus::default();
+        let pool = spawn_turn_pool(
+            1,
+            factory,
+            self.state.clone(),
+            None,
+            LiveStore::in_data_dir(&self.root),
+            events.clone(),
+            Duration::from_secs(30),
+            CancelRegistry::default(),
+        )
+        .unwrap();
+        self.server = MarbleServer::new(MarbleServerParts {
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            state: self.state.clone(),
+            store: None,
+            approvals: ApprovalInbox::default(),
+            events,
+            turn_tx: pool.sender,
+            steer_tx: mpsc::channel().0,
+            policy: AccessPolicy::new(None),
+            cancels: CancelRegistry::default(),
+        })
+        .with_prism(self.pool.clone());
+    }
     fn new(label: &str) -> Self {
         Self::with_args(label, Vec::new())
     }
@@ -3174,6 +3224,176 @@ fn named_engines_use_the_host_model_and_keep_tool_rows_after_reload() {
     assert!(saved.transcript.iter().any(|entry| entry.task_id == task.id
         && entry.kind == "tool"
         && entry.text == "glass.workspace.list · ok"));
+}
+
+#[test]
+fn everyone_dispatches_default_and_named_mentions_without_starting_other_agents() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::with_args("everyone-default-routing", Vec::new());
+    fixture.install_default_worker();
+    for (prompt, named, default) in [
+        ("@Ada hi", true, false),
+        ("@Marble take the lead @everyone", true, true),
+        ("@Marble and @Ada help", true, true),
+        ("no mention here", false, true),
+    ] {
+        assert_eq!(fixture.post("/api/everyone", json!({"text":prompt})).0, 202);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = fixture.state.lock().unwrap();
+            let turns: Vec<_> = state.tasks.iter().filter(|t| t.prompt == prompt).collect();
+            if turns.len() == usize::from(named) + usize::from(default)
+                && turns.iter().all(|t| t.status == "completed")
+            {
+                assert_eq!(
+                    turns.iter().any(|t| t.marble_id == fixture.marble_id),
+                    named
+                );
+                assert_eq!(turns.iter().any(|t| t.marble_id.is_empty()), default);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "dispatch did not settle: {turns:?}"
+            );
+            drop(state);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if named && default {
+            for (storage, owner) in [
+                (fixture.root.join("default-sessions"), "Marble"),
+                (
+                    fixture.root.join("prism-sessions").join(&fixture.marble_id),
+                    "Ada",
+                ),
+            ] {
+                let input: Value = serde_json::from_slice(
+                    &std::fs::read(storage.join("fixture-input.json")).unwrap(),
+                )
+                .unwrap();
+                assert!(input["input"]["text"].as_str().unwrap().contains(&format!(
+                    "This message is addressed to: Marble (lead), Ada. You are {owner}."
+                )));
+            }
+        }
+    }
+}
+
+#[test]
+fn everyone_failures_retry_on_a_checkpoint_fork_or_keep_later_turns_across_restart() {
+    if !python3_available() {
+        return;
+    }
+    for named in [false, true] {
+        for later in [false, true] {
+            let mut fixture = NamedTurnFixture::with_args(
+                &format!("fork-retry-{named}-{later}"),
+                vec!["--fail-once".into()],
+            );
+            fixture.install_default_worker();
+            let prefix = if named { "@Ada " } else { "" };
+            let before = format!("{prefix}hello");
+            assert_eq!(fixture.post("/api/everyone", json!({"text":before})).0, 202);
+            fixture.completed(&before);
+            let prompt = format!("{prefix}FAIL research");
+            assert_eq!(fixture.post("/api/everyone", json!({"text":prompt})).0, 202);
+            let failed = fixture.settled(&prompt);
+            assert_eq!(failed.status, "failed");
+            {
+                let state = fixture.state.lock().unwrap();
+                let failures: Vec<_> = state
+                    .transcript
+                    .iter()
+                    .filter(|e| e.task_id == failed.id && e.kind == "failure")
+                    .collect();
+                assert_eq!(
+                    failures.len(),
+                    2,
+                    "own chat and Everyone both carry a failure"
+                );
+                assert!(
+                    failures
+                        .iter()
+                        .all(|e| e.text == glass_marble::failure::MESSAGE
+                            && e.failure.as_ref().unwrap().category
+                                == if named {
+                                    "provider_rejected"
+                                } else {
+                                    "network"
+                                })
+                );
+                assert!(
+                    !serde_json::to_string(&state.transcript)
+                        .unwrap()
+                        .contains("secret-token")
+                );
+            }
+            if later {
+                assert_eq!(fixture.post("/api/turns", json!({"text":"later message", "conversationId":failed.conversation_id, "marbleId":if named {Some(&fixture.marble_id)} else {None}})).0, 202);
+                fixture.completed("later message");
+            }
+            let store = StateStore::in_data_dir(&fixture.root);
+            store.save(&fixture.state.lock().unwrap()).unwrap();
+            *fixture.state.lock().unwrap() = store.load().unwrap();
+            fixture.pool.shutdown_marble(&fixture.marble_id);
+            fixture.install_default_worker();
+            assert_eq!(
+                fixture
+                    .post("/api/turns/retry", json!({"taskId":failed.id}))
+                    .0,
+                202
+            );
+            let retried = fixture.completed(&prompt);
+            assert_ne!(retried.id, failed.id);
+            let storage = if named {
+                fixture.root.join("prism-sessions").join(&fixture.marble_id)
+            } else {
+                fixture.root.join("default-sessions")
+            };
+            let submitted: Value =
+                serde_json::from_slice(&std::fs::read(storage.join("fixture-input.json")).unwrap())
+                    .unwrap();
+            let engine_id = submitted["conversationId"].as_str().unwrap().to_string();
+            let history: Value = serde_json::from_slice(
+                &std::fs::read(storage.join("fixture-history.json")).unwrap(),
+            )
+            .unwrap();
+            let entries = history["conversations"][&engine_id].as_array().unwrap();
+            if later {
+                assert_eq!(engine_id, failed.conversation_id);
+                assert!(
+                    submitted["input"]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("retry of an earlier failed message")
+                );
+                assert_eq!(entries.len(), 4);
+            } else {
+                assert_ne!(engine_id, failed.conversation_id);
+                assert_eq!(
+                    entries.len(),
+                    2,
+                    "one prior message and one retry, never two failed prompts"
+                );
+            }
+            let continued = format!("{prefix}continue");
+            store.save(&fixture.state.lock().unwrap()).unwrap();
+            *fixture.state.lock().unwrap() = store.load().unwrap();
+            fixture.pool.shutdown_marble(&fixture.marble_id);
+            fixture.install_default_worker();
+            assert_eq!(
+                fixture.post("/api/everyone", json!({"text":continued})).0,
+                202
+            );
+            fixture.completed(&continued);
+            let next: Value =
+                serde_json::from_slice(&std::fs::read(storage.join("fixture-input.json")).unwrap())
+                    .unwrap();
+            assert_eq!(next["conversationId"], engine_id);
+        }
+    }
 }
 
 #[test]
@@ -3922,6 +4142,7 @@ fn clearing_everyone_empties_the_timeline() {
                 speaker: "user".into(),
                 speaker_name: "You".into(),
                 handoff: None,
+                ..Default::default()
             });
         }
         guard.transcript.push(TranscriptEntry {
@@ -3933,6 +4154,7 @@ fn clearing_everyone_empties_the_timeline() {
             speaker: "user".into(),
             speaker_name: "You".into(),
             handoff: None,
+            ..Default::default()
         });
     }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3976,6 +4198,7 @@ fn removing_a_marble_deletes_its_chat_and_everyone_lines() {
             task_ids: vec![],
             updated_at: 0,
             lane: 0,
+            ..Default::default()
         });
         guard.tasks.push(TaskRecord {
             marble_id: String::new(),
@@ -4001,6 +4224,7 @@ fn removing_a_marble_deletes_its_chat_and_everyone_lines() {
                 speaker: "user".into(),
                 speaker_name: "You".into(),
                 handoff: None,
+                ..Default::default()
             });
         }
     }

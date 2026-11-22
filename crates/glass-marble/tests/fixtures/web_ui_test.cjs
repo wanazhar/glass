@@ -107,6 +107,15 @@ test('per-agent task ids never make the default Marble work for Ada', () => {
     assert.equal(L.marbleStatus({ id: 'ada', activeTaskIds: ['a'], state: 'working' }, tasks, []), 'Working on Research');
 });
 
+test('failure rows show the plain message and Retry but never diagnostics', () => {
+    const render = appFunction('function entryNode(', 'function retry(', {
+        tasks: () => [{ id: 'failed-task' }], retry: () => 'Retry', el: (tag, style, ...children) => children
+    }, 'entryNode');
+    const node = render({ kind: 'failure', taskId: 'failed-task', text: "Couldn't get a reply from the model. Try again.", failure: { category: 'provider_rejected', retryable: true, diagnostics: 'PRIVATE DIAGNOSTICS' } });
+    assert.deepEqual(Array.from(node), ["Couldn't get a reply from the model. Try again.", 'Retry']);
+    assert.ok(!JSON.stringify(node).includes('PRIVATE'));
+});
+
 test('visible interface copy does not expose internal vocabulary', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8').replace(/<[^>]*>/g, ' ');
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');

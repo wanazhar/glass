@@ -690,9 +690,87 @@ impl Conversation {
         input: &TurnInput,
     ) -> Result<String, MarbleError> {
         self.set_active(conversation_id, "");
-        let submitted = self
-            .client
-            .durable_submit(conversation_id, request_id, input);
+        let record = self.product.as_ref().and_then(|p| {
+            p.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .conversations
+                .iter()
+                .find(|c| c.id == conversation_id)
+                .cloned()
+        });
+        let mut engine_id = record
+            .as_ref()
+            .filter(|c| !c.engine_conversation_id.is_empty())
+            .map(|c| c.engine_conversation_id.clone())
+            .unwrap_or_else(|| conversation_id.to_string());
+        let mut input = input.clone();
+        let retrying = record.as_ref().is_some_and(|record| {
+            self.product.as_ref().is_some_and(|p| {
+                p.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == record.retry_task_id)
+                    .is_some_and(|t| {
+                        input
+                            .text
+                            .ends_with(&format!("[User message]\n{}", t.prompt))
+                    })
+            })
+        });
+        if let Some(record) = &record
+            && retrying
+        {
+            let latest = self.product.as_ref().is_some_and(|p| {
+                p.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tasks
+                    .iter()
+                    .rev()
+                    .find(|t| {
+                        t.conversation_id == conversation_id
+                            && t.status != "queued"
+                            && !t.id.starts_with("queued-")
+                    })
+                    .is_some_and(|t| t.id == record.retry_task_id)
+            });
+            if let Some(sequence) = record
+                .checkpoints
+                .get(&record.retry_task_id)
+                .filter(|_| latest)
+            {
+                let request = self.client.request(
+                    "durable/fork",
+                    value!({"conversationId":engine_id,"asOf":sequence}),
+                );
+                let id = self.issue(request)?;
+                let result = self.pump(&id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
+                engine_id = result["conversationId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        MarbleError::Protocol("durable/fork returned no conversation id".into())
+                    })?
+                    .to_string();
+            } else {
+                input.text = input.text.replacen("[Marble host context]\n", "[Marble host context]\nThis is a retry of an earlier failed message; later turns remain in the conversation history.\n", 1);
+            }
+        }
+        let inspect = self.client.request(
+            "durable/inspect",
+            value!({"conversationId":engine_id,"limit":1}),
+        );
+        let inspect_id = self.issue(inspect)?;
+        let snapshot = self.pump(
+            &inspect_id,
+            Instant::now() + TURN_TIMEOUT,
+            None,
+            &mut |_| {},
+        )?;
+        let checkpoint = snapshot["sequence"]
+            .as_u64()
+            .ok_or_else(|| MarbleError::Protocol("durable/inspect returned no sequence".into()))?;
+        let submitted = self.client.durable_submit(&engine_id, request_id, &input);
         let submit_id = self.issue(submitted)?;
         let result = self.pump(&submit_id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
         let task_id = result["submission"]["id"]
@@ -703,6 +781,15 @@ impl Conversation {
             return Err(MarbleError::Protocol(
                 "durable/submit returned no task id".into(),
             ));
+        }
+        if let Some(product) = &self.product {
+            let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+            let record = state.conversation_mut(conversation_id);
+            record.engine_conversation_id = engine_id;
+            record.checkpoints.insert(task_id.clone(), checkpoint);
+            if retrying {
+                record.retry_task_id.clear();
+            }
         }
         self.set_active(conversation_id, &task_id);
         Ok(task_id)
@@ -743,7 +830,13 @@ impl Conversation {
     }
 
     /// Publish one product event for the active conversation and task.
-    pub fn publish(&self, kind: &str, data: Value) {
+    pub fn publish(&self, kind: &str, mut data: Value) {
+        if kind == "error" {
+            let failure =
+                crate::failure::FailureInfo::of(data["message"].as_str().unwrap_or_default());
+            data["message"] = value!(crate::failure::MESSAGE);
+            data["failure"] = value!(failure);
+        }
         self.events
             .publish(&self.active_conversation, &self.active_task, kind, data);
     }

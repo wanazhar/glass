@@ -40,6 +40,13 @@ CONVERSATION_SEQ = 0
 TASK_SEQ = {}
 SUBMISSIONS = {}
 TASK_COUNTER = [0]
+HISTORY = {"sequence": 0, "conversations": {}}
+
+
+def save_history():
+    if STORAGE_DIR:
+        with open(os.path.join(STORAGE_DIR, "fixture-history.json"), "w", encoding="utf-8") as handle:
+            json.dump(HISTORY, handle)
 
 
 def send(message):
@@ -94,7 +101,8 @@ def load_submissions():
         path = os.path.join(STORAGE_DIR, SUBMISSIONS_FILE)
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as handle:
-                SUBMISSIONS = {(k[0], k[1]): v for k, v in json.load(handle).items()}
+                SUBMISSIONS = {tuple(k.split("|", 1)): v for k, v in json.load(handle).items()}
+                TASK_COUNTER[0] = max([int(v.rsplit("-", 1)[-1]) for v in SUBMISSIONS.values()] or [0])
 
 
 def save_submissions():
@@ -106,6 +114,19 @@ def save_submissions():
 
 
 def run_turn(identifier, task, text, conversation, request):
+    HISTORY["sequence"] += 1
+    HISTORY["conversations"].setdefault(conversation, []).append({"sequence": HISTORY["sequence"], "text": str(text)})
+    save_history()
+    failed = os.path.join(STORAGE_DIR, "fixture-failed-once") if STORAGE_DIR else None
+    if "--fail-once" in sys.argv and "FAIL" in text and failed and not os.path.exists(failed):
+        with open(failed, "w", encoding="utf-8") as handle:
+            handle.write("failed")
+        if "--error-once" in sys.argv:
+            send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "connection reset secret-token"}})
+            return
+        event("turn-1", "text", {"text": "[Generation failed] Reason: provider's requirements secret-token"})
+        reply(identifier, {"settled": True})
+        return
     text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
@@ -172,7 +193,7 @@ def run_turn(identifier, task, text, conversation, request):
 
 
 def main():
-    global STORAGE_DIR
+    global STORAGE_DIR, HISTORY
     while True:
         line = sys.stdin.readline()
         if not line:
@@ -189,6 +210,10 @@ def main():
             if STORAGE_DIR:
                 os.makedirs(STORAGE_DIR, exist_ok=True)
             load_submissions()
+            history_file = os.path.join(STORAGE_DIR, "fixture-history.json") if STORAGE_DIR else None
+            if history_file and os.path.exists(history_file):
+                with open(history_file, "r", encoding="utf-8") as handle:
+                    HISTORY = json.load(handle)
             protocol = params.get("protocolVersion")
             required = params.get("requiredCapabilities") or []
             if protocol == 2 and "mixedTools" not in required:
@@ -249,6 +274,14 @@ def main():
                 CONVERSATION_SEQ += 1
                 conversation_id = ID_PREFIX + "durable-fixture-" + str(CONVERSATION_SEQ)
                 reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
+        elif method == "durable/inspect":
+            reply(identifier, {"sequence": HISTORY["sequence"], "items": [], "hasMore": False})
+        elif method == "durable/fork":
+            HISTORY["sequence"] += 1
+            conversation_id = ID_PREFIX + "fork-" + str(HISTORY["sequence"])
+            HISTORY["conversations"][conversation_id] = [entry for entry in HISTORY["conversations"].get(params["conversationId"], []) if entry["sequence"] <= params["asOf"]]
+            save_history()
+            reply(identifier, {"conversationId": conversation_id})
         elif method == "durable/submit":
             conversation_id = params.get("conversationId")
             request_id = params.get("requestId")
@@ -261,6 +294,7 @@ def main():
                 save_submissions()
             if isinstance(params.get("input"), dict):
                 INPUT_TEXT["value"] = str(params["input"].get("text") or "")
+                INPUT_TEXT["conversation"] = conversation_id
                 if STORAGE_DIR:
                     with open(os.path.join(STORAGE_DIR, "fixture-input.json"), "w", encoding="utf-8") as handle:
                         json.dump(params, handle)
@@ -278,7 +312,7 @@ def main():
                 PARKED_RUN["id"] = identifier
                 continue
             task_id = params.get("taskId") or task_id_for(params.get("conversationId"), params.get("requestId"))
-            run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), params.get("conversationId") or SESSION_ID, params.get("requestId") or "")
+            run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), INPUT_TEXT.get("conversation") or SESSION_ID, params.get("requestId") or "")
         elif method == "durable/abort":
             if PARKED_RUN.get("id"):
                 reply(PARKED_RUN.pop("id"), {"sessionId": SESSION_ID, "settled": True})

@@ -1305,7 +1305,7 @@ impl PrismPool {
                     .remove(&marble.id)
                 {
                     for waiter in waiters {
-                        let _ = waiter.send(Err(error.to_string()));
+                        let _ = waiter.send(Err(crate::failure::MESSAGE.to_string()));
                     }
                 }
                 let snapshot = {
@@ -1322,22 +1322,15 @@ impl PrismPool {
                             .lock()
                             .unwrap_or_else(|error| error.into_inner())
                             .remove(task_id);
-                        crate::everyone::mirror_settlement(&mut state, task_id, "", "failed");
                         self.cancels.forget(task_id);
                         state.set_task_status(task_id, "failed");
-                        state.push_transcript(TranscriptEntry {
-                            conversation_id: conversation_id.clone(),
-                            kind: "system".into(),
-                            text: format!("{} could not finish: {error}", marble.name),
-                            task_id: task_id.clone(),
-                            at: now,
-                            ..Default::default()
-                        });
+                        state.record_failure(conversation_id, task_id, &error.to_string());
+                        crate::everyone::mirror_settlement(&mut state, task_id, "", "failed");
                         state.conversation_mut(conversation_id).updated_at = now;
                     }
                     state
                         .prism
-                        .note_settled(&marble.id, "failed", &error.to_string());
+                        .note_settled(&marble.id, "failed", crate::failure::MESSAGE);
                     state.bump();
                     state.clone()
                 };
@@ -1349,7 +1342,7 @@ impl PrismPool {
                     json!({
                         "marble": marble.id,
                         "status": "failed",
-                        "message": error.to_string(),
+                        "message": crate::failure::MESSAGE,
                         "revision": snapshot.revision,
                     }),
                 );
@@ -1385,15 +1378,12 @@ impl PrismPool {
                 at: now,
                 ..Default::default()
             });
-            state.push_transcript(TranscriptEntry {
-                conversation_id,
-                task_id: task_id.clone(),
-                kind: "system".into(),
-                text: format!("{} could not start: {error}", marble.name),
-                at: now,
-                ..Default::default()
-            });
-            state.prism.note_settled(&marble.id, "failed", error);
+            state.record_failure(&conversation_id, &task_id, error);
+            crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), &task_id);
+            crate::everyone::mirror_settlement(&mut state, &task_id, "", "failed");
+            state
+                .prism
+                .note_settled(&marble.id, "failed", crate::failure::MESSAGE);
             state.bump();
             state.clone()
         };
@@ -1402,7 +1392,7 @@ impl PrismPool {
             "",
             &task_id,
             "prism",
-            json!({ "marble": marble.id, "status": "failed", "message": error }),
+            json!({ "marble": marble.id, "status": "failed", "message": crate::failure::MESSAGE }),
         );
     }
 

@@ -2224,6 +2224,7 @@ async fn handle_request_with_viewport_unredacted(
                             development_sessions,
                             host_backend,
                             elicitation,
+                            agent_profile,
                         ))
                         .await
                         .and_then(|response| response.result)
@@ -2338,7 +2339,7 @@ async fn handle_request_with_viewport_unredacted(
     };
     let mut response = call_inner!(tool, arguments)?;
     if let Some(result) = response.result.as_mut()
-        && super::workflows::verification_failed(result)
+        && super::workflows::verification_failed(&agent_tool, result)
     {
         result["isError"] = json!(true);
     }

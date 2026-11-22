@@ -3125,6 +3125,50 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn everyone_default_keeps_history_after_a_new_private_chat() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::with_persistence("everyone-stable-default", vec![], true);
+    fixture.install_default_worker_with_args(vec![]);
+    for text in [
+        "@Marble remember Everyone",
+        "new private chat",
+        "@Marble recall Everyone",
+    ] {
+        let path = if text.starts_with('@') {
+            "/api/everyone"
+        } else {
+            "/api/turns"
+        };
+        let (status, body) = fixture.post(path, json!({"text":text}));
+        assert_eq!(status, 202, "{body}");
+        fixture.completed(text);
+        if text == "new private chat" {
+            let mut state = fixture.state.lock().unwrap();
+            *state = serde_json::from_value(serde_json::to_value(&*state).unwrap()).unwrap();
+        }
+    }
+    let state = fixture.state.lock().unwrap();
+    let conversation = |prompt| {
+        state
+            .tasks
+            .iter()
+            .find(|task| task.prompt == prompt)
+            .unwrap()
+            .conversation_id
+            .clone()
+    };
+    let original = conversation("@Marble remember Everyone");
+    assert_ne!(conversation("new private chat"), original);
+    assert_eq!(
+        conversation("@Marble recall Everyone"),
+        original,
+        "Everyone lost its engine history after a new private chat"
+    );
+}
+
+#[test]
 fn everyone_and_private_agents_share_native_tools_and_finish_visible_rows() {
     if !python3_available() {
         return;

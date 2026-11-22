@@ -19,6 +19,18 @@ pub(crate) fn default_conversation(state: &ProductState) -> Option<String> {
         .tasks
         .iter()
         .rev()
+        .filter(|task| {
+            state.transcript.iter().any(|entry| {
+                entry.conversation_id == EVERYONE_CONVERSATION && entry.task_id == task.id
+            }) || state
+                .everyone_pending
+                .contains_key(&format!("task:{}", task.id))
+                || state
+                    .everyone_ready
+                    .values()
+                    .any(|entry| entry.task_id == task.id)
+        })
+        .chain(state.tasks.iter())
         .find(|task| {
             (task.marble_id.is_empty() || task.marble_id == DEFAULT_SPEAKER)
                 && task.owner != "prism"

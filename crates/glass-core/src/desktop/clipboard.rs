@@ -150,8 +150,8 @@ fn write(display: &str, xauthority: &Path, text: &str) -> Result<(), String> {
 }
 
 impl Desktop {
-    pub(super) fn clipboard(&self, value: &Value) -> Result<Value, String> {
-        self.clipboard_with(value, |display, xauthority, request| {
+    pub(super) fn clipboard(&self, value: &Value, workspace: &Path) -> Result<Value, String> {
+        self.clipboard_with_in(value, Some(workspace), |display, xauthority, request| {
             let session_id = &value["sessionId"];
             match request {
                 Request::Read => {
@@ -167,9 +167,19 @@ impl Desktop {
         })
     }
 
+    #[cfg(test)]
     fn clipboard_with(
         &self,
         value: &Value,
+        operation: impl FnOnce(&str, &Path, Request<'_>) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        self.clipboard_with_in(value, None, operation)
+    }
+
+    fn clipboard_with_in(
+        &self,
+        value: &Value,
+        workspace: Option<&Path>,
         operation: impl FnOnce(&str, &Path, Request<'_>) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let (session_id, request) = parse(value)?;
@@ -181,6 +191,18 @@ impl Desktop {
             let session = guard
                 .as_ref()
                 .ok_or("No managed desktop session is running")?;
+            if let Some(workspace) = workspace {
+                let caller = workspace
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?;
+                let root = session
+                    .workspace
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?;
+                if !caller.starts_with(root) {
+                    return Err("Clipboard access requires the desktop workspace".into());
+                }
+            }
             if session.id != session_id {
                 return Err(
                     "The managed desktop session changed; call desktop_status and observe again"
@@ -202,6 +224,36 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_rejects_unrelated_workspaces_before_reading() {
+        let root = std::env::temp_dir().join(format!("gc-clipboard-scope-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("desktop/child")).unwrap();
+        std::fs::create_dir(root.join("other")).unwrap();
+        let desktop = super::super::tests::desktop_with_test_session(&root.join("desktop"), "s");
+        let value = json!({"action":"read","sessionId":"s"});
+        assert!(
+            desktop
+                .clipboard_with_in(&value, Some(&root.join("other")), |_, _, _| panic!(
+                    "unrelated workspace read"
+                ))
+                .unwrap_err()
+                .contains("workspace")
+        );
+        desktop
+            .clipboard_with_in(&value, Some(&root.join("desktop/child")), |_, _, _| {
+                Ok(json!({"text":""}))
+            })
+            .unwrap();
+        assert!(
+            desktop
+                .clipboard_with_in(&value, Some(&root.join("missing")), |_, _, _| panic!(
+                    "missing workspace read"
+                ))
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn clipboard_holds_the_session_lease_across_the_write() {

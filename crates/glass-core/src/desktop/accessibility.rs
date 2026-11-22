@@ -327,6 +327,7 @@ async fn observe_async(
     let mut visited = 0usize;
     let mut truncated = roots_truncated;
     let mut query_ambiguous = false;
+    let mut matched_visible_count = 0;
     let mut matched_actionable_count = 0usize;
     let mut scoped_window_root_seen = false;
     #[cfg(test)]
@@ -719,15 +720,21 @@ async fn observe_async(
             if query_match_counts_toward_ambiguity(
                 matches_query,
                 is_actionable || pointer_fallback_candidate,
-                visible,
-                screen_target_value.is_some(),
             ) {
                 matched_actionable_count += 1;
             }
+            matched_visible_count += usize::from(query_match_is_visible(
+                matches_query,
+                is_actionable || pointer_fallback_candidate,
+                visible,
+                screen_target_value.is_some(),
+            ));
             if query.is_some() && matched_actionable_count >= 2 {
                 query_ambiguous = true;
-                truncated = !pending.is_empty();
-                break;
+                if matched_visible_count > 0 {
+                    truncated = !pending.is_empty();
+                    break;
+                }
             }
         }
         // Pop-up menus are often transient top-level accessibles rather than
@@ -928,12 +935,11 @@ async fn observe_async(
     })
 }
 
-fn query_match_counts_toward_ambiguity(
-    matches: bool,
-    actionable: bool,
-    visible: bool,
-    onscreen: bool,
-) -> bool {
+fn query_match_counts_toward_ambiguity(matches: bool, actionable: bool) -> bool {
+    matches && actionable
+}
+
+fn query_match_is_visible(matches: bool, actionable: bool, visible: bool, onscreen: bool) -> bool {
     matches && actionable && visible && onscreen
 }
 
@@ -1671,24 +1677,37 @@ mod tests {
         let mut visited = 0;
         for (visible, onscreen) in matches {
             visited += 1;
-            count += usize::from(super::query_match_counts_toward_ambiguity(
-                true, true, visible, onscreen,
-            ));
+            count += usize::from(super::query_match_is_visible(true, true, visible, onscreen));
             if count >= 2 {
                 break;
             }
         }
         assert_eq!(visited, 3);
         assert_eq!(count, 1);
-        assert!(!super::query_match_counts_toward_ambiguity(
-            true, true, false, true
-        ));
-        assert!(!super::query_match_counts_toward_ambiguity(
-            false, true, true, true
-        ));
-        assert!(!super::query_match_counts_toward_ambiguity(
-            true, false, true, true
-        ));
+        assert!(!super::query_match_is_visible(true, true, false, true));
+        assert!(!super::query_match_is_visible(false, true, true, true));
+        assert!(!super::query_match_is_visible(true, false, true, true));
+    }
+    #[test]
+    fn offscreen_duplicate_withholds_onscreen_action_tokens() {
+        let mut nodes = vec![
+            json!({"targetId":"onscreen", "pointerTarget":{"x":0.5,"y":0.5}, "onscreen":true}),
+            json!({"targetId":null,"onscreen":false}),
+        ];
+        let count = nodes
+            .iter()
+            .filter(|_| super::query_match_counts_toward_ambiguity(true, true))
+            .count();
+        let ambiguous = count >= 2;
+        assert!(ambiguous);
+        let mut targets = std::collections::HashMap::new();
+        withhold_unverified_query_tokens(&mut nodes, &mut targets, true, ambiguous, false);
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node["targetId"].is_null() && node["pointerTarget"].is_null())
+        );
+        assert!(targets.is_empty());
     }
     use super::{
         MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, UNSUPPORTED_CLICK_RECOVERY,

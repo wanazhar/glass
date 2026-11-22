@@ -108,7 +108,9 @@ async fn serve(listener: TcpListener) {
             let count = stream.read(&mut request).await.unwrap_or(0);
             if request.starts_with(b"GET /missing") {
                 let _ = stream
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
                     .await;
                 return;
             }

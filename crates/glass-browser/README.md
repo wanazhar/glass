@@ -468,6 +468,13 @@ says so and names the covering control. Calls that can change the page
 (click, type, fill, select, check, key) wait for it to settle, at most 1.5 s
 of network quiet and 1 s of DOM quiet, then end with a `Page after action:`
 line listing new text, URL or title changes, new tabs or an opened dialog.
+For credentials, export `GLASS_SECRET_<NAME>` (uppercase letters, digits and
+`_`; values of at least 4 characters) before starting the server. The
+`browser_type` and `browser_fill_form` descriptions then list the secret names,
+the model sends `{{secret:NAME}}` instead of the value, the real value is
+entered, and every agent tool result shows the placeholder in place of the
+value. Other tools reject placeholders. Glass Core's `desktop_input` text and
+`desktop_act` `set_text` honour the same variables.
 Glass Core offers this profile as typed tools when `glass-browser` is on
 `PATH` (`GC_BROWSER_TOOLS=0` disables it, `GC_BROWSER_BIN` and
 `GC_BROWSER_RUNTIME` override the binary and runtime). Without an override,

@@ -2019,7 +2019,16 @@ async fn handle_request_with_viewport(
             json!({"content":[{"type":"text","text":"Manual dialog decisions require Chromium. Native dialogs use form elicitation during the original operation; a later decision cannot change an already returned confirm or prompt."}],"isError":true}),
         ));
     }
-    let (tool, arguments) = match agent_tools::translate(&agent_tool, arguments) {
+    let arguments = match super::secrets::inject(&agent_tool, arguments) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({"content":[{"type":"text","text":message}],"isError":true}),
+            ));
+        }
+    };
+    let (tool, arguments) = match agent_tools::translate(&agent_tool, &arguments) {
         Ok(translated) => translated,
         Err(message) => {
             return Some(success_response(
@@ -2191,6 +2200,17 @@ async fn handle_request_with_viewport(
             "type": "text",
             "text": agent_tools::recovery_hint(&agent_tool, &error)
         }));
+    }
+    if let Some(content) = response
+        .result
+        .as_mut()
+        .and_then(|result| result["content"].as_array_mut())
+    {
+        for item in content {
+            if let Some(text) = item["text"].as_str() {
+                item["text"] = json!(super::secrets::redact(text));
+            }
+        }
     }
     Some(response)
 }

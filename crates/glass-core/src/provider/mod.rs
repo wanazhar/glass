@@ -649,6 +649,13 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
             }).to_string(),
         ));
     }
+    if let Some(secrets) = crate::secret_placeholders::description() {
+        for tool in &mut tools {
+            if matches!(tool.0.as_str(), "desktop_act" | "desktop_input") {
+                tool.1.push_str(&secrets);
+            }
+        }
+    }
     tools
 }
 

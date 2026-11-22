@@ -268,7 +268,7 @@ fn run_attempt(
     // without finish is exactly the crash the journal exists for.
     let conversation_id = match turn.conversation_id.as_deref() {
         Some(id) if !id.is_empty() => id.to_string(),
-        _ => match conversation.create().or_else(|error| {
+        _ => conversation.create().or_else(|error| {
             if !crate::failure::transient(&error.to_string()) {
                 return Err(error);
             }
@@ -278,23 +278,13 @@ fn run_attempt(
             );
             conversation.ensure_runtime()?;
             conversation.create()
-        }) {
-            Ok(id) => id,
-            Err(error) => {
-                return Err(error);
-            }
-        },
+        })?,
     };
     // Durable request ids are scoped to the real durable conversation so a
     // resumed conversation keeps its submission identity, while each new turn
     // still carries a distinct id.
     let request_id = format!("marble-{conversation_id}-{}", turn.request_id);
-    let engine_task_id = match conversation.submit(&conversation_id, &request_id, &turn.input) {
-        Ok(task_id) => task_id,
-        Err(error) => {
-            return Err(error);
-        }
-    };
+    let engine_task_id = conversation.submit(&conversation_id, &request_id, &turn.input)?;
     let task_id = logical_task.unwrap_or(&engine_task_id).to_string();
     if logical_task.is_some()
         && let Some(product) = conversation.product_state()
@@ -312,12 +302,7 @@ fn run_attempt(
     if let Some(turn) = live.as_deref_mut() {
         turn.note_task(&conversation_id, &task_id);
     }
-    let run_id = match conversation.start(&engine_task_id) {
-        Ok(run_id) => run_id,
-        Err(error) => {
-            return Err(error);
-        }
-    };
+    let run_id = conversation.start(&engine_task_id)?;
     let deadline = Instant::now() + options.timeout;
     let mut text = String::new();
     let mut reasoning = String::new();

@@ -502,6 +502,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     .with_steer_sink(pool.steer)
     .with_prism(Arc::clone(&prism))
     .with_crates(crate_map);
+    prism.resume_held();
     let server = match (tls_cert, tls_key) {
         (Some(cert), Some(key)) => {
             let identity =

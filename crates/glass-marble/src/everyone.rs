@@ -218,6 +218,11 @@ pub fn mirror(
             .rev()
             .find(|entry| entry.task_id == task_id && entry.kind == "failure")
             .and_then(|entry| entry.failure.clone())
+            .or_else(|| {
+                Some(crate::failure::FailureInfo::of(
+                    "turn interrupted before settlement",
+                ))
+            })
     } else {
         None
     };

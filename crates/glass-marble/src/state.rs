@@ -261,13 +261,12 @@ pub struct ProductState {
     #[serde(default)]
     pub control: ControlState,
     /// Who answers for a turn currently running for the Everyone plane:
-    /// `task:<id>` or `marble:<id>` → the speaker id to mirror under. In-memory
-    /// only; a settled turn past a restart keeps nothing to mirror.
-    #[serde(skip)]
+    /// `task:<id>`, queue id, or `marble:<id>` → the speaker id to mirror under.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub everyone_pending: std::collections::HashMap<String, String>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub everyone_orders: std::collections::HashMap<String, std::collections::VecDeque<String>>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub everyone_ready: std::collections::HashMap<String, TranscriptEntry>,
     /// Whether the assistant is up, what it is doing, and what it recovered.
     #[serde(default)]
@@ -849,6 +848,56 @@ impl ProductState {
     /// tasks were recovered.
     pub fn recover_interrupted(&mut self) -> usize {
         let now = now_millis();
+        let unclaimed: Vec<_> = self
+            .transcript
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && entry.kind == "pending"
+                    && !self.tasks.iter().any(|task| task.id == entry.task_id)
+                    && !self
+                        .control
+                        .queue
+                        .iter()
+                        .any(|queued| queued.id == entry.task_id)
+            })
+            .map(|(index, entry)| {
+                let prompt = self.transcript[..index]
+                    .iter()
+                    .rev()
+                    .find(|e| {
+                        e.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                            && e.kind == "user"
+                    })
+                    .map(|e| e.text.clone())
+                    .unwrap_or_default();
+                (entry.clone(), prompt)
+            })
+            .collect();
+        for (entry, prompt) in unclaimed {
+            let id = format!("recovered-{}", crate::next_request_id());
+            self.upsert_task(TaskRecord {
+                id: id.clone(),
+                status: "queued".into(),
+                prompt,
+                owner: if entry.speaker == "marble" {
+                    "agent"
+                } else {
+                    "prism"
+                }
+                .into(),
+                marble_id: if entry.speaker == "marble" {
+                    String::new()
+                } else {
+                    entry.speaker
+                },
+                at: now,
+                ..Default::default()
+            });
+            self.bind_thread(&id, entry.thread_id.as_deref());
+            crate::everyone::claim(self, &entry.task_id, &id);
+        }
         // `true` marks a turn that was running; `false` one still queued.
         let recovered: Vec<(String, String, bool)> = self
             .tasks
@@ -927,6 +976,44 @@ impl ProductState {
                 "failed"
             };
             self.routines.note_settled(task_id, outcome);
+        }
+        let settled_slots: Vec<_> = self
+            .transcript
+            .iter()
+            .filter(|e| {
+                e.conversation_id == crate::everyone::EVERYONE_CONVERSATION && e.kind == "pending"
+            })
+            .filter_map(|entry| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.id == entry.task_id && settled(&task.status))
+                    .map(|task| {
+                        let reply = self
+                            .transcript
+                            .iter()
+                            .rev()
+                            .find(|e| {
+                                e.task_id == task.id
+                                    && e.kind == "assistant"
+                                    && e.conversation_id != crate::everyone::EVERYONE_CONVERSATION
+                            })
+                            .map(|e| e.text.clone())
+                            .unwrap_or_default();
+                        (task.id.clone(), task.status.clone(), reply)
+                    })
+            })
+            .collect();
+        for (task, status, reply) in settled_slots {
+            crate::everyone::mirror_settlement(
+                self,
+                &task,
+                &reply,
+                if status == "completed" {
+                    "completed"
+                } else {
+                    "failed"
+                },
+            );
         }
         self.presence.recovered_tasks = recovered.len() as u64;
         // The roster is durable too, and a marble mid-dispatch is the case a
@@ -1124,6 +1211,92 @@ mod tests {
         state.prune(1);
         assert!(state.tasks.iter().any(|task| task.id == "running"));
         assert!(state.tasks.len() <= TASK_LIMIT);
+    }
+
+    #[test]
+    fn group_slots_survive_reload_and_settle_crash_windows() {
+        for status in ["running", "interrupted", "unclaimed", "held"] {
+            let mut state = ProductState::default();
+            state.conversation_mut("chat");
+            crate::everyone::mirror(
+                &mut state,
+                "user",
+                "You",
+                "user",
+                "@everyone hello",
+                "",
+                None,
+            );
+            let group = state.transcript.last().unwrap().id.clone();
+            let source = if status == "held" {
+                state
+                    .control
+                    .enqueue_marble("ada".into(), Some("chat".into()), "@everyone hello".into())
+                    .unwrap()
+                    .id
+            } else {
+                "marble:ada".into()
+            };
+            crate::everyone::reserve(&mut state, &group, &source, "ada", "Ada", None);
+            let slot = state.transcript.last().unwrap().id.clone();
+            if matches!(status, "running" | "interrupted") {
+                state.upsert_task(TaskRecord {
+                    id: "task".into(),
+                    conversation_id: "chat".into(),
+                    status: status.into(),
+                    owner: "prism".into(),
+                    marble_id: "ada".into(),
+                    prompt: "@everyone hello".into(),
+                    ..Default::default()
+                });
+                crate::everyone::claim(&mut state, &source, "task");
+            }
+            let mut reloaded: ProductState =
+                serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            assert_eq!(reloaded.everyone_pending, state.everyone_pending);
+            reloaded.recover_interrupted();
+            assert_eq!(reloaded.prune_everyone_entries(), 0);
+            let row = reloaded.transcript.iter().find(|e| e.id == slot).unwrap();
+            if status == "held" {
+                assert_eq!(row.kind, "pending");
+                assert_eq!(reloaded.control.queue.len(), 1);
+                crate::everyone::claim(&mut reloaded, &source, "task-after-restart");
+                crate::everyone::mirror_settlement(
+                    &mut reloaded,
+                    "task-after-restart",
+                    "one reply",
+                    "completed",
+                );
+                crate::everyone::mirror_settlement(
+                    &mut reloaded,
+                    "task-after-restart",
+                    "duplicate",
+                    "completed",
+                );
+                assert_eq!(
+                    reloaded
+                        .transcript
+                        .iter()
+                        .filter(|e| e.kind == "assistant")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    reloaded
+                        .transcript
+                        .iter()
+                        .find(|e| e.id == slot)
+                        .unwrap()
+                        .text,
+                    "one reply"
+                );
+            } else {
+                assert_eq!(row.kind, "failure", "{status}");
+                assert!(row.failure.as_ref().unwrap().retryable);
+                assert!(reloaded.everyone_pending.is_empty());
+                assert!(!reloaded.transcript.iter().any(|e| e.kind == "pending"));
+            }
+        }
     }
 
     #[test]

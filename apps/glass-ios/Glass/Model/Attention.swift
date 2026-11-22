@@ -38,10 +38,13 @@ enum Attention {
     /// Posts at most one alert per event id and thread. `replayed` events are catch-up after a launch or
     /// reconnect, which never alert.
     static func notify(_ title: String, conversation: String, thread: String, event: String, replayed: Bool) {
-        let ledger = NotifiedLedger(store: UserDefaults.standard, key: notifiedKey)
-        guard !replayed, ledger.record(event, for: thread) else { return }
         let looking = visibleThread == thread
-        guard shouldNotify(enabled: isOn, appState: UIApplication.shared.applicationState, looking: looking) else { return }
+        guard !replayed,
+              shouldNotify(enabled: isOn, appState: UIApplication.shared.applicationState, looking: looking)
+        else { return }
+        // The ledger holds the last event that actually alerted, so the same reply never alerts twice.
+        let ledger = NotifiedLedger(store: UserDefaults.standard, key: notifiedKey)
+        guard ledger.record(event, for: thread) else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = conversation

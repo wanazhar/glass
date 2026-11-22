@@ -113,6 +113,7 @@ struct MarbleEntryView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.marbleMeasuresHistory) private var measuresHistory
     @State private var creatingThread = false
     @State private var threadError = false
     @State private var showsMessageActions = false
@@ -149,7 +150,7 @@ struct MarbleEntryView: View {
             }
         }
         .background {
-            if !inInvertedScrollView {
+            if measuresHistory {
                 GeometryReader { geometry in
                     Color.clear.preference(
                         key: MarbleHistoryRowPositions.self,
@@ -583,6 +584,10 @@ private struct MarbleHistoryRowPositions: PreferenceKey {
     }
 }
 
+private extension EnvironmentValues {
+    @Entry var marbleMeasuresHistory = true
+}
+
 extension View {
     func marbleHistoryScrollTargets() -> some View {
         scrollTargetLayout().coordinateSpace(name: MarbleHistoryRowPositions.space)
@@ -630,8 +635,10 @@ private struct MarbleFollowLatest: ViewModifier {
     // to the top. Preserve its offset as well, including a partially read row.
     private final class PrependMeasurement {
         var offset: CGFloat = 0
+        var viewport: CGFloat = 0
         var rowPositions: [String: CGFloat] = [:]
         var anchor: (id: String, rowY: CGFloat, offset: CGFloat)?
+        var readerAnchor: (id: String, viewportY: CGFloat)?
         var followCorrection: Task<Void, Never>?
     }
 
@@ -659,6 +666,7 @@ private struct MarbleFollowLatest: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .environment(\.marbleMeasuresHistory, !newestFirst || !follow.following)
             .defaultScrollAnchor(newestFirst || searchJump != nil ? .top : .bottom, for: .initialOffset)
             .scrollPosition($position, anchor: newestFirst ? .bottom : .top)
             .scaleEffect(x: 1, y: newestFirst ? -1 : 1)
@@ -666,6 +674,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 phase = newPhase
                 if newPhase.isUserScrolling {
                     measurement.anchor = nil
+                    measurement.readerAnchor = nil
                     measurement.followCorrection?.cancel()
                     measurement.followCorrection = nil
                 }
@@ -673,6 +682,10 @@ private struct MarbleFollowLatest: ViewModifier {
                 let layout = Layout(context.geometry)
                 let distance = newestFirst ? layout.distanceFromTop : layout.distanceFromBottom
                 updateFollow(distance: distance, userMoved: oldPhase != .tracking)
+                if newestFirst && !follow.following {
+                    measurement.readerAnchor = nil
+                    retainReaderAnchor(offset: layout.offset, viewport: layout.viewport)
+                }
                 if hasMessages && follow.following && abs(distance) > 1 {
                     correctBottomAfterLayout()
                 }
@@ -692,6 +705,7 @@ private struct MarbleFollowLatest: ViewModifier {
             } action: { old, new in
                 // ScrollPosition's y coordinate starts after the top inset.
                 measurement.offset = new.offset + new.topInset
+                measurement.viewport = new.viewport
                 let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
                 let distance = newestFirst ? new.distanceFromTop : new.distanceFromBottom
                 updateFollow(
@@ -708,6 +722,11 @@ private struct MarbleFollowLatest: ViewModifier {
             }
             .onPreferenceChange(MarbleHistoryRowPositions.self) { rows in
                 measurement.rowPositions = rows
+                if newestFirst {
+                    guard !follow.following, !phase.isUserScrolling else { return }
+                    retainReaderAnchor(offset: measurement.offset, viewport: measurement.viewport)
+                    return
+                }
                 guard let anchor = measurement.anchor, let rowY = rows[anchor.id],
                       rowY > anchor.rowY else { return }
                 measurement.anchor = nil
@@ -755,6 +774,7 @@ private struct MarbleFollowLatest: ViewModifier {
     }
 
     private func jumpToLatest() {
+        measurement.readerAnchor = nil
         follow.jumpToLatest()
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
             scrollToEnd()
@@ -768,7 +788,24 @@ private struct MarbleFollowLatest: ViewModifier {
         } else {
             updated.layoutMoved(distanceFromBottom: distance)
         }
-        if updated != follow { follow = updated }
+        if updated != follow {
+            if updated.following { measurement.readerAnchor = nil }
+            follow = updated
+        }
+    }
+
+    private func retainReaderAnchor(offset: CGFloat, viewport: CGFloat) {
+        let rows = measurement.rowPositions
+        if let anchor = measurement.readerAnchor, let rowY = rows[anchor.id] {
+            let target = rowY - anchor.viewportY
+            if abs(target - offset) > 0.5 { position.scrollTo(y: target) }
+            return
+        }
+        // Logical bottom is the top of the inverted viewport. Keep the row
+        // nearest that edge at its exact offset as newer replies resize.
+        let edge = offset + viewport
+        let row = rows.filter { $0.value <= edge }.max { $0.value < $1.value }
+        measurement.readerAnchor = row.map { ($0.key, $0.value - offset) }
     }
 
     private func scrollToEnd() {

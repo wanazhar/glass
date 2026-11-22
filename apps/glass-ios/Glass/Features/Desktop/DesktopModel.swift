@@ -75,6 +75,20 @@ final class DesktopModel {
     private var latestJPEG: (Data, DesktopFrame?)?
     /// Where the time goes, for the connection details readout.
     private(set) var stats = DesktopStats()
+    /// Milliseconds from returning to the app until a fresh frame was on screen, for the last return.
+    private(set) var lastResumeMs: Int?
+    private var returnedAt: ContinuousClock.Instant?
+    /// In the background with keep-alive on: frames keep arriving but aren't decoded.
+    private var backgrounded = false
+    private var resumeOnReturn = false
+    /// Stream widths the app asks the host for, largest first. A full link steps down; room steps back up.
+    static let widths = [1280, 960, 800, 640]
+    private(set) var streamWidth = 1280
+    /// Switching widths reconnects the stream; the picture stays up without a "Reconnecting" badge.
+    private(set) var switchingWidth = false
+    private var sendSamples: [Int] = []
+    private var lastAdapt = ContinuousClock.now
+    private var steppedDownFrom: [Int: ContinuousClock.Instant] = [:]
     private var lastMove = ContinuousClock.now
     private var pendingScroll = CGSize.zero
 
@@ -155,9 +169,36 @@ final class DesktopModel {
     }
 
     func stopPicture() {
+        KeepAlive.shared.release("desktop")
         frameTask?.cancel()
         frameTask = nil
         picture = .idle
+    }
+
+    /// Leaving the app. Kept alive, the stream stays open; otherwise it closes now, keeping the last frame
+    /// on screen, instead of dying silently while iOS has Glass suspended.
+    func enterBackground() {
+        guard frameTask != nil else { return }
+        if KeepAlive.shared.running {
+            backgrounded = true
+        } else {
+            stopPicture()
+            resumeOnReturn = true
+        }
+    }
+
+    /// Back in the app: reconnect at once rather than waiting for a frozen socket to time out.
+    func returnToForeground() {
+        returnedAt = .now
+        if backgrounded {
+            backgrounded = false
+            decodeNext()
+        } else if resumeOnReturn {
+            resumeOnReturn = false
+            reconnect()
+        } else {
+            returnedAt = nil
+        }
     }
 
     private func startPicture() {
@@ -178,14 +219,18 @@ final class DesktopModel {
                     continue
                 }
                 do {
-                    let frames = try await api.desktopStream(width: 1280)
+                    let frames = try await api.desktopStream(width: self?.streamWidth ?? 1280)
                     self?.picture = .live
+                    self?.switchingWidth = false
+                    KeepAlive.shared.hold("desktop") { [weak self] in self?.stopPicture() }
                     failures = 0
                     for try await frame in frames { self?.show(frame) }
                 } catch {
                     failures += 1
                 }
                 guard !Task.isCancelled else { return }
+                // One dropped stream (a network change, a socket iOS closed) retries straight away.
+                if failures == 1 { continue }
                 self?.picture = .stills
                 for _ in 0..<(failures > 3 ? 20 : 4) {
                     guard !Task.isCancelled else { return }
@@ -213,8 +258,9 @@ final class DesktopModel {
     /// frame: one that arrives mid-decode replaces any frame still waiting.
     private func show(_ frame: DesktopFrame) {
         stats.received(frame)
+        adapt(to: frame)
         latestJPEG = (frame.jpeg, frame)
-        guard !decoding else { return }
+        guard !decoding, !backgrounded else { return }
         decodeNext()
     }
 
@@ -232,9 +278,43 @@ final class DesktopModel {
             if let image {
                 self.frame = image
                 self.stats.decoded(in: ContinuousClock.now - started)
+                if let returnedAt = self.returnedAt {
+                    self.lastResumeMs = Int((ContinuousClock.now - returnedAt) / .milliseconds(1))
+                    self.returnedAt = nil
+                }
             }
             self.decodeNext()
         }
+    }
+
+    /// Picks the stream width from how long the host spends writing each frame. Over 30 ms a frame means
+    /// the link can't carry 30 frames a second at this size, so the next size down is used; a width that
+    /// was too big isn't tried again for 30 s.
+    private func adapt(to frame: DesktopFrame) {
+        guard let send = frame.sendMs, !backgrounded else { return }
+        sendSamples.append(send)
+        guard sendSamples.count >= 24, ContinuousClock.now - lastAdapt >= .seconds(3) else { return }
+        let median = sendSamples.sorted()[sendSamples.count / 2]
+        sendSamples.removeAll()
+        guard let index = Self.widths.firstIndex(of: streamWidth) else { return }
+        if median > 30, index + 1 < Self.widths.count {
+            steppedDownFrom[streamWidth] = .now
+            switchWidth(to: Self.widths[index + 1])
+        } else if index > 0 {
+            let larger = Self.widths[index - 1]
+            let scale = Double(larger) / Double(streamWidth)
+            let cooled = steppedDownFrom[larger].map { ContinuousClock.now - $0 >= .seconds(30) } ?? true
+            if cooled, Double(median) * scale * scale < 20 { switchWidth(to: larger) }
+        }
+    }
+
+    private func switchWidth(to width: Int) {
+        streamWidth = width
+        lastAdapt = .now
+        switchingWidth = true
+        frameTask?.cancel()
+        frameTask = nil
+        startPicture()
     }
 
     // MARK: Input

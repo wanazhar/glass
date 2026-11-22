@@ -9,6 +9,7 @@ struct DesktopView: View {
     }
 
     @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model = DesktopModel()
     @AppStorage("glass.desktop.stats") private var showStats = false
     @State private var pointer: Pointer = .tap
@@ -20,6 +21,9 @@ struct DesktopView: View {
     @State private var holding = false
     @State private var scrollLast: CGSize = .zero
     @State private var rightClick = false
+    /// Most fingers down in the current touch, so a two-finger tap reads as a right click, not a click.
+    @State private var fingers = 0
+    @State private var pressStart: Date?
     @State private var showKeys = false
     @State private var typed = ""
     @State private var confirmStop = false
@@ -48,6 +52,13 @@ struct DesktopView: View {
             model.isVisible = false
             model.stopPicture()
             if model.status?.youHaveControl == true { Task { await model.giveBackControl() } }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background: model.enterBackground()
+            case .active: model.returnToForeground()
+            default: break
+            }
         }
         .sensoryFeedback(trigger: model.status?.lease) { _, lease in lease == "human" ? .start : .stop }
     }
@@ -125,6 +136,15 @@ struct DesktopView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .scaleEffect(zoom)
                     .offset(pan)
+                    if model.frame != nil, !model.switchingWidth, model.picture == .connecting || model.picture == .idle {
+                        Label("Reconnecting", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .floatingGlass()
+                            .padding(10)
+                            .accessibilityIdentifier("desktop.reconnecting")
+                    }
                     if status.youHaveControl && pointer == .trackpad {
                         let spot = viewport.screenPoint(for: model.cursor)
                         Image(systemName: "cursorarrow")
@@ -138,6 +158,12 @@ struct DesktopView: View {
                 .contentShape(Rectangle())
                 .gesture(drag(viewport, control: status.youHaveControl))
                 .simultaneousGesture(magnify(viewport))
+                .gesture(TouchCounter { fingers = $0 })
+                .gesture(TwoFingerScroll { location, delta in
+                    guard status.youHaveControl, pointer != .pan else { return }
+                    let point = pointer == .trackpad ? model.cursor : viewport.desktopPoint(at: location, clamped: true)
+                    if let point { model.scroll(at: point, by: CGSize(width: -delta.width, height: -delta.height)) }
+                })
                 .accessibilityElement()
                 .accessibilityLabel("Desktop screen")
                 .accessibilityValue(status.controlSummary)
@@ -185,7 +211,8 @@ struct DesktopView: View {
                     Text(status.controlSummary).font(.subheadline.weight(.semibold))
                     Text(pictureSummary).font(.footnote).foregroundStyle(.secondary)
                     if showStats {
-                        Text(model.stats.summary)
+                        Text(model.stats.summary + " · \(model.streamWidth) px"
+                             + (model.lastResumeMs.map { "\nBack live \($0) ms after returning" } ?? ""))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("desktop.stats")
@@ -222,6 +249,10 @@ struct DesktopView: View {
                         .labelStyle(.iconOnly)
                         .accessibilityHint("The next tap or click is a right click.")
                 }
+                Text(pointer == .pan ? "Drag to move around the zoomed desktop. Pinch to zoom."
+                     : "Tap to click. Two-finger tap or touch and hold to right-click. Two fingers scroll. Pinch to zoom.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 if showKeys { keys }
             } else {
                 Text(status.lease == "read-only" ? "Nobody can use the mouse or keyboard. Take control to use them."
@@ -287,6 +318,16 @@ struct DesktopView: View {
             .onChanged { value in
                 let mode: Pointer = control ? pointer : .pan
                 let moved = hypot(value.translation.width, value.translation.height) > 6
+                if pressStart == nil { pressStart = value.time }
+                // Two fingers scroll (or pinch); a drag that had begun lets go of the button.
+                if fingers >= 2, mode != .pan {
+                    if holding, let start = viewport.desktopPoint(at: value.startLocation, clamped: true) {
+                        model.send(.button(x: start.x, y: start.y, button: button, pressed: false))
+                        holding = false
+                    }
+                    dragOrigin = nil
+                    return
+                }
                 switch mode {
                 case .pan:
                     pan = viewport.clampedPan(CGSize(width: basePan.width + value.translation.width,
@@ -319,6 +360,26 @@ struct DesktopView: View {
             .onEnded { value in
                 let mode: Pointer = control ? pointer : .pan
                 let moved = hypot(value.translation.width, value.translation.height) > 6
+                let held = pressStart.map { value.time.timeIntervalSince($0) >= 0.5 } ?? false
+                pressStart = nil
+                defer { scrollLast = .zero }
+                // A two-finger tap or a touch held still for half a second is a right click.
+                if mode == .tap || mode == .trackpad, !moved, fingers >= 2 || held {
+                    let point = mode == .trackpad ? model.cursor : viewport.desktopPoint(at: value.location)
+                    if let point {
+                        model.cursor = point
+                        model.send(.click(x: point.x, y: point.y, button: .right))
+                    }
+                    holding = false
+                    dragOrigin = nil
+                    rightClick = false
+                    return
+                }
+                if fingers >= 2, mode != .pan {
+                    holding = false
+                    dragOrigin = nil
+                    return
+                }
                 switch mode {
                 case .pan:
                     basePan = pan
@@ -385,4 +446,82 @@ struct DesktopView: View {
         }
         return true
     }
+}
+
+/// Reports the most fingers down during each touch sequence, without taking part in recognition.
+private struct TouchCounter: UIGestureRecognizerRepresentable {
+    var changed: (Int) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Simultaneous { Simultaneous() }
+
+    func makeUIGestureRecognizer(context: Context) -> Recognizer {
+        let recognizer = Recognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: Recognizer, context: Context) { recognizer.changed = changed }
+
+    final class Recognizer: UIGestureRecognizer {
+        var changed: ((Int) -> Void)?
+        private var down = 0
+        private var most = 0
+
+        override init(target: Any?, action: Selector?) {
+            super.init(target: target, action: action)
+            cancelsTouchesInView = false
+            delaysTouchesEnded = false
+        }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            if down == 0 { most = 0 }
+            down += touches.count
+            if down > most {
+                most = down
+                changed?(most)
+            }
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { lift(touches) }
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { lift(touches) }
+
+        private func lift(_ touches: Set<UITouch>) {
+            down = max(0, down - touches.count)
+            if down == 0 { state = .failed }
+        }
+
+        override func reset() {
+            super.reset()
+            down = 0
+        }
+    }
+}
+
+/// A two-finger drag, reported as the centre point and the movement since the last report.
+private struct TwoFingerScroll: UIGestureRecognizerRepresentable {
+    var scrolled: (CGPoint, CGSize) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Simultaneous { Simultaneous() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        pan.minimumNumberOfTouches = 2
+        pan.maximumNumberOfTouches = 2
+        pan.cancelsTouchesInView = false
+        return pan
+    }
+
+    func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
+        guard pan.state == .changed, let view = pan.view else { return }
+        let moved = pan.translation(in: view)
+        pan.setTranslation(.zero, in: view)
+        scrolled(context.converter.localLocation, CGSize(width: moved.x, height: moved.y))
+    }
+}
+
+/// Lets a UIKit recognizer run alongside the desktop's SwiftUI drag and pinch.
+private final class Simultaneous: NSObject, UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }

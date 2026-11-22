@@ -60,7 +60,8 @@ extension GlassClient {
     public func desktopStream(width: Int = 1280) async throws(GlassError) -> AsyncThrowingStream<DesktopFrame, any Error> {
         let credential = try credential()
         var request = GlassRequest.get("/api/desktop/stream", query: [URLQueryItem(name: "width", value: String(min(max(width, 320), 1280)))])
-        request.timeout = 30
+        // The host sends a frame or a heartbeat at least every 2 s, so a quiet socket is a dead one.
+        request.timeout = 6
         let urlRequest = try GlassRequestBuilder.urlRequest(for: request, endpoint: endpoint, credential: credential, secretCapability: nil)
         let chunks: AsyncThrowingStream<Data, any Error>
         do {

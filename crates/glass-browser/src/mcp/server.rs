@@ -8797,7 +8797,7 @@ mod tests {
                 false,
                 None,
                 &SessionOptions::default(),
-                &BrowserPolicy::development(std::env::temp_dir()),
+                &BrowserPolicy::development(std::env::temp_dir()).unwrap(),
                 None,
                 None,
                 &DevelopmentSessionStore::default(),

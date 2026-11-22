@@ -458,8 +458,6 @@ struct MarbleState: Decodable, Equatable {
     var memory: MarbleMemory?
     var routines: MarbleRoutines?
     var voice: MarbleVoice?
-    var notifications: MarbleNotificationSettings?
-    var devices: [MarbleDevice]?
     var transcriptCount: Int?
     var prism: MarblePrism?
     var model: String?
@@ -475,8 +473,6 @@ struct MarbleState: Decodable, Equatable {
         memory: nil,
         routines: nil,
         voice: nil,
-        notifications: nil,
-        devices: nil,
         transcriptCount: 0,
         prism: nil,
         model: nil
@@ -489,8 +485,6 @@ struct MarbleState: Decodable, Equatable {
     var memoryState: MarbleMemory { memory ?? .empty }
     var routineState: MarbleRoutines { routines ?? .empty }
     var voiceSettings: MarbleVoice { voice ?? .empty }
-    var notificationState: MarbleNotificationSettings { notifications ?? .empty }
-    var deviceList: [MarbleDevice] { devices ?? [] }
     var prismState: MarblePrism { prism ?? .empty }
 
     func conversation(_ id: String?) -> MarbleConversation? {
@@ -524,6 +518,8 @@ struct MarbleEvent: Decodable, Equatable {
 struct MarbleEventData: Decodable, Equatable {
     var thread: MarbleThread? = nil
     var threadId: String? = nil
+    var entryId: String? = nil
+    var entryKind: String? = nil
     var text: String?
     var tool: String?
     var name: String? = nil
@@ -545,6 +541,8 @@ struct MarbleEventData: Decodable, Equatable {
         case thread, text, tool, name, callId, arguments, isError, message, status, revision
         case taskId, reason, cancelled, requestId, approved, cleared
         case threadId = "thread_id"
+        case entryId = "id"
+        case entryKind = "kind"
     }
 }
 
@@ -833,52 +831,6 @@ struct MarbleVoice: Decodable, Equatable {
     var provider: String?
 
     static let empty = MarbleVoice(enabled: false, rate: 0.5, voice: "", provider: "on-device")
-}
-
-/// APNs credentials the host signs with. The key file stays on the host.
-struct MarbleApns: Codable, Equatable {
-    var keyFile: String
-    var teamId: String
-    var keyId: String
-    var topic: String
-    var environment: String?
-}
-
-struct MarbleNotificationSettings: Decodable, Equatable {
-    var webhookUrl: String
-    var webhookTokenSet: Bool
-    var events: [String]
-    var availableEvents: [String]
-    var apns: MarbleApns?
-    var apnsConfigured: Bool
-    var webhookConfigured: Bool
-    var quietHours: MarbleQuietHours?
-    var reAlertSeconds: Int?
-    var retries: Int?
-    var dedupeSeconds: Int?
-
-    static let empty = MarbleNotificationSettings(
-        webhookUrl: "",
-        webhookTokenSet: false,
-        events: [],
-        availableEvents: [],
-        apns: nil,
-        apnsConfigured: false,
-        webhookConfigured: false,
-        quietHours: nil,
-        reAlertSeconds: nil,
-        retries: nil,
-        dedupeSeconds: nil
-    )
-}
-
-struct MarbleDevice: Decodable, Identifiable, Equatable {
-    var tokenPrefix: String
-    var platform: String
-    var topic: String
-    var lastSeenAt: UInt64
-
-    var id: String { tokenPrefix }
 }
 
 /// The /api/turns request body: exactly the composer text and the conversation

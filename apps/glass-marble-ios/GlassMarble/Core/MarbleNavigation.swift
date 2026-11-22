@@ -186,14 +186,10 @@ public struct MarbleNavigation: Sendable, Equatable {
 public struct MarbleScrollFollow: Sendable, Equatable {
     /// Distance from the bottom (points) that still counts as "at the end".
     public var snapThreshold: Double
-    /// Minimum interval between follow-scrolls during streaming.
-    public var throttleInterval: TimeInterval
     public private(set) var following = true
-    private var lastFollow: TimeInterval = 0
 
-    public init(snapThreshold: Double = 120, throttleInterval: TimeInterval = 0.15) {
+    public init(snapThreshold: Double = 120) {
         self.snapThreshold = snapThreshold
-        self.throttleInterval = throttleInterval
     }
 
     /// The person moved the scroll position; only their movement re-arms or
@@ -202,26 +198,13 @@ public struct MarbleScrollFollow: Sendable, Equatable {
         following = distanceFromBottom <= snapThreshold
     }
 
-    /// New content arrived. Follows only when the person is at the end and
-    /// the throttle allows it; returns whether a scroll should happen.
-    public mutating func shouldFollow(now: TimeInterval) -> Bool {
-        guard following, now - lastFollow >= throttleInterval else { return false }
-        lastFollow = now
-        return true
-    }
-
-    /// The first load jumps without animation or throttle.
-    public mutating func initialFollow(now: TimeInterval) -> Bool {
-        lastFollow = now
-        return true
-    }
-
     /// The "Jump to latest" button: shown when not following.
     public var showJumpButton: Bool { !following }
 
+    mutating func pauseForSearchJump() { following = false }
+
     /// Tapping the button re-arms following and scrolls.
-    public mutating func jumpToLatest(now: TimeInterval) {
+    public mutating func jumpToLatest() {
         following = true
-        lastFollow = now
     }
 }

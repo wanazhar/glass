@@ -389,83 +389,6 @@ final class OnboardingEvaluatorTests: XCTestCase {
     }
 }
 
-final class AttentionTests: XCTestCase {
-    private func event(
-        kind: String, taskId: String = "task-1",
-        reason: String? = nil, cancelled: Bool? = nil, requestId: String? = nil
-    ) -> MarbleEvent {
-        MarbleEvent(
-            sequence: 1,
-            conversationId: "conv-1",
-            taskId: taskId,
-            kind: kind,
-            data: MarbleEventData(
-                text: nil, tool: nil, isError: nil, message: nil, status: nil,
-                revision: nil, taskId: taskId, reason: reason,
-                cancelled: cancelled, requestId: requestId, approved: nil
-            )
-        )
-    }
-
-    func testDoubleSettledNotifiesOnce() {
-        var seen: Set<String> = []
-        let first = MarbleAttention.alert(
-            for: event(kind: "settled", reason: "completed"), seen: &seen
-        )
-        XCTAssertEqual(first?.title, "Marble finished")
-        let second = MarbleAttention.alert(
-            for: event(kind: "settled", cancelled: false), seen: &seen
-        )
-        XCTAssertNil(second)
-    }
-
-    func testCancelledTitle() {
-        var seen: Set<String> = []
-        let alert = MarbleAttention.alert(
-            for: event(kind: "settled", reason: "cancelled"), seen: &seen
-        )
-        XCTAssertEqual(alert?.title, "Marble stopped")
-    }
-
-    func testCancelledFlagTitle() {
-        var seen: Set<String> = []
-        let alert = MarbleAttention.alert(
-            for: event(kind: "settled", cancelled: true), seen: &seen
-        )
-        XCTAssertEqual(alert?.title, "Marble stopped")
-    }
-
-    func testFailedTitle() {
-        var seen: Set<String> = []
-        for reason in ["failed", "error", "interrupted"] {
-            seen = []
-            let alert = MarbleAttention.alert(
-                for: event(kind: "settled", reason: reason), seen: &seen
-            )
-            XCTAssertEqual(alert?.title, "Marble hit a problem", reason)
-        }
-    }
-
-    func testApprovalAlert() {
-        var seen: Set<String> = []
-        let alert = MarbleAttention.alert(
-            for: event(kind: "approval_pending", requestId: "req-1"), seen: &seen
-        )
-        XCTAssertEqual(alert?.title, "Marble needs approval")
-        XCTAssertNil(
-            MarbleAttention.alert(
-                for: event(kind: "approval_pending", requestId: "req-1"), seen: &seen
-            )
-        )
-    }
-
-    func testOtherKindsSilent() {
-        var seen: Set<String> = []
-        XCTAssertNil(MarbleAttention.alert(for: event(kind: "text"), seen: &seen))
-        XCTAssertNil(MarbleAttention.alert(for: event(kind: "state"), seen: &seen))
-    }
-}
-
 final class EmbeddedQueryTests: XCTestCase {
     private let endpoint = try! MarbleEndpoint.parse("http://100.64.0.5:4783").get()
 
@@ -867,29 +790,29 @@ final class MarbleScrollFollowTests: XCTestCase {
     func testFollowsWhenAtBottom() {
         var follow = MarbleScrollFollow()
         follow.userMoved(distanceFromBottom: 0)
-        XCTAssertTrue(follow.shouldFollow(now: 1.0))
+        XCTAssertTrue(follow.following)
         XCTAssertFalse(follow.showJumpButton)
     }
 
     func testStopsFollowingWhenUserScrollsUp() {
         var follow = MarbleScrollFollow()
         follow.userMoved(distanceFromBottom: 400)
-        XCTAssertFalse(follow.shouldFollow(now: 1.0))
+        XCTAssertFalse(follow.following)
         XCTAssertTrue(follow.showJumpButton)
     }
 
-    func testThrottlesStreamingScrolls() {
+    func testSearchJumpPausesFollowingUntilUserReturnsToBottom() {
         var follow = MarbleScrollFollow()
+        follow.pauseForSearchJump()
+        XCTAssertFalse(follow.following)
         follow.userMoved(distanceFromBottom: 0)
-        XCTAssertTrue(follow.shouldFollow(now: 1.0))
-        XCTAssertFalse(follow.shouldFollow(now: 1.05))
-        XCTAssertTrue(follow.shouldFollow(now: 1.2))
+        XCTAssertTrue(follow.following)
     }
 
     func testJumpToLatestReArms() {
         var follow = MarbleScrollFollow()
         follow.userMoved(distanceFromBottom: 400)
-        follow.jumpToLatest(now: 2.0)
+        follow.jumpToLatest()
         XCTAssertTrue(follow.following)
         XCTAssertFalse(follow.showJumpButton)
     }
@@ -1058,6 +981,19 @@ final class MarbleConnectionStatusTests: XCTestCase {
         var status = MarbleConnectionStatus()
         status.streamEnded("connection refused")
         XCTAssertEqual(status.label, "Offline")
+    }
+
+    func testForegroundStreamRetryUsesResumeGraceOnce() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        status.suspend()
+        status.resume()
+        status.reconnectStarted()
+        status.streamEnded("first attempt")
+        XCTAssertTrue(status.isConnected)
+        status.reconnectStarted()
+        status.streamEnded("still offline")
+        XCTAssertEqual(status.offlineReason, "still offline")
     }
 
     func testEventsKeepItConnected() {
@@ -1537,12 +1473,25 @@ final class MarbleDecisionWordsTests: XCTestCase {
 
 final class MarbleResumeTests: XCTestCase {
     func testResumesFromTheSavedCursor() {
-        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52), 40)
-        XCTAssertEqual(MarbleResumeCursor.resume(saved: 0, hostSequence: 52), 0)
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52, previousPID: 1, hostPID: 1),
+                       .init(since: 40, restarted: false))
     }
 
-    func testRestartedHostRewindsTheCursor() {
-        XCTAssertEqual(MarbleResumeCursor.resume(saved: 900, hostSequence: 12), 12)
+    func testSequenceRewindReplaysFromZeroWhenHostDoesNotReportPID() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 900, hostSequence: 12, previousPID: nil, hostPID: nil),
+                       .init(since: 0, restarted: true))
+    }
+
+    func testNewPIDReplaysFromZeroEvenAfterPassingTheOldCursor() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52, previousPID: 1, hostPID: 2),
+                       .init(since: 0, restarted: true))
+    }
+
+    func testAnOlderSavedCursorWithNoPIDReplaysOnce() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52, previousPID: nil, hostPID: 2),
+                       .init(since: 0, restarted: true))
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 0, hostSequence: 52, previousPID: nil, hostPID: 2),
+                       .init(since: 0, restarted: false))
     }
 
     func testReturningToTheAppDoesNotFlashOffline() {

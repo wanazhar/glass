@@ -1,18 +1,9 @@
+import ActivityKit
 import Foundation
 import Network
+import OSLog
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
 import UserNotifications
-
-/// Compile-time feature switches for this alpha.
-enum MarbleFeatures {
-    /// APNs needs an `aps-environment` entitlement the current signing does not
-    /// have; remote registration stays off and local notifications cover the
-    /// same alerts. The delegate hooks stay in place for when it is enabled.
-    static let remotePush = false
-}
 
 /// Observable product store shared by every iOS surface.
 @MainActor
@@ -82,6 +73,7 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
     @Published private(set) var threadEventSequences: [String: UInt64] = [:]
+    @Published private(set) var threadHostRevision: UInt64 = 0
     private var threadTaskIds: Set<String> = []
     private var chatsRevision: Int = -1
     /// Advanced on every host change or sign-out so late replies from the
@@ -109,23 +101,38 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var hostVersion: String?
     @Published private(set) var engineHealth: MarbleHealth.RuntimeHealth?
 
-    private var client: MarbleClient!
+    private var client: MarbleClient?
     private let speaker = MarbleSpeaker()
     private var streamTask: Task<Void, Never>?
     private var sequence: UInt64 = 0
+    private var hostPID: Int?
     private var started = false
     /// Per-conversation live buffers; `liveText` & friends mirror the selected one.
     @Published private var live: [String: LiveBuffers] = [:]
     private var backoffSeconds: Double = 1
-    private var reconnectInFlight = false
     private var lastReconnectAt: TimeInterval = 0
     private var pathMonitor: NWPathMonitor?
     /// NWPathMonitor reports the current path on its first callback; only
     /// real changes after that are worth a reconnect.
     private var pathMonitorSeenFirst = false
-    private var appActive = true
-    private var notificationCursor: MarbleNotificationCursor?
-    private var pendingSettlementAlerts: [String: (MarbleEvent, MarbleAttention.Alert)] = [:]
+    private var appInBackground = false
+    private var activityStartedForTransition = false
+    private var streamConnectedAt: Date?
+    private let backgroundConnection = MarbleBackgroundConnection()
+    private static let streamLog = Logger(subsystem: "com.wanazhar.glassmarble", category: "stream")
+    private static let backgroundConnectionKey = "marble.backgroundConnection"
+    private static let connectionPausedKey = "marble.connectionPaused"
+    static weak var liveActivityStore: MarbleStore?
+    @Published private(set) var locationPermissionDenied = false
+    @Published private(set) var connectionPaused = UserDefaults.standard.bool(forKey: MarbleStore.connectionPausedKey)
+    @Published var backgroundConnectionEnabled = UserDefaults.standard.bool(forKey: MarbleStore.backgroundConnectionKey) {
+        didSet {
+            UserDefaults.standard.set(backgroundConnectionEnabled, forKey: Self.backgroundConnectionKey)
+            updateBackgroundConnection()
+        }
+    }
+    private var notificationCursor = MarbleNotificationCursor()
+    var shouldPresentReply: ((String, String?) -> Bool)?
 
     /// Local-notification opt-in, persisted between launches (default off).
     private static let localNotificationsKey = "marble.localNotifications"
@@ -142,24 +149,16 @@ final class MarbleStore: ObservableObject {
         }
         self.endpoint = endpoint
         self.onboarded = endpoint != nil
-        self.client = endpoint.map { MarbleClient(endpoint: $0) }
         self.localNotificationsEnabled = UserDefaults.standard.bool(
             forKey: Self.localNotificationsKey
         )
+        if !connectionPaused { self.client = endpoint.map { MarbleClient(endpoint: $0) } }
         if let endpoint {
             restoreCache(for: endpoint)
         }
-        NotificationCenter.default.addObserver(
-            forName: .marblePushToken,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let token = notification.object as? String else { return }
-            Task { await self?.registerPushToken(token) }
+        backgroundConnection.authorizationChanged = { [weak self] in
+            self?.updateBackgroundConnection()
         }
-        // `.marbleOpenConversation` is observed by MarbleRootView, which owns
-        // navigation: it pushes the chat, and the chat view then marks itself
-        // as the conversation this store is watching.
     }
 
     // MARK: - Derived product state
@@ -202,7 +201,6 @@ final class MarbleStore: ObservableObject {
     var memory: MarbleMemory { state.memoryState }
     var routines: MarbleRoutines { state.routineState }
     var voice: MarbleVoice { state.voiceSettings }
-    var notificationState: MarbleNotificationSettings { state.notificationState }
     var prism: MarblePrism { state.prismState }
     var model: String { state.model ?? "" }
 
@@ -220,6 +218,7 @@ final class MarbleStore: ObservableObject {
     /// work overlays on top, so Chats, the chat header, and Settings never
     /// disagree about what Marble is doing.
     var statusLabel: String {
+        if connectionPaused { return "Disconnected" }
         if isWorking { return "Working" }
         if presence.status == "waiting" { return "Waiting" }
         if presence.status == "paused" || control.paused { return "Paused" }
@@ -233,22 +232,24 @@ final class MarbleStore: ObservableObject {
         guard onboarded, !started else { return }
         started = true
         startPathMonitor()
+        let oldActivities = Activity<MarbleConnectionActivityAttributes>.activities
         Task {
-            await refresh()
-            listen()
-            await registerForPush()
+            for activity in oldActivities { await activity.end(nil, dismissalPolicy: .immediate) }
         }
+        if !connectionPaused, !appInBackground { listen() }
     }
 
     /// A new host+token that passed onboarding validation.
     func apply(_ endpoint: MarbleEndpoint) {
+        stopStreaming()
+        setConnectionPaused(false)
         self.endpoint = endpoint
         MarblePreferences.save(endpoint)
         client = MarbleClient(endpoint: endpoint)
         onboarded = true
-        streamTask?.cancel()
         sequence = 0
-        notificationCursor = nil
+        hostPID = nil
+        notificationCursor = MarbleNotificationCursor()
         needsToken = false
         conversationTranscript = []
         transcriptConversationId = nil
@@ -261,25 +262,27 @@ final class MarbleStore: ObservableObject {
         syncLive()
         started = true
         startPathMonitor()
+        let generation = hostGeneration.current
         Task {
             await loginIfNeeded()
-            await refresh()
+            guard hostGeneration.isCurrent(generation), !appInBackground else { return }
             listen()
         }
     }
 
     /// Forget host and token and return to onboarding.
     func signOut() {
+        stopStreaming()
+        setConnectionPaused(false)
         if let endpoint { Self.removeCache(for: endpoint) }
         MarblePreferences.signOut()
-        streamTask?.cancel()
-        streamTask = nil
         client = nil
         endpoint = nil
         onboarded = false
         started = false
         sequence = 0
-        notificationCursor = nil
+        hostPID = nil
+        notificationCursor = MarbleNotificationCursor()
         state = .empty
         conversationTranscript = []
         transcriptConversationId = nil
@@ -297,45 +300,100 @@ final class MarbleStore: ObservableObject {
     /// Coalesced — a foregrounding, a path callback, and a retry can all land
     /// within a second of each other, and only one attempt should run.
     func reconnect(force: Bool = false) {
-        guard onboarded, !reconnectInFlight else { return }
+        guard onboarded, !appInBackground, !connectionPaused || force else { return }
+        if connectionPaused, let endpoint {
+            client = MarbleClient(endpoint: endpoint)
+            setConnectionPaused(false)
+        }
         let now = Date().timeIntervalSinceReferenceDate
         guard force || now - lastReconnectAt >= 1 else { return }
         lastReconnectAt = now
-        reconnectInFlight = true
-        status.reconnectStarted()
         backoffSeconds = 1
-        Task {
-            defer { reconnectInFlight = false }
-            await refresh()
-            await loadTranscript()
-            listen()
-        }
+        listen()
     }
 
-    /// Back in the app: keep showing what was there, reconnect at once, and
-    /// pick the stream up from the last event this iPhone saw.
+    func appWillResignActive() {
+        guard backgroundConnectionEnabled, let streamConnectedAt, let endpoint else { return }
+        activityStartedForTransition = backgroundConnection.startActivity(
+            connectedAt: streamConnectedAt, host: endpoint.displayHost
+        )
+    }
+
     func appBecameActive() {
-        guard !appActive || status.suspended else { return }
-        appActive = true
+        let wasBackgrounded = appInBackground
+        appInBackground = false
+        if activityStartedForTransition, !wasBackgrounded {
+            backgroundConnection.endActivity()
+        }
+        activityStartedForTransition = false
+        updateBackgroundConnection()
+        guard wasBackgrounded, streamConnectedAt == nil, !connectionPaused else { return }
         status.resume()
         reconnect(force: true)
     }
 
-    func appBecameInactive() {
-        guard appActive else { return }
-        appActive = false
-        status.suspend()
+    func appDidEnterBackground() {
+        appInBackground = true
+        if !backgroundConnection.isKeepingAlive {
+            status.suspend()
+            stopStreaming()
+        }
         saveCursor()
         saveCache()
+    }
+
+    static func disconnectFromLiveActivity() {
+        guard let store = liveActivityStore else {
+            // A Live Activity button can wake the app without creating a scene.
+            UserDefaults.standard.set(true, forKey: connectionPausedKey)
+            return
+        }
+        store.setConnectionPaused(true)
+        store.stopStreaming()
+        store.client = nil
+        store.hostGeneration.advance()
+        store.status = MarbleConnectionStatus()
+    }
+
+    private func setConnectionPaused(_ paused: Bool) {
+        connectionPaused = paused
+        UserDefaults.standard.set(paused, forKey: Self.connectionPausedKey)
+    }
+
+    private func updateBackgroundConnection() {
+        let keepAlive = backgroundConnectionEnabled && streamConnectedAt != nil && !needsToken
+        backgroundConnection.setLocationNeeded(keepAlive, canStart: !appInBackground)
+        locationPermissionDenied = backgroundConnectionEnabled && backgroundConnection.permissionDenied
+        if !backgroundConnection.isKeepingAlive {
+            backgroundConnection.endActivity()
+            if appInBackground, streamTask != nil {
+                status.suspend()
+                stopStreaming()
+            }
+        }
+    }
+
+    private func streamDisconnected() {
+        if streamConnectedAt != nil { Self.streamLog.debug("SSE disconnected") }
+        streamConnectedAt = nil
+        backgroundConnection.setLocationNeeded(false, canStart: false)
+        backgroundConnection.endActivity()
+    }
+
+    private func stopStreaming() {
+        streamTask?.cancel()
+        streamTask = nil
+        streamDisconnected()
     }
 
     // MARK: - On-device cache
 
     private static let cursorKeyPrefix = "marble.eventCursor."
-    private static let notificationCursorKeyPrefix = "marble.notificationCursor."
+    private static let hostPIDKeyPrefix = "marble.hostPID."
+    private static let notificationCursorKeyPrefix = "marble.replyNotificationCursor."
 
     private func saveNotificationCursor() {
-        guard let endpoint, let notificationCursor,
+        guard let endpoint,
               let data = try? JSONEncoder().encode(notificationCursor) else { return }
         UserDefaults.standard.set(data, forKey: Self.notificationCursorKeyPrefix + endpoint.baseURL.absoluteString)
     }
@@ -348,17 +406,20 @@ final class MarbleStore: ObservableObject {
     private static func removeCache(for endpoint: MarbleEndpoint) {
         if let url = cacheURL(for: endpoint) { try? FileManager.default.removeItem(at: url) }
         UserDefaults.standard.removeObject(forKey: cursorKeyPrefix + endpoint.baseURL.absoluteString)
+        UserDefaults.standard.removeObject(forKey: hostPIDKeyPrefix + endpoint.baseURL.absoluteString)
+        UserDefaults.standard.removeObject(forKey: notificationCursorKeyPrefix + endpoint.baseURL.absoluteString)
     }
 
     /// Show the last fetched chats for this host straight away, and resume
     /// its event stream from the last event seen.
     private func restoreCache(for endpoint: MarbleEndpoint) {
         if let data = UserDefaults.standard.data(forKey: Self.notificationCursorKeyPrefix + endpoint.baseURL.absoluteString) {
-            notificationCursor = try? JSONDecoder().decode(MarbleNotificationCursor.self, from: data)
+            notificationCursor = (try? JSONDecoder().decode(MarbleNotificationCursor.self, from: data)) ?? MarbleNotificationCursor()
         }
         sequence = UInt64(UserDefaults.standard.integer(
             forKey: Self.cursorKeyPrefix + endpoint.baseURL.absoluteString
         ))
+        hostPID = UserDefaults.standard.object(forKey: Self.hostPIDKeyPrefix + endpoint.baseURL.absoluteString) as? Int
         guard let url = Self.cacheURL(for: endpoint),
               let data = try? Data(contentsOf: url),
               let cache = MarbleChatCache.decoded(data) else { return }
@@ -400,7 +461,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func loginIfNeeded() async {
-        guard let token = endpoint?.token, !token.isEmpty else { return }
+        guard let client, let token = endpoint?.token, !token.isEmpty else { return }
         do {
             try await client.login(token: token)
         } catch {
@@ -424,9 +485,11 @@ final class MarbleStore: ObservableObject {
             errorMessage = nil
             status.refreshSucceeded()
             if let health = try? await healthFetch {
+                guard hostGeneration.isCurrent(generation) else { return }
                 hostVersion = health.version
                 engineHealth = health.runtime
             }
+            guard hostGeneration.isCurrent(generation) else { return }
             // Navigation owns which chat is on screen. A refresh may only
             // clear a selection whose conversation disappeared — never choose
             // one, or a poll would re-push a chat the person just left.
@@ -455,7 +518,7 @@ final class MarbleStore: ObservableObject {
             await loadChats()
         } catch MarbleClientError.unauthorized {
             guard hostGeneration.isCurrent(generation) else { return }
-            needsToken = true
+            markUnauthorized()
             status.refreshFailed("The token was rejected")
             loaded = true
         } catch {
@@ -474,6 +537,13 @@ final class MarbleStore: ObservableObject {
     }
 
     private func resetChats() {
+        resetChatActivity()
+        everyoneTimeline = []
+        marbleTranscripts = [:]
+        chatsRevision = -1
+    }
+
+    private func resetChatActivity() {
         everyoneTaskIds = []
         toolsByTurn = [:]
         reasoningByTurn = [:]
@@ -486,10 +556,6 @@ final class MarbleStore: ObservableObject {
         threadUpdates = [:]
         threadEventSequences = [:]
         threadTaskIds = []
-        pendingSettlementAlerts = [:]
-        everyoneTimeline = []
-        marbleTranscripts = [:]
-        chatsRevision = -1
     }
 
     /// Fetch the Everyone timeline and every marble's own chat once per
@@ -551,13 +617,12 @@ final class MarbleStore: ObservableObject {
         }
         let generation = hostGeneration.current
         let revision = state.revision
+        let after = transcriptCursor == 0 ? nil : transcriptCursor
         do {
-            let page = try await client.transcript(
-                conversationId: conversationId,
-                after: transcriptCursor == 0 ? nil : transcriptCursor
-            )
+            let page = try await client.transcript(conversationId: conversationId, after: after)
             guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId,
                   transcriptRevision <= revision else { return }
+            if after == nil { conversationTranscript = [] }
             var offsets = Dictionary(conversationTranscript.enumerated().map {
                 (Self.transcriptKey($0.element), $0.offset)
             }, uniquingKeysWith: { first, _ in first })
@@ -857,6 +922,7 @@ final class MarbleStore: ObservableObject {
 
     /// Settings → Data: wipe the shared plane's history on the host.
     func clearEveryone() async {
+        guard let client else { return }
         do {
             try await client.clearEveryone()
             await refresh()
@@ -1057,33 +1123,6 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    // MARK: - Notifications
-
-    func saveNotifications(_ update: MarbleClient.NotificationUpdate) async {
-        guard let client else { return }
-        await perform { _ = try await client.saveNotifications(update) }
-    }
-
-    func testNotification() async -> Bool {
-        guard let client else { return false }
-        do {
-            return try await client.testNotification()
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
-        }
-    }
-
-    func removeDevice(_ device: MarbleDevice) async {
-        guard let client else { return }
-        do {
-            try await client.removeDevice(tokenPrefix: device.tokenPrefix)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        await refresh()
-    }
-
     func setRoutineQuiet(_ quiet: MarbleQuietHours) async {
         guard let client else { return }
         do {
@@ -1243,27 +1282,6 @@ final class MarbleStore: ObservableObject {
         speaker.speak(spoken, rate: Float(voice.rate))
     }
 
-    func registerPushToken(_ token: String) async {
-        guard MarbleFeatures.remotePush, let client else { return }
-        do {
-            try await client.registerDevice(
-                token: token,
-                topic: Bundle.main.bundleIdentifier ?? ""
-            )
-        } catch {
-            // Push is optional: a host without APNs credentials simply ignores it.
-        }
-    }
-
-    private func registerForPush() async {
-        guard MarbleFeatures.remotePush else { return }
-        #if canImport(UIKit)
-        let center = UNUserNotificationCenter.current()
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
-        UIApplication.shared.registerForRemoteNotifications()
-        #endif
-    }
-
     // MARK: - Local notifications
 
     func requestLocalNotificationPermission() async -> Bool {
@@ -1273,74 +1291,30 @@ final class MarbleStore: ObservableObject {
             .requestAuthorization(options: [.alert, .sound, .badge])) ?? false
     }
 
-    /// Alert for an event that happened off-screen so a person can pull it back.
-    private func postLocalNotification(
-        conversationId: String, taskId: String, threadId: String?, title: String, body: String
-    ) {
-        guard localNotificationsEnabled else { return }
+    private func handleReply(_ event: MarbleEvent, liveAfter: UInt64?) {
+        let previous = notificationCursor
+        let reply = notificationCursor.consume(event, liveAfter: liveAfter)
+        if previous != notificationCursor { saveNotificationCursor() }
+        let conversationId = event.conversationId
+        let threadId = event.data.threadId
+        guard let reply, localNotificationsEnabled,
+              appInBackground ? backgroundConnection.isKeepingAlive
+                  : shouldPresentReply?(conversationId, threadId) == true else { return }
+        notificationCursor.notified(reply.entry)
+        saveNotificationCursor()
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
+        content.title = reply.title
+        content.body = String(reply.text.prefix(180))
         content.sound = .default
-        var marble = ["conversationId": conversationId, "taskId": taskId]
+        var marble = ["conversationId": conversationId]
         marble["threadId"] = threadId
         content.userInfo = ["marble": marble]
         let request = UNNotificationRequest(
-            identifier: "marble.\(UUID().uuidString)",
+            identifier: "marble.\(reply.entry.conversationId).\(reply.entry.id)",
             content: content,
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
-    }
-
-    /// Consume before presenting so muted, visible and replayed alerts all
-    /// advance the same per-host cursor.
-    private func notifyIfNeeded(event: MarbleEvent) {
-        let previous = notificationCursor
-        let alert = notificationCursor?.consume(event)
-        if previous != notificationCursor { saveNotificationCursor() }
-        guard let alert, localNotificationsEnabled else { return }
-        let taskId = event.data.taskId ?? event.taskId
-        if event.kind == "settled", !taskId.isEmpty, event.conversationId != everyoneConversationId,
-           !isEveryoneNotificationTask(taskId) {
-            // The engine sends settlement before the host writes the mirrored
-            // entry. Resolve the alert's destination after the host's state event.
-            pendingSettlementAlerts[taskId] = (event, alert)
-            let generation = hostGeneration.current
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(2))
-                guard let self, self.hostGeneration.isCurrent(generation) else { return }
-                await self.deliverSettlementAlert(taskId: taskId)
-            }
-            return
-        }
-        deliverAlert(alert, event: event, mirrored: isEveryoneNotificationTask(taskId))
-    }
-
-    private func isEveryoneNotificationTask(_ taskId: String) -> Bool {
-        !taskId.isEmpty && (everyoneTaskIds.contains(taskId) || everyoneTimeline.contains { $0.taskId == taskId })
-    }
-
-    private func deliverSettlementAlert(taskId: String) async {
-        guard let (event, alert) = pendingSettlementAlerts.removeValue(forKey: taskId),
-              let client else { return }
-        let generation = hostGeneration.current
-        let entries = try? await client.everyone(main: false)
-        guard hostGeneration.isCurrent(generation) else { return }
-        let mirrored = isEveryoneNotificationTask(taskId) || entries?.contains { $0.taskId == taskId } == true
-        deliverAlert(alert, event: event, mirrored: mirrored)
-    }
-
-    private func deliverAlert(_ alert: MarbleAttention.Alert, event: MarbleEvent, mirrored: Bool) {
-        let destination = mirrored ? everyoneConversationId : event.conversationId
-        let conversationTitle = state.conversation(destination)?.title ?? ""
-        postLocalNotification(
-            conversationId: destination,
-            taskId: event.data.taskId ?? event.taskId,
-            threadId: event.data.threadId,
-            title: alert.title,
-            body: conversationTitle.isEmpty ? alert.body : conversationTitle
-        )
     }
 
     private func perform(_ operation: () async throws -> Void) async {
@@ -1356,52 +1330,96 @@ final class MarbleStore: ObservableObject {
     // MARK: - Streaming
 
     private func listen() {
-        streamTask?.cancel()
+        stopStreaming()
         status.reconnectStarted()
         let client = self.client
         let generation = hostGeneration.current
         streamTask = Task { [weak self] in
+            var generation = generation
             while !Task.isCancelled {
                 guard let self, let client else { return }
-                let health = try? await client.health()
-                guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
-                if let health {
-                    self.sequence = MarbleResumeCursor.resume(saved: self.sequence, hostSequence: health.sequence)
-                    if self.notificationCursor == nil {
-                        self.notificationCursor = MarbleNotificationCursor(hostSequence: health.sequence, hostPID: health.pid)
-                    } else if self.notificationCursor?.align(hostSequence: health.sequence, hostPID: health.pid) == true {
-                        // The old process's sequence no longer identifies an event.
-                        self.sequence = 0
-                    }
-                    self.saveNotificationCursor()
-                }
-                let since = self.sequence
                 var endedReason: String? = nil
                 do {
-                    let events = client.events(
-                        since: since,
-                        onOpen: { Task { @MainActor in self.status.streamOpened() } },
-                        onActivity: { Task { @MainActor in self.status.streamEvent() } }
-                    )
-                    for try await event in events {
+                    let health = try await client.health(timeout: 3)
+                    guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
+                    self.prepareForStream(health)
+                    generation = self.hostGeneration.current
+                    var liveAfter: UInt64?
+                    stream: for try await update in client.events(since: self.sequence) {
                         guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
-                        self.backoffSeconds = 1
-                        self.handle(event)
+                        switch update {
+                        case .opened:
+                            self.status.streamOpened()
+                            self.backoffSeconds = 1
+                            self.threadHostRevision &+= 1
+                            let openedGeneration = generation
+                            // A newly restarted host may not send any live event.
+                            Task {
+                                guard self.hostGeneration.isCurrent(openedGeneration) else { return }
+                                await self.refresh()
+                            }
+                        case .activity:
+                            self.status.streamEvent()
+                            if let connectedAt = self.streamConnectedAt {
+                                self.backgroundConnection.refreshActivity(connectedAt: connectedAt)
+                            }
+                        case .baseline(let cursor):
+                            // A restart can land between /healthz and /api/events.
+                            if cursor < self.sequence { break stream }
+                            liveAfter = cursor
+                            self.streamConnectedAt = .now
+                            Self.streamLog.debug("SSE connected")
+                            self.updateBackgroundConnection()
+                        case .event(let event):
+                            self.status.streamEvent()
+                            self.handle(event, liveAfter: liveAfter)
+                        }
                     }
                 } catch MarbleClientError.unauthorized {
+                    guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
                     self.markUnauthorized()
                     return
                 } catch {
-                    if Task.isCancelled { return }
+                    guard !Task.isCancelled, self.hostGeneration.isCurrent(generation) else { return }
                     endedReason = error.localizedDescription
                     self.markOffline(error)
                 }
                 if Task.isCancelled { return }
+                self.streamDisconnected()
                 self.status.streamEnded(endedReason)
+                self.loaded = true
+                if self.appInBackground {
+                    self.streamTask = nil
+                    return
+                }
                 status.reconnectStarted()
                 let delay = self.backoffSeconds
-                self.backoffSeconds = min(self.backoffSeconds * 2, 30)
+                self.backoffSeconds = min(self.backoffSeconds * 2, 4)
                 try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    private func prepareForStream(_ health: MarbleHealth) {
+        let resume = MarbleResumeCursor.resume(
+            saved: sequence, hostSequence: health.sequence, previousPID: hostPID, hostPID: health.pid
+        )
+        sequence = resume.since
+        if resume.restarted {
+            // Keep cached rows visible while fetching fresh transcripts.
+            hostGeneration.advance()
+            resetChatActivity()
+            live = [:]
+            syncLive()
+            transcriptRevision = -1
+            transcriptCursor = 0
+            chatsRevision = -1
+            saveCursor()
+        }
+        if let pid = health.pid, hostPID != pid {
+            hostPID = pid
+            if let endpoint {
+                UserDefaults.standard.set(pid, forKey: Self.hostPIDKeyPrefix + endpoint.baseURL.absoluteString)
             }
         }
     }
@@ -1439,11 +1457,17 @@ final class MarbleStore: ObservableObject {
         reasoningByTurn[taskId, default: ""] += text
     }
 
-    private func handle(_ event: MarbleEvent) {
+    private func handle(_ event: MarbleEvent, liveAfter: UInt64? = nil) {
         guard event.sequence > sequence else { return }
         sequence = event.sequence
-        if event.kind == "state", pendingSettlementAlerts[event.taskId] != nil {
-            Task { await deliverSettlementAlert(taskId: event.taskId) }
+        if event.kind == "reply" {
+            handleReply(event, liveAfter: liveAfter)
+            saveCursor()
+            if let threadId = event.data.threadId {
+                threadEventSequences[threadId] = event.sequence
+            }
+            Task { await refresh() }
+            return
         }
         if let threadId = event.data.threadId {
             if !event.taskId.isEmpty, threadTaskIds.insert(event.taskId).inserted,
@@ -1458,7 +1482,6 @@ final class MarbleStore: ObservableObject {
                 Task { await refresh() }
             }
             if event.kind == "settled" { saveCursor() }
-            notifyIfNeeded(event: event)
             return
         }
         var buffers = live[event.conversationId] ?? LiveBuffers()
@@ -1522,20 +1545,20 @@ final class MarbleStore: ObservableObject {
         }
         live[event.conversationId] = buffers.isEmpty ? nil : buffers
         if forActive { syncLive() }
-        notifyIfNeeded(event: event)
     }
 
     private func markUnauthorized() {
         needsToken = true
+        stopStreaming()
     }
 
     private func markOffline(_ error: Error) {
         if let clientError = error as? MarbleClientError, clientError == .unauthorized {
-            needsToken = true
+            markUnauthorized()
             return
         }
         // iOS drops connections in the background; that is not news.
-        guard appActive, !status.suspended else { return }
+        guard !appInBackground, !status.suspended else { return }
         errorMessage = error.localizedDescription
     }
 }

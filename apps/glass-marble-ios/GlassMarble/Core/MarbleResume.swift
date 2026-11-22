@@ -4,8 +4,17 @@ import Foundation
 /// after `since`; its counter starts over when the host restarts, so a saved
 /// cursor ahead of the host's own sequence would hide every new event.
 enum MarbleResumeCursor {
-    static func resume(saved: UInt64, hostSequence: UInt64) -> UInt64 {
-        saved > hostSequence ? hostSequence : saved
+    struct Resume: Equatable {
+        let since: UInt64
+        let restarted: Bool
+    }
+
+    static func resume(saved: UInt64, hostSequence: UInt64, previousPID: Int?, hostPID: Int?) -> Resume {
+        // A saved position from an older app may have no process ID.
+        // Replay once so an already advanced replacement host can't hide replies.
+        let changedProcess = hostPID != nil && previousPID != hostPID && (previousPID != nil || saved != 0)
+        let restarted = changedProcess || hostSequence < saved
+        return Resume(since: restarted ? 0 : saved, restarted: restarted)
     }
 }
 

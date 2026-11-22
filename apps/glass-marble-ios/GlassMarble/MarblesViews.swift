@@ -115,8 +115,6 @@ struct EveryoneView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
-    @State private var follow = MarbleScrollFollow()
-    @State private var userDriven = false
     @State private var showsActivity = false
 
     private static let bottomAnchor = "everyone-bottom"
@@ -165,28 +163,7 @@ struct EveryoneView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .onScrollPhaseChange { _, phase in
-                userDriven = phase == .tracking || phase == .interacting || phase == .decelerating
-            }
-            .onScrollGeometryChange(for: Double.self) { geometry in
-                geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height
-            } action: { _, distance in
-                if userDriven { follow.userMoved(distanceFromBottom: distance) }
-            }
-            .onChange(of: entries.count) { _, _ in scrollIfFollowing(proxy) }
-            .onChange(of: store.everyoneThinking.count) { _, _ in scrollIfFollowing(proxy) }
-            .onAppear {
-                if follow.initialFollow(now: now()) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-                // Lazy rows settle their heights after the first pass; land
-                // on the real end once they have.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    if follow.following { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-                }
-            }
-            .onChange(of: store.loaded) { _, _ in scrollIfFollowing(proxy) }
-            .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: follow.following)
+            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor)
         }
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .marbleComposerInset { composer }
@@ -215,19 +192,6 @@ struct EveryoneView: View {
     }
 
     private var entries: [MarbleEntry] { store.everyoneEntries }
-
-    private func now() -> TimeInterval { Date().timeIntervalSinceReferenceDate }
-
-    private func scrollIfFollowing(_ proxy: ScrollViewProxy) {
-        // A new row is a discrete change, not streaming: no throttle.
-        guard follow.following else { return }
-        // Wait one pass so the new row has its height before scrolling to it.
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-            }
-        }
-    }
 
     /// Who's in the room, on the same bar as the title so messages scroll
     /// under material rather than behind bare avatars; plus a line when
@@ -570,16 +534,7 @@ struct MarbleChatScreen: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .onChange(of: entries.count) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: thinking) { _, _ in scrollToLatest(proxy) }
-            .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                }
-            }
-            .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: true)
+            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor)
         }
         .marbleComposerInset {
             ComposerBar(
@@ -591,12 +546,6 @@ struct MarbleChatScreen: View {
                 onStop: { Task { await store.stop(marble) } }
             )
             .marbleComposerBackground()
-        }
-    }
-
-    private func scrollToLatest(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
         }
     }
 

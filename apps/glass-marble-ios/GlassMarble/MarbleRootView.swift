@@ -31,7 +31,6 @@ final class MarbleNavigationModel: ObservableObject {
 struct MarbleRootView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @Environment(\.scenePhase) private var scenePhase
     @State private var showsIntroduction = false
     @AppStorage("marble.introduced") private var introduced = false
     @SceneStorage("marble.tab") private var storedTab = MarbleTab.everyone.rawValue
@@ -69,13 +68,6 @@ struct MarbleRootView: View {
             }
         }
         .task { store.start() }
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .active: store.appBecameActive()
-            case .background, .inactive: store.appBecameInactive()
-            @unknown default: break
-            }
-        }
         .onAppear {
             if let restored = MarbleTab(rawValue: storedTab) {
                 navigation.selectTab(restored)

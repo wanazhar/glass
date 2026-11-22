@@ -101,6 +101,7 @@ private struct MarbleThreadView: View {
     @State private var searching = false
     @State private var draft = ""
     @State private var jump: MarbleMessageJump?
+    @State private var appliedInitialJump = false
     @State private var sending = false
     @State private var loadFailed = false
     @State private var sendFailed = false
@@ -155,8 +156,9 @@ private struct MarbleThreadView: View {
                 .marbleComposerBackground()
             }
         }
-        .task(id: store.threadEventSequences[id]) {
-            if jump == nil, let initialEntryId { jump = MarbleMessageJump(entryId: initialEntryId) }
+        .task(id: [store.threadEventSequences[id], store.threadHostRevision]) {
+            if !appliedInitialJump, let initialEntryId { jump = MarbleMessageJump(entryId: initialEntryId) }
+            appliedInitialJump = true
             await load()
         }
     }
@@ -187,7 +189,7 @@ private struct MarbleThreadView: View {
             try await store.sendInThread(trimmed, thread: thread)
             if text == draft { draft = "" }
             await load()
-            if let entry = page?.entries.last { jump = MarbleMessageJump(entryId: entry.id) }
+            jump = nil
         } catch is CancellationError {
         } catch {
             sendFailed = true
@@ -285,6 +287,7 @@ private struct MarbleJumpTimeline: View {
     let jump: MarbleMessageJump?
     var parentId: String?
     @State private var highlight: String?
+    private static let bottomAnchor = "thread-bottom"
 
     var body: some View {
         let transcript = MarbleReasoningAssociation(entries, keepVisible: jump?.entryId)
@@ -302,13 +305,14 @@ private struct MarbleJumpTimeline: View {
                                     in: RoundedRectangle(cornerRadius: 8))
                         .id(entry.id)
                     }
+                    Color.clear.frame(height: 1).id(Self.bottomAnchor)
                 }
                 .padding(16)
                 .frame(maxWidth: 820)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor, searchJump: jump?.requestId)
             .task(id: jump.flatMap { target in entries.contains { $0.id == target.entryId } ? target : nil }) {
                 guard let jump, entries.contains(where: { $0.id == jump.entryId }) else { return }
                 highlight = jump.entryId

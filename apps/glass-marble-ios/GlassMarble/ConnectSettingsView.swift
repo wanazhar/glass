@@ -140,7 +140,17 @@ struct ConnectionSettingsView: View {
             Section {
                 LabeledContent("Host", value: store.endpoint?.displayHost ?? "not connected")
                 LabeledContent("Status", value: store.statusLabel)
-                Button("Reconnect now") { store.reconnect(force: true) }
+                Button(store.connectionPaused ? "Connect" : "Reconnect now") { store.reconnect(force: true) }
+            }
+            Section {
+                Toggle("Keep connection alive in background", isOn: $store.backgroundConnectionEnabled)
+                    .accessibilityIdentifier("settings.backgroundConnection")
+                if store.locationPermissionDenied {
+                    Text("Allow location while using Marble in iPhone Settings to keep the connection open.")
+                        .foregroundStyle(.secondary)
+                }
+            } footer: {
+                Text("While connected, Marble uses low-accuracy location updates to stay online. This can use more battery, and iOS shows the location indicator. Marble does not save or send your location.")
             }
             Section {
                 Button("Change host…") { showsChangeHost = true }
@@ -191,7 +201,7 @@ struct NotificationSettingsView: View {
                     set: { _ in Task { await store.toggleVoice() } }
                 ))
             } footer: {
-                Text("Alerts only arrive while Marble is open or recently used — remote push isn't available with this signing.")
+                Text("Marble alerts you to new replies in other chats. With background connection enabled, alerts can also arrive while Marble is in the background.")
             }
         }
         .navigationTitle("Notifications")
@@ -453,4 +463,3 @@ private struct ModelPickerRow: View {
         }
     }
 }
-

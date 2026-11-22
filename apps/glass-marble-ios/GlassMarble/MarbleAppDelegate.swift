@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// Read the deep-link target out of an APNs payload Marble sent itself.
+/// Read the deep-link target out of a local notification.
 func marbleConversationId(from userInfo: [AnyHashable: Any]) -> String? {
     guard let marble = userInfo["marble"] as? [String: Any] else { return nil }
     let id = marble["conversationId"] as? String
@@ -40,37 +40,15 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         let userInfo = notification.request.content.userInfo
         let target = marbleConversationId(from: userInfo)
         let marble = userInfo["marble"] as? [String: Any]
-        let taskID = marble?["taskId"] as? String
         let threadId = marble?["threadId"] as? String
         return await MainActor.run {
             let shouldSuppress = UIApplication.shared.connectedScenes.contains { scene in
-                guard scene.activationState == .foregroundActive,
+                guard scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive,
                       let delegate = scene.delegate as? MarbleSceneDelegate else { return false }
-                return !delegate.shouldPresentNotification(target: target, taskID: taskID, threadId: threadId)
+                return !delegate.shouldPresentNotification(target: target, threadId: threadId)
             }
             return shouldSuppress ? [] : [.banner, .sound, .list]
         }
-    }
-
-    /// The device token is handed to the product store, which registers it with
-    /// the self-hosted host so Marble can push a notification when it needs you.
-    func application(
-        _ application: UIApplication,
-        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
-    ) {
-        guard MarbleFeatures.remotePush else { return }
-        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        NotificationCenter.default.post(name: .marblePushToken, object: token)
-    }
-
-    func application(
-        _ application: UIApplication,
-        didFailToRegisterForRemoteNotificationsWithError error: Error
-    ) {
-        NotificationCenter.default.post(
-            name: .marblePushRegistrationFailed,
-            object: error.localizedDescription
-        )
     }
 
     func application(
@@ -100,18 +78,14 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #endif
     private let navigation = MarbleNavigationModel()
 
-    func shouldPresentNotification(target: String?, taskID: String?, threadId: String?) -> Bool {
+    func shouldPresentNotification(target: String?, threadId: String?) -> Bool {
         guard store.onboarded, !store.needsToken,
               window?.rootViewController?.presentedViewController == nil else { return true }
         let visibleChat = navigation.state.visibleChat { id in
             store.prism.marbles.first { $0.id == id }?.conversationId
         }
-        // The host can address a mirrored Everyone turn by its engine chat.
-        let mirrored = taskID.map { id in
-            !id.isEmpty && (store.everyoneTaskIds.contains(id) || store.everyoneEntries.contains { $0.taskId == id })
-        } ?? false
         return MarbleNotificationCursor.shouldPresent(
-            target: visibleChat == everyoneConversationId && mirrored ? everyoneConversationId : target,
+            target: target,
             visibleChat: visibleChat,
             threadId: threadId,
             visibleThreadId: navigation.state.visibleThreadId
@@ -124,6 +98,10 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        MarbleStore.liveActivityStore = store
+        store.shouldPresentReply = { [weak self] target, threadId in
+            self?.shouldPresentNotification(target: target, threadId: threadId) ?? false
+        }
         // A notification can launch the app cold; honour its target too.
         if let response = connectionOptions.notificationResponse,
            let id = marbleConversationId(from: response.notification.request.content.userInfo) {
@@ -141,12 +119,21 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
     }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        store.appWillResignActive()
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        store.appDidEnterBackground()
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        store.appBecameActive()
+    }
 }
 
 extension Notification.Name {
-    /// Posted with the APNs device token as a hex string.
-    static let marblePushToken = Notification.Name("marble.push.token")
-    static let marblePushRegistrationFailed = Notification.Name("marble.push.failed")
     /// Posted with a conversation id when a notification asks to open one.
     static let marbleOpenConversation = Notification.Name("marble.open.conversation")
 }

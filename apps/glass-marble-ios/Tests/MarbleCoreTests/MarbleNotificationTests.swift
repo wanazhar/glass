@@ -3,28 +3,58 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleNotificationTests: XCTestCase {
-    private func settled(_ sequence: UInt64, task: String = "turn") -> MarbleEvent {
-        MarbleEvent(sequence: sequence, conversationId: "chat", taskId: task, kind: "settled", data: .init())
+    private func reply(
+        _ sequence: UInt64, id: String = "entry", kind: String = "assistant",
+        eventKind: String = "reply", conversation: String = "chat"
+    ) -> MarbleEvent {
+        MarbleEvent(sequence: sequence, conversationId: conversation, taskId: "turn", kind: eventKind,
+                    data: .init(entryId: id, entryKind: kind, text: "Example"))
     }
 
-    func testInitialBaselineSkipsHistoryAndPersistsAcrossLaunch() throws {
-        var cursor = MarbleNotificationCursor(hostSequence: 10, hostPID: 1)
-        XCTAssertNil(cursor.consume(settled(10)))
-        XCTAssertNotNil(cursor.consume(settled(11)))
+    func testReplayRecordsLatestReplyWithoutNotifyingBeforeOrAtBaseline() {
+        var cursor = MarbleNotificationCursor()
+        XCTAssertNil(cursor.consume(reply(9, id: "first"), liveAfter: nil))
+        XCTAssertNil(cursor.consume(reply(10, id: "second"), liveAfter: 10))
+        XCTAssertEqual(cursor.lastSeenMessageID, "second")
+        XCTAssertNil(cursor.lastNotifiedMessageID)
+        XCTAssertEqual(cursor.consume(reply(11, id: "live"), liveAfter: 10)?.entry.id, "live")
+    }
+
+    func testStableEntryIDIsDedupedAcrossConnectionsAndLaunches() throws {
+        var cursor = MarbleNotificationCursor()
+        let entry = try XCTUnwrap(cursor.consume(reply(11), liveAfter: 10)?.entry)
+        cursor.notified(entry)
         let data = try JSONEncoder().encode(cursor)
         var restored = try JSONDecoder().decode(MarbleNotificationCursor.self, from: data)
-        XCTAssertNil(restored.consume(settled(11)))
-        XCTAssertNil(restored.consume(settled(12)), "The host publishes two settled frames per turn")
-        XCTAssertNotNil(restored.consume(settled(13, task: "new-turn")))
+        XCTAssertEqual(restored.lastNotifiedMessageID, "entry")
+        XCTAssertNil(restored.consume(reply(12), liveAfter: 11))
+        XCTAssertNotNil(restored.consume(reply(13, id: "another"), liveAfter: 11))
     }
 
-    func testReconnectPreservesCursorUnlessHostRestarts() {
-        var cursor = MarbleNotificationCursor(hostSequence: 10, hostPID: 1)
-        cursor.align(hostSequence: 14, hostPID: 1)
-        XCTAssertNotNil(cursor.consume(settled(11)))
-        cursor.align(hostSequence: 3, hostPID: 2)
-        XCTAssertNil(cursor.consume(settled(3)))
-        XCTAssertNotNil(cursor.consume(settled(4)))
+    func testReplyDeduplicationIsScopedToTheVisibleChat() {
+        var cursor = MarbleNotificationCursor()
+        XCTAssertNotNil(cursor.consume(reply(11, conversation: "everyone"), liveAfter: 10))
+        XCTAssertNotNil(cursor.consume(reply(12, conversation: "private"), liveAfter: 10))
+        XCTAssertNil(cursor.consume(reply(13, conversation: "everyone"), liveAfter: 10))
+        XCTAssertNil(cursor.consume(reply(14, conversation: "private"), liveAfter: 10))
+    }
+
+    func testOnlyPersistedAssistantAndFailureRepliesQualify() {
+        var cursor = MarbleNotificationCursor()
+        for kind in ["user", "tool", "reasoning"] {
+            XCTAssertNil(cursor.consume(reply(11, kind: kind), liveAfter: 10))
+        }
+        XCTAssertNil(cursor.consume(reply(12, eventKind: "settled"), liveAfter: 10))
+        XCTAssertNil(cursor.lastSeenMessageID)
+        XCTAssertEqual(cursor.consume(reply(13, kind: "failure"), liveAfter: 10)?.title, "Marble hit a problem")
+    }
+
+    func testReplyEventDecodesItsStableEntryIDAndThread() throws {
+        let payload = #"{"sequence":11,"conversationId":"chat","taskId":"turn","kind":"reply","data":{"id":"entry","kind":"assistant","text":"Example","thread_id":"thread"}}"#
+        let event = try JSONDecoder().decode(MarbleEvent.self, from: Data(payload.utf8))
+        var cursor = MarbleNotificationCursor()
+        XCTAssertEqual(event.data.threadId, "thread")
+        XCTAssertEqual(cursor.consume(event, liveAfter: 10)?.entry.id, "entry")
     }
 
     func testOnlyVisibleChatIsSuppressed() {
@@ -63,6 +93,12 @@ final class MarbleNotificationTests: XCTestCase {
         ))
         navigation.everyonePath = [.searchHit(conversationId: "everyone", threadId: "t", entryId: "reply")]
         XCTAssertEqual(navigation.visibleThreadId, "t")
+        XCTAssertFalse(MarbleNotificationCursor.shouldPresent(
+            target: "everyone", visibleChat: nil, threadId: "t", visibleThreadId: navigation.visibleThreadId
+        ))
+        XCTAssertTrue(MarbleNotificationCursor.shouldPresent(
+            target: "everyone", visibleChat: nil, threadId: "other", visibleThreadId: navigation.visibleThreadId
+        ))
         navigation.selectTab(.settings)
         XCTAssertNil(navigation.visibleThreadId)
     }

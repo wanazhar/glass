@@ -10,7 +10,6 @@ final class MarbleClient: @unchecked Sendable {
     init(endpoint: MarbleEndpoint) {
         self.endpoint = endpoint
         let configuration = URLSessionConfiguration.default
-        configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 60 * 60 * 4
         configuration.httpShouldSetCookies = true
@@ -117,25 +116,24 @@ final class MarbleClient: @unchecked Sendable {
 
     // MARK: - Product API
 
-    func health() async throws -> MarbleHealth {
+    func health(timeout: TimeInterval? = nil) async throws -> MarbleHealth {
         // healthz answers 503 with the same JSON body when the engine is down;
         // onboarding needs that body to say so instead of "unreachable". Every
         // failure maps through MarbleClientError so the evaluator can tell a
         // refused request from a silent one.
-        do {
-            let (data, response) = try await session.data(
-                for: try makeRequest(route: .health)
-            )
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 503 {
+        try await withRepin {
+            do {
+                var request = try makeRequest(route: .health)
+                if let timeout { request.timeoutInterval = timeout }
+                let (data, response) = try await session.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status != 503 { try marbleValidate(response, data: data) }
                 return try decoder.decode(MarbleHealth.self, from: data)
+            } catch let error as MarbleClientError {
+                throw error
+            } catch {
+                throw MarbleClientError.from(error)
             }
-            try marbleValidate(response, data: data)
-            return try decoder.decode(MarbleHealth.self, from: data)
-        } catch let error as MarbleClientError {
-            throw error
-        } catch {
-            throw MarbleClientError.from(error)
         }
     }
 
@@ -521,64 +519,6 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(route: .crates))
     }
 
-    // MARK: - Notifications and voice
-
-    struct NotificationUpdate: Encodable {
-        var webhookUrl: String
-        var webhookToken: String
-        var events: [String]
-        var apns: MarbleApns?
-        var quietHours: MarbleQuietHours?
-        var reAlertSeconds: Int?
-        var retries: Int?
-        var dedupeSeconds: Int?
-    }
-
-    func notificationSettings() async throws -> MarbleNotificationSettings {
-        try await fetch(try makeRequest(route: .notifications))
-    }
-
-    func saveNotifications(_ update: NotificationUpdate) async throws -> MarbleNotificationSettings {
-        try await postJSON("/api/notifications", body: update)
-    }
-
-    func testNotification() async throws -> Bool {
-        let reply: OkReply = try await postJSON(
-            "/api/notifications/test",
-            body: Optional<String>.none
-        )
-        return reply.ok
-    }
-
-    func registerDevice(token: String, topic: String) async throws {
-        struct Body: Encodable {
-            var token: String
-            var platform: String
-            var topic: String
-        }
-        let _: OkReply = try await postJSON(
-            "/api/devices",
-            body: Body(token: token, platform: "ios", topic: topic)
-        )
-    }
-
-    /// Registered push devices (the host only ever shows token prefixes).
-    func devices() async throws -> [MarbleDevice] {
-        struct Reply: Decodable { var devices: [MarbleDevice] }
-        do {
-            let reply: Reply = try await fetch(try makeRequest(route: .devices))
-            return reply.devices
-        } catch {
-            // Some hosts answer with a bare array instead of a wrapper.
-            let devices: [MarbleDevice] = try await fetch(try makeRequest(route: .devices))
-            return devices
-        }
-    }
-
-    func removeDevice(tokenPrefix: String) async throws {
-        try await post("/api/devices/\(encoded(tokenPrefix))/remove")
-    }
-
     func voice() async throws -> MarbleVoice {
         try await fetch(try makeRequest(route: .voice))
     }
@@ -608,14 +548,25 @@ final class MarbleClient: @unchecked Sendable {
     ///
     /// Raw bytes — never `bytes.lines`: `AsyncLineSequence` silently drops the
     /// empty lines that complete SSE frames, so keepalive-only streams and
-    /// every event would be invisible. `onOpen` fires as soon as the request
-    /// returns 200 (the stream is up before any frame); `onActivity` fires for
-    /// every completed line, including comments, so keepalives prove liveness.
-    func events(
-        since: UInt64,
-        onOpen: (@Sendable () -> Void)? = nil,
-        onActivity: (@Sendable () -> Void)? = nil
-    ) -> AsyncThrowingStream<MarbleEvent, Error> {
+    /// every event would be invisible.
+    enum StreamUpdate {
+        case opened
+        case activity
+        case baseline(UInt64)
+        case event(MarbleEvent)
+
+        init?(frame: MarbleSSEFrame, decoder: JSONDecoder) {
+            if frame.event == "hello" {
+                guard let cursor = frame.replayCursor else { return nil }
+                self = .baseline(cursor)
+            } else {
+                guard let event = try? decoder.decode(MarbleEvent.self, from: Data(frame.data.utf8)) else { return nil }
+                self = .event(event)
+            }
+        }
+    }
+
+    func events(since: UInt64) -> AsyncThrowingStream<StreamUpdate, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -625,26 +576,24 @@ final class MarbleClient: @unchecked Sendable {
                     )
                     let (bytes, response) = try await session.bytes(for: request)
                     try marbleValidateStatus(response)
-                    onOpen?()
+                    continuation.yield(.opened)
                     var splitter = MarbleSSELineSplitter()
                     var parser = MarbleSSEParser()
                     for try await byte in bytes {
                         for line in splitter.feed(byte) {
-                            onActivity?()
+                            if line.hasPrefix(":") { continuation.yield(.activity) }
                             guard let frame = parser.feed(line),
-                                  let data = frame.data.data(using: .utf8),
-                                  let event = try? decoder.decode(MarbleEvent.self, from: data)
+                                  let update = StreamUpdate(frame: frame, decoder: decoder)
                             else { continue }
-                            continuation.yield(event)
+                            continuation.yield(update)
                         }
                     }
                     if let last = splitter.finish() {
                         _ = parser.feed(last)
                     }
                     if let frame = parser.finish(),
-                       let data = frame.data.data(using: .utf8),
-                       let event = try? decoder.decode(MarbleEvent.self, from: data) {
-                        continuation.yield(event)
+                       let update = StreamUpdate(frame: frame, decoder: decoder) {
+                        continuation.yield(update)
                     }
                     continuation.finish()
                 } catch {

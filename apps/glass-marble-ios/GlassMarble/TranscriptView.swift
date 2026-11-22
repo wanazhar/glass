@@ -2,10 +2,6 @@ import SwiftUI
 
 struct TranscriptView: View {
     @EnvironmentObject private var store: MarbleStore
-    @State private var follow = MarbleScrollFollow()
-    /// True only while the person's finger is driving the scroll view;
-    /// content growth alone must never count as "scrolled away".
-    @State private var userDriven = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -69,39 +65,7 @@ struct TranscriptView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onScrollPhaseChange { _, phase in
-                userDriven = phase == .tracking || phase == .interacting || phase == .decelerating
-            }
-            .onScrollGeometryChange(for: Double.self) { geometry in
-                geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height
-            } action: { _, distance in
-                if userDriven { follow.userMoved(distanceFromBottom: distance) }
-            }
-            .onChange(of: store.transcript.count) { _, _ in scrollIfFollowing(proxy) }
-            .onChange(of: store.liveText) { _, _ in scrollIfFollowing(proxy) }
-            .onChange(of: store.liveTools.count) { _, _ in scrollIfFollowing(proxy) }
-            .onChange(of: store.loaded) { _, _ in scrollIfFollowing(proxy) }
-            .onAppear {
-                // First appearance jumps straight to the end, no animation.
-                if follow.initialFollow(now: now()) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-            }
-            .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: follow.following)
-            .overlay(alignment: .bottomTrailing) {
-                if follow.showJumpButton {
-                    Button {
-                        follow.jumpToLatest(now: now())
-                        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                    } label: {
-                        Label("Jump to latest", systemImage: "arrow.down")
-                            .labelStyle(.iconOnly)
-                            .padding(10)
-                            .marbleFloating()
-                    }
-                    .accessibilityLabel("Jump to latest")
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 8)
-                }
-            }
+            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor)
         }
     }
 
@@ -120,16 +84,6 @@ struct TranscriptView: View {
 
     private static let bottomAnchor = "marble-bottom"
 
-    private func now() -> TimeInterval {
-        Date().timeIntervalSinceReferenceDate
-    }
-
-    /// Follow the tail only while the person is at the end, and at most as
-    /// fast as the throttle allows — streaming must never fight their scroll.
-    private func scrollIfFollowing(_ proxy: ScrollViewProxy) {
-        guard follow.shouldFollow(now: now()) else { return }
-        DispatchQueue.main.async { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-    }
 }
 
 /// One transcript entry. The person's own messages sit in a blue bubble on
@@ -485,14 +439,79 @@ extension View {
         }
     }
 
-    /// Keep the newest message in view when the keyboard opens, as long as
-    /// the person was reading the end of the chat.
-    func marbleKeepsLatestVisible(proxy: ScrollViewProxy, anchor: String, following: Bool) -> some View {
-        onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-            guard following else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(anchor, anchor: .bottom)
+    func marbleFollowsLatest(proxy: ScrollViewProxy, anchor: String, searchJump: UUID? = nil) -> some View {
+        modifier(MarbleFollowLatest(proxy: proxy, anchor: anchor, searchJump: searchJump))
+    }
+}
+
+private struct MarbleFollowLatest: ViewModifier {
+    let proxy: ScrollViewProxy
+    let anchor: String
+    let searchJump: UUID?
+    @State private var follow = MarbleScrollFollow()
+    @State private var phase: ScrollPhase = .idle
+
+    private struct Layout: Equatable {
+        let bottom: CGFloat
+        let viewport: CGFloat
+        let offset: CGFloat
+
+        var distanceFromBottom: Double { Double(bottom - viewport - offset) }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
+            .onScrollPhaseChange { _, newPhase in
+                phase = newPhase
+                if newPhase == .idle { scrollIfFollowing() }
             }
+            .onScrollGeometryChange(for: Layout.self) { geometry in
+                Layout(
+                    bottom: geometry.contentSize.height + geometry.contentInsets.bottom,
+                    viewport: geometry.containerSize.height,
+                    offset: geometry.contentOffset.y
+                )
+            } action: { old, new in
+                if old.bottom != new.bottom || old.viewport != new.viewport {
+                    // SwiftUI now knows the row's rendered height and the
+                    // space left by the composer, including keyboard changes.
+                    scrollIfFollowing()
+                } else if old.offset != new.offset && (phase == .interacting || phase == .decelerating) {
+                    follow.userMoved(distanceFromBottom: new.distanceFromBottom)
+                }
+            }
+            .onChange(of: searchJump, initial: true) { _, target in
+                if target != nil {
+                    follow.pauseForSearchJump()
+                } else {
+                    follow.jumpToLatest()
+                    scrollIfFollowing()
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if follow.showJumpButton {
+                    Button {
+                        follow.jumpToLatest()
+                        scrollIfFollowing()
+                    } label: {
+                        Label("Jump to latest", systemImage: "arrow.down")
+                            .labelStyle(.iconOnly)
+                            .padding(10)
+                            .marbleFloating()
+                    }
+                    .accessibilityLabel("Jump to latest")
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                }
+            }
+    }
+
+    private func scrollIfFollowing() {
+        guard follow.following, phase == .idle || phase == .animating else { return }
+        DispatchQueue.main.async {
+            guard follow.following, phase == .idle || phase == .animating else { return }
+            proxy.scrollTo(anchor, anchor: .bottom)
         }
     }
 }

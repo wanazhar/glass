@@ -144,8 +144,6 @@ struct MarbleRoute: Equatable {
     }
     static let tools = MarbleRoute(path: "/api/tools")
     static let crates = MarbleRoute(path: "/api/crates")
-    static let notifications = MarbleRoute(path: "/api/notifications")
-    static let devices = MarbleRoute(path: "/api/devices")
     static let voice = MarbleRoute(path: "/api/voice")
     static let control = MarbleRoute(path: "/api/control")
 

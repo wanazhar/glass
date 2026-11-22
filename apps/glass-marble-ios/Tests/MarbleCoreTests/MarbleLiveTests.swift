@@ -127,9 +127,6 @@ final class MarbleLiveTests: XCTestCase {
         _ = try await fetchJSON(MarbleToolInventory.self, .tools)
         _ = try await fetchJSON(MarbleVoice.self, .voice)
 
-        struct DevicesReply: Decodable { var devices: [MarbleDevice] }
-        _ = try await fetchJSON(DevicesReply.self, .devices)
-
         // The crate map may legitimately 503 when the host has no workspace
         // map; anything else is a routing bug.
         do {
@@ -305,7 +302,11 @@ extension MarbleLiveTests {
             let port = UInt16(url.port ?? 80)
             var hints = addrinfo()
             hints.ai_family = AF_INET
+            #if canImport(Darwin)
+            hints.ai_socktype = SOCK_STREAM
+            #else
             hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+            #endif
             var info: UnsafeMutablePointer<addrinfo>?
             guard getaddrinfo(name, String(port), &hints, &info) == 0, let info else {
                 throw MarbleClientError.invalidURL
@@ -372,9 +373,10 @@ extension MarbleLiveTests {
         var parser = MarbleSSEParser()
         var sawKeepalive = false
         var sawAnyLine = false
+        var replayCursor: UInt64?
         var pending = socket.rest
         let deadline = Date().addingTimeInterval(25)
-        while !sawKeepalive && Date() < deadline {
+        while (!sawKeepalive || replayCursor == nil) && Date() < deadline {
             if pending.isEmpty {
                 guard let chunk = socket.read() else { break }
                 pending = chunk
@@ -384,11 +386,12 @@ extension MarbleLiveTests {
                 sawAnyLine = true
                 status.streamEvent()
                 if line.hasPrefix(":") { sawKeepalive = true }
-                _ = parser.feed(line)
+                if let cursor = parser.feed(line)?.replayCursor { replayCursor = cursor }
             }
         }
         XCTAssertTrue(sawAnyLine, "no bytes arrived on the event stream")
         XCTAssertTrue(sawKeepalive, "no keepalive arrived within 25 s")
+        XCTAssertNotNil(replayCursor, "no replay boundary arrived on the stream")
         XCTAssertEqual(status.label, "Connected")
     }
 

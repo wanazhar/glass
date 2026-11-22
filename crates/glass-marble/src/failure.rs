@@ -2,6 +2,15 @@ use serde::{Deserialize, Serialize};
 
 pub const MESSAGE: &str = "Couldn't get a reply from the model. Try again.";
 
+pub(crate) fn transient(error: &str) -> bool {
+    matches!(
+        FailureInfo::of(error).category.as_str(),
+        "network" | "timeout"
+    ) || ["HTTP 429", "HTTP 502", "HTTP 503", "HTTP 504"]
+        .iter()
+        .any(|status| error.contains(status))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureInfo {
     pub category: String,

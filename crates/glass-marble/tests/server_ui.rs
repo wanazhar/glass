@@ -4574,6 +4574,60 @@ fn everyone_default_recovers_after_first_admission_fails() {
 }
 
 #[test]
+fn everyone_cold_default_retries_transient_admission_once_without_duplicate_sends() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture =
+        NamedTurnFixture::with_persistence("cold-default-transient", Vec::new(), true);
+    fixture.install_default_worker_with_args(vec![
+        "--reject-create-once".into(),
+        "--transient-create-error".into(),
+        "--strict-conversations".into(),
+    ]);
+    let request = json!({"text":"@everyone cold start","client_message_id":"cold-first"});
+    let (status, body) = fixture.post("/api/everyone", request.clone());
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        body["busy"],
+        json!([]),
+        "default first admission failed: {body}"
+    );
+    assert_eq!(body["answering"].as_array().unwrap().len(), 2);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture
+        .events
+        .since(0)
+        .iter()
+        .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+        .count()
+        < 2
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(fixture.post("/api/everyone", request).1, body);
+    let state = fixture.store.as_ref().unwrap().load().unwrap();
+    assert_eq!(
+        state
+            .tasks
+            .iter()
+            .filter(|t| t.prompt == "@everyone cold start")
+            .count(),
+        2
+    );
+    assert!(state.tasks.iter().all(|t| t.status == "completed"));
+    assert_eq!(
+        state
+            .transcript
+            .iter()
+            .filter(|e| e.conversation_id == "everyone" && e.kind == "user")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn everyone_thread_search_returns_only_the_jumpable_reply() {
     if !python3_available() {
         return;

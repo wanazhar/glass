@@ -287,7 +287,8 @@ def main():
             if "--reject-create-once" in sys.argv and not os.path.exists(marker):
                 with open(marker, "w", encoding="utf-8") as handle:
                     handle.write("rejected")
-                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "fixture refuses first admission"}})
+                message = "connection reset during admission" if "--transient-create-error" in sys.argv else "fixture refuses first admission"
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": message}})
                 continue
             if STORAGE_DIR:
                 with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "w", encoding="utf-8") as handle:

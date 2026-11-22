@@ -186,7 +186,17 @@ pub fn run_turn(
     // without finish is exactly the crash the journal exists for.
     let conversation_id = match turn.conversation_id.as_deref() {
         Some(id) if !id.is_empty() => id.to_string(),
-        _ => match conversation.create() {
+        _ => match conversation.create().or_else(|error| {
+            if !crate::failure::transient(&error.to_string()) {
+                return Err(error);
+            }
+            conversation.publish(
+                "task_retry",
+                serde_json::json!({"attempt":1,"phase":"admission","reason":"transient_failure"}),
+            );
+            conversation.ensure_runtime()?;
+            conversation.create()
+        }) {
             Ok(id) => id,
             Err(error) => {
                 if let Some(turn) = live.as_deref_mut() {

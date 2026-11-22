@@ -18,12 +18,23 @@ struct MarbleChatCache: Codable, Equatable {
     static let empty = MarbleChatCache(everyone: [], transcripts: [:])
 
     /// One file name per host, so switching hosts never shows another
-    /// host's messages.
+    /// host's messages: the SHA-256 of the normalized host URL, which no two
+    /// different hosts share.
     static func fileName(for host: String) -> String {
-        let safe = host.unicodeScalars.map { scalar -> String in
-            CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "_"
-        }.joined()
-        return "marble-chats-\(safe).json"
+        let digest = MarbleSHA256.hash(Array(normalized(host).utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "marble-chats-\(hex).json"
+    }
+
+    /// Scheme and host are case-insensitive and a trailing slash adds
+    /// nothing, so they do not make a different host.
+    static func normalized(_ host: String) -> String {
+        var value = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        guard var components = URLComponents(string: value) else { return value }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        return components.string ?? value
     }
 
     func encoded() throws -> Data {

@@ -1558,7 +1558,20 @@ final class MarbleResumeTests: XCTestCase {
             MarbleChatCache.fileName(for: "http://a:4783"),
             MarbleChatCache.fileName(for: "http://b:4783")
         )
-        XCTAssertEqual(MarbleChatCache.fileName(for: "http://a:1"), "marble-chats-http___a_1.json")
+        XCTAssertTrue(MarbleChatCache.fileName(for: "http://a:1").hasPrefix("marble-chats-"))
+    }
+
+    func testCacheFileNamesNeverCollide() {
+        XCTAssertNotEqual(
+            MarbleChatCache.fileName(for: "http://a-b.example:4783"),
+            MarbleChatCache.fileName(for: "http://a.b.example:4783")
+        )
+        XCTAssertEqual(
+            MarbleChatCache.fileName(for: "HTTP://Host.Example:4783/"),
+            MarbleChatCache.fileName(for: "http://host.example:4783")
+        )
+        let name = MarbleChatCache.fileName(for: "http://a:1")
+        XCTAssertEqual(name.count, "marble-chats-".count + 64 + ".json".count)
     }
 }
 

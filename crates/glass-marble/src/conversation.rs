@@ -1016,19 +1016,40 @@ impl Conversation {
             return;
         }
         let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        let existing: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|entry| {
+                entry.conversation_id == self.active_conversation
+                    && entry.task_id == self.active_task
+                    && entry.kind == "tool"
+            })
+            .cloned()
+            .collect();
         state.transcript.retain(|entry| {
             entry.conversation_id != self.active_conversation
                 || entry.task_id != self.active_task
                 || entry.kind != "tool"
         });
-        for (_, text, _) in &tools.rows {
+        for (call, text, _) in &tools.rows {
+            let id = format!("entry-tool-{}-{call}", self.active_task);
+            let previous = existing
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .unwrap_or_default();
             state.push_transcript(crate::TranscriptEntry {
+                id,
                 conversation_id: self.active_conversation.clone(),
                 task_id: self.active_task.clone(),
                 kind: "tool".into(),
                 text: text.clone(),
-                at: crate::worker::now_millis(),
-                ..Default::default()
+                at: if previous.at == 0 {
+                    crate::worker::now_millis()
+                } else {
+                    previous.at
+                },
+                ..previous
             });
         }
     }

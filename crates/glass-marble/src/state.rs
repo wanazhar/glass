@@ -162,6 +162,17 @@ pub struct ObservedTool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(
+        default,
+        rename = "thread_id",
+        alias = "threadId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<crate::threads::ThreadSummary>,
     pub conversation_id: String,
     /// `user`, `assistant`, `reasoning`, `tool`, `system`, `failure`, or `handoff`.
     pub kind: String,
@@ -209,6 +220,12 @@ pub struct HandoffEntry {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductState {
+    #[serde(default)]
+    pub threads: Vec<crate::threads::Thread>,
+    #[serde(default)]
+    pub task_threads: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    pub thread_events: crate::threads::ThreadEvents,
     /// Monotonic document revision; durable commits use it for reconciliation.
     #[serde(default)]
     pub revision: u64,
@@ -427,6 +444,7 @@ impl ProductState {
         self.control
             .queue
             .retain(|entry| entry.conversation_id.as_deref() != Some(id));
+        self.prune_threads();
         Ok(())
     }
 
@@ -485,6 +503,7 @@ impl ProductState {
         self.everyone_pending.clear();
         self.everyone_orders.clear();
         self.everyone_ready.clear();
+        self.prune_threads();
         before - self.transcript.len()
     }
 
@@ -542,7 +561,16 @@ impl ProductState {
     }
 
     /// Append one transcript entry.
-    pub fn push_transcript(&mut self, entry: TranscriptEntry) {
+    pub fn push_transcript(&mut self, mut entry: TranscriptEntry) {
+        if entry.id.is_empty() {
+            entry.id = format!("entry-{}", crate::next_request_id());
+        }
+        if entry.kind != "user" && entry.speaker_name.is_empty() {
+            entry.speaker_name = self.entry_sender(&entry);
+        }
+        if entry.thread_id.is_none() {
+            entry.thread_id = self.task_threads.get(&entry.task_id).cloned();
+        }
         let key = format!("task:{}", entry.task_id);
         if entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
             && matches!(entry.kind.as_str(), "assistant" | "failure")
@@ -555,7 +583,14 @@ impl ProductState {
             self.flush_everyone();
             return;
         }
+        let thread = entry.thread_id.clone();
         self.transcript.push(entry);
+        if let Some(id) = thread {
+            if let Some(thread) = self.threads.iter_mut().find(|t| t.id == id) {
+                thread.last_activity_at = thread.last_activity_at.max(now_millis());
+            }
+            self.refresh_thread(&id);
+        }
     }
 
     pub(crate) fn flush_everyone(&mut self) {
@@ -708,6 +743,7 @@ impl ProductState {
         }
 
         if !summary.is_empty() {
+            self.prune_threads();
             self.retention.trimmed_transcript = self
                 .retention
                 .trimmed_transcript

@@ -156,15 +156,21 @@ impl StateStore {
     /// start rather than overwrite what the operator had.
     pub fn load(&self) -> Result<ProductState, MarbleError> {
         match fs::read_to_string(&self.path) {
-            Ok(encoded) => match serde_json::from_str(&encoded) {
-                Ok(state) => Ok(state),
+            Ok(encoded) => match serde_json::from_str::<ProductState>(&encoded) {
+                Ok(mut state) => {
+                    state.ensure_entry_ids();
+                    Ok(state)
+                }
                 Err(error) => {
                     tracing::warn!(
                         %error,
                         path = %self.path.display(),
                         "product state is unreadable; trying the newest daily backup"
                     );
-                    self.recover_from_backup(&error)
+                    self.recover_from_backup(&error).map(|mut state| {
+                        state.ensure_entry_ids();
+                        state
+                    })
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

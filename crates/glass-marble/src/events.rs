@@ -28,6 +28,7 @@ pub struct TurnEvent {
 
 #[derive(Debug, Default)]
 struct BusState {
+    task_threads: std::collections::HashMap<String, String>,
     sequence: u64,
     recent: VecDeque<TurnEvent>,
     subscribers: Vec<mpsc::SyncSender<TurnEvent>>,
@@ -40,6 +41,12 @@ pub struct EventBus {
 }
 
 impl EventBus {
+    pub fn bind_thread(&self, task: &str, thread: &str) {
+        self.lock().task_threads.insert(task.into(), thread.into());
+    }
+    pub fn unbind_thread(&self, task: &str) {
+        self.lock().task_threads.remove(task);
+    }
     fn lock(&self) -> std::sync::MutexGuard<'_, BusState> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
@@ -55,9 +62,15 @@ impl EventBus {
         conversation_id: &str,
         task_id: &str,
         kind: &str,
-        data: Value,
+        mut data: Value,
     ) -> TurnEvent {
         let mut state = self.lock();
+        if let Some(thread) = state.task_threads.get(task_id) {
+            if !data.is_object() {
+                data = json!({"value":data});
+            }
+            data["thread_id"] = json!(thread);
+        }
         state.sequence += 1;
         let event = TurnEvent {
             sequence: state.sequence,

@@ -215,6 +215,8 @@ pub struct ControlEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub id: String,
     #[serde(default)]
     pub marble_id: Option<String>,
@@ -475,6 +477,7 @@ impl ControlState {
             ));
         }
         let entry = QueuedTurn {
+            thread_id: None,
             id: next_id("queued"),
             marble_id,
             conversation_id,

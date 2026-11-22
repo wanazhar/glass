@@ -2913,9 +2913,16 @@ fn fixture_prism_pool(
     extra_args: Vec<String>,
 ) -> Arc<glass_marble::PrismPool> {
     let script = script.to_path_buf();
+    let sequence = std::sync::atomic::AtomicUsize::new(0);
     let factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(move || {
         let mut command = Command::new("python3");
         command.arg(&script).arg("runtime");
+        if !extra_args.iter().any(|arg| arg == "--id-prefix") {
+            command.arg("--id-prefix").arg(format!(
+                "prism-{}-",
+                sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+        }
         for arg in &extra_args {
             command.arg(arg);
         }
@@ -2946,6 +2953,7 @@ fn everyone_entries(state: &Arc<Mutex<ProductState>>) -> Vec<TranscriptEntry> {
 }
 
 struct NamedTurnFixture {
+    events: EventBus,
     root: std::path::PathBuf,
     script: std::path::PathBuf,
     state: Arc<Mutex<ProductState>>,
@@ -2959,6 +2967,7 @@ impl NamedTurnFixture {
         let root = self.root.clone();
         let script = self.script.clone();
         let state = self.state.clone();
+        let engine_events = self.events.clone();
         let factory: LaneFactory = Arc::new(move |_| {
             let mut command = Command::new("python3");
             command
@@ -2967,7 +2976,9 @@ impl NamedTurnFixture {
                 .arg("--fail-once")
                 .arg("--error-once")
                 .arg("--id-prefix")
-                .arg("default-");
+                .arg("default-")
+                .arg("--pre-tool-text")
+                .arg("Step commentary");
             Conversation::spawn_with_router(
                 command,
                 &root,
@@ -2975,11 +2986,11 @@ impl NamedTurnFixture {
                 HostPolicy::approving(),
                 ApprovalInbox::default(),
                 ToolRouter::new(&root)?,
-                EventBus::default(),
+                engine_events.clone(),
             )
             .map(|conversation| conversation.with_product(state.clone()))
         });
-        let events = EventBus::default();
+        let events = self.events.clone();
         let pool = spawn_turn_pool(
             1,
             factory,
@@ -3030,7 +3041,7 @@ impl NamedTurnFixture {
             state: Arc::clone(&state),
             store: None,
             approvals: ApprovalInbox::default(),
-            events,
+            events: events.clone(),
             turn_tx: TurnSender::detached(),
             steer_tx: mpsc::channel().0,
             policy: AccessPolicy::new(None),
@@ -3038,6 +3049,7 @@ impl NamedTurnFixture {
         })
         .with_prism(Arc::clone(&pool));
         Self {
+            events: events.clone(),
             root,
             script,
             state,
@@ -3161,6 +3173,330 @@ impl Drop for NamedTurnFixture {
     fn drop(&mut self) {
         self.pool.shutdown();
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn thread_routes_are_idempotent_searchable_and_paginated_with_stable_ids() {
+    let fixture = NamedTurnFixture::new("thread-contract");
+    let parent = {
+        let mut state = fixture.state.lock().unwrap();
+        state.conversation_mut("chat");
+        for text in ["before", "😀 CAFÉ parent", "after"] {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: "chat".into(),
+                kind: "user".into(),
+                text: text.into(),
+                at: 1,
+                ..Default::default()
+            });
+        }
+        state.transcript[1].id.clone()
+    };
+    let (status, created) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"chat", "parent_entry_id":parent}),
+    );
+    assert_eq!(status, 200);
+    let id = created["thread"]["id"].as_str().unwrap();
+    assert_eq!(created["thread"]["parent_sender"], "You");
+    assert_eq!(
+        fixture
+            .post(
+                "/api/threads",
+                json!({"conversation_id":"chat", "parent_entry_id":parent})
+            )
+            .1,
+        created
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/api/threads",
+                json!({"conversation_id":"wrong", "parent_entry_id":parent})
+            )
+            .0,
+        404
+    );
+    assert_eq!(fixture.post("/api/threads", json!({})).0, 400);
+    assert_eq!(fixture.server.handle("POST", "/api/threads", "{").0, 400);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        for kind in ["user", "tool", "reasoning", "assistant", "failure"] {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: "chat".into(),
+                thread_id: Some(id.into()),
+                kind: kind.into(),
+                text: "thread-only needle".into(),
+                at: u64::MAX - 1,
+                ..Default::default()
+            });
+        }
+    }
+    let get = |path: &str| {
+        let (status, body) = fixture.server.handle("GET", path, "");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()
+    };
+    let page = get(&format!("/api/threads/{id}"));
+    assert_eq!(page["entries"][0]["id"], parent);
+    assert_eq!(page["entries"].as_array().unwrap().len(), 6);
+    assert_eq!(page["thread"]["reply_count"], 3);
+    let main = get("/api/transcript?conversationId=chat&main=1");
+    assert_eq!(main["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(main["entries"][1]["thread"]["reply_count"], 3);
+    assert_eq!(
+        get("/api/transcript?conversationId=chat")["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+    let around = get(&format!(
+        "/api/transcript?conversationId=chat&main=1&around={parent}&limit=1&after=999"
+    ));
+    assert_eq!(around["entries"][0]["id"], parent);
+    assert_eq!(
+        fixture
+            .server
+            .handle(
+                "GET",
+                "/api/transcript?conversationId=chat&around=absent",
+                ""
+            )
+            .0,
+        404
+    );
+    assert_eq!(
+        fixture.server.handle("GET", "/api/threads/absent", "").0,
+        404
+    );
+    let hits = get("/api/search?q=needle");
+    assert_eq!(hits["hits"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        get(&format!("/api/search?q=needle&thread_id={id}&limit=1"))["hits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        get("/api/search?q=needle&thread_id=other")["hits"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(get("/api/search?q=")["hits"].as_array().unwrap().is_empty());
+    let unicode = get("/api/search?q=caf%C3%A9");
+    assert_eq!(unicode["hits"][0]["match_ranges"], json!([[5, 5]]));
+    assert_eq!(unicode["hits"][0]["entry_id"], parent);
+    assert_eq!(
+        get("/api/threads?conversation_id=chat")["threads"][0]["id"],
+        id
+    );
+    let after_id = main["entries"][2]["id"].as_str().unwrap();
+    assert_eq!(
+        fixture
+            .post(
+                "/api/threads",
+                json!({"conversation_id":"chat", "parent_entry_id":after_id})
+            )
+            .0,
+        200
+    );
+    assert_eq!(
+        get("/api/threads?conversation_id=chat")["threads"][0]["id"],
+        id
+    );
+    assert!(
+        fixture
+            .events
+            .since(0)
+            .iter()
+            .any(|e| e.kind == "thread" && e.data["thread"]["id"] == id)
+    );
+    let store = StateStore::in_data_dir(&fixture.root);
+    store.save(&fixture.state.lock().unwrap()).unwrap();
+    let restored = store.load().unwrap();
+    assert_eq!(restored.threads[0].id, id);
+    assert_eq!(restored.transcript[1].id, parent);
+
+    let locked = server_with(
+        ProductState::default(),
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(Some("private-token".into())),
+    );
+    for path in [
+        "/api/search?q=parent",
+        "/api/threads?conversation_id=chat",
+        "/api/threads/test",
+    ] {
+        assert_eq!(locked.handle("GET", path, "").0, 401);
+    }
+    assert_eq!(locked.handle("POST", "/api/threads", "{}").0, 401);
+}
+
+#[test]
+fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
+    if !python3_available() {
+        return;
+    }
+    for named in [false, true] {
+        for everyone in [false, true] {
+            let mut fixture = NamedTurnFixture::with_args(
+                &format!("thread-turn-{named}-{everyone}"),
+                vec![
+                    "--pre-tool-text".into(),
+                    "Step commentary".into(),
+                    "--fail-once".into(),
+                ],
+            );
+            fixture.install_default_worker();
+            let prefix = if everyone && named { "@Ada " } else { "" };
+            let root_prompt = format!("{prefix}root");
+            let path = if everyone {
+                "/api/everyone"
+            } else {
+                "/api/turns"
+            };
+            assert_eq!(fixture.post(path, json!({"text":root_prompt,"marbleId":if named {Some(&fixture.marble_id)} else {None}})).0, 202);
+            let root_task = fixture.completed(&root_prompt);
+            let cv = if everyone {
+                "everyone".into()
+            } else {
+                root_task.conversation_id.clone()
+            };
+            let parent = fixture
+                .state
+                .lock()
+                .unwrap()
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.conversation_id == cv && e.task_id == root_task.id && e.kind == "assistant"
+                })
+                .unwrap()
+                .id
+                .clone();
+            let thread = fixture
+                .post(
+                    "/api/threads",
+                    json!({"conversation_id":cv,"parent_entry_id":parent}),
+                )
+                .1["thread"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let prompt = format!("{prefix}reply");
+            assert_eq!(
+                fixture
+                    .post(
+                        path,
+                        json!({"text":prompt,"conversationId":cv,"thread_id":thread})
+                    )
+                    .0,
+                202
+            );
+            let task = fixture.completed(&prompt);
+            assert_eq!(!task.marble_id.is_empty(), named);
+            {
+                let state = fixture.state.lock().unwrap();
+                let entries: Vec<_> = state
+                    .transcript
+                    .iter()
+                    .filter(|e| e.task_id == task.id)
+                    .collect();
+                for kind in ["user", "tool", "reasoning", "assistant"] {
+                    assert!(entries.iter().any(|e| e.kind == kind), "missing {kind}");
+                }
+                assert!(
+                    entries
+                        .iter()
+                        .all(|e| !e.id.is_empty() && e.thread_id.as_deref() == Some(&thread))
+                );
+            }
+            let engine_storage = if named {
+                fixture.root.join("prism-sessions").join(&fixture.marble_id)
+            } else {
+                fixture.root.join("default-sessions")
+            };
+            let input: Value = serde_json::from_slice(
+                &std::fs::read(engine_storage.join("fixture-input.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                input["input"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("This is a thread reply. Parent message from")
+            );
+            assert!(
+                input["input"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("handled ")
+            );
+            let failed_prompt = format!("{prefix}FAIL reply");
+            assert_eq!(
+                fixture
+                    .post(
+                        path,
+                        json!({"text":failed_prompt,"conversationId":cv,"thread_id":thread})
+                    )
+                    .0,
+                202
+            );
+            let failed = fixture.settled(&failed_prompt);
+            assert_eq!(failed.status, "failed");
+            assert!(
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .transcript
+                    .iter()
+                    .filter(|e| e.task_id == failed.id && e.kind == "failure")
+                    .all(|e| e.thread_id.as_deref() == Some(&thread))
+            );
+            let store = StateStore::in_data_dir(&fixture.root);
+            store.save(&fixture.state.lock().unwrap()).unwrap();
+            *fixture.state.lock().unwrap() = store.load().unwrap();
+            fixture.pool.shutdown_marble(&fixture.marble_id);
+            fixture.install_default_worker();
+            assert_eq!(
+                fixture
+                    .post("/api/turns/retry", json!({"taskId":failed.id}))
+                    .0,
+                202
+            );
+            let retried = fixture.completed(&failed_prompt);
+            assert!(
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .transcript
+                    .iter()
+                    .filter(|e| e.task_id == retried.id)
+                    .all(|e| e.thread_id.as_deref() == Some(&thread))
+            );
+            let events = fixture.events.since(0);
+            for kind in ["text", "reasoning", "tool_start", "tool_end"] {
+                assert!(
+                    events.iter().any(|e| e.task_id == task.id
+                        && e.kind == kind
+                        && e.data["thread_id"] == thread),
+                    "missing threaded {kind}"
+                );
+            }
+            assert_eq!(
+                fixture
+                    .post(path, json!({"text":"invalid thread","thread_id":"missing"}))
+                    .0,
+                404
+            );
+        }
     }
 }
 
@@ -4120,6 +4456,46 @@ fn a_marble_can_ask_another_and_the_ask_is_visible() {
         })
         .expect("a finished line was written");
     assert!(finished.summary.contains("check the failing tests"));
+
+    loop {
+        let guard = state.lock().unwrap();
+        if let Some(delegate) = guard
+            .tasks
+            .iter()
+            .find(|t| t.marble_id == ben_id && t.status == "completed")
+        {
+            let thread_id = guard
+                .task_threads
+                .get(&delegate.id)
+                .expect("delegation starts a thread");
+            let thread = guard.threads.iter().find(|t| &t.id == thread_id).unwrap();
+            let parent = guard
+                .transcript
+                .iter()
+                .find(|e| e.id == thread.parent_entry_id)
+                .unwrap();
+            assert_eq!(parent.kind, "handoff");
+            assert_eq!(parent.conversation_id, "everyone");
+            assert_eq!(parent.handoff.as_ref().unwrap().status, "asked");
+            let replies: Vec<_> = guard
+                .transcript
+                .iter()
+                .filter(|e| e.task_id == delegate.id)
+                .collect();
+            assert!(replies.iter().any(|e| e.kind == "tool"));
+            assert!(replies.iter().any(|e| e.kind == "assistant"));
+            assert!(
+                replies
+                    .iter()
+                    .all(|e| e.thread_id.as_ref() == Some(thread_id))
+            );
+            assert_eq!(guard.thread_entries(thread)[0].id, parent.id);
+            break;
+        }
+        assert!(Instant::now() < deadline, "delegate did not settle");
+        drop(guard);
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -35,6 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// One message waiting for the durable turn worker.
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
+    pub thread_id: Option<String>,
     pub conversation_id: Option<String>,
     pub text: String,
     pub request_id: String,
@@ -770,6 +771,7 @@ fn undelivered(
             marble_id: String::new(),
             routine_id: request.routine_id.clone().unwrap_or_default(),
         });
+        guard.bind_thread(&queued_id, request.thread_id.as_deref());
         guard.conversation_mut(&conversation_id);
         if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
             task.conversation_id = conversation_id.clone();
@@ -1009,7 +1011,7 @@ fn run_command(
         guard.model.trim().to_string()
     };
     conversation.set_model((!model.is_empty()).then_some(model));
-    let turn = MarbleTurn {
+    let mut turn = MarbleTurn {
         conversation_id: request.conversation_id.clone(),
         request_id: request.request_id.clone(),
         input: crate::normalize::engine_input(
@@ -1019,6 +1021,13 @@ fn run_command(
             &prompt,
         ),
     };
+    if let Some(context) = request
+        .thread_id
+        .as_deref()
+        .and_then(|id| lock(state).thread_preamble(id))
+    {
+        turn.input.text = format!("{context}\n\n{}", turn.input.text);
+    }
     let mut accepted_turn: Option<AcceptedTurn> = None;
     let routine_id = request.routine_id.clone();
     let cancel = Arc::clone(&request.cancel);
@@ -1050,6 +1059,7 @@ fn run_command(
                 record.task_ids.push(task_id.to_string());
             }
             guard.tasks.retain(|task| task.id != queued_id);
+            guard.bind_thread(task_id, request.thread_id.as_deref());
             crate::everyone::claim(&mut guard, &queued_id, task_id);
             guard.upsert_task(TaskRecord {
                 marble_id: String::new(),
@@ -1239,6 +1249,7 @@ fn run_command(
                     if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
                         task.conversation_id = conversation_id.clone();
                     }
+                    guard.bind_thread(&queued_id, request.thread_id.as_deref());
                     guard.record_failure(&conversation_id, &queued_id, &error.to_string());
                     crate::everyone::claim(&mut guard, &queued_id, &queued_id);
                     crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
@@ -1290,7 +1301,7 @@ fn run_command(
             } else {
                 events.publish(
                     "",
-                    "",
+                    &format!("queued-{}", request.request_id),
                     "error",
                     json!({ "message": crate::failure::MESSAGE }),
                 );
@@ -1310,6 +1321,7 @@ fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
 impl TurnRequest {
     pub fn new(conversation_id: Option<String>, text: impl Into<String>) -> Self {
         Self {
+            thread_id: None,
             conversation_id,
             text: text.into(),
             request_id: crate::next_request_id(),

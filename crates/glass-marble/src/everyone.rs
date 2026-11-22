@@ -171,6 +171,7 @@ pub fn mirror(
         speaker_name: speaker_name.to_string(),
         handoff,
         failure,
+        ..Default::default()
     });
 }
 
@@ -191,10 +192,12 @@ pub fn claim(state: &mut ProductState, placeholder: &str, task_id: &str) -> bool
             .insert(format!("task:{task_id}"), speaker);
         // Stamp the person's line with the task now answering it, so
         // deleting that turn's chat takes the line it triggered too.
+        let thread = state.task_threads.get(task_id).cloned();
         if let Some(entry) = state.transcript.iter_mut().rev().find(|entry| {
             entry.conversation_id == EVERYONE_CONVERSATION
                 && entry.kind == "user"
                 && entry.task_id.is_empty()
+                && entry.thread_id == thread
         }) {
             entry.task_id = task_id.to_string();
         }

@@ -1198,7 +1198,14 @@ impl Desktop {
     }
 
     pub fn agent_clipboard(value: &Value) -> Result<Value, String> {
-        Self::agent_request(&json!({"action":"clipboard","value":value}))
+        Self::agent_clipboard_in(
+            value,
+            &std::env::current_dir().map_err(|error| error.to_string())?,
+        )
+    }
+
+    fn agent_clipboard_in(value: &Value, workspace: &Path) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"clipboard","value":value,"workspace":workspace}))
     }
 
     pub fn agent_launch_app(value: &Value) -> Result<Value, String> {
@@ -1480,7 +1487,9 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
-        "desktop_clipboard" => Desktop::agent_clipboard(&args).map(|value| value.to_string()),
+        "desktop_clipboard" => {
+            Desktop::agent_clipboard_in(&args, workspace).map(|value| value.to_string())
+        }
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
@@ -1732,7 +1741,10 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         },
         Some("act") => desktop.act_accessibility(&request["value"]),
         Some("launch_app") => desktop.launch_app(&request["value"]),
-        Some("clipboard") => desktop.clipboard(&request["value"]),
+        Some("clipboard") => request["workspace"]
+            .as_str()
+            .ok_or_else(|| "trusted thread workspace is required".to_owned())
+            .and_then(|workspace| desktop.clipboard(&request["value"], Path::new(workspace))),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))

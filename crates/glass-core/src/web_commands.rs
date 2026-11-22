@@ -91,10 +91,23 @@ fn label(value: &Value, key: &str) -> Result<String, String> {
     }
     Ok(s.into())
 }
-/// Status paths are relative to the repository root, while Git runs in the conversation folder,
-/// which may be a subdirectory; this pathspec makes Git resolve the path from the root, literally.
-fn top_path(path: &str) -> String {
-    format!(":(top,literal){path}")
+/// Runs a whole-file Git action from the repository root: status paths are relative to the root,
+/// while the conversation folder may be a subdirectory of it.
+fn git_file(workspace: &std::path::Path, args: &[&str], path: &str) -> Result<String, String> {
+    let top = String::from_utf8(crate::workflows::git(
+        workspace,
+        &["rev-parse", "--show-toplevel"],
+        None,
+    )?)
+    .map_err(|e| e.to_string())?;
+    let mut args = args.to_vec();
+    args.extend(["--", path]);
+    String::from_utf8(crate::workflows::git(
+        std::path::Path::new(top.trim_end_matches('\n')),
+        &args,
+        None,
+    )?)
+    .map_err(|e| e.to_string())
 }
 /// The selected Git patch, byte for byte: `git apply` rejects a patch whose last line lost its newline.
 fn patch_text(value: &Value) -> Result<&str, String> {
@@ -1320,12 +1333,37 @@ pub(crate) fn changes(cfg: &config::Config) -> Result<Value, String> {
         )?)
         .map_err(|e| e.to_string())?
     );
+    value["modeChanged"] = json!(mode_changes(&crate::workflows::git(
+        &cfg.workspace,
+        &["diff", "--raw", "-z", "--no-renames", "--no-ext-diff"],
+        None
+    )?));
     if value.to_string().len() > 2_000_000 {
         return Err(
             "Changes preview exceeds 2 MB; use native Git review or narrow the changes".into(),
         );
     }
     Ok(value)
+}
+
+/// Literal paths whose mode differs in `git diff --raw -z` output, so clients need not parse
+/// patch headers, where Git quotes unusual filenames.
+fn mode_changes(raw: &[u8]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut fields = raw.split(|b| *b == 0);
+    while let Some(meta) = fields.next() {
+        let Some(path) = fields.next() else { break };
+        let meta = String::from_utf8_lossy(meta);
+        let mut modes = meta.trim_start_matches(':').split(' ');
+        if let (Some(old), Some(new)) = (modes.next(), modes.next())
+            && old != new
+            && old != "000000"
+            && new != "000000"
+        {
+            paths.push(String::from_utf8_lossy(path).into_owned());
+        }
+    }
+    paths
 }
 
 fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
@@ -1365,9 +1403,9 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
                 return Err("Supply a path or commit message".into());
             }
             let output = match action.as_str() {
-                "stage" => capture(&["add", "--", &top_path(&arg)])?,
-                "unstage" => capture(&["restore", "--staged", "--", &top_path(&arg)])?,
-                "revert-file" => capture(&["restore", "--", &top_path(&arg)])?,
+                "stage" => git_file(&cfg.workspace, &["add"], &arg)?,
+                "unstage" => git_file(&cfg.workspace, &["restore", "--staged"], &arg)?,
+                "revert-file" => git_file(&cfg.workspace, &["restore"], &arg)?,
                 "stage-patch" | "unstage-patch" | "revert-patch" => {
                     let patch = patch_text(v)?;
                     let mut options = vec!["apply"];
@@ -1907,11 +1945,48 @@ mod tests {
     use super::*;
     #[test]
     fn whole_file_git_actions_resolve_from_the_repository_root() {
+        let root = std::env::temp_dir().join(format!("glass-git-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("tools");
+        std::fs::create_dir_all(nested.join("tools")).unwrap();
+        let run = |args: &[&str]| crate::workflows::git(&root, args, None).unwrap();
+        run(&["init", "-q"]);
+        std::fs::write(nested.join("build.sh"), "top\n").unwrap();
+        std::fs::write(nested.join("tools/build.sh"), "nested\n").unwrap();
+        run(&["add", "."]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        std::fs::write(nested.join("build.sh"), "changed\n").unwrap();
+        std::fs::write(nested.join("tools/build.sh"), "changed\n").unwrap();
+        super::git_file(&nested, &["restore"], "tools/build.sh").unwrap();
         assert_eq!(
-            super::top_path("tools/build.sh"),
-            ":(top,literal)tools/build.sh"
+            std::fs::read_to_string(nested.join("build.sh")).unwrap(),
+            "top\n"
         );
-        assert_eq!(super::top_path("a*b.txt"), ":(top,literal)a*b.txt");
+        assert_eq!(
+            std::fs::read_to_string(nested.join("tools/build.sh")).unwrap(),
+            "changed\n"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mode_changes_use_literal_paths_from_raw_diff() {
+        let z = "0000000000000000000000000000000000000000";
+        let raw = format!(
+            ":100644 100755 {z} {z} M\0d\u{e9}ploiement.sh\0:100644 100644 {z} {z} M\0notes.md\0:000000 100644 {z} {z} A\0new.txt\0"
+        );
+        assert_eq!(
+            super::mode_changes(raw.as_bytes()),
+            vec!["d\u{e9}ploiement.sh".to_string()]
+        );
     }
 
     #[test]

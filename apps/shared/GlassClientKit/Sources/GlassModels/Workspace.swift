@@ -81,8 +81,10 @@ public struct WorkspaceChanges: Sendable, Hashable, Decodable {
     public var branch: String?
     /// Status fingerprint the host checks before staging or discarding.
     public var expected: String?
+    /// Literal paths whose file mode changed, reported by the host.
+    public var modeChanged: Set<String>?
 
-    enum CodingKeys: String, CodingKey { case files, diff, branch, expected }
+    enum CodingKeys: String, CodingKey { case files, diff, branch, expected, modeChanged }
 
     public init(files: [File], diff: String, branch: String? = nil) {
         self.files = files; self.diff = diff; self.branch = branch
@@ -94,6 +96,7 @@ public struct WorkspaceChanges: Sendable, Hashable, Decodable {
         diff = try c.decodeIfPresent(String.self, forKey: .diff) ?? ""
         branch = try? c.decodeIfPresent(String.self, forKey: .branch)
         expected = try? c.decodeIfPresent(String.self, forKey: .expected)
+        modeChanged = try? c.decodeIfPresent(Set<String>.self, forKey: .modeChanged)
     }
 
     /// Hunks of the unstaged patch for one file, each with the file header it needs to apply alone.
@@ -101,6 +104,7 @@ public struct WorkspaceChanges: Sendable, Hashable, Decodable {
 
     /// The unstaged diff changes this file's mode, with or without line changes.
     public func changesMode(for path: String) -> Bool {
+        if let modeChanged { return modeChanged.contains(path) }
         var current = ""
         for line in diff.split(separator: "\n") {
             if line.hasPrefix("diff --git ") {

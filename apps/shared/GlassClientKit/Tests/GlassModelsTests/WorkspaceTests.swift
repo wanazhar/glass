@@ -77,4 +77,11 @@ import Testing
         #expect(changes.changesMode(for: "build.sh"))
         #expect(!changes.changesMode(for: "other.sh"))
     }
+
+    @Test func hostReportedModeChangesMatchLiteralPaths() throws {
+        let json = #"{"files":[],"diff":"diff --git \"a/d\\303\\251ploiement.sh\" \"b/d\\303\\251ploiement.sh\"\nold mode 100644\nnew mode 100755\n","modeChanged":["déploiement.sh"]}"#
+        let changes = try JSONDecoder().decode(WorkspaceChanges.self, from: Data(json.utf8))
+        #expect(changes.changesMode(for: "déploiement.sh"))
+        #expect(!changes.changesMode(for: "notes.md"))
+    }
 }

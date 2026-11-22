@@ -1979,6 +1979,48 @@ async fn handle_request_with_viewport(
     elicitation: Option<&McpElicitationClient>,
     agent_profile: bool,
 ) -> Option<JsonRpcResponse> {
+    let mut response = handle_request_with_viewport_unredacted(
+        request,
+        session,
+        native_session,
+        native_runtime,
+        persistent_native_session,
+        options,
+        policy,
+        viewport,
+        knowledge_store_path,
+        development_sessions,
+        host_backend,
+        elicitation,
+    )
+    .await?;
+    if let Some(result) = response.result.as_mut() {
+        super::secrets::redact_value(result);
+    }
+    if let Some(error) = response.error.as_mut() {
+        error.message = super::secrets::redact(&error.message);
+        if let Some(data) = error.data.as_mut() {
+            super::secrets::redact_value(data);
+        }
+    }
+    Some(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_with_viewport_unredacted(
+    request: &JsonRpcRequest,
+    session: &mut Option<CdpBrowserSession>,
+    native_session: &mut Option<BrowserRuntimeSession>,
+    native_runtime: bool,
+    persistent_native_session: Option<&str>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
+    knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
+) -> Option<JsonRpcResponse> {
     use super::agent_tools;
     if request.method == "tools/list" && agent_profile {
         let mut tools = agent_tools::agent_tools();
@@ -8714,6 +8756,66 @@ mod tests {
         let rendered = format!("{metadata:?}");
         assert!(!rendered.contains("private-request-id"));
         assert!(!rendered.contains("super-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn unlisted_session_reads_redact_text_structured_results_and_errors() {
+        const MARKER: &str = "GLASS_REDACTION_TEST_CHILD";
+        const SECRET: &str = "unique-secret-value\"\\end";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::server::tests::unlisted_session_reads_redact_text_structured_results_and_errors", "--nocapture"])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_TEST", SECRET)
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        struct Reads;
+        impl HostMcpToolBackend for Reads {
+            fn tools(&self) -> Vec<HostMcpTool> {
+                vec![HostMcpTool {
+                    name: "getText".into(),
+                    description: "test read".into(),
+                    input_schema: json!({}),
+                }]
+            }
+            fn call(&self, _: &str, arguments: Value) -> Result<Value, String> {
+                if arguments["fail"] == true {
+                    Err(format!("failed: {SECRET}"))
+                } else {
+                    Ok(json!({"text":SECRET,"nested":[SECRET]}))
+                }
+            }
+        }
+        for fail in [false, true] {
+            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getText","arguments":{"fail":fail}}})).unwrap();
+            let response = handle_request_with_viewport(
+                &request,
+                &mut None,
+                &mut None,
+                false,
+                None,
+                &SessionOptions::default(),
+                &BrowserPolicy::development(std::env::temp_dir()),
+                None,
+                None,
+                &DevelopmentSessionStore::default(),
+                Some(&Reads),
+                None,
+            )
+            .await
+            .unwrap();
+            let result = response.result.unwrap();
+            if fail {
+                assert_eq!(result["content"][0]["text"], "failed: {{secret:TEST}}");
+            } else {
+                assert_eq!(result["structuredContent"]["text"], "{{secret:TEST}}");
+                let text: Value =
+                    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(text["nested"][0], "{{secret:TEST}}");
+            }
+        }
     }
 
     #[test]

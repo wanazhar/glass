@@ -205,6 +205,12 @@ final class LiveHostE2ETests: XCTestCase {
     }
 
     @MainActor
+    private func liveActivity(_ springboard: XCUIApplication) -> XCUIElement {
+        springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS 'element-identifier:activity:'")).firstMatch
+    }
+
+    @MainActor
     private func waitUntil(_ timeout: TimeInterval = 30, _ condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -1074,17 +1080,28 @@ final class LiveHostE2ETests: XCTestCase {
         defer { _ = try? call("desktop/fake?on=0", method: "POST") }
         app.tabBars.buttons["Desktop"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["desktop.screen"].firstMatch.waitForExistence(timeout: 20))
-        func desktopStreams() throws -> Int {
+        func desktopReport(_ key: String) throws -> Int {
             let report = try JSONSerialization.jsonObject(with: Data(call("desktop/report").utf8)) as? [String: Any]
-            return report?["streamsAfterMark"] as? Int ?? -1
+            return report?[key] as? Int ?? -1
         }
+        func desktopStreams() throws -> Int { try desktopReport("streamsAfterMark") }
+        let takeControl = app.buttons["desktop.takeControl"].firstMatch
+        XCTAssertTrue(takeControl.waitForExistence(timeout: 20), "Desktop offers Take control")
+        takeControl.tap()
+        XCTAssertTrue(app.buttons["desktop.giveBack"].waitForExistence(timeout: 10))
 
         // The Live Activity's Disconnect closes the connection from the Dynamic Island.
         XCUIDevice.shared.press(.home)
         sleep(2)
-        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.025)).press(forDuration: 1.2)
         let disconnect = springboard.buttons["Disconnect"].firstMatch
-        XCTAssertTrue(disconnect.waitForExistence(timeout: 5), "the Live Activity offers Disconnect")
+        // The background location pill can share the Dynamic Island, so hold the activity's own part of it.
+        let island = liveActivity(springboard)
+        XCTAssertTrue(island.waitForExistence(timeout: 10), "the Live Activity is up")
+        for _ in 0..<3 where !disconnect.exists {
+            island.press(forDuration: 1.2)
+            _ = disconnect.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(disconnect.exists, "the Live Activity offers Disconnect")
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = "e2e-keepalive-live-activity"
         shot.lifetime = .keepAlways
@@ -1100,9 +1117,77 @@ final class LiveHostE2ETests: XCTestCase {
         sleep(8)
         attach(app, "e2e-keepalive-desktop-disconnected")
         XCTAssertEqual(try desktopStreams(), 0, "no new desktop stream after Disconnect")
+        // The frozen picture may not match the desktop any more, so touches on it go nowhere.
+        let inputsBefore = try desktopReport("inputs")
+        let screen = app.descendants(matching: .any)["desktop.screen"].firstMatch
+        XCTAssertTrue(screen.exists, "the picture and Reconnect are separate accessibility elements")
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.8)).tap()
+        sleep(2)
+        XCTAssertEqual(try desktopReport("inputs"), inputsBefore, "no input reaches the host after Disconnect")
         reconnect.tap()
         XCTAssertTrue(waitUntil(15) { ((try? desktopStreams()) ?? 0) > 0 }, "Reconnect opens the picture again")
         XCTAssertTrue(waitUntil(10) { !reconnect.exists })
+    }
+
+    @MainActor
+    func testClosingGlassEndsItsLiveActivity() throws {
+        let thread = try call("thread/new?title=Closing%20Glass", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 5) {
+            let allow = permission.buttons["Allow While Using App"]
+            (allow.exists ? allow : permission.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(waitUntil(10) { (keep.value as? String) == "1" }, "keep-alive turns on")
+        app.tabBars.buttons["Conversations"].tap()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        // Swiped away in the app switcher: the activity ends with Glass, without reopening it.
+        XCUIDevice.shared.press(.home)
+        let activity = liveActivity(springboard)
+        XCTAssertTrue(activity.waitForExistence(timeout: 10), "the Live Activity starts in the background")
+        let bottom = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.998))
+        bottom.press(forDuration: 0.05, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)),
+                     withVelocity: .slow, thenHoldForDuration: 1.0)
+        sleep(1)
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "e2e-close-switcher"
+        shot.lifetime = .keepAlways
+        add(shot)
+        let card = springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == 'Glass' AND identifier != 'Glass'")).firstMatch
+        let target = card.exists ? card : springboard.descendants(matching: .any)["Glass"].firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 5), "Glass shows in the app switcher")
+        let middle = target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        middle.press(forDuration: 0.05, thenDragTo: middle.withOffset(CGVector(dx: 0, dy: -600)))
+        XCTAssertTrue(waitUntil(15) { app.state == .notRunning }, "Glass closed")
+        XCTAssertTrue(waitUntil(10) { !activity.exists }, "closing Glass ends its Live Activity")
+
+        // Stopped without notice: the next launch clears whatever was left behind.
+        app.launchArguments = []
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(activity.waitForExistence(timeout: 10), "the Live Activity starts again")
+        app.terminate()
+        let left = activity.exists
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        let after = XCTAttachment(string: "activity left after a kill: \(left); after relaunch: \(activity.exists)")
+        after.name = "close-report"
+        after.lifetime = .keepAlways
+        add(after)
+        XCTAssertFalse(activity.exists, "relaunching ends an activity left by a kill")
     }
 
     @MainActor

@@ -42,6 +42,13 @@ final class KeepAlive: NSObject {
         center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { KeepAlive.shared.startActivity() }
         }
+        // Closing Glass from the app switcher ends its connections, so the Live Activity goes with it.
+        center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { KeepAlive.shared.endActivitiesBeforeExit() }
+        }
+        center.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { KeepAlive.shared.endActivitiesBeforeExit() }
+        }
         // An activity left over from a previous run describes a connection that no longer exists.
         Task {
             for stale in Activity<ConnectionActivityAttributes>.activities {
@@ -49,6 +56,14 @@ final class KeepAlive: NSObject {
             }
         }
     }
+
+    /// Call at launch, so an activity left by a run that was closed or killed ends straight away.
+    static func install() { _ = shared }
+
+    /// How long the Live Activity counts as current without a fresh update. Glass renews it while
+    /// it runs, so an activity outlasting a kill without notice shows as closed soon after.
+    static let freshFor: Duration = .seconds(90)
+    private var renewal: Task<Void, Never>?
 
     /// Turns keep-alive on or off. Turning it on asks for When In Use location; returns whether it is on.
     func set(_ on: Bool) async -> Bool {
@@ -119,7 +134,14 @@ final class KeepAlive: NSObject {
         let state = ConnectionActivityAttributes.ContentState(status: status, connectedSince: connectedSince)
         do {
             activity = try Activity.request(attributes: ConnectionActivityAttributes(host: hostName),
-                                            content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+                                            content: Self.content(state), pushType: nil)
+            renewal = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: Self.freshFor / 3)
+                    guard !Task.isCancelled else { return }
+                    self?.refreshActivity(renew: true)
+                }
+            }
         } catch {
             Self.log.error("Live Activity not started: \(error.localizedDescription, privacy: .public)")
         }
@@ -127,19 +149,42 @@ final class KeepAlive: NSObject {
 
     private static let log = Logger(subsystem: "com.wanazhar.glass", category: "keep-alive")
 
-    private func refreshActivity() {
+    private static func content(_ state: ConnectionActivityAttributes.ContentState) -> ActivityContent<ConnectionActivityAttributes.ContentState> {
+        ActivityContent(state: state, staleDate: .now + TimeInterval(freshFor.components.seconds))
+    }
+
+    private func refreshActivity(renew: Bool = false) {
         guard let activity, let connectedSince else { return }
         let state = ConnectionActivityAttributes.ContentState(status: status, connectedSince: connectedSince)
-        guard activity.content.state != state else { return }
+        guard renew || activity.content.state != state else { return }
         let id = activity.id
+        let content = Self.content(state)
         Task.detached {
             for current in Activity<ConnectionActivityAttributes>.activities where current.id == id {
-                await current.update(ActivityContent(state: state, staleDate: nil))
+                await current.update(content)
             }
         }
     }
 
+    /// iOS is closing Glass: end every Live Activity now, waiting briefly so it happens before the process stops.
+    private func endActivitiesBeforeExit() {
+        renewal?.cancel()
+        renewal = nil
+        activity = nil
+        guard !Activity<ConnectionActivityAttributes>.activities.isEmpty else { return }
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            for current in Activity<ConnectionActivityAttributes>.activities {
+                await current.end(nil, dismissalPolicy: .immediate)
+            }
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 1.5)
+    }
+
     private func endActivity() {
+        renewal?.cancel()
+        renewal = nil
         guard let activity else { return }
         self.activity = nil
         let id = activity.id

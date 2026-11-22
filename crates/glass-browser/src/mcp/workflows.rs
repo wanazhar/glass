@@ -82,6 +82,7 @@ pub(crate) fn learn_references(raw: &str) {
         recorder.references.clear();
     }
     for (reference, locator) in found {
+        let reference = reference_key(&reference).to_owned();
         if locator.is_empty() {
             recorder.references.remove(&reference);
         } else {
@@ -135,7 +136,10 @@ pub(crate) fn record(tool: &str, arguments: &Value) {
     let mut arguments = arguments.clone();
     let references = &recorder.references;
     let stable = |target: &mut Value| {
-        if let Some(locator) = target.as_str().and_then(|key| references.get(key)) {
+        if let Some(locator) = target
+            .as_str()
+            .and_then(|key| references.get(reference_key(key)))
+        {
             *target = json!(locator);
         }
     };
@@ -159,17 +163,18 @@ pub(crate) fn record(tool: &str, arguments: &Value) {
     }
 }
 
+fn reference_key(target: &str) -> &str {
+    target.strip_prefix("ref=").unwrap_or(target)
+}
+
 fn is_reference(target: &str) -> bool {
-    let target = target.strip_prefix("ref=").unwrap_or(target);
-    let snapshot_ref = target.split_once(':').is_some_and(|(revision, _)| {
-        revision.len() > 1
-            && revision.starts_with('r')
-            && revision[1..].chars().all(|c| c.is_ascii_digit())
-    });
-    let short_ref = target.len() > 1
-        && target.starts_with('e')
-        && target[1..].chars().all(|c| c.is_ascii_digit());
-    snapshot_ref || short_ref
+    reference_key(target)
+        .split_once(':')
+        .is_some_and(|(revision, _)| {
+            revision.len() > 1
+                && revision.starts_with('r')
+                && revision[1..].chars().all(|c| c.is_ascii_digit())
+        })
 }
 
 fn unstable_steps(steps: &[Value]) -> Vec<usize> {
@@ -401,7 +406,7 @@ mod tests {
             assert!(status.success());
             return;
         }
-        for reference in ["e8", "ref=r1:n8"] {
+        for reference in ["r1:c1:b8", "ref=r1:n8"] {
             learn_references(
                 &json!({"reference":reference,"role":"button","name":"Earlier label"}).to_string(),
             );
@@ -409,7 +414,7 @@ mod tests {
                 &json!({"reference":reference,"role":"button","name":"workflow-private-label"})
                     .to_string(),
             );
-            assert!(!recorder().references.contains_key(reference));
+            assert!(!recorder().references.contains_key(reference_key(reference)));
             start();
             record("browser_click", &json!({"target":reference}));
             assert!(save("private").unwrap_err().contains("non-replayable"));
@@ -473,8 +478,48 @@ mod tests {
         ] {
             assert!(!records(tool, &json!({})), "{tool}");
         }
-        assert!(is_reference("e12") && is_reference("r10:c1:b3") && is_reference("ref=r1:n8"));
-        assert!(!is_reference("role=button;name=Save") && !is_reference("email"));
+        assert!(is_reference("r10:c1:b3") && is_reference("ref=r1:n8"));
+        assert!(
+            !is_reference("e12")
+                && !is_reference("role=button;name=Save")
+                && !is_reference("email")
+        );
+    }
+
+    #[test]
+    fn workflow_saves_displayed_refs_and_short_accessible_names() {
+        const CHILD: &str = "GLASS_WORKFLOW_TARGET_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let root =
+                std::env::temp_dir().join(format!("glass-workflow-targets-{}", std::process::id()));
+            std::fs::create_dir(&root).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::workflows::tests::workflow_saves_displayed_refs_and_short_accessible_names"])
+                .env(CHILD, "1").env("GLASS_CONFIG_HOME", &root).status().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            assert!(status.success());
+            return;
+        }
+        start();
+        assert!(save("empty").unwrap_err().contains("nothing recorded"));
+        learn_references(
+            &json!([
+                {"reference":"r10:c1:b9", "role":"button", "name":"Save"},
+                {"reference":"ref=r1:n8", "role":"button", "name":"Continue"}
+            ])
+            .to_string(),
+        );
+        for target in ["ref=r10:c1:b9", "ref=r1:n8", "e12"] {
+            record("browser_click", &json!({"target":target}));
+        }
+        save("stable").unwrap();
+        let steps = load("stable").unwrap();
+        assert_eq!(steps[0]["arguments"]["target"], "role=button;name=Save");
+        assert_eq!(steps[1]["arguments"]["target"], "role=button;name=Continue");
+        assert_eq!(steps[2]["arguments"]["target"], "e12");
+        start();
+        record("browser_click", &json!({"target":"ref=r999:c1:b9"}));
+        assert!(save("unstable").unwrap_err().contains("non-replayable"));
     }
 
     #[test]

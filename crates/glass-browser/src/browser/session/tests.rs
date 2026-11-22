@@ -1508,6 +1508,37 @@ fn verification_failures_are_bounded_and_typed() {
     assert_eq!(value["revision"], 4);
 }
 
+#[cfg(feature = "native-engine")]
+#[test]
+fn visible_text_verification_joins_visible_inline_nodes() {
+    let runtime = rquickjs::Runtime::new().unwrap();
+    let context = rquickjs::Context::full(&runtime).unwrap();
+    context.with(|ctx| {
+        for (parts, expected) in [
+            (serde_json::json!([["Order ", true], ["confirmed", true]]), true),
+            (serde_json::json!([["Order confirmed", false]]), false),
+            (serde_json::json!([["Order ", true], ["confirmed", false]]), false),
+            (serde_json::json!([]), false),
+        ] {
+            let fixture = format!(r#"
+                globalThis.NodeFilter = {{SHOW_TEXT:4}};
+                globalThis.getComputedStyle = () => ({{display:'inline',visibility:'visible',opacity:'1',overflow:'visible'}});
+                globalThis.document = {{body:{{}},createTreeWalker:() => {{
+                    const nodes = {parts}.map(([text,visible]) => ({{nodeValue:text,parentElement:{{
+                        checkVisibility:()=>visible,
+                        getBoundingClientRect:()=>({{left:0,top:0,right:100,bottom:20,width:100,height:20}})
+                    }}}}));
+                    let index = 0;
+                    return {{nextNode:()=>nodes[index++]}};
+                }}}};
+            "#);
+            ctx.eval::<(), _>(fixture).unwrap();
+            let expression = visible_text_contains_expression("Order confirmed").unwrap();
+            assert_eq!(ctx.eval::<bool, _>(expression).unwrap(), expected, "{parts}");
+        }
+    });
+}
+
 #[test]
 fn diagnostics_redact_secrets_and_bound_retention() {
     let redacted =

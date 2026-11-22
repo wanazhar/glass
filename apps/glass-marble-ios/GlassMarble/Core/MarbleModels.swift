@@ -87,6 +87,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
     var serverID: String? = nil
     var threadId: String? = nil
     var thread: MarbleThreadSummary? = nil
+    var failure: MarbleFailureInfo? = nil
     var conversationId: String
     var kind: String
     var text: String
@@ -102,7 +103,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
         case serverID = "id"
-        case threadId, thread
+        case threadId, thread, failure
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +114,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         let membership: String? = try threadFields.optional("thread_id", "threadId")
         threadId = membership?.isEmpty == false ? membership : nil
         thread = try container.decodeIfPresent(MarbleThreadSummary.self, forKey: .thread)
+        failure = try container.decodeIfPresent(MarbleFailureInfo.self, forKey: .failure)
         conversationId = try container.decode(String.self, forKey: .conversationId)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decode(String.self, forKey: .text)
@@ -310,10 +312,12 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
     var persona: String
     /// The built-in assistant: fixed shape, its chats are the chats list.
     var isDefault: Bool
+    var reportedWorking: Bool? = nil
+    var reportedActiveTaskIds: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, role, glyph, hue, workspace, state, conversationId
-        case taskId, lastAt, runs, lastError, persona, isDefault
+        case taskId, lastAt, runs, lastError, persona, isDefault, isWorking, activeTaskIds
     }
 
     init(from decoder: Decoder) throws {
@@ -332,6 +336,8 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError) ?? ""
         persona = try container.decodeIfPresent(String.self, forKey: .persona) ?? ""
         isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        reportedWorking = try container.decodeIfPresent(Bool.self, forKey: .isWorking)
+        reportedActiveTaskIds = try container.decodeIfPresent([String].self, forKey: .activeTaskIds)
     }
 
     init(
@@ -356,11 +362,23 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
         self.isDefault = isDefault
     }
 
-    var isWorking: Bool { state == "working" }
+    func isWorking(presence: MarbleAgentPresence? = nil) -> Bool {
+        if let reportedWorking { return reportedWorking }
+        if let reportedActiveTaskIds { return !reportedActiveTaskIds.isEmpty }
+        if let presence { return presence.status == "working" || !presence.activeTaskIds.isEmpty }
+        return state == "working"
+    }
+
+    func activeTaskIds(presence: MarbleAgentPresence?) -> [String] {
+        if let reportedActiveTaskIds { return reportedActiveTaskIds }
+        if let presence { return presence.activeTaskIds }
+        return taskId.isEmpty ? [] : [taskId]
+    }
+
     /// A person-facing state word: what the row should say under the name.
-    var displayState: String {
+    func displayState(presence: MarbleAgentPresence?) -> String {
+        if isWorking(presence: presence) { return "Working…" }
         switch state {
-        case "working": return "Working…"
         case "blocked": return "Needs you"
         case "done": return "Finished"
         default: return "Idle"
@@ -507,6 +525,7 @@ struct MarbleEventData: Decodable, Equatable {
     var thread: MarbleThread? = nil
     var text: String?
     var tool: String?
+    var name: String? = nil
     var callId: String? = nil
     var arguments: MarbleJSON? = nil
     var isError: Bool?
@@ -654,6 +673,7 @@ struct MarblePresence: Decodable, Equatable {
     var queued: Int
     var routinesEnabled: Int
     var memories: Int
+    var agents: [String: MarbleAgentPresence]? = nil
 
     static let empty = MarblePresence(
         status: "offline",
@@ -682,6 +702,11 @@ struct MarblePresence: Decodable, Equatable {
         if uptimeSeconds >= 60 { return "\(uptimeSeconds / 60)m" }
         return "\(max(1, uptimeSeconds))s"
     }
+}
+
+struct MarbleAgentPresence: Decodable, Equatable {
+    let status: String
+    let activeTaskIds: [String]
 }
 
 /// One durable statement Marble carries between conversations.

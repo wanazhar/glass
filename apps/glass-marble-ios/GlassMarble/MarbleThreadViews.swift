@@ -287,13 +287,14 @@ private struct MarbleJumpTimeline: View {
     @State private var highlight: String?
 
     var body: some View {
+        let transcript = MarbleReasoningAssociation(entries, keepVisible: jump?.entryId)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(entries) { entry in
+                    ForEach(transcript.standalone) { entry in
                         VStack(alignment: .leading, spacing: 10) {
                             MarbleEntryView(entry: entry, speaker: store.speakerStyle(for: entry),
-                                            allowsThreads: parentId == nil)
+                                            reasoning: transcript.attached[entry.id], allowsThreads: parentId == nil)
                             if entry.id == parentId && entries.count > 1 { Divider() }
                         }
                         .padding(.vertical, 3)

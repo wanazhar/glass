@@ -142,7 +142,7 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
         entry: MarbleEntry,
         marbles: [MarblePrismMarble]
     ) -> MarbleSpeakerStyle? {
-        guard entry.kind == "assistant" || entry.kind == "handoff",
+        guard ["assistant", "handoff", "failure"].contains(entry.kind),
               !entry.speaker.isEmpty
         else { return nil }
         if let marble = marbles.first(where: { $0.id == entry.speaker }) {
@@ -161,20 +161,14 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
 
 /// How a host `everyone` event changes a fetched Everyone timeline.
 enum MarbleEveryoneTimeline {
-    /// Who the thinking bubbles are for: named marbles the host reports as
-    /// working, plus the default Marble while a turn this iPhone sent to
-    /// Everyone is still running (the roster keeps it idle for those).
-    static func thinking(
-        working: [String],
-        sentTaskIds: Set<String>,
-        runningTaskIds: Set<String>,
-        defaultName: String
-    ) -> [String] {
-        var names = working
-        if !sentTaskIds.isDisjoint(with: runningTaskIds), !names.contains(defaultName) {
-            names.insert(defaultName, at: 0)
-        }
-        return names
+    /// The state and transcript are fetched separately. Keep a bubble through
+    /// that transition, then let the visible outcome replace it.
+    static func showsThinking(
+        working: Bool, activeTaskIds: [String], previousTaskIds: [String], visibleOutcomes: Set<String>
+    ) -> Bool {
+        if working && activeTaskIds.isEmpty { return true }
+        let pending = working ? activeTaskIds : previousTaskIds
+        return pending.contains { !visibleOutcomes.contains($0) }
     }
 
     /// Whether the event says the shared timeline changed, so a fetched copy

@@ -38,8 +38,9 @@ struct TranscriptView: View {
                             description: Text("Ask Marble to read, change, or explain something in this workspace.")
                         )
                     }
-                    ForEach(store.transcript) { entry in
-                        MarbleEntryView(entry: entry)
+                    let transcript = MarbleReasoningAssociation(store.transcript)
+                    ForEach(transcript.standalone) { entry in
+                        MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                     if !store.liveReasoning.isEmpty {
@@ -48,10 +49,8 @@ struct TranscriptView: View {
                     ForEach(store.liveTools) { tool in
                         MarbleToolRow(tool: tool)
                     }
-                    if store.isWorking
-                        && store.liveText.isEmpty
-                        && store.liveReasoning.isEmpty
-                        && store.liveTools.isEmpty {
+                    if store.liveText.isEmpty && (store.isWorking
+                        || store.isAwaitingReply(in: store.selectedConversationId, entries: store.transcript)) {
                         MarbleThinkingBubble()
                     }
                     if !store.liveText.isEmpty {
@@ -145,6 +144,7 @@ struct MarbleEntryView: View {
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
     var speaker: MarbleSpeakerStyle? = nil
+    var reasoning: String? = nil
     var allowsThreads = true
 
     private var isUser: Bool { entry.kind == "user" }
@@ -155,12 +155,22 @@ struct MarbleEntryView: View {
 
     var body: some View {
         let failure = MarbleTurnFailure.representsFailure(entry, status: task?.status)
-        if (entry.kind == "assistant" || failure) && entry.threadId == nil
-            && !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId) {
-            ForEach(store.tools(for: entry.taskId)) { MarbleToolRow(tool: $0) }
+        VStack(alignment: .leading, spacing: 6) {
+            if entry.kind == "assistant" || failure {
+                let thought = reasoning ?? store.reasoning(for: entry.taskId)
+                if !thought.isEmpty { MarbleReasoningRow(text: thought, speaker: speaker?.name) }
+                if entry.threadId == nil && !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId) {
+                    ForEach(store.tools(for: entry.taskId)) { MarbleToolRow(tool: $0) }
+                }
+            }
+            entryContent(isFailure: failure)
         }
-        if failure {
-            MarbleFailedTurnRow(task: task)
+    }
+
+    @ViewBuilder
+    private func entryContent(isFailure: Bool) -> some View {
+        if isFailure {
+            MarbleFailedTurnRow(task: task, entry: entry, sender: speaker?.name)
         } else if allowsThreads, entry.serverID != nil, ["user", "assistant", "handoff"].contains(entry.kind) {
             VStack(alignment: .leading, spacing: 6) {
                 message
@@ -274,9 +284,10 @@ struct MarbleToolRow: View {
 
 struct MarbleReasoningRow: View {
     var text: String
+    var speaker: String? = nil
 
     var body: some View {
-        DisclosureGroup("Thought for a moment") {
+        DisclosureGroup(speaker.map { "\($0) thought for a moment" } ?? "Thought for a moment") {
             Text(text)
                 .font(.footnote)
                 .textSelection(.enabled)
@@ -312,23 +323,36 @@ struct MarbleTurnTail: View {
 private struct MarbleFailedTurnRow: View {
     @EnvironmentObject private var store: MarbleStore
     var task: MarbleTask?
+    var entry: MarbleEntry? = nil
+    var sender: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label(task.flatMap { MarbleTurnFailure.message(for: $0.status) } ?? "Marble couldn’t finish this reply.",
-                  systemImage: "exclamationmark.circle")
+            if let sender { Text(sender).fontWeight(.semibold) }
+            Label(message, systemImage: "exclamationmark.circle")
                 .foregroundStyle(.secondary)
-            if let task, MarbleTurnFailure.message(for: task.status) != nil,
-               !task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button("Retry") { Task { await store.retry(task) } }
-                    .disabled(store.retryingTurns.contains(task.id))
-                if store.retryFailures.contains(task.id) {
+            if let taskId = MarbleTurnFailure.retryID(entry: entry, task: task) {
+                Button("Retry") { Task { await store.retry(taskId: taskId) } }
+                    .disabled(store.retryingTurns.contains(taskId))
+                if store.retryFailures.contains(taskId) {
                     Text("Couldn’t retry. Try again in a moment.")
                         .foregroundStyle(.secondary)
                 }
             }
+            if let diagnostics = entry?.failure?.diagnostics, !diagnostics.isEmpty {
+                DisclosureGroup("Details") {
+                    Text(diagnostics)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .font(.footnote)
+    }
+
+    private var message: String {
+        if let entry, entry.kind == "failure", !entry.text.isEmpty { return entry.text }
+        return task.flatMap { MarbleTurnFailure.message(for: $0.status) } ?? "Marble couldn’t finish this reply."
     }
 }
 

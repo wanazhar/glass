@@ -47,7 +47,7 @@ struct MarbleToolActivity: Identifiable, Equatable {
     }
 
     static func apply(_ event: MarbleEvent, to calls: inout [Self]) {
-        guard let name = event.data.tool else { return }
+        guard let name = event.data.tool ?? event.data.name else { return }
         let id = event.data.requestId ?? event.data.callId
         let index = calls.lastIndex {
             if let id { return $0.id == id }
@@ -77,6 +77,12 @@ struct MarbleToolActivity: Identifiable, Equatable {
     }
 }
 
+struct MarbleFailureInfo: Codable, Equatable {
+    let category: String
+    let retryable: Bool
+    let diagnostics: String
+}
+
 enum MarbleTurnFailure {
     static func message(for status: String) -> String? {
         switch status {
@@ -93,7 +99,40 @@ enum MarbleTurnFailure {
     }
 
     static func representsFailure(_ entry: MarbleEntry, status: String?) -> Bool {
-        if isLegacyProviderError(entry) || entry.kind == "error" { return true }
+        if ["failure", "error"].contains(entry.kind) || isLegacyProviderError(entry) { return true }
         return entry.kind == "system" && status.flatMap(message(for:)) != nil
+    }
+
+    static func retryID(entry: MarbleEntry?, task: MarbleTask?) -> String? {
+        if let entry, let failure = entry.failure {
+            return failure.retryable && !entry.taskId.isEmpty ? entry.taskId : nil
+        }
+        guard let task, !task.id.isEmpty, message(for: task.status) != nil,
+              !task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return task.id
+    }
+}
+
+/// Attach separate reasoning records to the terminal row for the same task.
+/// Each view supplies only its own chat or thread's entries.
+struct MarbleReasoningAssociation {
+    let attached: [String: String]
+    let standalone: [MarbleEntry]
+
+    init(_ entries: [MarbleEntry], keepVisible entryId: String? = nil) {
+        let outcomes = Dictionary(entries.compactMap { entry -> (String, String)? in
+            guard !entry.taskId.isEmpty, ["assistant", "failure", "error"].contains(entry.kind) else { return nil }
+            return (entry.taskId, entry.id)
+        }, uniquingKeysWith: { first, _ in first })
+        var attached: [String: String] = [:]
+        standalone = entries.filter { entry in
+            guard entry.kind == "reasoning", entry.id != entryId,
+                  let outcome = outcomes[entry.taskId] else { return true }
+            if !entry.text.isEmpty {
+                attached[outcome] = [attached[outcome], entry.text].compactMap { $0 }.joined(separator: "\n\n")
+            }
+            return false
+        }
+        self.attached = attached
     }
 }

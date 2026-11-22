@@ -1296,7 +1296,7 @@ final class EveryoneDecodingTests: XCTestCase {
         XCTAssertTrue(prism.marbles[0].isDefault)
         XCTAssertEqual(prism.marbles[0].persona, "kind")
         XCTAssertEqual(prism.marbles[1].tagline, "warm")
-        XCTAssertEqual(prism.marbles[1].displayState, "Working…")
+        XCTAssertEqual(prism.marbles[1].displayState(presence: nil), "Working…")
     }
 
     func testMemoryFactDecodesAnOwner() throws {
@@ -1597,28 +1597,35 @@ final class MarbleResumeTests: XCTestCase {
 }
 
 final class MarbleEveryoneThinkingTests: XCTestCase {
-    func testDefaultMarbleThinksWhileItsEveryoneTurnRuns() {
-        XCTAssertEqual(
-            MarbleEveryoneTimeline.thinking(
-                working: ["Dietrich"], sentTaskIds: ["t1"], runningTaskIds: ["t1", "t9"], defaultName: "Marble"
-            ),
-            ["Marble", "Dietrich"]
-        )
+    func testIdleDefaultMarbleDoesNotInheritNamedAgentWork() throws {
+        let json = #"{"id":"marble","name":"Marble","state":"working","isWorking":false,"activeTaskIds":[]}"#
+        let marble = try JSONDecoder().decode(MarblePrismMarble.self, from: Data(json.utf8))
+        XCTAssertFalse(marble.isWorking())
+        XCTAssertEqual(marble.displayState(presence: nil), "Idle")
+        XCTAssertEqual(marble.activeTaskIds(presence: nil), [])
     }
 
-    func testFinishedTurnsShowNoBubble() {
-        XCTAssertEqual(
-            MarbleEveryoneTimeline.thinking(
-                working: [], sentTaskIds: ["t1"], runningTaskIds: ["t2"], defaultName: "Marble"
-            ),
-            []
-        )
-        XCTAssertEqual(
-            MarbleEveryoneTimeline.thinking(
-                working: ["Marble"], sentTaskIds: ["t1"], runningTaskIds: ["t1"], defaultName: "Marble"
-            ),
-            ["Marble"]
-        )
+    func testAgentPresenceSuppliesTaskIDsOnOlderRoster() throws {
+        let json = #"{"id":"ada","name":"Ada","state":"idle"}"#
+        let ada = try JSONDecoder().decode(MarblePrismMarble.self, from: Data(json.utf8))
+        let presence = MarbleAgentPresence(status: "working", activeTaskIds: ["t1"])
+        XCTAssertTrue(ada.isWorking(presence: presence))
+        XCTAssertEqual(ada.activeTaskIds(presence: presence), ["t1"])
+    }
+
+    func testThinkingStaysUntilTheSameTaskHasAnOutcome() {
+        XCTAssertTrue(MarbleEveryoneTimeline.showsThinking(
+            working: true, activeTaskIds: ["t1"], previousTaskIds: [], visibleOutcomes: ["t2"]
+        ))
+        XCTAssertTrue(MarbleEveryoneTimeline.showsThinking(
+            working: false, activeTaskIds: [], previousTaskIds: ["t1"], visibleOutcomes: ["t2"]
+        ))
+        XCTAssertFalse(MarbleEveryoneTimeline.showsThinking(
+            working: false, activeTaskIds: [], previousTaskIds: ["t1"], visibleOutcomes: ["t1"]
+        ))
+        XCTAssertFalse(MarbleEveryoneTimeline.showsThinking(
+            working: false, activeTaskIds: [], previousTaskIds: [], visibleOutcomes: []
+        ))
     }
 
     func testEveryoneReplyDecodesBothShapes() throws {

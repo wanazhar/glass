@@ -88,6 +88,10 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var liveText = ""
     @Published private(set) var liveReasoning = ""
     @Published private var toolsByTurn: [String: [MarbleToolActivity]] = [:]
+    @Published private var reasoningByTurn: [String: String] = [:]
+    private var reasoningTurnIds: [String] = []
+    @Published private var awaitingTranscript: [String: String] = [:]
+    @Published private var publishedEveryoneWork: [String: [String]] = [:]
     private var recentToolTurnIDs: [String] = []
     var liveTools: [MarbleToolActivity] {
         guard let activeTaskId, let selectedConversationId,
@@ -469,6 +473,10 @@ final class MarbleStore: ObservableObject {
     private func resetChats() {
         everyoneTaskIds = []
         toolsByTurn = [:]
+        reasoningByTurn = [:]
+        reasoningTurnIds = []
+        awaitingTranscript = [:]
+        publishedEveryoneWork = [:]
         recentToolTurnIDs = []
         retryingTurns = []
         retryFailures = []
@@ -497,10 +505,18 @@ final class MarbleStore: ObservableObject {
                     transcripts[marble.conversationId] = []
                 }
             }
-            guard hostGeneration.isCurrent(generation) else { return }
+            guard hostGeneration.isCurrent(generation), chatsRevision <= revision else { return }
             everyoneTimeline = timeline
             marbleTranscripts = transcripts
             chatsRevision = revision
+            publishedEveryoneWork = Dictionary(uniqueKeysWithValues: prism.marbles.compactMap { marble in
+                guard isAgentWorking(marble) else { return nil }
+                let tasks = activeTaskIds(for: marble)
+                return tasks.isEmpty ? nil : (marble.id, tasks)
+            })
+            for id in transcripts.keys where state.runningTask(for: id) == nil {
+                awaitingTranscript.removeValue(forKey: id)
+            }
             saveCache()
         } catch {
             guard hostGeneration.isCurrent(generation) else { return }
@@ -550,6 +566,9 @@ final class MarbleStore: ObservableObject {
             }
             transcriptCursor = max(transcriptCursor, page.cursor)
             transcriptRevision = revision
+            if state.runningTask(for: conversationId) == nil {
+                awaitingTranscript.removeValue(forKey: conversationId)
+            }
         } catch MarbleClientError.notFound {
             guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId else { return }
             state.conversations.removeAll { $0.id == conversationId }
@@ -619,20 +638,20 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var retryingTurns: Set<String> = []
     @Published private(set) var retryFailures: Set<String> = []
 
-    func retry(_ task: MarbleTask) async {
-        guard let client, retryingTurns.insert(task.id).inserted else { return }
+    func retry(taskId: String) async {
+        guard let client, !taskId.isEmpty, retryingTurns.insert(taskId).inserted else { return }
         let generation = hostGeneration.current
-        retryFailures.remove(task.id)
+        retryFailures.remove(taskId)
         do {
-            try await client.retry(taskId: task.id)
+            try await client.retry(taskId: taskId)
             guard hostGeneration.isCurrent(generation) else { return }
             await refresh()
         } catch {
             guard hostGeneration.isCurrent(generation) else { return }
-            retryFailures.insert(task.id)
+            retryFailures.insert(taskId)
         }
         guard hostGeneration.isCurrent(generation) else { return }
-        retryingTurns.remove(task.id)
+        retryingTurns.remove(taskId)
     }
 
     func tools(for taskID: String) -> [MarbleToolActivity] { toolsByTurn[taskID] ?? [] }
@@ -650,7 +669,40 @@ final class MarbleStore: ObservableObject {
         return entries.contains { $0.kind == "tool" && $0.taskId == taskId }
     }
 
-    func liveReasoning(for conversationID: String) -> String { live[conversationID]?.reasoning ?? "" }
+    func reasoning(for taskId: String) -> String {
+        guard !taskId.isEmpty else { return "" }
+        if let streamed = reasoningByTurn[taskId] { return streamed }
+        guard let task = state.tasks.first(where: { $0.id == taskId }),
+              let entries = marbleTranscripts[task.conversationId] else { return "" }
+        return entries.filter { $0.taskId == taskId && $0.kind == "reasoning" }.map(\.text).joined(separator: "\n\n")
+    }
+
+    func isTaskWorking(_ task: MarbleTask) -> Bool {
+        task.isRunning && prism.marbles.contains { marble in
+            isAgentWorking(marble) && activeTaskIds(for: marble).contains(task.id)
+        }
+    }
+
+    func isAwaitingReply(in conversationId: String?, entries: [MarbleEntry]) -> Bool {
+        guard let conversationId, let taskId = awaitingTranscript[conversationId] else { return false }
+        return !entries.contains { $0.taskId == taskId && ["assistant", "failure", "error"].contains($0.kind) }
+    }
+
+    func isAgentWorking(_ marble: MarblePrismMarble) -> Bool {
+        marble.isWorking(presence: presence.agents?[marble.id])
+    }
+
+    func agentState(for marble: MarblePrismMarble) -> String {
+        marble.displayState(presence: presence.agents?[marble.id])
+    }
+
+    private func activeTaskIds(for marble: MarblePrismMarble) -> [String] {
+        marble.activeTaskIds(presence: presence.agents?[marble.id])
+    }
+
+    func agentName(for taskId: String) -> String? {
+        prism.marbles.first { activeTaskIds(for: $0).contains(taskId) }?.name
+    }
 
     func latestTurn(in conversationID: String?) -> MarbleTask? {
         guard let conversationID, !conversationID.isEmpty else { return nil }
@@ -764,30 +816,20 @@ final class MarbleStore: ObservableObject {
         await updateMarble(marble.id, update: .init(persona: persona))
     }
 
-    /// Marbles working on something right now, for the thinking bubble.
-    var workingMarbles: [MarblePrismMarble] {
-        prism.marbles.filter(\.isWorking)
-    }
-
     /// Default-Marble turns this iPhone started from Everyone.
     @Published private(set) var everyoneTaskIds: Set<String> = []
 
     /// Names to show a thinking bubble for under the Everyone timeline.
-    var everyoneThinking: [String] {
-        let runningTasks = state.tasks.filter { $0.isRunning || $0.status == "queued" }
-        let running = Set(runningTasks.map(\.id))
-        // After a relaunch the sent ids are gone; a running turn whose prompt
-        // is a message said in Everyone is still that message's answer.
-        let said = Set(everyoneEntries.filter { $0.kind == "user" }.map(\.text))
-        let answering = runningTasks.filter { said.contains($0.prompt) }.map(\.id)
-        let defaultName = prism.marbles.first(where: \.isDefault)?.name ?? "Marble"
-        return MarbleEveryoneTimeline.thinking(
-            working: workingMarbles.filter { !$0.isDefault }.map(\.name)
-                + workingMarbles.filter(\.isDefault).map(\.name),
-            sentTaskIds: everyoneTaskIds.union(answering),
-            runningTaskIds: running,
-            defaultName: defaultName
-        )
+    var everyoneThinking: [MarblePrismMarble] {
+        let visibleOutcomes = Set(everyoneEntries.filter {
+            ["assistant", "failure", "error"].contains($0.kind)
+        }.map(\.taskId))
+        return prism.marbles.filter { marble in
+            MarbleEveryoneTimeline.showsThinking(
+                working: isAgentWorking(marble), activeTaskIds: activeTaskIds(for: marble),
+                previousTaskIds: publishedEveryoneWork[marble.id] ?? [], visibleOutcomes: visibleOutcomes
+            )
+        }
     }
 
     /// The shared plane's timeline, as last fetched from the host.
@@ -1331,6 +1373,17 @@ final class MarbleStore: ObservableObject {
         toolsByTurn[event.taskId] = calls
     }
 
+    private func recordReasoning(_ text: String, taskId: String) {
+        guard !taskId.isEmpty, !text.isEmpty else { return }
+        if reasoningByTurn[taskId] == nil {
+            if reasoningTurnIds.count >= 64 {
+                reasoningByTurn.removeValue(forKey: reasoningTurnIds.removeFirst())
+            }
+            reasoningTurnIds.append(taskId)
+        }
+        reasoningByTurn[taskId, default: ""] += text
+    }
+
     private func handle(_ event: MarbleEvent) {
         guard event.sequence > sequence else { return }
         sequence = event.sequence
@@ -1341,7 +1394,14 @@ final class MarbleStore: ObservableObject {
         case "text":
             buffers.text += event.data.text ?? ""
         case "reasoning":
-            buffers.reasoning += event.data.text ?? ""
+            let text = event.data.text ?? ""
+            if !event.taskId.isEmpty && buffers.taskId == nil {
+                buffers.taskId = event.taskId
+            }
+            if buffers.taskId == event.taskId || event.taskId.isEmpty {
+                buffers.reasoning += text
+            }
+            recordReasoning(text, taskId: event.taskId)
         case "tool_start", "tool_end":
             recordTool(event)
         case "approval_pending":
@@ -1356,7 +1416,11 @@ final class MarbleStore: ObservableObject {
         case "thread":
             if let thread = event.data.thread { threadUpdates[thread.id] = thread }
         case "settled":
+            guard buffers.taskId == nil || event.taskId.isEmpty || buffers.taskId == event.taskId else { break }
             let reply = forActive ? buffers.text : ""
+            if !event.taskId.isEmpty, !event.conversationId.isEmpty, event.data.cancelled != true {
+                awaitingTranscript[event.conversationId] = event.taskId
+            }
             buffers = LiveBuffers()
             saveCursor()
             Task {
@@ -1373,7 +1437,9 @@ final class MarbleStore: ObservableObject {
         case "cancel_requested":
             errorMessage = nil
         case "turn_start":
-            buffers.taskId = event.taskId.isEmpty ? buffers.taskId : event.taskId
+            if !event.taskId.isEmpty && buffers.taskId != event.taskId {
+                buffers = LiveBuffers(taskId: event.taskId)
+            }
         default:
             break
         }

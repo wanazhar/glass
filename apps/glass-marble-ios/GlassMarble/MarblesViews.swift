@@ -134,21 +134,26 @@ struct EveryoneView: View {
                             Text("Say something, or name a Marble with @ to call on it.")
                         }
                     }
-                    ForEach(entries) { entry in
+                    let transcript = MarbleReasoningAssociation(entries)
+                    ForEach(transcript.standalone) { entry in
                         MarbleEntryView(
                             entry: entry,
-                            speaker: store.speakerStyle(for: entry)
+                            speaker: store.speakerStyle(for: entry),
+                            reasoning: transcript.attached[entry.id]
                         )
                     }
                     ForEach(store.everyoneTurns.filter { $0.isRunning || $0.id == store.everyoneTurns.last?.id }) { task in
-                        let reasoning = store.liveReasoning(for: task.conversationId)
-                        if task.isRunning && !reasoning.isEmpty {
-                            MarbleReasoningRow(text: reasoning)
+                        let reasoning = store.reasoning(for: task.id)
+                        if store.isTaskWorking(task) && !reasoning.isEmpty
+                            && !entries.contains(where: {
+                                $0.taskId == task.id && ["reasoning", "assistant", "failure"].contains($0.kind)
+                            }) {
+                            MarbleReasoningRow(text: reasoning, speaker: store.agentName(for: task.id))
                         }
                         MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
                     }
-                    ForEach(store.everyoneThinking, id: \.self) { name in
-                        MarbleThinkingBubble(name: name)
+                    ForEach(store.everyoneThinking) { marble in
+                        MarbleThinkingBubble(name: marble.name)
                     }
                     Color.clear
                         .frame(height: 1)
@@ -238,7 +243,7 @@ struct EveryoneView: View {
                             VStack(spacing: 3) {
                                 MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 28)
                                     .overlay(alignment: .bottomTrailing) {
-                                        if marble.isWorking {
+                                        if store.isAgentWorking(marble) {
                                             Circle()
                                                 .fill(Color.accentColor)
                                                 .frame(width: 9, height: 9)
@@ -361,7 +366,7 @@ struct MarblesView: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
-                            Text(marble.displayState)
+                            Text(store.agentState(for: marble))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -529,25 +534,30 @@ struct MarbleChatScreen: View {
     @ViewBuilder
     private func transcript(_ marble: MarblePrismMarble) -> some View {
         let entries = store.marbleTranscript(marble)
+        let working = store.isAgentWorking(marble)
+        let active = store.latestTurn(in: marble.conversationId)
+        let thinking = working || store.isAwaitingReply(in: marble.conversationId, entries: entries)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if entries.isEmpty && !marble.isWorking {
+                    if entries.isEmpty && !thinking {
                         ContentUnavailableView {
                             Text("Nothing yet")
                         } description: {
                             Text("Say hello — \(marble.name) answers in its own voice.")
                         }
                     }
-                    ForEach(entries) { entry in
-                        MarbleEntryView(entry: entry)
+                    let transcript = MarbleReasoningAssociation(entries)
+                    ForEach(transcript.standalone) { entry in
+                        MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
                     }
-                    let reasoning = store.liveReasoning(for: marble.conversationId)
-                    if marble.isWorking && !reasoning.isEmpty {
+                    let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
+                    if working && !reasoning.isEmpty
+                        && !entries.contains(where: { $0.taskId == active?.id && $0.kind == "reasoning" }) {
                         MarbleReasoningRow(text: reasoning)
                     }
-                    MarbleTurnTail(task: store.latestTurn(in: marble.conversationId), entries: entries, showsLiveTools: true)
-                    if marble.isWorking {
+                    MarbleTurnTail(task: active, entries: entries, showsLiveTools: true)
+                    if thinking {
                         MarbleThinkingBubble(name: marble.name)
                     }
                     Color.clear
@@ -563,7 +573,7 @@ struct MarbleChatScreen: View {
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(.bottom, for: .sizeChanges)
             .onChange(of: entries.count) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: marble.isWorking) { _, _ in scrollToLatest(proxy) }
+            .onChange(of: thinking) { _, _ in scrollToLatest(proxy) }
             .onAppear {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
@@ -574,7 +584,7 @@ struct MarbleChatScreen: View {
         .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
-                isWorking: marble.isWorking,
+                isWorking: working,
                 placeholder: "Message \(marble.name)",
                 canSteer: false,
                 onSend: { send(marble) },

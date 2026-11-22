@@ -51,4 +51,30 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertEqual(tool?.status, .completed)
         XCTAssertEqual(tool?.query, "riemann · hypothesis")
     }
+
+    func testStructuredFailureUsesTheHostRetryFlagWithoutATaskSnapshot() throws {
+        let json = """
+        {"id":"entry","kind":"failure","conversationId":"everyone","at":32,
+         "taskId":"failed-agent-turn","text":"Couldn't get a reply from the model. Try again.",
+         "failure":{"category":"provider_rejected","retryable":true,"diagnostics":"Sanitized details"}}
+        """
+        var failure = try JSONDecoder().decode(MarbleEntry.self, from: Data(json.utf8))
+        XCTAssertTrue(MarbleTurnFailure.representsFailure(failure, status: nil))
+        XCTAssertEqual(failure.failure?.diagnostics, "Sanitized details")
+        XCTAssertEqual(MarbleTurnFailure.retryID(entry: failure, task: nil), "failed-agent-turn")
+        failure.failure = MarbleFailureInfo(category: "unknown", retryable: false, diagnostics: "")
+        let task = MarbleTask(id: "failed-agent-turn", conversationId: "everyone", status: "failed",
+                              owner: "agent", prompt: "retryable on old hosts", at: 31)
+        XCTAssertNil(MarbleTurnFailure.retryID(entry: failure, task: task))
+    }
+
+    func testReasoningAttachesToItsOwnReplyWhenTurnsInterleave() {
+        let a = MarbleEntry(conversationId: "everyone", kind: "reasoning", text: "Ada thought", taskId: "a", at: 1)
+        let b = MarbleEntry(conversationId: "everyone", kind: "reasoning", text: "Ben thought", taskId: "b", at: 2)
+        let reply = MarbleEntry(conversationId: "everyone", kind: "assistant", text: "Ben replied", taskId: "b", at: 3)
+        let failure = MarbleEntry(conversationId: "everyone", kind: "failure", text: "Ada failed", taskId: "a", at: 4)
+        let rows = MarbleReasoningAssociation([a, b, reply, failure])
+        XCTAssertEqual(rows.standalone, [reply, failure])
+        XCTAssertEqual(rows.attached, [reply.id: "Ben thought", failure.id: "Ada thought"])
+    }
 }

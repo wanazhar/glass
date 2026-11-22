@@ -1727,12 +1727,11 @@ fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Resu
         .filter(|node| node["bounds"].is_object())
         .cloned()
         .collect();
-    let stack = Desktop::agent_request(&json!({"action":"window_stack","sessionId":session_id}));
-    let stack = stack
-        .as_ref()
-        .ok()
-        .and_then(|value| value["windows"].as_array())
-        .map(Vec::as_slice);
+    let stack = label_window_stack(
+        Desktop::agent_request(&json!({"action":"window_stack","sessionId":session_id})),
+        !matches.is_empty(),
+    )?;
+    let stack = stack["windows"].as_array().map(Vec::as_slice);
     let LabelSelection {
         nodes,
         hidden,
@@ -1764,6 +1763,16 @@ fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Resu
     let saved = save_agent_frame(workspace, &frame)?;
     let legend = label_legend(&observation, &nodes, hidden, unknown);
     Ok(format!("{saved}\n{legend}"))
+}
+
+fn label_window_stack(stack: Result<Value, String>, has_matches: bool) -> Result<Value, String> {
+    match stack {
+        Ok(stack) => Ok(stack),
+        Err(error) if has_matches => Err(format!(
+            "Cannot label controls because X11 stacking is unavailable: {error}. No number boxes were drawn; call desktop_screenshot without labels."
+        )),
+        Err(_) => Ok(Value::Null),
+    }
 }
 
 /// Whether a window from `window_stack` covers a screen-fraction point.
@@ -2636,6 +2645,21 @@ mod tests {
             return Some("first_tab_preservation_unverified");
         }
         None
+    }
+
+    #[test]
+    fn label_stack_errors_preserve_recovery_without_drawing_boxes() {
+        let stack = json!({"windows": []});
+        assert_eq!(label_window_stack(Ok(stack.clone()), true).unwrap(), stack);
+        assert_eq!(
+            label_window_stack(Err("stack unavailable".into()), false).unwrap(),
+            Value::Null
+        );
+        let error = label_window_stack(Err("wmctrl is not installed; install wmctrl".into()), true)
+            .unwrap_err();
+        assert!(error.contains("install wmctrl"), "{error}");
+        assert!(error.contains("without labels"), "{error}");
+        assert!(!error.contains("with desktop_windows"), "{error}");
     }
 
     #[test]

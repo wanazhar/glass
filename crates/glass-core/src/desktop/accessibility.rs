@@ -648,14 +648,18 @@ async fn observe_async(
             let matches_query = query_terms
                 .as_ref()
                 .is_none_or(|terms| query_matches(&node, terms));
-            let screen_target_value = if matches_query
+            let screen_extents = if matches_query
                 && query.is_some()
                 && (is_actionable || pointer_fallback_candidate)
             {
-                query_screen_target(&accessible).await
+                query_screen_extents(&accessible).await
             } else {
                 None
             };
+            let screen_target_value = screen_extents.and_then(pointer_target_from_extents);
+            if visible && let Some(bounds) = screen_extents.and_then(bounds_from_extents) {
+                node["bounds"] = bounds;
+            }
             if query.is_some() && (is_actionable || pointer_fallback_candidate) {
                 // For query results this reports measured screen-rectangle
                 // intersection, not merely AT-SPI's Visible state.
@@ -1322,11 +1326,33 @@ fn pointer_target_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
     }))
 }
 
-async fn query_screen_target(accessible: &AccessibleProxy<'_>) -> Option<Value> {
+/// The onscreen part of a control's extents as screen fractions, used to draw
+/// labelled screenshots. It is descriptive, not an action token.
+fn bounds_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
+    let (x, y, width, height) = extents;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let left = x.max(0);
+    let top = y.max(0);
+    let right = x.checked_add(width)?.min(super::WIDTH as i32);
+    let bottom = y.checked_add(height)?.min(super::HEIGHT as i32);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let round = |value: f64| (value * 10_000.0).round() / 10_000.0;
+    Some(json!({
+        "x": round(left as f64 / super::WIDTH as f64),
+        "y": round(top as f64 / super::HEIGHT as f64),
+        "width": round((right - left) as f64 / super::WIDTH as f64),
+        "height": round((bottom - top) as f64 / super::HEIGHT as f64)
+    }))
+}
+
+async fn query_screen_extents(accessible: &AccessibleProxy<'_>) -> Option<(i32, i32, i32, i32)> {
     let proxies = accessible.proxies().await.ok()?;
     let component = proxies.component().await.ok()?;
-    let extents = component.get_extents(CoordType::Screen).await.ok()?;
-    pointer_target_from_extents(extents)
+    component.get_extents(CoordType::Screen).await.ok()
 }
 
 fn unverified_click_result(action_name: &str) -> Value {
@@ -1467,7 +1493,10 @@ async fn act_async(
     }
     if target.screen_bound
         && (target.supports_click || target.supports_focus || target.supports_text)
-        && query_screen_target(&accessible).await.is_none()
+        && query_screen_extents(&accessible)
+            .await
+            .and_then(pointer_target_from_extents)
+            .is_none()
     {
         return Err(
             "Accessibility target is outside the current screen; observe and scroll again".into(),
@@ -1712,10 +1741,10 @@ mod tests {
     use super::{
         MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, UNSUPPORTED_CLICK_RECOVERY,
         accessibility_target_id, accessibility_window_id_from_parts, bounded_accessible_name,
-        display_accessible_name, focused_query_role_is_leaf, focused_search_result_is_actionable,
-        is_password_role, is_pointer_fallback_candidate, node_is_relevant,
-        owner_is_within_ancestor_limit, pointer_target_from_extents, protect_text_value,
-        query_can_issue_action_tokens, query_is_focused, query_matches,
+        bounds_from_extents, display_accessible_name, focused_query_role_is_leaf,
+        focused_search_result_is_actionable, is_password_role, is_pointer_fallback_candidate,
+        node_is_relevant, owner_is_within_ancestor_limit, pointer_target_from_extents,
+        protect_text_value, query_can_issue_action_tokens, query_is_focused, query_matches,
         query_prefers_document_content, query_skips_app_menus, role_matches_hint,
         should_follow_related_object, target_can_be_exposed, text_edit_is_supported,
         unverified_click_result, validate_query, window_id_is_in_scope, window_identity_matches,
@@ -1904,6 +1933,20 @@ mod tests {
             display_accessible_name("Raw title".into(), Some("Child label".into())),
             "Raw title"
         );
+    }
+
+    #[test]
+    fn bounds_keep_only_the_onscreen_part_of_a_control() {
+        assert_eq!(
+            bounds_from_extents((128, 200, 64, 40)),
+            Some(json!({"x":0.1,"y":0.25,"width":0.05,"height":0.05}))
+        );
+        assert_eq!(
+            bounds_from_extents((-64, 0, 128, 80)),
+            Some(json!({"x":0.0,"y":0.0,"width":0.05,"height":0.1}))
+        );
+        assert!(bounds_from_extents((1300, 10, 20, 20)).is_none());
+        assert!(bounds_from_extents((10, 10, 0, 20)).is_none());
     }
 
     #[test]

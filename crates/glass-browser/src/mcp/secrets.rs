@@ -34,7 +34,13 @@ fn from_vars(vars: impl Iterator<Item = (String, String)>) -> Secrets {
 
 fn loaded() -> &'static Secrets {
     static SECRETS: OnceLock<Secrets> = OnceLock::new();
-    SECRETS.get_or_init(|| from_vars(std::env::vars()))
+    SECRETS.get_or_init(|| from_os_vars(std::env::vars_os()))
+}
+
+fn from_os_vars(vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>) -> Secrets {
+    from_vars(
+        vars.filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))),
+    )
 }
 
 fn sorted_names(secrets: &Secrets) -> Vec<&str> {
@@ -158,6 +164,26 @@ pub(crate) fn redact_value(value: &mut Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_environment_entries_are_ignored_without_losing_valid_secrets() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = OsString::from_vec(vec![0xff]);
+        let vars = vec![
+            (invalid.clone(), "unrelated".into()),
+            ("UNRELATED".into(), invalid.clone()),
+            ("GLASS_SECRET_INVALID".into(), invalid),
+            ("GLASS_SECRET_VALID".into(), "valid-value".into()),
+        ];
+        let secrets = from_os_vars(vars.into_iter());
+        assert_eq!(
+            secrets,
+            vec![("VALID".to_owned(), "valid-value".to_owned())]
+        );
+        assert!(from_os_vars(std::iter::empty()).is_empty());
+    }
 
     fn secrets() -> Secrets {
         from_vars(

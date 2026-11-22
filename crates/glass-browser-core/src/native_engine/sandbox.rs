@@ -409,7 +409,6 @@ fn apply_linux_address_space_limit() -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 /// Older bubblewrap releases (Ubuntu 22.04 ships 0.6) reject the
 /// user-namespace lock the content sandbox depends on, and the worker would
 /// otherwise die with an opaque spawn failure.
@@ -433,6 +432,7 @@ fn help_lists_userns_lock(help: &str) -> bool {
     help.contains("--disable-userns") && help.contains("--assert-userns-disabled")
 }
 
+#[cfg(target_os = "linux")]
 fn find_executable(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)

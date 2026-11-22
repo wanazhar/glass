@@ -121,6 +121,7 @@ final class AppModel {
             lastRefreshed = .now
             secretEntryUnlocked = await client.secretEntryUnlocked
             phase = .connected(status)
+            KeepAlive.shared.hostName = status.workspaceName
         } catch {
             handle(error)
         }

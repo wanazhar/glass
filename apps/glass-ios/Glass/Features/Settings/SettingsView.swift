@@ -5,7 +5,7 @@ import UserNotifications
 
 /// Settings submenus. Host status and diagnostics live here instead of in their own tabs.
 enum SettingsRoute: String, Hashable, CaseIterable {
-    case host, defaults, appearance, notifications, voice, diagnostics, about
+    case host, defaults, appearance, notifications, connection, voice, diagnostics, about
 
     var title: String {
         switch self {
@@ -13,6 +13,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .defaults: "Defaults for new conversations"
         case .appearance: "Appearance"
         case .notifications: "Notifications"
+        case .connection: "Background connection"
         case .voice: "Voice"
         case .diagnostics: "Diagnostics"
         case .about: "About"
@@ -25,6 +26,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .defaults: "slider.horizontal.3"
         case .appearance: "textformat.size"
         case .notifications: "bell"
+        case .connection: "antenna.radiowaves.left.and.right"
         case .voice: "mic"
         case .diagnostics: "stethoscope"
         case .about: "info.circle"
@@ -38,6 +40,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .defaults: HostDefaultsView()
         case .appearance: AppearanceSettingsView()
         case .notifications: NotificationSettingsView()
+        case .connection: ConnectionSettingsView()
         case .voice: VoiceSettingsView()
         case .diagnostics: DiagnosticsView()
         case .about: AboutView()
@@ -69,6 +72,7 @@ struct SettingsView: View {
             Section {
                 link(.appearance)
                 link(.notifications)
+                link(.connection)
                 link(.voice)
             }
             Section {
@@ -182,6 +186,43 @@ struct NotificationSettingsView: View {
 
     private func refresh() async {
         denied = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus == .denied
+    }
+}
+
+struct ConnectionSettingsView: View {
+    @AppStorage(KeepAlive.key) private var keepAlive = false
+    @State private var denied = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Keep connection alive in background", isOn: Binding(get: { keepAlive }, set: { on in
+                    Task {
+                        keepAlive = await KeepAlive.shared.set(on)
+                        denied = on && !keepAlive
+                    }
+                }))
+                .accessibilityIdentifier("settings.keepAlive")
+            } footer: {
+                Text("""
+                iPhone normally pauses Glass soon after you leave it. With this on, Glass stays connected while a \
+                conversation or the desktop is open, so replies and alerts keep arriving. To stay running it uses \
+                iPhone's least precise location, so the status bar shows a location indicator, and the Lock Screen \
+                shows the connection with a Disconnect button. Glass never stores or sends your location. It uses \
+                more battery, and stops as soon as nothing is connected.
+                """)
+            }
+            if denied {
+                Section {
+                    Button("Open iPhone Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    }
+                } footer: {
+                    Text("Location is turned off for Glass in iPhone Settings, so it can't stay connected in the background.")
+                }
+            }
+        }
+        .navigationTitle("Background connection")
     }
 }
 

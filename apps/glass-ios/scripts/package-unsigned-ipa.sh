@@ -22,6 +22,14 @@ check CFBundleIdentifier com.wanazhar.glass
 check CFBundleDisplayName Glass
 check MinimumOSVersion 18.0
 /usr/libexec/PlistBuddy -c "Print NSCameraUsageDescription" "$plist" >/dev/null || fail "NSCameraUsageDescription missing"
+/usr/libexec/PlistBuddy -c "Print NSLocationWhenInUseUsageDescription" "$plist" >/dev/null || fail "NSLocationWhenInUseUsageDescription missing"
+check NSSupportsLiveActivities true
+check UIBackgroundModes:0 location
+widgets="$app/PlugIns/GlassWidgets.appex"
+[[ -d "$widgets" ]] || fail "GlassWidgets.appex missing"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$widgets/Info.plist")" == com.wanazhar.glass.widgets ]] || fail "widget bundle id"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print NSExtension:NSExtensionPointIdentifier' "$widgets/Info.plist")" == com.apple.widgetkit-extension ]] || fail "widget extension point"
+[[ ! -e "$widgets/_CodeSignature" ]] || fail "widget extension is signed"
 [[ -f "$app/Assets.car" ]] || fail "Assets.car missing"
 [[ -d "$app/Base.lproj/LaunchScreen.storyboardc" ]] || fail "LaunchScreen.storyboardc missing"
 [[ ! -e "$app/embedded.mobileprovision" ]] || fail "embedded.mobileprovision present"

@@ -29,6 +29,8 @@ final class ConversationModel {
     private(set) var lastReconnect: Int?
     private var resumeStarted: ContinuousClock.Instant?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    /// The stream stayed open through the last background stretch because keep-alive kept Glass running.
+    private var keptAlive = false
     /// The next frame is the host's catch-up after (re)connecting: events that already happened.
     private var catchingUp = true
     /// When Glass last came back from the background. A socket iOS froze delivers what it missed right
@@ -54,7 +56,8 @@ final class ConversationModel {
         foregroundWatch = Task { [weak self] in
             for await _ in NotificationCenter.default.notifications(named: UIApplication.willEnterForegroundNotification) {
                 guard let self else { return }
-                self.cameBack = .now
+                // Kept alive, the stream never stopped, so what arrives next is new.
+                if !KeepAlive.shared.running { self.cameBack = .now }
             }
         }
     }
@@ -118,13 +121,20 @@ final class ConversationModel {
                 await self.receive(update)
             }
         }
+        KeepAlive.shared.hold(keepAliveKey) { [weak self] in self?.stop() }
     }
+
+    private var keepAliveKey: String { "conversation:" + thread.id }
 
     /// Leaving the app: a turn in progress keeps its stream for as long as iOS allows, so "Reply ready"
     /// can still arrive; otherwise the stream closes now instead of dying silently while suspended.
     func suspend() {
         composer.flushDraft()
         guard liveTask != nil else { return }
+        if KeepAlive.shared.running {
+            keptAlive = true
+            return
+        }
         guard timeline.isActive else { return stop() }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Glass reply") { [weak self] in
             MainActor.assumeIsolated {
@@ -138,6 +148,13 @@ final class ConversationModel {
     /// last event id, rather than waiting for a socket iOS suspended to time out.
     func resumeNow() async {
         endBackgroundTask()
+        defer { keptAlive = false }
+        // Glass stayed running and the stream stayed open: nothing to reconnect.
+        if keptAlive, KeepAlive.shared.running, liveTask != nil {
+            lastReconnect = 0
+            drawPendingFrames()
+            return
+        }
         guard loadedHistory, connection != .readOnly else { return await start() }
         resumeStarted = .now
         liveTask?.cancel()
@@ -153,6 +170,7 @@ final class ConversationModel {
     }
 
     func stop() {
+        KeepAlive.shared.release(keepAliveKey)
         liveTask?.cancel()
         liveTask = nil
         drawPendingFrames()

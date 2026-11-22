@@ -155,8 +155,10 @@ public struct DesktopFrame: Sendable, Hashable {
     public var ageMs: Int?
     /// How long the host took to encode it as JPEG, in milliseconds.
     public var encodeMs: Int?
-    public init(jpeg: Data, sequence: Int, ageMs: Int? = nil, encodeMs: Int? = nil) {
-        self.jpeg = jpeg; self.sequence = sequence; self.ageMs = ageMs; self.encodeMs = encodeMs
+    /// How long the host took to write the previous frame to the network; long writes mean the link is full.
+    public var sendMs: Int?
+    public init(jpeg: Data, sequence: Int, ageMs: Int? = nil, encodeMs: Int? = nil, sendMs: Int? = nil) {
+        self.jpeg = jpeg; self.sequence = sequence; self.ageMs = ageMs; self.encodeMs = encodeMs; self.sendMs = sendMs
     }
 }
 
@@ -196,7 +198,8 @@ public struct DesktopStreamParser: Sendable {
             if length > 0, fields["x-glass-heartbeat"] == nil {
                 frames.append(DesktopFrame(jpeg: Data(buffer[bodyStart..<bodyEnd]), sequence: fields["x-frame-seq"].flatMap(Int.init) ?? 0,
                                            ageMs: fields["x-frame-age-ms"].flatMap(Int.init),
-                                           encodeMs: fields["x-frame-encode-ms"].flatMap(Int.init)))
+                                           encodeMs: fields["x-frame-encode-ms"].flatMap(Int.init),
+                                           sendMs: fields["x-frame-send-ms"].flatMap(Int.init)))
             }
             buffer = Data(buffer[buffer.index(bodyEnd, offsetBy: 2)...])
         }

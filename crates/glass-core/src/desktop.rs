@@ -48,6 +48,8 @@ pub struct TimedFrame {
     pub jpeg: Vec<u8>,
     pub encode_ms: u64,
     pub age_ms: u64,
+    /// Changes only when the picture does; equal values mean an identical frame.
+    pub content: u64,
 }
 
 impl From<(u64, u64, Vec<u8>)> for TimedFrame {
@@ -58,6 +60,7 @@ impl From<(u64, u64, Vec<u8>)> for TimedFrame {
             jpeg,
             encode_ms: 0,
             age_ms: 0,
+            content: seq,
         }
     }
 }
@@ -1081,16 +1084,28 @@ impl Desktop {
     }
 
     /// Like `frame_after`, plus how old the frame is when it leaves and how long JPEG encoding took,
-    /// so viewers can see where desktop latency comes from.
-    pub fn timed_frame_after(
+    /// so viewers can see where desktop latency comes from. A frame whose picture still matches
+    /// `unchanged` comes back without JPEG bytes, so a viewer that already shows it costs no encode.
+    pub fn timed_frame_after_unless(
         &self,
         after: u64,
         timeout: Duration,
+        unchanged: Option<u64>,
     ) -> Result<Option<TimedFrame>, String> {
         self.frame_after_for_session(None, after, timeout)
             .and_then(|frame| {
                 frame
                     .map(|(_, _, seq, captured, frame)| {
+                        if unchanged == Some(frame.content) {
+                            return Ok(TimedFrame {
+                                seq,
+                                time_ms: captured,
+                                jpeg: Vec::new(),
+                                encode_ms: 0,
+                                age_ms: 0,
+                                content: frame.content,
+                            });
+                        }
                         let encoding = Instant::now();
                         let jpeg = frame.jpeg()?.to_vec();
                         Ok(TimedFrame {
@@ -1098,6 +1113,7 @@ impl Desktop {
                             time_ms: captured,
                             encode_ms: encoding.elapsed().as_millis() as u64,
                             age_ms: frame.captured_at.elapsed().as_millis() as u64,
+                            content: frame.content,
                             jpeg,
                         })
                     })

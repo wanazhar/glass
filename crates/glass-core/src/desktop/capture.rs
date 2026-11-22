@@ -15,6 +15,8 @@ pub(super) struct Frame {
     pub(super) since_start_ms: u64,
     pub(super) captured_at: Instant,
     pub(super) rgb: Vec<u8>,
+    /// Bumps only when the pixels differ from the previous capture, so viewers can skip repeats.
+    pub(super) content: u64,
     jpeg: OnceLock<Result<Vec<u8>, String>>,
 }
 
@@ -52,6 +54,7 @@ pub(super) fn read_frames(mut input: impl Read, frames: Arc<Mutex<Frames>>, star
     // Always drain capture into one current raw frame. JPEG is lazy and cached
     // per frame; neither encoding nor a slow viewer can block this reader.
     let mut seq = 0u64;
+    let mut previous: Option<Arc<Frame>> = None;
     loop {
         let mut rgb = vec![0; (super::WIDTH * super::HEIGHT * 3) as usize];
         if input.read_exact(&mut rgb).is_err() {
@@ -59,6 +62,11 @@ pub(super) fn read_frames(mut input: impl Read, frames: Arc<Mutex<Frames>>, star
             return;
         }
         seq = seq.saturating_add(1);
+        let content = match &previous {
+            Some(last) if last.rgb == rgb => last.content,
+            Some(last) => last.content.saturating_add(1),
+            None => 1,
+        };
         let captured_at = Instant::now();
         let frame = Arc::new(Frame {
             seq,
@@ -68,8 +76,10 @@ pub(super) fn read_frames(mut input: impl Read, frames: Arc<Mutex<Frames>>, star
                 .min(u64::MAX as u128) as u64,
             captured_at,
             rgb,
+            content,
             jpeg: OnceLock::new(),
         });
+        previous = Some(frame.clone());
         let mut state = frames.lock().unwrap();
         state.current = Some(frame);
         state.error = None;

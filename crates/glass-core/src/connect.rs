@@ -3635,7 +3635,7 @@ fn desktop_stream(
             )
             .map_err(|e| e.to_string());
         }
-        match stream_frame_after(desktop, &mut watermark, remaining) {
+        match stream_frame_after(desktop, &mut watermark, remaining, None) {
             Ok(Some(frame)) => break frame,
             Ok(None) => continue,
             Err(error) => {
@@ -3645,8 +3645,8 @@ fn desktop_stream(
         }
     };
     write_desktop_stream_headers(stream)?;
-    write_desktop_stream_frames(stream, first, width, |after, timeout| {
-        stream_frame_after(desktop, after, timeout)
+    write_desktop_stream_frames(stream, first, width, |after, timeout, unchanged| {
+        stream_frame_after(desktop, after, timeout, unchanged)
     })
 }
 
@@ -3663,8 +3663,9 @@ fn stream_frame_after(
     desktop: &crate::desktop::Desktop,
     after: &mut u64,
     timeout: Duration,
+    unchanged: Option<u64>,
 ) -> Result<Option<crate::desktop::TimedFrame>, String> {
-    match desktop.timed_frame_after(*after, timeout) {
+    match desktop.timed_frame_after_unless(*after, timeout, unchanged) {
         Err(error) if error == "Desktop frame source is stale" => {
             if let Some(current) = desktop.status()["frameSeq"].as_u64() {
                 *after = (*after).max(current);
@@ -3683,11 +3684,18 @@ fn write_desktop_stream_frames<W, F>(
 ) -> Result<(), String>
 where
     W: Write,
-    F: FnMut(&mut u64, Duration) -> Result<Option<crate::desktop::TimedFrame>, String>,
+    F: FnMut(&mut u64, Duration, Option<u64>) -> Result<Option<crate::desktop::TimedFrame>, String>,
 {
+    const HEARTBEAT: &[u8] =
+        b"--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n";
     let mut next = Some(first);
     let mut sequence = 0;
     let mut after = next.as_ref().map_or(0, |frame| frame.seq);
+    // The picture last sent, when it was sent, and how long writing it took: a slow write means the
+    // network is the bottleneck, which the viewer uses to pick a smaller stream.
+    let mut last_content = None;
+    let mut last_write = Instant::now();
+    let mut send_ms = 0;
     loop {
         let crate::desktop::TimedFrame {
             seq,
@@ -3695,9 +3703,10 @@ where
             jpeg,
             mut encode_ms,
             age_ms,
+            content,
         } = match next.take() {
             Some(frame) => frame,
-            None => match frame_after(&mut after, Duration::from_secs(2)) {
+            None => match frame_after(&mut after, Duration::from_secs(2), last_content) {
                 Ok(Some(frame)) => frame,
                 // Capture can pause while a desktop is idle or the remote
                 // transport is delayed. Keep the response open and wait for
@@ -3707,12 +3716,9 @@ where
                     // Use a valid, explicitly marked empty multipart part so
                     // proxies keep the response alive without making the
                     // viewer treat a heartbeat as an image frame.
-                    stream
-                        .write_all(
-                            b"--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n",
-                        )
-                        .map_err(|e| e.to_string())?;
+                    stream.write_all(HEARTBEAT).map_err(|e| e.to_string())?;
                     stream.flush().map_err(|e| e.to_string())?;
+                    last_write = Instant::now();
                     continue;
                 }
                 Err(_) => return Ok(()),
@@ -3720,6 +3726,17 @@ where
         };
         if seq <= sequence {
             return Ok(());
+        }
+        // An idle desktop repeats the same picture 30 times a second; send it once.
+        if last_content == Some(content) {
+            sequence = seq;
+            after = seq;
+            if last_write.elapsed() >= Duration::from_secs(2) {
+                stream.write_all(HEARTBEAT).map_err(|e| e.to_string())?;
+                stream.flush().map_err(|e| e.to_string())?;
+                last_write = Instant::now();
+            }
+            continue;
         }
         let resizing = Instant::now();
         let jpeg = if width == 1280 {
@@ -3730,15 +3747,19 @@ where
             resized
         };
         let age_ms = age_ms + resizing.elapsed().as_millis() as u64;
+        let writing = Instant::now();
         write!(
             stream,
-            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\nX-Frame-Age-Ms: {}\r\nX-Frame-Encode-Ms: {}\r\n\r\n",
-            jpeg.len(), seq, time_ms, age_ms, encode_ms
+            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\nX-Frame-Age-Ms: {}\r\nX-Frame-Encode-Ms: {}\r\nX-Frame-Send-Ms: {}\r\n\r\n",
+            jpeg.len(), seq, time_ms, age_ms, encode_ms, send_ms
         )
         .map_err(|e| e.to_string())?;
         stream.write_all(&jpeg).map_err(|e| e.to_string())?;
         stream.write_all(b"\r\n").map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
+        send_ms = writing.elapsed().as_millis() as u64;
+        last_write = Instant::now();
+        last_content = Some(content);
         sequence = seq;
         after = seq;
     }
@@ -3949,7 +3970,7 @@ mod tests {
             &mut body,
             (1, 100, b"first".to_vec()).into(),
             1280,
-            |after, _| {
+            |after, _, _| {
                 polls += 1;
                 match polls {
                     1 => {
@@ -3977,6 +3998,44 @@ mod tests {
     }
 
     #[test]
+    fn desktop_stream_sends_a_repeated_picture_once_and_reports_send_time() {
+        let mut polls = 0;
+        let mut body = Vec::new();
+        let frame = |seq, jpeg: &[u8], content| crate::desktop::TimedFrame {
+            seq,
+            time_ms: seq * 33,
+            jpeg: jpeg.to_vec(),
+            encode_ms: 0,
+            age_ms: 0,
+            content,
+        };
+        write_desktop_stream_frames(&mut body, frame(1, b"first", 1), 1280, |_, _, unchanged| {
+            polls += 1;
+            match polls {
+                1 => {
+                    assert_eq!(
+                        unchanged,
+                        Some(1),
+                        "the host is told which picture the viewer has"
+                    );
+                    Ok(Some(frame(2, b"", 1)))
+                }
+                2 => Ok(Some(frame(3, b"changed", 2))),
+                _ => Err("test stream closed".into()),
+            }
+        })
+        .unwrap();
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("X-Frame-Seq: 1\r\n"));
+        assert!(
+            !body.contains("X-Frame-Seq: 2\r\n"),
+            "an unchanged picture is not resent"
+        );
+        assert!(body.contains("X-Frame-Seq: 3\r\n"));
+        assert!(body.contains("X-Frame-Send-Ms: "));
+    }
+
+    #[test]
     fn desktop_stream_frames_report_host_age_and_encode_time() {
         let mut body = Vec::new();
         let first = crate::desktop::TimedFrame {
@@ -3985,8 +4044,9 @@ mod tests {
             jpeg: b"jpeg".to_vec(),
             encode_ms: 7,
             age_ms: 12,
+            content: 1,
         };
-        write_desktop_stream_frames(&mut body, first, 1280, |_, _| {
+        write_desktop_stream_frames(&mut body, first, 1280, |_, _, _| {
             Err("test stream closed".into())
         })
         .unwrap();
@@ -4003,7 +4063,7 @@ mod tests {
             &mut wire,
             (1, 100, b"jpeg".to_vec()).into(),
             1280,
-            |_, _| Err("test stream closed".into()),
+            |_, _, _| Err("test stream closed".into()),
         )
         .unwrap();
 

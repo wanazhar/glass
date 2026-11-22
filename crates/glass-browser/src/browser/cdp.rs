@@ -286,6 +286,7 @@ pub struct CdpClient {
     next_id: Arc<AtomicU64>,
     events: broadcast::Sender<CdpEvent>,
     payload_events: broadcast::Sender<CdpEventWithParams>,
+    network_events: broadcast::Sender<CdpEventWithParams>,
     screencast_sink: Arc<std::sync::Mutex<Option<ScreencastSink>>>,
     screencast_received: Arc<AtomicU64>,
     screencast_dropped: Arc<AtomicU64>,
@@ -382,8 +383,10 @@ impl CdpClient {
         let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
         let (event_tx, _) = broadcast::channel::<CdpEvent>(128);
         let (payload_event_tx, _) = broadcast::channel::<CdpEventWithParams>(128);
+        let (network_event_tx, _) = broadcast::channel::<CdpEventWithParams>(4096);
         let actor_events = event_tx.clone();
         let actor_payload_events = payload_event_tx.clone();
+        let actor_network_events = network_event_tx.clone();
         let screencast_sink = Arc::new(std::sync::Mutex::new(None));
         let actor_screencast_sink = Arc::clone(&screencast_sink);
         let screencast_received = Arc::new(AtomicU64::new(0));
@@ -435,6 +438,7 @@ impl CdpClient {
                                     &mut pending,
                                     &actor_events,
                                     &actor_payload_events,
+                                    &actor_network_events,
                                     ScreencastDispatch {
                                         sink: &actor_screencast_sink,
                                         received: &actor_screencast_received,
@@ -451,6 +455,7 @@ impl CdpClient {
                                         &mut pending,
                                         &actor_events,
                                         &actor_payload_events,
+                                        &actor_network_events,
                                         ScreencastDispatch {
                                             sink: &actor_screencast_sink,
                                             received: &actor_screencast_received,
@@ -495,6 +500,7 @@ impl CdpClient {
             next_id,
             events: event_tx,
             payload_events: payload_event_tx,
+            network_events: network_event_tx,
             screencast_sink,
             screencast_received,
             screencast_dropped,
@@ -514,6 +520,10 @@ impl CdpClient {
     /// Payload JSON is parsed only while this stream has at least one receiver.
     pub fn subscribe_events_with_params(&self) -> broadcast::Receiver<CdpEventWithParams> {
         self.payload_events.subscribe()
+    }
+
+    pub(crate) fn subscribe_network_events(&self) -> broadcast::Receiver<CdpEventWithParams> {
+        self.network_events.subscribe()
     }
 
     pub fn open_screencast_channel(
@@ -1462,6 +1472,7 @@ fn handle_incoming_message(
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>,
     events: &broadcast::Sender<CdpEvent>,
     payload_events: &broadcast::Sender<CdpEventWithParams>,
+    network_events: &broadcast::Sender<CdpEventWithParams>,
     screencast: ScreencastDispatch<'_>,
     text: &str,
 ) {
@@ -1541,6 +1552,19 @@ fn handle_incoming_message(
         let _ = events.send(CdpEvent {
             method: method.clone(),
         });
+        let is_network = matches!(
+            method.as_str(),
+            "Network.requestWillBeSent" | "Network.loadingFinished" | "Network.loadingFailed"
+        );
+        if is_network && network_events.receiver_count() > 0
+            && let Ok(payload) = serde_json::from_str::<IncomingEventParams>(text)
+        {
+            let _ = network_events.send(CdpEventWithParams {
+                method: method.clone(),
+                params: payload.params,
+                session_id: message.session_id.clone(),
+            });
+        }
         if payload_events.receiver_count() > 0 {
             match serde_json::from_str::<IncomingEventParams>(text) {
                 Ok(payload) => {

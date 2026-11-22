@@ -1814,6 +1814,18 @@ async fn action_network_tracking_includes_requests_started_before_the_wait() {
                 let command: Value = serde_json::from_str(&text).unwrap();
                 if command["method"] == "Runtime.evaluate" && request {
                     writer.lock().await.send(Message::Text(json!({"method":"Network.requestWillBeSent","params":{"requestId":"save","type":"Fetch"}}).to_string().into())).await.unwrap();
+                    for _ in 0..300 {
+                        writer
+                            .lock()
+                            .await
+                            .send(Message::Text(
+                                json!({"method":"Runtime.consoleAPICalled","params":{}})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
                     if completes {
                         let writer = Arc::clone(&writer);
                         tokio::spawn(async move {

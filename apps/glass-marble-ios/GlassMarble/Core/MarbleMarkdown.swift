@@ -52,11 +52,11 @@ enum MarbleMarkdown {
 
             if let fence = fenceMarker(trimmed) {
                 flush()
-                let language = String(trimmed.dropFirst(fence.count)).trimmingCharacters(in: .whitespaces)
+                let language = String(trimmed.dropFirst(fence.length)).trimmingCharacters(in: .whitespaces)
                 var code: [String] = []
                 index += 1
                 while index < lines.endIndex,
-                      !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
+                      !closes(fence, lines[index].trimmingCharacters(in: .whitespaces)) {
                     code.append(lines[index])
                     index += 1
                 }
@@ -149,10 +149,22 @@ enum MarbleMarkdown {
         return blocks
     }
 
-    private static func fenceMarker(_ trimmed: String) -> String? {
-        if trimmed.hasPrefix("```") { return "```" }
-        if trimmed.hasPrefix("~~~") { return "~~~" }
-        return nil
+    /// An opening code fence: three or more backticks or tildes. A backtick
+    /// fence's info string may not contain a backtick (CommonMark).
+    private static func fenceMarker(_ trimmed: String) -> (character: Character, length: Int)? {
+        guard let first = trimmed.first, first == "`" || first == "~" else { return nil }
+        let length = trimmed.prefix(while: { $0 == first }).count
+        guard length >= 3 else { return nil }
+        if first == "`", trimmed.dropFirst(length).contains("`") { return nil }
+        return (first, length)
+    }
+
+    /// A block closes only on a fence of the same character, at least as long
+    /// as the one that opened it, with nothing after it.
+    private static func closes(_ fence: (character: Character, length: Int), _ trimmed: String) -> Bool {
+        let length = trimmed.prefix(while: { $0 == fence.character }).count
+        guard length >= fence.length else { return false }
+        return trimmed.dropFirst(length).trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private static func heading(_ trimmed: String) -> MarbleMarkdownBlock? {

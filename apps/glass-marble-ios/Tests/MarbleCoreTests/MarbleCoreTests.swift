@@ -1459,6 +1459,27 @@ final class MarbleMarkdownTests: XCTestCase {
         XCTAssertEqual(MarbleMarkdown.parse("```\nx\ny"), [.code(language: "", code: "x\ny")])
     }
 
+    func testLongerFenceKeepsShorterFencesAsCode() {
+        XCTAssertEqual(
+            MarbleMarkdown.parse("````markdown\n```swift\nlet x = 1\n```\n````\nafter"),
+            [
+                .code(language: "markdown", code: "```swift\nlet x = 1\n```"),
+                .paragraph("after"),
+            ]
+        )
+    }
+
+    func testFenceClosesOnlyOnTheSameCharacter() {
+        XCTAssertEqual(
+            MarbleMarkdown.parse("~~~\n```\nx\n~~~~"),
+            [.code(language: "", code: "```\nx")]
+        )
+        XCTAssertEqual(
+            MarbleMarkdown.parse("```\n``` not a close\n```"),
+            [.code(language: "", code: "``` not a close")]
+        )
+    }
+
     func testShortTableRowsArePadded() {
         XCTAssertEqual(MarbleMarkdown.parse("|a|b|\n|-|-|\n|1|"), [
             .table(header: ["a", "b"], alignments: [.leading, .leading], rows: [["1", ""]])

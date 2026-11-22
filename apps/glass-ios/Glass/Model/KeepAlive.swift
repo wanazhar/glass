@@ -50,7 +50,10 @@ final class KeepAlive: NSObject {
     /// Turns keep-alive on or off. Turning it on asks for When In Use location; returns whether it is on.
     func set(_ on: Bool) async -> Bool {
         if on, manager.authorizationStatus == .notDetermined {
-            await withCheckedContinuation { authorizing.append($0) }
+            await withCheckedContinuation { continuation in
+                authorizing.append(continuation)
+                manager.requestWhenInUseAuthorization()
+            }
         }
         let enabled = on && authorized
         UserDefaults.standard.set(enabled, forKey: Self.key)

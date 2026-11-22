@@ -1,6 +1,7 @@
 //! Moves files between the workspace and the managed desktop's private
 //! Downloads folder, which the workspace-scoped file tools cannot reach.
 
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -45,11 +46,15 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
     let mut output = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(&partial)
         .map_err(|error| format!("Could not stage the file: {error}"))?;
     let result = (|| {
         let mut input = std::fs::File::open(from)?;
         std::io::copy(&mut input, &mut output)?;
+        output.set_permissions(std::fs::Permissions::from_mode(
+            input.metadata()?.permissions().mode() & 0o777,
+        ))?;
         output.sync_all()?;
         std::fs::rename(&partial, to)
     })();
@@ -208,6 +213,23 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfers_preserve_private_and_executable_permissions() {
+        let root = scratch("permissions");
+        let source = root.join("source");
+        let target = root.join("target");
+        std::fs::write(&source, b"content").unwrap();
+        for mode in [0o600, 0o755, 0o4700] {
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(mode)).unwrap();
+            copy(&source, &target).unwrap();
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+                mode & 0o777
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn manager_transfers_use_the_trusted_nested_thread_workspace() {

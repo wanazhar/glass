@@ -23,11 +23,15 @@ enum MarbleResumeCursor {
 struct MarbleChatCache: Codable, Equatable {
     var everyone: [MarbleEntry]
     var transcripts: [String: [MarbleEntry]]
+    var before: [String: String]? = nil
+    var threads: [String: MarbleThreadPage]? = nil
 
     static let empty = MarbleChatCache(everyone: [], transcripts: [:])
 
     mutating func removeConversation(_ id: String) {
         transcripts.removeValue(forKey: id)
+        before?.removeValue(forKey: id)
+        threads = threads?.filter { $0.value.thread.conversationId != id }
         everyone.removeAll { $0.conversationId == id }
     }
 
@@ -57,5 +61,31 @@ struct MarbleChatCache: Codable, Equatable {
 
     static func decoded(_ data: Data) -> MarbleChatCache? {
         try? JSONDecoder().decode(MarbleChatCache.self, from: data)
+    }
+}
+
+enum MarbleHistoryWindow {
+    static let pageSize = 50
+
+    /// Keep previously loaded rows only when they join the latest page.
+    /// The newest page owns overlapping rows, including in-place settlements.
+    static func refreshing(_ entries: [MarbleEntry], before: String?,
+                           with latest: [MarbleEntry], nextBefore: String?) -> ([MarbleEntry], String?) {
+        guard nextBefore != nil, let first = latest.first,
+              let overlap = entries.firstIndex(where: { $0.id == first.id }) else {
+            return (latest, nextBefore)
+        }
+        return (Array(entries[..<overlap]) + latest, overlap == 0 ? nextBefore : before)
+    }
+
+    static func prepending(_ older: [MarbleEntry], to newer: [MarbleEntry]) -> [MarbleEntry] {
+        let ids = Set(newer.map(\.id))
+        return older.filter { !ids.contains($0.id) } + newer
+    }
+
+    static func cached(_ entries: [MarbleEntry], before: String?) -> ([MarbleEntry], String?) {
+        guard entries.count > pageSize else { return (entries, before) }
+        let latest = Array(entries.suffix(pageSize))
+        return (latest, latest.first?.serverID)
     }
 }

@@ -71,7 +71,9 @@ struct TranscriptView: View {
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) {
+            if let conversationId { await store.loadOlderHistory(conversationId) }
+        }
     }
 
     /// Shaped rows keep the first load from looking like an empty
@@ -510,8 +512,11 @@ extension View {
         }
     }
 
-    func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil) -> some View {
-        modifier(MarbleFollowLatest(hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing))
+    func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil,
+                             loadOlder: (() async -> Void)? = nil) -> some View {
+        modifier(MarbleFollowLatest(
+            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, loadOlder: loadOlder
+        ))
     }
 }
 
@@ -519,6 +524,7 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
+    let loadOlder: (() async -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position = ScrollPosition()
     @State private var follow = MarbleScrollFollow()
@@ -555,6 +561,10 @@ private struct MarbleFollowLatest: ViewModifier {
                 updateFollow(distance: distance, userMoved: oldPhase != .tracking)
                 if hasMessages && follow.following && abs(distance) > 1 {
                     scrollToEnd()
+                }
+                if hasMessages, oldPhase != .tracking, let loadOlder,
+                   context.geometry.contentOffset.y + context.geometry.contentInsets.top < 180 {
+                    Task { await loadOlder() }
                 }
             }
             .onScrollGeometryChange(for: Layout.self) { geometry in

@@ -68,4 +68,41 @@ final class MarbleThreadsTests: XCTestCase {
         navigation.openThread("u")
         XCTAssertEqual(navigation.chatPath, [.marbleChat("ada"), .thread("u")])
     }
+
+    func testHistoryPagingRemainsOptionalAndDistinguishesAPrunedCursor() throws {
+        let decoder = JSONDecoder()
+        let legacy = try decoder.decode(MarbleEveryonePage.self, from: Data(#"{"entries":[]}"#.utf8))
+        XCTAssertNil(legacy.hasMore)
+        let paged = try decoder.decode(MarbleEveryonePage.self, from: Data(
+            #"{"entries":[],"hasMore":true,"nextBefore":"entry-50"}"#.utf8
+        ))
+        XCTAssertEqual(paged.hasMore, true)
+        XCTAssertEqual(paged.nextBefore, "entry-50")
+        XCTAssertEqual(MarbleRoute.everyone(after: nil, main: true, before: paged.nextBefore, limit: 50).query,
+                       [.init(name: "main", value: "1"), .init(name: "before", value: "entry-50"),
+                        .init(name: "limit", value: "50")])
+        XCTAssertEqual(MarbleClientError.status(404, body: #"{"error":"unknown_cursor"}"#), .unknownHistoryCursor)
+        XCTAssertEqual(MarbleClientError.status(404, body: #"{"error":"unknown_thread"}"#), .notFound)
+    }
+
+    func testHistoryWindowPrependsInHostOrderAndRefreshesOverlappingRows() {
+        func entry(_ id: String, text: String = "") -> MarbleEntry {
+            var row = MarbleEntry(conversationId: "everyone", kind: "assistant", text: text, taskId: "", at: 0)
+            row.serverID = id
+            return row
+        }
+        let a = entry("a"), b = entry("b"), c = entry("c"), d = entry("d"), e = entry("e")
+        let existing = MarbleHistoryWindow.prepending([a, b, c], to: [c, d])
+        XCTAssertEqual(existing.map(\.id), ["a", "b", "c", "d"])
+        let (updated, before) = MarbleHistoryWindow.refreshing(
+            existing, before: "a", with: [entry("c", text: "Finished"), d, e], nextBefore: "c"
+        )
+        XCTAssertEqual(updated.map(\.id), ["a", "b", "c", "d", "e"])
+        XCTAssertEqual(updated[2].text, "Finished")
+        XCTAssertEqual(before, "a")
+        XCTAssertEqual(MarbleHistoryWindow.refreshing(updated, before: before, with: [e], nextBefore: nil).0, [e])
+        let (cached, cursor) = MarbleHistoryWindow.cached((0..<60).map { entry("row-\($0)") }, before: nil)
+        XCTAssertEqual(cached.count, 50)
+        XCTAssertEqual(cursor, "row-10")
+    }
 }

@@ -39,7 +39,7 @@ struct MarbleThreadSummary: Codable, Hashable, Sendable {
     var replyLabel: String { replyCount == 1 ? "1 reply" : "\(replyCount) replies" }
 }
 
-struct MarbleThread: Decodable, Identifiable, Hashable, Sendable {
+struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
     let summary: MarbleThreadSummary
     let conversationId: String
     let parentEntryId: String
@@ -60,11 +60,26 @@ struct MarbleThread: Decodable, Identifiable, Hashable, Sendable {
         createdAt = try values.required("created_at", "createdAt")
         participants = try values.optional("participants") ?? []
     }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: MarbleThreadKey.self)
+        try values.encode(id, forKey: .init("id"))
+        try values.encode(summary.replyCount, forKey: .init("replyCount"))
+        try values.encode(summary.lastActivityAt, forKey: .init("lastActivityAt"))
+        try values.encode(conversationId, forKey: .init("conversationId"))
+        try values.encode(parentEntryId, forKey: .init("parentEntryId"))
+        try values.encode(parentPreview, forKey: .init("parentPreview"))
+        try values.encode(parentSender, forKey: .init("parentSender"))
+        try values.encode(createdAt, forKey: .init("createdAt"))
+        try values.encode(participants, forKey: .init("participants"))
+    }
 }
 
-struct MarbleThreadPage: Decodable {
+struct MarbleThreadPage: Codable, Equatable {
     let thread: MarbleThread
-    let entries: [MarbleEntry]
+    var entries: [MarbleEntry]
+    var hasMore: Bool? = nil
+    var nextBefore: String? = nil
 }
 
 struct MarbleSearchResult: Decodable, Identifiable, Hashable, Sendable {

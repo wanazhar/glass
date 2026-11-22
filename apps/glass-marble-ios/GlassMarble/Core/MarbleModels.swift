@@ -668,6 +668,14 @@ struct MarbleTranscriptPage: Decodable, Equatable {
     var cursor: UInt64
     var omitted: Int?
     var revision: Int?
+    var hasMore: Bool?
+    var nextBefore: String?
+}
+
+struct MarbleEveryonePage: Decodable {
+    var entries: [MarbleEntry]
+    var hasMore: Bool?
+    var nextBefore: String?
 }
 
 struct MarbleAccepted: Decodable, Equatable {

@@ -142,10 +142,16 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(route: .state))
     }
 
-    func transcript(conversationId: String, after: UInt64? = nil, around: String? = nil) async throws -> MarbleTranscriptPage {
-        try await fetch(
-            try makeRequest(route: .transcript(conversationId: conversationId, after: after, main: true, around: around))
-        )
+    func transcript(conversationId: String, around: String? = nil,
+                    before: String? = nil) async throws -> MarbleTranscriptPage {
+        let limit = around == nil ? MarbleHistoryWindow.pageSize : nil
+        let route = MarbleRoute.transcript(conversationId: conversationId, main: true, around: around)
+        let page: MarbleTranscriptPage = try await fetch(try makeRequest(route: route.history(before: before, limit: limit)))
+        // Older hosts already honored limit without advertising a back cursor.
+        if around == nil, before == nil, page.hasMore == nil, page.entries.count == limit {
+            return try await fetch(try makeRequest(route: route))
+        }
+        return page
     }
 
     func send(text: String, conversationId: String?, threadId: String? = nil,
@@ -229,8 +235,10 @@ final class MarbleClient: @unchecked Sendable {
         return reply.threads
     }
 
-    func thread(id: String) async throws -> MarbleThreadPage {
-        try await fetch(try makeRequest(path: "/api/threads/\(encoded(id))"))
+    func thread(id: String, before: String? = nil) async throws -> MarbleThreadPage {
+        let route = MarbleRoute(path: "/api/threads/\(encoded(id))")
+            .history(before: before, limit: MarbleHistoryWindow.pageSize)
+        return try await fetch(try makeRequest(route: route))
     }
 
     func createThread(conversationId: String, parentEntryId: String) async throws -> MarbleThread {
@@ -477,10 +485,10 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     /// The shared chat's timeline, newest entries after `after`.
-    func everyone(after: UInt64? = nil, main: Bool = true) async throws -> [MarbleEntry] {
-        struct Reply: Decodable { var entries: [MarbleEntry] }
-        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after, main: main)))
-        return reply.entries
+    func everyone(before: String? = nil) async throws -> MarbleEveryonePage {
+        try await fetch(try makeRequest(route: .everyone(
+            after: nil, main: true, before: before, limit: MarbleHistoryWindow.pageSize
+        )))
     }
 
     /// Empty the shared Everyone timeline; other chats are untouched.

@@ -67,17 +67,17 @@ final class MarbleStore: ObservableObject {
             Task { await self.loadTranscript() }
         }
     }
-    /// History for the selected conversation, fetched separately from state.
-    @Published private(set) var conversationTranscript: [MarbleEntry] = []
-    private var transcriptConversationId: String?
     @Published private var transcriptHistoryLoadedFor: String?
-    private var transcriptCursor: UInt64 = 0
     private var transcriptRevision: Int = -1
     /// Everyone and each marble's own chat, paged from the host: a lean state
     /// poll carries no transcript, so these never come from `state`.
     @Published private(set) var everyoneTimeline: [MarbleEntry] = []
     @Published private var everyoneHistoryLoaded = false
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
+    @Published private(set) var historyBefore: [String: String] = [:]
+    @Published private(set) var threadPages: [String: MarbleThreadPage] = [:]
+    private var loadingOlder: [String: String] = [:]
+    private var loadingOlderThreads: [String: String] = [:]
     private var deletedConversationIDs: Set<String> = []
     private var conversationDeletions: [String: UInt64] = [:]
     @Published private(set) var historyErrors: Set<String> = []
@@ -183,10 +183,6 @@ final class MarbleStore: ObservableObject {
 
     func transcript(for id: String?) -> [MarbleEntry] {
         guard let id else { return [] }
-        if transcriptConversationId == id,
-           transcriptHistoryLoadedFor == id || !conversationTranscript.isEmpty {
-            return conversationTranscript.filter { $0.threadId == nil }
-        }
         return (marbleTranscripts[id] ?? state.transcript(for: id)).filter { $0.threadId == nil }
     }
 
@@ -286,10 +282,7 @@ final class MarbleStore: ObservableObject {
         hostPID = nil
         notificationCursor = MarbleNotificationCursor()
         needsToken = false
-        conversationTranscript = []
-        transcriptConversationId = nil
         transcriptHistoryLoadedFor = nil
-        transcriptCursor = 0
         transcriptRevision = -1
         hostGeneration.advance()
         resetChats()
@@ -322,10 +315,7 @@ final class MarbleStore: ObservableObject {
         hostPID = nil
         notificationCursor = MarbleNotificationCursor()
         state = .empty
-        conversationTranscript = []
-        transcriptConversationId = nil
         transcriptHistoryLoadedFor = nil
-        transcriptCursor = 0
         transcriptRevision = -1
         hostGeneration.advance()
         resetChats()
@@ -478,18 +468,43 @@ final class MarbleStore: ObservableObject {
         guard let url = Self.cacheURL(for: endpoint),
               let data = try? Data(contentsOf: url),
               let cache = MarbleChatCache.decoded(data) else { return }
-        everyoneTimeline = cache.everyone
-        marbleTranscripts = cache.transcripts
+        historyBefore = cache.before ?? [:]
+        everyoneTimeline = cachedEntries(cache.everyone, for: everyoneConversationId)
+        marbleTranscripts = Dictionary(uniqueKeysWithValues: cache.transcripts.map { id, entries in
+            (id, cachedEntries(entries, for: id))
+        })
+        threadPages = cache.threads ?? [:]
     }
 
     private func saveCache(discardOnFailure: Bool = false) {
         guard let endpoint, let url = Self.cacheURL(for: endpoint) else { return }
-        let cache = MarbleChatCache(everyone: everyoneTimeline, transcripts: marbleTranscripts)
+        var cache = MarbleChatCache(everyone: [], transcripts: [:], before: [:])
+        for (id, entries) in marbleTranscripts {
+            let (rows, before) = MarbleHistoryWindow.cached(entries, before: historyBefore[id])
+            cache.transcripts[id] = rows
+            cache.before?[id] = before
+        }
+        let (rows, before) = MarbleHistoryWindow.cached(
+            everyoneTimeline, before: historyBefore[everyoneConversationId]
+        )
+        cache.everyone = rows
+        cache.before?[everyoneConversationId] = before
+        cache.threads = threadPages.mapValues { page in
+            var snapshot = page
+            (snapshot.entries, snapshot.nextBefore) = MarbleHistoryWindow.cached(page.entries, before: page.nextBefore)
+            return snapshot
+        }
         do {
             try cache.encoded().write(to: url, options: .atomic)
         } catch {
             if discardOnFailure { try? FileManager.default.removeItem(at: url) }
         }
+    }
+
+    private func cachedEntries(_ entries: [MarbleEntry], for id: String) -> [MarbleEntry] {
+        let (rows, before) = MarbleHistoryWindow.cached(entries, before: historyBefore[id])
+        historyBefore[id] = before
+        return rows
     }
 
     private func saveCursor() {
@@ -617,6 +632,10 @@ final class MarbleStore: ObservableObject {
         everyoneTimeline = []
         everyoneHistoryLoaded = false
         marbleTranscripts = [:]
+        historyBefore = [:]
+        threadPages = [:]
+        loadingOlder = [:]
+        loadingOlderThreads = [:]
         deletedConversationIDs = []
         conversationDeletions = [:]
         everyoneHistoryRevision = -1
@@ -656,7 +675,7 @@ final class MarbleStore: ObservableObject {
             marbleTranscripts[$0.conversationId] == nil || isAgentWorking($0)
                 || $0.conversationId == displayedMarbleConversation
                 || awaitingTranscript[$0.conversationId] != nil || liveEntries[$0.conversationId] != nil
-        }.map(\.conversationId)).subtracting([""])
+        }.map(\.conversationId)).subtracting(["", selectedConversationId ?? ""])
         await withTaskGroup(of: Void.self) { group in
             for id in marbleIds {
                 group.addTask { await self.loadMarbleHistory(id, revision: revision) }
@@ -676,16 +695,17 @@ final class MarbleStore: ObservableObject {
     private var everyoneHistoryRevision = -1
     private var marbleHistoryRevisions: [String: Int] = [:]
 
-    private func loadEveryoneHistory(revision: Int) async {
+    private func loadEveryoneHistory(revision: Int, resetWindow: Bool = false) async {
         guard let client else { return }
         let generation = hostGeneration.current
         do {
-            let timeline = try await client.everyone()
+            let page = try await client.everyone()
             guard hostGeneration.isCurrent(generation), everyoneHistoryRevision <= revision else { return }
             if historyErrors.contains(everyoneConversationId) { historyErrors.remove(everyoneConversationId) }
-            if everyoneTimeline != timeline { everyoneTimeline = timeline }
-            confirmEntries(timeline, conversationId: everyoneConversationId)
-            confirmOutgoing(timeline, to: .everyone())
+            updateHistory(everyoneConversationId, entries: page.entries,
+                          nextBefore: page.hasMore == true ? page.nextBefore : nil, reset: resetWindow)
+            confirmEntries(page.entries, conversationId: everyoneConversationId)
+            confirmOutgoing(page.entries, to: .everyone())
             if !everyoneHistoryLoaded { everyoneHistoryLoaded = true }
             everyoneHistoryRevision = revision
         } catch {
@@ -722,7 +742,7 @@ final class MarbleStore: ObservableObject {
         if displayedMarbleConversation == id { displayedMarbleConversation = nil }
     }
 
-    private func loadMarbleHistory(_ id: String, revision: Int) async {
+    private func loadMarbleHistory(_ id: String, revision: Int, resetWindow: Bool = false) async {
         guard let client, !deletedConversationIDs.contains(id) else { return }
         let generation = hostGeneration.current
         do {
@@ -731,7 +751,8 @@ final class MarbleStore: ObservableObject {
                   !deletedConversationIDs.contains(id),
                   (marbleHistoryRevisions[id] ?? -1) <= revision else { return }
             if historyErrors.contains(id) { historyErrors.remove(id) }
-            if marbleTranscripts[id] != page.entries { marbleTranscripts[id] = page.entries }
+            updateHistory(id, entries: page.entries, nextBefore: page.hasMore == true ? page.nextBefore : nil,
+                          reset: resetWindow)
             confirmEntries(page.entries, conversationId: id)
             if let marble = prism.marbles.first(where: { $0.conversationId == id && !$0.isDefault }) {
                 confirmOutgoing(page.entries, to: .marble(marble.id))
@@ -752,53 +773,29 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    /// Fetch the selected conversation's history separately, resuming from the
-    /// last cursor so a refresh does not carry every conversation at once.
-    private func loadTranscript() async {
+    /// Refresh the selected chat's latest page, retaining any loaded older pages.
+    private func loadTranscript(resetWindow: Bool = false) async {
         guard let client else { return }
         guard let conversationId = selectedConversationId else {
-            conversationTranscript = []
-            transcriptConversationId = nil
             transcriptHistoryLoadedFor = nil
-            transcriptCursor = 0
             transcriptRevision = -1
             return
         }
-        if transcriptConversationId != conversationId {
-            transcriptConversationId = conversationId
-            conversationTranscript = []
-            transcriptCursor = 0
+        if transcriptHistoryLoadedFor != conversationId {
             transcriptRevision = -1
         }
-        guard transcriptRevision != state.revision || conversationTranscript.isEmpty else {
-            return
-        }
+        guard resetWindow || transcriptRevision != state.revision else { return }
         let generation = hostGeneration.current
         let revision = state.revision
-        let after = transcriptCursor == 0 ? nil : transcriptCursor
         do {
-            let page = try await client.transcript(conversationId: conversationId, after: after)
+            let page = try await client.transcript(conversationId: conversationId)
             guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId,
                   transcriptRevision <= revision else { return }
             if historyErrors.contains(conversationId) { historyErrors.remove(conversationId) }
-            var entries = after == nil ? [] : conversationTranscript
-            var offsets = Dictionary(entries.enumerated().map {
-                (Self.transcriptKey($0.element), $0.offset)
-            }, uniquingKeysWith: { first, _ in first })
-            for entry in page.entries {
-                let key = Self.transcriptKey(entry)
-                if let index = offsets[key] {
-                    entries[index] = entry
-                } else {
-                    offsets[key] = entries.count
-                    entries.append(entry)
-                }
-            }
-            if conversationTranscript != entries { conversationTranscript = entries }
-            if marbleTranscripts[conversationId] != entries { marbleTranscripts[conversationId] = entries }
-            confirmEntries(entries, conversationId: conversationId)
-            confirmOutgoing(entries, to: .conversation(conversationId))
-            transcriptCursor = max(transcriptCursor, page.cursor)
+            updateHistory(conversationId, entries: page.entries,
+                          nextBefore: page.hasMore == true ? page.nextBefore : nil, reset: resetWindow)
+            confirmEntries(page.entries, conversationId: conversationId)
+            confirmOutgoing(page.entries, to: .conversation(conversationId))
             transcriptRevision = revision
             if transcriptHistoryLoadedFor != conversationId { transcriptHistoryLoadedFor = conversationId }
             if state.runningTask(for: conversationId) == nil {
@@ -815,8 +812,67 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    private static func transcriptKey(_ entry: MarbleEntry) -> String {
-        entry.serverID ?? "\(entry.at)|\(entry.kind)|\(entry.taskId)|\(entry.text)"
+    private func historyEntries(_ id: String) -> [MarbleEntry] {
+        id == everyoneConversationId ? everyoneTimeline : marbleTranscripts[id] ?? []
+    }
+
+    private func setHistory(_ entries: [MarbleEntry], for id: String, before: String?) {
+        if historyBefore[id] != before { historyBefore[id] = before }
+        if id == everyoneConversationId {
+            if everyoneTimeline != entries { everyoneTimeline = entries }
+        } else if marbleTranscripts[id] != entries {
+            marbleTranscripts[id] = entries
+        }
+    }
+
+    private func updateHistory(_ id: String, entries: [MarbleEntry], nextBefore: String?, reset: Bool) {
+        let (rows, cursor) = MarbleHistoryWindow.refreshing(
+            reset ? [] : historyEntries(id), before: historyBefore[id], with: entries, nextBefore: nextBefore
+        )
+        setHistory(rows, for: id, before: cursor)
+    }
+
+    func loadOlderHistory(_ id: String) async {
+        guard let client, let before = historyBefore[id], loadingOlder[id] == nil,
+              !deletedConversationIDs.contains(id) else { return }
+        let generation = hostGeneration.current
+        loadingOlder[id] = before
+        defer {
+            if hostGeneration.isCurrent(generation) { loadingOlder[id] = nil }
+        }
+        do {
+            let entries: [MarbleEntry]
+            let next: String?
+            let paged: Bool
+            if id == everyoneConversationId {
+                let page = try await client.everyone(before: before)
+                (entries, next, paged) = (page.entries, page.hasMore == true ? page.nextBefore : nil, page.hasMore != nil)
+            } else {
+                let page = try await client.transcript(conversationId: id, before: before)
+                (entries, next, paged) = (page.entries, page.hasMore == true ? page.nextBefore : nil, page.hasMore != nil)
+            }
+            guard hostGeneration.isCurrent(generation), historyBefore[id] == before else { return }
+            if paged {
+                setHistory(MarbleHistoryWindow.prepending(entries, to: historyEntries(id)), for: id, before: next)
+            } else {
+                await reloadNewestHistory(id)
+            }
+        } catch MarbleClientError.unknownHistoryCursor {
+            guard hostGeneration.isCurrent(generation), historyBefore[id] == before else { return }
+            await reloadNewestHistory(id)
+        } catch {
+            // Leave the cursor in place so another upward scroll can retry.
+        }
+    }
+
+    private func reloadNewestHistory(_ id: String) async {
+        if id == everyoneConversationId {
+            await loadEveryoneHistory(revision: state.revision, resetWindow: true)
+        } else if selectedConversationId == id {
+            await loadTranscript(resetWindow: true)
+        } else {
+            await loadMarbleHistory(id, revision: state.revision, resetWindow: true)
+        }
     }
 
     @Published private var outgoing: [MarbleOutgoing] = []
@@ -1162,17 +1218,58 @@ final class MarbleStore: ObservableObject {
         return try await withChatClient { try await $0.threads(conversationId: conversationId) }
     }
 
-    func thread(id: String) async throws -> MarbleThreadPage {
+    func threadPage(_ id: String) -> MarbleThreadPage? {
         #if DEBUG
         if let page = fixtureThreads?[id] { return page }
         #endif
-        let page = try await withChatClient { try await $0.thread(id: id) }
+        return threadPages[id]
+    }
+
+    func loadThreadHistory(_ id: String, resetWindow: Bool = false) async throws {
+        #if DEBUG
+        if fixtureThreads?[id] != nil { return }
+        #endif
+        var page = try await withChatClient { try await $0.thread(id: id) }
         let conversation = page.thread.conversationId
+        guard !deletedConversationIDs.contains(conversation) else { throw MarbleClientError.notFound }
         let target: MarbleSendTarget = conversation == everyoneConversationId
             ? .everyone(thread: id) : .conversation(conversation, thread: id)
         confirmOutgoing(page.entries, to: target)
         confirmEntries(page.entries, conversationId: conversation)
-        return page
+        let previous = resetWindow ? nil : threadPages[id]
+        (page.entries, page.nextBefore) = MarbleHistoryWindow.refreshing(
+            previous?.entries ?? [], before: previous?.nextBefore, with: page.entries,
+            nextBefore: page.hasMore == true ? page.nextBefore : nil
+        )
+        if threadPages[id] != page {
+            threadPages[id] = page
+            saveCache()
+        }
+    }
+
+    func loadOlderThread(_ id: String) async {
+        guard let before = threadPages[id]?.nextBefore, loadingOlderThreads[id] == nil else { return }
+        let generation = hostGeneration.current
+        loadingOlderThreads[id] = before
+        defer {
+            if hostGeneration.isCurrent(generation) { loadingOlderThreads[id] = nil }
+        }
+        do {
+            var older = try await withChatClient { try await $0.thread(id: id, before: before) }
+            guard let current = threadPages[id], current.nextBefore == before else { return }
+            if older.hasMore == nil {
+                try await loadThreadHistory(id, resetWindow: true)
+                return
+            }
+            older.entries = MarbleHistoryWindow.prepending(older.entries, to: current.entries)
+            if older.hasMore != true { older.nextBefore = nil }
+            threadPages[id] = older
+        } catch MarbleClientError.unknownHistoryCursor {
+            guard hostGeneration.isCurrent(generation), threadPages[id]?.nextBefore == before else { return }
+            try? await loadThreadHistory(id, resetWindow: true)
+        } catch {
+            // Keep the current rows and allow another scroll to retry.
+        }
     }
 
     func startThread(from entry: MarbleEntry) async throws -> MarbleThread {
@@ -1283,6 +1380,8 @@ final class MarbleStore: ObservableObject {
         guard let client else { return }
         do {
             try await client.clearEveryone()
+            setHistory([], for: everyoneConversationId, before: nil)
+            threadPages = threadPages.filter { $0.value.thread.conversationId != everyoneConversationId }
             await refresh()
         } catch {
             prismNotice = "Couldn't clear Everyone: \(error.localizedDescription)"
@@ -1528,11 +1627,8 @@ final class MarbleStore: ObservableObject {
         removeDeletedConversations(from: &snapshot)
         state = snapshot
         if selectedConversationId == id { selectedConversationId = nil }
-        if transcriptConversationId == id {
-            conversationTranscript = []
-            transcriptConversationId = nil
+        if transcriptHistoryLoadedFor == id {
             transcriptHistoryLoadedFor = nil
-            transcriptCursor = 0
             transcriptRevision = -1
         }
         var cache = MarbleChatCache(everyone: everyoneTimeline, transcripts: marbleTranscripts)
@@ -1540,6 +1636,8 @@ final class MarbleStore: ObservableObject {
         marbleTranscripts = cache.transcripts
         if everyoneTimeline != cache.everyone { everyoneTimeline = cache.everyone }
         marbleHistoryRevisions.removeValue(forKey: id)
+        historyBefore.removeValue(forKey: id)
+        threadPages = threadPages.filter { $0.value.thread.conversationId != id }
         historyErrors.remove(id)
         awaitingTranscript.removeValue(forKey: id)
         live.removeValue(forKey: id)
@@ -1808,7 +1906,8 @@ final class MarbleStore: ObservableObject {
             live = [:]
             syncLive()
             transcriptRevision = -1
-            transcriptCursor = 0
+            loadingOlder = [:]
+            loadingOlderThreads = [:]
             chatsRevision = -1
             everyoneHistoryRevision = -1
             marbleHistoryRevisions = [:]
@@ -2011,7 +2110,11 @@ final class MarbleStore: ObservableObject {
             scheduleEventRefresh()
         case "everyone":
             everyoneTimeline = MarbleEveryoneTimeline.applying(event, to: everyoneTimeline)
-            if everyoneTimeline.isEmpty { saveCache() }
+            if event.data.cleared != nil {
+                historyBefore[everyoneConversationId] = nil
+                threadPages = threadPages.filter { $0.value.thread.conversationId != everyoneConversationId }
+                saveCache()
+            }
             chatsRevision = -1
             scheduleEventRefresh()
         case "thread":

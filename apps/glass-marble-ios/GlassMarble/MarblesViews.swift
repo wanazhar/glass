@@ -168,7 +168,9 @@ struct EveryoneView: View {
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) {
+            await store.loadOlderHistory(everyoneConversationId)
+        }
         .task { await store.openEveryoneHistory() }
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .marbleComposerInset { composer }
@@ -537,7 +539,9 @@ struct MarbleChatScreen: View {
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) {
+            await store.loadOlderHistory(marble.conversationId)
+        }
         .task(id: marble.conversationId) { await store.openMarbleHistory(marble) }
         .onDisappear { store.closeMarbleHistory(marble.conversationId) }
         .marbleComposerInset {

@@ -104,6 +104,8 @@ enum MarbleOnboardingEvaluator {
             return .http(403, "forbidden")
         case .notFound:
             return .http(404, "not_found")
+        case .unknownHistoryCursor:
+            return .http(404, "unknown_cursor")
         case .conflict(let code):
             return .http(409, code)
         case .server(let status, let body), .http(let status, let body):
@@ -122,7 +124,7 @@ enum MarbleOnboardingEvaluator {
         switch error {
         case .unauthorized: return 401
         case .forbidden: return 403
-        case .notFound: return 404
+        case .notFound, .unknownHistoryCursor: return 404
         case .conflict: return 409
         case .server(let status, _), .http(let status, _): return status
         default: return 0
@@ -135,6 +137,7 @@ enum MarbleOnboardingEvaluator {
         case .unauthorized: return "unauthorized"
         case .forbidden: return "forbidden"
         case .notFound: return "not_found"
+        case .unknownHistoryCursor: return "unknown_cursor"
         case .conflict(let code): return code
         case .server(_, let body), .http(_, let body):
             return MarbleClientError.errorCode(from: body)

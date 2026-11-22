@@ -96,7 +96,7 @@ private struct MarbleThreadView: View {
     @EnvironmentObject private var store: MarbleStore
     let id: String
     var initialEntryId: String?
-    @State private var page: MarbleThreadPage?
+    private var page: MarbleThreadPage? { store.threadPage(id) }
     @State private var query = ""
     @State private var searching = false
     @State private var draft = ""
@@ -156,9 +156,16 @@ private struct MarbleThreadView: View {
         let generation = UUID()
         loadGeneration = generation
         do {
-            let result = try await store.thread(id: id)
+            try await store.loadThreadHistory(id)
             guard generation == loadGeneration else { return }
-            page = result
+            if let jump {
+                while let page, let cursor = page.nextBefore,
+                      !page.entries.contains(where: { $0.id == jump.entryId }) {
+                    await store.loadOlderThread(id)
+                    guard generation == loadGeneration, !Task.isCancelled,
+                          self.page?.nextBefore != cursor else { break }
+                }
+            }
             loadFailed = false
         } catch is CancellationError {
         } catch {
@@ -181,7 +188,8 @@ private struct MarbleThreadView: View {
             jump: jump, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
             workingNames: presentation.responders.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
-            }
+            },
+            loadOlder: { await store.loadOlderThread(id) }
         )
     }
 
@@ -284,6 +292,7 @@ private struct MarbleJumpTimeline: View {
     var parentId: String?
     var outgoing: UUID? = nil
     var workingNames: [String] = []
+    var loadOlder: (() async -> Void)? = nil
     @State private var highlight: String?
 
     var body: some View {
@@ -310,7 +319,9 @@ private struct MarbleJumpTimeline: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .marbleFollowsLatest(hasMessages: !entries.isEmpty, searchJump: jump?.requestId, outgoing: outgoing)
+            .marbleFollowsLatest(
+                hasMessages: !entries.isEmpty, searchJump: jump?.requestId, outgoing: outgoing, loadOlder: loadOlder
+            )
             .task(id: jump.flatMap { target in entries.contains { $0.id == target.entryId } ? target : nil }) {
                 guard let jump, let row = transcript.standalone.first(where: { $0.id == jump.entryId }) else { return }
                 highlight = jump.entryId

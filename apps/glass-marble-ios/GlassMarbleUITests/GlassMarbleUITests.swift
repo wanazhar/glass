@@ -21,8 +21,57 @@ final class GlassMarbleUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["-MarbleUITestFixture"]
+        app.launchArguments = ["-MarbleUITestFixture", "-marble.introduced", "YES"]
         app.launch()
+    }
+
+    func testColdOpenShowsLatestEveryoneAndThreadHistoryWithoutScrolling() {
+        app.tabBars.buttons["Everyone"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Everyone,'")).firstMatch.tap()
+        assertHittable("Everyone history row 59")
+        for count in [60, 2] {
+            app.buttons["Threads"].tap()
+            app.staticTexts["Thread with \(count) fixture replies"].tap()
+            assertHittable("Thread \(count) history row \(count)")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+    }
+
+    func testColdOpenWaitsForLateHistoryAndShowsLatestWithoutScrolling() {
+        app.terminate()
+        app.launchArguments.append("-MarbleUITestDelayedEveryone")
+        app.launch()
+        app.tabBars.buttons["Everyone"].tap()
+        app.buttons.matching(NSPredicate(format: "label == 'Everyone' AND identifier != 'tab.everyone'")).firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Loading messages"].firstMatch.waitForExistence(timeout: 2))
+        XCTAssertFalse(app.staticTexts["No one has spoken yet"].exists)
+        assertHittable("Everyone history row 59")
+    }
+
+    func testColdOpenShowsLatestNamedAndDefaultHistoryWithoutScrolling() {
+        app.tabBars.buttons["Marbles"].tap()
+        app.staticTexts["Ada"].tap()
+        assertHittable("Hello! Lovely to meet you — what shall we work on?")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.staticTexts["Marble"].tap()
+        app.staticTexts["Fixture conversation 0"].tap()
+        assertHittable("Fixture message 299")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.staticTexts["Fixture conversation 2"].tap()
+        assertHittable("Fixture message 2")
+    }
+
+    private func assertHittable(_ text: String, file: StaticString = #filePath, line: UInt = #line) {
+        let message = app.staticTexts[text].firstMatch
+        let visible = NSPredicate { _, _ in message.exists && message.isHittable }
+        let expectation = XCTNSPredicateExpectation(predicate: visible, object: nil)
+        let result = XCTWaiter.wait(for: [expectation], timeout: 5)
+        if result != .completed {
+            shot("Latest message missing")
+            print(app.debugDescription)
+        }
+        XCTAssertEqual(result, .completed, "Latest message did not appear without scrolling: \(text)", file: file, line: line)
     }
 
     func testLaunchLandsOnChatsListWithNoChatPushed() {

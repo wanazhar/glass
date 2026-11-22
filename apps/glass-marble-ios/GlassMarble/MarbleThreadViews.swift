@@ -103,7 +103,6 @@ private struct MarbleThreadView: View {
     @State private var jump: MarbleMessageJump?
     @State private var appliedInitialJump = false
     @State private var loadFailed = false
-    @State private var sendFailed = false
     @State private var loadGeneration = UUID()
 
     var body: some View {
@@ -124,7 +123,7 @@ private struct MarbleThreadView: View {
                     }
                 }
             } else if let page {
-                MarbleJumpTimeline(entries: page.entries, jump: jump, parentId: page.thread.parentEntryId)
+                timeline(page)
             } else if loadFailed {
                 ContentUnavailableView {
                     Label("Couldn’t load thread", systemImage: "text.bubble")
@@ -141,16 +140,8 @@ private struct MarbleThreadView: View {
         .searchable(text: $query, isPresented: $searching, prompt: "Search this thread")
         .marbleComposerInset {
             if page != nil && !searching {
-                VStack(spacing: 0) {
-                    if sendFailed {
-                        Text("Couldn’t send the reply. Try again.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 8)
-                    }
-                    ComposerBar(draft: $draft, isWorking: false, placeholder: "Reply in thread",
-                                onSend: send, onStop: {})
-                }
+                ComposerBar(draft: $draft, isWorking: false, placeholder: "Reply in thread",
+                            onSend: send, onStop: {})
                 .marbleComposerBackground()
             }
         }
@@ -175,22 +166,29 @@ private struct MarbleThreadView: View {
         }
     }
 
-    private func send(_ text: String) async -> Bool {
-        guard let thread = page?.thread else { return false }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        sendFailed = false
-        do {
-            try await store.sendInThread(trimmed, thread: thread)
-            await load()
-            jump = nil
-            return true
-        } catch is CancellationError {
-            return false
-        } catch {
-            sendFailed = true
-            return false
-        }
+    private func target(for page: MarbleThreadPage) -> MarbleSendTarget {
+        let conversationId = page.thread.conversationId
+        return conversationId == everyoneConversationId
+            ? .everyone(thread: id) : .conversation(conversationId, thread: id)
+    }
+
+    private func timeline(_ page: MarbleThreadPage) -> some View {
+        let target = target(for: page)
+        let conversationId = page.thread.conversationId
+        let presentation = store.outgoingPresentation(page.entries, to: target, conversationId: conversationId)
+        return MarbleJumpTimeline(
+            entries: store.withLiveToolRows(presentation.entries, conversationId: conversationId, threadId: id),
+            jump: jump, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
+            workingNames: presentation.responders.map { id in
+                store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
+            }
+        )
+    }
+
+    private func send(_ text: String) -> Bool {
+        guard let page, store.send(text, to: target(for: page), entries: page.entries) else { return false }
+        jump = nil
+        return true
     }
 }
 
@@ -283,15 +281,16 @@ private struct MarbleJumpTimeline: View {
     let entries: [MarbleEntry]
     let jump: MarbleMessageJump?
     var parentId: String?
+    var outgoing: UUID? = nil
+    var workingNames: [String] = []
     @State private var highlight: String?
-    private static let bottomAnchor = "thread-bottom"
 
     var body: some View {
         let transcript = MarbleReasoningAssociation(entries, keepVisible: jump?.entryId)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(transcript.standalone) { entry in
+                    ForEach(transcript.standalone, id: \.rowID) { entry in
                         VStack(alignment: .leading, spacing: 10) {
                             MarbleEntryView(entry: entry, speaker: store.speakerStyle(for: entry),
                                             reasoning: transcript.attached[entry.id], allowsThreads: parentId == nil)
@@ -300,21 +299,20 @@ private struct MarbleJumpTimeline: View {
                         .padding(.vertical, 3)
                         .background(highlight == entry.id ? Color.accentColor.opacity(0.15) : .clear,
                                     in: RoundedRectangle(cornerRadius: 8))
-                        .id(entry.id)
                     }
-                    Color.clear.frame(height: 1).id(Self.bottomAnchor)
+                    ForEach(workingNames, id: \.self) { MarbleThinkingBubble(name: $0) }
                 }
                 .padding(16)
                 .frame(maxWidth: 820)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor, searchJump: jump?.requestId)
+            .marbleFollowsLatest(hasMessages: !entries.isEmpty, searchJump: jump?.requestId, outgoing: outgoing)
             .task(id: jump.flatMap { target in entries.contains { $0.id == target.entryId } ? target : nil }) {
                 guard let jump, entries.contains(where: { $0.id == jump.entryId }) else { return }
                 highlight = jump.entryId
                 await Task.yield()
-                proxy.scrollTo(jump.entryId, anchor: .center)
+                proxy.scrollTo(entries.first { $0.id == jump.entryId }?.rowID, anchor: .center)
                 try? await Task.sleep(for: .seconds(1.6))
                 guard !Task.isCancelled else { return }
                 withAnimation(reduceMotion ? nil : .easeOut) { highlight = nil }

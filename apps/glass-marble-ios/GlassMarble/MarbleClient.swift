@@ -148,9 +148,10 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
-    func send(text: String, conversationId: String?, threadId: String? = nil) async throws -> MarbleAccepted {
+    func send(text: String, conversationId: String?, threadId: String? = nil,
+              clientMessageId: UUID? = nil) async throws -> MarbleAccepted {
         let data = try JSONEncoder().encode(
-            MarbleTurnBody(text: text, conversationId: conversationId, threadId: threadId)
+            MarbleTurnBody(text: text, conversationId: conversationId, threadId: threadId, clientMessageId: clientMessageId)
         )
         return try await fetch(
             try makeRequest(path: "/api/turns", method: "POST", body: data)
@@ -449,10 +450,13 @@ final class MarbleClient: @unchecked Sendable {
 
     private struct PrismReply: Decodable { var prism: MarblePrism }
 
-    private struct DispatchReply: Decodable {
+    struct DispatchReply: Decodable {
         var dispatched: [String]
         var marbles: [String]
         var swarm: Bool
+        var entry_id: String?
+        var client_message_id: String?
+        var taskId: String?
     }
 
     @discardableResult
@@ -486,8 +490,10 @@ final class MarbleClient: @unchecked Sendable {
 
     /// One message on the shared plane; the marbles it names answer.
     @discardableResult
-    func sendEveryone(text: String, threadId: String? = nil) async throws -> MarbleEveryoneReply {
-        try await postJSON("/api/everyone", body: MarbleTurnBody(text: text, conversationId: nil, threadId: threadId))
+    func sendEveryone(text: String, threadId: String? = nil, clientMessageId: UUID? = nil) async throws -> MarbleEveryoneReply {
+        try await postJSON("/api/everyone", body: MarbleTurnBody(
+            text: text, conversationId: nil, threadId: threadId, clientMessageId: clientMessageId
+        ))
     }
 
     func removeMarble(id: String) async throws {
@@ -498,16 +504,16 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     /// Hand one prompt to several marbles at once. Empty `marbles` means all.
-    func dispatchSwarm(text: String, marbles: [String]) async throws -> (names: [String], swarm: Bool) {
+    func dispatchSwarm(text: String, marbles: [String], clientMessageId: UUID? = nil) async throws -> DispatchReply {
         struct Body: Encodable {
             var text: String
             var marbles: [String]?
+            var client_message_id: UUID?
         }
-        let reply: DispatchReply = try await postJSON(
+        return try await postJSON(
             "/api/prism/dispatch",
-            body: Body(text: text, marbles: marbles.isEmpty ? nil : marbles)
+            body: Body(text: text, marbles: marbles.isEmpty ? nil : marbles, client_message_id: clientMessageId)
         )
-        return (reply.marbles, reply.swarm)
     }
 
     func tools() async throws -> MarbleToolInventory {

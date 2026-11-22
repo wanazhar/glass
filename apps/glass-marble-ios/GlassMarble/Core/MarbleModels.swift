@@ -85,6 +85,9 @@ struct MarbleApproval: Decodable, Identifiable, Equatable {
 
 struct MarbleEntry: Codable, Identifiable, Equatable {
     var serverID: String? = nil
+    var clientMessageID: String? = nil
+    var presentationID: String? = nil
+    var failedSendID: UUID? = nil
     var threadId: String? = nil
     var thread: MarbleThreadSummary? = nil
     var failure: MarbleFailureInfo? = nil
@@ -103,6 +106,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
         case serverID = "id"
+        case clientMessageID = "client_message_id"
         case threadId, thread, failure
     }
 
@@ -111,6 +115,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         let threadFields = try decoder.container(keyedBy: MarbleThreadKey.self)
         let id = try container.decodeIfPresent(String.self, forKey: .serverID)
         serverID = id?.isEmpty == false ? id : nil
+        clientMessageID = try threadFields.optional("client_message_id", "clientMessageId")
         let membership: String? = try threadFields.optional("thread_id", "threadId")
         threadId = membership?.isEmpty == false ? membership : nil
         thread = try container.decodeIfPresent(MarbleThreadSummary.self, forKey: .thread)
@@ -140,7 +145,8 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         self.handoff = handoff
     }
 
-    var id: String { serverID ?? "\(conversationId)|\(taskId)|\(kind)|\(at)|\(text.count)|\(text.hashValue)" }
+    var id: String { serverID ?? presentationID ?? "\(conversationId)|\(taskId)|\(kind)|\(at)|\(text.count)|\(text.hashValue)" }
+    var rowID: String { presentationID ?? clientMessageID.map { "outgoing-\($0.lowercased())" } ?? id }
 
     /// A streamed entry that has not reached the durable transcript yet.
     static func preview(kind: String, text: String) -> MarbleEntry {
@@ -513,12 +519,33 @@ struct MarbleEvent: Decodable, Equatable {
     var taskId: String
     var kind: String
     var data: MarbleEventData
+    var userEntry: MarbleEntry? = nil
+}
+
+extension MarbleEvent {
+    private enum CodingKeys: String, CodingKey { case sequence, conversationId, taskId, kind, data }
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        sequence = try fields.decode(UInt64.self, forKey: .sequence)
+        conversationId = try fields.decode(String.self, forKey: .conversationId)
+        taskId = try fields.decode(String.self, forKey: .taskId)
+        kind = try fields.decode(String.self, forKey: .kind)
+        data = try fields.decode(MarbleEventData.self, forKey: .data)
+        if kind == "entry", var entry = try? fields.decode(MarbleEntry.self, forKey: .data),
+           entry.kind == "user", entry.serverID != nil, entry.clientMessageID != nil {
+            entry.conversationId = conversationId
+            userEntry = entry
+        }
+    }
 }
 
 struct MarbleEventData: Decodable, Equatable {
     var thread: MarbleThread? = nil
     var threadId: String? = nil
     var entryId: String? = nil
+    var toolEntryId: String? = nil
+    var sender: String? = nil
     var entryKind: String? = nil
     var text: String?
     var tool: String?
@@ -539,9 +566,10 @@ struct MarbleEventData: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case thread, text, tool, name, callId, arguments, isError, message, status, revision
-        case taskId, reason, cancelled, requestId, approved, cleared
+        case taskId, reason, cancelled, requestId, approved, cleared, sender
         case threadId = "thread_id"
         case entryId = "id"
+        case toolEntryId = "entry_id"
         case entryKind = "kind"
     }
 }
@@ -594,6 +622,8 @@ struct MarbleEveryoneReply: Decodable, Equatable {
     var busy: [String]
     /// Set when the default Marble took the message as an ordinary turn.
     var taskId: String?
+    var entryId: String? = nil
+    var clientMessageID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case ok, answering, busy, taskId, accepted
@@ -613,6 +643,9 @@ struct MarbleEveryoneReply: Decodable, Equatable {
         answering = try container.decodeIfPresent([String].self, forKey: .answering) ?? []
         busy = try container.decodeIfPresent([String].self, forKey: .busy) ?? []
         taskId = try container.decodeIfPresent(String.self, forKey: .taskId)
+        let fields = try decoder.container(keyedBy: MarbleThreadKey.self)
+        entryId = try fields.optional("entry_id", "entryId")
+        clientMessageID = try fields.optional("client_message_id", "clientMessageId")
     }
 }
 
@@ -644,6 +677,8 @@ struct MarbleAccepted: Decodable, Equatable {
     var taskId: String
     /// Set when a marble's own engine took the turn instead of the chat engine.
     var marbleName: String?
+    var entry_id: String? = nil
+    var client_message_id: String? = nil
 }
 
 struct MarbleHealth: Decodable, Equatable {
@@ -840,15 +875,18 @@ public struct MarbleTurnBody: Encodable, Equatable, Sendable {
     public var text: String
     public var conversationId: String?
     public var threadId: String?
+    public var clientMessageId: UUID?
 
     enum CodingKeys: String, CodingKey {
         case text, conversationId
         case threadId = "thread_id"
+        case clientMessageId = "client_message_id"
     }
 
-    public init(text: String, conversationId: String?, threadId: String? = nil) {
+    public init(text: String, conversationId: String?, threadId: String? = nil, clientMessageId: UUID? = nil) {
         self.text = text
         self.conversationId = conversationId
         self.threadId = threadId
+        self.clientMessageId = clientMessageId
     }
 }

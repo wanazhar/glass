@@ -3,7 +3,7 @@ import SwiftUI
 /// Native rendering of a reply's Markdown: quotes, lists, tables, code, and
 /// links. Parsing lives in `MarbleMarkdown`; this view only draws its blocks,
 /// so it can be swapped for the shared rich components when they land.
-struct MarbleMarkdownView: View {
+struct MarbleMarkdownView: View, Equatable {
     var text: String
     var font: Font = .body
     var color: Color = .primary

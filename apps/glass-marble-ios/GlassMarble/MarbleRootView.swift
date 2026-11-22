@@ -237,7 +237,7 @@ struct MarbleChatView: View {
     }
 
     var body: some View {
-        TranscriptView()
+        TranscriptView(conversationId: conversationId)
         .safeAreaInset(edge: .top) {
             approvalRail
         }
@@ -366,13 +366,11 @@ struct MarbleChatView: View {
         }
     }
 
-    private func send(_ text: String) async -> Bool {
+    private func send(_ text: String) -> Bool {
         if dictation.isRecording { dictation.stop() }
-        guard await store.send(text) else { return false }
-        if case .draft = route, let id = store.selectedConversationId {
-            navigation.draftResolved(id)
+        return store.send(text, to: .conversation(conversationId), entries: store.transcript(for: conversationId)) { [weak navigation] id in
+            if case .draft = route { navigation?.draftResolved(id) }
         }
-        return true
     }
 
     /// Send the draft into the running turn, keeping its context.

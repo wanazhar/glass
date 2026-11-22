@@ -116,15 +116,22 @@ struct EveryoneView: View {
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
     @State private var showsActivity = false
-
-    private static let bottomAnchor = "everyone-bottom"
+    private let target = MarbleSendTarget.everyone()
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
+        let presentation = store.outgoingPresentation(store.everyoneEntries, to: target, conversationId: everyoneConversationId)
+        let entries = store.withLiveToolRows(presentation.entries, conversationId: everyoneConversationId)
+        let serverWorking = Set(store.everyoneThinking.map(\.id))
+        let responders = presentation.responders + store.prism.marbles.map(\.id).filter {
+            serverWorking.contains($0) && !presentation.responders.contains($0)
+        }
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if entries.isEmpty && !store.loaded {
+                    if entries.isEmpty && store.everyoneHistoryLoading {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
+                            .accessibilityLabel("Loading messages")
+                    } else if entries.isEmpty && store.historyErrors.contains(everyoneConversationId) {
+                        MarbleHistoryUnavailable { await store.openEveryoneHistory() }
                     } else if entries.isEmpty {
                         ContentUnavailableView {
                             Text("No one has spoken yet")
@@ -133,7 +140,7 @@ struct EveryoneView: View {
                         }
                     }
                     let transcript = MarbleReasoningAssociation(entries)
-                    ForEach(transcript.standalone) { entry in
+                    ForEach(transcript.standalone, id: \.rowID) { entry in
                         MarbleEntryView(
                             entry: entry,
                             speaker: store.speakerStyle(for: entry),
@@ -150,21 +157,18 @@ struct EveryoneView: View {
                         }
                         MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
                     }
-                    ForEach(store.everyoneThinking) { marble in
-                        MarbleThinkingBubble(name: marble.name)
+                    ForEach(responders, id: \.self) { id in
+                        MarbleThinkingBubble(name: store.prism.marbles.first(where: { $0.id == id })?.name ?? "Marble")
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchor)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
+        .task { await store.openEveryoneHistory() }
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .marbleComposerInset { composer }
         .toolbarVisibility(.hidden, for: .tabBar)
@@ -190,8 +194,6 @@ struct EveryoneView: View {
             }
         }
     }
-
-    private var entries: [MarbleEntry] { store.everyoneEntries }
 
     /// Who's in the room, on the same bar as the title so messages scroll
     /// under material rather than behind bare avatars; plus a line when
@@ -293,7 +295,7 @@ struct EveryoneView: View {
                 draft: $draft,
                 isWorking: false,
                 placeholder: "Message Everyone",
-                onSend: store.sendEveryone,
+                onSend: { store.send($0, to: target, entries: store.everyoneEntries) },
                 onStop: {}
             )
         }
@@ -488,18 +490,24 @@ struct MarbleChatScreen: View {
         }
     }
 
-    private static let bottomAnchor = "marble-chat-bottom"
-
     @ViewBuilder
     private func transcript(_ marble: MarblePrismMarble) -> some View {
-        let entries = store.marbleTranscript(marble)
+        let target = MarbleSendTarget.marble(marble.id)
+        let durable = store.marbleTranscript(marble)
+        let presentation = store.outgoingPresentation(durable, to: target, conversationId: marble.conversationId)
+        let entries = store.withLiveToolRows(presentation.entries, conversationId: marble.conversationId)
         let working = store.isAgentWorking(marble)
         let active = store.latestTurn(in: marble.conversationId)
-        let thinking = working || store.isAwaitingReply(in: marble.conversationId, entries: entries)
-        ScrollViewReader { proxy in
-            ScrollView {
+        let thinking = !presentation.responders.isEmpty || working
+            || store.isAwaitingReply(in: marble.conversationId, entries: entries)
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if entries.isEmpty && !thinking {
+                    if entries.isEmpty && store.marbleHistoryLoading(marble) {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
+                            .accessibilityLabel("Loading messages")
+                    } else if entries.isEmpty && store.historyErrors.contains(marble.conversationId) {
+                        MarbleHistoryUnavailable { await store.openMarbleHistory(marble) }
+                    } else if entries.isEmpty && !thinking {
                         ContentUnavailableView {
                             Text("Nothing yet")
                         } description: {
@@ -507,7 +515,7 @@ struct MarbleChatScreen: View {
                         }
                     }
                     let transcript = MarbleReasoningAssociation(entries)
-                    ForEach(transcript.standalone) { entry in
+                    ForEach(transcript.standalone, id: \.rowID) { entry in
                         MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
                     }
                     let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
@@ -516,42 +524,32 @@ struct MarbleChatScreen: View {
                         MarbleReasoningRow(text: reasoning)
                     }
                     MarbleTurnTail(task: active, entries: entries, showsLiveTools: true)
-                    if thinking {
+                    if thinking && !entries.contains(where: { $0.kind == "assistant" && $0.taskId == active?.id }) {
                         MarbleThinkingBubble(name: marble.name)
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchor)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
+        .task(id: marble.conversationId) { await store.openMarbleHistory(marble) }
+        .onDisappear { store.closeMarbleHistory(marble.conversationId) }
         .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
                 isWorking: working,
                 placeholder: "Message \(marble.name)",
                 canSteer: false,
-                onSend: { await send($0, to: marble) },
+                onSend: { store.send($0, to: target, entries: durable) },
                 onStop: { Task { await store.stop(marble) } }
             )
             .marbleComposerBackground()
         }
     }
 
-    private func send(_ text: String, to marble: MarblePrismMarble) async -> Bool {
-        // Dispatch creates a named Marble's durable conversation on its first turn.
-        if marble.conversationId.isEmpty {
-            return await store.sendToMarble(marble, text: text)
-        }
-        store.selectedConversationId = marble.conversationId
-        return await store.send(text)
-    }
 }
 
 /// A marble's info: who it is (editable), its look, its memory, its workspace,

@@ -2,15 +2,19 @@ import SwiftUI
 
 struct TranscriptView: View {
     @EnvironmentObject private var store: MarbleStore
+    var conversationId: String?
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
+        let target = MarbleSendTarget.conversation(conversationId)
+        let durable = store.transcript(for: conversationId)
+        let presentation = store.outgoingPresentation(durable, to: target, conversationId: conversationId)
+        let entries = store.withLiveToolRows(presentation.entries, conversationId: conversationId)
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if !store.loaded {
+                    if entries.isEmpty && (!store.loaded || store.transcriptHistoryLoading(conversationId)) {
                         placeholderRows
-                    } else if store.connection == .offline
-                        && store.transcript.isEmpty
+                    } else if (store.connection == .offline || store.historyErrors.contains(conversationId ?? ""))
+                        && entries.isEmpty
                         && store.liveText.isEmpty
                         && store.liveReasoning.isEmpty
                         && store.liveTools.isEmpty {
@@ -24,7 +28,7 @@ struct TranscriptView: View {
                             Button("Retry") { Task { await store.refresh() } }
                                 .buttonStyle(.borderedProminent)
                         }
-                    } else if store.transcript.isEmpty
+                    } else if entries.isEmpty
                         && store.liveText.isEmpty
                         && store.liveReasoning.isEmpty
                         && store.liveTools.isEmpty {
@@ -34,8 +38,8 @@ struct TranscriptView: View {
                             description: Text("Ask Marble to read, change, or explain something in this workspace.")
                         )
                     }
-                    let transcript = MarbleReasoningAssociation(store.transcript)
-                    ForEach(transcript.standalone) { entry in
+                    let transcript = MarbleReasoningAssociation(entries)
+                    ForEach(transcript.standalone, id: \.rowID) { entry in
                         MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
@@ -45,17 +49,17 @@ struct TranscriptView: View {
                     ForEach(store.liveTools) { tool in
                         MarbleToolRow(tool: tool)
                     }
-                    if store.liveText.isEmpty && (store.isWorking
-                        || store.isAwaitingReply(in: store.selectedConversationId, entries: store.transcript)) {
+                    let working = store.isWorking && !entries.contains {
+                        $0.kind == "assistant" && $0.taskId == store.activeTaskId
+                    }
+                    if store.liveText.isEmpty && (!presentation.responders.isEmpty || working
+                        || store.isAwaitingReply(in: conversationId, entries: entries)) {
                         MarbleThinkingBubble()
                     }
-                    if !store.liveText.isEmpty {
+                    if !store.liveText.isEmpty && store.activeTaskId == nil {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
                     }
-                    MarbleTurnTail(task: store.latestTurn(in: store.selectedConversationId), entries: store.transcript)
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchor)
+                    MarbleTurnTail(task: store.latestTurn(in: conversationId), entries: entries)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
@@ -63,10 +67,9 @@ struct TranscriptView: View {
                 // single 1,000-character line.
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .marbleFollowsLatest(proxy: proxy, anchor: Self.bottomAnchor)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
     }
 
     /// Shaped rows keep the first load from looking like an empty
@@ -80,10 +83,21 @@ struct TranscriptView: View {
         }
         .font(.body)
         .redacted(reason: .placeholder)
+        .accessibilityHidden(true)
     }
 
-    private static let bottomAnchor = "marble-bottom"
+}
 
+struct MarbleHistoryUnavailable: View {
+    let retry: () async -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Couldn’t load messages", systemImage: "network.slash")
+        } actions: {
+            Button("Retry") { Task { await retry() } }
+        }
+    }
 }
 
 /// One transcript entry. The person's own messages sit in a blue bubble on
@@ -123,7 +137,18 @@ struct MarbleEntryView: View {
 
     @ViewBuilder
     private func entryContent(isFailure: Bool) -> some View {
-        if isFailure {
+        if let sendId = entry.failedSendID {
+            VStack(alignment: .trailing, spacing: 5) {
+                message
+                HStack(spacing: 8) {
+                    Text("Couldn’t send")
+                        .foregroundStyle(.secondary)
+                    Button("Retry") { store.retrySend(sendId) }
+                        .disabled(store.connectionPaused)
+                }
+                .font(.footnote)
+            }
+        } else if isFailure {
             MarbleFailedTurnRow(task: task, entry: entry, sender: speaker?.name)
         } else if allowsThreads, entry.serverID != nil, ["user", "assistant", "handoff"].contains(entry.kind) {
             VStack(alignment: .leading, spacing: 6) {
@@ -191,8 +216,8 @@ struct MarbleEntryView: View {
         } else if entry.kind == "reasoning" {
             // Thinking stays tucked away — never inline with the reply.
             MarbleReasoningRow(text: entry.text)
-        } else if let tool = MarbleToolActivity.fromTranscript(entry) {
-            MarbleToolRow(tool: tool)
+        } else if let tool = store.toolActivity(for: entry) {
+            MarbleToolRow(tool: tool, sender: speaker?.name ?? tool.sender)
         } else if entry.kind == "system" || entry.kind == "tool" {
             Text(entry.text)
                 .font(.footnote)
@@ -211,7 +236,7 @@ struct MarbleEntryView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("\(speaker.name) said")
                 }
-                MarbleMarkdownView(text: entry.text)
+                MarbleMarkdownView(text: entry.text).equatable()
                     .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -221,11 +246,12 @@ struct MarbleEntryView: View {
 
 struct MarbleToolRow: View {
     var tool: MarbleToolActivity
+    var sender: String? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: tool.isWebSearch ? "magnifyingglass" : "wrench.and.screwdriver")
-            Text(tool.title + (tool.query.map { " · " + $0 } ?? ""))
+            Text([sender, tool.title, tool.query].compactMap { $0 }.joined(separator: " · "))
                 .lineLimit(1)
             Spacer(minLength: 4)
             Text(tool.status.rawValue)
@@ -323,7 +349,7 @@ struct ComposerBar: View {
     var workingPlaceholder: String = "Add to what Marble is doing"
     /// False where the host cannot take a correction mid-turn.
     var canSteer: Bool = true
-    var onSend: (String) async -> Bool
+    var onSend: (String) -> Bool
     /// Correct the running turn instead of starting a new one.
     var onSteer: (String) async -> Bool = { _ in false }
     var onStop: () -> Void
@@ -428,11 +454,14 @@ struct ComposerBar: View {
     private func submit() {
         guard !trimmed.isEmpty, !submitting, !store.connectionPaused else { return }
         let sent = draft
-        let operation = action == .steer ? onSteer : onSend
+        guard action == .steer else {
+            if onSend(sent) { draft = "" }
+            return
+        }
         submitting = true
         Task {
             defer { submitting = false }
-            let accepted = await operation(sent)
+            let accepted = await onSteer(sent)
             draft = MarbleDraft.draft(after: sent, current: draft, accepted: accepted)
         }
     }
@@ -443,13 +472,8 @@ struct ComposerBar: View {
 }
 
 extension View {
-    @ViewBuilder
     func marbleComposerInset(@ViewBuilder content: () -> some View) -> some View {
-        if #available(iOS 26.0, *) {
-            safeAreaBar(edge: .bottom, spacing: 0, content: content)
-        } else {
-            safeAreaInset(edge: .bottom, spacing: 0, content: content)
-        }
+        safeAreaInset(edge: .bottom, spacing: 0, content: content)
     }
 
     /// A solid bar behind the composer so messages never show through it,
@@ -463,61 +487,87 @@ extension View {
         }
     }
 
-    func marbleFollowsLatest(proxy: ScrollViewProxy, anchor: String, searchJump: UUID? = nil) -> some View {
-        modifier(MarbleFollowLatest(proxy: proxy, anchor: anchor, searchJump: searchJump))
+    func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil) -> some View {
+        modifier(MarbleFollowLatest(hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing))
     }
 }
 
 private struct MarbleFollowLatest: ViewModifier {
-    let proxy: ScrollViewProxy
-    let anchor: String
+    let hasMessages: Bool
     let searchJump: UUID?
+    let outgoing: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var position = ScrollPosition()
     @State private var follow = MarbleScrollFollow()
     @State private var phase: ScrollPhase = .idle
+    @State private var positionedHistory = false
 
     private struct Layout: Equatable {
         let bottom: CGFloat
         let viewport: CGFloat
         let offset: CGFloat
+        let topInset: CGFloat
 
-        var distanceFromBottom: Double { Double(bottom - viewport - offset) }
+        var distanceFromBottom: Double {
+            Double(max(-topInset, bottom - viewport) - offset)
+        }
     }
 
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
+            .defaultScrollAnchor(follow.following ? .bottom : nil, for: .sizeChanges)
+            .scrollPosition($position)
             .onScrollPhaseChange { _, newPhase in
                 phase = newPhase
-                if newPhase == .idle { scrollIfFollowing() }
             }
             .onScrollGeometryChange(for: Layout.self) { geometry in
                 Layout(
                     bottom: geometry.contentSize.height + geometry.contentInsets.bottom,
                     viewport: geometry.containerSize.height,
-                    offset: geometry.contentOffset.y
+                    offset: geometry.contentOffset.y,
+                    topInset: geometry.contentInsets.top
                 )
             } action: { old, new in
-                if old.bottom != new.bottom || old.viewport != new.viewport {
-                    // SwiftUI now knows the row's rendered height and the
-                    // space left by the composer, including keyboard changes.
-                    scrollIfFollowing()
-                } else if old.offset != new.offset && (phase == .interacting || phase == .decelerating) {
+                let userScrolling = phase == .interacting || phase == .decelerating
+                if userScrolling && old.offset != new.offset {
                     follow.userMoved(distanceFromBottom: new.distanceFromBottom)
                 }
+                guard hasMessages, new.viewport > 0, new.bottom > 0 else { return }
+                let initialLayout = !positionedHistory
+                positionedHistory = true
+                // An inset change can put the bottom either behind the
+                // composer or above it, depending on the resize direction.
+                let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
+                if follow.following && !userScrolling && abs(new.distanceFromBottom) > 1
+                    && (resized || (initialLayout && searchJump == nil)) {
+                    position.scrollTo(edge: .bottom)
+                }
+            }
+            .task(id: hasMessages) {
+                let loaded = hasMessages
+                guard loaded, !positionedHistory else { return }
+                // An already-sized scroll view may replace its loading rows
+                // without changing geometry. Wait for that content transaction.
+                await Task.yield()
+                guard !Task.isCancelled, !positionedHistory else { return }
+                positionedHistory = true
+                if searchJump == nil && follow.following { position.scrollTo(edge: .bottom) }
             }
             .onChange(of: searchJump, initial: true) { _, target in
                 if target != nil {
                     follow.pauseForSearchJump()
-                } else {
-                    follow.jumpToLatest()
-                    scrollIfFollowing()
+                }
+            }
+            .onChange(of: outgoing) { _, send in
+                if send != nil {
+                    jumpToLatest()
                 }
             }
             .overlay(alignment: .bottomTrailing) {
                 if follow.showJumpButton {
                     Button {
-                        follow.jumpToLatest()
-                        scrollIfFollowing()
+                        jumpToLatest()
                     } label: {
                         Label("Jump to latest", systemImage: "arrow.down")
                             .labelStyle(.iconOnly)
@@ -531,11 +581,10 @@ private struct MarbleFollowLatest: ViewModifier {
             }
     }
 
-    private func scrollIfFollowing() {
-        guard follow.following, phase == .idle || phase == .animating else { return }
-        DispatchQueue.main.async {
-            guard follow.following, phase == .idle || phase == .animating else { return }
-            proxy.scrollTo(anchor, anchor: .bottom)
+    private func jumpToLatest() {
+        follow.jumpToLatest()
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
+            position.scrollTo(edge: .bottom)
         }
     }
 }

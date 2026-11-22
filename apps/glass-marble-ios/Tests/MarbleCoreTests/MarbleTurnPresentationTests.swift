@@ -34,6 +34,32 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertNil(calls.first?.query)
     }
 
+    func testNamelessEndUpdatesMatchingCallAndKeepsEveryoneAttribution() throws {
+        var calls: [MarbleToolActivity] = []
+        let start = try toolEvent("tool_start", data: #"{"callId":"call-7","tool":"bash","sender":"Ada","entry_id":"tool-7"}"#)
+        let end = try toolEvent("tool_end", data: #"{"callId":"call-7","requestId":"approval","approved":false,"isError":true}"#)
+        MarbleToolActivity.apply(start, to: &calls)
+        MarbleToolActivity.apply(end, to: &calls)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "bash")
+        XCTAssertEqual(calls.first?.sender, "Ada")
+        XCTAssertEqual(calls.first?.entryIDs["chat"], "tool-7")
+        XCTAssertEqual(calls.first?.status, .denied)
+    }
+
+    func testSettledFinalizesOnlyRunningCalls() throws {
+        var calls: [MarbleToolActivity] = []
+        for id in ["one", "two"] {
+            let start = try toolEvent("tool_start", data: #"{"callId":"\#(id)","tool":"bash"}"#)
+            MarbleToolActivity.apply(start, to: &calls)
+        }
+        MarbleToolActivity.apply(try toolEvent("tool_end", data: #"{"callId":"two","isError":true}"#), to: &calls)
+        MarbleToolActivity.finishRunning(&calls)
+        XCTAssertEqual(calls.map(\.status), [.finished, .failed])
+        MarbleToolActivity.apply(try toolEvent("tool_end", data: #"{"callId":"one","isError":false}"#), to: &calls)
+        XCTAssertEqual(calls.map(\.status), [.completed, .failed])
+    }
+
     func testFailurePresentationLeavesNormalAnswersAlone() {
         let failure = MarbleEntry.preview(kind: "assistant", text: "[Generation failed]\nReason: provider error")
         XCTAssertTrue(MarbleTurnFailure.representsFailure(failure, status: nil))

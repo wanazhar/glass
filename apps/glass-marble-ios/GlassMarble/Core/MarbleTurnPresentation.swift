@@ -4,6 +4,7 @@ struct MarbleToolActivity: Identifiable, Equatable {
     enum Status: String {
         case running = "Running"
         case completed = "Done"
+        case finished = "Finished"
         case failed = "Failed"
         case denied = "Denied"
     }
@@ -12,6 +13,12 @@ struct MarbleToolActivity: Identifiable, Equatable {
     let name: String
     var query: String?
     var status: Status
+    var callId: String? = nil
+    var requestId: String? = nil
+    var sender: String? = nil
+    var entryIDs: [String: String] = [:]
+    var threadId: String? = nil
+    var sequence: UInt64 = 0
 
     var isWebSearch: Bool { ["web_search", "web.search", "glass.web.search", "glass.browser.search"].contains(name) }
 
@@ -34,6 +41,7 @@ struct MarbleToolActivity: Identifiable, Equatable {
         case "running": status = .running
         case "failed": status = .failed
         case "denied": status = .denied
+        case "finished": status = .finished
         default: return nil
         }
         let label = entry.text[..<statusSeparator.lowerBound]
@@ -47,33 +55,61 @@ struct MarbleToolActivity: Identifiable, Equatable {
     }
 
     static func apply(_ event: MarbleEvent, to calls: inout [Self]) {
-        guard let name = event.data.tool ?? event.data.name else { return }
-        let id = event.data.requestId ?? event.data.callId
+        let name = event.data.tool ?? event.data.name
+        let callId = event.data.callId
+        let requestId = event.data.requestId
+        let id = callId ?? requestId
         let index = calls.lastIndex {
-            if let id { return $0.id == id }
-            return $0.name == name && $0.status == .running
+            if let callId, let previous = $0.callId { return callId == previous }
+            if let requestId, let previous = $0.requestId { return requestId == previous }
+            return id == nil && event.kind == "tool_end" && $0.name == name && $0.status == .running
         }
+        let row: Int
+        if let index {
+            row = index
+        } else {
+            guard let name else { return }
+            row = calls.count
+            calls.append(Self(id: id ?? String(event.sequence), name: name, query: nil,
+                              status: .running, sequence: event.sequence))
+        }
+        calls[row].callId = callId ?? calls[row].callId
+        calls[row].requestId = requestId ?? calls[row].requestId
+        if let sender = event.data.sender, !sender.isEmpty { calls[row].sender = sender }
+        if let entryId = event.data.toolEntryId { calls[row].entryIDs[event.conversationId] = entryId }
+        if let threadId = event.data.threadId { calls[row].threadId = threadId }
         switch event.kind {
         case "tool_start":
-            guard index == nil else { return }
-            let query: String?
             if case let .object(arguments) = event.data.arguments,
-               case let .string(value) = arguments["query"] ?? arguments["q"] {
-                query = String(value.prefix(160))
-            } else {
-                query = nil
+               let value = ["query", "q", "url", "path", "command"].compactMap({ key -> String? in
+                   if case let .string(value) = arguments[key] { return value }
+                   return nil
+               }).first {
+                calls[row].query = String(value.prefix(160))
             }
-            calls.append(Self(id: id ?? String(event.sequence), name: name, query: query, status: .running))
         case "tool_end":
-            let status: Status = event.data.approved == false ? .denied : event.data.isError == true ? .failed : .completed
-            if let index {
-                calls[index].status = status
-            } else {
-                calls.append(Self(id: id ?? String(event.sequence), name: name, query: nil, status: status))
-            }
+            calls[row].status = event.data.approved == false ? .denied : event.data.isError == true ? .failed : .completed
         default:
             break
         }
+    }
+
+    static func finishRunning(_ calls: inout [Self]) {
+        for index in calls.indices where calls[index].status == .running {
+            calls[index].status = .finished
+        }
+    }
+
+    var transcriptText: String {
+        let end: String
+        switch status {
+        case .running: end = "running"
+        case .completed: end = "ok"
+        case .finished: end = "finished"
+        case .failed: end = "failed"
+        case .denied: end = "denied"
+        }
+        return [name, query, end].compactMap { $0 }.joined(separator: " · ")
     }
 }
 

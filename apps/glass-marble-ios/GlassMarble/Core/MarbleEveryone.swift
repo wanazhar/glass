@@ -54,17 +54,39 @@ enum MarbleMentions {
     /// Whether `@word` appears bounded by non-word characters — `@Ada` matches
     /// but `radar` and `@adaptive` do not.
     private static func mentioned(_ word: String, in text: String) -> Bool {
+        mentionPosition(word, in: text) != nil
+    }
+
+    static func responders(in text: String, roster: [MarblePrismMarble]) -> [String] {
+        let text = text.lowercased()
+        let mentions = roster.compactMap { marble -> (String, String.Index)? in
+            let named = mentionPosition(marble.name.lowercased(), in: text)
+            let alias = marble.isDefault ? mentionPosition("marble", in: text) : nil
+            return [named, alias].compactMap { $0 }.min().map { (marble.id, $0) }
+        }.sorted { $0.1 < $1.1 }.map(\.0)
+        var ids = mentions
+        if mentioned("everyone", in: text) {
+            ids += roster.map(\.id).filter { !mentions.contains($0) }
+        }
+        return ids.isEmpty ? ["marble"] : ids
+    }
+
+    private static func mentionPosition(_ word: String, in text: String) -> String.Index? {
+        guard !word.isEmpty else { return nil }
         var rest = text[...]
         let needle = "@\(word)"
         while let at = rest.range(of: needle) {
             let after = rest[at.upperBound...]
-            guard let next = after.first else { return true }
-            if !next.isLetter && !next.isNumber && next != "-" && next != "_" {
-                return true
+            if let next = after.unicodeScalars.first {
+                if !CharacterSet.alphanumerics.contains(next) && next != "-" && next != "_" {
+                    return at.lowerBound
+                }
+            } else {
+                return at.lowerBound
             }
             rest = after
         }
-        return false
+        return nil
     }
 
     /// A hue no roster marble uses yet, so a new marble is distinguishable at
@@ -142,10 +164,10 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
         entry: MarbleEntry,
         marbles: [MarblePrismMarble]
     ) -> MarbleSpeakerStyle? {
-        guard ["assistant", "handoff", "failure"].contains(entry.kind),
-              !entry.speaker.isEmpty
+        guard ["assistant", "handoff", "failure", "tool"].contains(entry.kind),
+              !entry.speaker.isEmpty || !entry.speakerName.isEmpty
         else { return nil }
-        if let marble = marbles.first(where: { $0.id == entry.speaker }) {
+        if let marble = marbles.first(where: { $0.id == entry.speaker || $0.name == entry.speakerName }) {
             return MarbleSpeakerStyle(
                 name: entry.speakerName.isEmpty ? marble.name : entry.speakerName,
                 hue: marble.hue,

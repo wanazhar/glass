@@ -3612,6 +3612,133 @@ fn explicit_reasoning_is_private_for_all_agents_and_chats() {
 }
 
 #[test]
+fn everyone_reasoning_survives_paging_and_server_restart_with_stable_ids() {
+    if !python3_available() {
+        return;
+    }
+    let args = vec!["--everyone-reasoning".into()];
+    let mut fixture =
+        NamedTurnFixture::with_persistence("everyone-durable-reasoning", args.clone(), true);
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Dietrich", "tester", "square", 200, "", "")
+        .unwrap();
+    fixture.install_default_worker_with_args(args);
+    assert_eq!(
+        fixture
+            .post(
+                "/api/everyone",
+                json!({"text":"@everyone durable reasoning"})
+            )
+            .0,
+        202
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fixture
+        .events
+        .since(0)
+        .iter()
+        .filter(|event| event.kind == "reply" && event.conversation_id == "everyone")
+        .count()
+        < 3
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let read = |server: &MarbleServer, path: &str| {
+        let (status, body) = server.handle("GET", path, "");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()["entries"].clone()
+    };
+    let entries = read(&fixture.server, "/api/everyone");
+    assert_eq!(entries, read(&fixture.server, "/api/everyone?limit=50"));
+    let rows = entries.as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .take(7)
+            .map(|entry| entry["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "user",
+            "reasoning",
+            "assistant",
+            "reasoning",
+            "assistant",
+            "reasoning",
+            "assistant"
+        ]
+    );
+    for name in ["Marble", "Ada", "Dietrich"] {
+        let index = rows
+            .iter()
+            .position(|row| row["kind"] == "reasoning" && row["speakerName"] == name)
+            .unwrap();
+        let expected = if name == "Ada" {
+            format!("Channel for {name}.")
+        } else {
+            format!("Channel for {name}.\n\nPlanning for {name}.")
+        };
+        assert_eq!(rows[index]["text"], expected);
+        assert_eq!(rows[index + 1]["kind"], "assistant");
+        assert_eq!(rows[index + 1]["text"], "Public answer.");
+        assert_eq!(rows[index]["taskId"], rows[index + 1]["taskId"]);
+        assert!(
+            rows.iter()
+                .any(|row| row["kind"] == "tool" && row["taskId"] == rows[index]["taskId"])
+        );
+    }
+    fixture.pool.shutdown();
+    let mut reloaded = fixture.store.as_ref().unwrap().load().unwrap();
+    assert_eq!(reloaded.recover_interrupted(), 0);
+    assert!(
+        LiveStore::in_data_dir(&fixture.root)
+            .recover(&mut reloaded)
+            .is_empty()
+    );
+    assert_eq!(
+        serde_json::to_value(reloaded.transcript_for("everyone")).unwrap(),
+        entries
+    );
+    assert_eq!(
+        reloaded
+            .transcript
+            .iter()
+            .filter(|entry| entry.kind == "reasoning")
+            .count(),
+        6
+    );
+    for row in rows.iter().filter(|row| row["kind"] == "reasoning") {
+        let source = reloaded
+            .transcript
+            .iter()
+            .find(|entry| {
+                entry.conversation_id != "everyone"
+                    && entry.kind == "reasoning"
+                    && entry.task_id == row["taskId"].as_str().unwrap()
+            })
+            .unwrap();
+        assert_eq!(row["id"], format!("{}-everyone", source.id));
+    }
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::new(Mutex::new(reloaded)),
+        store: fixture.store.clone(),
+        approvals: ApprovalInbox::default(),
+        events: EventBus::default(),
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    });
+    assert_eq!(read(&server, "/api/everyone"), entries);
+    assert_eq!(read(&server, "/api/everyone?limit=50"), entries);
+    println!("EVERYONE_REASONING_ENDPOINT={entries}");
+}
+
+#[test]
 fn plain_text_blocks_reclassify_live_replies_for_all_agents_and_chats() {
     if !python3_available() {
         return;
@@ -5139,7 +5266,9 @@ fn everyone_reserves_reply_order_even_when_the_last_agent_finishes_first() {
                 .transcript
                 .iter()
                 .filter(|e| {
-                    e.conversation_id == "everyone" && e.speaker != "other" && e.kind != "user"
+                    e.conversation_id == "everyone"
+                        && e.speaker != "other"
+                        && matches!(e.kind.as_str(), "pending" | "assistant" | "failure")
                 })
                 .collect();
             assert_eq!(rows.len(), 2);

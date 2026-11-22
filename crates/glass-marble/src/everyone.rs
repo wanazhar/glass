@@ -313,6 +313,42 @@ pub fn mirror_settlement(state: &mut ProductState, task_id: &str, reply: &str, s
     if !text.trim().is_empty() {
         mirror(state, &speaker, &name, kind, text, task_id, None);
     }
+    let reasoning: Vec<_> = state
+        .transcript
+        .iter()
+        .filter(|entry| {
+            entry.task_id == task_id
+                && entry.kind == "reasoning"
+                && entry.conversation_id != EVERYONE_CONVERSATION
+                && !entry.text.trim().is_empty()
+        })
+        .cloned()
+        .collect();
+    for mut entry in reasoning {
+        entry.id = format!("{}-everyone", entry.id);
+        entry.conversation_id = EVERYONE_CONVERSATION.into();
+        entry.speaker = speaker.clone();
+        entry.speaker_name = name.clone();
+        let id = entry.id.clone();
+        state.push_transcript(entry);
+        let reasoning_index = state
+            .transcript
+            .iter()
+            .position(|entry| entry.id == id)
+            .unwrap();
+        if let Some(reply_index) = state.transcript.iter().position(|entry| {
+            entry.conversation_id == EVERYONE_CONVERSATION
+                && entry.task_id == task_id
+                && matches!(
+                    entry.kind.as_str(),
+                    "pending" | "assistant" | "failure" | "system"
+                )
+        }) && reasoning_index > reply_index
+        {
+            let entry = state.transcript.remove(reasoning_index);
+            state.transcript.insert(reply_index, entry);
+        }
+    }
     state.flush_everyone();
 }
 

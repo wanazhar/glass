@@ -139,6 +139,19 @@ def run_turn(identifier, task, text, conversation, request):
     text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if "--everyone-reasoning" in sys.argv:
+        with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
+            name = json.load(handle)["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]
+        event(turn, "reasoning", {"text":"Channel for " + name + "."})
+        event(turn, "tool_start", {"callId":"reasoning-tool","name":"bash"})
+        event(turn, "tool_end", {"callId":"reasoning-tool","text":"done","isError":False})
+        if name != "Ada":
+            event(turn, "text", {"text":"Planning for " + name + "."})
+            event(turn, "text_block_start", {"blockId":"answer"})
+        event(turn, "text", {"text":"Public answer."})
+        event(turn, "settled", {"reason":"completed"})
+        reply(identifier, {"settled":True})
+        return
     if "--text-blocks" in sys.argv:
         if "--text-blocks-open-tag" in sys.argv:
             event(turn, "text", {"text":"<thinking>"})
@@ -295,7 +308,7 @@ def main():
                     "protocolVersion": protocol or 1,
                     "runtime": {"name": "glass-core", "version": "0.3.14"},
                     "capabilities": {
-                        "textBlockBoundaries": "--text-blocks" in sys.argv and "textBlockBoundaries" in params.get("optionalCapabilities", []),
+                        "textBlockBoundaries": any(flag in sys.argv for flag in ["--text-blocks", "--everyone-reasoning"]) and "textBlockBoundaries" in params.get("optionalCapabilities", []),
                         "hostTools": True,
                         "localTools": True,
                         "mixedTools": True,

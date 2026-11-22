@@ -101,9 +101,10 @@ pub fn inject(tool: &str, arguments: &mut Value) -> Result<(), String> {
 fn redact_with(secrets: &Secrets, text: &str) -> String {
     let mut text = text.to_owned();
     for (name, value) in secrets {
-        if text.contains(value.as_str()) {
-            text = text.replace(value.as_str(), &format!("{OPEN}{name}}}}}"));
-        }
+        let placeholder = format!("{OPEN}{name}}}}}");
+        let escaped = serde_json::to_string(value).expect("string serialization");
+        text = text.replace(&escaped[1..escaped.len() - 1], &placeholder);
+        text = text.replace(value.as_str(), &placeholder);
     }
     text
 }
@@ -121,6 +122,18 @@ pub(crate) fn has_secrets() -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn serialized_desktop_results_redact_escaped_credentials() {
+        let secrets = vec![("QUOTED".into(), "pass\"word\\token\nend".into())];
+        let result = json!({"text":secrets[0].1,"nested":[secrets[0].1]});
+        let redacted = redact_with(&secrets, &result.to_string());
+        let value: Value = serde_json::from_str(&redacted).unwrap();
+        assert_eq!(value["text"], "{{secret:QUOTED}}");
+        assert_eq!(value["nested"][0], "{{secret:QUOTED}}");
+        assert_eq!(redact_with(&secrets, ""), "");
+        assert_eq!(redact_with(&secrets, "ordinary"), "ordinary");
+    }
 
     fn secrets() -> Secrets {
         from_vars(

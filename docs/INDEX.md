@@ -248,7 +248,7 @@ current user instructions.
   cancellation, concurrency, errors, security, and response modes.
 - [MCP tool catalog](mcp-tools.md) — every tool in the current checkout's
   negotiated conformance inventory grouped by domain.
-- [MCP schema budget](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
+- [MCP schema budget and live source measurements](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
 - [Protocol](protocol.md) and [schema compatibility](schema-compatibility.md) —
   canonical request/response envelopes and additive version rules.

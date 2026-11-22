@@ -472,6 +472,7 @@ enum ToolInvocation<'a> {
     },
     Diagnostics {
         duration_ms: u64,
+        console_text: bool,
     },
     AcceptDialog,
     DismissDialog,
@@ -2074,6 +2075,7 @@ async fn handle_request_with_viewport_unredacted(
             ));
         }
     };
+    let agent_arguments = arguments.clone();
     let (tool, arguments) = match agent_tools::translate(&agent_tool, &arguments) {
         Ok(translated) => translated,
         Err(message) => {
@@ -2138,6 +2140,10 @@ async fn handle_request_with_viewport_unredacted(
                 .map(|(text, tabs)| agent_tools::PageState { text, tabs })
         }};
     }
+    if let Some((reload, reload_arguments)) = agent_tools::pre_reload(&agent_tool, &agent_arguments)
+    {
+        let _ = inner_text!(reload, reload_arguments);
+    }
     let before = if agent_tools::mutates_page(&agent_tool) {
         let _ = inner_text!(
             "wait",
@@ -2167,6 +2173,27 @@ async fn handle_request_with_viewport_unredacted(
         .result
         .as_ref()
         .is_some_and(|result| result["isError"] != true);
+    if succeeded && agent_tools::reports(&agent_tool) {
+        let raw = response
+            .result
+            .as_ref()
+            .and_then(|result| result["content"][0]["text"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let page_text = if agent_tool == "browser_find" {
+            inner_text!("getText", json!({}))
+        } else {
+            None
+        };
+        let report =
+            agent_tools::read_report(&agent_tool, &agent_arguments, &raw, page_text.as_deref());
+        if let Some(result) = response.result.as_mut() {
+            *result = match report {
+                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
+                Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
+            };
+        }
+    }
     if succeeded
         && agent_tool == "browser_save_pdf"
         && let Some(result) = response.result.as_mut()
@@ -3363,9 +3390,12 @@ async fn call_tool(
                 )
                 .await?,
         )?)),
-        ToolInvocation::Diagnostics { duration_ms } => serialized_result(
+        ToolInvocation::Diagnostics {
+            duration_ms,
+            console_text,
+        } => serialized_result(
             &session
-                .diagnostics(Duration::from_millis(duration_ms))
+                .diagnostics_with(Duration::from_millis(duration_ms), console_text)
                 .await?,
         ),
         ToolInvocation::AcceptDialog => {
@@ -4173,6 +4203,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "diagnostics" => Ok(ToolInvocation::Diagnostics {
             duration_ms: optional_u64(arguments, "durationMs", 1_000)?,
+            console_text: optional_bool(arguments, "consoleText")?,
         }),
         "acceptDialog" => Ok(ToolInvocation::AcceptDialog),
         "dismissDialog" => Ok(ToolInvocation::DismissDialog),
@@ -5239,7 +5270,7 @@ async fn native_mcp_observation(
         ToolInvocation::ObserveDelta => {
             serialized_result_mode(&session.native_observe_delta().await?, response_mode)
         }
-        ToolInvocation::Diagnostics { duration_ms } => serialized_result_mode(
+        ToolInvocation::Diagnostics { duration_ms, .. } => serialized_result_mode(
             &session
                 .native_diagnostics(Duration::from_millis(duration_ms))
                 .await?,
@@ -6584,7 +6615,7 @@ async fn call_native_tool_on_session_impl(
             session.native_import_checkpoint(&checkpoint).await?;
             serialized_result_mode(&json!({"status": "checkpoint_imported"}), response_mode)
         }
-        ToolInvocation::Diagnostics { duration_ms } => serialized_result_mode(
+        ToolInvocation::Diagnostics { duration_ms, .. } => serialized_result_mode(
             &session
                 .native_diagnostics(Duration::from_millis(duration_ms))
                 .await?,
@@ -7597,7 +7628,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "diagnostics",
             description: "Collect bounded, redacted console and network evidence in an explicit scope.",
-            input_schema: json!({"type":"object","properties":{"durationMs":{"type":"integer","minimum":1,"maximum":30000,"default":1000}}}),
+            input_schema: json!({"type":"object","properties":{"durationMs":{"type":"integer","minimum":1,"maximum":30000,"default":1000},"consoleText":{"type":"boolean","default":false,"description":"Keep console arguments and uncaught exceptions, after sensitive-marker redaction."}}}),
         },
         Tool {
             name: "acceptDialog",

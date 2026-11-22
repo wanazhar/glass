@@ -8,6 +8,16 @@ use super::*;
 impl CdpBrowserSession {
     /// Collect explicitly scoped, bounded, secret-redacted browser evidence.
     pub async fn diagnostics(&self, duration: Duration) -> BrowserResult<DiagnosticReport> {
+        self.diagnostics_with(duration, false).await
+    }
+
+    /// Like [`Self::diagnostics`]; `console_text` keeps console arguments and
+    /// uncaught exceptions after sensitive-marker redaction.
+    pub async fn diagnostics_with(
+        &self,
+        duration: Duration,
+        console_text: bool,
+    ) -> BrowserResult<DiagnosticReport> {
         if duration.is_zero() || duration > MAX_DIAGNOSTIC_DURATION {
             return Err("diagnostic duration must be between 1 ms and 30 seconds".into());
         }
@@ -32,12 +42,13 @@ impl CdpBrowserSession {
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => break,
                         event = events.recv() => match event {
-                            Ok(event) if event.session_id == route_session_id => collect_diagnostic_event(
+                            Ok(event) if event.session_id == route_session_id => collect_diagnostic_event_with(
                                 &event,
                                 &mut console,
                                 &mut network,
                                 &mut request_indexes,
                                 &mut dropped_events,
+                                console_text,
                             ),
                             Ok(_) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {

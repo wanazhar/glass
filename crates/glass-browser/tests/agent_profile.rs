@@ -202,6 +202,8 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         json!({"fields":[{"target":name_reference,"value":"Aisyah Karim"},{"target":checkbox_reference,"value":"true"},{"target":"name=Email","value":"a@example.test"}]}),
     )
     .await;
+    let filled = mcp.ok("browser_get_text", json!({})).await;
+    assert!(filled.contains("\"terms\":true"), "{filled}");
     mcp.ok(
         "browser_select_option",
         json!({"target":"name=Plan","value":"Team"}),

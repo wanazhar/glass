@@ -6,6 +6,7 @@ struct MarbleConnectionActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         /// Nil while SSE is retrying.
         let connectedAt: Date?
+        let expiresAt: Date?
     }
 
     let host: String

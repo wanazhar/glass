@@ -107,9 +107,10 @@ final class MarbleBackgroundConnection: NSObject, @preconcurrency CLLocationMana
     }
 
     private func activityContent(connectedAt: Date?) -> ActivityContent<MarbleConnectionActivityAttributes.ContentState> {
-        .init(
-            state: .init(connectedAt: connectedAt),
-            staleDate: .now.addingTimeInterval(25)
+        let expiresAt = Date.now.addingTimeInterval(25)
+        return .init(
+            state: .init(connectedAt: connectedAt, expiresAt: expiresAt),
+            staleDate: expiresAt
         )
     }
 

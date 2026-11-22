@@ -159,6 +159,7 @@ impl StateStore {
             Ok(encoded) => match serde_json::from_str::<ProductState>(&encoded) {
                 Ok(mut state) => {
                     state.ensure_entry_ids();
+                    state.prune_threads();
                     Ok(state)
                 }
                 Err(error) => {
@@ -169,6 +170,7 @@ impl StateStore {
                     );
                     self.recover_from_backup(&error).map(|mut state| {
                         state.ensure_entry_ids();
+                        state.prune_threads();
                         state
                     })
                 }
@@ -234,12 +236,15 @@ impl StateStore {
             MarbleError::Protocol(format!("cannot read {}: {error}", path.display()))
         })?;
         let document = value.get("state").cloned().unwrap_or(value);
-        serde_json::from_value(document).map_err(|error| {
+        let mut state: ProductState = serde_json::from_value(document).map_err(|error| {
             MarbleError::Protocol(format!(
                 "{} is not a marble product document: {error}",
                 path.display()
             ))
-        })
+        })?;
+        state.ensure_entry_ids();
+        state.prune_threads();
+        Ok(state)
     }
 
     /// Replace the live document with a daily backup, or with `from` (a backup

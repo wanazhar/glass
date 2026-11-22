@@ -3343,6 +3343,60 @@ fn thread_routes_are_idempotent_searchable_and_paginated_with_stable_ids() {
 }
 
 #[test]
+fn clear_everyone_keeps_surviving_thread_replies_openable_in_private_chat() {
+    let mut state = ProductState::default();
+    state.conversation_mut("everyone");
+    state.conversation_mut("private");
+    state.push_transcript(TranscriptEntry {
+        id: "parent".into(),
+        conversation_id: "everyone".into(),
+        kind: "assistant".into(),
+        text: "parent".into(),
+        ..Default::default()
+    });
+    let thread = state.create_thread("everyone", "parent").unwrap();
+    for (conversation, id) in [("private", "private-reply"), ("everyone", "mirror-reply")] {
+        state.push_transcript(TranscriptEntry {
+            id: id.into(),
+            conversation_id: conversation.into(),
+            thread_id: Some(thread.id.clone()),
+            task_id: "reply-task".into(),
+            kind: "assistant".into(),
+            text: "survivor".into(),
+            ..Default::default()
+        });
+    }
+    let server = free_server(state);
+    assert_eq!(server.handle("POST", "/api/everyone/clear", "").0, 200);
+    let get = |path: &str| {
+        let (status, body) = server.handle("GET", path, "");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()
+    };
+    let main = get("/api/transcript?conversationId=private&main=1");
+    assert_eq!(main["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(main["entries"][0]["id"], "private-reply");
+    let around = get("/api/transcript?conversationId=private&main=1&around=private-reply");
+    assert_eq!(around["entries"][0]["id"], "private-reply");
+    let search = get("/api/search?q=survivor");
+    assert_eq!(search["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(search["hits"][0]["entry_id"], "private-reply");
+    assert_eq!(search["hits"][0]["thread_id"], Value::Null);
+    assert_eq!(
+        server
+            .handle("GET", &format!("/api/threads/{}", thread.id), "")
+            .0,
+        404
+    );
+    assert!(
+        get("/api/everyone")["entries"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn cancelling_a_queued_everyone_lead_releases_buffered_replies() {
     let mut state = ProductState::default();
     state.conversation_mut("chat");

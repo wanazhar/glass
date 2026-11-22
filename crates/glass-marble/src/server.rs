@@ -477,6 +477,7 @@ impl MarbleServer {
         {
             let mut state = parts.state.lock().unwrap_or_else(|e| e.into_inner());
             state.ensure_entry_ids();
+            state.prune_threads();
             state.thread_events.0 = Some(parts.events.clone());
             for (task, thread) in &state.task_threads {
                 parts.events.bind_thread(task, thread);
@@ -1217,6 +1218,12 @@ impl MarbleServer {
             };
         {
             let mut guard = self.lock_state();
+            if thread
+                .as_ref()
+                .is_some_and(|id| !guard.threads.iter().any(|t| &t.id == id))
+            {
+                return Response::error(404, "unknown_thread");
+            }
             crate::everyone::mirror(
                 &mut guard,
                 crate::everyone::USER_SPEAKER,

@@ -115,10 +115,15 @@ impl ProductState {
     }
 
     pub fn bind_thread(&mut self, task: &str, thread: Option<&str>) {
-        if let Some(id) = thread {
+        if let Some(id) = thread.filter(|id| self.threads.iter().any(|t| t.id == *id)) {
             self.task_threads.insert(task.into(), id.into());
             if let Some(events) = &self.thread_events.0 {
                 events.bind_thread(task, id);
+            }
+        } else {
+            self.task_threads.remove(task);
+            if let Some(events) = &self.thread_events.0 {
+                events.unbind_thread(task);
             }
         }
     }
@@ -267,6 +272,37 @@ impl ProductState {
     pub(crate) fn prune_threads(&mut self) {
         self.threads
             .retain(|t| self.transcript.iter().any(|e| e.id == t.parent_entry_id));
+        let valid: std::collections::HashSet<_> =
+            self.threads.iter().map(|t| t.id.clone()).collect();
+        for entry in self
+            .transcript
+            .iter_mut()
+            .chain(self.everyone_ready.values_mut())
+        {
+            if entry
+                .thread_id
+                .as_ref()
+                .is_some_and(|id| !valid.contains(id))
+            {
+                entry.thread_id = None;
+            }
+            if entry
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !valid.contains(&thread.id))
+            {
+                entry.thread = None;
+            }
+        }
+        for queued in &mut self.control.queue {
+            if queued
+                .thread_id
+                .as_ref()
+                .is_some_and(|id| !valid.contains(id))
+            {
+                queued.thread_id = None;
+            }
+        }
         self.task_threads.retain(|task, id| {
             let keep = self.tasks.iter().any(|t| &t.id == task)
                 && self.threads.iter().any(|t| &t.id == id);
@@ -285,6 +321,141 @@ impl ProductState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn threaded_reply(parent_conversation: &str) -> (ProductState, String, String) {
+        let mut state = ProductState::default();
+        state.conversation_mut(parent_conversation);
+        state.conversation_mut("private");
+        state.push_transcript(TranscriptEntry {
+            conversation_id: parent_conversation.into(),
+            kind: "assistant".into(),
+            text: "parent".into(),
+            at: 1,
+            ..Default::default()
+        });
+        let parent = state.transcript[0].id.clone();
+        let thread = state.create_thread(parent_conversation, &parent).unwrap();
+        state.upsert_task(crate::state::TaskRecord {
+            id: "reply-task".into(),
+            conversation_id: "private".into(),
+            status: "completed".into(),
+            ..Default::default()
+        });
+        state.bind_thread("reply-task", Some(&thread.id));
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "private".into(),
+            task_id: "reply-task".into(),
+            kind: "assistant".into(),
+            text: "surviving reply".into(),
+            at: 2,
+            ..Default::default()
+        });
+        let reply = state.transcript.last().unwrap().id.clone();
+        (state, thread.id, reply)
+    }
+
+    #[test]
+    fn clear_everyone_detaches_orphaned_private_replies() {
+        let (mut state, thread, reply) = threaded_reply("everyone");
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "everyone".into(),
+            task_id: "reply-task".into(),
+            kind: "assistant".into(),
+            text: "surviving reply".into(),
+            at: 2,
+            ..Default::default()
+        });
+        assert_eq!(state.clear_everyone(), 2);
+        assert!(state.threads.is_empty());
+        assert!(state.task_threads.is_empty());
+        let entry = state.transcript.iter().find(|e| e.id == reply).unwrap();
+        assert_eq!(entry.thread_id, None);
+        assert_eq!(
+            state.search_messages("surviving", None, 30)[0]["entry_id"],
+            reply
+        );
+        state.bind_thread("late-task", Some(&thread));
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "private".into(),
+            task_id: "late-task".into(),
+            kind: "assistant".into(),
+            text: "late reply".into(),
+            ..Default::default()
+        });
+        assert_eq!(state.transcript.last().unwrap().thread_id, None);
+    }
+
+    #[test]
+    fn retention_detaches_orphaned_thread_replies() {
+        let (mut state, _, reply) = threaded_reply("private");
+        state.everyone_ready.insert(
+            "task:buffered".into(),
+            state.transcript.last().unwrap().clone(),
+        );
+        for _ in 0..crate::state::TRANSCRIPT_PER_CONVERSATION - 1 {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: "private".into(),
+                kind: "user".into(),
+                text: "newer".into(),
+                ..Default::default()
+            });
+        }
+        assert_eq!(state.prune(100).transcript, 1);
+        assert!(state.threads.is_empty());
+        assert_eq!(state.everyone_ready["task:buffered"].thread_id, None);
+        assert_eq!(
+            state
+                .transcript
+                .iter()
+                .find(|e| e.id == reply)
+                .unwrap()
+                .thread_id,
+            None
+        );
+        assert_eq!(
+            state.search_messages("surviving", None, 30)[0]["entry_id"],
+            reply
+        );
+    }
+
+    #[test]
+    fn loading_repairs_persisted_orphaned_threads() {
+        let (mut state, thread, reply) = threaded_reply("everyone");
+        state.threads.clear();
+        state
+            .control
+            .enqueue(Some("private".into()), "queued reply")
+            .unwrap();
+        state.control.queue.last_mut().unwrap().thread_id = Some(thread);
+        let root =
+            std::env::temp_dir().join(format!("marble-orphan-migration-{}", std::process::id()));
+        let store = crate::StateStore::in_data_dir(&root);
+        store.save(&state).unwrap();
+        let backup = store
+            .write_daily_backup(&state, crate::worker::now_millis())
+            .unwrap();
+        let repaired = store.load().unwrap();
+        assert!(
+            repaired
+                .transcript
+                .iter()
+                .all(|e| e.thread_id.is_none() && e.thread.is_none())
+        );
+        assert!(repaired.task_threads.is_empty());
+        assert_eq!(repaired.control.queue[0].thread_id, None);
+        assert_eq!(
+            repaired.search_messages("surviving", None, 30)[0]["entry_id"],
+            reply
+        );
+        let (restored, _) = store.restore(Some(&backup)).unwrap();
+        assert!(
+            restored
+                .transcript
+                .iter()
+                .all(|e| e.thread_id.is_none() && e.thread.is_none())
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn old_identical_entries_receive_distinct_reproducible_ids() {

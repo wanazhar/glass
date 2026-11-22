@@ -115,6 +115,7 @@ struct MarbleEntryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var creatingThread = false
     @State private var threadError = false
+    @State private var showsMessageActions = false
     var entry: MarbleEntry
     /// Who said it, when the row is on a shared timeline. Nil on one-to-one
     /// chats, which need no label.
@@ -122,7 +123,7 @@ struct MarbleEntryView: View {
     var replyHue: Int = MarbleSpeakerStyle.defaultHue
     var reasoning: String? = nil
     var allowsThreads = true
-    var measuresHistoryPosition = true
+    var inInvertedScrollView = false
 
     private var isUser: Bool { entry.kind == "user" }
     private var task: MarbleTask? {
@@ -148,7 +149,7 @@ struct MarbleEntryView: View {
             }
         }
         .background {
-            if measuresHistoryPosition {
+            if !inInvertedScrollView {
                 GeometryReader { geometry in
                     Color.clear.preference(
                         key: MarbleHistoryRowPositions.self,
@@ -176,13 +177,21 @@ struct MarbleEntryView: View {
             MarbleFailedTurnRow(task: task, entry: entry, sender: speaker?.name)
         } else if allowsThreads, entry.serverID != nil, ["user", "assistant", "handoff"].contains(entry.kind) {
             VStack(alignment: .leading, spacing: 6) {
-                message
-                    .contextMenu {
-                        Button("Reply in thread", systemImage: "arrowshape.turn.up.left") {
+                if inInvertedScrollView {
+                    // Context menu lifts lose the scroll view's transform.
+                    message
+                        .highPriorityGesture(LongPressGesture().onEnded { _ in
+                            showsMessageActions = true
+                        })
+                        .confirmationDialog("Message actions", isPresented: $showsMessageActions) {
+                            replyInThread
+                        }
+                        .accessibilityAction(named: Text("Reply in thread")) {
                             Task { await openThread() }
                         }
-                        .disabled(creatingThread)
-                    }
+                } else {
+                    message.contextMenu { replyInThread }
+                }
                 if let thread = store.threadSummary(for: entry) {
                     NavigationLink(value: ChatRoute.thread(thread.id)) {
                         Label(thread.replyLabel, systemImage: "text.bubble")
@@ -199,6 +208,13 @@ struct MarbleEntryView: View {
         } else {
             message
         }
+    }
+
+    private var replyInThread: some View {
+        Button("Reply in thread", systemImage: "arrowshape.turn.up.left") {
+            Task { await openThread() }
+        }
+        .disabled(creatingThread)
     }
 
     private func openThread() async {

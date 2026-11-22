@@ -154,7 +154,7 @@ struct EveryoneView: View {
                             entry: entry,
                             speaker: store.speakerStyle(for: entry),
                             reasoning: transcript.attached[entry.id],
-                            measuresHistoryPosition: false
+                            inInvertedScrollView: true
                         )
                         .scaleEffect(x: 1, y: -1)
                     }

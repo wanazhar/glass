@@ -6,18 +6,6 @@
 //! use a tool and what to use instead; errors gain a next step.
 
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static AGENT_PROFILE: AtomicBool = AtomicBool::new(false);
-
-/// Select whether `tools/list` returns the agent profile.
-pub(crate) fn set_agent_profile(enabled: bool) {
-    AGENT_PROFILE.store(enabled, Ordering::Relaxed);
-}
-
-pub(crate) fn agent_profile() -> bool {
-    AGENT_PROFILE.load(Ordering::Relaxed)
-}
 
 const TARGET: &str = "Element to act on. Prefer the `ref` from the latest browser_snapshot (e.g. \"e12\"). Otherwise: \"role=button;name=Save\", \"name=Email\" (accessible name or label), \"text=Sign in\", \"css=#email\".";
 
@@ -120,8 +108,8 @@ pub(crate) fn agent_tools() -> Vec<Value> {
         ),
         tool(
             "browser_download",
-            "Wait for the next file download and save it into an existing directory; returns the saved path. Start the download with browser_click on the link in the same turn first, or call this right before clicking. Example: {\"directory\":\".\"}.",
-            json!({"type":"object","properties":{"directory":{"type":"string","minLength":1,"maxLength":4096,"default":"."},"timeoutMs":timeout_schema(30000,30000)},"additionalProperties":false}),
+            "Capture a file download into an existing directory. Supply target to authorize before clicking its link in this same operation; do not click first or try a concurrent click. Omit target only for an independently triggered download. Example: {\"directory\":\".\",\"target\":\"name=Download report\"}.",
+            json!({"type":"object","properties":{"directory":{"type":"string","minLength":1,"maxLength":4096,"default":"."},"target":target_schema(),"timeoutMs":timeout_schema(30000,30000)},"additionalProperties":false}),
         ),
         tool(
             "browser_clipboard",
@@ -177,7 +165,9 @@ fn reject_unknown(arguments: &Value, tool: &str) -> Result<(), String> {
             .as_object()
             .cloned()
             .unwrap_or_default();
-        if let Some(key) = object.keys().find(|key| !allowed.contains_key(*key)) {
+        if let Some(key) = object.keys().find(|key| {
+            !allowed.contains_key(*key) && !matches!(key.as_str(), "mutationLease" | "leaseToken")
+        }) {
             return Err(format!(
                 "{tool} does not accept `{key}`. Allowed: {}. Example: {}",
                 allowed.keys().cloned().collect::<Vec<_>>().join(", "),
@@ -384,10 +374,11 @@ pub(crate) fn translate(name: &str, arguments: &Value) -> Result<(&'static str, 
                     .map_err(|_| "working directory is unavailable".to_string())?
                     .join(directory)
             };
-            (
-                "download",
-                json!({"destination": absolute.to_string_lossy(), "timeoutMs": a.get("timeoutMs").and_then(Value::as_u64).unwrap_or(30000)}),
-            )
+            let mut out = json!({"destination": absolute.to_string_lossy(), "timeoutMs": a.get("timeoutMs").and_then(Value::as_u64).unwrap_or(30000)});
+            if let Some(target) = string(a, "target") {
+                out["target"] = json!(target);
+            }
+            ("download", out)
         }
         "browser_clipboard" => match need(a, "action", name)? {
             "read" => ("clipboardRead", json!({})),

@@ -16,6 +16,8 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <main>
 <h1>Join the beta</h1>
 <label for="n">Full name</label><input id="n" oninput="state.name=this.value;show()">
+<label for="e">Email</label><input id="e" oninput="state.email=this.value;show()">
+<a href="/report.csv" download="report.csv">Download report</a>
 <label for="p">Plan</label><select id="p" onchange="state.plan=this.value;show()"><option>Solo</option><option>Team</option></select>
 <label><input type="checkbox" id="t" onchange="state.terms=this.checked;show()"> I agree to the terms</label>
 <button id="load" onclick="setTimeout(()=>{document.getElementById('out').textContent='Net revenue: RM 48,213'},800)">Load report</button>
@@ -88,11 +90,15 @@ async fn serve(listener: TcpListener) {
     while let Ok((mut stream, _)) = listener.accept().await {
         tokio::spawn(async move {
             let mut request = [0; 4096];
-            let _ = stream.read(&mut request).await;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{FIXTURE}",
-                FIXTURE.len()
-            );
+            let count = stream.read(&mut request).await.unwrap_or(0);
+            let response = if request[..count].starts_with(b"GET /report.csv ") {
+                "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=report.csv\r\nContent-Length: 6\r\nConnection: close\r\n\r\na,b\n1\n".to_string()
+            } else {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{FIXTURE}",
+                    FIXTURE.len()
+                )
+            };
             let _ = stream.write_all(response.as_bytes()).await;
         });
     }
@@ -169,7 +175,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
 
     mcp.ok(
         "browser_fill_form",
-        json!({"fields":[{"target":"name=Full name","value":"Aisyah Karim"}]}),
+        json!({"fields":[{"target":"name=Full name","value":"Aisyah Karim"},{"target":"name=Email","value":"a@example.test"}]}),
     )
     .await;
     mcp.ok(
@@ -212,7 +218,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     let state: Value = serde_json::from_str(&state_line["STATE ".len()..]).unwrap();
     assert_eq!(
         state,
-        json!({"name":"Aisyah Karim","plan":"Team","terms":true,"key":"Escape","deleted":true})
+        json!({"name":"Aisyah Karim","email":"a@example.test","plan":"Team","terms":true,"key":"Escape","deleted":true})
     );
 
     let missing = mcp
@@ -230,6 +236,24 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
 
     let tabs = mcp.ok("browser_tabs", json!({"action":"list"})).await;
     assert!(tabs.contains("Agent fixture"), "{tabs}");
+
+    let download_dir = std::env::current_dir()
+        .unwrap()
+        .join(format!(".agent-download-{}", std::process::id()));
+    std::fs::create_dir(&download_dir).unwrap();
+    let download = mcp
+        .ok(
+            "browser_download",
+            json!({"directory":download_dir,"target":"name=Download report"}),
+        )
+        .await;
+    assert!(download.contains("completed"), "{download}");
+    assert_eq!(
+        std::fs::read(download_dir.join("report.csv")).unwrap(),
+        b"a,b\n1\n"
+    );
+    std::fs::remove_file(download_dir.join("report.csv")).unwrap();
+    std::fs::remove_dir(download_dir).unwrap();
 
     drop(mcp);
     let _ = child.wait().await;

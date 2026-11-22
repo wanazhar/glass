@@ -61,7 +61,14 @@ pub(super) fn observe(
     revision: u64,
     query: Option<&str>,
 ) -> Result<Snapshot, String> {
-    observe_scoped(session_bus_address, session_id, revision, query, None)
+    observe_scoped(
+        session_bus_address,
+        session_id,
+        revision,
+        query,
+        None,
+        false,
+    )
 }
 
 pub(super) fn observe_scoped(
@@ -70,6 +77,7 @@ pub(super) fn observe_scoped(
     revision: u64,
     query: Option<&str>,
     window_root: Option<WindowRoot>,
+    label_scan: bool,
 ) -> Result<Snapshot, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -93,6 +101,7 @@ pub(super) fn observe_scoped(
                 query,
                 None,
                 window_root,
+                label_scan,
             ),
         )
         .await
@@ -107,6 +116,7 @@ async fn observe_async(
     query: Option<&str>,
     window_root: Option<WindowRoot>,
     application_window_scope: Option<WindowRoot>,
+    label_scan: bool,
 ) -> Result<Snapshot, String> {
     let query_terms = query.map(validate_query).transpose()?;
     let window_scoped = window_root.is_some() || application_window_scope.is_some();
@@ -735,7 +745,11 @@ async fn observe_async(
             ));
             if query.is_some() && matched_actionable_count >= 2 {
                 query_ambiguous = true;
-                if matched_visible_count > 0 {
+                let labelled = nodes
+                    .iter()
+                    .filter(|node| node["bounds"].is_object())
+                    .count();
+                if matched_visible_count > 0 && query_scan_is_done(label_scan, labelled) {
                     truncated = !pending.is_empty();
                     break;
                 }
@@ -945,6 +959,13 @@ fn query_match_counts_toward_ambiguity(matches: bool, actionable: bool) -> bool 
 
 fn query_match_is_visible(matches: bool, actionable: bool, visible: bool, onscreen: bool) -> bool {
     matches && actionable && visible && onscreen
+}
+
+/// Two matches already make an ordinary query ambiguous. A labelled
+/// screenshot keeps scanning for onscreen matches to number, up to its box
+/// limit; ambiguity still withholds every action token.
+fn query_scan_is_done(label_scan: bool, labelled: usize) -> bool {
+    !label_scan || labelled >= super::capture::MAX_LABELS
 }
 
 fn focused_search_result_is_actionable(
@@ -1745,10 +1766,11 @@ mod tests {
         focused_search_result_is_actionable, is_password_role, is_pointer_fallback_candidate,
         node_is_relevant, owner_is_within_ancestor_limit, pointer_target_from_extents,
         protect_text_value, query_can_issue_action_tokens, query_is_focused, query_matches,
-        query_prefers_document_content, query_skips_app_menus, role_matches_hint,
-        should_follow_related_object, target_can_be_exposed, text_edit_is_supported,
-        unverified_click_result, validate_query, window_id_is_in_scope, window_identity_matches,
-        window_name_identity, window_title_terms, withhold_unverified_query_tokens,
+        query_prefers_document_content, query_scan_is_done, query_skips_app_menus,
+        role_matches_hint, should_follow_related_object, target_can_be_exposed,
+        text_edit_is_supported, unverified_click_result, validate_query, window_id_is_in_scope,
+        window_identity_matches, window_name_identity, window_title_terms,
+        withhold_unverified_query_tokens,
     };
     use serde_json::json;
 
@@ -1947,6 +1969,14 @@ mod tests {
         );
         assert!(bounds_from_extents((1300, 10, 20, 20)).is_none());
         assert!(bounds_from_extents((10, 10, 0, 20)).is_none());
+    }
+
+    #[test]
+    fn only_a_labelled_screenshot_keeps_scanning_past_an_ambiguous_match() {
+        assert!(query_scan_is_done(false, 0));
+        assert!(!query_scan_is_done(true, 0));
+        assert!(!query_scan_is_done(true, 2));
+        assert!(query_scan_is_done(true, super::super::capture::MAX_LABELS));
     }
 
     #[test]

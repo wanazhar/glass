@@ -80,6 +80,57 @@ fn parse_list(output: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Parses `xprop -root _NET_CLIENT_LIST_STACKING`, bottom to top.
+fn parse_stacking(output: &str) -> Vec<u64> {
+    output
+        .split_once('#')
+        .map(|(_, ids)| ids)
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|id| u64::from_str_radix(id.trim().strip_prefix("0x")?, 16).ok())
+        .collect()
+}
+
+fn window_number(window: &Value) -> Option<u64> {
+    u64::from_str_radix(window["id"].as_str()?.strip_prefix("0x")?, 16).ok()
+}
+
+/// Keeps listed windows that are in the stacking order, bottom to top.
+fn order_by_stacking(windows: Vec<Value>, order: &[u64]) -> Vec<Value> {
+    let mut stacked: Vec<(usize, Value)> = windows
+        .into_iter()
+        .filter_map(|window| {
+            let number = window_number(&window)?;
+            Some((order.iter().position(|id| *id == number)?, window))
+        })
+        .collect();
+    stacked.sort_by_key(|(position, _)| *position);
+    stacked.into_iter().map(|(_, window)| window).collect()
+}
+
+fn stack(display: &str, xauthority: &Path) -> Result<Vec<Value>, String> {
+    let windows = parse_list(&wmctrl(display, xauthority, &["-l", "-x", "-G"])?);
+    let mut child = Command::new("xprop")
+        .args(["-root", "_NET_CLIENT_LIST_STACKING"])
+        .env("DISPLAY", display)
+        .env("XAUTHORITY", xauthority)
+        .env_remove("WAYLAND_DISPLAY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not run xprop: {error}"))?;
+    let status = wait_bounded(&mut child)?;
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut pipe, &mut stdout);
+    }
+    if !status.success() {
+        return Err("The window manager did not report its stacking order".into());
+    }
+    Ok(order_by_stacking(windows, &parse_stacking(&stdout)))
+}
+
 fn wmctrl(display: &str, xauthority: &Path, args: &[&str]) -> Result<String, String> {
     x11_command("wmctrl", display, xauthority, args)
 }
@@ -144,6 +195,25 @@ fn application_windows(
 }
 
 impl Desktop {
+    /// Windows bottom to top, for labelled screenshots to skip covered controls.
+    pub(super) fn window_stack(&self, session_id: &str) -> Result<Value, String> {
+        let (display, xauthority) = {
+            let guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            let session = guard
+                .as_ref()
+                .filter(|session| session.id == session_id)
+                .ok_or("The managed desktop session changed; call desktop_status again")?;
+            (
+                session.display.clone(),
+                session.directory.join("Xauthority"),
+            )
+        };
+        Ok(json!({"windows": stack(&display, &xauthority)?}))
+    }
+
     pub(super) fn windows(&self, value: &Value) -> Result<Value, String> {
         self.windows_with(value, run)
     }
@@ -341,6 +411,25 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+
+    #[test]
+    fn stacking_orders_listed_windows_bottom_to_top() {
+        let order = parse_stacking(
+            "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0xe00003, 0x1a00007, 0x2200004",
+        );
+        assert_eq!(order, [0xe00003, 0x1a00007, 0x2200004]);
+        let windows = vec![
+            json!({"id": "0x02200004", "title": "Files"}),
+            json!({"id": "0x01a00007", "title": "Mousepad"}),
+            json!({"id": "0x03300001", "title": "Gone"}),
+        ];
+        let titles: Vec<Value> = order_by_stacking(windows, &order)
+            .into_iter()
+            .map(|window| window["title"].clone())
+            .collect();
+        assert_eq!(titles, ["Mousepad", "Files"]);
+        assert!(parse_stacking("_NET_CLIENT_LIST_STACKING:  not found.").is_empty());
     }
 }
 
@@ -557,6 +646,21 @@ mod xvfb_tests {
                 .and_then(|window| window["id"].as_str().map(str::to_owned))
         };
         let message = eventually(|| find("GlassClose"), "the xmessage window");
+        let top = |display: &str| {
+            stack(display, xauthority)
+                .ok()?
+                .last()
+                .and_then(|window| window["title"].as_str().map(str::to_owned))
+        };
+        eventually(
+            || (top(&display)? == "GlassClose").then_some(()),
+            "the newest window on top of the stack",
+        );
+        run(&display, xauthority, "s", Request::Focus(&id)).unwrap();
+        eventually(
+            || (top(&display)? == "GlassProbe").then_some(()),
+            "the focused window on top of the stack",
+        );
         let closed = run(&display, xauthority, "s", Request::Close(&message)).unwrap();
         assert_eq!(closed["closed"], true);
         eventually(

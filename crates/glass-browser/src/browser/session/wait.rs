@@ -17,8 +17,86 @@ struct VerificationBaseline {
 }
 
 pub(crate) struct NetworkQuietTracker {
-    events: tokio::sync::broadcast::Receiver<crate::browser::cdp::CdpEventWithParams>,
+    state: Arc<std::sync::Mutex<TrackedNetworkState>>,
+    collector: tokio::task::JoinHandle<()>,
     guard: NetworkDomainGuard,
+}
+
+struct TrackedNetworkState {
+    in_flight: HashSet<String>,
+    overflowed: bool,
+    closed: bool,
+    empty_since: tokio::time::Instant,
+}
+
+impl Drop for NetworkQuietTracker {
+    fn drop(&mut self) {
+        self.collector.abort();
+    }
+}
+
+impl NetworkQuietTracker {
+    fn new(
+        mut events: tokio::sync::broadcast::Receiver<crate::browser::cdp::CdpEventWithParams>,
+        guard: NetworkDomainGuard,
+    ) -> Self {
+        let state = Arc::new(std::sync::Mutex::new(TrackedNetworkState {
+            in_flight: HashSet::new(),
+            overflowed: false,
+            closed: false,
+            empty_since: tokio::time::Instant::now(),
+        }));
+        let collected = Arc::clone(&state);
+        let collector = tokio::spawn(async move {
+            loop {
+                let event = events.recv().await;
+                let Ok(mut state) = collected.lock() else {
+                    break;
+                };
+                match event {
+                    Ok(event) => {
+                        let id = event.params["requestId"].as_str();
+                        match event.method.as_str() {
+                            "Network.requestWillBeSent"
+                                if !is_ignored_network_resource_type(
+                                    event.params["type"].as_str(),
+                                ) =>
+                            {
+                                if let Some(id) = id {
+                                    if state.in_flight.len() < NETWORK_IN_FLIGHT_LIMIT {
+                                        state.in_flight.insert(id.to_owned());
+                                    } else {
+                                        state.overflowed = true;
+                                    }
+                                }
+                            }
+                            "Network.loadingFinished" | "Network.loadingFailed" => {
+                                if let Some(id) = id {
+                                    state.in_flight.remove(id);
+                                }
+                                if state.in_flight.is_empty() {
+                                    state.empty_since = tokio::time::Instant::now();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        state.overflowed = true
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        state.closed = true;
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            state,
+            collector,
+            guard,
+        }
+    }
 }
 
 pub(crate) fn is_ignored_network_resource_type(resource_type: Option<&str>) -> bool {
@@ -362,11 +440,11 @@ impl CdpBrowserSession {
     }
 
     pub(crate) async fn start_network_quiet_tracking(&self) -> BrowserResult<NetworkQuietTracker> {
-        let events = self.cdp.subscribe_events_with_params();
+        let events = self.cdp.subscribe_network_events();
         let guard =
             NetworkDomainGuard::acquire(self.cdp.clone(), Arc::clone(&self.network_wait_leases))
                 .await?;
-        Ok(NetworkQuietTracker { events, guard })
+        Ok(NetworkQuietTracker::new(events, guard))
     }
 
     async fn wait_for_network_quiet(
@@ -381,27 +459,36 @@ impl CdpBrowserSession {
 
     pub(crate) async fn wait_for_tracked_network_quiet(
         &self,
-        tracker: NetworkQuietTracker,
+        mut tracker: NetworkQuietTracker,
         quiet: Duration,
         deadline: Duration,
     ) -> BrowserResult<WaitOutcome> {
         if quiet.is_zero() {
             return Err("network quiet duration must be positive".into());
         }
-        let NetworkQuietTracker {
-            mut events,
-            mut guard,
-        } = tracker;
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
-        let mut empty_since = started;
-        let mut in_flight = HashSet::new();
-        let mut overflowed = false;
         loop {
             self.ensured_route_identity().await?;
             let now = tokio::time::Instant::now();
-            if in_flight.is_empty() && !overflowed && now.duration_since(empty_since) >= quiet {
-                guard.disable().await?;
+            let (in_flight, overflowed, closed, empty_since) = {
+                let state = tracker
+                    .state
+                    .lock()
+                    .map_err(|_| "network tracker poisoned")?;
+                (
+                    state.in_flight.len(),
+                    state.overflowed,
+                    state.closed,
+                    state.empty_since.max(started),
+                )
+            };
+            if closed {
+                return Err("network wait event stream closed".into());
+            }
+            if in_flight == 0 && !overflowed && now.saturating_duration_since(empty_since) >= quiet
+            {
+                tracker.guard.disable().await?;
                 let (target_id, frame_id) = self.route_identity().await?;
                 return Ok(WaitOutcome {
                     condition: "network_quiet".to_string(),
@@ -418,50 +505,19 @@ impl CdpBrowserSession {
                     last_state: if overflowed {
                         "in_flight=overflow".to_string()
                     } else {
-                        format!("in_flight={}", in_flight.len())
+                        format!("in_flight={in_flight}")
                     },
                     observed_page: self.page_info().await.ok(),
                     reason: "deadline_exceeded",
                 }
                 .into());
             }
-            tokio::select! {
-                _ = tokio::time::sleep(expires.saturating_duration_since(now).min(WAIT_POLL_INTERVAL)) => {}
-                event = events.recv() => match event {
-                    Ok(event) => {
-                        let request_id = event.params["requestId"].as_str();
-                        match event.method.as_str() {
-                            "Network.requestWillBeSent" => {
-                                if is_ignored_network_resource_type(event.params["type"].as_str()) {
-                                    continue;
-                                }
-                                if let Some(id) = request_id {
-                                    if in_flight.len() < NETWORK_IN_FLIGHT_LIMIT {
-                                        in_flight.insert(id.to_string());
-                                    } else {
-                                        overflowed = true;
-                                    }
-                                }
-                            }
-                            "Network.loadingFinished" | "Network.loadingFailed" => {
-                                if let Some(id) = request_id {
-                                    in_flight.remove(id);
-                                }
-                                if in_flight.is_empty() && !overflowed {
-                                    empty_since = tokio::time::Instant::now();
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        return Err("network wait event stream lagged".into());
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        return Err("network wait event stream closed".into());
-                    }
-                }
-            }
+            tokio::time::sleep(
+                expires
+                    .saturating_duration_since(now)
+                    .min(WAIT_POLL_INTERVAL),
+            )
+            .await;
         }
     }
 }

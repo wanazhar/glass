@@ -513,12 +513,21 @@ pub(crate) struct PageState {
 pub(crate) fn change_summary(tool: &str, before: &PageState, after: &PageState) -> String {
     const MAX_LINES: usize = 6;
     let mut parts = Vec::new();
+    let tabs = |value: &Value| {
+        value
+            .as_array()
+            .cloned()
+            .or_else(|| value["result"].as_array().cloned())
+            .unwrap_or_default()
+    };
+    let before_tabs = tabs(&before.tabs);
+    let after_tabs = tabs(&after.tabs);
     let active = |tabs: &Value| {
         tabs.as_array()
             .and_then(|tabs| tabs.iter().find(|tab| tab["active"] == true).cloned())
             .unwrap_or(Value::Null)
     };
-    let (was, now) = (active(&before.tabs), active(&after.tabs));
+    let (was, now) = (active(&json!(before_tabs)), active(&json!(after_tabs)));
     if was["url"] != now["url"]
         && let Some(url) = now["url"].as_str()
     {
@@ -529,8 +538,7 @@ pub(crate) fn change_summary(tool: &str, before: &PageState, after: &PageState) 
     {
         parts.push(format!("title is now \"{}\"", clip(title, 120)));
     }
-    let count = |tabs: &Value| tabs.as_array().map_or(0, Vec::len);
-    let opened = count(&after.tabs).saturating_sub(count(&before.tabs));
+    let opened = after_tabs.len().saturating_sub(before_tabs.len());
     if opened > 0 {
         parts.push(format!(
             "{opened} new tab(s) opened; switch with browser_tabs {{\"action\":\"list\"}} then select"
@@ -711,6 +719,31 @@ mod tests {
         assert!(recovery_hint("browser_click", moved).contains("retry the same call once"));
         let many = r#"{"kind":"ambiguous","diagnostics":{"matchedCount":3}}"#;
         assert!(recovery_hint("browser_click", many).starts_with("Next: 3 elements match"));
+    }
+
+    #[test]
+    fn change_summary_handles_native_projected_tabs() {
+        let before = PageState {
+            text: "unchanged".into(),
+            tabs: json!({"result":[{"url":"https://a.test/", "title":"A", "active":true}]}),
+        };
+        let after = PageState {
+            text: before.text.clone(),
+            tabs: json!({"result":[{"url":"https://a.test/done", "title":"Done", "active":true}, {"url":"https://b.test/", "active":false}]}),
+        };
+        let summary = change_summary("browser_click", &before, &after);
+        assert!(
+            summary.contains("URL is now https://a.test/done"),
+            "{summary}"
+        );
+        assert!(summary.contains("title is now \"Done\""), "{summary}");
+        assert!(summary.contains("1 new tab(s) opened"), "{summary}");
+        assert!(change_summary("browser_click", &before, &before).contains("no visible change"));
+        let empty = PageState {
+            text: String::new(),
+            tabs: Value::Null,
+        };
+        assert!(change_summary("browser_click", &empty, &empty).contains("no visible change"));
     }
 
     #[test]

@@ -199,6 +199,7 @@ public struct MarbleScrollFollow: Sendable, Equatable {
     /// Distance from the bottom (points) that still counts as "at the end".
     public var snapThreshold: Double
     public private(set) var following = true
+    private var distanceFromBottom: Double = 0
 
     public init(snapThreshold: Double = 120) {
         self.snapThreshold = snapThreshold
@@ -207,11 +208,17 @@ public struct MarbleScrollFollow: Sendable, Equatable {
     /// The person moved the scroll position; only their movement re-arms or
     /// disarms following.
     public mutating func userMoved(distanceFromBottom: Double) {
+        layoutMoved(distanceFromBottom: distanceFromBottom)
         following = distanceFromBottom <= snapThreshold
     }
 
-    /// The "Jump to latest" button: shown when not following.
-    public var showJumpButton: Bool { !following }
+    /// Layout can reach the bottom by shrinking history or growing the
+    /// viewport, even when the reader hasn't moved the scroll position.
+    public mutating func layoutMoved(distanceFromBottom: Double) {
+        self.distanceFromBottom = max(0, distanceFromBottom)
+    }
+
+    public var showJumpButton: Bool { !following && distanceFromBottom > 1 }
 
     mutating func pauseForSearchJump() { following = false }
 

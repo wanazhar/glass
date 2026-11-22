@@ -517,6 +517,13 @@ private struct MarbleFollowLatest: ViewModifier {
         let offset: CGFloat
         let topInset: CGFloat
 
+        init(_ geometry: ScrollGeometry) {
+            bottom = geometry.contentSize.height + geometry.contentInsets.bottom
+            viewport = geometry.containerSize.height
+            offset = geometry.contentOffset.y
+            topInset = geometry.contentInsets.top
+        }
+
         var distanceFromBottom: Double {
             Double(max(-topInset, bottom - viewport) - offset)
         }
@@ -527,17 +534,16 @@ private struct MarbleFollowLatest: ViewModifier {
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
             .defaultScrollAnchor(follow.following ? .bottom : nil, for: .sizeChanges)
             .scrollPosition($position)
-            .onScrollPhaseChange { _, newPhase in
+            .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase
+                if newPhase == .idle && (oldPhase == .interacting || oldPhase == .decelerating) {
+                    follow.userMoved(distanceFromBottom: Layout(context.geometry).distanceFromBottom)
+                }
             }
             .onScrollGeometryChange(for: Layout.self) { geometry in
-                Layout(
-                    bottom: geometry.contentSize.height + geometry.contentInsets.bottom,
-                    viewport: geometry.containerSize.height,
-                    offset: geometry.contentOffset.y,
-                    topInset: geometry.contentInsets.top
-                )
+                Layout(geometry)
             } action: { old, new in
+                follow.layoutMoved(distanceFromBottom: new.distanceFromBottom)
                 let userScrolling = phase == .interacting || phase == .decelerating
                 if userScrolling && old.offset != new.offset {
                     follow.userMoved(distanceFromBottom: new.distanceFromBottom)

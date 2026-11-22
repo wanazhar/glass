@@ -875,6 +875,22 @@ final class MarbleScrollFollowTests: XCTestCase {
         XCTAssertTrue(follow.following)
         XCTAssertFalse(follow.showJumpButton)
     }
+
+    func testJumpButtonHidesWhenLayoutReachesBottomWithoutUserMotion() {
+        var follow = MarbleScrollFollow()
+        follow.pauseForSearchJump()
+        follow.layoutMoved(distanceFromBottom: 400)
+        XCTAssertTrue(follow.showJumpButton)
+        follow.layoutMoved(distanceFromBottom: -4)
+        XCTAssertFalse(follow.showJumpButton)
+    }
+
+    func testGrowthWhilePinnedDoesNotShowJumpButton() {
+        var follow = MarbleScrollFollow()
+        follow.layoutMoved(distanceFromBottom: 400)
+        XCTAssertTrue(follow.following)
+        XCTAssertFalse(follow.showJumpButton)
+    }
 }
 
 final class MarbleScheduleTests: XCTestCase {

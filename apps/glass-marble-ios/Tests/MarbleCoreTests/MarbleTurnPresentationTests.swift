@@ -234,4 +234,42 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertEqual(rows.standalone, [reply, failure])
         XCTAssertEqual(rows.attached, [reply.id: "Ben thought", failure.id: "Ada thought"])
     }
+
+    func testPersistedEveryoneReasoningSharesTheLiveReplySlotAcrossRefreshAndRelaunch() throws {
+        func row(_ id: String, kind: String, text: String, agent: String) -> MarbleEntry {
+            var entry = MarbleEntry(conversationId: "everyone", kind: kind, text: text,
+                                    taskId: "\(agent)-turn", at: 1, speakerName: agent)
+            entry.serverID = id
+            return entry
+        }
+        let user = row("group-message", kind: "user", text: "@everyone", agent: "Member")
+        let marble = row("marble-reply", kind: "pending", text: "", agent: "Marble")
+        let dietrich = row("dietrich-reply", kind: "pending", text: "", agent: "Dietrich")
+        let older = row("older-reply", kind: "assistant", text: "Earlier", agent: "Ada")
+        let marbleReasoning = row("private-marble-reasoning-everyone", kind: "reasoning",
+                                  text: "Marble's plan", agent: "Marble")
+        let dietrichReasoning = row("private-dietrich-reasoning-everyone", kind: "reasoning",
+                                    text: "Dietrich's plan", agent: "Dietrich")
+        var marbleReply = marble
+        marbleReply.kind = "assistant"
+        marbleReply.text = "Marble's answer"
+        var dietrichReply = dietrich
+        dietrichReply.kind = "assistant"
+        dietrichReply.text = "Dietrich's answer"
+        let current = [older, user, marble, dietrich]
+        let live = [marbleReply, dietrichReply]
+        let page = [user, marbleReasoning, marbleReply, dietrichReasoning, dietrichReply]
+        let (refreshed, _) = MarbleHistoryWindow.refreshing(
+            current, before: older.id, with: page, nextBefore: user.id
+        )
+        let withLiveUpdates = MarbleEveryoneTimeline.applying(live, to: refreshed)
+        XCTAssertEqual(withLiveUpdates.map(\.id), ([older] + page).map(\.id))
+        let relaunched = try JSONDecoder().decode([MarbleEntry].self, from: JSONEncoder().encode(withLiveUpdates))
+        let transcript = MarbleReasoningAssociation(relaunched)
+        XCTAssertEqual(transcript.standalone, [older, user, marbleReply, dietrichReply])
+        XCTAssertEqual(transcript.attached, [
+            marble.id: marbleReasoning.text,
+            dietrich.id: dietrichReasoning.text,
+        ])
+    }
 }

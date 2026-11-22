@@ -133,6 +133,7 @@ struct MarbleEntryView: View {
         let failure = MarbleTurnFailure.representsFailure(entry, status: task?.status)
         VStack(alignment: .leading, spacing: 6) {
             if entry.kind == "assistant" || entry.kind == "pending" || failure {
+                // Persisted reasoning replaces the live disclosure for this task.
                 let thought = reasoning ?? store.reasoning(for: entry.taskId)
                 if !thought.isEmpty { MarbleReasoningRow(text: thought, speaker: speaker?.name) }
                 if entry.kind != "pending", entry.threadId == nil,

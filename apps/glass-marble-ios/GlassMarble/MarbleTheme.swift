@@ -70,26 +70,37 @@ struct MarbleTitleView: View {
     var title: String
     @EnvironmentObject private var store: MarbleStore
 
+    private var connectionText: String? {
+        if store.connectionPaused { return "Not connected" }
+        switch store.connection {
+        case .idle: return "Not connected"
+        case .connecting: return "Connecting…"
+        case .live: return nil
+        case .offline: return "Offline"
+        }
+    }
+
     var body: some View {
+        let connectionText = connectionText
         VStack(spacing: 0) {
             HStack(spacing: 5) {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
-                if store.connection == .live {
+                if connectionText == nil {
                     Circle()
                         .fill(.green)
                         .frame(width: 6, height: 6)
                 }
             }
-            if store.connection != .live {
-                Text(store.connection == .offline ? "Offline" : "Connecting…")
+            if let connectionText {
+                Text(connectionText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(store.connection == .live ? "connected" : store.connection == .offline ? "offline" : "connecting")")
+        .accessibilityLabel("\(title), \(connectionText ?? "Connected")")
     }
 }
 

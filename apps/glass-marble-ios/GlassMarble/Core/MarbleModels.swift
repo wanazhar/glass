@@ -91,6 +91,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
     var threadId: String? = nil
     var thread: MarbleThreadSummary? = nil
     var failure: MarbleFailureInfo? = nil
+    var cancelled: Bool? = nil
     var conversationId: String
     var kind: String
     var text: String
@@ -107,7 +108,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
         case serverID = "id"
         case clientMessageID = "client_message_id"
-        case threadId, thread, failure
+        case threadId, thread, failure, cancelled
     }
 
     init(from decoder: Decoder) throws {
@@ -120,6 +121,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         threadId = membership?.isEmpty == false ? membership : nil
         thread = try container.decodeIfPresent(MarbleThreadSummary.self, forKey: .thread)
         failure = try container.decodeIfPresent(MarbleFailureInfo.self, forKey: .failure)
+        cancelled = try container.decodeIfPresent(Bool.self, forKey: .cancelled)
         conversationId = try container.decode(String.self, forKey: .conversationId)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decode(String.self, forKey: .text)

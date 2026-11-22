@@ -3,6 +3,24 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleTurnPresentationTests: XCTestCase {
+    func testStoppedPartialReplyKeepsItsTextAndOffersRetry() throws {
+        let task = MarbleTask(id: "turn", conversationId: "chat", status: "cancelled",
+                              owner: "user", prompt: "Do the work", at: 1)
+        let entry = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Partial",
+                                taskId: task.id, at: 2)
+        XCTAssertTrue(MarbleTurnFailure.isStoppedPartialReply(entry, taskStatus: task.status))
+        XCTAssertEqual(MarbleTurnFailure.retryID(entry: entry, task: task), task.id)
+        XCTAssertFalse(MarbleTurnFailure.isStoppedPartialReply(entry, taskStatus: "completed"))
+
+        let payload = #"{"sequence":2,"conversationId":"chat","taskId":"turn","kind":"reply","data":{"id":"partial","kind":"assistant","text":"Partial","cancelled":true}}"#
+        let event = try JSONDecoder().decode(MarbleEvent.self, from: Data(payload.utf8))
+        let saved = try XCTUnwrap(MarbleEveryoneTimeline.settling(event, reserved: nil, at: 2))
+        let restored = try JSONDecoder().decode(MarbleEntry.self, from: JSONEncoder().encode(saved))
+        XCTAssertEqual(restored.text, "Partial")
+        XCTAssertTrue(MarbleTurnFailure.isStoppedPartialReply(restored, taskStatus: nil))
+        XCTAssertEqual(MarbleTurnFailure.retryID(entry: restored, task: nil), task.id)
+    }
+
     func testNarrationUsesFinalReplyAndResetInvalidatesQueuedSpeechByTask() throws {
         var narration = MarbleReplyNarration()
         var entry = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Final answer.",

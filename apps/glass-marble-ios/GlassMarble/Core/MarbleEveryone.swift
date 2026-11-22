@@ -196,6 +196,7 @@ enum MarbleEveryoneTimeline {
         entry.taskId = event.taskId
         if let sender = event.data.sender, !sender.isEmpty { entry.speakerName = sender }
         entry.failure = event.data.failure
+        entry.cancelled = event.data.cancelled
         return entry
     }
 

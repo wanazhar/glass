@@ -141,6 +141,9 @@ struct MarbleEntryView: View {
                 }
             }
             entryContent(isFailure: failure)
+            if !failure && MarbleTurnFailure.isStoppedPartialReply(entry, taskStatus: task?.status) {
+                MarbleFailedTurnRow(task: task, entry: entry)
+            }
         }
         .background {
             GeometryReader { geometry in
@@ -397,7 +400,8 @@ private struct MarbleFailedTurnRow: View {
 
     private var message: String {
         if let entry, entry.kind == "failure", !entry.text.isEmpty { return entry.text }
-        return task.flatMap { MarbleTurnFailure.message(for: $0.status) } ?? "Marble couldn’t finish this reply."
+        let status = entry?.cancelled == true ? "cancelled" : task?.status
+        return status.flatMap(MarbleTurnFailure.message(for:)) ?? "Marble couldn’t finish this reply."
     }
 }
 

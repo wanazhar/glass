@@ -198,10 +198,15 @@ enum MarbleTurnFailure {
         return entry.kind == "system" && status.flatMap(message(for:)) != nil
     }
 
+    static func isStoppedPartialReply(_ entry: MarbleEntry, taskStatus: String?) -> Bool {
+        entry.kind == "assistant" && (entry.cancelled == true || taskStatus == "cancelled")
+    }
+
     static func retryID(entry: MarbleEntry?, task: MarbleTask?) -> String? {
         if let entry, let failure = entry.failure {
             return failure.retryable && !entry.taskId.isEmpty ? entry.taskId : nil
         }
+        if let entry, entry.cancelled == true, !entry.taskId.isEmpty { return entry.taskId }
         guard let task, !task.id.isEmpty, message(for: task.status) != nil,
               !task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return task.id

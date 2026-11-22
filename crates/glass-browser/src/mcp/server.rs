@@ -8816,15 +8816,15 @@ mod tests {
                 assert_eq!(text["nested"][0], "{{secret:TEST}}");
             }
         }
-        let before = super::agent_tools::PageState {
+        let before = crate::mcp::agent_tools::PageState {
             text: String::new(),
             tabs: json!([]),
         };
-        let after = super::agent_tools::PageState {
+        let after = crate::mcp::agent_tools::PageState {
             text: format!("{}{SECRET}", "x".repeat(150)),
             tabs: json!([{"active":true,"title":format!("{}{SECRET}","x".repeat(110)),"url":format!("https://example.test/{}{SECRET}","x".repeat(170))}]),
         };
-        let summary = super::agent_tools::change_summary("browser_click", &before, &after);
+        let summary = crate::mcp::agent_tools::change_summary("browser_click", &before, &after);
         assert!(!summary.contains("unique-secret"), "{summary}");
         assert!(summary.contains("{{secret:"), "{summary}");
     }

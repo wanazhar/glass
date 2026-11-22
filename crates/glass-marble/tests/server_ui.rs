@@ -4634,17 +4634,22 @@ fn everyone_reserves_reply_order_even_when_the_last_agent_finishes_first() {
     };
     let deadline = Instant::now() + Duration::from_secs(5);
     while fixture
-        .state
-        .lock()
-        .unwrap()
-        .tasks
+        .events
+        .since(0)
         .iter()
-        .any(|t| t.status == "running")
+        .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+        .count()
+        < 2
     {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
     let state = fixture.store.as_ref().unwrap().load().unwrap();
+    assert!(
+        state.tasks.iter().all(|t| t.status == "completed"),
+        "{:?}",
+        state.tasks
+    );
     let replies: Vec<_> = state
         .transcript
         .iter()

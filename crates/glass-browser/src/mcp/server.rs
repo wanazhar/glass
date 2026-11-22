@@ -1658,6 +1658,9 @@ fn save_pdf_result(
         let path = policy
             .require_output_path(&path)
             .map_err(|error| error.to_string())?;
+        if !path.starts_with(policy.workspace_root()) {
+            return Err("PDF output escapes the configured workspace root".into());
+        }
         let encoded = result["content"][0]["text"]
             .as_str()
             .and_then(|text| serde_json::from_str::<Value>(text).ok())
@@ -8206,7 +8209,7 @@ mod tests {
     #[test]
     fn pdf_outputs_decode_native_projection_and_reject_invalid_data() {
         let workspace = PdfTestDirectory::new();
-        let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
+        let policy = super::BrowserPolicy::development(workspace.path()).unwrap();
         let output = workspace.path().join("native.pdf");
         let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":output}}})).unwrap();
         for payload in [

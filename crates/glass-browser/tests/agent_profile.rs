@@ -471,7 +471,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     assert_eq!(failed["isError"], true, "{failed}");
     assert!(text(&failed).contains("do not report success"), "{failed}");
 
-    let pdf = std::env::temp_dir().join(format!("glass-agent-{port}.pdf"));
+    let pdf = std::path::PathBuf::from(format!(".glass-agent-{port}.pdf"));
     let saved_pdf = mcp
         .ok("browser_save_pdf", json!({"path": pdf.to_str().unwrap()}))
         .await;

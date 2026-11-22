@@ -106,6 +106,7 @@ def save_submissions():
 
 
 def run_turn(identifier, task, text, conversation, request):
+    text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
     if argument("--pre-tool-text"):

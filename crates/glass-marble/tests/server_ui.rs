@@ -1110,13 +1110,11 @@ fn cancelled_turn_does_not_steal_the_next_turns_reply() {
             )
             .unwrap();
             assert_eq!(submitted["conversationId"], conversation_id);
-            assert_eq!(submitted["input"]["text"], "hello");
-            assert!(
-                submitted["input"]["context"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("withdrawn")
-            );
+            assert_eq!(submitted["input"].as_object().unwrap().len(), 1);
+            let engine_text = submitted["input"]["text"].as_str().unwrap();
+            assert!(engine_text.ends_with("[User message]\nhello"));
+            assert!(engine_text.contains("withdrawn"));
+            assert!(engine_text.contains("Current date and time:"));
             let user_for_hello = entries
                 .iter()
                 .find(|entry| entry["taskId"] == hello_task.as_str() && entry["kind"] == "user");
@@ -3098,6 +3096,35 @@ fn named_engines_use_the_host_model_and_keep_tool_rows_after_reload() {
     );
     assert_eq!(status, 202);
     let task = fixture.completed("inspect");
+    let submitted: Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .root
+                .join("prism-sessions")
+                .join(&fixture.marble_id)
+                .join("fixture-input.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(submitted["input"].as_object().unwrap().len(), 1);
+    assert!(
+        submitted["input"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("[User message]\ninspect")
+    );
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .transcript
+            .iter()
+            .any(|entry| entry.task_id == task.id
+                && entry.kind == "user"
+                && entry.text == "inspect")
+    );
     let options: Value = serde_json::from_slice(
         &std::fs::read(
             fixture

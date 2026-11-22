@@ -1485,20 +1485,17 @@ mod tests {
 
     #[test]
     fn remembered_facts_are_carried_into_the_turn() {
-        use glass_runtime_client::protocol::ContextBlock;
         let mut product = ProductState::default();
         let plain = turn_input(&Arc::new(Mutex::new(product.clone())), "hello");
-        assert_eq!(plain.context.len(), 1);
+        assert!(plain.context.is_empty());
+        assert!(plain.text.contains("Current date and time:"));
         product
             .memory
             .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
-        assert_eq!(with_memory.context.len(), 2);
-        assert_eq!(with_memory.text, "hello");
-        match &with_memory.context[0] {
-            ContextBlock::Text { text } => assert!(text.contains("my name is Azhar")),
-            other => panic!("unexpected context block: {other:?}"),
-        }
+        assert!(with_memory.context.is_empty());
+        assert!(with_memory.text.ends_with("[User message]\nhello"));
+        assert!(with_memory.text.contains("my name is Azhar"));
     }
 }

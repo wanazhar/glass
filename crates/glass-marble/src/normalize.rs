@@ -1,7 +1,6 @@
 //! Inbound text becomes the minimal typed turn input.
 
 use glass_runtime_client::TurnInput;
-use glass_runtime_client::protocol::ContextBlock;
 
 pub(crate) fn engine_input(
     state: &crate::ProductState,
@@ -10,6 +9,10 @@ pub(crate) fn engine_input(
     text: &str,
 ) -> TurnInput {
     let mut input = to_turn_input(&InboundMessage::new(text));
+    let mut context = vec![current_datetime(
+        crate::worker::now_millis(),
+        state.routines.offset_minutes,
+    )];
     if let Some(previous) = conversation_id.filter(|id| !id.is_empty()).and_then(|id| {
         state.tasks.iter().rev().find(|task| {
             task.conversation_id == id
@@ -22,16 +25,15 @@ pub(crate) fn engine_input(
     ) && !state.transcript.iter().any(|entry| {
         entry.task_id == previous.id && entry.kind == "assistant" && !entry.text.trim().is_empty()
     }) {
-        input.context.push(ContextBlock::Text {
-            text: "Host note: the earlier unanswered request was withdrawn. Do not answer it; answer only the newest message.".into(),
-        });
+        context.push("Host note: the earlier unanswered request was withdrawn. Do not answer it; answer only the newest message.".into());
     }
     if let Some(text) = state.memory.context_block_for(owner) {
-        input.context.push(ContextBlock::Text { text });
+        context.push(text);
     }
-    input.context.push(ContextBlock::Text {
-        text: current_datetime(crate::worker::now_millis(), state.routines.offset_minutes),
-    });
+    input.text = format!(
+        "[Marble host context]\n{}\n[/Marble host context]\n\n[User message]\n{text}",
+        context.join("\n\n")
+    );
     input
 }
 
@@ -111,10 +113,7 @@ mod tests {
     use crate::{ProductState, TaskRecord, TranscriptEntry};
 
     fn has_withdrawal(input: TurnInput) -> bool {
-        input
-            .context
-            .iter()
-            .any(|block| matches!(block, ContextBlock::Text { text } if text.contains("withdrawn")))
+        input.text.contains("withdrawn")
     }
 
     #[test]
@@ -135,7 +134,9 @@ mod tests {
         state.routines.offset_minutes = 480;
         for owner in ["marble", "ada"] {
             let input = engine_input(&state, None, owner, "hello");
-            assert!(input.context.iter().any(|block| matches!(block, ContextBlock::Text { text } if text.starts_with("Current date and time:") && text.contains("UTC+08:00"))));
+            assert!(
+                input.text.contains("Current date and time:") && input.text.contains("UTC+08:00")
+            );
         }
     }
 
@@ -156,10 +157,9 @@ mod tests {
                 ..Default::default()
             }];
             let input = engine_input(&state, Some("chat"), "marble", "new");
-            assert_eq!(input.text, "new");
-            assert!(
-                matches!(&input.context[0], ContextBlock::Text { text } if text.contains("withdrawn"))
-            );
+            assert!(input.text.ends_with("[User message]\nnew"));
+            assert!(input.context.is_empty());
+            assert!(has_withdrawal(input));
             assert!(!has_withdrawal(engine_input(
                 &state,
                 Some("other"),
@@ -188,5 +188,31 @@ mod tests {
             "marble",
             "new"
         )));
+    }
+
+    #[test]
+    fn engine_input_serializes_as_exactly_one_user_message() {
+        let mut state = ProductState::default();
+        state.tasks.push(TaskRecord {
+            id: "old".into(),
+            conversation_id: "chat".into(),
+            status: "failed".into(),
+            ..Default::default()
+        });
+        state
+            .memory
+            .remember("Shared fact", "fact", "chat", true, "")
+            .unwrap();
+        for text in ["hello", "", "<script>user text</script>"] {
+            let input = engine_input(&state, Some("chat"), "marble", text);
+            let wire = serde_json::to_value(&input).unwrap();
+            assert_eq!(wire.as_object().unwrap().len(), 1);
+            assert!(wire.get("context").is_none());
+            assert!(wire.get("images").is_none());
+            assert!(input.text.contains("Shared fact"));
+            assert!(input.text.contains("withdrawn"));
+            assert!(input.text.ends_with(&format!("[User message]\n{text}")));
+            assert!(state.transcript.is_empty());
+        }
     }
 }

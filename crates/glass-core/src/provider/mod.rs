@@ -518,8 +518,16 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/(width - 1), y=py/(height - 1) using desktop_status width and height. For web pages use browser_screenshot.".to_string(),
-            serde_json::json!({"type":"object","properties":{"sessionId":{"type":"string","maxLength":64}},"required":["sessionId"],"additionalProperties":false}).to_string(),
+            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/(width - 1), y=py/(height - 1) using desktop_status width and height. To read small text or check a detail, pass `region` to zoom: that part of the screen is returned at full resolution, enlarged up to 4x, and the result says how to map its pixels back to desktop_input coordinates. Example: {\"sessionId\":\"<from desktop_status>\",\"region\":{\"x\":0.5,\"y\":0,\"width\":0.5,\"height\":0.25}} zooms on the top-right quarter. For web pages use browser_screenshot.".to_string(),
+            serde_json::json!({"type":"object","properties":{
+                "sessionId":{"type":"string","maxLength":64},
+                "region":{"type":"object","description":"Optional zoom area as fractions of the screen; at least 0.02 wide and tall.","properties":{
+                    "x":{"type":"number","minimum":0,"maximum":1},
+                    "y":{"type":"number","minimum":0,"maximum":1},
+                    "width":{"type":"number","minimum":0.02,"maximum":1},
+                    "height":{"type":"number","minimum":0.02,"maximum":1}
+                },"required":["x","y","width","height"],"additionalProperties":false}
+            },"required":["sessionId"],"additionalProperties":false}).to_string(),
         ),
         (
             "desktop_observe".to_string(),
@@ -553,14 +561,16 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_input".to_string(),
-            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the managed session identified by the latest desktop_status.sessionId, and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the managed session identified by the latest desktop_status.sessionId, and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Use `pointer-double-click` at x/y to open a file or select a word, and `pointer-drag` from x/y to toX/toY (left button held) to move a window, slider or selection in one call. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["action","sessionId"],
                 "properties":{
                     "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from desktop_status; the manager rejects stale sessions."},
-                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","key-tap","key-chord","text","scroll"]},
+                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","pointer-double-click","pointer-drag","key","key-tap","key-chord","text","scroll"]},
                     "x":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen width: 0 is the left edge, 1 the right, 0.5 the center. From a desktop_screenshot pixel, x = px / (desktop_status.width - 1)."},
                     "y":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen height: 0 is the top edge, 1 the bottom. From a desktop_screenshot pixel, y = py / (desktop_status.height - 1)."},
+                    "toX":{"type":"number","minimum":0,"maximum":1,"description":"pointer-drag only: where to drop, as a fraction of the screen width."},
+                    "toY":{"type":"number","minimum":0,"maximum":1,"description":"pointer-drag only: where to drop, as a fraction of the screen height."},
                     "button":{"type":"string","enum":["left","middle","right"]},
                     "pressed":{"type":"boolean"},
                     "key":{"type":"string","maxLength":16},
@@ -571,6 +581,8 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 }
             ,"allOf":[
                 {"if":{"properties":{"action":{"const":"pointer-click"}}},"then":{"required":["x","y","button"]}},
+                {"if":{"properties":{"action":{"const":"pointer-double-click"}}},"then":{"required":["x","y"]}},
+                {"if":{"properties":{"action":{"const":"pointer-drag"}}},"then":{"required":["x","y","toX","toY"]}},
                 {"if":{"properties":{"action":{"enum":["pointer-move","scroll"]}}},"then":{"required":["x","y"]}},
                 {"if":{"properties":{"action":{"const":"pointer-button"}}},"then":{"required":["button","pressed"]}}
                 ,{"if":{"properties":{"action":{"const":"key"}}},"then":{"required":["key","pressed"]}}
@@ -604,6 +616,36 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                     "text":{"type":"string","maxLength":4096,"description":"Text to place on the clipboard; required for write. Maximum 4096 UTF-8 bytes, not characters. Newline and tab are allowed."}
                 },
                 "allOf":[{"if":{"properties":{"action":{"const":"write"}}},"then":{"required":["text"]}}]
+            }).to_string(),
+        ));
+        tools.push((
+            "desktop_windows".to_string(),
+            "List the application windows of the managed desktop identified by the latest desktop_status.sessionId, with title, app and position as screen fractions, or bring one to the front (`focus`) or close it (`close`) by its id. Use it to find a window hidden behind another, to check which apps are open, or to close an app or dialog you are done with. Ids are X11 window ids such as \"0x01a00007\" from the latest list; they are not desktop_observe windowId selectors. focus and close need the agent input lease; close asks the app to close, so it may show a save prompt. Not for browser tabs: use browser_tabs. Examples: {\"action\":\"list\",\"sessionId\":\"<from desktop_status>\"}; {\"action\":\"focus\",\"sessionId\":\"<from desktop_status>\",\"id\":\"0x01a00007\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["list","focus","close"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "id":{"type":"string","maxLength":10,"pattern":"^0x[0-9a-fA-F]+$","description":"Window id from desktop_windows list; required for focus and close."}
+                },
+                "allOf":[{"if":{"properties":{"action":{"enum":["focus","close"]}}},"then":{"required":["id"]}}]
+            }).to_string(),
+        ));
+        tools.push((
+            "desktop_files".to_string(),
+            "Move files between the workspace and the managed desktop's private Downloads folder, for the desktop identified by the latest desktop_status.sessionId. Desktop apps save downloads there, and your workspace file tools cannot reach it. `list` shows what is in Downloads; `export` copies one file (by name) into the workspace at .gc-artifacts/desktop/downloads/<name>; `import` copies a workspace file (path, relative to the workspace) into Downloads so an app's file dialog can open it. Files up to 100 MiB; existing files with the same name are replaced. Not for browser downloads in the agent browser: browser_* tools save those in the workspace. Examples: {\"action\":\"export\",\"sessionId\":\"<from desktop_status>\",\"name\":\"invoice.pdf\"}; {\"action\":\"import\",\"sessionId\":\"<from desktop_status>\",\"path\":\"data/report.csv\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["list","import","export"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "name":{"type":"string","maxLength":255,"description":"export only: a file name from desktop_files list, without slashes."},
+                    "path":{"type":"string","maxLength":4096,"description":"import only: a workspace-relative file path."}
+                },
+                "allOf":[
+                    {"if":{"properties":{"action":{"const":"export"}}},"then":{"required":["name"]}},
+                    {"if":{"properties":{"action":{"const":"import"}}},"then":{"required":["path"]}}
+                ]
             }).to_string(),
         ));
     }
@@ -743,7 +785,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
-        assert_eq!(full.len(), 7);
+        assert_eq!(full.len(), 9);
+        assert_eq!(full[8].0, "desktop_files");
+        assert_eq!(full[7].0, "desktop_windows");
+        let windows: Value = serde_json::from_str(&full[7].2).unwrap();
+        assert_eq!(
+            windows["properties"]["action"]["enum"],
+            serde_json::json!(["list", "focus", "close"])
+        );
+        let screenshot: Value = serde_json::from_str(&full[1].2).unwrap();
+        assert_eq!(
+            screenshot["properties"]["region"]["additionalProperties"],
+            false
+        );
         assert_eq!(full[6].0, "desktop_clipboard");
         let clipboard: Value = serde_json::from_str(&full[6].2).unwrap();
         assert_eq!(clipboard["additionalProperties"], false);

@@ -1,11 +1,15 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::HashSet,
     ffi::{CString, c_char, c_int, c_uint, c_ulong, c_void},
     sync::Mutex,
+    thread,
+    time::Duration,
 };
 
 use super::{HEIGHT, InputError, WIDTH};
+
+const DRAG_STEPS: i32 = 12;
 
 pub(super) fn inject(
     display: &str,
@@ -33,6 +37,52 @@ pub(super) fn inject(
         close: loaded.close_display,
     };
     match action {
+        "pointer-double-click" => {
+            let (x, y) = coordinates(value)?;
+            let button = button_id(value["button"].as_str().unwrap_or("left"))
+                .ok_or(InputError::Invalid("button must be left, middle, or right"))?;
+            unsafe {
+                (loaded.motion)(xdisplay, 0, x, y, 0);
+            }
+            for _ in 0..2 {
+                unsafe {
+                    (loaded.button)(xdisplay, button as c_uint, 1, 0);
+                    (loaded.button)(xdisplay, button as c_uint, 0, 0);
+                    (loaded.flush)(xdisplay);
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+        }
+        "pointer-drag" => {
+            let (x, y) = coordinates(value)?;
+            let (to_x, to_y) = drag_destination(value)?;
+            let step = |delay: u64| {
+                unsafe {
+                    (loaded.flush)(xdisplay);
+                }
+                thread::sleep(Duration::from_millis(delay));
+            };
+            unsafe {
+                (loaded.motion)(xdisplay, 0, x, y, 0);
+            }
+            step(30);
+            unsafe {
+                (loaded.button)(xdisplay, 1, 1, 0);
+            }
+            step(60);
+            for index in 1..=DRAG_STEPS {
+                let px = x + (to_x - x) * index / DRAG_STEPS;
+                let py = y + (to_y - y) * index / DRAG_STEPS;
+                unsafe {
+                    (loaded.motion)(xdisplay, 0, px, py, 0);
+                }
+                step(16);
+            }
+            step(60);
+            unsafe {
+                (loaded.button)(xdisplay, 1, 0, 0);
+            }
+        }
         "pointer-move" | "pointer-button" | "pointer-click" | "scroll" => {
             let button_event = if action == "pointer-button" {
                 Some((
@@ -148,7 +198,7 @@ pub(super) fn inject(
         }
         _ => {
             return Err(InputError::Invalid(
-                "action must be pointer-move, pointer-button, pointer-click, key, text, or scroll",
+                "action must be pointer-move, pointer-button, pointer-click, pointer-double-click, pointer-drag, key, key-tap, key-chord, text, or scroll",
             ));
         }
     }
@@ -309,6 +359,12 @@ pub(super) fn coordinates(value: &Value) -> Result<(c_int, c_int), InputError> {
         (x * (WIDTH - 1) as f64).round() as c_int,
         (y * (HEIGHT - 1) as f64).round() as c_int,
     ))
+}
+
+pub(super) fn drag_destination(value: &Value) -> Result<(c_int, c_int), InputError> {
+    coordinates(&json!({"x": value["toX"], "y": value["toY"]})).map_err(|_| {
+        InputError::Invalid("pointer-drag needs toX and toY between 0 and 1 for the drop point")
+    })
 }
 
 pub(super) fn bounded_delta(delta: f64) -> i64 {

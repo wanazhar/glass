@@ -51,8 +51,19 @@ fn copy_staged(from: &Path, to: &Path, staged: impl FnOnce(&Path)) -> Result<(),
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
         .map_err(|_| "Secure random unavailable".to_owned())?;
     let partial = to.with_file_name(format!(".{:032x}.gc-partial", u128::from_ne_bytes(nonce)));
-    let parent = File::open(to.parent().ok_or("destination needs a parent directory")?)
-        .map_err(|error| error.to_string())?;
+    let parent_path = to.parent().ok_or("destination needs a parent directory")?;
+    #[cfg(target_os = "linux")]
+    let parent = {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(parent_path)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let parent = File::open(parent_path);
+    let parent = parent.map_err(|error| error.to_string())?;
     let name = CString::new(partial.file_name().unwrap().as_bytes()).unwrap();
     let target = CString::new(
         to.file_name()
@@ -296,6 +307,61 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn transfers_allow_non_listable_destinations() {
+        // SAFETY: geteuid has no preconditions or side effects.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("requires a non-root user to enforce directory permissions");
+            return;
+        }
+        let home = scratch("non-listable-home");
+        let workspace = scratch("non-listable-workspace");
+        std::fs::write(workspace.join("report.csv"), b"a,b\n1,2\n").unwrap();
+        let downloads = home.join("Downloads");
+        std::fs::create_dir(&downloads).unwrap();
+        let exports = export_directory(&workspace).unwrap();
+        for directory in [&downloads, &exports] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o300)).unwrap();
+            assert_eq!(
+                std::fs::read_dir(directory).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+        let imported = transfer(
+            &home,
+            &workspace,
+            &json!({"action":"import","path":"report.csv"}),
+        );
+        let exported = transfer(
+            &home,
+            &workspace,
+            &json!({"action":"export","name":"report.csv"}),
+        );
+        let missing = copy(&workspace.join("missing"), &exports.join("missing"));
+        std::fs::write(workspace.join("empty"), b"").unwrap();
+        let empty = copy(&workspace.join("empty"), &exports.join("empty"));
+        for directory in [&downloads, &exports] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(imported.unwrap()["bytes"], 8);
+        assert_eq!(exported.unwrap()["bytes"], 8);
+        assert!(missing.is_err());
+        empty.unwrap();
+        assert_eq!(
+            std::fs::read(downloads.join("report.csv")).unwrap(),
+            b"a,b\n1,2\n"
+        );
+        assert_eq!(
+            std::fs::read(exports.join("report.csv")).unwrap(),
+            b"a,b\n1,2\n"
+        );
+        assert_eq!(std::fs::metadata(exports.join("empty")).unwrap().len(), 0);
+        assert_eq!(std::fs::read_dir(&exports).unwrap().count(), 2);
+        std::fs::remove_dir_all(home).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 
     #[test]
     fn staging_cleanup_does_not_follow_directory_substitution() {

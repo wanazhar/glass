@@ -85,28 +85,24 @@ struct ComposerView: View {
     }
 
     /// While Glass works, a message either steers the current reply or waits for the next turn.
+    /// One tap switches between the two; the line always says what Send will do.
     private var sendModeMenu: some View {
-        Menu {
-            Picker("Send", selection: Bindable(composer).mode) {
-                ForEach(ComposerModel.SendMode.allCases) { mode in
-                    Text(mode.title)
-                        .badge(Text(mode.explanation))
-                        .tag(mode)
-                }
-            }
+        Button {
+            composer.mode = composer.mode == .steer ? .queue : .steer
         } label: {
             HStack(spacing: 4) {
                 Text(composer.mode.explanation)
-                Image(systemName: "chevron.up.chevron.down").imageScale(.small)
+                Image(systemName: "arrow.left.arrow.right").imageScale(.small)
             }
             .font(.footnote)
-            .foregroundStyle(.secondary)
         }
-        .tint(.secondary)
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, 52)
         .accessibilityLabel("While Glass is working")
-        .accessibilityValue(composer.mode.title + ". " + composer.mode.explanation)
+        .accessibilityValue(composer.mode.title + ". " + composer.mode.detail)
+        .accessibilityHint(composer.mode == .steer ? "Switches to Queue: send after this reply" : "Switches to Steer: change what Glass is doing now")
         .accessibilityIdentifier("composer.mode")
     }
 

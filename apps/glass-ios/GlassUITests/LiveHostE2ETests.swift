@@ -260,8 +260,6 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitUntil(10) {
             if (mode.value as? String)?.hasPrefix("Queue") == true { return true }
             mode.tap()
-            let queue = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Queue")).firstMatch
-            if waitUntil(3, { queue.exists && queue.isHittable }) { queue.tap() }
             return (mode.value as? String)?.hasPrefix("Queue") == true
         }, "queue mode is selected: \(mode.value ?? "")")
         app.buttons["composer.send"].tap()

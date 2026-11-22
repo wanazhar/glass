@@ -3945,20 +3945,25 @@ mod tests {
     fn desktop_stream_stays_open_across_a_temporary_frame_gap() {
         let mut polls = 0;
         let mut body = Vec::new();
-        write_desktop_stream_frames(&mut body, (1, 100, b"first".to_vec()).into(), 1280, |after, _| {
-            polls += 1;
-            match polls {
-                1 => {
-                    *after = 1;
-                    Ok(None)
+        write_desktop_stream_frames(
+            &mut body,
+            (1, 100, b"first".to_vec()).into(),
+            1280,
+            |after, _| {
+                polls += 1;
+                match polls {
+                    1 => {
+                        *after = 1;
+                        Ok(None)
+                    }
+                    2 => {
+                        assert_eq!(*after, 1, "the stale frame watermark must be skipped");
+                        Ok(Some((2, 3_000, b"after-gap".to_vec()).into()))
+                    }
+                    _ => Err("test stream closed".into()),
                 }
-                2 => {
-                    assert_eq!(*after, 1, "the stale frame watermark must be skipped");
-                    Ok(Some((2, 3_000, b"after-gap".to_vec()).into()))
-                }
-                _ => Err("test stream closed".into()),
-            }
-        })
+            },
+        )
         .unwrap();
 
         let body = String::from_utf8(body).unwrap();
@@ -3994,9 +3999,12 @@ mod tests {
     fn desktop_stream_wire_headers_use_opaque_fetch_type_and_keep_custom_frame_protocol() {
         let mut wire = Vec::new();
         write_desktop_stream_headers(&mut wire).unwrap();
-        write_desktop_stream_frames(&mut wire, (1, 100, b"jpeg".to_vec()).into(), 1280, |_, _| {
-            Err("test stream closed".into())
-        })
+        write_desktop_stream_frames(
+            &mut wire,
+            (1, 100, b"jpeg".to_vec()).into(),
+            1280,
+            |_, _| Err("test stream closed".into()),
+        )
         .unwrap();
 
         let header_end = wire

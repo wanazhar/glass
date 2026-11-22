@@ -57,6 +57,38 @@ private final class ScriptedTransport: GlassHTTPTransport, @unchecked Sendable {
         #expect(try store.credential(for: model.endpoint!) == .none)
     }
 
+    @Test func desktopDisconnectReleasesHeldButtonsAndBlocksInput() async throws {
+        let transport = happyTransport()
+        let model = AppModel(defaults: defaults, store: store, transport: transport)
+        await model.pair(with: Self.link)
+        let sent = NSLock()
+        nonisolated(unsafe) var inputs: [String] = []
+        transport.set { request in
+            guard request.url?.path == "/api/desktop/input" else { return (200, Self.status) }
+            let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            sent.withLock { inputs.append(body) }
+            return (200, "{}")
+        }
+        let desktop = DesktopModel()
+        desktop.attach(model.api)
+        desktop.send(.button(x: 0.2, y: 0.3, button: .left, pressed: true))
+        for _ in 0..<50 where sent.withLock({ inputs.isEmpty }) { try await Task.sleep(for: .milliseconds(20)) }
+        desktop.disconnect()
+        desktop.send(.click(x: 0.5, y: 0.5, button: .left))
+        desktop.type("ls")
+        for _ in 0..<50 where sent.withLock({ inputs.count }) < 2 { try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(100))
+        let got = sent.withLock { inputs }
+        #expect(got.count == 2)
+        #expect(got.allSatisfy { $0.contains("pointer-button") })
+        #expect(got.last?.contains("false") == true)
+
+        desktop.reconnect()
+        desktop.send(.click(x: 0.5, y: 0.5, button: .left))
+        for _ in 0..<50 where sent.withLock({ inputs.count }) < 3 { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(sent.withLock { inputs.count } == 3)
+    }
+
     @Test func forgettingOrRevokingTheHostClosesHeldConnections() async throws {
         let transport = happyTransport()
         let model = AppModel(defaults: defaults, store: store, transport: transport)

@@ -72,6 +72,8 @@ final class DesktopModel {
     /// Inputs waiting to be sent, in order. A newer pointer move replaces a waiting one, so a slow
     /// network never replays a backlog of stale moves.
     private var pendingInputs: [DesktopInput] = []
+    /// Mouse buttons the host currently has pressed, so Disconnect can let go of them.
+    private var heldButtons: [DesktopButton: CGPoint] = [:]
     private var sending = false
     private var decoding = false
     private var latestJPEG: (Data, DesktopFrame?)?
@@ -185,11 +187,19 @@ final class DesktopModel {
     }
 
     /// The Live Activity's Disconnect: close the picture and keep it closed.
+    /// Input stops too: the frozen picture may no longer match the desktop. Waiting input is dropped,
+    /// except letting go of a pressed button, so the host isn't left mid-drag.
     func disconnect() {
         disconnected = true
         backgrounded = false
         resumeOnReturn = false
         stopPicture()
+        pendingInputs = heldButtons.map { .button(x: Double($0.value.x), y: Double($0.value.y), button: $0.key, pressed: false) }
+        heldButtons = [:]
+        pendingScroll = .zero
+        control = false
+        alt = false
+        drainIfIdle()
     }
 
     /// Leaving the app. Kept alive, the stream stays open; otherwise it closes now, keeping the last frame
@@ -337,12 +347,21 @@ final class DesktopModel {
     // MARK: Input
 
     func send(_ input: DesktopInput) {
+        guard !disconnected else { return }
+        if case .button(let x, let y, let button, let pressed) = input {
+            if pressed { heldButtons[button] = CGPoint(x: x ?? cursor.x, y: y ?? cursor.y) }
+            else { heldButtons[button] = nil }
+        }
         if case .move = input, case .move? = pendingInputs.last {
             pendingInputs[pendingInputs.count - 1] = input
         } else {
             pendingInputs.append(input)
         }
-        guard !sending else { return }
+        drainIfIdle()
+    }
+
+    private func drainIfIdle() {
+        guard !sending, !pendingInputs.isEmpty else { return }
         sending = true
         Task { [weak self] in await self?.drainInputs() }
     }

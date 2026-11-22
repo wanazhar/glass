@@ -8,6 +8,7 @@
 
 use base64::Engine;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -26,7 +27,7 @@ const MAX_BODY_BYTES: usize = 60_000;
 type Schema = (String, String, String);
 
 static CATALOG: OnceLock<Vec<Schema>> = OnceLock::new();
-static CLIENT: Mutex<Option<Client>> = Mutex::new(None);
+static CLIENTS: OnceLock<Mutex<HashMap<PathBuf, Client>>> = OnceLock::new();
 
 pub fn is_tool(name: &str) -> bool {
     name.len() > "browser_".len()
@@ -48,16 +49,27 @@ pub fn schemas() -> Vec<Schema> {
 }
 
 fn binary() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
     if let Some(path) = std::env::var_os("GC_BROWSER_BIN") {
-        return Some(PathBuf::from(path));
+        let path = PathBuf::from(path);
+        if path.components().count() > 1 || path.is_file() || path.is_absolute() {
+            return Some(cwd.join(path));
+        }
+        return std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| cwd.join(dir).join(&path))
+            .find(|path| path.is_file());
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join("glass-browser"))
+        .map(|dir| cwd.join(dir).join("glass-browser"))
         .find(|path| path.is_file())
 }
 
 fn command(workspace: Option<&Path>) -> Option<Command> {
-    let mut command = Command::new(binary()?);
+    Some(command_for_binary(binary()?, workspace))
+}
+
+fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
+    let mut command = Command::new(binary);
     if let Ok(runtime) = std::env::var("GC_BROWSER_RUNTIME")
         && !runtime.is_empty()
     {
@@ -67,14 +79,14 @@ fn command(workspace: Option<&Path>) -> Option<Command> {
         command.args(["--port", &port.to_string()]);
     }
     command
-        .args(["--mcp", "--tool-profile", "agent"])
+        .args(["--mcp", "--tool-profile", "agent", "--incognito"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(workspace) = workspace {
         command.current_dir(workspace);
     }
-    Some(command)
+    command
 }
 
 /// A per-process CDP port, so a Chrome the user already runs on 9222 never
@@ -111,7 +123,6 @@ struct Client {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     next_id: u64,
-    workspace: Option<PathBuf>,
 }
 
 impl Client {
@@ -132,7 +143,6 @@ impl Client {
             stdin: Some(stdin),
             lines,
             next_id: 0,
-            workspace: workspace.map(Path::to_path_buf),
         };
         client
             .request(
@@ -219,15 +229,25 @@ pub fn execute(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools
             return crate::tools::Outcome::err(format!("invalid JSON arguments: {error}"));
         }
     };
-    let mut guard = CLIENT.lock().unwrap_or_else(|poison| poison.into_inner());
-    let reusable = guard.as_mut().is_some_and(|client| {
-        client.workspace.as_deref() == Some(workspace)
-            && matches!(client.child.try_wait(), Ok(None))
-    });
+    let workspace = match workspace.canonicalize() {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            return crate::tools::Outcome::err(format!("browser workspace is unavailable: {error}"));
+        }
+    };
+    let mut guard = CLIENTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let reusable = guard
+        .get_mut(&workspace)
+        .is_some_and(|client| matches!(client.child.try_wait(), Ok(None)));
     if !reusable {
-        *guard = None;
-        match Client::spawn(Some(workspace), PROBE_TIMEOUT) {
-            Some(client) => *guard = Some(client),
+        guard.remove(&workspace);
+        match Client::spawn(Some(&workspace), PROBE_TIMEOUT) {
+            Some(client) => {
+                guard.insert(workspace.clone(), client);
+            }
             None => {
                 return crate::tools::Outcome::err(
                     "glass-browser could not start. Check `glass-browser --help` with bash; on Linux hosts without a working native sandbox set GC_BROWSER_RUNTIME=chromium.",
@@ -235,7 +255,7 @@ pub fn execute(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools
             }
         }
     }
-    let client = guard.as_mut().expect("client was just ensured");
+    let client = guard.get_mut(&workspace).expect("client was just ensured");
     let result = client.request(
         "tools/call",
         json!({"name": call.name, "arguments": arguments}),
@@ -244,14 +264,14 @@ pub fn execute(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools
     let result = match result {
         Ok(result) => result,
         Err(error) => {
-            *guard = None;
+            guard.remove(&workspace);
             return crate::tools::Outcome::err(format!(
                 "{error}. The browser session was reset; call browser_navigate again."
             ));
         }
     };
     drop(guard);
-    let body = render(&result, workspace);
+    let body = render(&result, &workspace);
     if result["isError"] == true {
         crate::tools::Outcome::err(body)
     } else {
@@ -364,6 +384,73 @@ fn screenshot_file(directory: &File, name: &str) -> std::io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_clients_survive_switches_and_isolate_transport_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        const MARKER: &str = "GLASS_WORKSPACE_BROWSER_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let root =
+                std::env::temp_dir().join(format!("gc-browser-workspaces-{}", std::process::id()));
+            std::fs::create_dir_all(root.join("parent")).unwrap();
+            std::fs::create_dir_all(root.join("teammate")).unwrap();
+            let script = root.join("fake-browser");
+            std::fs::write(
+                &script,
+                r#"#!/usr/bin/env python3
+import json, sys
+assert '--incognito' in sys.argv
+count = 0
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    response = {'jsonrpc': '2.0', 'id': request['id']}
+    if request['method'] == 'tools/call':
+        count += 1
+        if request['params']['arguments'].get('fail'):
+            response['error'] = {'code': -1, 'message': 'mock transport failure'}
+        else:
+            response['result'] = {'content': [{'type': 'text', 'text': str(count)}]}
+    else:
+        response['result'] = {}
+    print(json.dumps(response), flush=True)
+"#,
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "browser_tools::tests::workspace_clients_survive_switches_and_isolate_transport_failures", "--nocapture"])
+                .current_dir(&root)
+                .env(MARKER, "1")
+                .env("GC_BROWSER_BIN", "./fake-browser")
+                .status().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            assert!(status.success());
+            return;
+        }
+        let call = |workspace: &str, arguments: &str| {
+            execute(
+                &glass_mod_api::ToolCall {
+                    id: "test".into(),
+                    name: "browser_snapshot".into(),
+                    arguments: arguments.into(),
+                },
+                Path::new(workspace),
+            )
+        };
+        assert_eq!(call("parent", "{}").body, "1");
+        assert_eq!(call("teammate", "{}").body, "1");
+        assert_eq!(call("parent", "{}").body, "2");
+        assert!(call("missing", "{}").body.starts_with("error:"));
+        assert!(
+            call("parent", r#"{"fail":true}"#)
+                .body
+                .starts_with("error:")
+        );
+        assert_eq!(call("teammate", "{}").body, "2");
+        assert_eq!(call("parent", "{}").body, "1");
+    }
 
     #[test]
     fn screenshot_descriptors_survive_directory_symlink_substitution() {

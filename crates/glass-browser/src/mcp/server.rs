@@ -2149,6 +2149,66 @@ async fn handle_request_with_viewport_unredacted(
                 .map(|(text, tabs)| agent_tools::PageState { text, tabs })
         }};
     }
+    macro_rules! inner_result {
+        ($tool:expr, $arguments:expr) => {{
+            match call_inner!($tool, $arguments).and_then(|response| response.result) {
+                Some(result) => {
+                    let text = result["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    if result["isError"] == true {
+                        Err(text)
+                    } else {
+                        Ok(text)
+                    }
+                }
+                None => Err("browser tool failed".to_owned()),
+            }
+        }};
+    }
+    if agent_tool == "browser_logins" {
+        let name = agent_arguments["name"].as_str().unwrap_or_default();
+        let outcome = match agent_arguments["action"].as_str().unwrap_or_default() {
+            "list" => agent_tools::list_logins(),
+            "delete" => agent_tools::delete_login(name),
+            "save" => match inner_result!("cookies", json!({})) {
+                Ok(cookies) => inner_result!(
+                    "evaluate",
+                    json!({"expression": agent_tools::READ_LOGIN_STORAGE})
+                )
+                .and_then(|page| agent_tools::save_login(name, &cookies, &page)),
+                Err(error) => Err(error),
+            },
+            _ => match agent_tools::read_login(name) {
+                Ok(login) => {
+                    async {
+                        inner_result!("setCookies", json!({"cookies": login["cookies"]}))?;
+                        inner_result!("navigate", json!({"url": login["url"]}))?;
+                        inner_result!(
+                            "evaluate",
+                            json!({"expression": agent_tools::write_login_storage(&login)})
+                        )?;
+                        inner_result!("reload", json!({}))?;
+                        Ok::<_, String>(agent_tools::loaded_login(name, &login))
+                    }
+                    .await
+                }
+                Err(error) => Err(error),
+            },
+        };
+        let (text, is_error) = match outcome {
+            Ok(text) => (text, false),
+            Err(error) => {
+                let hint = agent_tools::recovery_hint(&agent_tool, &error);
+                (format!("{error}\n{hint}"), true)
+            }
+        };
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":super::secrets::redact(&text)}],"isError":is_error}),
+        ));
+    }
     if let Some((reload, reload_arguments)) = agent_tools::pre_reload(&agent_tool, &agent_arguments)
     {
         let _ = inner_text!(reload, reload_arguments);

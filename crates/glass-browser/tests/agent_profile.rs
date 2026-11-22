@@ -39,6 +39,8 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <iframe srcdoc="<p>Inside frame</p>"></iframe>
 <table><tr><th>Order</th><th>Total</th></tr><tr><td>A-1</td><td>RM 10</td></tr><tr><td>B-2</td><td>RM 25</td></tr></table>
 <button onclick="console.error('Report failed: quota',7)">Report problem</button>
+<button onclick="document.cookie='sid=s3ss10n; path=/';localStorage.setItem('user','aisyah')">Sign in</button>
+<div id="cookie-notice">We use cookies <button onclick="this.parentNode.remove()">Got it</button></div>
 <p id="state"></p>
 </main>
 <script>if(location.search.includes('reading'))fetch('/missing.json');const state={};function show(){document.getElementById('state').textContent='STATE '+JSON.stringify(state)}</script>"#;
@@ -141,6 +143,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
     };
+    let config_home = std::env::temp_dir().join(format!("glass-agent-profile-{port}"));
     let mut child = Command::new(support::glass_binary())
         .args([
             "--browser-runtime",
@@ -152,6 +155,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .args(["--chrome-path", chrome.to_str().unwrap(), "--incognito"])
         .args(["--port", &port.to_string()])
         .env("GLASS_SECRET_AGENT_NAME", "Zubaidah Secret 42")
+        .env("GLASS_CONFIG_HOME", &config_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -175,7 +179,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.len() <= 28, "{names:?}");
+    assert!(names.len() <= 30, "{names:?}");
     assert!(
         names.iter().all(|name| name.starts_with("browser_")),
         "{names:?}"
@@ -545,6 +549,29 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     let network = mcp.ok("browser_network", json!({"reload":true})).await;
     assert!(network.contains("1 failed."), "{network}");
     assert!(network.contains("/missing.json"), "{network}");
+
+    let dismissed = mcp.ok("browser_dismiss_consent", json!({})).await;
+    assert!(dismissed.starts_with("Dismissed"), "{dismissed}");
+    let text = mcp.ok("browser_get_text", json!({})).await;
+    assert!(!text.contains("We use cookies"), "{text}");
+    mcp.ok("browser_click", json!({"target":"text=Sign in"}))
+        .await;
+    let saved = mcp
+        .ok("browser_logins", json!({"action":"save","name":"fixture"}))
+        .await;
+    assert!(saved.contains("1 cookies, 1 localStorage keys"), "{saved}");
+    let file = config_home.join("glass/logins/fixture.json");
+    let mode =
+        std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions());
+    assert_eq!(mode & 0o777, 0o600);
+    let listed = mcp.ok("browser_logins", json!({"action":"list"})).await;
+    assert!(listed.contains("- fixture (http://127.0.0.1:"), "{listed}");
+    let loaded = mcp
+        .ok("browser_logins", json!({"action":"load","name":"fixture"}))
+        .await;
+    assert!(loaded.contains("Loaded login \"fixture\""), "{loaded}");
+    assert!(!loaded.contains("s3ss10n") && !saved.contains("s3ss10n"));
+    let _ = std::fs::remove_dir_all(&config_home);
 
     drop(mcp);
     let _ = child.wait().await;

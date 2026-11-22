@@ -28,6 +28,7 @@ mod clipboard;
 mod files;
 mod input;
 mod process;
+mod recording;
 mod supervisor;
 mod updates;
 mod windows;
@@ -1267,6 +1268,10 @@ impl Desktop {
         Self::agent_request(&json!({"action":"files","value":value,"workspace":workspace}))
     }
 
+    pub fn agent_record(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"record","value":value}))
+    }
+
     pub fn agent_windows(value: &Value) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"windows","value":value}))
     }
@@ -1563,6 +1568,7 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         }
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
         "desktop_wait" => wait_for_desktop(&args).map(|value| value.to_string()),
+        "desktop_record" => Desktop::agent_record(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
         "desktop_clipboard" => {
             Desktop::agent_clipboard(&args, workspace).map(|value| value.to_string())
@@ -1946,6 +1952,7 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         Some("files") => request["workspace"].as_str()
             .ok_or_else(|| "trusted thread workspace is required".to_owned())
             .and_then(|workspace| desktop.files(&request["value"], Path::new(workspace))),
+        Some("record") => desktop.record(&request["value"]),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))

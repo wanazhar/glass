@@ -101,7 +101,7 @@ def desktop_env():
     return env
 
 
-def check(task, answer, calls, base):
+def check(task, answer, calls, base, workspace=None):
     spec = task["check"]
     results = []
     if "answer_contains" in spec:
@@ -129,6 +129,16 @@ def check(task, answer, calls, base):
             names = subprocess.run(["xdotool", "search", "--name", spec["desktop_window"]],
                                    env=env, capture_output=True, text=True, timeout=5).stdout
         results.append(bool(names.strip()))
+    if "workspace_file" in spec:
+        want = spec["workspace_file"]
+        found = sorted(Path(workspace).glob(want["glob"])) if workspace else []
+        data = found[-1].read_bytes() if found else b""
+        ok = bool(found)
+        if "starts_with" in want:
+            ok = ok and data.startswith(want["starts_with"].encode())
+        if "contains" in want:
+            ok = ok and want["contains"].encode() in data
+        results.append(ok)
     return bool(results) and all(results)
 
 
@@ -168,7 +178,7 @@ def run_task(task, families, args, base, data_dir, workspace, bin_dir):
     ideal_hit = None if not ideal else any(any_match(c, ideal) for c in calls)
     infrastructure_error = None
     try:
-        success = check(task, answer, calls, base)
+        success = check(task, answer, calls, base, workspace)
     except (OSError, subprocess.SubprocessError) as error:
         success = False
         infrastructure_error = f"Verification failed: {error}"

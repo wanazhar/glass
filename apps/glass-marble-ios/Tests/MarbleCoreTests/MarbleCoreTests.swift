@@ -1531,6 +1531,23 @@ final class MarbleResumeTests: XCTestCase {
         XCTAssertTrue(MarbleChatCache.fileName(for: "http://a:1").hasPrefix("marble-chats-"))
     }
 
+    func testDeletedConversationIsAbsentFromRewrittenDiskCache() throws {
+        let deleted = MarbleEntry(conversationId: "deleted", kind: "user", text: "private draft", taskId: "", at: 1)
+        let kept = MarbleEntry(conversationId: "kept", kind: "assistant", text: "keep this", taskId: "", at: 2)
+        let everyone = MarbleEntry(conversationId: "everyone", kind: "assistant", text: "shared", taskId: "", at: 3)
+        var cache = MarbleChatCache(everyone: [everyone], transcripts: ["deleted": [deleted], "kept": [kept]])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try cache.encoded().write(to: url, options: .atomic)
+
+        cache.removeConversation("deleted")
+        try cache.encoded().write(to: url, options: .atomic)
+
+        let restored = try XCTUnwrap(MarbleChatCache.decoded(Data(contentsOf: url)))
+        XCTAssertEqual(restored.transcripts, ["kept": [kept]])
+        XCTAssertEqual(restored.everyone, [everyone])
+    }
+
     func testCacheFileNamesNeverCollide() {
         XCTAssertNotEqual(
             MarbleChatCache.fileName(for: "http://a-b.example:4783"),

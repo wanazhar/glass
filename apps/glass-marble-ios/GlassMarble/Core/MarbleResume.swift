@@ -26,6 +26,11 @@ struct MarbleChatCache: Codable, Equatable {
 
     static let empty = MarbleChatCache(everyone: [], transcripts: [:])
 
+    mutating func removeConversation(_ id: String) {
+        transcripts.removeValue(forKey: id)
+        everyone.removeAll { $0.conversationId == id }
+    }
+
     /// One file name per host, so switching hosts never shows another
     /// host's messages: the SHA-256 of the normalized host URL, which no two
     /// different hosts share.

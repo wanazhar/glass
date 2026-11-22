@@ -77,6 +77,7 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var everyoneTimeline: [MarbleEntry] = []
     @Published private var everyoneHistoryLoaded = false
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
+    private var deletedConversationIDs: Set<String> = []
     @Published private(set) var historyErrors: Set<String> = []
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
     @Published private(set) var threadEventSequences: [String: UInt64] = [:]
@@ -467,10 +468,14 @@ final class MarbleStore: ObservableObject {
         marbleTranscripts = cache.transcripts
     }
 
-    private func saveCache() {
+    private func saveCache(discardOnFailure: Bool = false) {
         guard let endpoint, let url = Self.cacheURL(for: endpoint) else { return }
         let cache = MarbleChatCache(everyone: everyoneTimeline, transcripts: marbleTranscripts)
-        try? cache.encoded().write(to: url, options: .atomic)
+        do {
+            try cache.encoded().write(to: url, options: .atomic)
+        } catch {
+            if discardOnFailure { try? FileManager.default.removeItem(at: url) }
+        }
     }
 
     private func saveCursor() {
@@ -530,8 +535,9 @@ final class MarbleStore: ObservableObject {
         let generation = hostGeneration.current
         do {
             async let healthFetch = client.health()
-            let snapshot = try await client.state()
+            var snapshot = try await client.state()
             guard hostGeneration.isCurrent(generation) else { return }
+            removeDeletedConversations(from: &snapshot)
             if state != snapshot { state = snapshot }
             let finished = Set(snapshot.tasks.filter { !$0.isRunning && $0.status != "queued" }.map(\.id))
             if !everyoneTaskIds.isDisjoint(with: finished) { everyoneTaskIds.subtract(finished) }
@@ -598,6 +604,7 @@ final class MarbleStore: ObservableObject {
         everyoneTimeline = []
         everyoneHistoryLoaded = false
         marbleTranscripts = [:]
+        deletedConversationIDs = []
         everyoneHistoryRevision = -1
         marbleHistoryRevisions = [:]
         historyErrors = []
@@ -702,11 +709,12 @@ final class MarbleStore: ObservableObject {
     }
 
     private func loadMarbleHistory(_ id: String, revision: Int) async {
-        guard let client else { return }
+        guard let client, !deletedConversationIDs.contains(id) else { return }
         let generation = hostGeneration.current
         do {
             let page = try await client.transcript(conversationId: id)
             guard hostGeneration.isCurrent(generation), !Task.isCancelled,
+                  !deletedConversationIDs.contains(id),
                   (marbleHistoryRevisions[id] ?? -1) <= revision else { return }
             if historyErrors.contains(id) { historyErrors.remove(id) }
             if marbleTranscripts[id] != page.entries { marbleTranscripts[id] = page.entries }
@@ -719,10 +727,12 @@ final class MarbleStore: ObservableObject {
         } catch MarbleClientError.notFound {
             // A named Marble can exist before its first conversation is ready.
             guard hostGeneration.isCurrent(generation), !Task.isCancelled,
+                  !deletedConversationIDs.contains(id),
                   (marbleHistoryRevisions[id] ?? -1) <= revision else { return }
             if marbleTranscripts[id] == nil { marbleTranscripts[id] = [] }
         } catch {
-            guard hostGeneration.isCurrent(generation), !Task.isCancelled else { return }
+            guard hostGeneration.isCurrent(generation), !Task.isCancelled,
+                  !deletedConversationIDs.contains(id) else { return }
             if !historyErrors.contains(id) { historyErrors.insert(id) }
             errorMessage = error.localizedDescription
         }
@@ -782,9 +792,7 @@ final class MarbleStore: ObservableObject {
             }
         } catch MarbleClientError.notFound {
             guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId else { return }
-            state.conversations.removeAll { $0.id == conversationId }
-            selectedConversationId = nil
-            conversationTranscript = []
+            purgeConversation(conversationId)
             errorMessage = "This chat no longer exists"
         } catch {
             guard hostGeneration.isCurrent(generation), selectedConversationId == conversationId else { return }
@@ -1447,18 +1455,72 @@ final class MarbleStore: ObservableObject {
     }
 
     func delete(_ conversation: MarbleConversation) async {
-        guard let client else { return }
         do {
-            try await client.deleteConversation(id: conversation.id)
-            if selectedConversationId == conversation.id {
-                conversationTranscript = []
-                selectedConversationId = nil
-            }
+            try await withChatClient { try await $0.deleteConversation(id: conversation.id) }
+            purgeConversation(conversation.id)
             errorMessage = nil
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
         }
         await refresh()
+    }
+
+    private func removeDeletedConversations(from snapshot: inout MarbleState) {
+        guard !deletedConversationIDs.isEmpty else { return }
+        snapshot.conversations.removeAll { deletedConversationIDs.contains($0.id) }
+        snapshot.transcript.removeAll { deletedConversationIDs.contains($0.conversationId) }
+        snapshot.tasks.removeAll { deletedConversationIDs.contains($0.conversationId) }
+    }
+
+    private func purgeConversation(_ id: String) {
+        deletedConversationIDs.insert(id)
+        let transcript = marbleTranscripts[id] ?? state.transcript(for: id)
+        let taskIDs = Set(state.tasks.filter { $0.conversationId == id }.map(\.id)
+            + transcript.map(\.taskId).filter { !$0.isEmpty })
+        var snapshot = state
+        removeDeletedConversations(from: &snapshot)
+        state = snapshot
+        if selectedConversationId == id { selectedConversationId = nil }
+        if transcriptConversationId == id {
+            conversationTranscript = []
+            transcriptConversationId = nil
+            transcriptHistoryLoadedFor = nil
+            transcriptCursor = 0
+            transcriptRevision = -1
+        }
+        var cache = MarbleChatCache(everyone: everyoneTimeline, transcripts: marbleTranscripts)
+        cache.removeConversation(id)
+        marbleTranscripts = cache.transcripts
+        if everyoneTimeline != cache.everyone { everyoneTimeline = cache.everyone }
+        marbleHistoryRevisions.removeValue(forKey: id)
+        historyErrors.remove(id)
+        awaitingTranscript.removeValue(forKey: id)
+        live.removeValue(forKey: id)
+        liveEntries.removeValue(forKey: id)
+        streamedReplies.removeValue(forKey: id)
+        for taskID in taskIDs {
+            reasoningByTurn.removeValue(forKey: taskID)
+            toolsByTurn.removeValue(forKey: taskID)
+        }
+        reasoningTurnIds.removeAll { taskIDs.contains($0) }
+        recentToolTurnIDs.removeAll { taskIDs.contains($0) }
+        streamedTaskIDs.subtract(taskIDs)
+        settledToolTasks.subtract(taskIDs)
+        threadTaskIds.subtract(taskIDs)
+        retryingTurns.subtract(taskIDs)
+        retryFailures.subtract(taskIDs)
+        outgoing.removeAll {
+            if case let .conversation(conversation, _) = $0.target { return conversation == id }
+            return false
+        }
+        let removedThreads = threadUpdates.values.filter { $0.conversationId == id }.map(\.id)
+        for threadID in removedThreads {
+            threadUpdates.removeValue(forKey: threadID)
+            threadEventSequences.removeValue(forKey: threadID)
+        }
+        saveCache(discardOnFailure: true)
     }
 
     func update(_ fact: MarbleMemoryFact, text: String) async {
@@ -1842,6 +1904,7 @@ final class MarbleStore: ObservableObject {
     private func handle(_ event: MarbleEvent, liveAfter: UInt64? = nil) {
         guard event.sequence > sequence else { return }
         sequence = event.sequence
+        guard !deletedConversationIDs.contains(event.conversationId) else { return }
         if ["settled", "reply", "error"].contains(event.kind) { finishTools(for: event.taskId) }
         if ["tool_start", "tool_end"].contains(event.kind) { recordTool(event) }
         if event.kind == "entry" {

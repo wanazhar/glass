@@ -513,12 +513,12 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     let mut tools = vec![
         (
             "desktop_status".to_string(),
-            "Read the live status of the managed desktop shared with GC, Glass resident agents, and the human through Connect. Reports its sessionId, exact display, workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. Does not start or stop a desktop.".to_string(),
+            "Read the live status of the managed desktop shared with GC, Glass resident agents, and the human through Connect. Call this first for any task in a desktop application. Reports its sessionId, exact display, size (width, height), workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. displayServer is always \"x11\" (a private Xvfb display, never the human's own screen); hostSession is the human's session type (x11, wayland, or none). Does not start or stop a desktop. Not for web pages in the agent browser: use the browser_* tools for those.".to_string(),
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease.".to_string(),
+            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/width, y=py/height using desktop_status width and height. For web pages use browser_screenshot.".to_string(),
             serde_json::json!({"type":"object","properties":{"sessionId":{"type":"string","maxLength":64}},"required":["sessionId"],"additionalProperties":false}).to_string(),
         ),
         (
@@ -559,8 +559,8 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 "properties":{
                     "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from desktop_status; the manager rejects stale sessions."},
                     "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","key-tap","key-chord","text","scroll"]},
-                    "x":{"type":"number","minimum":0,"maximum":1},
-                    "y":{"type":"number","minimum":0,"maximum":1},
+                    "x":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen width: 0 is the left edge, 1 the right, 0.5 the center. From a desktop_screenshot pixel, x = px / desktop_status.width."},
+                    "y":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen height: 0 is the top edge, 1 the bottom. From a desktop_screenshot pixel, y = py / desktop_status.height."},
                     "button":{"type":"string","enum":["left","middle","right"]},
                     "pressed":{"type":"boolean"},
                     "key":{"type":"string","maxLength":16},
@@ -591,6 +591,19 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 "required":["action","sessionId"],
                 "additionalProperties":false,
                 "allOf":[{"if":{"properties":{"action":{"const":"launch"}}},"then":{"required":["desktopEntryId"]}}]
+            }).to_string(),
+        ));
+        tools.push((
+            "desktop_clipboard".to_string(),
+            "Read or replace the clipboard of the managed desktop identified by the latest desktop_status.sessionId. Use it to move text between desktop applications, or to paste text that is too long or awkward to type: write it here, then send Control+V with desktop_input key-chord. Writing requires the agent input lease; reading returns at most 4096 UTF-8 bytes with `truncated` set when there was more. Not for the agent browser: use browser_clipboard for web pages. Examples: {\"action\":\"read\",\"sessionId\":\"<from desktop_status>\"}; {\"action\":\"write\",\"sessionId\":\"<from desktop_status>\",\"text\":\"Quarterly report\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["read","write"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "text":{"type":"string","maxLength":4096,"description":"Text to place on the clipboard; required for write. Newline and tab are allowed."}
+                },
+                "allOf":[{"if":{"properties":{"action":{"const":"write"}}},"then":{"required":["text"]}}]
             }).to_string(),
         ));
     }
@@ -730,7 +743,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
-        assert_eq!(full.len(), 6);
+        assert_eq!(full.len(), 7);
+        assert_eq!(full[6].0, "desktop_clipboard");
+        let clipboard: Value = serde_json::from_str(&full[6].2).unwrap();
+        assert_eq!(clipboard["additionalProperties"], false);
+        assert_eq!(
+            clipboard["properties"]["action"]["enum"],
+            serde_json::json!(["read", "write"])
+        );
+        for (name, _, _) in &full {
+            assert!(name.starts_with("desktop_"));
+        }
         assert!(full[0].1.contains("frameTimeMs"));
         for name in ["desktop_screenshot", "desktop_observe"] {
             let schema: Value =

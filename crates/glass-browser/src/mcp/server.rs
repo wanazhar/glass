@@ -1645,12 +1645,19 @@ fn workflow_status_error_code(message: &str) -> i32 {
 }
 
 /// Write the base64 PDF from printToPdf to the path the agent asked for.
-fn save_pdf_result(request: &JsonRpcRequest, result: &Value) -> Result<String, String> {
+fn save_pdf_result(
+    request: &JsonRpcRequest,
+    result: &Value,
+    policy: &BrowserPolicy,
+) -> Result<String, String> {
     use base64::Engine as _;
     let path = request.params["arguments"]["path"]
         .as_str()
         .unwrap_or_default();
     super::agent_tools::pdf_path(path).and_then(|path| {
+        let path = policy
+            .require_output_path(&path)
+            .map_err(|error| error.to_string())?;
         let encoded = result["content"][0]["text"]
             .as_str()
             .and_then(|text| serde_json::from_str::<String>(text).ok())
@@ -2100,7 +2107,7 @@ async fn handle_request_with_viewport(
         && agent_tool == "browser_save_pdf"
         && let Some(result) = response.result.as_mut()
     {
-        match save_pdf_result(request, result) {
+        match save_pdf_result(request, result, policy) {
             Ok(text) => result["content"] = json!([{"type": "text", "text": text}]),
             Err(error) => {
                 *result = json!({"content": [{"type": "text", "text": format!("{error} | Next: pass a writable path such as \"page.pdf\".")}], "isError": true});
@@ -8164,6 +8171,38 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pdf_outputs_follow_workspace_policy() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
+        let result = serde_json::json!({"content":[{"text":"\"JVBERi0=\""}]});
+        let save = |path: &std::path::Path, result: &serde_json::Value| {
+            let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":path}}})).unwrap();
+            super::save_pdf_result(&request, result, &policy)
+        };
+        let output = workspace.path().join("page.pdf");
+        assert!(save(&output, &result).is_ok());
+        assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        assert!(save(&outside.path().join("page.pdf"), &result).is_err());
+        assert!(save(&workspace.path().join("missing/page.pdf"), &result).is_err());
+        assert!(save(&workspace.path().join("empty.pdf"), &serde_json::json!({})).is_err());
+        assert!(!workspace.path().join("empty.pdf").exists());
+        #[cfg(unix)]
+        {
+            let protected = outside.path().join("protected.pdf");
+            std::fs::write(&protected, b"unchanged").unwrap();
+            let link = workspace.path().join("escape.pdf");
+            std::os::unix::fs::symlink(&protected, &link).unwrap();
+            assert!(save(&link, &result).is_err());
+            let directory = workspace.path().join("escape");
+            std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+            assert!(save(&directory.join("new.pdf"), &result).is_err());
+            assert_eq!(std::fs::read(protected).unwrap(), b"unchanged");
+            assert!(!outside.path().join("new.pdf").exists());
+        }
+    }
+
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
 

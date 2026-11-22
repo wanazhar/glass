@@ -88,7 +88,9 @@ fn spawn_error(error: std::io::Error) -> String {
     }
 }
 
-fn wait_bounded(child: &mut std::process::Child) -> Result<std::process::ExitStatus, String> {
+pub(super) fn wait_bounded(
+    child: &mut std::process::Child,
+) -> Result<std::process::ExitStatus, String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {

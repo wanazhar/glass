@@ -25,10 +25,12 @@ mod accessibility;
 mod apps;
 mod capture;
 mod clipboard;
+mod files;
 mod input;
 mod process;
 mod supervisor;
 mod updates;
+mod windows;
 use capture::Frames;
 
 const WIDTH: u32 = 1280;
@@ -1261,6 +1263,14 @@ impl Desktop {
         Self::agent_request(&json!({"action":"start"}))
     }
 
+    pub fn agent_files(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"files","value":value}))
+    }
+
+    pub fn agent_windows(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"windows","value":value}))
+    }
+
     pub fn agent_clipboard(value: &Value, workspace: &Path) -> Result<Value, String> {
         Self::agent_request(&json!({"action":"clipboard","value":value,"workspace":workspace}))
     }
@@ -1440,8 +1450,8 @@ impl Desktop {
         Ok(())
     }
 
-    fn agent_frame(session_id: &str) -> Result<Value, String> {
-        Self::agent_request(&json!({"action":"frame","sessionId":session_id}))
+    fn agent_frame(session_id: &str, region: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"frame","sessionId":session_id,"region":region}))
     }
 
     fn agent_request(request: &Value) -> Result<Value, String> {
@@ -1529,6 +1539,8 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_act"
             | "desktop_launch_app"
             | "desktop_clipboard"
+            | "desktop_windows"
+            | "desktop_files"
     )
 }
 
@@ -1547,6 +1559,8 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
         "desktop_clipboard" => {
             Desktop::agent_clipboard(&args, workspace).map(|value| value.to_string())
         }
+        "desktop_windows" => Desktop::agent_windows(&args).map(|value| value.to_string()),
+        "desktop_files" => Desktop::agent_files(&args).map(|value| value.to_string()),
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
@@ -1555,7 +1569,7 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
                 .and_then(Value::as_str)
                 .ok_or_else(|| "sessionId is required from desktop_status".to_owned());
             session_id.and_then(|session_id| {
-                Desktop::agent_frame(session_id)
+                Desktop::agent_frame(session_id, &args["region"])
                     .and_then(|value| save_agent_frame(workspace, &value))
             })
         }
@@ -1662,9 +1676,21 @@ fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
     file.sync_all()
         .map_err(|e| format!("Could not save desktop screenshot: {e}"))?;
     prune_agent_frames(&directory, &format!("desktop-{session_id}-"), &path);
+    let zoom = match (
+        value["region"]["x"].as_f64(),
+        value["region"]["y"].as_f64(),
+        value["region"]["width"].as_f64(),
+        value["region"]["height"].as_f64(),
+        value["imageWidth"].as_u64(),
+        value["imageHeight"].as_u64(),
+    ) {
+        (Some(x), Some(y), Some(w), Some(h), Some(iw), Some(ih)) => format!(
+            " It is a {iw}x{ih} zoom of region x={x}, y={y}, width={w}, height={h}: a pixel (px, py) in it maps to desktop_input x = {x} + px / {iw} * {w}, y = {y} + py / {ih} * {h}."
+        ),
+        _ => String::new(),
+    };
     Ok(format!(
-        "Fresh desktop frame {} saved to `.gc-artifacts/desktop/{filename}`. Use `view_image` with that relative path to inspect its pixels.",
-        seq
+        "Fresh desktop frame {seq} saved to `.gc-artifacts/desktop/{filename}`.{zoom} Use `view_image` with that relative path to inspect its pixels."
     ))
 }
 
@@ -1802,17 +1828,24 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
             .as_str()
             .ok_or_else(|| "trusted thread workspace is required".to_owned())
             .and_then(|workspace| desktop.clipboard(&request["value"], Path::new(workspace))),
+        Some("windows") => desktop.windows(&request["value"]),
+        Some("files") => desktop.files(&request["value"]),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
                 .and_then(|frame| match frame {
-                    Some((session_id, workspace_root, seq, captured, frame)) => Ok(json!({
-                        "sessionId":session_id,
-                        "workspaceRoot":workspace_root,
-                        "seq":seq,
-                        "capturedAtMs":captured,
-                        "jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)
-                    })),
+                    Some((session_id, workspace_root, seq, captured, frame)) => {
+                        let mut value = if request["region"].is_null() {
+                            json!({"jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)})
+                        } else {
+                            capture::zoom(&frame.rgb, &request["region"])?
+                        };
+                        value["sessionId"] = json!(session_id);
+                        value["workspaceRoot"] = json!(workspace_root);
+                        value["seq"] = json!(seq);
+                        value["capturedAtMs"] = json!(captured);
+                        Ok(value)
+                    }
                     None => {
                         Ok(json!({"error":"Desktop frame source did not produce a fresh frame"}))
                     }
@@ -2137,7 +2170,14 @@ mod tests {
             ("desktop_act", "click" | "focus" | "set_text") => action,
             (
                 "desktop_input",
-                "pointer-move" | "pointer-click" | "scroll" | "key" | "key-tap" | "key-chord"
+                "pointer-move"
+                | "pointer-click"
+                | "pointer-double-click"
+                | "pointer-drag"
+                | "scroll"
+                | "key"
+                | "key-tap"
+                | "key-chord"
                 | "text",
             ) => action,
             ("desktop_launch_app", "list" | "launch") => action,

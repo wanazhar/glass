@@ -22,7 +22,9 @@ on `initialize`. Only those hosts receive the acknowledgement
 `capabilities.textBlockBoundaries: true` and `runtime/event` notifications with
 `params.type: "text_block_start"` and `params.data: {"blockId":"…"}`. A
 boundary precedes text from another provider-identified block; there is no
-notification for a single text block, ordinary token deltas, or empty blocks.
+notification for a single text block or ordinary token deltas. A distinct
+Anthropic text-block start is a boundary even when empty, so opted-in hosts can
+reject empty final answers rather than promote preceding planning text.
 The first block is implicit. Block IDs are opaque and scoped to the turn.
 
 Anthropic block indices, Responses item/content identifiers, and typed Chat

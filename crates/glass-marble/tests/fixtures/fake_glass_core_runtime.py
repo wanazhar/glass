@@ -144,6 +144,12 @@ def run_turn(identifier, task, text, conversation, request):
             event(turn, "text", {"text":"<thinking>"})
         for delta in ["Planning ", "secret."]:
             event(turn, "text", {"text": delta})
+        if "--text-blocks-tool-empty" in sys.argv:
+            event(turn, "tool_start", {"callId":"planning-tool","name":"bash"})
+            event(turn, "tool_end", {"callId":"planning-tool","text":"done","isError":False})
+            event(turn, "settled", {"reason":"completed"})
+            reply(identifier, {"settled":True})
+            return
         event(turn, "text_block_start", {"blockId":"block-1"})
         event(turn, "text", {"text":"More planning."})
         event(turn, "text_block_start", {"blockId":"block-2"})

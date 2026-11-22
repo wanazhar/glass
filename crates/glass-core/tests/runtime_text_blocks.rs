@@ -32,138 +32,171 @@ fn durable_provider_boundaries_preserve_text_order_and_saved_answer() {
             events.push(value);
         }
     }
-    let mut saved_entries = None;
-    for enabled in [false, true] {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = std::thread::spawn(move || {
-            listener.set_nonblocking(true).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            let mut stream = loop {
-                if let Ok((stream, _)) = listener.accept() {
-                    break stream;
+    for (provider, empty) in [
+        ("openai-responses", false),
+        ("anthropic", false),
+        ("anthropic", true),
+    ] {
+        let expected_text = if empty { "Plan." } else { "Plan.Answer." };
+        let mut saved_entries = None;
+        for enabled in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                let mut stream = loop {
+                    if let Ok((stream, _)) = listener.accept() {
+                        break stream;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "provider was not called"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "provider was not called"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            };
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let frames = if provider == "anthropic" {
+                    let mut frames = vec![
+                        json!({"type":"message_start","message":{"usage":{"input_tokens":1}}}),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Plan."}}),
+                        json!({"type":"content_block_stop","index":0}),
+                        json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
+                    ];
+                    if !empty {
+                        frames.push(json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answer."}}));
+                    }
+                    frames.extend([
+                    json!({"type":"content_block_stop","index":1}),
+                    json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
+                    json!({"type":"message_stop"}),
+                ]);
+                    frames
+                } else {
+                    vec![
+                        json!({"type":"response.output_text.delta","item_id":"message","content_index":0,"delta":"Plan."}),
+                        json!({"type":"response.output_text.delta","item_id":"message","content_index":1,"delta":"Answer."}),
+                        json!({"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}),
+                    ]
+                };
+                let body = frames
+                    .iter()
+                    .map(|frame| {
+                        format!(
+                            "event: {}\ndata: {frame}\n\n",
+                            frame["type"].as_str().unwrap()
+                        )
+                    })
+                    .collect::<String>();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let storage = std::env::temp_dir().join(format!(
+                "gc-block-runtime-{}-{provider}-{empty}-{enabled}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&storage).unwrap();
+            let mut child = Command::new(env!("CARGO_BIN_EXE_glass-core"))
+                .arg("runtime")
+                .env("XDG_CONFIG_HOME", storage.join("config"))
+                .env("XDG_DATA_HOME", storage.join("data"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
                 .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse::<usize>().unwrap();
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            let frames = [
-                json!({"type":"response.output_text.delta","item_id":"message","content_index":0,"delta":"Plan."}),
-                json!({"type":"response.output_text.delta","item_id":"message","content_index":1,"delta":"Answer."}),
-                json!({"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}),
-            ];
-            let body = frames
-                .iter()
-                .map(|frame| format!("data: {frame}\n\n"))
-                .collect::<String>();
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-        });
-        let storage =
-            std::env::temp_dir().join(format!("gc-block-runtime-{}-{enabled}", std::process::id()));
-        std::fs::create_dir_all(&storage).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_glass-core"))
-            .arg("runtime")
-            .env("XDG_CONFIG_HOME", storage.join("config"))
-            .env("XDG_DATA_HOME", storage.join("data"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        let mut events = Vec::new();
-        request(
-            &mut child,
-            &mut output,
-            "initialize",
-            json!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":if enabled {vec!["textBlockBoundaries"]} else {vec![]},"storageDir":storage.join("sessions")}),
-            &mut events,
-        );
-        let conversation = request(
-            &mut child,
-            &mut output,
-            "durable/create",
-            json!({"cwd":storage,"toolMode":"local","provider":"openai-responses","baseUrl":base_url,"apiKeyEnv":null,"connection":null,"model":"gpt-4.1-mini","maxTokens":32}),
-            &mut events,
-        );
-        let id = conversation["conversationId"].as_str().unwrap();
-        let task = request(
-            &mut child,
-            &mut output,
-            "durable/submit",
-            json!({"conversationId":id,"requestId":"input","input":{"text":"answer"}}),
-            &mut events,
-        );
-        request(
-            &mut child,
-            &mut output,
-            "durable/run",
-            json!({"taskId":task["taskId"]}),
-            &mut events,
-        );
-        let entries = request(
-            &mut child,
-            &mut output,
-            "durable/entries",
-            json!({"conversationId":id,"limit":100}),
-            &mut events,
-        );
-        let text = events
-            .iter()
-            .filter(|event| event["params"]["type"] == "text")
-            .map(|event| event["params"]["data"]["text"].as_str().unwrap())
-            .collect::<String>();
-        assert_eq!(text, "Plan.Answer.");
-        let boundaries: Vec<_> = events
-            .iter()
-            .enumerate()
-            .filter(|(_, event)| event["params"]["type"] == "text_block_start")
-            .collect();
-        assert_eq!(boundaries.len(), usize::from(enabled));
-        if enabled {
-            let before = events[..boundaries[0].0]
+            let mut output = BufReader::new(child.stdout.take().unwrap());
+            let mut events = Vec::new();
+            request(
+                &mut child,
+                &mut output,
+                "initialize",
+                json!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":if enabled {vec!["textBlockBoundaries"]} else {vec![]},"storageDir":storage.join("sessions")}),
+                &mut events,
+            );
+            let conversation = request(
+                &mut child,
+                &mut output,
+                "durable/create",
+                json!({"cwd":storage,"toolMode":"local","provider":provider,"baseUrl":base_url,"apiKeyEnv":null,"connection":null,"model":"gpt-4.1-mini","maxTokens":32}),
+                &mut events,
+            );
+            let id = conversation["conversationId"].as_str().unwrap();
+            let task = request(
+                &mut child,
+                &mut output,
+                "durable/submit",
+                json!({"conversationId":id,"requestId":"input","input":{"text":"answer"}}),
+                &mut events,
+            );
+            request(
+                &mut child,
+                &mut output,
+                "durable/run",
+                json!({"taskId":task["taskId"]}),
+                &mut events,
+            );
+            let entries = request(
+                &mut child,
+                &mut output,
+                "durable/entries",
+                json!({"conversationId":id,"limit":100}),
+                &mut events,
+            );
+            let text = events
                 .iter()
                 .filter(|event| event["params"]["type"] == "text")
                 .map(|event| event["params"]["data"]["text"].as_str().unwrap())
                 .collect::<String>();
-            assert_eq!(before, "Plan.");
-        }
-        assert!(
-            entries["entries"]
-                .as_array()
-                .unwrap()
+            assert_eq!(text, expected_text);
+            let boundaries: Vec<_> = events
                 .iter()
-                .any(|entry| entry["k"] == "assistant" && entry["t"] == "Plan.Answer."),
-            "{entries}"
-        );
-        let serialized = serde_json::to_vec(&entries["entries"]).unwrap();
-        if let Some(expected) = &saved_entries {
-            assert_eq!(&serialized, expected);
+                .enumerate()
+                .filter(|(_, event)| event["params"]["type"] == "text_block_start")
+                .collect();
+            assert_eq!(boundaries.len(), usize::from(enabled));
+            if enabled {
+                let before = events[..boundaries[0].0]
+                    .iter()
+                    .filter(|event| event["params"]["type"] == "text")
+                    .map(|event| event["params"]["data"]["text"].as_str().unwrap())
+                    .collect::<String>();
+                assert_eq!(before, "Plan.");
+            }
+            assert!(
+                entries["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["k"] == "assistant" && entry["t"] == expected_text),
+                "{entries}"
+            );
+            let serialized = serde_json::to_vec(&entries["entries"]).unwrap();
+            if let Some(expected) = &saved_entries {
+                assert_eq!(&serialized, expected);
+            }
+            saved_entries = Some(serialized);
+            drop(child.stdin.take());
+            assert!(child.wait().unwrap().success());
+            server.join().unwrap();
+            std::fs::remove_dir_all(storage).unwrap();
         }
-        saved_entries = Some(serialized);
-        drop(child.stdin.take());
-        assert!(child.wait().unwrap().success());
-        server.join().unwrap();
-        std::fs::remove_dir_all(storage).unwrap();
     }
 }
 

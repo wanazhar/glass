@@ -3712,7 +3712,11 @@ fn empty_or_failed_final_blocks_never_fall_back_to_planning_text() {
     if !python3_available() {
         return;
     }
-    for mode in ["--text-blocks-empty", "--text-blocks-error"] {
+    for mode in [
+        "--text-blocks-empty",
+        "--text-blocks-error",
+        "--text-blocks-tool-empty",
+    ] {
         let args = vec!["--text-blocks".into(), mode.into()];
         let mut fixture =
             NamedTurnFixture::with_persistence(&format!("blocks-{mode}"), args.clone(), true);

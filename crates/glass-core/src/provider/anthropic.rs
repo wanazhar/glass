@@ -445,13 +445,13 @@ impl<R: Read> StreamEvents<R> {
                         self.input_fragments.retain(|(i, _)| *i != index);
                     }
                     "text" => {
+                        if self.blocks.enabled {
+                            self.outbox
+                                .extend(self.blocks.start(format!("anthropic:{index}")));
+                        }
                         if let Some(t) = block.get("text").and_then(Value::as_str)
                             && !t.is_empty()
                         {
-                            if self.blocks.enabled {
-                                self.outbox
-                                    .extend(self.blocks.start(format!("anthropic:{index}")));
-                            }
                             self.outbox.push_back(Event::Text(t.to_string()));
                         }
                     }
@@ -644,6 +644,50 @@ impl<R: Read> Iterator for StreamEvents<R> {
 mod tests {
     use super::*;
     use glass_mod_api::Message;
+
+    #[test]
+    fn empty_text_block_starts_preserve_opt_in_boundaries_without_text_events() {
+        let collect = |enabled, count| {
+            let mut stream = StreamEvents::new(std::io::empty());
+            stream.blocks.enabled = enabled;
+            let frames = [
+                (
+                    "content_block_start",
+                    json!({"index":0,"content_block":{"type":"text","text":""}}),
+                ),
+                (
+                    "content_block_delta",
+                    json!({"index":0,"delta":{"type":"text_delta","text":"Planning."}}),
+                ),
+                (
+                    "content_block_start",
+                    json!({"index":1,"content_block":{"type":"text","text":""}}),
+                ),
+                ("message_stop", json!({})),
+            ];
+            for (kind, data) in frames.into_iter().take(count) {
+                stream.process(crate::sse::SseEvent {
+                    event: Some(kind.into()),
+                    data: data.to_string(),
+                });
+            }
+            stream.outbox.into_iter().collect::<Vec<_>>()
+        };
+        assert!(collect(true, 1).is_empty());
+        assert_eq!(collect(true, 2), vec![Event::Text("Planning.".into())]);
+        assert_eq!(
+            collect(false, 4),
+            vec![Event::Text("Planning.".into()), Event::Done]
+        );
+        assert_eq!(
+            collect(true, 4),
+            vec![
+                Event::Text("Planning.".into()),
+                Event::TextBlockStart("anthropic:1".into()),
+                Event::Done
+            ]
+        );
+    }
 
     #[test]
     fn text_blocks_are_opt_in_and_leave_text_and_usage_unchanged() {

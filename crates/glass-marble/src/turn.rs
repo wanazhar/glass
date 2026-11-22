@@ -425,7 +425,7 @@ fn run_attempt(
     ));
     text.push_str(&visible);
     publish_text(&visible);
-    if text.trim().is_empty() {
+    if !streaming && text.trim().is_empty() {
         text = last_segment;
     }
     text = conversation.clean_reply(&text);

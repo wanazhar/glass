@@ -232,7 +232,9 @@ pub fn execute(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools
     let workspace = match workspace.canonicalize() {
         Ok(workspace) => workspace,
         Err(error) => {
-            return crate::tools::Outcome::err(format!("browser workspace is unavailable: {error}"));
+            return crate::tools::Outcome::err(format!(
+                "browser workspace is unavailable: {error}"
+            ));
         }
     };
     let mut guard = CLIENTS

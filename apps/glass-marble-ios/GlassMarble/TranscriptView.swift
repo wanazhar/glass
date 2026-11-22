@@ -587,6 +587,7 @@ private struct MarbleFollowLatest: ViewModifier {
         var offset: CGFloat = 0
         var rowPositions: [String: CGFloat] = [:]
         var anchor: (id: String, rowY: CGFloat, offset: CGFloat)?
+        var followCorrection: Task<Void, Never>?
     }
 
     private struct Layout: Equatable {
@@ -610,16 +611,19 @@ private struct MarbleFollowLatest: ViewModifier {
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
-            .defaultScrollAnchor(follow.following && !phase.isUserScrolling ? .bottom : nil, for: .sizeChanges)
             .scrollPosition($position, anchor: .top)
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase
-                if newPhase.isUserScrolling { measurement.anchor = nil }
+                if newPhase.isUserScrolling {
+                    measurement.anchor = nil
+                    measurement.followCorrection?.cancel()
+                    measurement.followCorrection = nil
+                }
                 guard oldPhase.isUserScrolling, newPhase == .idle else { return }
                 let distance = Layout(context.geometry).distanceFromBottom
                 updateFollow(distance: distance, userMoved: oldPhase != .tracking)
                 if hasMessages && follow.following && abs(distance) > 1 {
-                    scrollToEnd()
+                    correctBottomAfterLayout()
                 }
                 if hasMessages, oldPhase != .tracking, let loadOlder,
                    context.geometry.contentOffset.y + context.geometry.contentInsets.top < 180 {
@@ -647,7 +651,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 positionedHistory = true
                 if follow.following && !phase.isUserScrolling && abs(new.distanceFromBottom) > 1
                     && (resized || (initialLayout && searchJump == nil)) {
-                    scrollToEnd()
+                    correctBottomAfterLayout()
                 }
             }
             .onPreferenceChange(MarbleHistoryRowPositions.self) { rows in
@@ -676,6 +680,10 @@ private struct MarbleFollowLatest: ViewModifier {
                 if send != nil && follow.following && !phase.isUserScrolling {
                     jumpToLatest()
                 }
+            }
+            .onDisappear {
+                measurement.followCorrection?.cancel()
+                measurement.followCorrection = nil
             }
             .overlay(alignment: .bottomTrailing) {
                 if follow.showJumpButton {
@@ -712,7 +720,19 @@ private struct MarbleFollowLatest: ViewModifier {
     }
 
     private func scrollToEnd() {
-        position.scrollTo(id: MarbleTranscriptEnd.rowID, anchor: .bottom)
+        position.scrollTo(edge: .bottom)
+    }
+
+    private func correctBottomAfterLayout() {
+        guard measurement.followCorrection == nil else { return }
+        // Writing to ScrollPosition inside the lazy stack's geometry update
+        // can trigger another layout before the first transaction completes.
+        measurement.followCorrection = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            measurement.followCorrection = nil
+            if follow.following && !phase.isUserScrolling { scrollToEnd() }
+        }
     }
 }
 

@@ -3338,6 +3338,100 @@ fn thread_routes_are_idempotent_searchable_and_paginated_with_stable_ids() {
 }
 
 #[test]
+fn everyone_thread_search_returns_only_the_jumpable_reply() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("thread-search-visibility");
+    assert_eq!(
+        fixture.post("/api/everyone", json!({"text":"@Ada root"})).0,
+        202
+    );
+    let root = fixture.completed("@Ada root");
+    let parent = fixture
+        .state
+        .lock()
+        .unwrap()
+        .transcript
+        .iter()
+        .find(|e| e.conversation_id == "everyone" && e.task_id == root.id && e.kind == "assistant")
+        .unwrap()
+        .id
+        .clone();
+    let thread = fixture
+        .post(
+            "/api/threads",
+            json!({"conversation_id":"everyone", "parent_entry_id":parent}),
+        )
+        .1["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        fixture
+            .post(
+                "/api/everyone",
+                json!({"text":"@Ada jumpneedle", "thread_id":thread})
+            )
+            .0,
+        202
+    );
+    let reply = fixture.completed("@Ada jumpneedle");
+    let visible = {
+        let state = fixture.state.lock().unwrap();
+        let copies: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|e| e.task_id == reply.id && e.kind == "assistant")
+            .collect();
+        assert_eq!(
+            copies.len(),
+            2,
+            "fixture must exercise both mirrored copies"
+        );
+        copies
+            .iter()
+            .find(|e| e.conversation_id == "everyone")
+            .unwrap()
+            .id
+            .clone()
+    };
+    let get = |path: &str| {
+        let (status, body) = fixture.server.handle("GET", path, "");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()
+    };
+    let page = get(&format!("/api/threads/{thread}"));
+    for scope in [String::new(), format!("&thread_id={thread}")] {
+        let hits = get(&format!(
+            "/api/search?q=handled%20%40Ada%20jumpneedle{scope}"
+        ));
+        let hits = hits["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0]["entry_id"], visible);
+        assert_eq!(hits[0]["conversation_id"], "everyone");
+        assert_eq!(hits[0]["thread_id"], thread);
+        assert!(
+            page["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["id"] == hits[0]["entry_id"])
+        );
+        let around = get(&format!(
+            "/api/transcript?conversationId=everyone&around={visible}&limit=1"
+        ));
+        assert_eq!(around["entries"][0]["id"], visible);
+    }
+    let users = get(&format!("/api/search?q=jumpneedle&thread_id={thread}"));
+    assert_eq!(
+        users["hits"].as_array().unwrap().len(),
+        2,
+        "one visible user and one assistant reply"
+    );
+}
+
+#[test]
 fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
     if !python3_available() {
         return;

@@ -133,28 +133,53 @@ impl ProductState {
         entries.extend(
             self.transcript
                 .iter()
-                .filter(|e| {
-                    e.thread_id.as_deref() == Some(&thread.id) && e.id != thread.parent_entry_id
-                })
-                .filter(|e| {
-                    if thread.conversation_id != crate::everyone::EVERYONE_CONVERSATION
-                        || e.conversation_id == thread.conversation_id
-                    {
-                        return true;
-                    }
-                    if e.kind == "user" {
-                        return false;
-                    }
-                    !self.transcript.iter().any(|mirror| {
-                        mirror.conversation_id == thread.conversation_id
-                            && mirror.thread_id == e.thread_id
-                            && mirror.task_id == e.task_id
-                            && mirror.kind == e.kind
-                    })
+                .filter(|entry| {
+                    entry.id != thread.parent_entry_id && self.thread_entry_visible(thread, entry)
                 })
                 .cloned(),
         );
         entries
+    }
+
+    fn thread_entry_visible(&self, thread: &Thread, entry: &TranscriptEntry) -> bool {
+        if entry.id == thread.parent_entry_id {
+            return true;
+        }
+        if entry.thread_id.as_deref() != Some(&thread.id) {
+            return false;
+        }
+        if thread.conversation_id != crate::everyone::EVERYONE_CONVERSATION
+            || entry.conversation_id == thread.conversation_id
+        {
+            return true;
+        }
+        if entry.kind == "user" {
+            return false;
+        }
+        !self.transcript.iter().any(|mirror| {
+            mirror.conversation_id == thread.conversation_id
+                && mirror.thread_id == entry.thread_id
+                && mirror.task_id == entry.task_id
+                && mirror.kind == entry.kind
+        })
+    }
+
+    fn search_entry_visible(&self, entry: &TranscriptEntry, thread: Option<&str>) -> bool {
+        if let Some(id) = thread.or(entry.thread_id.as_deref()) {
+            return self
+                .threads
+                .iter()
+                .find(|t| t.id == id)
+                .is_some_and(|thread| self.thread_entry_visible(thread, entry));
+        }
+        entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+            || entry.task_id.is_empty()
+            || !self.transcript.iter().any(|mirror| {
+                mirror.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && mirror.thread_id.is_none()
+                    && mirror.task_id == entry.task_id
+                    && mirror.kind == entry.kind
+            })
     }
 
     pub fn refresh_thread(&mut self, id: &str) {
@@ -220,7 +245,7 @@ impl ProductState {
             return Vec::new();
         }
         let needle = query.to_lowercase();
-        self.transcript.iter().rev().filter(|e| matches!(e.kind.as_str(), "user" | "assistant" | "failure") && thread.is_none_or(|id| e.thread_id.as_deref() == Some(id) || self.threads.iter().any(|t| t.id == id && t.parent_entry_id == e.id)))
+        self.transcript.iter().rev().filter(|e| matches!(e.kind.as_str(), "user" | "assistant" | "failure") && self.search_entry_visible(e, thread))
             .filter_map(|entry| {
                 let mut folded = String::new();
                 let mut positions = Vec::new();
@@ -340,21 +365,76 @@ mod tests {
     }
 
     #[test]
+    fn search_prefers_main_mirrors_but_keeps_scoped_parents_and_distinct_messages() {
+        let mut state = ProductState::default();
+        for kind in ["user", "assistant", "failure"] {
+            for conversation in ["private", "everyone"] {
+                state.push_transcript(TranscriptEntry {
+                    conversation_id: conversation.into(),
+                    kind: kind.into(),
+                    task_id: format!("task-{kind}"),
+                    text: "needle".into(),
+                    ..Default::default()
+                });
+            }
+        }
+        let parent = state.transcript[0].id.clone();
+        let thread = state.create_thread("private", &parent).unwrap();
+        let hits = state.search_messages("needle", None, 30);
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|h| h["conversation_id"] == "everyone"));
+        let scoped = state.search_messages("needle", Some(&thread.id), 30);
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0]["entry_id"], parent);
+        assert_eq!(state.thread_entries(&thread).len(), 1);
+        for _ in 0..2 {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: "private".into(),
+                kind: "user".into(),
+                text: "separate".into(),
+                ..Default::default()
+            });
+        }
+        assert_eq!(state.search_messages("separate", None, 30).len(), 2);
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "private".into(),
+            kind: "assistant".into(),
+            text: "orphan".into(),
+            thread_id: Some("deleted".into()),
+            ..Default::default()
+        });
+        assert!(state.search_messages("orphan", None, 30).is_empty());
+        assert!(
+            state
+                .search_messages("orphan", Some("deleted"), 30)
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn search_uses_utf8_ranges_and_original_unicode_boundaries() {
         let mut state = ProductState::default();
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "chat".into(),
+            kind: "user".into(),
+            text: "parent".into(),
+            ..Default::default()
+        });
+        let parent = state.transcript[0].id.clone();
+        let thread = state.create_thread("chat", &parent).unwrap();
         for kind in ["user", "assistant", "failure", "reasoning", "tool"] {
             state.push_transcript(TranscriptEntry {
                 conversation_id: "chat".into(),
                 kind: kind.into(),
                 text: format!("{}😀 CAFÉ {}", "α".repeat(150), "ω".repeat(150)),
-                thread_id: Some("thread".into()),
+                thread_id: Some(thread.id.clone()),
                 ..Default::default()
             });
         }
         assert!(state.search_messages("", None, 30).is_empty());
         assert!(state.search_messages("absent", None, 30).is_empty());
         assert!(state.search_messages("café", Some("other"), 30).is_empty());
-        let hits = state.search_messages("café", Some("thread"), 30);
+        let hits = state.search_messages("café", Some(&thread.id), 30);
         assert_eq!(hits.len(), 3);
         for hit in hits {
             let snippet = hit["snippet"].as_str().unwrap();

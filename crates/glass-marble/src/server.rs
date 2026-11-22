@@ -671,10 +671,13 @@ impl MarbleServer {
                 .iter()
                 .find(|t| t.id == decode_path_segment(id))
             {
-                Some(thread) => Response::json(
-                    200,
-                    json!({"thread":thread,"entries":state.thread_entries(thread)}),
-                ),
+                Some(thread) => match history_page(state.thread_entry_refs(thread), head, None) {
+                    Ok(page) => Response::json(
+                        200,
+                        json!({"thread":thread,"entries":page.entries,"hasMore":page.has_more,"nextBefore":page.next_before}),
+                    ),
+                    Err(response) => response,
+                },
                 None => Response::error(404, "unknown_thread"),
             };
         }
@@ -1178,21 +1181,25 @@ impl MarbleServer {
             .query_param("after")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
-        let entries: Vec<crate::state::TranscriptEntry> = {
-            let guard = self.lock_state();
-            guard
-                .transcript
-                .iter()
-                .filter(|entry| {
-                    entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
-                        && entry.at > after
-                        && (head.query_param("main").as_deref() != Some("1")
-                            || entry.thread_id.is_none())
-                })
-                .cloned()
-                .collect()
+        let main = head.query_param("main").as_deref() == Some("1");
+        let guard = self.lock_state();
+        let entries = guard
+            .transcript
+            .iter()
+            .filter(|entry| {
+                entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && entry.at > after
+                    && (!main || entry.thread_id.is_none())
+            })
+            .collect();
+        let page = match history_page(entries, head, None) {
+            Ok(page) => page,
+            Err(response) => return response,
         };
-        Response::json(200, json!({"ok": true, "entries": entries}))
+        Response::json(
+            200,
+            json!({"ok": true, "entries": page.entries, "hasMore":page.has_more,"nextBefore":page.next_before}),
+        )
     }
 
     fn client_send(&self, path: &str, body: &str) -> Response {
@@ -2051,11 +2058,6 @@ impl MarbleServer {
             },
             _ => None,
         };
-        let limit = head
-            .query_param("limit")
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .map(|value| value.clamp(1, 1_000))
-            .unwrap_or(500);
         let guard = self.lock_state();
         if !conversation_id.is_empty()
             && !guard
@@ -2068,32 +2070,21 @@ impl MarbleServer {
                 json!({"error": "not_found", "message": "This chat no longer exists"}),
             );
         }
-        let mut entries: Vec<&crate::state::TranscriptEntry> = guard
+        let main = head.query_param("main").as_deref() == Some("1");
+        let around = head.query_param("around");
+        let entries: Vec<&crate::state::TranscriptEntry> = guard
             .transcript
             .iter()
             .filter(|entry| conversation_id.is_empty() || entry.conversation_id == conversation_id)
-            .filter(|entry| {
-                head.query_param("main").as_deref() != Some("1") || entry.thread_id.is_none()
-            })
-            .filter(|entry| {
-                head.query_param("around").is_some()
-                    || after.is_none_or(|cursor| entry.at >= cursor)
-            })
+            .filter(|entry| !main || entry.thread_id.is_none())
+            .filter(|entry| around.is_some() || after.is_none_or(|cursor| entry.at >= cursor))
             .collect();
-        if let Some(id) = head.query_param("around") {
-            let Some(index) = entries.iter().position(|e| e.id == id) else {
-                return Response::error(404, "unknown_entry");
-            };
-            let start = index
-                .saturating_sub(limit / 2)
-                .min(entries.len().saturating_sub(limit));
-            entries = entries.into_iter().skip(start).take(limit).collect();
-        }
-        let omitted = entries.len().saturating_sub(limit);
-        if omitted > 0 {
-            entries.drain(..omitted);
-        }
-        let cursor = entries
+        let page = match history_page(entries, head, Some(500)) {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+        let cursor = page
+            .entries
             .iter()
             .map(|entry| entry.at)
             .max()
@@ -2102,10 +2093,12 @@ impl MarbleServer {
             200,
             json!({
                 "conversationId": conversation_id,
-                "entries": entries,
+                "entries": page.entries,
                 "cursor": cursor,
-                "omitted": omitted,
+                "omitted": page.omitted,
                 "revision": guard.revision,
+                "hasMore": page.has_more,
+                "nextBefore": page.next_before,
             }),
         )
     }
@@ -4204,6 +4197,60 @@ fn etag_matches(head: &RequestHead, etag: &str) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+struct HistoryPage<'a> {
+    entries: Vec<&'a crate::TranscriptEntry>,
+    has_more: bool,
+    next_before: Option<String>,
+    omitted: usize,
+}
+
+fn history_page<'a>(
+    mut entries: Vec<&'a crate::TranscriptEntry>,
+    head: &RequestHead,
+    default_limit: Option<usize>,
+) -> Result<HistoryPage<'a>, Response> {
+    let before = head.query_param("before");
+    let around = head.query_param("around");
+    if before.is_some() && (around.is_some() || head.query_param("after").is_some()) {
+        return Err(Response::error(400, "conflicting_cursors"));
+    }
+    let limit = match head.query_param("limit") {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map(|n| n.clamp(1, 1_000))
+            .map_err(|_| Response::error(400, "invalid_limit"))?,
+        None => default_limit.unwrap_or(if before.is_some() { 500 } else { usize::MAX }),
+    };
+    if let Some(id) = before {
+        if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+            return Err(Response::error(400, "invalid_cursor"));
+        }
+        let index = entries
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or_else(|| Response::error(404, "unknown_cursor"))?;
+        entries.truncate(index);
+    }
+    let start = if let Some(id) = &around {
+        let index = entries
+            .iter()
+            .position(|e| e.id == *id)
+            .ok_or_else(|| Response::error(404, "unknown_entry"))?;
+        index
+            .saturating_sub(limit / 2)
+            .min(entries.len().saturating_sub(limit))
+    } else {
+        entries.len().saturating_sub(limit)
+    };
+    let entries: Vec<_> = entries.into_iter().skip(start).take(limit).collect();
+    Ok(HistoryPage {
+        has_more: start > 0,
+        next_before: (start > 0).then(|| entries[0].id.clone()),
+        omitted: if around.is_some() { 0 } else { start },
+        entries,
+    })
 }
 
 fn valid_conversation_id(id: &str) -> bool {

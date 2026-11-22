@@ -202,6 +202,36 @@ Retry availability, not automatic replay eligibility. Completed tool side effect
 and an unresponsive host-level runtime deadline are not automatically replayed;
 they require an explicit Retry rather than risking duplicate side effects.
 
+## History paging
+
+These transcript endpoints accept `limit` and an exclusive `before` entry-ID cursor:
+
+- `GET /api/everyone?limit=50&before=<entry-id>`
+- `GET /api/transcript?conversationId=<chat-id>&limit=50&before=<entry-id>`
+- `GET /api/threads/<thread-id>?limit=50&before=<entry-id>`
+
+The first request omits `before` and gets the latest N entries. Each page retains
+transcript order (oldest to newest within that page). Prepend older pages without
+reversing them. IDs, not timestamps, avoid gaps at equal timestamps and keep a
+pending row's cursor valid when that row settles. Upsert SSE changes by ID;
+timestamp `after` polling alone does not detect updates to existing entries.
+
+Every response adds `hasMore` and `nextBefore` (the oldest returned entry ID when
+older entries exist, otherwise `null`). Pass `nextBefore` back as `before`.
+Thread metadata stays under `thread`; the parent entry appears only on the page
+containing it, not as a redundant copy on every page. Existing entry fields and
+transcript `cursor`, `omitted`, `revision`, and `conversationId` remain unchanged.
+
+Defaults are backward compatible: without paging parameters Everyone and thread
+detail still return all retained entries; `/api/transcript` still returns the
+latest 500. `before` without `limit` uses 500. Explicit limits clamp to 1–1000;
+non-integer/overflowing limits return 400 `invalid_limit`. Empty, control-character
+or over-256-byte cursors return 400 `invalid_cursor`; unknown, pruned or out-of-scope
+entry IDs return 404 `unknown_cursor`. `before` cannot combine with `after` or
+`around` (400 `conflicting_cursors`). Existing `after`, `around`, and `main=1`
+transcript behavior is preserved. Keep the same conversation/thread/main filter
+while paging; an invalidated cursor requires reloading the newest page.
+
 ## Checks
 
 ```text

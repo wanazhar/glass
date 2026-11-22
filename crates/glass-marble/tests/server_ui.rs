@@ -4576,6 +4576,344 @@ fn everyone_default_recovers_after_first_admission_fails() {
 }
 
 #[test]
+#[ignore = "manual 2000-entry payload and handler timing measurement"]
+fn history_paging_measurement() {
+    let mut state = ProductState::default();
+    state.conversation_mut("everyone");
+    for i in 0..2000 {
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "everyone".into(),
+            kind: if i % 4 == 0 { "user" } else { "assistant" }.into(),
+            text: format!(
+                "entry {i}: {}",
+                "a representative multi-agent conversation reply with useful details. ".repeat(8)
+            ),
+            speaker: ["user", "marble", "ada", "dietrich"][i % 4].into(),
+            at: i as u64 + 1,
+            ..Default::default()
+        });
+    }
+    let parent = state.transcript[0].id.clone();
+    let thread = state.create_thread("everyone", &parent).unwrap();
+    for entry in &mut state.transcript[1..] {
+        entry.thread_id = Some(thread.id.clone());
+    }
+    let server = free_server(state);
+    for path in [
+        "/api/everyone".to_string(),
+        "/api/transcript?conversationId=everyone".into(),
+        format!("/api/threads/{}", thread.id),
+    ] {
+        for query in ["", "limit=50"] {
+            let url = if query.is_empty() {
+                path.clone()
+            } else {
+                format!(
+                    "{path}{}{query}",
+                    if path.contains('?') { "&" } else { "?" }
+                )
+            };
+            let mut bytes = 0;
+            let mut count = 0;
+            let start = Instant::now();
+            for _ in 0..100 {
+                let (status, body) = server.handle("GET", &url, "");
+                assert_eq!(status, 200, "{body}");
+                bytes = body.len();
+            }
+            let mean_us = start.elapsed().as_micros() / 100;
+            let (_, body) = server.handle("GET", &url, "");
+            let value: Value = serde_json::from_str(&body).unwrap();
+            count += value["entries"].as_array().unwrap().len();
+            println!("PAGING {url}: entries={count} bytes={bytes} mean_handler_us={mean_us}");
+        }
+    }
+}
+
+fn paged_history_state() -> ProductState {
+    let mut state = ProductState::default();
+    for conversation in ["everyone", "chat"] {
+        state.conversation_mut(conversation);
+        for i in 0..513 {
+            state.push_transcript(TranscriptEntry {
+                id: format!("entry-{conversation}-{i:04}"),
+                conversation_id: conversation.into(),
+                kind: if i % 4 == 0 { "user" } else { "assistant" }.into(),
+                speaker: ["user", "marble", "ada", "dietrich"][i % 4].into(),
+                text: format!("message {i}"),
+                at: 100,
+                ..Default::default()
+            });
+        }
+        let thread = state
+            .create_thread(conversation, &format!("entry-{conversation}-0000"))
+            .unwrap();
+        for entry in &mut state.transcript {
+            if entry.conversation_id == conversation && entry.id != thread.parent_entry_id {
+                entry.thread_id = Some(thread.id.clone());
+            }
+        }
+    }
+    state.conversation_mut("empty");
+    state
+}
+
+#[test]
+fn history_paging_preserves_defaults_and_visits_equal_timestamp_entries_once() {
+    let state = paged_history_state();
+    let mut paths = vec![
+        ("/api/everyone".into(), "everyone", 513),
+        (
+            "/api/transcript?conversationId=everyone".into(),
+            "everyone",
+            500,
+        ),
+        ("/api/transcript?conversationId=chat".into(), "chat", 500),
+    ];
+    for thread in &state.threads {
+        paths.push((
+            format!("/api/threads/{}", thread.id),
+            if thread.conversation_id == "everyone" {
+                "everyone"
+            } else {
+                "chat"
+            },
+            513,
+        ));
+    }
+    let state: ProductState =
+        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+    let server = free_server(state);
+    for (path, conversation, default_count) in paths {
+        let (status, body) = server.handle("GET", &path, "");
+        assert_eq!(status, 200, "{body}");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["entries"].as_array().unwrap().len(), default_count);
+        assert_eq!(body["hasMore"], default_count < 513);
+        let separator = if path.contains('?') { "&" } else { "?" };
+        let mut before = String::new();
+        let mut all = Vec::new();
+        loop {
+            let url = format!("{path}{separator}limit=7{before}");
+            let (status, body) = server.handle("GET", &url, "");
+            assert_eq!(status, 200, "{body}");
+            let body: Value = serde_json::from_str(&body).unwrap();
+            let entries = body["entries"].as_array().unwrap();
+            assert!(!entries.is_empty());
+            assert!(entries.len() <= 7);
+            let page: Vec<_> = entries
+                .iter()
+                .map(|e| e["id"].as_str().unwrap().to_string())
+                .collect();
+            assert!(page.windows(2).all(|pair| pair[0] < pair[1]));
+            all.splice(0..0, page);
+            if body["hasMore"] == false {
+                assert!(body["nextBefore"].is_null());
+                break;
+            }
+            assert_eq!(body["nextBefore"], entries[0]["id"]);
+            before = format!("&before={}", body["nextBefore"].as_str().unwrap());
+            assert!(all.len() < 513);
+        }
+        assert_eq!(
+            all,
+            (0..513)
+                .map(|i| format!("entry-{conversation}-{i:04}"))
+                .collect::<Vec<_>>()
+        );
+    }
+    let (_, body) = server.handle(
+        "GET",
+        "/api/transcript?conversationId=chat&around=entry-chat-0500&limit=7",
+        "",
+    );
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["entries"][0]["id"], "entry-chat-0497");
+    assert_eq!(body["entries"][6]["id"], "entry-chat-0503");
+    assert_eq!(body["omitted"], 0);
+    for path in [
+        "/api/everyone?main=1&limit=5",
+        "/api/transcript?conversationId=chat&main=1&limit=5",
+    ] {
+        let (_, body) = server.handle("GET", path, "");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(body["hasMore"], false);
+    }
+    let (_, body) = server.handle("GET", "/api/everyone?after=100&limit=5", "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["entries"],
+        json!([])
+    );
+    let (_, body) = server.handle(
+        "GET",
+        "/api/transcript?conversationId=chat&after=100&limit=5",
+        "",
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+}
+
+#[test]
+fn history_paging_empty_boundaries_and_invalid_parameters_are_scoped() {
+    let state = paged_history_state();
+    let thread = state
+        .threads
+        .iter()
+        .find(|t| t.conversation_id == "chat")
+        .unwrap()
+        .id
+        .clone();
+    let server = free_server(state);
+    for (path, conversation) in [
+        ("/api/everyone".into(), "everyone"),
+        ("/api/transcript?conversationId=chat".into(), "chat"),
+        (format!("/api/threads/{thread}"), "chat"),
+    ] {
+        let separator = if path.contains('?') { "&" } else { "?" };
+        for (query, expected, error) in [
+            ("limit=nope", 400, "invalid_limit"),
+            ("limit=-1", 400, "invalid_limit"),
+            ("limit=184467440737095516160", 400, "invalid_limit"),
+            ("before=", 400, "invalid_cursor"),
+            ("before=%0A", 400, "invalid_cursor"),
+            ("before=missing", 404, "unknown_cursor"),
+            ("before=missing&after=0", 400, "conflicting_cursors"),
+            ("before=missing&around=missing", 400, "conflicting_cursors"),
+        ] {
+            let (status, body) = server.handle("GET", &format!("{path}{separator}{query}"), "");
+            assert_eq!(status, expected, "{path}: {body}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&body).unwrap()["error"],
+                error
+            );
+        }
+        for cursor in [
+            "x".repeat(257),
+            format!(
+                "entry-{}-0000",
+                if conversation == "chat" {
+                    "everyone"
+                } else {
+                    "chat"
+                }
+            ),
+        ] {
+            assert!(matches!(
+                server
+                    .handle("GET", &format!("{path}{separator}before={cursor}"), "")
+                    .0,
+                400 | 404
+            ));
+        }
+        let (status, body) = server.handle(
+            "GET",
+            &format!("{path}{separator}before=entry-{conversation}-0000&limit=5"),
+            "",
+        );
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["entries"], json!([]));
+        assert_eq!(body["hasMore"], false);
+        assert!(body["nextBefore"].is_null());
+        for (limit, count) in [(0, 1), (1001, 513)] {
+            let (_, body) = server.handle("GET", &format!("{path}{separator}limit={limit}"), "");
+            assert_eq!(
+                serde_json::from_str::<Value>(&body).unwrap()["entries"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                count
+            );
+        }
+    }
+    for path in [
+        "/api/transcript?conversationId=empty&limit=5",
+        "/api/everyone?main=1&before=entry-everyone-0000",
+    ] {
+        let (_, body) = server.handle("GET", path, "");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["entries"],
+            json!([])
+        );
+    }
+    assert_eq!(
+        server
+            .handle(
+                "GET",
+                "/api/transcript?conversationId=chat&main=1&before=entry-chat-0001",
+                ""
+            )
+            .0,
+        404
+    );
+}
+
+#[test]
+fn history_paging_cursor_survives_new_entries_settlement_and_reload() {
+    let fixture = NamedTurnFixture::new("paging-concurrent-updates");
+    {
+        let mut state = fixture.state.lock().unwrap();
+        *state = paged_history_state();
+        let anchor = state
+            .transcript
+            .iter_mut()
+            .find(|e| e.id == "entry-chat-0510")
+            .unwrap();
+        anchor.kind = "pending".into();
+        anchor.task_id = "anchor-task".into();
+    }
+    let (status, body) =
+        fixture
+            .server
+            .handle("GET", "/api/transcript?conversationId=chat&limit=3", "");
+    assert_eq!(status, 200);
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["nextBefore"], "entry-chat-0510");
+    let reloaded = {
+        let mut state = fixture.state.lock().unwrap();
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "chat".into(),
+            task_id: "anchor-task".into(),
+            kind: "assistant".into(),
+            text: "settled answer".into(),
+            at: 200,
+            ..Default::default()
+        });
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "chat".into(),
+            kind: "user".into(),
+            text: "newer message".into(),
+            at: 201,
+            ..Default::default()
+        });
+        serde_json::from_str::<ProductState>(&serde_json::to_string(&*state).unwrap()).unwrap()
+    };
+    let server = free_server(reloaded);
+    let (status, body) = server.handle(
+        "GET",
+        "/api/transcript?conversationId=chat&limit=3&before=entry-chat-0510",
+        "",
+    );
+    assert_eq!(status, 200, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["entry-chat-0507", "entry-chat-0508", "entry-chat-0509"]
+    );
+}
+
+#[test]
 fn everyone_reserves_reply_order_even_when_the_last_agent_finishes_first() {
     if !python3_available() {
         return;

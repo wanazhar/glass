@@ -129,20 +129,21 @@ impl ProductState {
     }
 
     pub fn thread_entries(&self, thread: &Thread) -> Vec<TranscriptEntry> {
+        self.thread_entry_refs(thread)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn thread_entry_refs(&self, thread: &Thread) -> Vec<&TranscriptEntry> {
         let mut entries: Vec<_> = self
             .transcript
             .iter()
             .filter(|e| e.id == thread.parent_entry_id)
-            .cloned()
             .collect();
-        entries.extend(
-            self.transcript
-                .iter()
-                .filter(|entry| {
-                    entry.id != thread.parent_entry_id && self.thread_entry_visible(thread, entry)
-                })
-                .cloned(),
-        );
+        entries.extend(self.transcript.iter().filter(|entry| {
+            entry.id != thread.parent_entry_id && self.thread_entry_visible(thread, entry)
+        }));
         entries
     }
 

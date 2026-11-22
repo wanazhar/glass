@@ -230,25 +230,15 @@ pub fn mirror_settlement(state: &mut ProductState, task_id: &str, reply: &str, s
             .map(|marble| marble.name.clone())
             .unwrap_or_else(|| speaker.clone())
     };
-    if status == "failed" {
-        mirror(
-            state,
-            &speaker,
-            &name,
-            "failure",
-            crate::failure::MESSAGE,
-            task_id,
-            None,
-        );
-        return;
-    }
     let (kind, text) = match status {
+        "failed" => ("failure", crate::failure::MESSAGE.to_string()),
         "completed" => ("assistant", reply.to_string()),
         _ => ("system", format!("{name} could not finish: {}", status)),
     };
     if !text.trim().is_empty() {
         mirror(state, &speaker, &name, kind, text, task_id, None);
     }
+    state.flush_everyone();
 }
 
 /// One plain sentence for a handoff entry, as it appears in chat.
@@ -392,6 +382,43 @@ mod tests {
         );
         assert!(state.everyone_orders.is_empty());
         assert!(state.everyone_ready.is_empty());
+    }
+
+    #[test]
+    fn cancelled_lead_releases_buffered_replies() {
+        for status in ["cancelled", "completed"] {
+            let mut state = roster();
+            state.everyone_orders.insert(
+                "message".into(),
+                ["task:lead".into(), "task:next".into(), "task:last".into()].into(),
+            );
+            state
+                .everyone_pending
+                .insert("task:lead".into(), "marble".into());
+            state
+                .everyone_pending
+                .insert("task:next".into(), state.prism.marbles[0].id.clone());
+            state
+                .everyone_pending
+                .insert("task:last".into(), state.prism.marbles[1].id.clone());
+            mirror_settlement(&mut state, "last", "Last answer", "completed");
+            mirror_settlement(&mut state, "next", "Next answer", "completed");
+            assert!(state.transcript.is_empty());
+            mirror_settlement(&mut state, "lead", "", status);
+            let answers: Vec<_> = state
+                .transcript
+                .iter()
+                .filter(|e| e.kind == "assistant")
+                .map(|e| e.text.as_str())
+                .collect();
+            assert_eq!(answers, ["Next answer", "Last answer"], "{status}");
+            if status == "cancelled" {
+                assert_eq!(state.transcript[0].kind, "system");
+            }
+            assert!(state.everyone_pending.is_empty());
+            assert!(state.everyone_orders.is_empty());
+            assert!(state.everyone_ready.is_empty());
+        }
     }
 
     #[test]

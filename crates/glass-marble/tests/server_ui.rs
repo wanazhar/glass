@@ -3343,6 +3343,51 @@ fn thread_routes_are_idempotent_searchable_and_paginated_with_stable_ids() {
 }
 
 #[test]
+fn cancelling_a_queued_everyone_lead_releases_buffered_replies() {
+    let mut state = ProductState::default();
+    state.conversation_mut("chat");
+    state.upsert_task(TaskRecord {
+        id: "queued-lead".into(),
+        conversation_id: "chat".into(),
+        status: "queued".into(),
+        owner: "agent".into(),
+        prompt: "lead".into(),
+        ..Default::default()
+    });
+    state.everyone_orders.insert(
+        "message".into(),
+        ["queued-lead".into(), "task:next".into(), "task:last".into()].into(),
+    );
+    for (key, speaker) in [
+        ("queued-lead", "marble"),
+        ("task:next", "ada"),
+        ("task:last", "ben"),
+    ] {
+        state.everyone_pending.insert(key.into(), speaker.into());
+    }
+    glass_marble::everyone::mirror_settlement(&mut state, "last", "Last answer", "completed");
+    glass_marble::everyone::mirror_settlement(&mut state, "next", "Next answer", "completed");
+    assert!(state.transcript.is_empty());
+    let server = free_server(state);
+    assert_eq!(
+        server.handle("POST", "/api/tasks/queued-lead/cancel", "").0,
+        200
+    );
+    let (status, body) = server.handle("GET", "/api/everyone", "");
+    assert_eq!(status, 200);
+    let timeline: Value = serde_json::from_str(&body).unwrap();
+    let entries = timeline["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3, "{body}");
+    assert_eq!(entries[0]["kind"], "system");
+    assert_eq!(entries[1]["text"], "Next answer");
+    assert_eq!(entries[2]["text"], "Last answer");
+    assert_eq!(
+        server.handle("POST", "/api/tasks/queued-lead/cancel", "").0,
+        409
+    );
+}
+
+#[test]
 fn everyone_default_recovers_after_first_admission_fails() {
     if !python3_available() {
         return;

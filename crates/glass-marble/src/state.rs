@@ -573,7 +573,7 @@ impl ProductState {
         }
         let key = format!("task:{}", entry.task_id);
         if entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
-            && matches!(entry.kind.as_str(), "assistant" | "failure")
+            && matches!(entry.kind.as_str(), "assistant" | "failure" | "system")
             && self
                 .everyone_orders
                 .values()

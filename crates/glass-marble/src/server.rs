@@ -3544,6 +3544,8 @@ impl MarbleServer {
                     ..Default::default()
                 });
                 guard.routines.note_settled(task_id, "cancelled");
+                crate::everyone::claim(&mut guard, task_id, task_id);
+                crate::everyone::mirror_settlement(&mut guard, task_id, "", "cancelled");
                 guard.bump();
                 true
             } else {

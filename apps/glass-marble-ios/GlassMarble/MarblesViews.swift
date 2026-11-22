@@ -159,16 +159,16 @@ struct EveryoneView: View {
                     }
                     // A fixed scroll target survives the simultaneous insert
                     // of the sent bubble, working rows and composer resize.
-                    MarbleTranscriptEnd()
+                    MarbleTranscriptEnd(bottomPadding: 12)
                 }
                 .scrollTargetLayout()
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), hasEndTarget: true)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target))
         .task { await store.openEveryoneHistory() }
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .marbleComposerInset { composer }
@@ -528,9 +528,11 @@ struct MarbleChatScreen: View {
                     if thinking && !entries.contains(where: { $0.kind == "assistant" && $0.taskId == active?.id }) {
                         MarbleThinkingBubble(name: marble.name)
                     }
+                    MarbleTranscriptEnd(bottomPadding: 12)
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }

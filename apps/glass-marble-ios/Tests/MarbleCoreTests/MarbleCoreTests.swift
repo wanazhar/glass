@@ -891,6 +891,17 @@ final class MarbleScrollFollowTests: XCTestCase {
         XCTAssertTrue(follow.following)
         XCTAssertFalse(follow.showJumpButton)
     }
+
+    func testSmallScrollAwayDetachesAndContentChangesKeepItDetached() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 35)
+        XCTAssertTrue(follow.showJumpButton)
+        follow.layoutMoved(distanceFromBottom: 180)
+        XCTAssertFalse(follow.following)
+        follow.userMoved(distanceFromBottom: 6)
+        XCTAssertTrue(follow.following)
+        XCTAssertFalse(follow.showJumpButton)
+    }
 }
 
 final class MarbleScheduleTests: XCTestCase {

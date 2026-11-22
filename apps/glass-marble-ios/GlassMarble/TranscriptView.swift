@@ -60,9 +60,11 @@ struct TranscriptView: View {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
                     }
                     MarbleTurnTail(task: store.latestTurn(in: conversationId), entries: entries)
+                    MarbleTranscriptEnd(bottomPadding: 14)
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                .padding(.top, 14)
                 // Cap the measure on iPad and Mac so a reply never becomes a
                 // single 1,000-character line.
                 .frame(maxWidth: 820, alignment: .leading)
@@ -482,10 +484,11 @@ struct ComposerBar: View {
 
 struct MarbleTranscriptEnd: View {
     enum ID: Hashable { case latest }
+    var bottomPadding: CGFloat
 
     var body: some View {
         Color.clear
-            .frame(height: 1)
+            .frame(height: bottomPadding)
             .accessibilityHidden(true)
             .id(ID.latest)
     }
@@ -507,12 +510,8 @@ extension View {
         }
     }
 
-    func marbleFollowsLatest(
-        hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil, hasEndTarget: Bool = false
-    ) -> some View {
-        modifier(MarbleFollowLatest(
-            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, hasEndTarget: hasEndTarget
-        ))
+    func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil) -> some View {
+        modifier(MarbleFollowLatest(hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing))
     }
 }
 
@@ -520,7 +519,6 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
-    let hasEndTarget: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position = ScrollPosition()
     @State private var follow = MarbleScrollFollow()
@@ -548,29 +546,29 @@ private struct MarbleFollowLatest: ViewModifier {
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(searchJump == nil ? .bottom : .top, for: .initialOffset)
-            .defaultScrollAnchor(follow.following ? .bottom : nil, for: .sizeChanges)
-            .scrollPosition($position)
+            .defaultScrollAnchor(follow.following && !phase.isUserScrolling ? .bottom : nil, for: .sizeChanges)
+            .scrollPosition($position, anchor: .top)
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase
-                if newPhase == .idle && (oldPhase == .interacting || oldPhase == .decelerating) {
-                    follow.userMoved(distanceFromBottom: Layout(context.geometry).distanceFromBottom)
+                guard oldPhase.isUserScrolling, newPhase == .idle else { return }
+                let distance = Layout(context.geometry).distanceFromBottom
+                updateFollow(distance: distance, userMoved: oldPhase != .tracking)
+                if hasMessages && follow.following && abs(distance) > 1 {
+                    scrollToEnd()
                 }
             }
             .onScrollGeometryChange(for: Layout.self) { geometry in
                 Layout(geometry)
             } action: { old, new in
-                follow.layoutMoved(distanceFromBottom: new.distanceFromBottom)
-                let userScrolling = phase == .interacting || phase == .decelerating
-                if userScrolling && old.offset != new.offset {
-                    follow.userMoved(distanceFromBottom: new.distanceFromBottom)
-                }
+                let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
+                updateFollow(
+                    distance: new.distanceFromBottom,
+                    userMoved: phase.isUserScrolling && old.offset != new.offset && !resized
+                )
                 guard hasMessages, new.viewport > 0, new.bottom > 0 else { return }
                 let initialLayout = !positionedHistory
                 positionedHistory = true
-                // An inset change can put the bottom either behind the
-                // composer or above it, depending on the resize direction.
-                let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
-                if follow.following && !userScrolling && abs(new.distanceFromBottom) > 1
+                if follow.following && !phase.isUserScrolling && abs(new.distanceFromBottom) > 1
                     && (resized || (initialLayout && searchJump == nil)) {
                     scrollToEnd()
                 }
@@ -591,7 +589,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 }
             }
             .onChange(of: outgoing) { _, send in
-                if send != nil {
+                if send != nil && follow.following && !phase.isUserScrolling {
                     jumpToLatest()
                 }
             }
@@ -619,11 +617,26 @@ private struct MarbleFollowLatest: ViewModifier {
         }
     }
 
-    private func scrollToEnd() {
-        if hasEndTarget {
-            position.scrollTo(id: MarbleTranscriptEnd.ID.latest, anchor: .bottom)
+    private func updateFollow(distance: Double, userMoved: Bool) {
+        var updated = follow
+        if userMoved {
+            updated.userMoved(distanceFromBottom: distance)
         } else {
-            position.scrollTo(edge: .bottom)
+            updated.layoutMoved(distanceFromBottom: distance)
+        }
+        if updated != follow { follow = updated }
+    }
+
+    private func scrollToEnd() {
+        position.scrollTo(id: MarbleTranscriptEnd.ID.latest, anchor: .bottom)
+    }
+}
+
+private extension ScrollPhase {
+    var isUserScrolling: Bool {
+        switch self {
+        case .tracking, .interacting, .decelerating: true
+        default: false
         }
     }
 }

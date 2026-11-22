@@ -302,8 +302,10 @@ private struct MarbleJumpTimeline: View {
                                     in: RoundedRectangle(cornerRadius: 8))
                     }
                     ForEach(workingNames, id: \.self) { MarbleThinkingBubble(name: $0) }
+                    MarbleTranscriptEnd(bottomPadding: 16)
                 }
-                .padding(16)
+                .scrollTargetLayout()
+                .padding([.horizontal, .top], 16)
                 .frame(maxWidth: 820)
                 .frame(maxWidth: .infinity)
             }

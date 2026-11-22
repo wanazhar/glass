@@ -1250,6 +1250,16 @@ impl PrismPool {
                     };
                     state.set_task_status(&reply.task_id, status);
                     state.conversation_mut(&reply.conversation_id).updated_at = now;
+                    if !reply.reasoning.trim().is_empty() {
+                        state.push_transcript(TranscriptEntry {
+                            conversation_id: reply.conversation_id.clone(),
+                            kind: "reasoning".into(),
+                            text: reply.reasoning.clone(),
+                            task_id: reply.task_id.clone(),
+                            at: now,
+                            ..Default::default()
+                        });
+                    }
                     if !reply.text.trim().is_empty() {
                         state.push_transcript(TranscriptEntry {
                             conversation_id: reply.conversation_id.clone(),

@@ -783,12 +783,18 @@ impl Conversation {
                 }
                 Incoming::Event(event) => {
                     self.note_engine_tool(&event);
-                    if event.kind != "text" {
+                    if !matches!(event.kind.as_str(), "text" | "reasoning") {
                         self.publish(&event.kind, event.data.clone());
                     }
                     sink(&event);
                 }
                 Incoming::Tool { request_id, call } => {
+                    sink(&RuntimeEvent {
+                        session_id: call.session_id.clone(),
+                        turn_id: call.turn_id.clone(),
+                        kind: "tool_start".into(),
+                        data: value!({"callId": call.call_id, "tool": call.name, "arguments": call.arguments}),
+                    });
                     self.handle_tool(request_id, &call, cancel)?;
                 }
                 Incoming::Unknown(_) => {}

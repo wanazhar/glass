@@ -228,19 +228,19 @@ pub fn run_turn(
     let deadline = Instant::now() + options.timeout;
     let mut text = String::new();
     let mut reasoning = String::new();
+    let mut reasoning_boundary = false;
     let mut splitter = ThinkSplitter::default();
+    let mut last_segment = String::new();
     let mut usage: Option<Value> = None;
     let events = conversation.events().clone();
-    let publish_split = |visible: &str, thought: &str| {
-        for (kind, delta) in [("text", visible), ("reasoning", thought)] {
-            if !delta.is_empty() {
-                events.publish(
-                    &conversation_id,
-                    &task_id,
-                    kind,
-                    serde_json::json!({"text": delta}),
-                );
-            }
+    let publish_reasoning = |delta: &str| {
+        if !delta.is_empty() {
+            events.publish(
+                &conversation_id,
+                &task_id,
+                "reasoning",
+                serde_json::json!({"text": delta}),
+            );
         }
     };
     let cancel = options.cancel.map(|requested| CancelToken {
@@ -256,20 +256,42 @@ pub fn run_turn(
                 // Providers may inline `<think>` blocks inside ordinary text
                 // deltas; split them out so reasoning never lands in replies.
                 let (visible, thought) = splitter.feed(delta);
-                publish_split(&visible, &thought);
+                publish_reasoning(&append_reasoning(
+                    &mut reasoning,
+                    &mut reasoning_boundary,
+                    &thought,
+                ));
                 text.push_str(&visible);
-                reasoning.push_str(&thought);
                 if let Some(turn) = live.as_deref_mut() {
-                    turn.progress(&text, &reasoning);
+                    turn.progress("", &reasoning);
                 }
             }
         }
         "reasoning" => {
             if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
-                reasoning.push_str(delta);
+                publish_reasoning(&append_reasoning(
+                    &mut reasoning,
+                    &mut reasoning_boundary,
+                    delta,
+                ));
                 if let Some(turn) = live.as_deref_mut() {
-                    turn.progress(&text, &reasoning);
+                    turn.progress("", &reasoning);
                 }
+            }
+        }
+        "tool_start" => {
+            let (visible, thought) = splitter.flush();
+            text.push_str(&visible);
+            publish_reasoning(&append_reasoning(
+                &mut reasoning,
+                &mut reasoning_boundary,
+                &thought,
+            ));
+            let commentary = take_commentary(&mut text, &mut reasoning, &mut last_segment);
+            publish_reasoning(&commentary);
+            reasoning_boundary = true;
+            if let Some(turn) = live.as_deref_mut() {
+                turn.progress("", &reasoning);
             }
         }
         "usage" => usage = Some(event.data.clone()),
@@ -288,9 +310,18 @@ pub fn run_turn(
         turn.finish();
     }
     let (visible, thought) = splitter.flush();
-    publish_split(&visible, &thought);
+    publish_reasoning(&append_reasoning(
+        &mut reasoning,
+        &mut reasoning_boundary,
+        &thought,
+    ));
     text.push_str(&visible);
-    reasoning.push_str(&thought);
+    if text.trim().is_empty() {
+        text = last_segment;
+    }
+    if !text.is_empty() {
+        conversation.publish("text", serde_json::json!({"text": text}));
+    }
     let cancelled = options
         .cancel
         .map(|requested| requested.load(Ordering::Relaxed))
@@ -314,9 +345,62 @@ pub fn run_turn(
     Ok(reply)
 }
 
+fn append_reasoning(reasoning: &mut String, boundary: &mut bool, delta: &str) -> String {
+    if delta.is_empty() {
+        return String::new();
+    }
+    let delta = if *boundary && !reasoning.is_empty() {
+        format!("\n\n{delta}")
+    } else {
+        delta.to_string()
+    };
+    reasoning.push_str(&delta);
+    *boundary = false;
+    delta
+}
+
+fn take_commentary(text: &mut String, reasoning: &mut String, last: &mut String) -> String {
+    let segment = std::mem::take(text);
+    if segment.trim().is_empty() {
+        return String::new();
+    }
+    last.clone_from(&segment);
+    let delta = if reasoning.is_empty() {
+        segment
+    } else {
+        format!("\n\n{segment}")
+    };
+    reasoning.push_str(&delta);
+    delta
+}
+
 #[cfg(test)]
 mod tests {
     use super::ThinkSplitter;
+
+    #[test]
+    fn tool_boundaries_separate_commentary_and_keep_a_fallback() {
+        let mut text = "Research info.".to_string();
+        let mut reasoning = String::new();
+        let mut last = String::new();
+        super::take_commentary(&mut text, &mut reasoning, &mut last);
+        assert!(text.is_empty());
+        text.push_str("Checking sources.");
+        super::take_commentary(&mut text, &mut reasoning, &mut last);
+        assert_eq!(reasoning, "Research info.\n\nChecking sources.");
+        assert_eq!(last, "Checking sources.");
+        assert!(super::take_commentary(&mut text, &mut reasoning, &mut last).is_empty());
+        assert_eq!(last, "Checking sources.");
+        text.push_str("The answer.");
+        assert_eq!(text, "The answer.");
+        let mut boundary = true;
+        super::append_reasoning(&mut reasoning, &mut boundary, "Private ");
+        super::append_reasoning(&mut reasoning, &mut boundary, "thought.");
+        assert_eq!(
+            reasoning,
+            "Research info.\n\nChecking sources.\n\nPrivate thought."
+        );
+    }
 
     fn split(deltas: &[&str]) -> (String, String) {
         let mut splitter = ThinkSplitter::default();

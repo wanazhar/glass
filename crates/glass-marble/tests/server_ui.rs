@@ -2957,6 +2957,10 @@ struct NamedTurnFixture {
 
 impl NamedTurnFixture {
     fn new(label: &str) -> Self {
+        Self::with_args(label, Vec::new())
+    }
+
+    fn with_args(label: &str, args: Vec<String>) -> Self {
         let root =
             std::env::temp_dir().join(format!("glass-marble-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -2972,7 +2976,7 @@ impl NamedTurnFixture {
             .id
             .clone();
         let state = Arc::new(Mutex::new(initial));
-        let pool = fixture_prism_pool(&script, &root, &state, &events, Vec::new());
+        let pool = fixture_prism_pool(&script, &root, &state, &events, args);
         let server = MarbleServer::new(MarbleServerParts {
             listener: TcpListener::bind("127.0.0.1:0").unwrap(),
             state: Arc::clone(&state),
@@ -3034,6 +3038,44 @@ impl NamedTurnFixture {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+#[test]
+fn named_steps_persist_commentary_as_reasoning_and_only_deliver_the_answer() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_args(
+        "step-commentary",
+        vec![
+            "--pre-tool-text".into(),
+            "Research info.".into(),
+            "--text-chunks".into(),
+            r#"["The answer."]"#.into(),
+        ],
+    );
+    let (status, _) = fixture.post(
+        "/api/turns",
+        json!({"text":"research", "marbleId":fixture.marble_id}),
+    );
+    assert_eq!(status, 202);
+    let task = fixture.completed("research");
+    let state = fixture.state.lock().unwrap();
+    let entries: Vec<_> = state
+        .transcript
+        .iter()
+        .filter(|e| e.task_id == task.id)
+        .collect();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.kind == "reasoning" && e.text == "Research info.")
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.kind == "assistant" && e.text == "The answer.")
+    );
 }
 
 impl Drop for NamedTurnFixture {

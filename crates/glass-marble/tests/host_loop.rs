@@ -89,6 +89,64 @@ fn run_one(
     reply
 }
 
+#[test]
+fn pre_tool_text_is_not_a_visible_delta_and_is_the_empty_answer_fallback() {
+    if !python3_available() {
+        return;
+    }
+    for answer in ["The answer.", ""] {
+        let root = workspace(if answer.is_empty() {
+            "step-empty"
+        } else {
+            "step-final"
+        });
+        let script = write_fake_runtime(&root);
+        let events = EventBus::default();
+        let mut command = Command::new("python3");
+        command
+            .arg(script)
+            .arg("runtime")
+            .arg("--pre-tool-text")
+            .arg("Research info.")
+            .arg("--text-chunks")
+            .arg(serde_json::json!([answer]).to_string());
+        let mut conversation = Conversation::spawn_with_router(
+            command,
+            &root,
+            &root.join("sessions"),
+            HostPolicy::approving(),
+            ApprovalInbox::default(),
+            ToolRouter::new(&root).unwrap(),
+            events.clone(),
+        )
+        .unwrap();
+        let reply = run_turn(
+            &turn("research", None),
+            &mut conversation,
+            TurnOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(reply.reasoning, "Research info.");
+        assert_eq!(
+            reply.text,
+            if answer.is_empty() {
+                "Research info."
+            } else {
+                answer
+            }
+        );
+        let frames = events.since(0);
+        let visible: String = frames
+            .iter()
+            .filter(|e| e.kind == "text")
+            .map(|e| e.data["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(visible, reply.text);
+        conversation.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 /// How one lane's fake engine is built for a test.
 #[derive(Clone)]
 struct LaneSpec {

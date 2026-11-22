@@ -108,6 +108,8 @@ def save_submissions():
 def run_turn(identifier, task, text, conversation, request):
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if argument("--pre-tool-text"):
+        event(turn, "text", {"text": argument("--pre-tool-text")})
     if DELAY_MS > 0:
         time.sleep(DELAY_MS / 1000)
     # A prompt of "ASK <name>: <instruction>" makes this engine ask another

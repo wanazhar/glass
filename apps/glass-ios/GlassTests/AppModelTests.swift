@@ -89,6 +89,39 @@ private final class ScriptedTransport: GlassHTTPTransport, @unchecked Sendable {
         #expect(sent.withLock { inputs.count } == 3)
     }
 
+    @Test func desktopDisconnectKeepsAReleaseQueuedBehindASlowInput() async throws {
+        let transport = happyTransport()
+        let model = AppModel(defaults: defaults, store: store, transport: transport)
+        await model.pair(with: Self.link)
+        let sent = NSLock()
+        nonisolated(unsafe) var inputs: [String] = []
+        let gate = DispatchSemaphore(value: 0)
+        transport.set { request in
+            guard request.url?.path == "/api/desktop/input" else { return (200, Self.status) }
+            let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            sent.withLock { inputs.append(body) }
+            if body.contains("pointer-move") { gate.wait() }
+            return (200, "{}")
+        }
+        let desktop = DesktopModel()
+        desktop.attach(model.api)
+        desktop.send(.button(x: 0.2, y: 0.3, button: .left, pressed: true))
+        desktop.send(.move(x: 0.7, y: 0.8))
+        desktop.send(.button(x: 0.7, y: 0.8, button: .left, pressed: false))
+        for _ in 0..<100 where sent.withLock({ inputs.count }) < 2 { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(sent.withLock { inputs.count } == 2)
+        desktop.disconnect()
+        gate.signal()
+        for _ in 0..<100 where sent.withLock({ inputs.count }) < 3 { try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(100))
+        let got = sent.withLock { inputs }
+        #expect(got.count == 3)
+        #expect(got.last?.contains("pointer-button") == true)
+        #expect(got.last?.contains("false") == true)
+        // Released where the pointer is, not back at the press.
+        #expect(got.last?.contains("\"x\"") == false)
+    }
+
     @Test func forgettingOrRevokingTheHostClosesHeldConnections() async throws {
         let transport = happyTransport()
         let model = AppModel(defaults: defaults, store: store, transport: transport)

@@ -72,8 +72,9 @@ final class DesktopModel {
     /// Inputs waiting to be sent, in order. A newer pointer move replaces a waiting one, so a slow
     /// network never replays a backlog of stale moves.
     private var pendingInputs: [DesktopInput] = []
-    /// Mouse buttons the host currently has pressed, so Disconnect can let go of them.
-    private var heldButtons: [DesktopButton: CGPoint] = [:]
+    /// Mouse buttons sent pressed to the host and not yet released, so Disconnect can let go of them.
+    /// Updated as each input goes out, not as it's queued.
+    private var hostHeldButtons: Set<DesktopButton> = []
     private var sending = false
     private var decoding = false
     private var latestJPEG: (Data, DesktopFrame?)?
@@ -188,14 +189,14 @@ final class DesktopModel {
 
     /// The Live Activity's Disconnect: close the picture and keep it closed.
     /// Input stops too: the frozen picture may no longer match the desktop. Waiting input is dropped,
-    /// except letting go of a pressed button, so the host isn't left mid-drag.
+    /// except letting go of every button the host may still have pressed, where the pointer is now,
+    /// so the host isn't left mid-drag.
     func disconnect() {
         disconnected = true
         backgrounded = false
         resumeOnReturn = false
         stopPicture()
-        pendingInputs = heldButtons.map { .button(x: Double($0.value.x), y: Double($0.value.y), button: $0.key, pressed: false) }
-        heldButtons = [:]
+        pendingInputs = hostHeldButtons.map { .button(x: nil, y: nil, button: $0, pressed: false) }
         pendingScroll = .zero
         control = false
         alt = false
@@ -348,10 +349,6 @@ final class DesktopModel {
 
     func send(_ input: DesktopInput) {
         guard !disconnected else { return }
-        if case .button(let x, let y, let button, let pressed) = input {
-            if pressed { heldButtons[button] = CGPoint(x: x ?? cursor.x, y: y ?? cursor.y) }
-            else { heldButtons[button] = nil }
-        }
         if case .move = input, case .move? = pendingInputs.last {
             pendingInputs[pendingInputs.count - 1] = input
         } else {
@@ -371,6 +368,9 @@ final class DesktopModel {
         while !pendingInputs.isEmpty {
             let input = pendingInputs.removeFirst()
             guard let api else { continue }
+            if case .button(_, _, let button, let pressed) = input {
+                if pressed { hostHeldButtons.insert(button) } else { hostHeldButtons.remove(button) }
+            }
             let started = ContinuousClock.now
             do {
                 try await api.sendDesktopInput(input)

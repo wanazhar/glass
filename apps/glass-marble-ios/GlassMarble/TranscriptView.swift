@@ -587,6 +587,7 @@ private struct MarbleFollowLatest: ViewModifier {
         var offset: CGFloat = 0
         var rowPositions: [String: CGFloat] = [:]
         var anchor: (id: String, rowY: CGFloat, offset: CGFloat)?
+        var layout: Layout?
         var followCorrection: Task<Void, Never>?
     }
 
@@ -603,9 +604,8 @@ private struct MarbleFollowLatest: ViewModifier {
             topInset = geometry.contentInsets.top
         }
 
-        var distanceFromBottom: Double {
-            Double(max(-topInset, bottom - viewport) - offset)
-        }
+        var bottomOffset: CGFloat { max(-topInset, bottom - viewport) }
+        var distanceFromBottom: Double { Double(bottomOffset - offset) }
     }
 
     func body(content: Content) -> some View {
@@ -639,6 +639,7 @@ private struct MarbleFollowLatest: ViewModifier {
             .onScrollGeometryChange(for: Layout.self) { geometry in
                 Layout(geometry)
             } action: { old, new in
+                measurement.layout = new
                 // ScrollPosition's y coordinate starts after the top inset.
                 measurement.offset = new.offset + new.topInset
                 let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
@@ -650,7 +651,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 let initialLayout = !positionedHistory
                 positionedHistory = true
                 if follow.following && !phase.isUserScrolling && abs(new.distanceFromBottom) > 1
-                    && (resized || (initialLayout && searchJump == nil)) {
+                    && (resized || new.distanceFromBottom < -1 || (initialLayout && searchJump == nil)) {
                     correctBottomAfterLayout()
                 }
             }
@@ -731,7 +732,15 @@ private struct MarbleFollowLatest: ViewModifier {
             await Task.yield()
             guard !Task.isCancelled else { return }
             measurement.followCorrection = nil
-            if follow.following && !phase.isUserScrolling { scrollToEnd() }
+            guard follow.following, !phase.isUserScrolling, let layout = measurement.layout,
+                  abs(layout.distanceFromBottom) > 1 else { return }
+            if layout.distanceFromBottom < -1 {
+                // A shrinking disclosure can leave an offset past the new
+                // bottom. Request the new coordinate to clamp that offset.
+                position.scrollTo(y: layout.bottomOffset + layout.topInset)
+            } else {
+                scrollToEnd()
+            }
         }
     }
 }

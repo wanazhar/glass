@@ -142,7 +142,8 @@ fn redact_with(secrets: &Secrets, text: &str) -> String {
     let mut cursor = 0;
     while cursor < text.len() {
         let rest = &text[cursor..];
-        if let Some(after) = rest.strip_prefix(OPEN)
+        if spans.last().is_none_or(|span| cursor >= span.1)
+            && let Some(after) = rest.strip_prefix(OPEN)
             && let Some(end) = after
                 .as_bytes()
                 .iter()
@@ -229,6 +230,24 @@ fn redact_mcp_result_with(secrets: &Secrets, value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redaction_scans_placeholders_overlapped_by_an_earlier_secret() {
+        let secrets = vec![
+            ("PREFIX".into(), "x{{secret:P".into()),
+            ("SUFFIX".into(), "ASSWORD}}tail".into()),
+            ("PASSWORD".into(), "configured-value".into()),
+        ];
+        assert_eq!(
+            redact_with(&secrets, "x{{secret:PASSWORD}}tail"),
+            "{{secret:PREFIX}}{{secret:SUFFIX}}"
+        );
+        assert_eq!(
+            redact_with(&secrets, "{{secret:PASSWORD}}"),
+            "{{secret:PASSWORD}}"
+        );
+        assert_eq!(redact_with(&secrets, ""), "");
+    }
     #[test]
     fn redaction_covers_untrusted_markers_and_overlapping_values() {
         let secrets = vec![

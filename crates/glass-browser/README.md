@@ -460,7 +460,12 @@ task-level `browser_*` tools (`browser_navigate`, `browser_snapshot`,
 `browser_click`, `browser_fill_form`, `browser_wait_for`, `browser_tabs`,
 `browser_handle_dialog`, `browser_upload_file`, `browser_download`, and so on).
 Each has a closed JSON schema with an example, says when to use it and when
-not to, and failed calls end with a `Next:` hint naming the tool to try.
+not to, and failed calls end with a `Next:` hint naming the tool to try;
+when the element is covered, off screen, hidden, ambiguous or moved, the hint
+says so and names the covering control. Calls that can change the page
+(click, type, fill, select, check, key) wait for it to settle, at most 1.5 s
+of network quiet and 1 s of DOM quiet, then end with a `Page after action:`
+line listing new text, URL or title changes, new tabs or an opened dialog.
 Glass Core offers this profile as typed tools when `glass-browser` is on
 `PATH` (`GC_BROWSER_TOOLS=0` disables it, `GC_BROWSER_BIN` and
 `GC_BROWSER_RUNTIME` override the binary and runtime). Without an override,

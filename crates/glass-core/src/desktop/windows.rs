@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::{Desktop, HEIGHT, Lease, WIDTH, clipboard::wait_bounded};
 
-const WMCTRL_MISSING: &str = "wmctrl is not installed; install it (for example `sudo apt install wmctrl`) to use desktop_windows";
+const WMCTRL_MISSING: &str = "wmctrl is not installed; install it (for example `sudo apt install wmctrl`) to use desktop_windows or labelled screenshots";
 
 #[derive(Debug, PartialEq)]
 enum Request<'a> {

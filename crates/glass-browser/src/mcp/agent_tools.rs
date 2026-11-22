@@ -633,6 +633,16 @@ pub(crate) struct PageState {
 /// A short report of what an action changed, so the model can check the
 /// effect without another browser_snapshot call.
 pub(crate) fn change_summary(tool: &str, before: &PageState, after: &PageState) -> String {
+    let redact = |state: &PageState| {
+        let mut tabs = state.tabs.clone();
+        super::secrets::redact_value(&mut tabs);
+        PageState {
+            text: super::secrets::redact(&state.text),
+            tabs,
+        }
+    };
+    let before = redact(before);
+    let after = redact(after);
     const MAX_LINES: usize = 6;
     let mut parts = Vec::new();
     let tabs = |value: &Value| {

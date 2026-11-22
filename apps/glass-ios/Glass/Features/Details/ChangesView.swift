@@ -64,6 +64,7 @@ struct DiffView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var discarding: DiffHunk?
+    @State private var discardingFile = false
 
     private var canAct: Bool { conversation.canWrite && expected != nil && !busy }
 
@@ -129,6 +130,18 @@ struct DiffView: View {
                 .disabled(!canAct)
                 .accessibilityIdentifier("changes.stageFile")
             }
+            if !file.isStaged, hunks.contains(where: \.changesMode) {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Discard File", role: .destructive) { discardingFile = true }
+                        .disabled(!canAct)
+                        .accessibilityIdentifier("changes.discardFile")
+                }
+            }
+        }
+        .confirmationDialog("Discard changes to this file?", isPresented: $discardingFile, titleVisibility: .visible) {
+            Button("Discard File", role: .destructive) { Task { await git("revert-file", args: file.path) } }
+        } message: {
+            Text("Its lines and permissions go back to the last staged version. This can’t be undone from Glass.")
         }
         .confirmationDialog("Discard these lines?", isPresented: Binding(get: { discarding != nil }, set: { if !$0 { discarding = nil } }),
                             titleVisibility: .visible) {

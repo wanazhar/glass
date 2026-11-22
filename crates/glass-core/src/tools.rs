@@ -139,7 +139,17 @@ pub(crate) fn bash_owned_sensitive(
         owner,
         sensitive_capture || crate::secret_placeholders::has_secrets(),
     );
-    outcome.body = crate::secret_placeholders::redact(&outcome.body);
+    let exit_prefix = outcome.exit_code.map(|code| format!("[exit {code}]\n"));
+    let prefix = exit_prefix
+        .as_deref()
+        .filter(|prefix| outcome.body.starts_with(prefix))
+        .or_else(|| outcome.body.starts_with("error:").then_some("error:"))
+        .or_else(|| outcome.body.starts_with("blocked").then_some("blocked"))
+        .unwrap_or("");
+    outcome.body = format!(
+        "{prefix}{}",
+        crate::secret_placeholders::redact(&outcome.body[prefix.len()..])
+    );
     outcome
 }
 
@@ -1077,6 +1087,31 @@ mod tests {
             name: "bash".into(),
             arguments: args.to_string(),
         }
+    }
+
+    #[test]
+    fn shell_redaction_preserves_host_failure_markers() {
+        const MARKER: &str = "GLASS_SHELL_STATUS_REDACTION_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tools::tests::shell_redaction_preserves_host_failure_markers",
+                    "--nocapture",
+                ])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_STATUS", "exit")
+                .env("GLASS_SECRET_ERROR", "error")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let outcome = bash(&call(r#"{"command":"exit 7"}"#), &std::env::temp_dir());
+        assert_eq!(outcome.exit_code, Some(7));
+        assert!(outcome.body.starts_with("[exit 7]\n"), "{}", outcome.body);
+        let invalid = bash(&call("not json"), &std::env::temp_dir());
+        assert!(invalid.body.starts_with("error:"), "{}", invalid.body);
     }
 
     #[test]

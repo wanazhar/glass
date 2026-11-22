@@ -105,14 +105,40 @@ pub fn inject(tool: &str, arguments: &mut Value) -> Result<(), String> {
 }
 
 fn redact_with(secrets: &Secrets, text: &str) -> String {
-    let mut text = text.to_owned();
+    let mut patterns = Vec::with_capacity(secrets.len() * 2);
     for (name, value) in secrets {
         let placeholder = format!("{OPEN}{name}}}}}");
         let escaped = serde_json::to_string(value).expect("string serialization");
-        text = text.replace(&escaped[1..escaped.len() - 1], &placeholder);
-        text = text.replace(value.as_str(), &placeholder);
+        patterns.push((value.clone(), placeholder.clone()));
+        patterns.push((escaped[1..escaped.len() - 1].to_owned(), placeholder));
     }
-    text
+    patterns.sort_by_key(|pattern| std::cmp::Reverse(pattern.0.len()));
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix(OPEN)
+            && let Some(end) = after.find("}}")
+            && !after[..end].is_empty()
+            && after[..end].len() <= 64
+            && after[..end]
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            let length = OPEN.len() + end + 2;
+            out.push_str(&rest[..length]);
+            rest = &rest[length..];
+        } else if let Some((value, placeholder)) =
+            patterns.iter().find(|(value, _)| rest.starts_with(value))
+        {
+            out.push_str(placeholder);
+            rest = &rest[value.len()..];
+        } else {
+            let ch = rest.chars().next().expect("nonempty text");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
 }
 
 /// Replace every secret value in a tool result with its placeholder.
@@ -128,6 +154,21 @@ pub(crate) fn has_secrets() -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn redaction_is_single_pass_and_preserves_reusable_placeholders() {
+        let secrets = vec![
+            ("PASSWORD".into(), "secret".into()),
+            ("TOKEN".into(), "PASSWORD".into()),
+        ];
+        let expected = "{{secret:PASSWORD}} {{secret:TOKEN}} {{secret:PASSWORD}}";
+        assert_eq!(
+            redact_with(&secrets, "secret PASSWORD {{secret:PASSWORD}}"),
+            expected
+        );
+        assert_eq!(redact_with(&secrets, expected), expected);
+        assert_eq!(redact_with(&secrets, ""), "");
+    }
 
     #[cfg(unix)]
     #[test]

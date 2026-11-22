@@ -281,6 +281,19 @@ pub fn execute(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools
     }
 }
 
+pub(crate) fn release_workspace(workspace: &Path) {
+    let Ok(workspace) = workspace.canonicalize() else {
+        return;
+    };
+    let client = CLIENTS.get().and_then(|clients| {
+        clients
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&workspace)
+    });
+    drop(client);
+}
+
 fn render(result: &Value, workspace: &Path) -> String {
     let mut parts = Vec::new();
     for item in result["content"].as_array().into_iter().flatten() {
@@ -481,6 +494,9 @@ for line in sys.stdin:
         );
         assert_eq!(call("teammate", "{}").body, "2");
         assert_eq!(call("parent", "{}").body, "1");
+        release_workspace(Path::new("teammate"));
+        assert_eq!(call("teammate", "{}").body, "1");
+        assert_eq!(call("parent", "{}").body, "2");
     }
 
     #[test]

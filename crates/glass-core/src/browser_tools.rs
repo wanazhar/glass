@@ -52,7 +52,7 @@ fn binary() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     if let Some(path) = std::env::var_os("GC_BROWSER_BIN") {
         let path = PathBuf::from(path);
-        if path.components().count() > 1 || path.is_file() || path.is_absolute() {
+        if path.components().count() > 1 || path.is_absolute() || path.starts_with(".") {
             return Some(cwd.join(path));
         }
         return std::env::split_paths(&std::env::var_os("PATH")?)
@@ -386,6 +386,35 @@ fn screenshot_file(directory: &File, name: &str) -> std::io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_browser_override_uses_path_not_workspace() {
+        const MARKER: &str = "GLASS_BROWSER_PATH_TEST";
+        if let Some(root) = std::env::var_os(MARKER) {
+            let root = PathBuf::from(root);
+            assert_eq!(binary(), Some(root.join("trusted/browser-command")));
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("gc-browser-path-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("trusted")).unwrap();
+        std::fs::create_dir_all(root.join("workspace")).unwrap();
+        for directory in ["trusted", "workspace"] {
+            std::fs::write(root.join(directory).join("browser-command"), "fixture").unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "browser_tools::tests::bare_browser_override_uses_path_not_workspace",
+            ])
+            .env(MARKER, &root)
+            .env("GC_BROWSER_BIN", "browser-command")
+            .env("PATH", root.join("trusted"))
+            .current_dir(root.join("workspace"))
+            .status()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn workspace_clients_survive_switches_and_isolate_transport_failures() {

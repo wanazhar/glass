@@ -26,6 +26,24 @@ const DEVICE_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEVICE_VERIFICATION_URI: &str = "https://auth.openai.com/codex/device";
 const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 const DEVICE_FLOW: &str = "device_code";
+
+pub(crate) fn is_codex_endpoint(base_url: &str) -> bool {
+    url::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("chatgpt.com")
+            && url.port_or_known_default() == Some(443)
+            && url.path().trim_end_matches('/') == "/backend-api/codex"
+    })
+}
+
+pub(crate) fn chatgpt_account_id(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let claims: Value = serde_json::from_slice(&B64.decode(payload).ok()?).ok()?;
+    claims["https://api.openai.com/auth"]["chatgpt_account_id"]
+        .as_str()
+        .map(str::to_owned)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connection {
     pub id: String,
@@ -718,9 +736,7 @@ impl Attempt {
             .as_str()
             .ok_or("Sign-in returned no identity token")?;
         let (subject, email) = validate_identity(id, &client, &self.nonce)?;
-        if self.existing.as_ref().is_some_and(|c| c.subject != subject) {
-            return Err("The signed-in account does not match the selected connection".into());
-        }
+        check_reconnected_account(self.existing.as_ref(), &subject)?;
         let mut cred = Credential {
             access_token: String::new(),
             refresh_token: String::new(),
@@ -890,12 +906,74 @@ impl DeviceAttempt {
         Ok(cred)
     }
 }
+fn use_device_sign_in(existing: Option<&Credential>) -> bool {
+    existing.is_some_and(|credential| credential.flow == DEVICE_FLOW)
+}
+
+fn check_reconnected_account(existing: Option<&Credential>, subject: &str) -> Result<(), String> {
+    if existing.is_some_and(|credential| credential.subject != subject) {
+        return Err("The signed-in account does not match the selected connection".into());
+    }
+    Ok(())
+}
+
+fn chatgpt_device(
+    keys: &KeyReader,
+    existing: Option<&Credential>,
+) -> Result<Option<Credential>, String> {
+    use glass_tui::crossterm::event::{Event, KeyCode};
+    let Some(attempt) = modal::work(
+        keys,
+        "Starting ChatGPT device sign-in",
+        DeviceAttempt::start,
+    )
+    .transpose()?
+    else {
+        return Ok(None);
+    };
+    let screen = modal::Screen::new();
+    let mut next_poll = std::time::Instant::now() + Duration::from_secs(attempt.interval);
+    loop {
+        if now() >= attempt.expires_at {
+            return Err("Device sign-in expired. Start again.".into());
+        }
+        screen.draw(
+            "ChatGPT device sign-in",
+            &[
+                format!("Open {} on any device.", attempt.verification_uri),
+                format!("Enter code: {}", attempt.user_code),
+                "Approve ChatGPT access, then wait for sign-in to finish.".into(),
+            ],
+            "O open verification page · Esc cancel",
+            0,
+        );
+        if std::time::Instant::now() >= next_poll {
+            if let Some(credential) = attempt.poll()? {
+                check_reconnected_account(existing, &credential.subject)?;
+                return Ok(Some(credential));
+            }
+            next_poll = std::time::Instant::now() + Duration::from_secs(attempt.interval);
+        }
+        if let Some(Event::Key(key)) = keys.next_timeout(Duration::from_millis(100)) {
+            if modal::cancelled(key.code, key.modifiers) {
+                return Ok(None);
+            }
+            if key.code == KeyCode::Char('o') {
+                browser(&attempt.verification_uri);
+            }
+        }
+    }
+}
+
 pub fn chatgpt(
     keys: &KeyReader,
     store: &mut Store,
     existing: Option<Credential>,
 ) -> Result<Option<Credential>, String> {
     use glass_tui::crossterm::event::{Event, KeyCode};
+    if use_device_sign_in(existing.as_ref()) {
+        return chatgpt_device(keys, existing.as_ref());
+    }
     let attempt = Attempt::start(store, existing)?;
     // Never display the ID-token hint in terminal output.
     let opened = browser(&attempt.url);
@@ -1058,6 +1136,36 @@ pub fn chatgpt(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn reconnect_routes_device_credentials_without_reusing_the_loopback_client() {
+        assert!(!use_device_sign_in(None));
+        let mut cred = credential();
+        assert!(!use_device_sign_in(Some(&cred)));
+        cred.client_id = DEVICE_CLIENT_ID.into();
+        cred.flow = DEVICE_FLOW.into();
+        assert!(use_device_sign_in(Some(&cred)));
+        cred.flow = "unknown".into();
+        assert!(!use_device_sign_in(Some(&cred)));
+        assert!(check_reconnected_account(None, "new-account").is_ok());
+        assert!(check_reconnected_account(Some(&cred), &cred.subject).is_ok());
+        assert!(check_reconnected_account(Some(&cred), "different-account").is_err());
+    }
+
+    #[test]
+    fn codex_endpoint_requires_the_exact_https_origin_and_base_path() {
+        assert!(is_codex_endpoint("https://chatgpt.com/backend-api/codex/"));
+        for url in [
+            "https://api.openai.com/v1",
+            "https://chatgpt.com.evil.test/backend-api/codex",
+            "http://chatgpt.com/backend-api/codex",
+            "https://chatgpt.com:8443/backend-api/codex",
+            "https://chatgpt.com/other",
+            "",
+        ] {
+            assert!(!is_codex_endpoint(url));
+        }
+    }
+
     fn credential() -> Credential {
         Credential {
             access_token: "test-access".into(),

@@ -13,6 +13,11 @@ export const settingsSections = [
 const aliases={index:'general',models:'general',integrations:'tools',memory:'tools',profiles:'instructions',permissions:'advanced',effective:'advanced'};
 export const settingDestination=name=>({settings:'general',login:'connections',logout:'connections',model:'general',mods:'tools',extensions:'tools',skills:'tools','skill-doctor':'tools',profiles:'instructions',theme:'appearance',animation:'appearance',tools:'appearance',security:'advanced','settings-info':'advanced'}[name]);
 export const configurationCommands=new Set(['login','logout','mods','extensions','profiles','skills','skill-doctor','security','settings-info','animation']);
+export function devicePollRequest(device,revision){
+  const model=String(device?.model??'').trim();
+  if(!model||new TextEncoder().encode(model).length>256||/\p{Cc}/u.test(model))return null;
+  return {revision,action:'device-poll',args:device.attempt,model,confirmed:true};
+}
 export function settingsPage({api,context,appearance,error,visibility,resumeChat,navigation}) {
   const root=document.querySelector('#settings-page');
   const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
@@ -90,7 +95,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
       preference(models,{key:'model',label:'Default model',value:defaults.model,save:saveDefault('model')});
     }
     const responses=group(parent,'Responses');
-    preference(responses,{key:'max_tokens',label:'Maximum output tokens',help:'Includes provider reasoning when counted as output.',value:defaults.max_tokens,type:'number',save:saveDefault('max_tokens',v=>Number(v))});
+    preference(responses,{key:'max_tokens',label:'Maximum output tokens',help:'Includes provider reasoning when counted as output. ChatGPT Codex controls its own output limit; this preference is not sent.',value:defaults.max_tokens,type:'number',save:saveDefault('max_tokens',v=>Number(v))});
     preference(responses,{key:'reasoning_budget',label:'Reasoning allowance',help:'Leave empty to use the provider default.',value:defaults.reasoning_budget,type:'number',save:saveDefault('reasoning_budget',v=>v.trim()===''?null:Number(v))});
     preference(responses,{key:'adaptive_pacing',label:'Adaptive pacing',help:'Adjust request timing to provider pressure.',value:defaults.adaptive_pacing,type:'checkbox',save:saveDefault('adaptive_pacing')});
     preference(responses,{key:'image_input',label:'Image input',help:'Enable only for models that support images.',value:defaults.image_input,type:'checkbox',save:saveDefault('image_input')});
@@ -122,6 +127,8 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     if(oauth){const link=el('a','command-run','Continue sign-in');link.href=oauth.authorize_url;link.target='_blank';link.rel='noopener noreferrer';box.append(link);text(box,'After signing in, the browser returns to a 127.0.0.1 address only that device can open. If the page does not load, paste its full address or just the code below.');accountForm(box,true);}
     if(device?.device){
       const card=el('div','connection-form');card.append(el('h3','','ChatGPT device sign-in'));
+      const model=el('input');model.type='text';model.setAttribute('aria-label','ChatGPT model ID');model.placeholder='Model ID available to your ChatGPT account';model.maxLength=256;model.required=true;model.value=device.model||'';model.oninput=()=>{device.model=model.value;};card.append(model);
+      text(card,'Choose a model ID supported by your ChatGPT account. Your global provider model is not reused.');
       const link=el('a','command-run','Open verification page');link.href=device.device.verification_uri;link.target='_blank';link.rel='noopener noreferrer';card.append(link);
       const codeLine=el('p','');codeLine.append(el('strong','',device.device.user_code));card.append(codeLine);
       text(card,'Enter this code on the verification page from any device. This page finishes sign-in automatically.');text(card,'If ChatGPT rejects the code, enable device code authorization in ChatGPT → Settings → Security.');
@@ -129,7 +136,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
       const copy=el('button','quiet','Copy code');copy.type='button';copy.onclick=()=>{navigator.clipboard?.writeText(device.device.user_code).then(()=>feedback('Code copied'),()=>{});};card.append(copy);
       const cancel=el('button','quiet','Cancel');cancel.type='button';cancel.onclick=()=>guard(()=>{stopDevice();device=null;renderBody();});card.append(cancel);
       box.append(card);
-      if(!deviceTimer){const attempt=device.attempt,wait=Math.max(3,Number(device.device.interval)||5)*1000;deviceTimer=setInterval(async()=>{try{const next=await api('settings',{revision:data.revision,action:'device-poll',args:attempt,model:data.defaults.model||'',confirmed:true});if(next?.sign_in?.status==='connected'){stopDevice();device=null;data=next;feedback('ChatGPT connected');renderBody();}else if(status.isConnected)status.textContent='Waiting for approval…';}catch(e){stopDevice();if(status.isConnected){status.textContent=e.message;status.classList.add('settings-error');}}},wait);}
+      if(!deviceTimer){const wait=Math.max(3,Number(device.device.interval)||5)*1000;deviceTimer=setInterval(async()=>{const change=devicePollRequest(device,data.revision);if(!change){if(status.isConnected)status.textContent='Enter a ChatGPT model ID to complete sign-in.';return;}try{const next=await api('settings',change);if(next?.sign_in?.status==='connected'){stopDevice();device=null;data=next;feedback('ChatGPT connected');renderBody();}else if(status.isConnected)status.textContent='Waiting for approval…';}catch(e){stopDevice();if(status.isConnected){status.textContent=e.message;status.classList.add('settings-error');}}},wait);}
     }
   }
   function tools(parent){

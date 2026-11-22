@@ -1393,6 +1393,13 @@ fn login_attempts() -> &'static std::sync::Mutex<std::collections::HashMap<Strin
     > = std::sync::OnceLock::new();
     STORE.get_or_init(Default::default)
 }
+fn device_model(value: &Value) -> Result<String, String> {
+    let model = label(value, "model")?;
+    if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
+        return Err("Choose a ChatGPT model ID up to 256 bytes before completing sign-in".into());
+    }
+    Ok(model)
+}
 pub(crate) fn login(
     cfg: &mut config::Config,
     owner: &str,
@@ -1497,6 +1504,10 @@ pub(crate) fn login(
                     }
                 }
             };
+            let model = device_model(v)?;
+            if v["confirmed"] != true {
+                return Err("Confirm saving this connection on the host".into());
+            }
             let credential = match device.poll() {
                 Ok(Some(credential)) => credential,
                 Ok(None) => return Ok(json!({"status":"pending"})),
@@ -1507,13 +1518,6 @@ pub(crate) fn login(
                     return Err(error);
                 }
             };
-            if v["confirmed"] != true {
-                return Err("Confirm saving this connection on the host".into());
-            }
-            let model = label(v, "model")?;
-            if model.len() > 256 || model.chars().any(char::is_control) {
-                return Err("Enter a model ID up to 256 bytes".into());
-            }
             if let Ok(mut attempts) = login_attempts().lock() {
                 attempts.remove(&attempt_id);
             }
@@ -1941,6 +1945,22 @@ pub fn finish_heavy(
 #[cfg(test)]
 mod mutation_tests {
     use super::*;
+    #[test]
+    fn device_sign_in_requires_an_explicit_model() {
+        for value in [
+            json!({}),
+            json!({"model":""}),
+            json!({"model":"   "}),
+            json!({"model":"bad\nmodel"}),
+            json!({"model":"x".repeat(257)}),
+        ] {
+            assert!(device_model(&value).is_err());
+        }
+        assert_eq!(
+            device_model(&json!({"model":"gpt-5-codex"})).unwrap(),
+            "gpt-5-codex"
+        );
+    }
     #[test]
     fn naming_is_local_and_unconfirmed_destructive_commands_do_nothing() {
         let path = std::env::temp_dir().join(format!("gc-web-commands-{}", std::process::id()));

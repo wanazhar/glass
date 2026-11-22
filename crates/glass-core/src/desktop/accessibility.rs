@@ -186,13 +186,19 @@ async fn observe_async(
         .build()
         .await
         .map_err(accessibility_error)?;
-    let mut application_roots = if window_root.is_some() && application_window_scope.is_none() {
-        Vec::new()
-    } else {
-        root.get_children().await.map_err(accessibility_error)?
-    };
+    let mut application_roots =
+        if !label_scan && window_root.is_some() && application_window_scope.is_none() {
+            Vec::new()
+        } else {
+            root.get_children().await.map_err(accessibility_error)?
+        };
     let roots_truncated = application_roots.len() > MAX_NODES;
     application_roots.truncate(MAX_NODES);
+    let label_windows = if label_scan && !roots_truncated {
+        label_window_inventory(&accessibility, &application_roots, session_id).await
+    } else {
+        None
+    };
     let mut app_scoped_query = window_scoped;
     let mut scoped_window_roots = Vec::<(ObjectRefOwned, String)>::new();
     if let Some(window_root) = window_root {
@@ -745,11 +751,7 @@ async fn observe_async(
             ));
             if query.is_some() && matched_actionable_count >= 2 {
                 query_ambiguous = true;
-                let labelled = nodes
-                    .iter()
-                    .filter(|node| node["bounds"].is_object())
-                    .count();
-                if matched_visible_count > 0 && query_scan_is_done(label_scan, labelled) {
+                if matched_visible_count > 0 && query_scan_is_done(label_scan) {
                     truncated = !pending.is_empty();
                     break;
                 }
@@ -923,7 +925,7 @@ async fn observe_async(
         return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
     }
 
-    let value = json!({
+    let mut value = json!({
         "sessionId": session_id,
         "revision": revision,
         "query": query,
@@ -935,6 +937,9 @@ async fn observe_async(
         "queryAmbiguous": query_ambiguous,
         "nodes": nodes,
     });
+    if label_scan {
+        value["labelWindows"] = json!(label_windows);
+    }
     #[cfg(test)]
     let value = {
         let mut value = value;
@@ -962,10 +967,71 @@ fn query_match_is_visible(matches: bool, actionable: bool, visible: bool, onscre
 }
 
 /// Two matches already make an ordinary query ambiguous. A labelled
-/// screenshot keeps scanning for onscreen matches to number, up to its box
-/// limit; ambiguity still withholds every action token.
-fn query_scan_is_done(label_scan: bool, labelled: usize) -> bool {
-    !label_scan || labelled >= super::capture::MAX_LABELS
+/// screenshot keeps scanning within the traversal budgets, so covered controls
+/// can be removed before applying the box limit.
+fn query_scan_is_done(label_scan: bool) -> bool {
+    !label_scan
+}
+
+async fn label_window_inventory(
+    connection: &atspi::zbus::Connection,
+    applications: &[ObjectRefOwned],
+    session_id: &str,
+) -> Option<Vec<Value>> {
+    // AT-SPI exposes application-specific AccessibleIds, not X11 XIDs. Resolve
+    // the application's bus PID and associate it with _NET_WM_PID instead.
+    let bus = Proxy::new(
+        connection,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    )
+    .await
+    .ok()?;
+    let mut windows = Vec::new();
+    for object in applications {
+        let application = object.as_accessible_proxy(connection).await.ok()?;
+        let pid: u32 = bus
+            .call("GetConnectionUnixProcessID", &(object.name_as_str()?,))
+            .await
+            .ok()?;
+        let children = application.get_children().await.ok()?;
+        if windows.len() + children.len() > MAX_SEARCH_NODES {
+            return None;
+        }
+        for child in children {
+            let window = child.as_accessible_proxy(connection).await.ok()?;
+            let role = window.get_role_name().await.ok()?;
+            if !matches!(
+                role.to_ascii_lowercase().as_str(),
+                "frame" | "window" | "dialog" | "alert" | "file chooser"
+            ) {
+                continue;
+            }
+            let title = window.name().await.ok()?;
+            let identity = if title.trim().is_empty() {
+                display_accessible_name(
+                    title.clone(),
+                    Some(accessible_context_name(&window, connection).await),
+                )
+            } else {
+                title.clone()
+            };
+            let mut metadata = json!({
+                "windowId": accessibility_window_id(session_id, &child, &role, &window_name_identity(&identity)),
+                "pid": pid,
+                "title": title,
+            });
+            if let Some((x, y, width, height)) = query_screen_extents(&window).await {
+                metadata["x"] = json!(x as f64 / super::WIDTH as f64);
+                metadata["y"] = json!(y as f64 / super::HEIGHT as f64);
+                metadata["width"] = json!(width as f64 / super::WIDTH as f64);
+                metadata["height"] = json!(height as f64 / super::HEIGHT as f64);
+            }
+            windows.push(metadata);
+        }
+    }
+    Some(windows)
 }
 
 fn focused_search_result_is_actionable(
@@ -1973,10 +2039,8 @@ mod tests {
 
     #[test]
     fn only_a_labelled_screenshot_keeps_scanning_past_an_ambiguous_match() {
-        assert!(query_scan_is_done(false, 0));
-        assert!(!query_scan_is_done(true, 0));
-        assert!(!query_scan_is_done(true, 2));
-        assert!(query_scan_is_done(true, super::super::capture::MAX_LABELS));
+        assert!(query_scan_is_done(false));
+        assert!(!query_scan_is_done(true));
     }
 
     #[test]

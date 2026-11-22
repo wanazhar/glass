@@ -1797,16 +1797,20 @@ fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Resu
         .ok()
         .and_then(|value| value["windows"].as_array())
         .map(Vec::as_slice);
-    let found = matches.len();
-    let mut nodes = match stack {
-        Some(stack) => uncovered_labels(matches, stack),
-        None => matches,
-    };
-    let hidden = found - nodes.len();
-    nodes.truncate(capture::MAX_LABELS);
+    let LabelSelection {
+        nodes,
+        hidden,
+        unknown,
+    } = uncovered_labels(
+        matches,
+        stack,
+        observation["labelWindows"].as_array().map(Vec::as_slice),
+    );
     if nodes.is_empty() {
-        let reason = if hidden > 0 {
-            "every match is covered by another window"
+        let reason = if unknown > 0 {
+            "occlusion is unknown because window ownership or stacking could not be established; those labels were omitted"
+        } else if hidden > 0 {
+            "every match is covered or its window is not visible on this workspace"
         } else {
             "no onscreen control matched"
         };
@@ -1822,10 +1826,7 @@ fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Resu
         return Err(error.to_owned());
     }
     let saved = save_agent_frame(workspace, &frame)?;
-    let mut legend = label_legend(&observation, &nodes, hidden);
-    if stack.is_none() {
-        legend.push_str("\nWindow stacking could not be read, so a box may sit on a window covering its control; check the image before clicking.");
-    }
+    let legend = label_legend(&observation, &nodes, hidden, unknown);
     Ok(format!("{saved}\n{legend}"))
 }
 
@@ -1845,9 +1846,22 @@ fn window_covers(window: &Value, x: f64, y: f64) -> bool {
 /// Drops matches whose control is fully covered by windows stacked above its
 /// own window, and the pointer of a match whose click point is covered.
 /// AT-SPI reports such controls as showing, so only X11 stacking reveals it.
-fn uncovered_labels(nodes: Vec<Value>, stack: &[Value]) -> Vec<Value> {
+fn uncovered_labels(
+    nodes: Vec<Value>,
+    stack: Option<&[Value]>,
+    windows: Option<&[Value]>,
+) -> LabelSelection {
     const SAMPLES: u32 = 5;
-    nodes
+    let mut selection = LabelSelection {
+        nodes: Vec::new(),
+        hidden: 0,
+        unknown: 0,
+    };
+    let (Some(stack), Some(windows)) = (stack, windows) else {
+        selection.unknown = nodes.len();
+        return selection;
+    };
+    selection.nodes = nodes
         .into_iter()
         .filter_map(|mut node| {
             let bounds = &node["bounds"];
@@ -1857,26 +1871,18 @@ fn uncovered_labels(nodes: Vec<Value>, stack: &[Value]) -> Vec<Value> {
                 bounds["width"].as_f64()?,
                 bounds["height"].as_f64()?,
             );
-            let (center_x, center_y) = (x + width / 2.0, y + height / 2.0);
-            let title = node["owningWindow"]["name"].as_str().unwrap_or_default();
-            let owners: Vec<usize> = stack
-                .iter()
-                .enumerate()
-                .filter(|(_, window)| !title.is_empty() && window["title"] == title)
-                .map(|(index, _)| index)
-                .collect();
-            let Some(&owner) = owners
-                .iter()
-                .rev()
-                .find(|&&index| window_covers(&stack[index], center_x, center_y))
-                .or(owners.last())
-            else {
-                return Some(node);
+            let Some(owner) = label_window_owner(&node["owningWindow"], windows, stack) else {
+                selection.unknown += 1;
+                return None;
             };
+            if stack[owner]["visible"] != true {
+                selection.hidden += 1;
+                return None;
+            }
             let covered = |px: f64, py: f64| {
                 stack[owner + 1..]
                     .iter()
-                    .any(|window| window_covers(window, px, py))
+                    .any(|window| window["visible"] == true && window_covers(window, px, py))
             };
             let visible = (0..SAMPLES * SAMPLES).any(|sample| {
                 let column = f64::from(sample % SAMPLES) + 0.5;
@@ -1887,6 +1893,7 @@ fn uncovered_labels(nodes: Vec<Value>, stack: &[Value]) -> Vec<Value> {
                 )
             });
             if !visible {
+                selection.hidden += 1;
                 return None;
             }
             if let (Some(px), Some(py)) = (
@@ -1898,10 +1905,74 @@ fn uncovered_labels(nodes: Vec<Value>, stack: &[Value]) -> Vec<Value> {
             }
             Some(node)
         })
-        .collect()
+        .collect();
+    selection.nodes.truncate(capture::MAX_LABELS);
+    selection
 }
 
-fn label_legend(observation: &Value, nodes: &[Value], hidden: usize) -> String {
+struct LabelSelection {
+    nodes: Vec<Value>,
+    hidden: usize,
+    unknown: usize,
+}
+
+fn rectangles_overlap(a: &Value, b: &Value) -> bool {
+    let rect = |value: &Value| {
+        Some((
+            value["x"].as_f64()?,
+            value["y"].as_f64()?,
+            value["width"].as_f64()?,
+            value["height"].as_f64()?,
+        ))
+    };
+    let (Some((ax, ay, aw, ah)), Some((bx, by, bw, bh))) = (rect(a), rect(b)) else {
+        return false;
+    };
+    aw > 0.0
+        && ah > 0.0
+        && bw > 0.0
+        && bh > 0.0
+        && ax < bx + bw
+        && bx < ax + aw
+        && ay < by + bh
+        && by < ay + ah
+}
+
+fn label_window_owner(owner: &Value, windows: &[Value], stack: &[Value]) -> Option<usize> {
+    let id = owner["windowId"].as_str()?;
+    let window = windows.iter().find(|window| window["windowId"] == id)?;
+    let pid = window["pid"].as_u64().filter(|pid| *pid > 0)?;
+    let clients = stack
+        .iter()
+        .enumerate()
+        .filter(|(_, client)| client["pid"].as_u64() == Some(pid))
+        .collect::<Vec<_>>();
+    let peers = windows
+        .iter()
+        .filter(|window| window["pid"].as_u64() == Some(pid))
+        .collect::<Vec<_>>();
+    if clients.len() == 1 && peers.len() == 1 {
+        return Some(clients[0].0);
+    }
+    let same_window = |a: &Value, b: &Value| {
+        a["title"].as_str().is_some() && a["title"] == b["title"] && rectangles_overlap(a, b)
+    };
+    let candidates = clients
+        .into_iter()
+        .filter(|(_, client)| same_window(window, client))
+        .collect::<Vec<_>>();
+    let [(index, client)] = candidates.as_slice() else {
+        return None;
+    };
+    (peers
+        .into_iter()
+        .filter(|peer| same_window(peer, client))
+        .count()
+        == 1)
+        .then_some(*index)
+}
+
+fn label_legend(observation: &Value, nodes: &[Value], hidden: usize, unknown: usize) -> String {
     let revision = &observation["revision"];
     let actionable = observation["queryAmbiguous"] != true && observation["truncated"] != true;
     let mut legend = format!(
@@ -1912,7 +1983,10 @@ fn label_legend(observation: &Value, nodes: &[Value], hidden: usize) -> String {
         legend.push_str(" The match is ambiguous or truncated, so no number can be acted on yet: refine labels.query or pass a windowId, then label again.");
     }
     if hidden > 0 {
-        legend.push_str(&format!(" {hidden} more match(es) are covered by other windows and were not labelled; bring their window forward with desktop_windows to see them."));
+        legend.push_str(&format!(" {hidden} more match(es) are covered by other windows or not visible on this workspace and were not labelled; bring their window forward with desktop_windows to see them."));
+    }
+    if unknown > 0 {
+        legend.push_str(&format!(" Occlusion is unknown for {unknown} match(es): window ownership or stacking could not be established, so their labels were omitted."));
     }
     for (index, node) in nodes.iter().enumerate() {
         let mut line = format!(
@@ -2633,28 +2707,36 @@ mod tests {
         let observation = json!({"revision": 7, "queryAmbiguous": false, "truncated": false});
         let save = json!({"role":"push button","name":"Save","targetId":"t-1","pointerTarget":{"x":0.25,"y":0.5}});
         let label = json!({"role":"label","name":"Untitled","targetId":null,"pointerTarget":null});
-        let legend = label_legend(&observation, &[save, label.clone()], 0);
+        let legend = label_legend(&observation, &[save, label.clone()], 0, 0);
         assert!(legend.contains("revision 7"));
         assert!(legend.contains("[1] push button \"Save\" targetId=t-1 pointer x=0.2500 y=0.5000"));
         assert!(legend.contains("[2] label \"Untitled\" (look only)"));
         assert!(!legend.contains("ambiguous"));
         let ambiguous = json!({"revision": 8, "queryAmbiguous": true});
         assert!(
-            label_legend(&ambiguous, std::slice::from_ref(&label), 0)
+            label_legend(&ambiguous, std::slice::from_ref(&label), 0, 0)
                 .contains("refine labels.query")
         );
-        assert!(label_legend(&observation, &[label], 2).contains("2 more match(es) are covered"));
+        assert!(
+            label_legend(&observation, std::slice::from_ref(&label), 2, 0)
+                .contains("2 more match(es) are covered")
+        );
+        assert!(
+            label_legend(&observation, &[label], 0, 1)
+                .contains("Occlusion is unknown for 1 match(es)")
+        );
     }
 
     #[test]
     fn labels_skip_controls_covered_by_a_window_stacked_above() {
-        let window = |title: &str, x: f64, y: f64| json!({"title": title, "x": x, "y": y, "width": 0.5, "height": 0.5});
+        let window = |title: &str, x: f64, y: f64| json!({"title": title, "pid": if title == "Editor" { 11 } else { 22 }, "visible": true, "x": x, "y": y, "width": 0.5, "height": 0.5});
+        let windows = [json!({"windowId": "editor", "pid": 11, "title": "Editor"})];
         // Bottom to top: the editor, then a file manager over its right half.
         let stack = [window("Editor", 0.0, 0.0), window("Files", 0.3, 0.0)];
         let control = |name: &str, x: f64, pointer_x: f64| {
             json!({
                 "name": name,
-                "owningWindow": {"name": "Editor"},
+                "owningWindow": {"windowId": "editor", "name": "Editor"},
                 "bounds": {"x": x, "y": 0.1, "width": 0.1, "height": 0.05},
                 "pointerTarget": {"x": pointer_x, "y": 0.125},
             })
@@ -2663,21 +2745,143 @@ mod tests {
         let edge = control("Edge", 0.25, 0.32);
         let save = control("Save", 0.35, 0.4);
         let unknown = json!({"name": "Unknown", "bounds": {"x": 0.35, "y": 0.1, "width": 0.1, "height": 0.05}});
-        let kept = uncovered_labels(vec![open, edge, save, unknown], &stack);
+        let kept = uncovered_labels(
+            vec![open, edge, save, unknown],
+            Some(&stack),
+            Some(&windows),
+        );
+        assert_eq!((kept.hidden, kept.unknown), (1, 1));
         let names: Vec<&str> = kept
+            .nodes
             .iter()
             .filter_map(|node| node["name"].as_str())
             .collect();
-        assert_eq!(names, ["Open", "Edge", "Unknown"]);
-        assert_eq!(kept[0]["pointerTarget"]["x"], 0.1);
+        assert_eq!(names, ["Open", "Edge"]);
+        assert_eq!(kept.nodes[0]["pointerTarget"]["x"], 0.1);
         assert!(
-            kept[1]["pointerTarget"].is_null(),
+            kept.nodes[1]["pointerTarget"].is_null(),
             "a covered click point is withheld"
         );
 
         let on_top = [window("Files", 0.3, 0.0), window("Editor", 0.0, 0.0)];
         let save = control("Save", 0.35, 0.4);
-        assert_eq!(uncovered_labels(vec![save], &on_top).len(), 1);
+        assert_eq!(
+            uncovered_labels(vec![save], Some(&on_top), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn labels_match_unique_pids_without_cross_pid_title_fallbacks() {
+        let owner = json!({"windowId":"editor"});
+        let windows = [json!({"windowId":"editor", "pid":11, "title":"AT-SPI title"})];
+        let stack = [
+            json!({"pid":22,"title":"AT-SPI title"}),
+            json!({"pid":11,"title":"X11 title"}),
+        ];
+        assert_eq!(label_window_owner(&owner, &windows, &stack), Some(1));
+        assert_eq!(label_window_owner(&owner, &windows, &stack[..1]), None);
+        assert_eq!(label_window_owner(&owner, &[], &stack), None);
+        assert_eq!(label_window_owner(&json!({}), &windows, &stack), None);
+        assert_eq!(
+            label_window_owner(&owner, &[json!({"windowId":"editor","pid":0})], &stack),
+            None
+        );
+    }
+
+    #[test]
+    fn labels_disambiguate_only_exact_titles_and_overlapping_rects_within_a_pid() {
+        let owner = json!({"windowId":"editor"});
+        let window = |id: &str, title: &str, x: f64| json!({"windowId":id,"pid":11,"title":title,"x":x,"y":0.0,"width":0.4,"height":0.5});
+        let windows = [
+            window("editor", "Editor", -0.1),
+            window("other", "Editor", 0.6),
+        ];
+        let stack = [window("x1", "Editor", -0.2), window("x2", "Editor", 0.6)];
+        assert_eq!(label_window_owner(&owner, &windows, &stack), Some(0));
+        assert_eq!(
+            label_window_owner(
+                &owner,
+                &windows,
+                &[window("x1", "editor", -0.2), stack[1].clone()]
+            ),
+            None
+        );
+        assert_eq!(
+            label_window_owner(
+                &owner,
+                &windows,
+                &[window("x1", "Editor", 0.3), stack[1].clone()]
+            ),
+            None
+        );
+        assert_eq!(
+            label_window_owner(&owner, &windows, &[stack[0].clone(), stack[0].clone()]),
+            None
+        );
+        assert_eq!(
+            label_window_owner(&owner, &[windows[0].clone(), windows[0].clone()], &stack),
+            None
+        );
+        let mut hidden_peer = stack[0].clone();
+        hidden_peer["visible"] = json!(false);
+        assert_eq!(
+            label_window_owner(&owner, &windows[..1], &[stack[0].clone(), hidden_peer]),
+            None
+        );
+        let mut hidden_accessible = windows[0].clone();
+        hidden_accessible["windowId"] = json!("hidden");
+        assert_eq!(
+            label_window_owner(
+                &owner,
+                &[windows[0].clone(), hidden_accessible],
+                &stack[..1]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn labels_remove_covered_controls_before_the_forty_box_limit() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let stack = [
+            json!({"pid":11,"visible":true,"x":-0.1,"y":0.0,"width":1.0,"height":1.0}),
+            json!({"pid":22,"visible":true,"x":0.3,"y":0.0,"width":0.5,"height":1.0}),
+        ];
+        let control = |x| json!({"owningWindow":{"windowId":"editor"}, "bounds":{"x":x,"y":0.1,"width":0.1,"height":0.05}});
+        let mut nodes = vec![control(0.4); capture::MAX_LABELS];
+        nodes.extend(vec![control(0.0); capture::MAX_LABELS + 1]);
+        let selected = uncovered_labels(nodes.clone(), Some(&stack), Some(&windows));
+        assert_eq!(
+            (selected.nodes.len(), selected.hidden, selected.unknown),
+            (capture::MAX_LABELS, capture::MAX_LABELS, 0)
+        );
+        assert!(selected.nodes.iter().all(|node| node["bounds"]["x"] == 0.0));
+        assert_eq!(uncovered_labels(nodes, None, Some(&windows)).unknown, 81);
+        assert!(
+            uncovered_labels(vec![], Some(&[]), Some(&[]))
+                .nodes
+                .is_empty()
+        );
+        assert_eq!(
+            uncovered_labels(vec![control(0.0)], Some(&stack), None).unknown,
+            1
+        );
+        let mut hidden_stack = stack.clone();
+        hidden_stack[1]["visible"] = json!(false);
+        assert_eq!(
+            uncovered_labels(vec![control(0.4)], Some(&hidden_stack), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+        hidden_stack[0]["visible"] = json!(false);
+        assert_eq!(
+            uncovered_labels(vec![control(0.0)], Some(&hidden_stack), Some(&windows)).hidden,
+            1
+        );
     }
 
     #[test]

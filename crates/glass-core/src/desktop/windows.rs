@@ -83,6 +83,9 @@ fn parse_list(output: &str) -> Vec<Value> {
 /// Parses `xprop -root _NET_CLIENT_LIST_STACKING`, bottom to top.
 fn parse_stacking(output: &str) -> Vec<u64> {
     output
+        .lines()
+        .next()
+        .unwrap_or_default()
         .split_once('#')
         .map(|(_, ids)| ids)
         .unwrap_or_default()
@@ -109,26 +112,114 @@ fn order_by_stacking(windows: Vec<Value>, order: &[u64]) -> Vec<Value> {
 }
 
 fn stack(display: &str, xauthority: &Path) -> Result<Vec<Value>, String> {
-    let windows = parse_list(&wmctrl(display, xauthority, &["-l", "-x", "-G"])?);
-    let mut child = Command::new("xprop")
-        .args(["-root", "_NET_CLIENT_LIST_STACKING"])
-        .env("DISPLAY", display)
-        .env("XAUTHORITY", xauthority)
-        .env_remove("WAYLAND_DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("Could not run xprop: {error}"))?;
-    let status = wait_bounded(&mut child)?;
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut pipe, &mut stdout);
+    let mut windows = parse_list(&wmctrl(display, xauthority, &["-l", "-x", "-G"])?);
+    let output = x11_command(
+        "xprop",
+        display,
+        xauthority,
+        &["-root", "_NET_CLIENT_LIST_STACKING", "_NET_CURRENT_DESKTOP"],
+    )?;
+    let order = parse_stacking(&output);
+    let desktop = property_numbers(&output, "_NET_CURRENT_DESKTOP")
+        .first()
+        .copied()
+        .ok_or("X11 current desktop is unavailable")?;
+    for window in &mut windows {
+        if !window_number(window).is_some_and(|id| order.contains(&id)) {
+            return Err("X11 client list changed while reading window stacking".into());
+        }
+        let id = window["id"].as_str().ok_or("missing window id")?;
+        let properties = x11_command(
+            "xprop",
+            display,
+            xauthority,
+            &[
+                "-id",
+                id,
+                "_NET_WM_PID",
+                "_NET_WM_DESKTOP",
+                "_NET_WM_STATE",
+                "_NET_FRAME_EXTENTS",
+            ],
+        )?;
+        let geometry = x11_command("xwininfo", display, xauthority, &["-id", id])?;
+        apply_stack_metadata(window, &properties, &geometry, desktop)?;
     }
-    if !status.success() {
-        return Err("The window manager did not report its stacking order".into());
+    Ok(order_by_stacking(windows, &order))
+}
+
+fn property_numbers(output: &str, name: &str) -> Vec<i64> {
+    output
+        .lines()
+        .find_map(|line| {
+            let (property, values) = line.split_once('=')?;
+            (property.split('(').next()?.trim() == name).then(|| {
+                values
+                    .split(',')
+                    .filter_map(|value| value.trim().parse().ok())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn apply_stack_metadata(
+    window: &mut Value,
+    properties: &str,
+    geometry: &str,
+    desktop: i64,
+) -> Result<(), String> {
+    let field = |name: &str| {
+        geometry
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(name).map(str::trim))
+    };
+    let number = |name: &str| {
+        field(name)
+            .and_then(|value| value.parse::<i64>().ok())
+            .ok_or("X11 window geometry is unavailable")
+    };
+    let extents = property_numbers(properties, "_NET_FRAME_EXTENTS");
+    let extent = |index: usize| extents.get(index).copied().unwrap_or(0).max(0) as f64;
+    let (left, right, top, bottom) = (extent(0), extent(1), extent(2), extent(3));
+    let (x, y, width, height) = (
+        number("Absolute upper-left X:")? as f64,
+        number("Absolute upper-left Y:")? as f64,
+        number("Width:")? as f64,
+        number("Height:")? as f64,
+    );
+    if width <= 0.0 || height <= 0.0 {
+        return Err("X11 window geometry is empty".into());
     }
-    Ok(order_by_stacking(windows, &parse_stacking(&stdout)))
+    window["x"] = json!((x - left) / WIDTH as f64);
+    window["y"] = json!((y - top) / HEIGHT as f64);
+    window["width"] = json!((width + left + right) / WIDTH as f64);
+    window["height"] = json!((height + top + bottom) / HEIGHT as f64);
+    window["pid"] = json!(
+        property_numbers(properties, "_NET_WM_PID")
+            .first()
+            .copied()
+            .filter(|pid| *pid > 0)
+    );
+    let workspace = property_numbers(properties, "_NET_WM_DESKTOP")
+        .first()
+        .copied();
+    window["desktop"] = json!(workspace);
+    let hidden = properties
+        .lines()
+        .filter(|line| line.starts_with("_NET_WM_STATE("))
+        .any(|line| {
+            line.split(|c: char| c.is_whitespace() || c == ',')
+                .any(|atom| atom == "_NET_WM_STATE_HIDDEN")
+        });
+    window["visible"] = json!(
+        field("Map State:") == Some("IsViewable")
+            && !hidden
+            && workspace.is_some_and(|workspace| workspace == desktop
+                || workspace == -1
+                || workspace == u32::MAX as i64)
+    );
+    Ok(())
 }
 
 fn wmctrl(display: &str, xauthority: &Path, args: &[&str]) -> Result<String, String> {
@@ -430,6 +521,64 @@ mod tests {
             .collect();
         assert_eq!(titles, ["Mousepad", "Files"]);
         assert!(parse_stacking("_NET_CLIENT_LIST_STACKING:  not found.").is_empty());
+    }
+
+    #[test]
+    fn stack_metadata_preserves_negative_origins_and_adjusts_for_frames() {
+        let mut window = json!({});
+        let geometry = "  Absolute upper-left X: -100\n Absolute upper-left Y: -20\n Width: 800\n Height: 600\n Map State: IsViewable\n";
+        let properties = "_NET_WM_PID(CARDINAL) = 123\n_NET_WM_DESKTOP(CARDINAL) = 2\n_NET_WM_STATE(ATOM) = \n_NET_FRAME_EXTENTS(CARDINAL) = 5, 7, 30, 9\n";
+        apply_stack_metadata(&mut window, properties, geometry, 2).unwrap();
+        assert_eq!(window["x"], -105.0 / WIDTH as f64);
+        assert_eq!(window["y"], -50.0 / HEIGHT as f64);
+        assert_eq!(window["width"], 812.0 / WIDTH as f64);
+        assert_eq!(window["height"], 639.0 / HEIGHT as f64);
+        assert_eq!(window["pid"], 123);
+        assert_eq!(window["visible"], true);
+        assert!(apply_stack_metadata(&mut window, properties, "", 2).is_err());
+        assert!(
+            apply_stack_metadata(
+                &mut window,
+                properties,
+                &geometry.replace("Width: 800", "Width: 0"),
+                2
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse_stacking(
+                "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0x1, 0x2\n_NET_CURRENT_DESKTOP(CARDINAL) = 2"
+            ),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn stack_metadata_filters_hidden_unmapped_and_other_workspaces_but_keeps_pinned() {
+        let mut window = json!({});
+        let geometry = "Absolute upper-left X: 0\nAbsolute upper-left Y: 0\nWidth: 100\nHeight: 100\nMap State: IsViewable";
+        for (desktop, state, mapped, visible) in [
+            (2, "", "IsViewable", true),
+            (1, "", "IsViewable", false),
+            (-1, "", "IsViewable", true),
+            (u32::MAX as i64, "", "IsViewable", true),
+            (2, "_NET_WM_STATE_HIDDEN", "IsViewable", false),
+            (2, "", "IsUnMapped", false),
+        ] {
+            let properties =
+                format!("_NET_WM_DESKTOP(CARDINAL) = {desktop}\n_NET_WM_STATE(ATOM) = {state}");
+            apply_stack_metadata(
+                &mut window,
+                &properties,
+                &geometry.replace("IsViewable", mapped),
+                2,
+            )
+            .unwrap();
+            assert_eq!(window["visible"], visible, "{properties} {mapped}");
+        }
+        apply_stack_metadata(&mut window, "", geometry, 2).unwrap();
+        assert_eq!(window["visible"], false);
+        assert!(window["pid"].is_null());
     }
 }
 

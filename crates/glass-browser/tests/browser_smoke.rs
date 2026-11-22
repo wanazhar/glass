@@ -703,6 +703,18 @@ async fn consent_dialogs_accept_explicit_cookie_choices_only() {
             "<dialog open aria-label='GDPR consent'>We use cookies.<button onclick='window.choice=true'>OK</button></dialog>",
             true,
         ),
+        (
+            "<dialog open aria-label='Privacy consent'>Choose your preferences<button onclick='window.choice=true'>Accept all cookies</button></dialog>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='GDPR consent'><button onclick='window.unrelatedChoice=true'>OK</button><button onclick='window.choice=true'>Reject all cookies and continue</button></dialog>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='Privacy consent'><button onclick='window.unrelatedChoice=true'>OK</button><button style='display:none' onclick='window.choice=true'>Accept all cookies</button></dialog>",
+            false,
+        ),
         ("", false),
     ] {
         session

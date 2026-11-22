@@ -126,9 +126,10 @@ pub(crate) fn inject(tool: &str, arguments: &Value) -> Result<Value, String> {
 fn redact_with(secrets: &Secrets, text: &str) -> String {
     let mut text = text.to_owned();
     for (name, value) in secrets {
-        if text.contains(value.as_str()) {
-            text = text.replace(value.as_str(), &format!("{OPEN}{name}}}}}"));
-        }
+        let placeholder = format!("{OPEN}{name}}}}}");
+        let escaped = serde_json::to_string(value).expect("string serialization");
+        text = text.replace(&escaped[1..escaped.len() - 1], &placeholder);
+        text = text.replace(value.as_str(), &placeholder);
     }
     text
 }
@@ -136,6 +137,21 @@ fn redact_with(secrets: &Secrets, text: &str) -> String {
 /// Replace every secret value in a tool result with its placeholder.
 pub(crate) fn redact(text: &str) -> String {
     redact_with(loaded(), text)
+}
+
+pub(crate) fn redact_value(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = redact(text),
+        Value::Array(values) => values.iter_mut().for_each(redact_value),
+        Value::Object(object) => {
+            let original = std::mem::take(object);
+            for (key, mut value) in original {
+                redact_value(&mut value);
+                object.insert(redact(&key), value);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +224,17 @@ mod tests {
         assert_eq!(
             redact_with(&secrets(), text),
             "Signed in with {{secret:SITE_PASSWORD}}; token {{secret:API_TOKEN}}; pin 123"
+        );
+    }
+
+    #[test]
+    fn escaped_json_strings_are_redacted() {
+        let secrets = vec![("QUOTED".into(), "pass\"word\\token\nend".into())];
+        let text = json!({"text":secrets[0].1}).to_string();
+        let redacted = redact_with(&secrets, &text);
+        assert_eq!(
+            serde_json::from_str::<Value>(&redacted).unwrap()["text"],
+            "{{secret:QUOTED}}"
         );
     }
 }

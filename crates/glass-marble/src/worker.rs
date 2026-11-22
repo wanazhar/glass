@@ -901,6 +901,7 @@ fn run_command(
     cancels: &CancelRegistry,
 ) {
     let TurnCommand { request, accepted } = command;
+    conversation.set_store(store);
     let mut sender = Some(accepted);
     // The surface records a queued placeholder before handing the message over,
     // so a `202 queued` is visible in the document. The real task replaces it as

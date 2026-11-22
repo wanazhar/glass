@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -133,6 +134,27 @@ def run_turn(identifier, task, text, conversation, request):
     event(turn, "turn_start", {})
     if argument("--pre-tool-text"):
         event(turn, "text", {"text": argument("--pre-tool-text")})
+    if "--native-date" in sys.argv:
+        with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
+            options = json.load(handle)
+        name = options["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]
+        executions = []
+        for index in range(2):
+            if index:
+                event(turn, "text", {"text": "Plan two."})
+            call = "date-" + str(index)
+            event(turn, "tool_start", {"callId": call, "name": "bash", "title": "date -u -Iseconds"})
+            result = subprocess.run(["date", "-u", "-Iseconds"], capture_output=True, text=True, check=True)
+            executions.append({"task": task, "callId": call, "output": result.stdout.strip()})
+            event(turn, "tool_end", {"callId": call, "text": result.stdout, "isError": False})
+        with open(os.path.join(STORAGE_DIR, "fixture-date-executions.jsonl"), "a", encoding="utf-8") as handle:
+            for execution in executions:
+                handle.write(json.dumps(execution) + "\n")
+        for chunk in ["@" + name + " The system time is ", result.stdout.strip(), "."]:
+            event(turn, "text", {"text": chunk})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
     if DELAY_MS > 0:
         time.sleep(DELAY_MS / 1000)
     # A prompt of "ASK <name>: <instruction>" makes this engine ask another

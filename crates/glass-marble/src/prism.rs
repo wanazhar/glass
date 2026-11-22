@@ -1178,6 +1178,7 @@ impl PrismPool {
         };
         let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
         let conversation = &mut *guard;
+        conversation.set_store(self.store.as_deref());
         let conversation_id = {
             let state = self.lock_state();
             state

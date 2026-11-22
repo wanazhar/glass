@@ -131,6 +131,25 @@ struct ToolRows {
 }
 
 impl ToolRows {
+    fn normalize(&self, event: &mut RuntimeEvent) {
+        if !matches!(event.kind.as_str(), "tool_start" | "tool_end") {
+            return;
+        }
+        let name = event.data["tool"]
+            .as_str()
+            .or_else(|| event.data["name"].as_str())
+            .or_else(|| {
+                let call = event.data["callId"].as_str()?;
+                self.rows
+                    .iter()
+                    .find(|row| row.0 == call)
+                    .map(|row| row.2.split(" · ").next().unwrap_or("tool"))
+            })
+            .unwrap_or("tool")
+            .to_string();
+        event.data["tool"] = value!(name);
+    }
+
     fn observe(&mut self, event: &RuntimeEvent) -> bool {
         if !matches!(event.kind.as_str(), "tool_start" | "tool_end") {
             return false;
@@ -344,6 +363,7 @@ pub struct Conversation {
     active_task: String,
     /// Durable product document whose control layer classifies every call.
     product: Option<Arc<Mutex<ProductState>>>,
+    store: Option<crate::store::StateStore>,
     /// Corrections arriving while a turn runs, drained between runtime frames.
     steering: Option<mpsc::Receiver<SteerRequest>>,
     /// How to start a fresh engine after the transport dies. `None` means this
@@ -447,6 +467,7 @@ impl Conversation {
             active_conversation: String::new(),
             active_task: String::new(),
             product: None,
+            store: None,
             steering: None,
             respawn: None,
             storage_dir: storage_dir.to_path_buf(),
@@ -494,6 +515,10 @@ impl Conversation {
     pub fn with_product(mut self, product: Arc<Mutex<ProductState>>) -> Self {
         self.product = Some(product);
         self
+    }
+
+    pub(crate) fn set_store(&mut self, store: Option<&crate::store::StateStore>) {
+        self.store = store.cloned();
     }
 
     /// Supply the channel the HTTP surface uses to correct a running turn.
@@ -837,8 +862,38 @@ impl Conversation {
             data["message"] = value!(crate::failure::MESSAGE);
             data["failure"] = value!(failure);
         }
+        let mut everyone = None;
+        if matches!(kind, "tool_start" | "tool_end")
+            && let Some(product) = &self.product
+        {
+            let state = product.lock().unwrap_or_else(|error| error.into_inner());
+            let call = data["callId"].as_str().unwrap_or_default();
+            let id = format!("entry-tool-{}-{call}", self.active_task);
+            if let Some(row) = state.transcript.iter().find(|e| e.id == id) {
+                data["entry_id"] = value!(row.id);
+                data["sender"] = value!(row.speaker_name);
+            }
+            if let Some(row) = state
+                .transcript
+                .iter()
+                .find(|e| e.id == format!("{id}-everyone"))
+            {
+                let mut mirrored = data.clone();
+                mirrored["entry_id"] = value!(row.id);
+                mirrored["sender"] = value!(row.speaker_name);
+                everyone = Some(mirrored);
+            }
+        }
         self.events
             .publish(&self.active_conversation, &self.active_task, kind, data);
+        if let Some(data) = everyone {
+            self.events.publish(
+                crate::everyone::EVERYONE_CONVERSATION,
+                &self.active_task,
+                kind,
+                data,
+            );
+        }
     }
 
     pub fn set_active(&mut self, conversation_id: &str, task_id: &str) {
@@ -975,7 +1030,8 @@ impl Conversation {
                         "unexpected runtime response id {id:?}"
                     )));
                 }
-                Incoming::Event(event) => {
+                Incoming::Event(mut event) => {
+                    tools.normalize(&mut event);
                     if tools.observe(&event) {
                         self.record_tool_rows(&tools);
                     }
@@ -990,10 +1046,11 @@ impl Conversation {
                         session_id: call.session_id.clone(),
                         turn_id: call.turn_id.clone(),
                         kind: "tool_start".into(),
-                        data: value!({"callId": call.call_id, "tool": call.name, "arguments": call.arguments}),
+                        data: value!({"requestId":request_id.as_str().map(str::to_owned).unwrap_or_else(|| request_id.to_string()), "callId": call.call_id, "tool": call.name, "arguments": call.arguments}),
                     };
                     tools.observe(&start);
                     self.record_tool_rows(&tools);
+                    self.publish(&start.kind, start.data.clone());
                     sink(&start);
                     let data = self.handle_tool(request_id, &call, cancel)?;
                     let end = RuntimeEvent {
@@ -1003,6 +1060,7 @@ impl Conversation {
                     };
                     tools.observe(&end);
                     self.record_tool_rows(&tools);
+                    self.publish(&end.kind, end.data.clone());
                     sink(&end);
                 }
                 Incoming::Unknown(_) => {}
@@ -1016,21 +1074,23 @@ impl Conversation {
             return;
         }
         let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        let shared = state
+            .everyone_pending
+            .contains_key(&format!("task:{}", self.active_task));
         let existing: Vec<_> = state
             .transcript
             .iter()
             .filter(|entry| {
-                entry.conversation_id == self.active_conversation
+                (entry.conversation_id == self.active_conversation
+                    || (shared && entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION))
                     && entry.task_id == self.active_task
                     && entry.kind == "tool"
             })
             .cloned()
             .collect();
-        state.transcript.retain(|entry| {
-            entry.conversation_id != self.active_conversation
-                || entry.task_id != self.active_task
-                || entry.kind != "tool"
-        });
+        state
+            .transcript
+            .retain(|entry| !existing.iter().any(|previous| previous.id == entry.id));
         for (call, text, _) in &tools.rows {
             let id = format!("entry-tool-{}-{call}", self.active_task);
             let previous = existing
@@ -1051,7 +1111,38 @@ impl Conversation {
                 },
                 ..previous
             });
+            if shared {
+                let mirror_id = format!("entry-tool-{}-{call}-everyone", self.active_task);
+                let previous = existing
+                    .iter()
+                    .find(|e| e.id == mirror_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let speaker = state
+                    .everyone_pending
+                    .get(&format!("task:{}", self.active_task))
+                    .cloned()
+                    .unwrap_or_default();
+                state.push_transcript(crate::TranscriptEntry {
+                    id: mirror_id,
+                    conversation_id: crate::everyone::EVERYONE_CONVERSATION.into(),
+                    task_id: self.active_task.clone(),
+                    kind: "tool".into(),
+                    text: text.clone(),
+                    at: if previous.at == 0 {
+                        crate::worker::now_millis()
+                    } else {
+                        previous.at
+                    },
+                    speaker,
+                    ..previous
+                });
+            }
         }
+        state.bump();
+        let snapshot = state.clone();
+        drop(state);
+        crate::store::persist_optional(self.store.as_ref(), &snapshot);
     }
 
     /// Apply every queued correction to the turn that is running now. A request
@@ -1113,15 +1204,6 @@ impl Conversation {
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| request_id.to_string());
-        self.publish(
-            "tool_start",
-            value!({
-                "requestId": key,
-                "callId": call.call_id,
-                "tool": call.name,
-                "arguments": call.arguments,
-            }),
-        );
         let scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
         let (approval, reason) = self.decide(&key, call, &scope, cancel);
         let answer = crate::host::answer_tool(
@@ -1156,7 +1238,6 @@ impl Conversation {
             "isError": outcome.is_error,
             "text": outcome.text,
         });
-        self.publish("tool_end", data.clone());
         Ok(data)
     }
 
@@ -1412,6 +1493,33 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_tool_ends_keep_the_start_name_and_failure_status() {
+        let mut tools = ToolRows::default();
+        let mut event = RuntimeEvent {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            kind: "tool_start".into(),
+            data: value!({"callId":"date", "name":"bash", "title":"date"}),
+        };
+        tools.normalize(&mut event);
+        assert!(tools.observe(&event));
+        event.kind = "tool_end".into();
+        event.data = value!({"callId":"date", "isError":true, "text":"error: refused"});
+        tools.normalize(&mut event);
+        assert_eq!(event.data["tool"], "bash");
+        assert!(tools.observe(&event));
+        assert_eq!(tools.rows.len(), 1);
+        assert_eq!(tools.rows[0].1, "bash · date · failed");
+        event.data = value!({"callId":"unknown", "isError":false});
+        tools.normalize(&mut event);
+        assert_eq!(event.data["tool"], "tool");
+        event.data = value!({});
+        tools.normalize(&mut event);
+        assert!(!tools.observe(&event));
+        assert_eq!(tools.rows.len(), 1);
+    }
 
     #[test]
     fn identity_and_brevity_are_shared_without_conflicting_names() {

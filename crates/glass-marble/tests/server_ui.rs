@@ -3125,6 +3125,272 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn everyone_and_private_agents_share_native_tools_and_finish_visible_rows() {
+    if !python3_available() {
+        return;
+    }
+    let args = vec![
+        "--native-date".into(),
+        "--pre-tool-text".into(),
+        "Plan one.".into(),
+    ];
+    let mut fixture =
+        NamedTurnFixture::with_persistence("everyone-native-tools", args.clone(), true);
+    fixture.state.lock().unwrap().model = "fixture-model".into();
+    let dietrich = fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Dietrich", "tester", "square", 200, "", "")
+        .unwrap()
+        .id
+        .clone();
+    fixture.install_default_worker_with_args(args);
+    let agents = [
+        ("marble".to_string(), "Marble"),
+        (fixture.marble_id.clone(), "Ada"),
+        (dietrich, "Dietrich"),
+    ];
+    let mut private = Vec::new();
+    for (id, _) in &agents {
+        let text = format!("private date {id}");
+        let (status, body) = fixture.post(
+            "/api/turns",
+            json!({"text":text, "marbleId":(id != "marble").then_some(id)}),
+        );
+        assert_eq!(status, 202, "{body}");
+        let task = fixture.completed(&text);
+        private.push(task);
+    }
+    let cursor = fixture.events.sequence();
+    let (status, body) = fixture.post(
+        "/api/everyone",
+        json!({"text":"@everyone whats the system time?"}),
+    );
+    assert_eq!(status, 202, "{body}");
+    let receiver = fixture.events.subscribe();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let replies = fixture
+            .events
+            .since(cursor)
+            .iter()
+            .filter(|e| e.kind == "reply" && e.conversation_id == "everyone")
+            .count();
+        if replies == 3 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Everyone did not finish");
+        let _ = receiver.recv_timeout(Duration::from_millis(50));
+    }
+    let disk = fixture.store.as_ref().unwrap().load().unwrap();
+    let events = fixture.events.since(0);
+    for ((id, name), previous) in agents.iter().zip(private.iter()) {
+        let shared = disk
+            .tasks
+            .iter()
+            .find(|t| {
+                (t.marble_id == *id || (id == "marble" && t.marble_id.is_empty()))
+                    && t.prompt == "@everyone whats the system time?"
+            })
+            .unwrap();
+        assert_eq!(
+            shared.conversation_id, previous.conversation_id,
+            "Everyone changed engines"
+        );
+        for task in [previous, shared] {
+            let source: Vec<_> = disk
+                .transcript
+                .iter()
+                .filter(|e| {
+                    e.task_id == task.id
+                        && e.kind == "tool"
+                        && e.conversation_id == task.conversation_id
+                })
+                .collect();
+            assert_eq!(source.len(), 2);
+            assert!(
+                source
+                    .iter()
+                    .all(|e| e.text == "bash · date -u -Iseconds · ok")
+            );
+            let reply = disk
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.task_id == task.id
+                        && e.kind == "assistant"
+                        && e.conversation_id == task.conversation_id
+                })
+                .unwrap();
+            assert!(
+                reply.text.starts_with("The system time is "),
+                "{}",
+                reply.text
+            );
+            assert!(
+                !reply.text.contains('@')
+                    && !reply.text.contains("Plan")
+                    && !reply.text.contains("commentary")
+            );
+            let reasoning = disk
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.task_id == task.id
+                        && e.kind == "reasoning"
+                        && e.conversation_id == task.conversation_id
+                })
+                .unwrap();
+            assert!(
+                reasoning.text.ends_with("\n\nPlan two."),
+                "{}",
+                reasoning.text
+            );
+            for row in source {
+                let lifecycle: Vec<_> = events
+                    .iter()
+                    .filter(|e| {
+                        e.task_id == task.id
+                            && e.conversation_id == task.conversation_id
+                            && e.data["entry_id"] == row.id
+                            && matches!(e.kind.as_str(), "tool_start" | "tool_end")
+                    })
+                    .collect();
+                assert_eq!(
+                    lifecycle.len(),
+                    2,
+                    "private lifecycle missing for {}",
+                    row.id
+                );
+                assert_eq!(lifecycle[0].kind, "tool_start");
+                assert_eq!(lifecycle[1].kind, "tool_end");
+                assert_eq!(lifecycle[0].data["callId"], lifecycle[1].data["callId"]);
+                assert_eq!(lifecycle[1].data["tool"], "bash");
+                assert_eq!(lifecycle[1].data["isError"], false);
+            }
+        }
+        let mirrors: Vec<_> = disk
+            .transcript
+            .iter()
+            .filter(|e| {
+                e.conversation_id == "everyone" && e.task_id == shared.id && e.kind == "tool"
+            })
+            .collect();
+        assert_eq!(mirrors.len(), 2, "Everyone tool rows missing for {name}");
+        for row in mirrors {
+            assert_eq!(row.speaker_name, *name);
+            assert!(row.text.ends_with(" · ok"));
+            let lifecycle: Vec<_> = events
+                .iter()
+                .filter(|e| {
+                    e.conversation_id == "everyone"
+                        && e.task_id == shared.id
+                        && e.data["entry_id"] == row.id
+                        && matches!(e.kind.as_str(), "tool_start" | "tool_end")
+                })
+                .collect();
+            assert_eq!(lifecycle.len(), 2);
+            assert_eq!(lifecycle[0].kind, "tool_start");
+            assert_eq!(lifecycle[1].kind, "tool_end");
+            assert_eq!(lifecycle[1].data["sender"], *name);
+            assert_eq!(lifecycle[0].data["callId"], lifecycle[1].data["callId"]);
+        }
+        let visible_reply = disk
+            .transcript
+            .iter()
+            .find(|e| {
+                e.task_id == shared.id && e.kind == "assistant" && e.conversation_id == "everyone"
+            })
+            .unwrap();
+        assert_eq!(
+            visible_reply.text,
+            disk.transcript
+                .iter()
+                .find(|e| e.task_id == shared.id
+                    && e.kind == "assistant"
+                    && e.conversation_id == shared.conversation_id)
+                .unwrap()
+                .text
+        );
+        let reply_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == "reply" && e.data["id"] == visible_reply.id)
+            .collect();
+        assert_eq!(reply_events.len(), 1);
+        assert_eq!(reply_events[0].conversation_id, "everyone");
+        assert_eq!(reply_events[0].data["sender"], *name);
+        assert_eq!(reply_events[0].data["text"], visible_reply.text);
+        let sessions = if id == "marble" {
+            fixture.root.join("default-sessions")
+        } else {
+            fixture.root.join("prism-sessions").join(id)
+        };
+        let executed: Vec<Value> =
+            std::fs::read_to_string(sessions.join("fixture-date-executions.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        assert_eq!(executed.len(), 4);
+        for task in [previous, shared] {
+            assert_eq!(executed.iter().filter(|e| e["task"] == task.id).count(), 2);
+            let output = executed
+                .iter()
+                .rev()
+                .find(|e| e["task"] == task.id)
+                .unwrap()["output"]
+                .as_str()
+                .unwrap();
+            let reply = disk
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.task_id == task.id
+                        && e.kind == "assistant"
+                        && e.conversation_id == task.conversation_id
+                })
+                .unwrap();
+            assert_eq!(reply.text, format!("The system time is {output}."));
+        }
+        let options: Value = serde_json::from_str(
+            &std::fs::read_to_string(sessions.join("fixture-session-options.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(options["toolMode"], "mixed");
+        assert_eq!(options["model"], "fixture-model");
+        assert!(!options["tools"].as_array().unwrap().is_empty());
+        assert!(
+            options["instructions"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("You are {name}"))
+        );
+        assert!(
+            options["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("Never @mention yourself")
+        );
+        let history: Value = serde_json::from_str(
+            &std::fs::read_to_string(sessions.join("fixture-history.json")).unwrap(),
+        )
+        .unwrap();
+        let conversations = history["conversations"].as_object().unwrap();
+        assert_eq!(conversations.len(), 1);
+        let messages = conversations.values().next().unwrap().as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("This message is addressed to: Marble (lead), Ada, Dietrich.")
+        );
+    }
+}
+
+#[test]
 fn everyone_handoff_reply_emits_the_visible_delegate_entry_once() {
     if !python3_available() {
         return;

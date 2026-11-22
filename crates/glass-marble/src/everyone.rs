@@ -16,21 +16,18 @@ pub const DEFAULT_SPEAKER: &str = "marble";
 
 pub(crate) fn default_conversation(state: &ProductState) -> Option<String> {
     state
-        .transcript
+        .tasks
         .iter()
         .rev()
-        .filter(|e| e.conversation_id == EVERYONE_CONVERSATION && e.speaker == DEFAULT_SPEAKER)
-        .find_map(|entry| {
-            state
-                .tasks
-                .iter()
-                .find(|task| task.id == entry.task_id)
-                .filter(|task| {
-                    !task.conversation_id.is_empty()
-                        && !task.conversation_id.starts_with("recovered-")
-                })
-                .map(|task| task.conversation_id.clone())
+        .find(|task| {
+            (task.marble_id.is_empty() || task.marble_id == DEFAULT_SPEAKER)
+                && task.owner != "prism"
+                && state.prism.owner_of(&task.conversation_id).is_none()
+                && task.status != "queued"
+                && !task.conversation_id.is_empty()
+                && !task.conversation_id.starts_with("recovered-")
         })
+        .map(|task| task.conversation_id.clone())
 }
 
 /// Who should answer one Everyone message.

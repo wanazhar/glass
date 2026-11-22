@@ -62,7 +62,7 @@ struct TranscriptView: View {
                     MarbleTurnTail(task: store.latestTurn(in: conversationId), entries: entries)
                     MarbleTranscriptEnd(bottomPadding: 14)
                 }
-                .scrollTargetLayout()
+                .marbleHistoryScrollTargets()
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
                 // Cap the measure on iPad and Mac so a reply never becomes a
@@ -71,8 +71,8 @@ struct TranscriptView: View {
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) {
-            if let conversationId { await store.loadOlderHistory(conversationId) }
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
+            if let conversationId { await store.loadOlderHistory(conversationId, beforePrepend: beforePrepend) }
         }
     }
 
@@ -139,6 +139,14 @@ struct MarbleEntryView: View {
                 }
             }
             entryContent(isFailure: failure)
+        }
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: MarbleHistoryRowPositions.self,
+                    value: [entry.rowID: geometry.frame(in: .named(MarbleHistoryRowPositions.space)).minY]
+                )
+            }
         }
     }
 
@@ -499,18 +507,33 @@ struct ComposerBar: View {
 }
 
 struct MarbleTranscriptEnd: View {
-    enum ID: Hashable { case latest }
+    static let rowID = "marble-timeline-end"
     var bottomPadding: CGFloat
 
     var body: some View {
         Color.clear
             .frame(height: bottomPadding)
             .accessibilityHidden(true)
-            .id(ID.latest)
+            .id(Self.rowID)
+    }
+}
+
+typealias MarbleOlderHistoryLoader = (@escaping () -> Void) async -> Void
+
+private struct MarbleHistoryRowPositions: PreferenceKey {
+    static let space = "marble-history-content"
+    static let defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
     }
 }
 
 extension View {
+    func marbleHistoryScrollTargets() -> some View {
+        scrollTargetLayout().coordinateSpace(name: MarbleHistoryRowPositions.space)
+    }
+
     func marbleComposerInset(@ViewBuilder content: () -> some View) -> some View {
         safeAreaInset(edge: .bottom, spacing: 0, content: content)
     }
@@ -527,7 +550,7 @@ extension View {
     }
 
     func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil,
-                             loadOlder: (() async -> Void)? = nil) -> some View {
+                             loadOlder: MarbleOlderHistoryLoader? = nil) -> some View {
         modifier(MarbleFollowLatest(
             hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, loadOlder: loadOlder
         ))
@@ -538,12 +561,21 @@ private struct MarbleFollowLatest: ViewModifier {
     let hasMessages: Bool
     let searchJump: UUID?
     let outgoing: UUID?
-    let loadOlder: (() async -> Void)?
+    let loadOlder: MarbleOlderHistoryLoader?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var position = ScrollPosition()
+    @State private var position = ScrollPosition(idType: String.self)
     @State private var follow = MarbleScrollFollow()
     @State private var phase: ScrollPhase = .idle
     @State private var positionedHistory = false
+    @State private var measurement = PrependMeasurement()
+
+    // ScrollPosition retains the top row during a prepend but aligns it flush
+    // to the top. Preserve its offset as well, including a partially read row.
+    private final class PrependMeasurement {
+        var offset: CGFloat = 0
+        var rowPositions: [String: CGFloat] = [:]
+        var anchor: (id: String, rowY: CGFloat, offset: CGFloat)?
+    }
 
     private struct Layout: Equatable {
         let bottom: CGFloat
@@ -570,6 +602,7 @@ private struct MarbleFollowLatest: ViewModifier {
             .scrollPosition($position, anchor: .top)
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 phase = newPhase
+                if newPhase.isUserScrolling { measurement.anchor = nil }
                 guard oldPhase.isUserScrolling, newPhase == .idle else { return }
                 let distance = Layout(context.geometry).distanceFromBottom
                 updateFollow(distance: distance, userMoved: oldPhase != .tracking)
@@ -578,12 +611,20 @@ private struct MarbleFollowLatest: ViewModifier {
                 }
                 if hasMessages, oldPhase != .tracking, let loadOlder,
                    context.geometry.contentOffset.y + context.geometry.contentInsets.top < 180 {
-                    Task { await loadOlder() }
+                    Task {
+                        await loadOlder {
+                            guard !follow.following, let id = position.viewID(type: String.self),
+                                  let rowY = measurement.rowPositions[id] else { return }
+                            measurement.anchor = (id, rowY, measurement.offset)
+                        }
+                    }
                 }
             }
             .onScrollGeometryChange(for: Layout.self) { geometry in
                 Layout(geometry)
             } action: { old, new in
+                // ScrollPosition's y coordinate starts after the top inset.
+                measurement.offset = new.offset + new.topInset
                 let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
                 updateFollow(
                     distance: new.distanceFromBottom,
@@ -596,6 +637,13 @@ private struct MarbleFollowLatest: ViewModifier {
                     && (resized || (initialLayout && searchJump == nil)) {
                     scrollToEnd()
                 }
+            }
+            .onPreferenceChange(MarbleHistoryRowPositions.self) { rows in
+                measurement.rowPositions = rows
+                guard let anchor = measurement.anchor, let rowY = rows[anchor.id],
+                      rowY > anchor.rowY else { return }
+                measurement.anchor = nil
+                position.scrollTo(y: anchor.offset + rowY - anchor.rowY)
             }
             .task(id: hasMessages) {
                 let loaded = hasMessages
@@ -652,7 +700,7 @@ private struct MarbleFollowLatest: ViewModifier {
     }
 
     private func scrollToEnd() {
-        position.scrollTo(id: MarbleTranscriptEnd.ID.latest, anchor: .bottom)
+        position.scrollTo(id: MarbleTranscriptEnd.rowID, anchor: .bottom)
     }
 }
 

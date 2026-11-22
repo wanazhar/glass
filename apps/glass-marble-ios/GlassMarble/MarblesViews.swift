@@ -162,15 +162,15 @@ struct EveryoneView: View {
                     // of the sent bubble, working rows and composer resize.
                     MarbleTranscriptEnd(bottomPadding: 12)
                 }
-                .scrollTargetLayout()
+                .marbleHistoryScrollTargets()
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) {
-            await store.loadOlderHistory(everyoneConversationId)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
+            await store.loadOlderHistory(everyoneConversationId, beforePrepend: beforePrepend)
         }
         .task { await store.openEveryoneHistory() }
         .safeAreaInset(edge: .top, spacing: 0) { header }
@@ -533,15 +533,15 @@ struct MarbleChatScreen: View {
                     }
                     MarbleTranscriptEnd(bottomPadding: 12)
                 }
-                .scrollTargetLayout()
+                .marbleHistoryScrollTargets()
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
-        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) {
-            await store.loadOlderHistory(marble.conversationId)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
+            await store.loadOlderHistory(marble.conversationId, beforePrepend: beforePrepend)
         }
         .task(id: marble.conversationId) { await store.openMarbleHistory(marble) }
         .onDisappear { store.closeMarbleHistory(marble.conversationId) }

@@ -834,7 +834,7 @@ final class MarbleStore: ObservableObject {
         setHistory(rows, for: id, before: cursor)
     }
 
-    func loadOlderHistory(_ id: String) async {
+    func loadOlderHistory(_ id: String, beforePrepend: () -> Void = {}) async {
         guard let client, let before = historyBefore[id], loadingOlder[id] == nil,
               !deletedConversationIDs.contains(id) else { return }
         let generation = hostGeneration.current
@@ -855,7 +855,10 @@ final class MarbleStore: ObservableObject {
             }
             guard hostGeneration.isCurrent(generation), historyBefore[id] == before else { return }
             if paged {
-                setHistory(MarbleHistoryWindow.prepending(entries, to: historyEntries(id)), for: id, before: next)
+                let current = historyEntries(id)
+                let rows = MarbleHistoryWindow.prepending(entries, to: current)
+                if rows.count > current.count { beforePrepend() }
+                setHistory(rows, for: id, before: next)
             } else {
                 await reloadNewestHistory(id)
             }
@@ -1257,7 +1260,7 @@ final class MarbleStore: ObservableObject {
         }
     }
 
-    func loadOlderThread(_ id: String) async {
+    func loadOlderThread(_ id: String, beforePrepend: () -> Void = {}) async {
         guard let before = threadPages[id]?.nextBefore, loadingOlderThreads[id] == nil else { return }
         let generation = hostGeneration.current
         loadingOlderThreads[id] = before
@@ -1273,6 +1276,7 @@ final class MarbleStore: ObservableObject {
             }
             older.entries = MarbleHistoryWindow.prepending(older.entries, to: current.entries)
             if older.hasMore != true { older.nextBefore = nil }
+            if older.entries.count > current.entries.count { beforePrepend() }
             threadPages[id] = older
         } catch MarbleClientError.unknownHistoryCursor {
             guard hostGeneration.isCurrent(generation), threadPages[id]?.nextBefore == before else { return }

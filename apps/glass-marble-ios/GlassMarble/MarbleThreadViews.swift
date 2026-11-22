@@ -189,7 +189,7 @@ private struct MarbleThreadView: View {
             workingNames: presentation.responders.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
             },
-            loadOlder: { await store.loadOlderThread(id) }
+            loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) }
         )
     }
 
@@ -292,7 +292,7 @@ private struct MarbleJumpTimeline: View {
     var parentId: String?
     var outgoing: UUID? = nil
     var workingNames: [String] = []
-    var loadOlder: (() async -> Void)? = nil
+    var loadOlder: MarbleOlderHistoryLoader? = nil
     @State private var highlight: String?
 
     var body: some View {
@@ -313,7 +313,7 @@ private struct MarbleJumpTimeline: View {
                     ForEach(workingNames, id: \.self) { MarbleThinkingBubble(name: $0) }
                     MarbleTranscriptEnd(bottomPadding: 16)
                 }
-                .scrollTargetLayout()
+                .marbleHistoryScrollTargets()
                 .padding([.horizontal, .top], 16)
                 .frame(maxWidth: 820)
                 .frame(maxWidth: .infinity)

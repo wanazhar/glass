@@ -169,6 +169,20 @@ impl ProductState {
         })
     }
 
+    pub(crate) fn reply_conversation<'a>(&'a self, entry: &'a TranscriptEntry) -> Option<&'a str> {
+        let Some(id) = &entry.thread_id else {
+            return Some(&entry.conversation_id);
+        };
+        let thread = self.threads.iter().find(|thread| &thread.id == id)?;
+        if thread.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+            && entry.conversation_id != thread.conversation_id
+        {
+            return None;
+        }
+        self.thread_entry_visible(thread, entry)
+            .then_some(thread.conversation_id.as_str())
+    }
+
     fn search_entry_visible(&self, entry: &TranscriptEntry, thread: Option<&str>) -> bool {
         if let Some(id) = thread.or(entry.thread_id.as_deref()) {
             return self

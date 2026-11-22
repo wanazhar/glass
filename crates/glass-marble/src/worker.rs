@@ -513,6 +513,7 @@ pub fn spawn_turn_pool(
     timeout: Duration,
     cancels: CancelRegistry,
 ) -> Result<TurnPool, MarbleError> {
+    events.attach_replies(&mut lock(&state));
     let lanes = lanes.max(1);
     let (sender, inbox) = TurnInbox::channel();
     let steer = SteerSink::default();
@@ -782,9 +783,7 @@ fn undelivered(
         guard.bump();
         guard.clone()
     };
-    if let Some(store) = store {
-        store::persist(store, &snapshot);
-    }
+    store::persist_optional(store, &snapshot);
     // Whoever is still waiting for admission hears the failure; a surface that
     // already answered `202` learns it from the row and the stream.
     let _ = accepted.send(Err(error));
@@ -931,9 +930,7 @@ fn run_command(
             guard.bump();
             guard.clone()
         };
-        if let Some(store) = store {
-            store::persist(store, &snapshot);
-        }
+        store::persist_optional(store, &snapshot);
         events.publish(
             "",
             "",
@@ -962,9 +959,7 @@ fn run_command(
                 let restarts = guard.presence.runtime.restarts;
                 (guard.clone(), restarts)
             };
-            if let Some(store) = store {
-                store::persist(store, &snapshot);
-            }
+            store::persist_optional(store, &snapshot);
             events.publish(
                 "",
                 "",
@@ -1091,9 +1086,7 @@ fn run_command(
             guard.memory.note_use("marble");
             guard.clone()
         };
-        if let Some(store) = store {
-            store::persist(store, &snapshot);
-        }
+        store::persist_optional(store, &snapshot);
         // The conversation is durable with its lane before the caller is told
         // it exists, so the very next turn or correction is routed to the
         // engine that owns the session instead of guessing lane zero.
@@ -1164,9 +1157,7 @@ fn run_command(
                 });
                 (guard.clone(), suggestion)
             };
-            if let Some(store) = store {
-                store::persist(store, &snapshot);
-            }
+            store::persist_optional(store, &snapshot);
             events.publish(
                 &reply.conversation_id,
                 &reply.task_id,
@@ -1256,9 +1247,7 @@ fn run_command(
                     guard.bump();
                     guard.clone()
                 };
-                if let Some(store) = store {
-                    store::persist(store, &snapshot);
-                }
+                store::persist_optional(store, &snapshot);
                 let _ = sender.send(Err(error));
                 return;
             }
@@ -1278,9 +1267,7 @@ fn run_command(
                     crate::everyone::mirror_settlement(&mut guard, &identity.task_id, "", "failed");
                     guard.clone()
                 };
-                if let Some(store) = store {
-                    store::persist(store, &snapshot);
-                }
+                store::persist_optional(store, &snapshot);
                 events.publish(
                     &identity.conversation_id,
                     &identity.task_id,

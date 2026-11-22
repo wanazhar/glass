@@ -478,7 +478,7 @@ impl MarbleServer {
             let mut state = parts.state.lock().unwrap_or_else(|e| e.into_inner());
             state.ensure_entry_ids();
             state.prune_threads();
-            state.thread_events.0 = Some(parts.events.clone());
+            parts.events.attach_replies(&mut state);
             for (task, thread) in &state.task_threads {
                 parts.events.bind_thread(task, thread);
             }
@@ -3675,13 +3675,10 @@ impl MarbleServer {
     }
 
     fn save_state(&self) {
-        let Some(store) = &self.store else {
-            return;
-        };
         // Persist straight from the borrowed document: a full clone per mutation
         // is the most expensive part of a write that is otherwise bounded.
         let guard = self.lock_state();
-        crate::store::persist(store, &guard)
+        crate::store::persist_optional(self.store.as_deref(), &guard)
     }
 
     pub fn serve(self) -> std::io::Result<()> {

@@ -648,6 +648,9 @@ impl PrismPool {
     /// Build the pool. Engines are started lazily on first dispatch, so a host
     /// that never swarms pays nothing for the roster.
     pub fn new(parts: PrismPoolParts) -> Self {
+        parts
+            .events
+            .attach_replies(&mut parts.state.lock().unwrap_or_else(|e| e.into_inner()));
         Self {
             factory: parts.factory,
             cwd: parts.cwd,
@@ -833,9 +836,7 @@ impl PrismPool {
     }
 
     fn persist(&self, snapshot: &ProductState) {
-        if let Some(store) = &self.store {
-            store::persist(store, snapshot);
-        }
+        store::persist_optional(self.store.as_deref(), snapshot);
     }
 
     /// Engine for one marble, started on first use.

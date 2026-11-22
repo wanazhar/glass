@@ -2912,6 +2912,17 @@ fn fixture_prism_pool(
     events: &EventBus,
     extra_args: Vec<String>,
 ) -> Arc<glass_marble::PrismPool> {
+    fixture_prism_pool_with_store(script, root, state, events, extra_args, None)
+}
+
+fn fixture_prism_pool_with_store(
+    script: &std::path::Path,
+    root: &std::path::Path,
+    state: &Arc<Mutex<ProductState>>,
+    events: &EventBus,
+    extra_args: Vec<String>,
+    store: Option<Arc<StateStore>>,
+) -> Arc<glass_marble::PrismPool> {
     let script = script.to_path_buf();
     let sequence = std::sync::atomic::AtomicUsize::new(0);
     let factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(move || {
@@ -2933,7 +2944,7 @@ fn fixture_prism_pool(
         cwd: root.to_path_buf(),
         sessions: root.join("prism-sessions"),
         state: Arc::clone(state),
-        store: None,
+        store,
         live: LiveStore::in_data_dir(root),
         events: events.clone(),
         cancels: CancelRegistry::default(),
@@ -2954,6 +2965,7 @@ fn everyone_entries(state: &Arc<Mutex<ProductState>>) -> Vec<TranscriptEntry> {
 
 struct NamedTurnFixture {
     events: EventBus,
+    store: Option<Arc<StateStore>>,
     root: std::path::PathBuf,
     script: std::path::PathBuf,
     state: Arc<Mutex<ProductState>>,
@@ -3000,7 +3012,7 @@ impl NamedTurnFixture {
             1,
             factory,
             self.state.clone(),
-            None,
+            self.store.clone(),
             LiveStore::in_data_dir(&self.root),
             events.clone(),
             Duration::from_secs(30),
@@ -3010,7 +3022,7 @@ impl NamedTurnFixture {
         self.server = MarbleServer::new(MarbleServerParts {
             listener: TcpListener::bind("127.0.0.1:0").unwrap(),
             state: self.state.clone(),
-            store: None,
+            store: self.store.clone(),
             approvals: ApprovalInbox::default(),
             events,
             turn_tx: pool.sender,
@@ -3025,6 +3037,10 @@ impl NamedTurnFixture {
     }
 
     fn with_args(label: &str, args: Vec<String>) -> Self {
+        Self::with_persistence(label, args, false)
+    }
+
+    fn with_persistence(label: &str, args: Vec<String>, persistent: bool) -> Self {
         let root =
             std::env::temp_dir().join(format!("glass-marble-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -3040,11 +3056,13 @@ impl NamedTurnFixture {
             .id
             .clone();
         let state = Arc::new(Mutex::new(initial));
-        let pool = fixture_prism_pool(&script, &root, &state, &events, args);
+        let store = persistent.then(|| Arc::new(StateStore::in_data_dir(&root)));
+        let pool =
+            fixture_prism_pool_with_store(&script, &root, &state, &events, args, store.clone());
         let server = MarbleServer::new(MarbleServerParts {
             listener: TcpListener::bind("127.0.0.1:0").unwrap(),
             state: Arc::clone(&state),
-            store: None,
+            store: store.clone(),
             approvals: ApprovalInbox::default(),
             events: events.clone(),
             turn_tx: TurnSender::detached(),
@@ -3055,6 +3073,7 @@ impl NamedTurnFixture {
         .with_prism(Arc::clone(&pool));
         Self {
             events: events.clone(),
+            store,
             root,
             script,
             state,
@@ -3101,6 +3120,144 @@ impl NamedTurnFixture {
             }
             assert!(Instant::now() < deadline, "no completed task for {prompt}");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[test]
+fn durable_reply_events_match_visible_entries_for_default_named_and_everyone_turns() {
+    if !python3_available() {
+        return;
+    }
+    for named in [false, true] {
+        for everyone in [false, true] {
+            for threaded in [false, true] {
+                for failed in [false, true] {
+                    let label = format!("reply-event-{named}-{everyone}-{threaded}-{failed}");
+                    let mut fixture = NamedTurnFixture::with_persistence(
+                        &label,
+                        vec![
+                            "--fail-once".into(),
+                            "--pre-tool-text".into(),
+                            "Step commentary".into(),
+                        ],
+                        true,
+                    );
+                    if !named {
+                        fixture.install_default_worker();
+                    }
+                    let store = fixture.store.as_ref().unwrap();
+                    let receiver = fixture.events.subscribe();
+                    let next_reply = || loop {
+                        let event = receiver
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("reply SSE event");
+                        if event.kind == "reply" {
+                            let disk = store.load().unwrap();
+                            assert!(
+                                disk.transcript.iter().any(|e| event.data["id"] == e.id),
+                                "event arrived before its entry was durable"
+                            );
+                            break event;
+                        }
+                    };
+                    let path = if everyone {
+                        "/api/everyone"
+                    } else {
+                        "/api/turns"
+                    };
+                    let text = |message: &str| {
+                        if everyone && named {
+                            format!("@Ada {message}")
+                        } else {
+                            message.to_string()
+                        }
+                    };
+                    let (status, body) = fixture.post(path, json!({"text":text("seed"), "marbleId":named.then_some(&fixture.marble_id)}));
+                    assert_eq!(status, 202, "{body}");
+                    let mut seed = next_reply();
+                    if everyone {
+                        let other = next_reply();
+                        if other.conversation_id == "everyone" {
+                            seed = other;
+                        }
+                        assert_eq!(seed.conversation_id, "everyone");
+                    }
+                    let thread = if threaded {
+                        let (status, body) = fixture.post("/api/threads", json!({"conversation_id":seed.conversation_id, "parent_entry_id":seed.data["id"]}));
+                        assert_eq!(status, 200, "{body}");
+                        Some(body["thread"]["id"].as_str().unwrap().to_string())
+                    } else {
+                        None
+                    };
+                    let cursor = fixture.events.sequence();
+                    let (status, body) = fixture.post(path, json!({"text":text(if failed { "FAIL reply" } else { "next reply" }), "marbleId":named.then_some(&fixture.marble_id), "conversationId":seed.conversation_id, "thread_id":thread}));
+                    assert_eq!(status, 202, "{body}");
+                    let count = if everyone && !threaded { 2 } else { 1 };
+                    let mut ids = std::collections::HashSet::new();
+                    for _ in 0..count {
+                        let event = next_reply();
+                        assert!(ids.insert(event.data["id"].as_str().unwrap().to_string()));
+                        assert_eq!(
+                            event.data["kind"],
+                            if failed { "failure" } else { "assistant" }
+                        );
+                        assert_eq!(event.data["sender"], if named { "Ada" } else { "Marble" });
+                        assert_eq!(event.data["task_id"], event.task_id);
+                        assert_eq!(
+                            event.data.get("thread_id").and_then(Value::as_str),
+                            thread.as_deref()
+                        );
+                        let disk = store.load().unwrap();
+                        let entry = disk
+                            .transcript
+                            .iter()
+                            .find(|e| event.data["id"] == e.id)
+                            .unwrap();
+                        assert_eq!(event.data["text"], entry.text);
+                        assert_eq!(event.conversation_id, entry.conversation_id);
+                        let (status, body) = fixture.server.handle(
+                            "GET",
+                            &format!(
+                                "/api/transcript?conversationId={}&around={}",
+                                event.conversation_id, entry.id
+                            ),
+                            "",
+                        );
+                        assert_eq!(status, 200, "{body}");
+                        assert!(
+                            serde_json::from_str::<Value>(&body).unwrap()["entries"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|e| e["id"] == entry.id)
+                        );
+                        if let Some(thread) = &thread {
+                            let (_, body) =
+                                fixture
+                                    .server
+                                    .handle("GET", &format!("/api/threads/{thread}"), "");
+                            assert!(
+                                serde_json::from_str::<Value>(&body).unwrap()["entries"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .any(|e| e["id"] == entry.id)
+                            );
+                        }
+                    }
+                    store.save(&fixture.state.lock().unwrap()).unwrap();
+                    assert_eq!(
+                        fixture
+                            .events
+                            .since(cursor)
+                            .iter()
+                            .filter(|e| e.kind == "reply")
+                            .count(),
+                        count
+                    );
+                }
+            }
         }
     }
 }

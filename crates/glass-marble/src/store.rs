@@ -395,6 +395,9 @@ impl StateStore {
             MarbleError::Protocol(format!("cannot write {}: {error}", self.path.display()))
         })?;
         saved.insert(self.path.clone(), state.revision);
+        if let Some(events) = &state.thread_events.0 {
+            events.publish_replies(state);
+        }
         Ok(())
     }
 }
@@ -434,6 +437,14 @@ pub fn persist(store: &StateStore, state: &ProductState) {
     record_persist_outcome(outcome.as_ref().err());
     if let Err(error) = outcome {
         tracing::warn!(%error, "could not persist marble product state");
+    }
+}
+
+pub(crate) fn persist_optional(store: Option<&StateStore>, state: &ProductState) {
+    if let Some(store) = store {
+        persist(store, state);
+    } else if let Some(events) = &state.thread_events.0 {
+        events.publish_replies(state);
     }
 }
 

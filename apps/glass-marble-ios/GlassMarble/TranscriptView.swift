@@ -584,9 +584,11 @@ extension View {
     }
 
     func marbleFollowsLatest(hasMessages: Bool, searchJump: UUID? = nil, outgoing: UUID? = nil,
+                             startAtCachedLatest: Bool = false,
                              loadOlder: MarbleOlderHistoryLoader? = nil) -> some View {
         modifier(MarbleFollowLatest(
-            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing, loadOlder: loadOlder
+            hasMessages: hasMessages, searchJump: searchJump, outgoing: outgoing,
+            startAtCachedLatest: startAtCachedLatest, loadOlder: loadOlder
         ))
     }
 }
@@ -597,11 +599,23 @@ private struct MarbleFollowLatest: ViewModifier {
     let outgoing: UUID?
     let loadOlder: MarbleOlderHistoryLoader?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var position = ScrollPosition(idType: String.self)
+    @State private var position: ScrollPosition
     @State private var follow = MarbleScrollFollow()
     @State private var phase: ScrollPhase = .idle
     @State private var positionedHistory = false
     @State private var measurement = PrependMeasurement()
+
+    init(hasMessages: Bool, searchJump: UUID?, outgoing: UUID?, startAtCachedLatest: Bool,
+         loadOlder: MarbleOlderHistoryLoader?) {
+        self.hasMessages = hasMessages
+        self.searchJump = searchJump
+        self.outgoing = outgoing
+        self.loadOlder = loadOlder
+        // Give the first layout the bottom position with the cached rows
+        // already present. Uncached screens still reposition as rows arrive.
+        _position = State(initialValue: hasMessages && startAtCachedLatest
+            ? ScrollPosition(idType: String.self, edge: .bottom) : ScrollPosition(idType: String.self))
+    }
 
     // ScrollPosition retains the top row during a prepend but aligns it flush
     // to the top. Preserve its offset as well, including a partially read row.

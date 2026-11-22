@@ -652,6 +652,7 @@ final class MarbleStore: ObservableObject {
         everyoneHistoryRevision = -1
         everyoneHistoryGeneration = 0
         everyoneHistoryNeedsReload = false
+        everyoneHistoryRequest = nil
         marbleHistoryRevisions = [:]
         historyErrors = []
         chatsRevision = -1
@@ -713,6 +714,7 @@ final class MarbleStore: ObservableObject {
     private var everyoneHistoryRevision = -1
     private var everyoneHistoryGeneration: UInt64 = 0
     private var everyoneHistoryNeedsReload = false
+    private var everyoneHistoryRequest: UUID?
     private var marbleHistoryRevisions: [String: Int] = [:]
 
     private func invalidateEveryoneHistory() {
@@ -720,12 +722,18 @@ final class MarbleStore: ObservableObject {
         // prefix can still contain mirrors removed by deleting a chat.
         everyoneHistoryGeneration &+= 1
         everyoneHistoryNeedsReload = true
+        everyoneHistoryRequest = nil
     }
 
     private func loadEveryoneHistory(revision: Int, resetWindow: Bool = false) async {
         guard let client else { return }
         let generation = hostGeneration.current
         let historyGeneration = everyoneHistoryGeneration
+        let request = UUID()
+        everyoneHistoryRequest = request
+        defer {
+            if everyoneHistoryRequest == request { everyoneHistoryRequest = nil }
+        }
         do {
             let page = try await client.everyone()
             guard hostGeneration.isCurrent(generation), everyoneHistoryGeneration == historyGeneration,
@@ -758,7 +766,7 @@ final class MarbleStore: ObservableObject {
             return
         }
         #endif
-        guard !everyoneHistoryLoaded else { return }
+        guard !everyoneHistoryLoaded, everyoneHistoryRequest == nil else { return }
         await loadEveryoneHistory(revision: state.revision)
     }
 

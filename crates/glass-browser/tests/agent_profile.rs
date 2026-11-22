@@ -18,6 +18,10 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <label for="n">Full name</label><input id="n" oninput="state.name=this.value;show()">
 <label for="e">Email</label><input id="e" oninput="state.email=this.value;show()">
 <label for="city">City</label><input id="city" list="cities" oninput="state.city=this.value;show()"><datalist id="cities"><option>Paris</option><option>Berlin</option></datalist>
+<div role="combobox" tabindex="0" aria-label="Membership">Standard membership</div>
+<div role="listbox" tabindex="0" aria-label="Billing"><div role="option" aria-selected="true">Monthly billing</div></div>
+<input role="combobox" aria-label="Editable option" oninput="document.getElementById('edited-value').textContent='EDITED '+this.value"><p id="edited-value"></p>
+<input role="combobox" aria-label="Reverting option" value="Standard" oninput="this.value='Standard';document.getElementById('reverted-value').textContent='REVERTED '+this.value"><p id="reverted-value"></p>
 <a href="/report.csv" download="report.csv">Download report</a>
 <label for="p">Plan</label><select id="p" role="combobox listbox" onchange="state.plan=this.value;show()"><option>Solo</option><option>Team</option></select>
 <label><input type="checkbox" id="t" onchange="state.terms=this.checked;show()"> I agree to the terms</label>
@@ -237,6 +241,60 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     .await;
     let filled = mcp.ok("browser_get_text", json!({})).await;
     assert!(filled.contains("\"city\":\"ParisBerlin\""), "{filled}");
+    for target in ["name=Membership", "name=Billing"] {
+        let result = mcp
+            .call(
+                "browser_fill_form",
+                json!({"fields":[{"target":target,"value":"Premium"}]}),
+            )
+            .await;
+        let outcome: Value = serde_json::from_str(&text(&result)).unwrap();
+        assert_eq!(outcome["filled"], 0, "{outcome}");
+        assert_eq!(outcome["fields"][0]["success"], false, "{outcome}");
+        assert!(
+            outcome["fields"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("non-editable ARIA dropdown"),
+            "{outcome}"
+        );
+    }
+    let unchanged = mcp.ok("browser_get_text", json!({})).await;
+    assert!(unchanged.contains("Standard membership"), "{unchanged}");
+    assert!(unchanged.contains("Monthly billing"), "{unchanged}");
+    let result = mcp
+        .ok(
+            "browser_fill_form",
+            json!({"fields":[{"target":"name=Editable option","value":"Premium"}]}),
+        )
+        .await;
+    let outcome: Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(outcome["filled"], 1, "{outcome}");
+    assert_eq!(outcome["fields"][0]["success"], true, "{outcome}");
+    for (target, value) in [
+        ("name=Editable option", ""),
+        ("name=Reverting option", "Premium"),
+    ] {
+        let result = mcp
+            .call(
+                "browser_fill_form",
+                json!({"fields":[{"target":target,"value":value}]}),
+            )
+            .await;
+        let outcome: Value = serde_json::from_str(&text(&result)).unwrap();
+        assert_eq!(outcome["filled"], 0, "{outcome}");
+        assert_eq!(outcome["fields"][0]["success"], false, "{outcome}");
+        assert!(
+            outcome["fields"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("value did not change"),
+            "{outcome}"
+        );
+    }
+    let unchanged = mcp.ok("browser_get_text", json!({})).await;
+    assert!(unchanged.contains("EDITED Premium"), "{unchanged}");
+    assert!(unchanged.contains("REVERTED Standard"), "{unchanged}");
     mcp.ok(
         "browser_select_option",
         json!({"target":"name=Plan","value":"Team"}),

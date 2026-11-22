@@ -163,15 +163,8 @@ impl CdpBrowserSession {
         };
         let reference = reference.as_str();
 
-        let metadata = async {
-            let object = self.cdp.resolve_node_object(element.node_id, element.backend_dom_node_id).await?;
-            let result = self.cdp.call_on_object(&object,
-                "function() { return {tag: this.tagName, role: this.getAttribute('role'), type: this.type || ''}; }").await;
-            let _ = self.cdp.release_object(&object).await;
-            result
-        }.await;
-        let metadata = match metadata {
-            Ok(metadata) => metadata.result.value.unwrap_or_default(),
+        let metadata = match self.form_control_metadata(element).await {
+            Ok(metadata) => metadata,
             Err(error) => return ("none".into(), false, Some(error.to_string())),
         };
         let role = element
@@ -209,11 +202,42 @@ impl CdpBrowserSession {
                 Err(e) => ("click".to_string(), false, Some(e.to_string())),
             }
         } else {
+            let dropdown = matches!(role.as_str(), "combobox" | "listbox");
+            if dropdown && metadata["editable"].as_bool() != Some(true) {
+                return (
+                    "none".into(),
+                    false,
+                    Some("form control is a non-editable ARIA dropdown; interact with its options instead".into()),
+                );
+            }
             match self.type_text(value, Some(reference)).await {
+                Ok(_) if dropdown => match self.form_control_metadata(element).await {
+                    Ok(after) if after["value"] != metadata["value"] => ("type".into(), true, None),
+                    Ok(_) => (
+                        "type".into(),
+                        false,
+                        Some(
+                            "form control value did not change; interact with its options instead"
+                                .into(),
+                        ),
+                    ),
+                    Err(error) => ("type".into(), false, Some(error.to_string())),
+                },
                 Ok(_) => ("type".to_string(), true, None),
                 Err(e) => ("type".to_string(), false, Some(e.to_string())),
             }
         }
+    }
+
+    async fn form_control_metadata(&self, element: &ResolvedElement) -> BrowserResult<Value> {
+        let object = self
+            .cdp
+            .resolve_node_object(element.node_id, element.backend_dom_node_id)
+            .await?;
+        let result = self.cdp.call_on_object(&object,
+            "function() { return {tag: this.tagName, role: this.getAttribute('role'), type: this.type || '', editable: this.isContentEditable || ((this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') && !this.readOnly && !this.disabled), value: this.value ?? this.textContent}; }").await;
+        let _ = self.cdp.release_object(&object).await;
+        Ok(result?.result.value.unwrap_or_default())
     }
 }
 

@@ -1547,6 +1547,7 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_windows"
             | "desktop_files"
             | "desktop_wait"
+            | "desktop_record"
     )
 }
 
@@ -2287,6 +2288,7 @@ mod tests {
     #[test]
     fn desktop_wait_matches_names_not_queries() {
         assert!(super::is_tool("desktop_wait"));
+        assert!(super::is_tool("desktop_record"));
         let observation = json!({"query":"saved","nodes":[{"name":"Untitled","children":[{"name":"Document Saved","states":["visible","showing"],"onscreen":true}]}]});
         assert!(super::observation_names_contain(&observation, "saved"));
         for node in [

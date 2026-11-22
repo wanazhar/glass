@@ -39,7 +39,8 @@ fn regular_file(path: &Path, label: &str) -> Result<u64, String> {
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
     let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
+        .map_err(|_| "Secure random unavailable".to_owned())?;
     let partial = to.with_file_name(format!(".{:032x}.gc-partial", u128::from_ne_bytes(nonce)));
     let mut output = std::fs::OpenOptions::new()
         .write(true)

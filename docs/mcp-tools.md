@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names all 101 browser tools in the current `0.3.14` client-conformance inventory.
+This catalog names all 104 browser tools in the current `0.3.14` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools carry actor, Core authorization, workspace-
 generation, and project-revision metadata. Resident Core calls are already
@@ -62,10 +62,10 @@ identity and revisions without another approval.
 | `glass.workflow` | `glass.workflow.cancel`, `glass.workflow.list`, `glass.workflow.pause`, `glass.workflow.record`, `glass.workflow.resume`, `glass.workflow.run`, `glass.workflow.verify` | Durable workflow lifecycle, verification, and recording. |
 | `glass.workspace` | `glass.workspace.delete`, `glass.workspace.inspect`, `glass.workspace.list`, `glass.workspace.resume`, `glass.workspace.suspend` | Workspace lifecycle, root, and project configuration metadata. |
 
-The checked-in development conformance fixture pins the full 339-tool
+The checked-in development conformance fixture pins the full 344-tool
 inventory, including `glass.agent.delegate`, `glass.todo.*`, and Git
 fetch/pull/merge/rebase; the documentation coverage gate checks every fixture
-entry against this catalog. The browser-only conformance fixture covers 101
+entry against this catalog. The browser-only conformance fixture covers 104
 tools. Clients must still use `tools/list` for schemas and the negotiated
 capability agreement for availability; an inventory entry is not authority to
 mutate.
@@ -144,6 +144,9 @@ rules from [semantic execution](semantic-execution.md).
 |---|---|
 | `preflightNavigation` | Check URL policy without Chrome, DNS, or confirmation-token consumption. |
 | `navigate` | Navigate and return revision-aware page and identity metadata. |
+| `back` | Go one entry back in the active page's history; accepts an optional `expectedRevision` guard. |
+| `forward` | Go one entry forward in the active page's history; accepts an optional `expectedRevision` guard. |
+| `reload` | Reload the active page; accepts an optional `expectedRevision` guard. |
 | `preflight` | Resolve a target and clickability without input, focus, scroll, or revision change. |
 | `click` | Click one unique locator or revisioned reference; optional `modifiers` object accepts `alt`, `control`, `meta`, and `shift` booleans. |
 | `clickAt` | Policy-gated exact viewport-coordinate click; never retargeted; accepts the same optional modifier object. |

@@ -47,6 +47,10 @@ const CONSENT_DISMISS_FUNCTION: &str = r#"function() {
     });
     const accept = /^(accept|accept all|allow all|i agree|agree|got it|ok|okay|reject all|decline|(?:accept(?: all)? cookies|allow(?: all)? cookies|reject(?: all)? cookies)(?: and continue)?)$/i;
     for (const box of named.filter(visible).slice(0, 20)) {
+        const label = ['id', 'class', 'aria-label'].map(name => box.getAttribute(name) || '').join(' ');
+        const context = box.cloneNode(true);
+        context.querySelectorAll('button,a,[role=button],input,script,style').forEach(el => el.remove());
+        if (!/cookie/i.test(label) && !/\bcookies?\b/i.test(context.textContent || '')) continue;
         const button = [...box.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')]
             .filter(visible)
             .find(b => accept.test((b.innerText || b.value || '').trim()));

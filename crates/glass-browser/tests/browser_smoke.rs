@@ -691,11 +691,23 @@ async fn consent_dialogs_accept_explicit_cookie_choices_only() {
             "<dialog open aria-label='Payment'><button onclick='window.choice=true'>Accept all cookies</button></dialog>",
             false,
         ),
+        (
+            "<dialog open aria-label='GDPR request'><button onclick='window.unrelatedChoice=true'>OK</button></dialog><div id='cookie-notice'><button onclick='window.choice=true'>Accept all</button></div>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='GDPR request'><button onclick='window.unrelatedChoice=true'>OK</button></dialog>",
+            false,
+        ),
+        (
+            "<dialog open aria-label='GDPR consent'>We use cookies.<button onclick='window.choice=true'>OK</button></dialog>",
+            true,
+        ),
         ("", false),
     ] {
         session
             .evaluate(&format!(
-                "window.choice=false; document.body.innerHTML={}",
+                "window.choice=false; window.unrelatedChoice=false; document.body.innerHTML={}",
                 json!(html)
             ))
             .await
@@ -712,6 +724,10 @@ async fn consent_dialogs_accept_explicit_cookie_choices_only() {
         assert_eq!(
             session.evaluate("window.choice").await.unwrap(),
             json!(dismissed)
+        );
+        assert_eq!(
+            session.evaluate("window.unrelatedChoice").await.unwrap(),
+            json!(false)
         );
     }
     session.close().await.unwrap();

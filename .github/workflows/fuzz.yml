@@ -38,7 +38,7 @@ jobs:
         with:
           toolchain: nightly
           shared-key: fuzz-${{ matrix.target }}
-          workspaces: fuzz -> fuzz/target
+          workspaces: fuzz -> target
           tools: cargo-fuzz@0.13.2
       - name: Run bounded fuzz target
         shell: bash

@@ -9,7 +9,7 @@
 # Usage:
 #   scripts/ci-local.sh [all|fmt|clippy|test|audit|core|smokes]
 #   scripts/ci-local.sh --full          # also run scripts/release-certify.sh
-#   scripts/ci-local.sh --build-core    # build core-release before smokes
+#   scripts/ci-local.sh --reuse-core    # explicitly reuse a smoke binary
 #
 # Environment:
 #   RUSTC_WRAPPER / SCCACHE_CACHE_SIZE  set automatically when sccache exists
@@ -24,13 +24,14 @@ usage() {
 }
 
 want_full=0
-want_build_core=0
+want_build_core=1
 declare -a selections=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --full) want_full=1; shift ;;
     --build-core) want_build_core=1; shift ;;
+    --reuse-core) want_build_core=0; shift ;;
     -h|--help) usage; exit 0 ;;
     all|fmt|clippy|test|audit|core|smokes) selections+=("$1"); shift ;;
     *)
@@ -215,16 +216,35 @@ selected() {
 }
 
 core_binary() {
-  if [[ -n "${GLASS_CORE_TEST_BINARY:-}" && -x "${GLASS_CORE_TEST_BINARY}" ]]; then
-    printf '%s\n' "$GLASS_CORE_TEST_BINARY"
-    return 0
-  fi
-  local candidate="$root/target/core-release/glass-core"
+  local target candidate
+  target="$(cargo metadata --format-version 1 --no-deps --locked | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')" || return 1
+  candidate="$target/core-release/glass-core"
   if [[ -x "$candidate" ]]; then
     printf '%s\n' "$candidate"
     return 0
   fi
   return 1
+}
+
+prepare_core_binary() {
+  if (( want_build_core == 1 )); then
+    echo "building glass-core with profile core-release" >&2
+    cargo build --profile core-release --locked --package glass-core --bin glass-core || return 1
+  elif [[ -n "${GLASS_CORE_TEST_BINARY:-}" ]]; then
+    [[ -x "$GLASS_CORE_TEST_BINARY" ]] || return 1
+    printf '%s\n' "$GLASS_CORE_TEST_BINARY"
+    return 0
+  fi
+  core_binary
+}
+
+prepare_smoke_fixtures() {
+  if ! python3 -c 'import pyte' >/dev/null 2>&1; then
+    echo 'PTY smokes require pyte: run python3 -m pip install pyte==0.8.2' >&2
+    return 1
+  fi
+  npm --prefix "$root/products/glass-core" ci --ignore-scripts || return 1
+  npm --prefix "$root/products/glass-core" run build
 }
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -269,12 +289,9 @@ fi
 
 if selected smokes; then
   echo "== glass-core smokes =="
-  if (( want_build_core == 1 )) || ! core_binary >/dev/null; then
-    echo "building glass-core with profile core-release"
-    cargo build --profile core-release --locked --package glass-core --bin glass-core
-  fi
-  if ! bin="$(core_binary)"; then
-    echo "no glass-core binary; pass --build-core or set GLASS_CORE_TEST_BINARY" >&2
+  prepare_smoke_fixtures
+  if ! bin="$(prepare_core_binary)"; then
+    echo "no glass-core binary; check the build or explicitly use --reuse-core with GLASS_CORE_TEST_BINARY" >&2
     exit 1
   fi
   echo "using $bin"

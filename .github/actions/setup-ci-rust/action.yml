@@ -14,7 +14,7 @@ inputs:
     required: false
     default: ""
   workspaces:
-    description: Extra rust-cache workspaces (e.g. "fuzz -> fuzz/target")
+    description: Extra rust-cache workspaces (e.g. "fuzz -> target")
     required: false
     default: ""
   toolchain:

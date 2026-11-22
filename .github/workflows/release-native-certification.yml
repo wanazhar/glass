@@ -47,9 +47,9 @@ jobs:
           test "${tag_verified}" = "true"
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-ci-rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master @ 2026-11-15
         with:
-          shared-key: certification-debug
+          toolchain: stable
 
       - name: Install Node
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -122,9 +122,9 @@ jobs:
           test "${tag_verified}" = "true"
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-ci-rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master @ 2026-11-15
         with:
-          shared-key: certification-debug
+          toolchain: stable
 
       - name: Certify named-pipe reconnect and process-tree cleanup
         run: >-

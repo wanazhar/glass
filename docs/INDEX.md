@@ -97,7 +97,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 | Opening a private Connect link | [Glass Core remote workspace](../products/glass-core/docs/connect.md#start) | Compact terminal links, origin-bound authentication, and recovery for incomplete links |
 | Sharing a same-host desktop with an agent | [Glass Core remote workspace](../products/glass-core/docs/connect.md#shared-desktop) | [Quick XFCE and reusable GNOME](../products/glass-core/docs/connect.md#available-desktop-choices), [touch gestures, screenshots in nested projects, and responsive control handoffs](../products/glass-core/docs/connect.md#viewing-and-control), [transport measurements](../products/glass-core/docs/connect.md#transport-measurements) |
 | Providing sensitive input outside chat | [Glass Core remote workspace](../products/glass-core/docs/connect.md#authorization-and-http) | HTTPS owner-capability links and local masked terminal prompts |
-| Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
+| Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog, including navigation history](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser), [glass-dev docs.rs](https://docs.rs/glass-dev) |
 | Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |
 | Reviewing native browser journeys and scale profiles | [Native browser journey corpus](architecture/native-journey-corpus.md#native-browser-journey-corpus) | [Native browser engine](architecture/native-engine.md), [backend capability matrix](backend-capability-matrix.json) |
@@ -255,7 +255,7 @@ current user instructions.
   cancellation, concurrency, errors, security, and response modes.
 - [MCP tool catalog](mcp-tools.md) — every tool in the current checkout's
   negotiated conformance inventory grouped by domain.
-- [MCP schema budget and live source measurements](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
+- [MCP schema budget and live source measurements, including history tools](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
 - [Browser and computer-use audit](BROWSER-CU-AUDIT.md) — Linux tool surfaces,
   gaps, prioritized plan, and the tool-selection eval.

@@ -455,10 +455,12 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
-For LLM agents, `--tool-profile agent` replaces the full catalog with 19
-task-level `browser_*` tools (`browser_navigate`, `browser_snapshot`,
-`browser_click`, `browser_fill_form`, `browser_wait_for`, `browser_tabs`,
-`browser_handle_dialog`, `browser_upload_file`, `browser_download`, and so on).
+For LLM agents, `--tool-profile agent` replaces the full catalog with 24
+task-level `browser_*` tools (`browser_navigate`, `browser_history`,
+`browser_snapshot`, `browser_click`, `browser_drag`, `browser_fill_form`,
+`browser_wait_for`, `browser_verify`, `browser_frames`, `browser_tabs`,
+`browser_handle_dialog`, `browser_upload_file`, `browser_download`,
+`browser_save_pdf`, and so on).
 Each has a closed JSON schema with an example, says when to use it and when
 not to, and failed calls end with a `Next:` hint naming the tool to try;
 when the element is covered, off screen, hidden, ambiguous or moved, the hint

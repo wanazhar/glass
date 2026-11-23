@@ -2317,9 +2317,12 @@ impl VerificationPredicate {
             return Err("verification predicate nesting exceeds four levels".into());
         }
         match self {
-            Self::UrlEquals { value }
-            | Self::TitleContains { value }
-            | Self::TextContains { value } => {
+            Self::UrlEquals { value } => {
+                if value.is_empty() || value.len() > 8192 {
+                    return Err("verification URL must be 1..=8192 bytes".into());
+                }
+            }
+            Self::TitleContains { value } | Self::TextContains { value } => {
                 if value.is_empty() || value.len() > 1024 {
                     return Err("verification text must be 1..=1024 bytes".into());
                 }
@@ -3998,9 +4001,9 @@ pub(crate) fn visible_text_contains_expression(text: &str) -> BrowserResult<Stri
     Ok(format!(
         r#"(() => {{
             const wanted = {text};
+            let visibleText = '';
             const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {{
-                if (!(node.nodeValue || '').includes(wanted)) continue;
                 const element = node.parentElement;
                 if (!element) continue;
                 if (element.checkVisibility && !element.checkVisibility({{checkOpacity:true, checkVisibilityCSS:true}})) continue;
@@ -4017,9 +4020,9 @@ pub(crate) fn visible_text_contains_expression(text: &str) -> BrowserResult<Stri
                         if (right <= left || bottom <= top) {{ hidden = true; break; }}
                     }}
                 }}
-                if (!hidden) return true;
+                if (!hidden) visibleText += node.nodeValue || '';
             }}
-            return false;
+            return visibleText.includes(wanted);
         }})()"#
     ))
 }

@@ -86,7 +86,7 @@
       "minProperties": 1,
       "maxProperties": 1,
       "oneOf": [
-        {"required": ["urlEquals"], "properties": {"urlEquals": {"type": "string", "minLength": 1, "maxLength": 1024}}},
+        {"required": ["urlEquals"], "properties": {"urlEquals": {"type": "string", "minLength": 1, "maxLength": 8192}}},
         {"required": ["titleContains"], "properties": {"titleContains": {"type": "string", "minLength": 1, "maxLength": 1024}}},
         {"required": ["visible"], "properties": {"visible": {"type": "string", "minLength": 1, "maxLength": 1024}}},
         {"required": ["textContains"], "properties": {"textContains": {"type": "string", "minLength": 1, "maxLength": 1024}}},

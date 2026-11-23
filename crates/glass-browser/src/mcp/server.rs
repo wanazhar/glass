@@ -505,6 +505,10 @@ enum ToolInvocation<'a> {
     PrintToPdf {
         options: serde_json::Value,
     },
+    History {
+        action: &'static str,
+        expected_revision: Option<u64>,
+    },
     FillForm {
         fields: Vec<(String, String)>,
         expected_revision: Option<u64>,
@@ -1640,6 +1644,42 @@ fn workflow_status_error_code(message: &str) -> i32 {
     }
 }
 
+/// Write the base64 PDF from printToPdf to the path the agent asked for.
+fn save_pdf_result(
+    request: &JsonRpcRequest,
+    result: &Value,
+    policy: &BrowserPolicy,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let path = request.params["arguments"]["path"]
+        .as_str()
+        .unwrap_or_default();
+    super::agent_tools::pdf_path(path).and_then(|path| {
+        let path = policy
+            .require_output_path(&path)
+            .map_err(|error| error.to_string())?;
+        if !path.starts_with(policy.workspace_root()) {
+            return Err("PDF output escapes the configured workspace root".into());
+        }
+        let encoded = result["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .or_else(|| value["result"].as_str())
+                    .map(str::to_owned)
+            })
+            .ok_or("printToPdf returned no PDF data")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("printToPdf returned invalid base64: {error}"))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        Ok(json!({"path": path, "bytes": bytes.len()}).to_string())
+    })
+}
+
 fn tool_requires_mutation_lease(tool_name: &str) -> bool {
     !matches!(
         tool_name,
@@ -2072,6 +2112,17 @@ async fn handle_request_with_viewport(
         .result
         .as_ref()
         .is_some_and(|result| result["isError"] != true);
+    if succeeded
+        && agent_tool == "browser_save_pdf"
+        && let Some(result) = response.result.as_mut()
+    {
+        match save_pdf_result(request, result, policy) {
+            Ok(text) => result["content"] = json!([{"type": "text", "text": text}]),
+            Err(error) => {
+                *result = json!({"content": [{"type": "text", "text": format!("{error} | Next: pass a writable path such as \"page.pdf\".")}], "isError": true});
+            }
+        }
+    }
     let dialog_open = response.result.as_ref().is_some_and(|result| {
         result["content"][0]["text"]
             .as_str()
@@ -3299,6 +3350,21 @@ async fn call_tool(
                 .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result(&session.print_to_pdf(&opts).await?)
         }
+        ToolInvocation::History {
+            action,
+            expected_revision,
+        } => {
+            let revision = expected_revision.unwrap_or_else(|| {
+                session
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            });
+            serialized_result(&match action {
+                "back" => session.go_back_with_revision(revision).await?,
+                "forward" => session.go_forward_with_revision(revision).await?,
+                _ => session.reload_with_revision(revision).await?,
+            })
+        }
         ToolInvocation::FillForm {
             fields,
             expected_revision,
@@ -4073,6 +4139,14 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "sessionStorage" => Ok(ToolInvocation::SessionStorage),
         "printToPdf" => Ok(ToolInvocation::PrintToPdf {
             options: arguments.clone(),
+        }),
+        "back" | "forward" | "reload" => Ok(ToolInvocation::History {
+            action: match tool_name {
+                "back" => "back",
+                "forward" => "forward",
+                _ => "reload",
+            },
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "fillForm" => {
             let arr = arguments["fields"]
@@ -6459,6 +6533,20 @@ async fn call_native_tool_on_session_impl(
                 .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result_mode(&session.native_print_to_pdf(&options).await?, response_mode)
         }
+        ToolInvocation::History {
+            action,
+            expected_revision,
+        } => {
+            let outcome = match (action, expected_revision) {
+                ("back", None) => session.go_back().await?,
+                ("back", Some(revision)) => session.go_back_with_revision(revision).await?,
+                ("forward", None) => session.go_forward().await?,
+                ("forward", Some(revision)) => session.go_forward_with_revision(revision).await?,
+                (_, None) => session.native_reload().await?,
+                (_, Some(revision)) => session.reload_with_revision(revision).await?,
+            };
+            serialized_result_mode(&outcome, response_mode)
+        }
         ToolInvocation::FillForm {
             fields,
             expected_revision,
@@ -7521,6 +7609,21 @@ fn tools() -> Vec<Tool> {
             input_schema: json!({"type":"object","properties":{}}),
         },
         Tool {
+            name: "back",
+            description: "Go one entry back in the active page's history.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
+            name: "forward",
+            description: "Go one entry forward in the active page's history.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
+            name: "reload",
+            description: "Reload the active page.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
             name: "printToPdf",
             description: "Generate a PDF of the current page. Returns base64-encoded data.",
             input_schema: json!({"type":"object","properties":{"paperWidth":{"type":"number"},"paperHeight":{"type":"number"},"printBackground":{"type":"boolean"}}}),
@@ -8079,6 +8182,86 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 mod tests {
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
+
+    struct PdfTestDirectory(std::path::PathBuf);
+
+    impl PdfTestDirectory {
+        fn new() -> Self {
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).unwrap();
+            let path = std::env::temp_dir()
+                .join(format!("glass-mcp-pdf-{:032x}", u128::from_le_bytes(nonce)));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for PdfTestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pdf_outputs_decode_native_projection_and_reject_invalid_data() {
+        let workspace = PdfTestDirectory::new();
+        let policy = super::BrowserPolicy::development(workspace.path()).unwrap();
+        let output = workspace.path().join("native.pdf");
+        let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":output}}})).unwrap();
+        for payload in [
+            serde_json::json!("JVBERi0="),
+            serde_json::json!({"result":"JVBERi0=","detailAvailability":{}}),
+        ] {
+            let result = serde_json::json!({"content":[{"text":payload.to_string()}]});
+            let report = super::save_pdf_result(&request, &result, &policy).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&report).unwrap()["bytes"],
+                5
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        }
+        for text in ["not JSON", "{}", "null", "\"!invalid!\"", "{\"result\":42}"] {
+            let result = serde_json::json!({"content":[{"text":text}]});
+            assert!(super::save_pdf_result(&request, &result, &policy).is_err());
+            assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        }
+    }
+
+    #[test]
+    fn pdf_outputs_follow_workspace_policy() {
+        let workspace = PdfTestDirectory::new();
+        let outside = PdfTestDirectory::new();
+        let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
+        let result = serde_json::json!({"content":[{"text":"\"JVBERi0=\""}]});
+        let save = |path: &std::path::Path, result: &serde_json::Value| {
+            let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":path}}})).unwrap();
+            super::save_pdf_result(&request, result, &policy)
+        };
+        let output = workspace.path().join("page.pdf");
+        assert!(save(&output, &result).is_ok());
+        assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        assert!(save(&outside.path().join("page.pdf"), &result).is_err());
+        assert!(save(&workspace.path().join("missing/page.pdf"), &result).is_err());
+        assert!(save(&workspace.path().join("empty.pdf"), &serde_json::json!({})).is_err());
+        assert!(!workspace.path().join("empty.pdf").exists());
+        #[cfg(unix)]
+        {
+            let protected = outside.path().join("protected.pdf");
+            std::fs::write(&protected, b"unchanged").unwrap();
+            let link = workspace.path().join("escape.pdf");
+            std::os::unix::fs::symlink(&protected, &link).unwrap();
+            assert!(save(&link, &result).is_err());
+            let directory = workspace.path().join("escape");
+            std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+            assert!(save(&directory.join("new.pdf"), &result).is_err());
+            assert_eq!(std::fs::read(protected).unwrap(), b"unchanged");
+            assert!(!outside.path().join("new.pdf").exists());
+        }
+    }
 
     #[test]
     fn cancellation_map_poison_is_recovered_for_cleanup_and_cancellation() {

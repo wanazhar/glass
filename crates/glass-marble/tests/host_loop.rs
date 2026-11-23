@@ -1079,6 +1079,70 @@ fn a_stop_in_one_chat_does_not_disturb_another_chat() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn a_created_chat_steers_its_engine_session_not_its_product_id() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("created-chat-steer");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    state
+        .lock()
+        .unwrap()
+        .conversation_mut("chat-created")
+        .needs_engine_session = true;
+    let factory = lane_factory(
+        &root,
+        &script,
+        vec![LaneSpec {
+            delay_ms: 500,
+            ..LaneSpec::default()
+        }],
+        ApprovalInbox::default(),
+        started,
+    );
+    let product = state.clone();
+    let pool = spawn_turn_pool(
+        1,
+        Arc::new(move |lane| {
+            factory(lane).map(|conversation| conversation.with_product(product.clone()))
+        }),
+        state.clone(),
+        None,
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .unwrap();
+    let accepted = submit(&pool, "first message", Some("chat-created".into()));
+    assert_eq!(accepted.conversation_id, "chat-created");
+    let engine_id = state.lock().unwrap().conversations[0]
+        .engine_conversation_id
+        .clone();
+    assert_ne!(engine_id, "chat-created");
+    assert!(!engine_id.is_empty());
+    assert!(pool.steer.send(
+        0,
+        SteerRequest {
+            conversation_id: accepted.conversation_id.clone(),
+            task_id: accepted.task_id.clone(),
+            text: "use the other file".into(),
+        }
+    ));
+    wait_for_settled(&state, &accepted.task_id);
+    let path = root.join("sessions/lane-0/fixture-steer.json");
+    wait_until("the correction to reach Core", || path.exists());
+    let recorded: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(recorded["sessionId"], engine_id);
+    assert_eq!(recorded["text"], "use the other file");
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A correction is delivered to the engine that owns the chat, and the other
 /// chat's engine never sees it.
 #[test]

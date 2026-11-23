@@ -1208,7 +1208,21 @@ impl Conversation {
                 continue;
             }
             let input = crate::to_turn_input(&crate::InboundMessage::new(&request.text));
-            match self.client.steer(&self.active_conversation, &input) {
+            let engine_id = self
+                .product
+                .as_ref()
+                .and_then(|product| {
+                    product
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .conversations
+                        .iter()
+                        .find(|record| record.id == self.active_conversation)
+                        .map(|record| record.engine_conversation_id.clone())
+                        .filter(|id| !id.is_empty())
+                })
+                .unwrap_or_else(|| self.active_conversation.clone());
+            match self.client.steer(&engine_id, &input) {
                 Ok(id) => {
                     self.note_issued(id.clone());
                     if auxiliary.len() < MAX_AUXILIARY_RESPONSES {

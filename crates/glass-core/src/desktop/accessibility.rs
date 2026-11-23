@@ -60,13 +60,35 @@ pub(super) struct WindowRoot {
 enum MenuContainer {
     Bar,
     Popup,
+    Button,
 }
 
-fn child_menu_container(role: &str, inherited: Option<MenuContainer>) -> Option<MenuContainer> {
+impl MenuContainer {
+    fn is_popup(self) -> bool {
+        matches!(self, Self::Popup | Self::Button)
+    }
+}
+
+fn is_open_menu_control(role: &str, states: StateSet) -> bool {
+    matches!(role, "toggle button" | "menu button")
+        && states.contains(State::Visible)
+        && states.contains(State::Showing)
+        && states.contains(State::Checked)
+}
+
+fn child_menu_container(
+    role: &str,
+    inherited: Option<MenuContainer>,
+    states: StateSet,
+) -> Option<MenuContainer> {
     match role {
         "menu bar" => Some(MenuContainer::Bar),
         "menu" | "popup menu" => Some(MenuContainer::Popup),
         _ if is_window_role(role) => None,
+        _ if inherited.is_none() && is_open_menu_control(role, states) => {
+            Some(MenuContainer::Button)
+        }
+        _ if inherited == Some(MenuContainer::Button) => None,
         _ => inherited,
     }
 }
@@ -667,7 +689,7 @@ async fn observe_async(
                 "name": name,
                 "application": application.clone(),
                 "owningWindow": if query.is_some() { window.clone() } else { None },
-                "inPopupMenu": parent_menu_container == Some(MenuContainer::Popup),
+                "inPopupMenu": parent_menu_container.is_some_and(MenuContainer::is_popup),
                 "states": state_names(states),
                 "actions": action_names,
                 "pointerFallback": pointer_fallback_candidate,
@@ -776,9 +798,7 @@ async fn observe_async(
         // children of the panel. The reciprocal PopupFor relation is exposed
         // as ParentWindowOf on the visible owner frame, not on the menu
         // toggle itself, so follow it from visible app-scoped windows too.
-        let checked_menu_control = matches!(role_lower.as_str(), "toggle button" | "menu button")
-            && visible
-            && states.contains(State::Checked);
+        let checked_menu_control = is_open_menu_control(&role_lower, states);
         let mut embedded_document_found = false;
         if app_scoped_query && window_is_in_scope && visible && (checked_menu_control || is_window)
         {
@@ -900,7 +920,7 @@ async fn observe_async(
                                 application.clone(),
                                 window.clone(),
                                 window_object.clone(),
-                                child_menu_container(&role_lower, parent_menu_container),
+                                child_menu_container(&role_lower, parent_menu_container, states),
                             ));
                         }
                     }
@@ -1877,19 +1897,105 @@ mod tests {
 
     #[test]
     fn menu_ancestry_distinguishes_popup_items_from_menu_bar_commands() {
-        let bar = child_menu_container("menu bar", None);
+        let states = StateSet::empty();
+        let bar = child_menu_container("menu bar", None, states);
         assert_eq!(bar, Some(MenuContainer::Bar));
-        assert_eq!(child_menu_container("menu item", bar), bar);
-        let popup = child_menu_container("menu", bar);
+        assert_eq!(child_menu_container("menu item", bar, states), bar);
+        let popup = child_menu_container("menu", bar, states);
         assert_eq!(popup, Some(MenuContainer::Popup));
         for role in ["menu item", "check menu item", "radio menu item", "panel"] {
-            assert_eq!(child_menu_container(role, popup), popup);
+            assert_eq!(child_menu_container(role, popup, states), popup);
         }
-        assert_eq!(child_menu_container("popup menu", None), popup);
-        assert_eq!(child_menu_container("menu bar", popup), bar);
-        assert_eq!(child_menu_container("frame", popup), None);
-        assert_eq!(child_menu_container("dialog", popup), None);
-        assert_eq!(child_menu_container("menu item", None), None);
+        assert_eq!(child_menu_container("popup menu", None, states), popup);
+        assert_eq!(child_menu_container("menu bar", popup, states), bar);
+        assert_eq!(child_menu_container("frame", popup, states), None);
+        assert_eq!(child_menu_container("dialog", popup, states), None);
+        assert_eq!(child_menu_container("menu item", None, states), None);
+    }
+
+    #[test]
+    fn flattened_gtk3_menu_button_commands_keep_their_popup_labels() {
+        let open = StateSet::new(State::Visible | State::Showing | State::Checked);
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.2,"width":0.3,"height":0.3});
+        let command = |role, context: Option<MenuContainer>| {
+            json!({
+                "role":role,
+                "name":"Save",
+                "inPopupMenu":context.is_some_and(MenuContainer::is_popup),
+                "owningWindow":{"windowId":"editor"},
+                "bounds":{"x":0.25,"y":0.25,"width":0.1,"height":0.05},
+                "pointerTarget":{"x":0.3,"y":0.275}
+            })
+        };
+        for button_role in ["toggle button", "menu button"] {
+            let frame = child_menu_container("frame", None, open);
+            let context = child_menu_container(button_role, frame, open);
+            assert_eq!(context, Some(MenuContainer::Button));
+            for role in ["menu item", "check menu item", "radio menu item"] {
+                let node = command(role, context);
+                let stack = [editor.clone(), popup.clone()];
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert_eq!(selection.nodes, [node]);
+                assert_eq!((selection.hidden, selection.unknown), (0, 0));
+            }
+            for role in ["push button", "panel", "toggle button"] {
+                let node = command(role, context);
+                let stack = [editor.clone(), popup.clone()];
+                let selection = uncovered_labels(vec![node], Some(&stack), Some(&windows));
+                assert!(selection.nodes.is_empty());
+                assert_eq!((selection.hidden, selection.unknown), (1, 0));
+            }
+            for role in ["menu item", "panel", "frame"] {
+                assert_eq!(child_menu_container(role, context, open), None);
+            }
+            assert_eq!(
+                child_menu_container("menu", context, open),
+                Some(MenuContainer::Popup)
+            );
+            let bar = child_menu_container("menu bar", None, open);
+            let barred = child_menu_container(button_role, bar, open);
+            assert_eq!(barred, bar);
+            for context in [
+                barred,
+                None,
+                child_menu_container(button_role, None, StateSet::empty()),
+                child_menu_container(
+                    button_role,
+                    None,
+                    StateSet::new(State::Visible | State::Showing),
+                ),
+                child_menu_container(
+                    button_role,
+                    None,
+                    StateSet::new(State::Visible | State::Checked),
+                ),
+                child_menu_container(
+                    button_role,
+                    None,
+                    StateSet::new(State::Showing | State::Checked),
+                ),
+                child_menu_container("push button", None, open),
+            ] {
+                let node = command("menu item", context);
+                let stack = [editor.clone(), popup.clone()];
+                let selection = uncovered_labels(vec![node], Some(&stack), Some(&windows));
+                assert!(selection.nodes.is_empty());
+                assert_eq!((selection.hidden, selection.unknown), (1, 0));
+            }
+            let node = command("menu item", context);
+            let mut foreign = popup.clone();
+            foreign["pid"] = json!(22);
+            for stack in [
+                vec![editor.clone(), foreign],
+                vec![editor.clone(), popup.clone(), popup.clone()],
+            ] {
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert!(selection.nodes.is_empty());
+                assert_eq!((selection.hidden, selection.unknown), (1, 0));
+            }
+        }
     }
 
     #[test]

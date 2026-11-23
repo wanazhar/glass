@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// Read the deep-link target out of an APNs payload Marble sent itself.
+/// Read the deep-link target out of a local notification.
 func marbleConversationId(from userInfo: [AnyHashable: Any]) -> String? {
     guard let marble = userInfo["marble"] as? [String: Any] else { return nil }
     let id = marble["conversationId"] as? String
@@ -16,7 +16,12 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        MarbleBackgroundConnection.endActivitiesFromPreviousLaunch()
         return true
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        MarbleBackgroundConnection.endActivitiesBeforeTermination()
     }
 
     /// A tapped notification opens the conversation that needed attention, not
@@ -32,35 +37,26 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
         completionHandler()
     }
 
-    /// Marble is an assistant, not a background daemon: show its banner even
-    /// while the app is in front.
+    /// The open chat already shows its own updates.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([.banner, .sound, .list])
-    }
-
-    /// The device token is handed to the product store, which registers it with
-    /// the self-hosted host so Marble can push a notification when it needs you.
-    func application(
-        _ application: UIApplication,
-        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
-    ) {
-        guard MarbleFeatures.remotePush else { return }
-        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        NotificationCenter.default.post(name: .marblePushToken, object: token)
-    }
-
-    func application(
-        _ application: UIApplication,
-        didFailToRegisterForRemoteNotificationsWithError error: Error
-    ) {
-        NotificationCenter.default.post(
-            name: .marblePushRegistrationFailed,
-            object: error.localizedDescription
-        )
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        let userInfo = notification.request.content.userInfo
+        let target = marbleConversationId(from: userInfo)
+        let marble = userInfo["marble"] as? [String: Any]
+        let threadId = marble?["threadId"] as? String
+        let mirroredInEveryone = marble?["mirroredInEveryone"] as? String == "true"
+        return await MainActor.run {
+            let shouldSuppress = UIApplication.shared.connectedScenes.contains { scene in
+                guard scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive,
+                      let delegate = scene.delegate as? MarbleSceneDelegate else { return false }
+                return !delegate.shouldPresentNotification(
+                    target: target, threadId: threadId, mirroredInEveryone: mirroredInEveryone
+                )
+            }
+            return shouldSuppress ? [] : [.banner, .sound, .list]
+        }
     }
 
     func application(
@@ -90,12 +86,33 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #endif
     private let navigation = MarbleNavigationModel()
 
+    func shouldPresentNotification(target: String?, threadId: String?, mirroredInEveryone: Bool) -> Bool {
+        guard store.onboarded, !store.needsToken,
+              window?.rootViewController?.presentedViewController == nil else { return true }
+        let visibleChat = navigation.state.visibleChat { id in
+            store.prism.marbles.first { $0.id == id }?.conversationId
+        }
+        return MarbleNotificationCursor.shouldPresent(
+            target: target,
+            visibleChat: visibleChat,
+            threadId: threadId,
+            visibleThreadId: navigation.state.visibleThreadId,
+            mirroredInEveryone: mirroredInEveryone
+        )
+    }
+
     func scene(
         _ scene: UIScene,
         willConnectTo session: UISceneSession,
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        MarbleStore.liveActivityStore = store
+        store.shouldPresentReply = { [weak self] target, threadId, mirroredInEveryone in
+            self?.shouldPresentNotification(
+                target: target, threadId: threadId, mirroredInEveryone: mirroredInEveryone
+            ) ?? false
+        }
         // A notification can launch the app cold; honour its target too.
         if let response = connectionOptions.notificationResponse,
            let id = marbleConversationId(from: response.notification.request.content.userInfo) {
@@ -109,16 +126,29 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = controller
-        window.tintColor = UIColor(red: 0.43, green: 0.66, blue: 0.95, alpha: 1)
+        window.tintColor = .systemBlue
         window.makeKeyAndVisible()
         self.window = window
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        store.appWillResignActive()
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        store.appDidEnterBackground()
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        store.appBecameActive()
+    }
+
+    func sceneDidDisconnect(_ scene: UIScene) {
+        store.sceneDisconnected()
     }
 }
 
 extension Notification.Name {
-    /// Posted with the APNs device token as a hex string.
-    static let marblePushToken = Notification.Name("marble.push.token")
-    static let marblePushRegistrationFailed = Notification.Name("marble.push.failed")
     /// Posted with a conversation id when a notification asks to open one.
     static let marbleOpenConversation = Notification.Name("marble.open.conversation")
 }

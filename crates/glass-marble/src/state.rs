@@ -20,6 +20,8 @@ pub const TRANSCRIPT_LIMIT: usize = 4_000;
 pub const TASK_LIMIT: usize = 500;
 /// Conversations the product keeps, by most recent activity.
 pub const CONVERSATION_LIMIT: usize = 100;
+/// Unsent empty conversations kept separately from saved history.
+pub const UNSENT_CONVERSATION_LIMIT: usize = 10;
 
 /// What retention has trimmed, so a long-running instance stays legible.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +50,7 @@ impl RetentionState {
                 "transcript": TRANSCRIPT_LIMIT,
                 "tasks": TASK_LIMIT,
                 "conversations": CONVERSATION_LIMIT,
+                "unsentConversations": UNSENT_CONVERSATION_LIMIT,
             },
             "trimmedTranscript": self.trimmed_transcript,
             "trimmedTasks": self.trimmed_tasks,
@@ -93,6 +96,19 @@ pub struct ConversationRecord {
     /// admitted its first turn.
     #[serde(default)]
     pub lane: u8,
+    #[serde(default)]
+    pub engine_conversation_id: String,
+    /// Explicitly created chats acquire their engine session on first send.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_engine_session: bool,
+    #[serde(default)]
+    pub checkpoints: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub retry_task_id: String,
+}
+
+impl ConversationRecord {
+    pub(crate) const UNASSIGNED_LANE: u8 = u8::MAX;
 }
 
 /// One durable generation task admitted for a conversation.
@@ -101,6 +117,9 @@ pub struct ConversationRecord {
 pub struct TaskRecord {
     pub id: String,
     pub conversation_id: String,
+    /// Named target, including turns that failed before a chat existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub marble_id: String,
     /// `queued`, `running`, `completed`, `cancelled`, `failed`, or
     /// `interrupted` when the process stopped mid-turn.
     pub status: String,
@@ -153,8 +172,26 @@ pub struct ObservedTool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptEntry {
+    #[serde(
+        default,
+        rename = "client_message_id",
+        alias = "clientMessageId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_message_id: Option<String>,
+    #[serde(default)]
+    pub id: String,
+    #[serde(
+        default,
+        rename = "thread_id",
+        alias = "threadId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<crate::threads::ThreadSummary>,
     pub conversation_id: String,
-    /// `user`, `assistant`, `reasoning`, `tool`, `system`, or `handoff`.
+    /// `user`, `assistant`, `reasoning`, `tool`, `system`, `failure`, or `handoff`.
     pub kind: String,
     pub text: String,
     #[serde(default)]
@@ -169,6 +206,8 @@ pub struct TranscriptEntry {
     /// One marble asking another for help, when this entry records a handoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<HandoffEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::failure::FailureInfo>,
 }
 
 /// One marble-to-marble handoff, kept on the transcript row that tells it.
@@ -194,10 +233,32 @@ pub struct HandoffEntry {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMessage {
+    pub id: String,
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientSend {
+    pub message: ClientMessage,
+    pub scopes: Vec<String>,
+    pub status: u16,
+    pub response: Option<Value>,
+}
+
 /// Whole local product state served to the UI and encoded for the client.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_sends: Vec<ClientSend>,
+    #[serde(default)]
+    pub threads: Vec<crate::threads::Thread>,
+    #[serde(default)]
+    pub task_threads: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    pub thread_events: crate::threads::ThreadEvents,
     /// Monotonic document revision; durable commits use it for reconciliation.
     #[serde(default)]
     pub revision: u64,
@@ -210,10 +271,13 @@ pub struct ProductState {
     #[serde(default)]
     pub control: ControlState,
     /// Who answers for a turn currently running for the Everyone plane:
-    /// `task:<id>` or `marble:<id>` → the speaker id to mirror under. In-memory
-    /// only; a settled turn past a restart keeps nothing to mirror.
-    #[serde(skip)]
+    /// `task:<id>`, queue id, or `marble:<id>` → the speaker id to mirror under.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub everyone_pending: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub everyone_orders: std::collections::HashMap<String, std::collections::VecDeque<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub everyone_ready: std::collections::HashMap<String, TranscriptEntry>,
     /// Whether the assistant is up, what it is doing, and what it recovered.
     #[serde(default)]
     pub presence: PresenceState,
@@ -248,6 +312,60 @@ pub struct ProductState {
 }
 
 impl ProductState {
+    pub fn record_failure(&mut self, conversation_id: &str, task_id: &str, error: &str) {
+        self.push_transcript(TranscriptEntry {
+            conversation_id: conversation_id.into(),
+            task_id: task_id.into(),
+            kind: "failure".into(),
+            text: crate::failure::MESSAGE.into(),
+            failure: Some(crate::failure::FailureInfo::of(error)),
+            at: crate::worker::now_millis(),
+            ..Default::default()
+        });
+    }
+    pub fn agent_tasks(&self, id: &str) -> Vec<&TaskRecord> {
+        self.tasks
+            .iter()
+            .filter(|task| {
+                let named = self.prism.marbles.iter().find(|m| {
+                    !m.conversation_id.is_empty() && m.conversation_id == task.conversation_id
+                });
+                let owner = if !task.marble_id.is_empty() {
+                    task.marble_id.as_str()
+                } else if let Some(marble) = named {
+                    marble.id.as_str()
+                } else if task.owner == "prism" {
+                    ""
+                } else {
+                    "marble"
+                };
+                task.status == "running" && owner == id
+            })
+            .collect()
+    }
+
+    pub fn prism_document(&self) -> Value {
+        let mut document = self.prism.document();
+        if let Some(marbles) = document["marbles"].as_array_mut() {
+            for marble in marbles.iter_mut() {
+                let tasks = self.agent_tasks(marble["id"].as_str().unwrap_or_default());
+                marble["isWorking"] = serde_json::json!(!tasks.is_empty());
+                marble["activeTaskIds"] =
+                    serde_json::json!(tasks.iter().map(|t| &t.id).collect::<Vec<_>>());
+                marble["taskId"] =
+                    serde_json::json!(tasks.last().map(|t| t.id.as_str()).unwrap_or_default());
+                if !tasks.is_empty() {
+                    marble["state"] = serde_json::json!("working");
+                } else if marble["state"] == "working" {
+                    marble["state"] = serde_json::json!("idle");
+                }
+            }
+            let working = marbles.iter().filter(|m| m["isWorking"] == true).count();
+            document["working"] = serde_json::json!(working);
+        }
+        document
+    }
+
     /// Encode state into the JSON shape served to and accepted from the UI.
     pub fn encode(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
@@ -358,6 +476,7 @@ impl ProductState {
         self.control
             .queue
             .retain(|entry| entry.conversation_id.as_deref() != Some(id));
+        self.prune_threads();
         Ok(())
     }
 
@@ -403,6 +522,7 @@ impl ProductState {
             entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION
                 || entry.task_id.is_empty()
                 || tasks.contains(entry.task_id.as_str())
+                || (entry.kind == "pending" && self.everyone_pending.contains_key(&entry.task_id))
         });
         before - self.transcript.len()
     }
@@ -414,6 +534,9 @@ impl ProductState {
         self.transcript
             .retain(|entry| entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION);
         self.everyone_pending.clear();
+        self.everyone_orders.clear();
+        self.everyone_ready.clear();
+        self.prune_threads();
         before - self.transcript.len()
     }
 
@@ -471,8 +594,116 @@ impl ProductState {
     }
 
     /// Append one transcript entry.
-    pub fn push_transcript(&mut self, entry: TranscriptEntry) {
-        self.transcript.push(entry);
+    pub fn push_transcript(&mut self, mut entry: TranscriptEntry) {
+        let pending = matches!(entry.kind.as_str(), "assistant" | "failure" | "system")
+            .then(|| {
+                self.transcript.iter().find(|previous| {
+                    previous.kind == "pending"
+                        && previous.conversation_id == entry.conversation_id
+                        && previous.task_id == entry.task_id
+                })
+            })
+            .flatten();
+        let replacing_pending = pending.is_some();
+        if let Some(previous) = pending {
+            entry.id = previous.id.clone();
+            entry.at = previous.at;
+            entry.thread_id = previous.thread_id.clone();
+        }
+        if entry.kind == "user"
+            && !entry.task_id.is_empty()
+            && let Some(previous) = self.transcript.iter().find(|previous| {
+                previous.kind == "user"
+                    && previous.conversation_id == entry.conversation_id
+                    && previous.task_id == entry.task_id
+            })
+        {
+            entry.id = previous.id.clone();
+            entry.at = previous.at;
+        }
+        if entry.kind == "user"
+            && entry.client_message_id.is_none()
+            && !entry.task_id.is_empty()
+            && let Some(send) = self.client_sends.iter().find(|send| {
+                !send.scopes.iter().any(|scope| scope == "everyone")
+                    && send
+                        .response
+                        .as_ref()
+                        .is_some_and(|response| response["taskId"] == entry.task_id)
+            })
+        {
+            entry.id = send.message.entry_id.clone();
+            entry.client_message_id = Some(send.message.id.clone());
+        }
+        if entry.id.is_empty() {
+            entry.id = format!("entry-{}", crate::next_request_id());
+        }
+        if entry.kind != "user" && entry.speaker_name.is_empty() {
+            entry.speaker_name = self.entry_sender(&entry);
+        }
+        if entry.thread_id.is_none() {
+            entry.thread_id = self.task_threads.get(&entry.task_id).cloned();
+        }
+        let key = format!("task:{}", entry.task_id);
+        if entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+            && !replacing_pending
+            && matches!(entry.kind.as_str(), "assistant" | "failure" | "system")
+            && self
+                .everyone_orders
+                .values()
+                .any(|order| order.contains(&key))
+        {
+            self.everyone_ready.insert(key, entry);
+            self.flush_everyone();
+            return;
+        }
+        let thread = entry.thread_id.clone();
+        if let Some(send) = self
+            .client_sends
+            .iter_mut()
+            .find(|send| send.message.entry_id == entry.id)
+            && !entry.conversation_id.is_empty()
+            && !send.scopes.contains(&entry.conversation_id)
+        {
+            send.scopes.push(entry.conversation_id.clone());
+        }
+        if let Some(existing) = self
+            .transcript
+            .iter_mut()
+            .find(|existing| existing.id == entry.id)
+        {
+            *existing = entry;
+        } else {
+            self.transcript.push(entry);
+        }
+        if let Some(id) = thread {
+            if let Some(thread) = self.threads.iter_mut().find(|t| t.id == id) {
+                thread.last_activity_at = thread.last_activity_at.max(now_millis());
+            }
+            self.refresh_thread(&id);
+        }
+    }
+
+    pub(crate) fn flush_everyone(&mut self) {
+        let groups: Vec<_> = self.everyone_orders.keys().cloned().collect();
+        for group in groups {
+            while let Some(key) = self
+                .everyone_orders
+                .get(&group)
+                .and_then(|q| q.front())
+                .cloned()
+            {
+                if let Some(entry) = self.everyone_ready.remove(&key) {
+                    self.everyone_orders.get_mut(&group).unwrap().pop_front();
+                    self.push_transcript(entry);
+                } else if !self.everyone_pending.contains_key(&key) {
+                    self.everyone_orders.get_mut(&group).unwrap().pop_front();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.everyone_orders.retain(|_, order| !order.is_empty());
     }
 
     /// Transcript entries for one conversation, newest last.
@@ -536,20 +767,45 @@ impl ProductState {
                 conversation
                     .task_ids
                     .retain(|id| known.contains(id.as_str()));
+                conversation
+                    .checkpoints
+                    .retain(|id, _| known.contains(id.as_str()));
             }
         }
 
-        // Conversations: newest activity wins, but anything still working stays.
-        if self.conversations.len() > CONVERSATION_LIMIT {
-            let mut order: Vec<usize> = (0..self.conversations.len()).collect();
+        // Unsent empty chats have their own cap and never displace history.
+        if self.conversations.len() > UNSENT_CONVERSATION_LIMIT {
+            let with_content: std::collections::HashSet<&str> = self
+                .transcript
+                .iter()
+                .map(|entry| entry.conversation_id.as_str())
+                .collect();
+            let (mut empty, mut order): (Vec<usize>, Vec<usize>) = (0..self.conversations.len())
+                .partition(|index| {
+                    let conversation = &self.conversations[*index];
+                    conversation.needs_engine_session
+                        && !with_content.contains(conversation.id.as_str())
+                });
             order.sort_by_key(|index| std::cmp::Reverse(self.conversations[*index].updated_at));
-            let mut keep: std::collections::HashSet<usize> =
-                order.into_iter().take(CONVERSATION_LIMIT).collect();
+            empty.sort_by_key(|index| {
+                (
+                    std::cmp::Reverse(self.conversations[*index].updated_at),
+                    std::cmp::Reverse(*index),
+                )
+            });
+            let mut keep: std::collections::HashSet<usize> = order
+                .into_iter()
+                .take(CONVERSATION_LIMIT)
+                .chain(empty.into_iter().take(UNSENT_CONVERSATION_LIMIT))
+                .collect();
             for (index, conversation) in self.conversations.iter().enumerate() {
                 if self
                     .tasks
                     .iter()
                     .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
+                    || self.control.queue.iter().any(|entry| {
+                        entry.conversation_id.as_deref() == Some(conversation.id.as_str())
+                    })
                 {
                     keep.insert(index);
                 }
@@ -600,6 +856,7 @@ impl ProductState {
         }
 
         if !summary.is_empty() {
+            self.prune_threads();
             self.retention.trimmed_transcript = self
                 .retention
                 .trimmed_transcript
@@ -623,6 +880,56 @@ impl ProductState {
     /// tasks were recovered.
     pub fn recover_interrupted(&mut self) -> usize {
         let now = now_millis();
+        let unclaimed: Vec<_> = self
+            .transcript
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && entry.kind == "pending"
+                    && !self.tasks.iter().any(|task| task.id == entry.task_id)
+                    && !self
+                        .control
+                        .queue
+                        .iter()
+                        .any(|queued| queued.id == entry.task_id)
+            })
+            .map(|(index, entry)| {
+                let prompt = self.transcript[..index]
+                    .iter()
+                    .rev()
+                    .find(|e| {
+                        e.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                            && e.kind == "user"
+                    })
+                    .map(|e| e.text.clone())
+                    .unwrap_or_default();
+                (entry.clone(), prompt)
+            })
+            .collect();
+        for (entry, prompt) in unclaimed {
+            let id = format!("recovered-{}", crate::next_request_id());
+            self.upsert_task(TaskRecord {
+                id: id.clone(),
+                status: "queued".into(),
+                prompt,
+                owner: if entry.speaker == "marble" {
+                    "agent"
+                } else {
+                    "prism"
+                }
+                .into(),
+                marble_id: if entry.speaker == "marble" {
+                    String::new()
+                } else {
+                    entry.speaker
+                },
+                at: now,
+                ..Default::default()
+            });
+            self.bind_thread(&id, entry.thread_id.as_deref());
+            crate::everyone::claim(self, &entry.task_id, &id);
+        }
         // `true` marks a turn that was running; `false` one still queued.
         let recovered: Vec<(String, String, bool)> = self
             .tasks
@@ -702,6 +1009,45 @@ impl ProductState {
             };
             self.routines.note_settled(task_id, outcome);
         }
+        let settled_slots: Vec<_> = self
+            .transcript
+            .iter()
+            .filter(|e| {
+                e.conversation_id == crate::everyone::EVERYONE_CONVERSATION && e.kind == "pending"
+            })
+            .filter_map(|entry| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.id == entry.task_id && settled(&task.status))
+                    .map(|task| {
+                        let reply = self
+                            .transcript
+                            .iter()
+                            .rev()
+                            .find(|e| {
+                                e.task_id == task.id
+                                    && e.kind == "assistant"
+                                    && e.conversation_id != crate::everyone::EVERYONE_CONVERSATION
+                            })
+                            .map(|e| e.text.clone())
+                            .unwrap_or_default();
+                        (task.id.clone(), task.status.clone(), reply)
+                    })
+            })
+            .collect();
+        for (task, status, reply) in settled_slots {
+            crate::everyone::claim(self, &task, &task);
+            crate::everyone::mirror_settlement(
+                self,
+                &task,
+                &reply,
+                if status == "completed" {
+                    "completed"
+                } else {
+                    "failed"
+                },
+            );
+        }
         self.presence.recovered_tasks = recovered.len() as u64;
         // The roster is durable too, and a marble mid-dispatch is the case a
         // restart used to leave permanently unusable: `working` with no engine
@@ -719,6 +1065,41 @@ impl ProductState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_presence_only_counts_the_owning_agents_running_tasks() {
+        let mut state = super::ProductState::default();
+        let ada = state
+            .prism
+            .add("Ada", "writer", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        state.tasks.push(super::TaskRecord {
+            id: "a".into(),
+            marble_id: ada.clone(),
+            owner: "prism".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        let doc = state.prism_document();
+        assert_eq!(doc["marbles"][0]["state"], "idle");
+        assert_eq!(doc["marbles"][1]["state"], "working");
+        assert_eq!(
+            state.presence.document(&state)["agents"][&ada]["activeTaskIds"][0],
+            "a"
+        );
+        state.tasks.push(super::TaskRecord {
+            id: "d".into(),
+            owner: "agent".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        assert_eq!(state.prism_document()["marbles"][0]["state"], "working");
+        state.tasks[0].status = "failed".into();
+        assert_eq!(state.prism_document()["marbles"][1]["isWorking"], false);
+        state.tasks.clear();
+        assert_eq!(state.prism_document()["working"], 0);
+    }
     use super::*;
 
     #[test]
@@ -745,6 +1126,7 @@ mod tests {
         assert_eq!(state.conversations[0].title, "");
         assert_eq!(state.tasks[0].at, 0);
         assert_eq!(state.tasks[0].routine_id, "");
+        assert_eq!(state.tasks[0].marble_id, "");
         assert_eq!(state.transcript[0].task_id, "");
         assert!(state.memory.facts.is_empty());
         assert!(state.routines.routines.is_empty());
@@ -755,6 +1137,7 @@ mod tests {
 
     fn settled_task(id: &str, at: u64) -> TaskRecord {
         TaskRecord {
+            marble_id: String::new(),
             id: id.into(),
             conversation_id: "c1".into(),
             status: "completed".into(),
@@ -800,6 +1183,165 @@ mod tests {
     }
 
     #[test]
+    fn unsent_created_chats_do_not_displace_saved_history() {
+        for history_count in [0, CONVERSATION_LIMIT] {
+            let mut state = ProductState::default();
+            for index in 0..history_count {
+                let id = format!("saved-{index}");
+                state.conversation_mut(&id).updated_at = index as u64;
+                state.push_transcript(TranscriptEntry {
+                    conversation_id: id,
+                    kind: "assistant".into(),
+                    text: format!("answer {index}"),
+                    ..Default::default()
+                });
+            }
+            for index in 0..UNSENT_CONVERSATION_LIMIT + 2 {
+                let record = state.conversation_mut(&format!("empty-{index}"));
+                record.updated_at = 1_000 + index as u64;
+                record.needs_engine_session = true;
+            }
+            let mut state = ProductState::decode(&state.encode()).unwrap();
+            let summary = state.prune(2_000);
+            assert_eq!(summary.conversations, 2);
+            assert_eq!(summary.transcript, 0);
+            assert_eq!(
+                state.conversations.len(),
+                history_count + UNSENT_CONVERSATION_LIMIT
+            );
+            assert_eq!(state.transcript.len(), history_count);
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|record| matches!(record.id.as_str(), "empty-0" | "empty-1"))
+            );
+            for index in 0..history_count {
+                assert_eq!(
+                    state.transcript_for(&format!("saved-{index}"))[0].text,
+                    format!("answer {index}")
+                );
+            }
+            assert!(state.prune(2_001).is_empty());
+
+            state.conversation_mut("empty-11").needs_engine_session = false;
+            state.push_transcript(TranscriptEntry {
+                conversation_id: "empty-11".into(),
+                kind: "user".into(),
+                text: "first message".into(),
+                ..Default::default()
+            });
+            assert_eq!(
+                state.prune(2_002).conversations,
+                usize::from(history_count == CONVERSATION_LIMIT)
+            );
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "saved-0")
+            );
+            assert!(
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "empty-2")
+            );
+            assert_eq!(
+                state.transcript.len(),
+                (history_count + 1).min(CONVERSATION_LIMIT)
+            );
+        }
+    }
+
+    #[test]
+    fn unsent_chat_retention_preserves_content_and_unfinished_turns() {
+        let mut state = ProductState::default();
+        for index in 0..UNSENT_CONVERSATION_LIMIT + 2 {
+            let record = state.conversation_mut(&format!("empty-{index}"));
+            record.needs_engine_session = true;
+            record.updated_at = index as u64;
+        }
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "empty-0".into(),
+            kind: "failure".into(),
+            text: "engine creation failed".into(),
+            ..Default::default()
+        });
+        state.tasks.push(TaskRecord {
+            id: "queued".into(),
+            conversation_id: "empty-1".into(),
+            status: "queued".into(),
+            ..Default::default()
+        });
+        assert!(state.prune(2_000).is_empty());
+        state.tasks[0].status = "cancelled".into();
+        assert_eq!(state.prune(2_001).conversations, 1);
+        assert!(
+            state
+                .conversations
+                .iter()
+                .any(|record| record.id == "empty-0")
+        );
+        assert!(
+            !state
+                .conversations
+                .iter()
+                .any(|record| record.id == "empty-1")
+        );
+        assert_eq!(
+            state.transcript_for("empty-0")[0].text,
+            "engine creation failed"
+        );
+    }
+
+    #[test]
+    fn control_queued_chats_are_protected_in_both_retention_caps() {
+        for needs_engine_session in [false, true] {
+            let limit = if needs_engine_session {
+                UNSENT_CONVERSATION_LIMIT
+            } else {
+                CONVERSATION_LIMIT
+            };
+            let mut state = ProductState::default();
+            for index in 0..=limit {
+                let id = format!("chat-{index}");
+                let record = state.conversation_mut(&id);
+                record.needs_engine_session = needs_engine_session;
+                record.updated_at = index as u64;
+                if !needs_engine_session {
+                    state.push_transcript(TranscriptEntry {
+                        conversation_id: id,
+                        kind: "assistant".into(),
+                        text: "saved answer".into(),
+                        ..Default::default()
+                    });
+                }
+            }
+            state
+                .control
+                .enqueue(Some("chat-0".into()), "held message")
+                .unwrap();
+            assert!(state.tasks.is_empty());
+            assert!(state.prune(2_000).is_empty());
+            assert!(
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "chat-0")
+            );
+            state.control.take_queue();
+            assert_eq!(state.prune(2_001).conversations, 1);
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "chat-0")
+            );
+        }
+    }
+
+    #[test]
     fn conversations_can_be_renamed_deleted_and_searched() {
         let mut state = ProductState::default();
         state.conversation_mut("c1").title = "old".into();
@@ -822,6 +1364,7 @@ mod tests {
         assert!(state.search_transcript("nothing here", 10).is_empty());
 
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t2".into(),
             conversation_id: "c1".into(),
             status: "running".into(),
@@ -848,6 +1391,7 @@ mod tests {
                 .push(settled_task(&format!("t{index}"), index as u64));
         }
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "running".into(),
             conversation_id: "c1".into(),
             status: "running".into(),
@@ -862,9 +1406,149 @@ mod tests {
     }
 
     #[test]
+    fn queued_default_group_slots_fail_with_their_original_identity_after_reload() {
+        for conversation_id in ["", "chat"] {
+            let mut state = ProductState::default();
+            if !conversation_id.is_empty() {
+                state.conversation_mut(conversation_id);
+            }
+            crate::everyone::mirror(
+                &mut state,
+                "user",
+                "You",
+                "user",
+                "@Marble queued",
+                "",
+                None,
+            );
+            let group = state.transcript.last().unwrap().id.clone();
+            let thread = state.create_thread("everyone", &group).unwrap();
+            crate::everyone::reserve(
+                &mut state,
+                &group,
+                "queued-default",
+                "marble",
+                "Marble",
+                Some(&thread.id),
+            );
+            let slot = state.transcript.last().unwrap().clone();
+            state.upsert_task(TaskRecord {
+                id: "queued-default".into(),
+                conversation_id: conversation_id.into(),
+                status: "queued".into(),
+                owner: "agent".into(),
+                prompt: "@Marble queued".into(),
+                ..Default::default()
+            });
+            state.bind_thread("queued-default", Some(&thread.id));
+            let mut state: ProductState =
+                serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            assert_eq!(state.recover_interrupted(), 1);
+            assert_eq!(state.recover_interrupted(), 0);
+            assert_eq!(state.tasks[0].status, "failed");
+            let row = state.transcript.iter().find(|e| e.id == slot.id).unwrap();
+            assert_eq!(row.kind, "failure");
+            assert_eq!(row.task_id, "queued-default");
+            assert_eq!(row.at, slot.at);
+            assert_eq!(row.thread_id, slot.thread_id);
+            assert!(row.failure.as_ref().unwrap().retryable);
+            assert!(state.everyone_pending.is_empty());
+            assert!(state.everyone_orders.is_empty());
+            assert!(!state.transcript.iter().any(|e| e.kind == "pending"));
+        }
+    }
+
+    #[test]
+    fn group_slots_survive_reload_and_settle_crash_windows() {
+        for status in ["running", "interrupted", "unclaimed", "held"] {
+            let mut state = ProductState::default();
+            state.conversation_mut("chat");
+            crate::everyone::mirror(
+                &mut state,
+                "user",
+                "You",
+                "user",
+                "@everyone hello",
+                "",
+                None,
+            );
+            let group = state.transcript.last().unwrap().id.clone();
+            let source = if status == "held" {
+                state
+                    .control
+                    .enqueue_marble("ada".into(), Some("chat".into()), "@everyone hello".into())
+                    .unwrap()
+                    .id
+            } else {
+                "marble:ada".into()
+            };
+            crate::everyone::reserve(&mut state, &group, &source, "ada", "Ada", None);
+            let slot = state.transcript.last().unwrap().id.clone();
+            if matches!(status, "running" | "interrupted") {
+                state.upsert_task(TaskRecord {
+                    id: "task".into(),
+                    conversation_id: "chat".into(),
+                    status: status.into(),
+                    owner: "prism".into(),
+                    marble_id: "ada".into(),
+                    prompt: "@everyone hello".into(),
+                    ..Default::default()
+                });
+                crate::everyone::claim(&mut state, &source, "task");
+            }
+            let mut reloaded: ProductState =
+                serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            assert_eq!(reloaded.everyone_pending, state.everyone_pending);
+            reloaded.recover_interrupted();
+            assert_eq!(reloaded.prune_everyone_entries(), 0);
+            let row = reloaded.transcript.iter().find(|e| e.id == slot).unwrap();
+            if status == "held" {
+                assert_eq!(row.kind, "pending");
+                assert_eq!(reloaded.control.queue.len(), 1);
+                crate::everyone::claim(&mut reloaded, &source, "task-after-restart");
+                crate::everyone::mirror_settlement(
+                    &mut reloaded,
+                    "task-after-restart",
+                    "one reply",
+                    "completed",
+                );
+                crate::everyone::mirror_settlement(
+                    &mut reloaded,
+                    "task-after-restart",
+                    "duplicate",
+                    "completed",
+                );
+                assert_eq!(
+                    reloaded
+                        .transcript
+                        .iter()
+                        .filter(|e| e.kind == "assistant")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    reloaded
+                        .transcript
+                        .iter()
+                        .find(|e| e.id == slot)
+                        .unwrap()
+                        .text,
+                    "one reply"
+                );
+            } else {
+                assert_eq!(row.kind, "failure", "{status}");
+                assert!(row.failure.as_ref().unwrap().retryable);
+                assert!(reloaded.everyone_pending.is_empty());
+                assert!(!reloaded.transcript.iter().any(|e| e.kind == "pending"));
+            }
+        }
+    }
+
+    #[test]
     fn restarting_marks_running_turns_interrupted() {
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t1".into(),
             conversation_id: "c1".into(),
             status: "running".into(),
@@ -890,6 +1574,7 @@ mod tests {
         let mut state = ProductState::default();
         state.conversation_mut("c1").title = "chat".into();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "queued-1".into(),
             conversation_id: "c1".into(),
             status: "queued".into(),
@@ -913,6 +1598,7 @@ mod tests {
         // and the explanation land in a chat that stays open.
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "queued-9".into(),
             conversation_id: String::new(),
             status: "queued".into(),
@@ -960,6 +1646,7 @@ mod tests {
     fn the_orphan_prune_keeps_queued_work_without_a_conversation() {
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "queued-3".into(),
             conversation_id: String::new(),
             status: "queued".into(),
@@ -1005,6 +1692,7 @@ mod everyone_tests {
             speaker: "user".into(),
             speaker_name: "You".into(),
             handoff: None,
+            ..Default::default()
         }
     }
 
@@ -1017,8 +1705,10 @@ mod everyone_tests {
             task_ids: vec![],
             updated_at: 0,
             lane: 0,
+            ..Default::default()
         });
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-1".into(),
             conversation_id: "c-1".into(),
             status: "completed".into(),
@@ -1051,6 +1741,7 @@ mod everyone_tests {
     fn everyone_entries_quoting_dead_tasks_are_pruned() {
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-live".into(),
             conversation_id: "c".into(),
             status: "completed".into(),

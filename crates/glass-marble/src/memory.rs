@@ -128,11 +128,9 @@ impl MemoryState {
             ));
         }
         let candidate = text.to_ascii_lowercase();
-        if let Some(existing) = self
-            .facts
-            .iter_mut()
-            .find(|fact| normalize(&fact.text).to_ascii_lowercase() == candidate)
-        {
+        if let Some(existing) = self.facts.iter_mut().find(|fact| {
+            fact.owner == owner && normalize(&fact.text).to_ascii_lowercase() == candidate
+        }) {
             existing.updated_at = now_millis();
             existing.explicit = existing.explicit || explicit;
             return Ok(existing.clone());
@@ -176,11 +174,17 @@ impl MemoryState {
             ));
         }
         let candidate = text.to_ascii_lowercase();
-        if self
+        let owner = &self
             .facts
             .iter()
-            .any(|fact| fact.id != id && normalize(&fact.text).to_ascii_lowercase() == candidate)
-        {
+            .find(|fact| fact.id == id)
+            .ok_or_else(|| "unknown memory".to_string())?
+            .owner;
+        if self.facts.iter().any(|fact| {
+            fact.id != id
+                && &fact.owner == owner
+                && normalize(&fact.text).to_ascii_lowercase() == candidate
+        }) {
             return Err("an equivalent memory is already kept".into());
         }
         let fact = self
@@ -204,15 +208,16 @@ impl MemoryState {
         self.facts.len() != before
     }
 
-    /// Forget every fact whose text contains `query`.
-    pub fn forget_matching(&mut self, query: &str) -> usize {
+    /// Forget matching facts belonging to one owner.
+    pub fn forget_matching(&mut self, query: &str, owner: &str) -> usize {
         let needle = normalize(query).to_ascii_lowercase();
         if needle.is_empty() {
             return 0;
         }
         let before = self.facts.len();
-        self.facts
-            .retain(|fact| !normalize(&fact.text).to_ascii_lowercase().contains(&needle));
+        self.facts.retain(|fact| {
+            fact.owner != owner || !normalize(&fact.text).to_ascii_lowercase().contains(&needle)
+        });
         before - self.facts.len()
     }
 
@@ -556,6 +561,26 @@ mod tests {
     }
 
     #[test]
+    fn identical_facts_keep_their_requested_owner() {
+        let mut memory = MemoryState::default();
+        let shared = memory
+            .remember("Keep it short", "fact", "", true, "")
+            .unwrap();
+        let private = memory
+            .remember("Keep it short", "fact", "", true, "ada")
+            .unwrap();
+        assert_ne!(shared.id, private.id);
+        assert_eq!(private.owner, "ada");
+        assert_eq!(
+            memory
+                .remember("Keep it short", "fact", "", true, "ada")
+                .unwrap()
+                .id,
+            private.id
+        );
+    }
+
+    #[test]
     fn suggestions_wait_for_a_decision_and_never_duplicate_a_fact() {
         let mut memory = MemoryState::default();
         let suggestion = memory
@@ -595,6 +620,36 @@ mod tests {
     }
 
     #[test]
+    fn editing_memory_checks_duplicates_only_within_its_owner() {
+        let mut memory = MemoryState::default();
+        let ada = memory
+            .remember("prefer short replies", "fact", "", true, "ada")
+            .unwrap();
+        memory
+            .remember("prefer short replies", "fact", "", true, "ben")
+            .unwrap();
+        let updated = memory
+            .update(&ada.id, "prefer short replies", "preference")
+            .unwrap();
+        assert_eq!(updated.kind, "preference");
+        assert_eq!(updated.owner, "ada");
+        memory
+            .remember("check the sources", "fact", "", true, "ben")
+            .unwrap();
+        assert!(memory.update(&ada.id, "check the sources", "fact").is_ok());
+        memory
+            .remember("keep a changelog", "fact", "", true, "ada")
+            .unwrap();
+        assert!(memory.update(&ada.id, "keep a changelog", "fact").is_err());
+        assert_eq!(
+            memory
+                .update("missing", "check the sources", "fact")
+                .unwrap_err(),
+            "unknown memory"
+        );
+    }
+
+    #[test]
     fn editing_a_memory_keeps_its_identity_and_rejects_duplicates() {
         let mut memory = MemoryState::default();
         let fact = memory
@@ -629,7 +684,10 @@ mod tests {
         memory
             .remember("the office wifi is glassnet", "fact", "c1", true, "")
             .unwrap();
-        assert_eq!(memory.forget_matching("wifi"), 1);
+        assert_eq!(memory.forget_matching("", ""), 0);
+        assert_eq!(memory.forget_matching("   ", ""), 0);
+        assert_eq!(memory.forget_matching("wifi", "someone-else"), 0);
+        assert_eq!(memory.forget_matching("wifi", ""), 1);
         assert_eq!(memory.facts.len(), 1);
         assert!(memory.forget(&fact.id));
         assert!(memory.facts.is_empty());

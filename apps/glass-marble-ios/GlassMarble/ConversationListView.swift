@@ -4,8 +4,6 @@ struct ConversationListView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var searchText = ""
-    @State private var hits: [MarbleSearchHit] = []
-    @State private var searchTask: Task<Void, Never>?
     @State private var renaming: MarbleConversation?
     @State private var renameDraft = ""
     @State private var deleting: MarbleConversation?
@@ -18,7 +16,6 @@ struct ConversationListView: View {
         .navigationTitle("Glass Marble")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search conversations")
-        .onChange(of: searchText) { _, _ in debounceSearch() }
         .alert("Rename conversation", isPresented: renameBinding) {
             TextField("Title", text: $renameDraft)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -38,8 +35,7 @@ struct ConversationListView: View {
                 guard let conversation = deleting else { return }
                 deleting = nil
                 Task {
-                    await store.delete(conversation)
-                    if !store.state.conversations.contains(where: { $0.id == conversation.id }) {
+                    if await store.delete(conversationId: conversation.id) {
                         navigation.deleted(conversation.id)
                     }
                 }
@@ -49,14 +45,7 @@ struct ConversationListView: View {
             Text("Its transcript is removed from the host. A conversation with a running turn cannot be deleted.")
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    navigation.newChat()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .accessibilityLabel("New conversation")
-            }
+            ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
         }
         // The navigation title already says which app this is; the strip below
         // only has to say which host is answering and what it is doing.
@@ -94,15 +83,10 @@ struct ConversationListView: View {
     @ViewBuilder
     private var searchSection: some View {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Section(header: Text("Transcript matches")) {
-                if hits.isEmpty {
-                    Text("No matches")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(hits) { hit in
-                    searchHitRow(hit)
-                }
+            MarbleSearchSection(query: searchText) { hit in
+                NavigationLink(value: ChatRoute.searchHit(
+                    conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
+                )) { MarbleSearchRow(hit: hit) }
             }
         }
     }
@@ -119,29 +103,10 @@ struct ConversationListView: View {
                     Text("Start one with the compose button.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Button("New chat") { navigation.newChat() }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 24)
             }
-        }
-    }
-
-    private func searchHitRow(_ hit: MarbleSearchHit) -> some View {
-        Button {
-            navigation.openConversation(hit.conversationId)
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(hit.title.isEmpty ? hit.conversationId : hit.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(hit.text)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            .padding(.vertical, 2)
         }
     }
 
@@ -180,7 +145,7 @@ struct ConversationListView: View {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return sortedConversations }
         return sortedConversations.filter { conversation in
-            if conversation.title.lowercased().contains(needle) {
+            if conversation.displayTitle.lowercased().contains(needle) {
                 return true
             }
             return store.state.tasks.contains { task in
@@ -189,21 +154,56 @@ struct ConversationListView: View {
         }
     }
 
-    /// Debounced server-side transcript search while the field has text.
-    private func debounceSearch() {
-        searchTask?.cancel()
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            hits = []
-            return
+}
+
+struct MarbleNewChatButton: View {
+    @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var creating = false
+    @State private var failure: String?
+
+    var body: some View {
+        Button(action: create) {
+            Label("New Chat", systemImage: "square.and.pencil")
+                .labelStyle(.iconOnly)
         }
-        searchTask = Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            hits = (try? await store.search(query: query)) ?? []
+        .accessibilityIdentifier("chat.compose")
+        .disabled(creating)
+        .alert("Couldn’t create chat", isPresented: Binding(
+            get: { failure != nil },
+            set: { if !$0 { failure = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(failure ?? "")
         }
     }
 
+    private func create() {
+        let origin = navigation.state
+        creating = true
+        Task {
+            defer { creating = false }
+            do {
+                let conversation = try await store.createConversation()
+                open(conversation.id, from: origin)
+            } catch MarbleClientError.notFound {
+                // Older hosts create a chat when its first message is sent.
+                open(nil, from: origin)
+            } catch is CancellationError {
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+    }
+
+    private func open(_ id: String?, from origin: MarbleNavigation) {
+        let current = navigation.state
+        guard current.tab == origin.tab,
+              current.everyonePath == origin.everyonePath,
+              current.chatPath == origin.chatPath else { return }
+        navigation.openNewChat(id)
+    }
 }
 
 private struct ConversationRow: View {
@@ -212,7 +212,7 @@ private struct ConversationRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(conversation.title.isEmpty ? conversation.id : conversation.title)
+            Text(conversation.displayTitle)
                 .font(.callout)
                 .lineLimit(1)
             if let line {

@@ -77,6 +77,14 @@ impl Provider for Chain {
     }
 
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+        self.stream_text_blocks(req, false)
+    }
+
+    fn stream_text_blocks(
+        &self,
+        req: &Request<'_>,
+        enabled: bool,
+    ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let mut first_error: Option<Error> = None;
         for (index, provider) in self.levels.iter().enumerate() {
             // Stickiness: once a fallback has served this turn's requests,
@@ -99,7 +107,7 @@ impl Provider for Chain {
                 max_tokens: req.max_tokens,
                 reasoning: req.reasoning,
             };
-            match provider.stream(&rebuilt) {
+            match provider.stream_text_blocks(&rebuilt, enabled) {
                 Ok(stream) if index == 0 => return Ok(stream),
                 Ok(stream) => {
                     self.sticky.set(index);

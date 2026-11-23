@@ -10,7 +10,6 @@ final class MarbleClient: @unchecked Sendable {
     init(endpoint: MarbleEndpoint) {
         self.endpoint = endpoint
         let configuration = URLSessionConfiguration.default
-        configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 60 * 60 * 4
         configuration.httpShouldSetCookies = true
@@ -102,12 +101,12 @@ final class MarbleClient: @unchecked Sendable {
         }
     }
 
-    private func post(_ path: String, body: Encodable? = nil) async throws {
+    private func post(_ path: String, body: Encodable? = nil, acceptsNotFound: Bool = false) async throws {
         let data = try body.map { try JSONEncoder().encode($0) }
         let request = try makeRequest(path: path, method: "POST", body: data)
         do {
             let (responseData, response) = try await session.data(for: request)
-            try marbleValidate(response, data: responseData)
+            try marbleValidate(response, data: responseData, acceptsNotFound: acceptsNotFound)
         } catch let error as MarbleClientError {
             throw error
         } catch {
@@ -117,25 +116,24 @@ final class MarbleClient: @unchecked Sendable {
 
     // MARK: - Product API
 
-    func health() async throws -> MarbleHealth {
+    func health(timeout: TimeInterval? = nil) async throws -> MarbleHealth {
         // healthz answers 503 with the same JSON body when the engine is down;
         // onboarding needs that body to say so instead of "unreachable". Every
         // failure maps through MarbleClientError so the evaluator can tell a
         // refused request from a silent one.
-        do {
-            let (data, response) = try await session.data(
-                for: try makeRequest(route: .health)
-            )
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 503 {
+        try await withRepin {
+            do {
+                var request = try makeRequest(route: .health)
+                if let timeout { request.timeoutInterval = timeout }
+                let (data, response) = try await session.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status != 503 { try marbleValidate(response, data: data) }
                 return try decoder.decode(MarbleHealth.self, from: data)
+            } catch let error as MarbleClientError {
+                throw error
+            } catch {
+                throw MarbleClientError.from(error)
             }
-            try marbleValidate(response, data: data)
-            return try decoder.decode(MarbleHealth.self, from: data)
-        } catch let error as MarbleClientError {
-            throw error
-        } catch {
-            throw MarbleClientError.from(error)
         }
     }
 
@@ -144,15 +142,22 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(route: .state))
     }
 
-    func transcript(conversationId: String, after: UInt64?) async throws -> MarbleTranscriptPage {
-        try await fetch(
-            try makeRequest(route: .transcript(conversationId: conversationId, after: after))
-        )
+    func transcript(conversationId: String, around: String? = nil,
+                    before: String? = nil) async throws -> MarbleTranscriptPage {
+        let limit = around == nil ? MarbleHistoryWindow.pageSize : nil
+        let route = MarbleRoute.transcript(conversationId: conversationId, main: true, around: around)
+        let page: MarbleTranscriptPage = try await fetch(try makeRequest(route: route.history(before: before, limit: limit)))
+        // Older hosts already honored limit without advertising a back cursor.
+        if around == nil, before == nil, page.hasMore == nil, page.entries.count == limit {
+            return try await fetch(try makeRequest(route: route))
+        }
+        return page
     }
 
-    func send(text: String, conversationId: String?) async throws -> MarbleAccepted {
+    func send(text: String, conversationId: String?, threadId: String? = nil,
+              clientMessageId: UUID? = nil) async throws -> MarbleAccepted {
         let data = try JSONEncoder().encode(
-            MarbleTurnBody(text: text, conversationId: conversationId)
+            MarbleTurnBody(text: text, conversationId: conversationId, threadId: threadId, clientMessageId: clientMessageId)
         )
         return try await fetch(
             try makeRequest(path: "/api/turns", method: "POST", body: data)
@@ -172,13 +177,19 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
+    func createConversation() async throws -> MarbleConversation {
+        struct Reply: Decodable { let conversation: MarbleConversation }
+        let reply: Reply = try await postJSON("/api/conversations", body: nil)
+        return reply.conversation
+    }
+
     func renameConversation(id: String, title: String) async throws {
         struct Body: Encodable { var title: String }
         try await post("/api/conversations/\(encoded(id))/rename", body: Body(title: title))
     }
 
     func deleteConversation(id: String) async throws {
-        try await post("/api/conversations/\(encoded(id))/delete")
+        try await post("/api/conversations/\(encoded(id))/delete", acceptsNotFound: true)
     }
 
     func cancel(taskId: String) async throws {
@@ -198,6 +209,61 @@ final class MarbleClient: @unchecked Sendable {
             try makeRequest(route: .search(query, limit: limit))
         )
         return reply.hits
+    }
+
+    func messageSearch(query: String, threadId: String?, limit: Int = 30) async throws -> [MarbleSearchResult] {
+        struct Reply: Decodable { var hits: [MarbleSearchResult] }
+        do {
+            let reply: Reply = try await fetch(
+                try makeRequest(route: .messageSearch(query, threadId: threadId, limit: limit))
+            )
+            return reply.hits
+        } catch MarbleClientError.notFound where threadId == nil {
+            return try await search(query: query, limit: limit).map(MarbleSearchResult.init(legacy:))
+        }
+    }
+
+    func threads(conversationId: String) async throws -> [MarbleThread] {
+        struct Reply: Decodable {
+            let threads: [MarbleThread]
+
+            init(from decoder: Decoder) throws {
+                if var list = try? decoder.unkeyedContainer() {
+                    var threads: [MarbleThread] = []
+                    while !list.isAtEnd { threads.append(try list.decode(MarbleThread.self)) }
+                    self.threads = threads
+                } else {
+                    self.threads = try decoder.container(keyedBy: MarbleThreadKey.self).required("threads")
+                }
+            }
+        }
+        let reply: Reply = try await fetch(try makeRequest(route: .threads(conversationId: conversationId)))
+        return reply.threads
+    }
+
+    func thread(id: String, before: String? = nil) async throws -> MarbleThreadPage {
+        let route = MarbleRoute(path: "/api/threads/\(encoded(id))")
+            .history(before: before, limit: MarbleHistoryWindow.pageSize)
+        return try await fetch(try makeRequest(route: route))
+    }
+
+    func createThread(conversationId: String, parentEntryId: String) async throws -> MarbleThread {
+        struct Body: Encodable {
+            var conversation_id: String
+            var parent_entry_id: String
+        }
+        struct Reply: Decodable {
+            let thread: MarbleThread
+            init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: MarbleThreadKey.self)
+                thread = try values.optional("thread") ?? MarbleThread(from: decoder)
+            }
+        }
+        let reply: Reply = try await postJSON(
+            "/api/threads",
+            body: Body(conversation_id: conversationId, parent_entry_id: parentEntryId)
+        )
+        return reply.thread
     }
 
     /// `GET /api/export` — the whole document, or one conversation's slice.
@@ -398,10 +464,13 @@ final class MarbleClient: @unchecked Sendable {
 
     private struct PrismReply: Decodable { var prism: MarblePrism }
 
-    private struct DispatchReply: Decodable {
+    struct DispatchReply: Decodable {
         var dispatched: [String]
         var marbles: [String]
         var swarm: Bool
+        var entry_id: String?
+        var client_message_id: String?
+        var taskId: String?
     }
 
     @discardableResult
@@ -422,10 +491,10 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     /// The shared chat's timeline, newest entries after `after`.
-    func everyone(after: UInt64? = nil) async throws -> [MarbleEntry] {
-        struct Reply: Decodable { var entries: [MarbleEntry] }
-        let reply: Reply = try await fetch(try makeRequest(route: .everyone(after: after)))
-        return reply.entries
+    func everyone(before: String? = nil) async throws -> MarbleEveryonePage {
+        try await fetch(try makeRequest(route: .everyone(
+            after: nil, main: true, before: before, limit: MarbleHistoryWindow.pageSize
+        )))
     }
 
     /// Empty the shared Everyone timeline; other chats are untouched.
@@ -435,9 +504,10 @@ final class MarbleClient: @unchecked Sendable {
 
     /// One message on the shared plane; the marbles it names answer.
     @discardableResult
-    func sendEveryone(text: String) async throws -> MarbleEveryoneReply {
-        struct Body: Encodable { var text: String }
-        return try await postJSON("/api/everyone", body: Body(text: text))
+    func sendEveryone(text: String, threadId: String? = nil, clientMessageId: UUID? = nil) async throws -> MarbleEveryoneReply {
+        try await postJSON("/api/everyone", body: MarbleTurnBody(
+            text: text, conversationId: nil, threadId: threadId, clientMessageId: clientMessageId
+        ))
     }
 
     func removeMarble(id: String) async throws {
@@ -448,16 +518,16 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     /// Hand one prompt to several marbles at once. Empty `marbles` means all.
-    func dispatchSwarm(text: String, marbles: [String]) async throws -> (names: [String], swarm: Bool) {
+    func dispatchSwarm(text: String, marbles: [String], clientMessageId: UUID? = nil) async throws -> DispatchReply {
         struct Body: Encodable {
             var text: String
             var marbles: [String]?
+            var client_message_id: UUID?
         }
-        let reply: DispatchReply = try await postJSON(
+        return try await postJSON(
             "/api/prism/dispatch",
-            body: Body(text: text, marbles: marbles.isEmpty ? nil : marbles)
+            body: Body(text: text, marbles: marbles.isEmpty ? nil : marbles, client_message_id: clientMessageId)
         )
-        return (reply.marbles, reply.swarm)
     }
 
     func tools() async throws -> MarbleToolInventory {
@@ -467,64 +537,6 @@ final class MarbleClient: @unchecked Sendable {
     /// The workspace crate map, read when the sheet that shows it opens.
     func crates() async throws -> MarbleCrateMap {
         try await fetch(try makeRequest(route: .crates))
-    }
-
-    // MARK: - Notifications and voice
-
-    struct NotificationUpdate: Encodable {
-        var webhookUrl: String
-        var webhookToken: String
-        var events: [String]
-        var apns: MarbleApns?
-        var quietHours: MarbleQuietHours?
-        var reAlertSeconds: Int?
-        var retries: Int?
-        var dedupeSeconds: Int?
-    }
-
-    func notificationSettings() async throws -> MarbleNotificationSettings {
-        try await fetch(try makeRequest(route: .notifications))
-    }
-
-    func saveNotifications(_ update: NotificationUpdate) async throws -> MarbleNotificationSettings {
-        try await postJSON("/api/notifications", body: update)
-    }
-
-    func testNotification() async throws -> Bool {
-        let reply: OkReply = try await postJSON(
-            "/api/notifications/test",
-            body: Optional<String>.none
-        )
-        return reply.ok
-    }
-
-    func registerDevice(token: String, topic: String) async throws {
-        struct Body: Encodable {
-            var token: String
-            var platform: String
-            var topic: String
-        }
-        let _: OkReply = try await postJSON(
-            "/api/devices",
-            body: Body(token: token, platform: "ios", topic: topic)
-        )
-    }
-
-    /// Registered push devices (the host only ever shows token prefixes).
-    func devices() async throws -> [MarbleDevice] {
-        struct Reply: Decodable { var devices: [MarbleDevice] }
-        do {
-            let reply: Reply = try await fetch(try makeRequest(route: .devices))
-            return reply.devices
-        } catch {
-            // Some hosts answer with a bare array instead of a wrapper.
-            let devices: [MarbleDevice] = try await fetch(try makeRequest(route: .devices))
-            return devices
-        }
-    }
-
-    func removeDevice(tokenPrefix: String) async throws {
-        try await post("/api/devices/\(encoded(tokenPrefix))/remove")
     }
 
     func voice() async throws -> MarbleVoice {
@@ -556,14 +568,25 @@ final class MarbleClient: @unchecked Sendable {
     ///
     /// Raw bytes — never `bytes.lines`: `AsyncLineSequence` silently drops the
     /// empty lines that complete SSE frames, so keepalive-only streams and
-    /// every event would be invisible. `onOpen` fires as soon as the request
-    /// returns 200 (the stream is up before any frame); `onActivity` fires for
-    /// every completed line, including comments, so keepalives prove liveness.
-    func events(
-        since: UInt64,
-        onOpen: (@Sendable () -> Void)? = nil,
-        onActivity: (@Sendable () -> Void)? = nil
-    ) -> AsyncThrowingStream<MarbleEvent, Error> {
+    /// every event would be invisible.
+    enum StreamUpdate {
+        case opened
+        case activity
+        case baseline(UInt64)
+        case event(MarbleEvent)
+
+        init?(frame: MarbleSSEFrame, decoder: JSONDecoder) {
+            if frame.event == "hello" {
+                guard let cursor = frame.replayCursor else { return nil }
+                self = .baseline(cursor)
+            } else {
+                guard let event = try? decoder.decode(MarbleEvent.self, from: Data(frame.data.utf8)) else { return nil }
+                self = .event(event)
+            }
+        }
+    }
+
+    func events(since: UInt64) -> AsyncThrowingStream<StreamUpdate, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -573,26 +596,24 @@ final class MarbleClient: @unchecked Sendable {
                     )
                     let (bytes, response) = try await session.bytes(for: request)
                     try marbleValidateStatus(response)
-                    onOpen?()
+                    continuation.yield(.opened)
                     var splitter = MarbleSSELineSplitter()
                     var parser = MarbleSSEParser()
                     for try await byte in bytes {
                         for line in splitter.feed(byte) {
-                            onActivity?()
+                            if line.hasPrefix(":") { continuation.yield(.activity) }
                             guard let frame = parser.feed(line),
-                                  let data = frame.data.data(using: .utf8),
-                                  let event = try? decoder.decode(MarbleEvent.self, from: data)
+                                  let update = StreamUpdate(frame: frame, decoder: decoder)
                             else { continue }
-                            continuation.yield(event)
+                            continuation.yield(update)
                         }
                     }
                     if let last = splitter.finish() {
                         _ = parser.feed(last)
                     }
                     if let frame = parser.finish(),
-                       let data = frame.data.data(using: .utf8),
-                       let event = try? decoder.decode(MarbleEvent.self, from: data) {
-                        continuation.yield(event)
+                       let update = StreamUpdate(frame: frame, decoder: decoder) {
+                        continuation.yield(update)
                     }
                     continuation.finish()
                 } catch {

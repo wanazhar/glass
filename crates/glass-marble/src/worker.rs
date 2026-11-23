@@ -18,7 +18,7 @@ use crate::events::EventBus;
 use crate::live::LiveStore;
 use crate::memory;
 use crate::notify::{self, Notification};
-use crate::state::{ProductState, TaskRecord, TranscriptEntry};
+use crate::state::{ConversationRecord, ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::{
     MarbleError, MarbleTurn, TurnOptions, conversation::Conversation, conversation::SteerRequest,
@@ -35,6 +35,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// One message waiting for the durable turn worker.
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
+    pub client_message: Option<crate::state::ClientMessage>,
+    pub thread_id: Option<String>,
     pub conversation_id: Option<String>,
     pub text: String,
     pub request_id: String,
@@ -512,6 +514,7 @@ pub fn spawn_turn_pool(
     timeout: Duration,
     cancels: CancelRegistry,
 ) -> Result<TurnPool, MarbleError> {
+    events.attach_replies(&mut lock(&state));
     let lanes = lanes.max(1);
     let (sender, inbox) = TurnInbox::channel();
     let steer = SteerSink::default();
@@ -532,13 +535,30 @@ pub fn spawn_turn_pool(
         .name("glass-marble-turns".into())
         .spawn(move || {
             let mut next = 1;
-            while let Some(command) = inbox.recv() {
-                let lane = choose_lane(
+            let mut everyone_lane = None;
+            while let Some(mut command) = inbox.recv() {
+                let everyone = lock(&wiring.state).everyone_pending.contains_key(
+                    &format!("queued-{}", command.request.request_id),
+                );
+                if everyone && command.request.conversation_id.is_none() {
+                    command.request.conversation_id = crate::everyone::default_conversation(&lock(&wiring.state));
+                }
+                let lane = if everyone {
+                    if command.request.conversation_id.is_some() {
+                        everyone_lane = Some(choose_lane(&wiring.state, command.request.conversation_id.as_deref(), &runtimes, &mut next));
+                    }
+                    *everyone_lane.get_or_insert_with(|| choose_lane(
+                        &wiring.state,
+                        command.request.conversation_id.as_deref(),
+                        &runtimes,
+                        &mut next,
+                    ))
+                } else { choose_lane(
                     &wiring.state,
                     command.request.conversation_id.as_deref(),
                     &runtimes,
                     &mut next,
-                );
+                ) };
                 if runtimes[lane].is_none() {
                     // Starting an engine launches a subprocess and greets it,
                     // which can take seconds. Doing that here would hold up
@@ -746,7 +766,10 @@ fn undelivered(
 ) {
     let TurnCommand { request, accepted } = command;
     let queued_id = format!("queued-{}", request.request_id);
-    let conversation_id = request.conversation_id.clone().unwrap_or_default();
+    let conversation_id = request
+        .conversation_id
+        .clone()
+        .unwrap_or_else(|| format!("recovered-{queued_id}"));
     let message = error.to_string();
     let snapshot = {
         let mut guard = lock(state);
@@ -757,13 +780,28 @@ fn undelivered(
         {
             return;
         }
-        guard.set_task_status(&queued_id, "failed");
+        guard.upsert_task(TaskRecord {
+            id: queued_id.clone(),
+            conversation_id: conversation_id.clone(),
+            status: "failed".into(),
+            owner: "agent".into(),
+            prompt: request.text.clone(),
+            at: now_millis(),
+            marble_id: String::new(),
+            routine_id: request.routine_id.clone().unwrap_or_default(),
+        });
+        guard.bind_thread(&queued_id, request.thread_id.as_deref());
+        guard.conversation_mut(&conversation_id);
+        if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
+            task.conversation_id = conversation_id.clone();
+        }
+        guard.record_failure(&conversation_id, &queued_id, &message);
+        crate::everyone::claim(&mut guard, &queued_id, &queued_id);
+        crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
         guard.bump();
         guard.clone()
     };
-    if let Some(store) = store {
-        store::persist(store, &snapshot);
-    }
+    store::persist_optional(store, &snapshot);
     // Whoever is still waiting for admission hears the failure; a surface that
     // already answered `202` learns it from the row and the stream.
     let _ = accepted.send(Err(error));
@@ -771,7 +809,7 @@ fn undelivered(
         &conversation_id,
         &queued_id,
         "error",
-        json!({"message": message, "revision": snapshot.revision}),
+        json!({"message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&message), "revision": snapshot.revision}),
     );
 }
 
@@ -822,17 +860,17 @@ fn choose_lane(
     if runtimes.is_empty() {
         return 0;
     }
-    if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
-        let bound = state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+    let mut state = lock(state);
+    let record = conversation_id.and_then(|id| {
+        state
             .conversations
-            .iter()
+            .iter_mut()
             .find(|record| record.id == id)
-            .map(|record| usize::from(record.lane));
-        if let Some(lane) = bound {
-            return lane.min(runtimes.len() - 1);
-        }
+    });
+    if let Some(record) = &record
+        && record.lane != ConversationRecord::UNASSIGNED_LANE
+    {
+        return usize::from(record.lane).min(runtimes.len() - 1);
     }
     let mut best = *next % runtimes.len();
     let mut best_load = usize::MAX;
@@ -848,6 +886,10 @@ fn choose_lane(
         }
     }
     *next = (best + 1) % runtimes.len();
+    if let Some(record) = record {
+        // Reserve the lane before dispatch so queued first sends share it.
+        record.lane = best as u8;
+    }
     best
 }
 
@@ -881,6 +923,7 @@ fn run_command(
     cancels: &CancelRegistry,
 ) {
     let TurnCommand { request, accepted } = command;
+    conversation.set_store(store);
     let mut sender = Some(accepted);
     // The surface records a queued placeholder before handing the message over,
     // so a `202 queued` is visible in the document. The real task replaces it as
@@ -910,9 +953,7 @@ fn run_command(
             guard.bump();
             guard.clone()
         };
-        if let Some(store) = store {
-            store::persist(store, &snapshot);
-        }
+        store::persist_optional(store, &snapshot);
         events.publish(
             "",
             "",
@@ -941,9 +982,7 @@ fn run_command(
                 let restarts = guard.presence.runtime.restarts;
                 (guard.clone(), restarts)
             };
-            if let Some(store) = store {
-                store::persist(store, &snapshot);
-            }
+            store::persist_optional(store, &snapshot);
             events.publish(
                 "",
                 "",
@@ -990,16 +1029,37 @@ fn run_command(
         guard.model.trim().to_string()
     };
     conversation.set_model((!model.is_empty()).then_some(model));
-    let turn = MarbleTurn {
-        conversation_id: request.conversation_id.clone(),
+    let conversation_id = request.conversation_id.clone().or_else(|| {
+        let state = lock(state);
+        state
+            .everyone_pending
+            .contains_key(&queued_id)
+            .then(|| crate::everyone::default_conversation(&state))
+            .flatten()
+            .filter(|id| {
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == *id && record.lane == lane)
+            })
+    });
+    let mut turn = MarbleTurn {
+        conversation_id: conversation_id.clone(),
         request_id: request.request_id.clone(),
         input: crate::normalize::engine_input(
             &lock(state),
-            request.conversation_id.as_deref(),
+            conversation_id.as_deref(),
             "marble",
             &prompt,
         ),
     };
+    if let Some(context) = request
+        .thread_id
+        .as_deref()
+        .and_then(|id| lock(state).thread_preamble(id))
+    {
+        turn.input.text = format!("{context}\n\n{}", turn.input.text);
+    }
     let mut accepted_turn: Option<AcceptedTurn> = None;
     let routine_id = request.routine_id.clone();
     let cancel = Arc::clone(&request.cancel);
@@ -1008,7 +1068,9 @@ fn run_command(
             conversation_id: conversation_id.to_string(),
             task_id: task_id.to_string(),
         };
-        accepted_turn = Some(identity.clone());
+        if let Some(previous) = accepted_turn.replace(identity.clone()) {
+            cancels.forget(&previous.task_id);
+        }
         // The worker registers the flag, so every admitted turn is cancellable —
         // including one a routine fired or one a resume dispatched.
         cancels.register(task_id, Arc::clone(&cancel));
@@ -1031,8 +1093,10 @@ fn run_command(
                 record.task_ids.push(task_id.to_string());
             }
             guard.tasks.retain(|task| task.id != queued_id);
+            guard.bind_thread(task_id, request.thread_id.as_deref());
             crate::everyone::claim(&mut guard, &queued_id, task_id);
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: task_id.to_string(),
                 conversation_id: conversation_id.to_string(),
                 status: "running".into(),
@@ -1042,6 +1106,15 @@ fn run_command(
                 routine_id: routine_id.clone().unwrap_or_default(),
             });
             guard.push_transcript(TranscriptEntry {
+                id: request
+                    .client_message
+                    .as_ref()
+                    .map(|message| message.entry_id.clone())
+                    .unwrap_or_default(),
+                client_message_id: request
+                    .client_message
+                    .as_ref()
+                    .map(|message| message.id.clone()),
                 conversation_id: conversation_id.to_string(),
                 kind: "user".into(),
                 text: prompt.clone(),
@@ -1061,14 +1134,25 @@ fn run_command(
             guard.memory.note_use("marble");
             guard.clone()
         };
-        if let Some(store) = store {
-            store::persist(store, &snapshot);
-        }
+        store::persist_optional(store, &snapshot);
         // The conversation is durable with its lane before the caller is told
         // it exists, so the very next turn or correction is routed to the
         // engine that owns the session instead of guessing lane zero.
         if let Some(sender) = sender.take() {
             let _ = sender.send(Ok(identity));
+        }
+        if let Some(client) = &request.client_message
+            && let Some(entry) = snapshot
+                .transcript
+                .iter()
+                .find(|entry| entry.id == client.entry_id)
+        {
+            events.publish(
+                conversation_id,
+                task_id,
+                "entry",
+                serde_json::to_value(entry).unwrap(),
+            );
         }
         events.publish(
             conversation_id,
@@ -1134,9 +1218,7 @@ fn run_command(
                 });
                 (guard.clone(), suggestion)
             };
-            if let Some(store) = store {
-                store::persist(store, &snapshot);
-            }
+            store::persist_optional(store, &snapshot);
             events.publish(
                 &reply.conversation_id,
                 &reply.task_id,
@@ -1201,13 +1283,32 @@ fn run_command(
                 // outlive it and look like work that is still waiting.
                 let snapshot = {
                     let mut guard = lock(state);
-                    guard.tasks.retain(|task| task.id != queued_id);
+                    let conversation_id = request
+                        .conversation_id
+                        .clone()
+                        .unwrap_or_else(|| format!("recovered-{queued_id}"));
+                    guard.upsert_task(TaskRecord {
+                        id: queued_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                        status: "failed".into(),
+                        owner: "agent".into(),
+                        prompt: request.text.clone(),
+                        at: now_millis(),
+                        marble_id: String::new(),
+                        routine_id: request.routine_id.clone().unwrap_or_default(),
+                    });
+                    guard.conversation_mut(&conversation_id);
+                    if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
+                        task.conversation_id = conversation_id.clone();
+                    }
+                    guard.bind_thread(&queued_id, request.thread_id.as_deref());
+                    guard.record_failure(&conversation_id, &queued_id, &error.to_string());
+                    crate::everyone::claim(&mut guard, &queued_id, &queued_id);
+                    crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
                     guard.bump();
                     guard.clone()
                 };
-                if let Some(store) = store {
-                    store::persist(store, &snapshot);
-                }
+                store::persist_optional(store, &snapshot);
                 let _ = sender.send(Err(error));
                 return;
             }
@@ -1219,24 +1320,20 @@ fn run_command(
                     guard.bump();
                     guard.set_task_status(&identity.task_id, "failed");
                     guard.routines.note_settled(&identity.task_id, "failed");
-                    guard.push_transcript(TranscriptEntry {
-                        conversation_id: identity.conversation_id.clone(),
-                        kind: "system".into(),
-                        text: error.to_string(),
-                        task_id: identity.task_id.clone(),
-                        at: now_millis(),
-                        ..Default::default()
-                    });
+                    guard.record_failure(
+                        &identity.conversation_id,
+                        &identity.task_id,
+                        &error.to_string(),
+                    );
+                    crate::everyone::mirror_settlement(&mut guard, &identity.task_id, "", "failed");
                     guard.clone()
                 };
-                if let Some(store) = store {
-                    store::persist(store, &snapshot);
-                }
+                store::persist_optional(store, &snapshot);
                 events.publish(
                     &identity.conversation_id,
                     &identity.task_id,
                     "error",
-                    json!({"message": error.to_string(), "revision": snapshot.revision}),
+                    json!({"message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&error.to_string()), "revision": snapshot.revision}),
                 );
                 notify::spawn_delivery(
                     snapshot.notifications.clone(),
@@ -1244,13 +1341,18 @@ fn run_command(
                     Notification::new(
                         "failed",
                         "Marble hit a problem",
-                        error.to_string(),
+                        crate::failure::MESSAGE,
                         &identity.conversation_id,
                         &identity.task_id,
                     ),
                 );
             } else {
-                events.publish("", "", "error", json!({ "message": error.to_string() }));
+                events.publish(
+                    "",
+                    &format!("queued-{}", request.request_id),
+                    "error",
+                    json!({ "message": crate::failure::MESSAGE }),
+                );
             }
         }
     }
@@ -1267,6 +1369,8 @@ fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
 impl TurnRequest {
     pub fn new(conversation_id: Option<String>, text: impl Into<String>) -> Self {
         Self {
+            client_message: None,
+            thread_id: None,
             conversation_id,
             text: text.into(),
             request_id: crate::next_request_id(),
@@ -1336,6 +1440,7 @@ mod tests {
         {
             let mut guard = state.lock().unwrap();
             guard.conversation_mut("c-2").lane = 2;
+            guard.conversation_mut("empty").lane = ConversationRecord::UNASSIGNED_LANE;
             guard.bump();
         }
         let runtimes = vec![lane_with(0), lane_with(0), lane_with(0)];
@@ -1353,6 +1458,9 @@ mod tests {
         // real lane instead of failing the admission.
         let mut next = 0;
         assert_eq!(choose_lane(&state, Some("unknown"), &busy, &mut next), 1);
+        next = 0;
+        assert_eq!(choose_lane(&state, Some("empty"), &busy, &mut next), 1);
+        assert_eq!(choose_lane(&state, Some("empty"), &busy, &mut next), 1);
     }
 
     #[test]
@@ -1484,20 +1592,17 @@ mod tests {
 
     #[test]
     fn remembered_facts_are_carried_into_the_turn() {
-        use glass_runtime_client::protocol::ContextBlock;
         let mut product = ProductState::default();
         let plain = turn_input(&Arc::new(Mutex::new(product.clone())), "hello");
         assert!(plain.context.is_empty());
+        assert!(plain.text.contains("Current date and time:"));
         product
             .memory
             .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
-        assert_eq!(with_memory.context.len(), 1);
-        assert_eq!(with_memory.text, "hello");
-        match &with_memory.context[0] {
-            ContextBlock::Text { text } => assert!(text.contains("my name is Azhar")),
-            other => panic!("unexpected context block: {other:?}"),
-        }
+        assert!(with_memory.context.is_empty());
+        assert!(with_memory.text.ends_with("[User message]\nhello"));
+        assert!(with_memory.text.contains("my name is Azhar"));
     }
 }

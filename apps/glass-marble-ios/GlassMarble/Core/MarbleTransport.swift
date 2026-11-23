@@ -76,9 +76,14 @@ struct MarbleEndpoint: Equatable {
             url: baseURL,
             resolvingAgainstBaseURL: false
         ) else { return nil }
-        let base = components.path
+        // Callers percent-encode identifiers before building a route, so the
+        // path is joined as already encoded; setting `path` would encode the
+        // `%` again and the host would see `%253A` instead of `:`.
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.insert("%")
         let leaf = path.hasPrefix("/") ? path : "/" + path
-        components.path = base + leaf
+        let encodedLeaf = leaf.addingPercentEncoding(withAllowedCharacters: allowed) ?? leaf
+        components.percentEncodedPath = components.percentEncodedPath + encodedLeaf
         if !query.isEmpty {
             components.queryItems = query
         }
@@ -131,24 +136,47 @@ struct MarbleRoute: Equatable {
     static let prism = MarbleRoute(path: "/api/prism")
 
     /// The shared chat's timeline, paged by `after` like a transcript page.
-    static func everyone(after: UInt64?) -> MarbleRoute {
+    static func everyone(after: UInt64?, main: Bool = false, before: String? = nil,
+                         limit: Int? = nil) -> MarbleRoute {
         var query: [URLQueryItem] = []
         if let after { query.append(URLQueryItem(name: "after", value: "\(after)")) }
-        return MarbleRoute(path: "/api/everyone", query: query)
+        if main { query.append(URLQueryItem(name: "main", value: "1")) }
+        return MarbleRoute(path: "/api/everyone", query: query).history(before: before, limit: limit)
     }
     static let tools = MarbleRoute(path: "/api/tools")
     static let crates = MarbleRoute(path: "/api/crates")
-    static let notifications = MarbleRoute(path: "/api/notifications")
-    static let devices = MarbleRoute(path: "/api/devices")
     static let voice = MarbleRoute(path: "/api/voice")
     static let control = MarbleRoute(path: "/api/control")
 
-    static func transcript(conversationId: String, after: UInt64? = nil) -> MarbleRoute {
+    static func transcript(
+        conversationId: String, after: UInt64? = nil, main: Bool = false, around: String? = nil,
+        before: String? = nil, limit: Int? = nil
+    ) -> MarbleRoute {
         var query = [URLQueryItem(name: "conversationId", value: conversationId)]
-        if let after, after > 0 {
+        if let around {
+            query.append(URLQueryItem(name: "around", value: around))
+        } else if let after, after > 0 {
             query.append(URLQueryItem(name: "after", value: String(after)))
         }
-        return MarbleRoute(path: "/api/transcript", query: query)
+        if main { query.append(URLQueryItem(name: "main", value: "1")) }
+        return MarbleRoute(path: "/api/transcript", query: query).history(before: before, limit: limit)
+    }
+
+    func history(before: String?, limit: Int?) -> MarbleRoute {
+        var route = self
+        if let before { route.query.append(.init(name: "before", value: before)) }
+        if let limit { route.query.append(.init(name: "limit", value: String(limit))) }
+        return route
+    }
+
+    static func threads(conversationId: String) -> MarbleRoute {
+        MarbleRoute(path: "/api/threads", query: [.init(name: "conversation_id", value: conversationId)])
+    }
+
+    static func messageSearch(_ query: String, threadId: String?, limit: Int) -> MarbleRoute {
+        var items = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: String(limit))]
+        if let threadId { items.append(.init(name: "thread_id", value: threadId)) }
+        return MarbleRoute(path: "/api/search", query: items)
     }
 
     static func search(_ q: String, limit: Int = 30) -> MarbleRoute {
@@ -214,6 +242,7 @@ enum MarbleClientError: LocalizedError, Equatable {
     case unauthorized
     case forbidden
     case notFound
+    case unknownHistoryCursor
     case conflict(String)
     case server(Int, String)
     case decoding(String)
@@ -240,6 +269,8 @@ enum MarbleClientError: LocalizedError, Equatable {
             return "The host refused that request (403)."
         case .notFound:
             return "The host does not know that route."
+        case .unknownHistoryCursor:
+            return "This history page is no longer available."
         case .conflict(let code):
             return "The host could not do that now (\(code))."
         case .server(let status, _):
@@ -289,7 +320,7 @@ enum MarbleClientError: LocalizedError, Equatable {
         switch statusCode {
         case 401: return .unauthorized
         case 403: return .forbidden
-        case 404: return .notFound
+        case 404: return Self.errorCode(from: body) == "unknown_cursor" ? .unknownHistoryCursor : .notFound
         case 409: return .conflict(Self.errorCode(from: body))
         case 500..<600: return .server(statusCode, body)
         default: return .http(statusCode, body)
@@ -308,11 +339,11 @@ enum MarbleClientError: LocalizedError, Equatable {
 }
 
 /// Validate a completed HTTP response; throws the mapped error.
-func marbleValidate(_ response: URLResponse, data: Data) throws {
+func marbleValidate(_ response: URLResponse, data: Data, acceptsNotFound: Bool = false) throws {
     guard let http = response as? HTTPURLResponse else {
         throw MarbleClientError.offline("The host did not answer over HTTP.")
     }
-    guard (200..<300).contains(http.statusCode) else {
+    guard (200..<300).contains(http.statusCode) || (acceptsNotFound && http.statusCode == 404) else {
         let body = String(data: data, encoding: .utf8) ?? ""
         throw MarbleClientError.status(http.statusCode, body: body)
     }

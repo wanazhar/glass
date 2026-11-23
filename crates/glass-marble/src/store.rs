@@ -156,15 +156,23 @@ impl StateStore {
     /// start rather than overwrite what the operator had.
     pub fn load(&self) -> Result<ProductState, MarbleError> {
         match fs::read_to_string(&self.path) {
-            Ok(encoded) => match serde_json::from_str(&encoded) {
-                Ok(state) => Ok(state),
+            Ok(encoded) => match serde_json::from_str::<ProductState>(&encoded) {
+                Ok(mut state) => {
+                    state.ensure_entry_ids();
+                    state.prune_threads();
+                    Ok(state)
+                }
                 Err(error) => {
                     tracing::warn!(
                         %error,
                         path = %self.path.display(),
                         "product state is unreadable; trying the newest daily backup"
                     );
-                    self.recover_from_backup(&error)
+                    self.recover_from_backup(&error).map(|mut state| {
+                        state.ensure_entry_ids();
+                        state.prune_threads();
+                        state
+                    })
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -228,12 +236,15 @@ impl StateStore {
             MarbleError::Protocol(format!("cannot read {}: {error}", path.display()))
         })?;
         let document = value.get("state").cloned().unwrap_or(value);
-        serde_json::from_value(document).map_err(|error| {
+        let mut state: ProductState = serde_json::from_value(document).map_err(|error| {
             MarbleError::Protocol(format!(
                 "{} is not a marble product document: {error}",
                 path.display()
             ))
-        })
+        })?;
+        state.ensure_entry_ids();
+        state.prune_threads();
+        Ok(state)
     }
 
     /// Replace the live document with a daily backup, or with `from` (a backup
@@ -384,6 +395,9 @@ impl StateStore {
             MarbleError::Protocol(format!("cannot write {}: {error}", self.path.display()))
         })?;
         saved.insert(self.path.clone(), state.revision);
+        if let Some(events) = &state.thread_events.0 {
+            events.publish_replies(state);
+        }
         Ok(())
     }
 }
@@ -426,6 +440,14 @@ pub fn persist(store: &StateStore, state: &ProductState) {
     }
 }
 
+pub(crate) fn persist_optional(store: Option<&StateStore>, state: &ProductState) {
+    if let Some(store) = store {
+        persist(store, state);
+    } else if let Some(events) = &state.thread_events.0 {
+        events.publish_replies(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +479,7 @@ mod tests {
         let mut state = ProductState::default();
         state.conversation_mut("kept").title = "real".into();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-kept".into(),
             conversation_id: "kept".into(),
             status: "completed".into(),
@@ -466,6 +489,7 @@ mod tests {
             routine_id: String::new(),
         });
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "t-orphan".into(),
             conversation_id: "gone".into(),
             status: "interrupted".into(),

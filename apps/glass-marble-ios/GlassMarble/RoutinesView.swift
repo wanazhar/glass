@@ -38,7 +38,9 @@ struct ScheduledView: View {
                             Toggle("", isOn: enabledBinding(routine))
                                 .labelsHidden()
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .swipeActions(edge: .trailing) {
                         Button("Delete", role: .destructive) {
                             Task { await store.remove(routine) }

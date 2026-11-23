@@ -26,7 +26,7 @@ use crate::worker::{CancelRegistry, now_millis};
 use crate::{ApprovalInbox, Conversation, HostPolicy, MarbleError, TurnOptions, run_turn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
@@ -648,6 +648,9 @@ impl PrismPool {
     /// Build the pool. Engines are started lazily on first dispatch, so a host
     /// that never swarms pays nothing for the roster.
     pub fn new(parts: PrismPoolParts) -> Self {
+        parts
+            .events
+            .attach_replies(&mut parts.state.lock().unwrap_or_else(|e| e.into_inner()));
         Self {
             factory: parts.factory,
             cwd: parts.cwd,
@@ -691,6 +694,81 @@ impl PrismPool {
         text: &str,
         requested: Option<&[String]>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
+        self.dispatch_inner(text, requested, None, None, None)
+    }
+
+    pub fn dispatch_in_thread(
+        self: &Arc<Self>,
+        text: &str,
+        requested: Option<&[String]>,
+        thread: Option<&str>,
+    ) -> Result<PrismDispatch, DispatchRefusal> {
+        self.dispatch_inner(text, requested, None, thread, None)
+    }
+
+    pub(crate) fn dispatch_client_in_thread(
+        self: &Arc<Self>,
+        text: &str,
+        requested: Option<&[String]>,
+        thread: Option<&str>,
+        client: Option<crate::state::ClientMessage>,
+    ) -> Result<PrismDispatch, DispatchRefusal> {
+        self.dispatch_inner(text, requested, None, thread, client)
+    }
+
+    pub fn resume_held(self: &Arc<Self>) -> usize {
+        let queued = self.lock_state().control.queue.clone();
+        let mut seen = HashSet::new();
+        let mut dispatched = 0;
+        for entry in queued {
+            let Some(id) = entry.marble_id else { continue };
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            match self.dispatch_inner(
+                &entry.text,
+                Some(std::slice::from_ref(&id)),
+                Some(&entry.id),
+                entry.thread_id.as_deref(),
+                entry.client_message.clone(),
+            ) {
+                Ok(_) => dispatched += 1,
+                Err(error)
+                    if !matches!(
+                        error.code,
+                        "marble_busy" | "admission_paused" | "unknown_queue_entry"
+                    ) =>
+                {
+                    let marble = {
+                        let mut state = self.lock_state();
+                        state.control.queue.retain(|queued| queued.id != entry.id);
+                        crate::everyone::rekey(&mut state, &entry.id, &format!("marble:{id}"));
+                        state.prism.get(&id).cloned()
+                    };
+                    if let Some(marble) = marble {
+                        self.fail_before_acceptance(
+                            &marble,
+                            &entry.text,
+                            &error.message,
+                            entry.thread_id.as_deref(),
+                            entry.client_message.as_ref(),
+                        );
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        dispatched
+    }
+
+    fn dispatch_inner(
+        self: &Arc<Self>,
+        text: &str,
+        requested: Option<&[String]>,
+        queue_id: Option<&str>,
+        thread_id: Option<&str>,
+        client: Option<crate::state::ClientMessage>,
+    ) -> Result<PrismDispatch, DispatchRefusal> {
         let targets = {
             let state = self.lock_state();
             plan_dispatch(&state, text, requested)?
@@ -710,6 +788,18 @@ impl PrismPool {
         let mut names = Vec::with_capacity(planned.len());
         let snapshot = {
             let mut state = self.lock_state();
+            if let Some(id) = queue_id {
+                if state.control.paused {
+                    return Err(refuse(409, "admission_paused", "admission is paused"));
+                }
+                if !state.control.queue.iter().any(|entry| entry.id == id) {
+                    return Err(refuse(
+                        404,
+                        "unknown_queue_entry",
+                        "that message is no longer queued",
+                    ));
+                }
+            }
             // Checked again under the same lock that marks the roster, so two
             // dispatches arriving together cannot both claim one marble.
             for (marble, _) in &planned {
@@ -735,6 +825,12 @@ impl PrismPool {
             if swarm {
                 state.prism.swarms = state.prism.swarms.saturating_add(1);
             }
+            if let Some(id) = queue_id {
+                state.control.queue.retain(|entry| entry.id != id);
+                for marble in &targets {
+                    crate::everyone::rekey(&mut state, id, &format!("marble:{}", marble.id));
+                }
+            }
             state.bump();
             state.clone()
         };
@@ -749,17 +845,32 @@ impl PrismPool {
                 "revision": snapshot.revision,
             }),
         );
-        for (marble, root) in planned {
+        for (index, (marble, root)) in planned.into_iter().enumerate() {
             let pool = Arc::clone(self);
             let prompt = prompt.clone();
             let marble_id = marble.id.clone();
             let marble_name = marble.name.clone();
+            let target = marble.clone();
+            let thread = thread_id.map(str::to_string);
+            let mut identity = client.clone();
+            if index > 0
+                && let Some(identity) = &mut identity
+            {
+                identity.entry_id = format!("{}-{}", identity.entry_id, marble.id);
+            }
+            let turn_identity = identity.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("glass-marble-prism-{marble_id}"))
-                .spawn(move || pool.run_marble(&marble, root, &prompt));
+                .spawn(move || pool.run_marble(&target, root, &prompt, thread, turn_identity));
             if let Err(error) = spawned {
                 tracing::error!(%error, marble = %marble_name, "could not start a prism turn");
-                self.block(&marble_id, &format!("could not start the turn: {error}"));
+                self.fail_before_acceptance(
+                    &marble,
+                    text,
+                    &format!("could not start the turn: {error}"),
+                    thread_id,
+                    identity.as_ref(),
+                );
             }
         }
         Ok(PrismDispatch { ids, names, swarm })
@@ -770,9 +881,7 @@ impl PrismPool {
     }
 
     fn persist(&self, snapshot: &ProductState) {
-        if let Some(store) = &self.store {
-            store::persist(store, snapshot);
-        }
+        store::persist_optional(self.store.as_deref(), snapshot);
     }
 
     /// Engine for one marble, started on first use.
@@ -825,6 +934,11 @@ impl PrismPool {
         };
         let conversation = conversation
             .with_product(Arc::clone(&self.state))
+            .with_speaker(&marble.name)
+            .with_model({
+                let state = self.lock_state();
+                (!state.model.trim().is_empty()).then(|| state.model.trim().to_string())
+            })
             .with_instructions(crate::conversation::marble_session_instructions(
                 marble, &roster, root,
             ));
@@ -857,6 +971,7 @@ impl PrismPool {
         root: PathBuf,
         text: &str,
         depth: u8,
+        thread_id: Option<String>,
     ) {
         if depth > 0 {
             self.pending_depths
@@ -864,7 +979,7 @@ impl PrismPool {
                 .unwrap_or_else(|error| error.into_inner())
                 .insert(marble.id.clone(), depth);
         }
-        self.run_marble(marble, root, text);
+        self.run_marble(marble, root, text, thread_id, None);
     }
 
     /// Runs an ask from the marble that owns `scope`.
@@ -1000,13 +1115,13 @@ impl PrismPool {
             .entry(target.id.clone())
             .or_default()
             .push(sender);
-        self.record_ask(&asker_id, &task_id, &scope.conversation_id, entry.clone());
+        let thread = self.record_ask(&asker_id, &task_id, &scope.conversation_id, entry.clone());
         let prompt = format!("{asker_name} asks: {instruction}");
         let root = self.workspace_root(&target).unwrap_or_default();
         let pool = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name(format!("glass-marble-ask-{}", target.id))
-            .spawn(move || pool.run_marble_at_depth(&target, root, &prompt, depth + 1));
+            .spawn(move || pool.run_marble_at_depth(&target, root, &prompt, depth + 1, thread));
         if let Err(error) = spawned {
             return fail(
                 self,
@@ -1040,7 +1155,7 @@ impl PrismPool {
         task_id: &str,
         scope_conversation: &str,
         entry: crate::state::HandoffEntry,
-    ) {
+    ) -> Option<String> {
         let snapshot = {
             let mut state = self.lock_state();
             let conversation = if scope_conversation.is_empty() {
@@ -1052,14 +1167,34 @@ impl PrismPool {
             } else {
                 scope_conversation.to_string()
             };
+            let before = state.transcript.len();
             crate::everyone::record_handoff(&mut state, &conversation, task_id, &entry);
+            let parent_conversation = if state
+                .everyone_pending
+                .contains_key(&format!("task:{task_id}"))
+            {
+                crate::everyone::EVERYONE_CONVERSATION
+            } else {
+                conversation.as_str()
+            };
+            let parent = state.transcript[before..]
+                .iter()
+                .find(|e| e.conversation_id == parent_conversation && e.kind == "handoff")
+                .map(|e| (e.conversation_id.clone(), e.id.clone()));
+            let thread = if entry.status == "asked" {
+                parent
+                    .and_then(|(cv, id)| state.create_thread(&cv, &id))
+                    .map(|t| t.id)
+            } else {
+                None
+            };
             state.bump();
-            state.clone()
+            (state.clone(), thread)
         };
-        self.persist(&snapshot);
+        self.persist(&snapshot.0);
         self.events.publish(
-            "",
-            "",
+            scope_conversation,
+            task_id,
             "handoff",
             serde_json::json!({
                 "from": entry.from,
@@ -1067,19 +1202,35 @@ impl PrismPool {
                 "status": entry.status,
             }),
         );
+        snapshot.1
     }
 
     /// Run one marble's turn to settlement.
-    fn run_marble(self: &Arc<Self>, marble: &PrismMarble, root: PathBuf, text: &str) {
+    fn run_marble(
+        self: &Arc<Self>,
+        marble: &PrismMarble,
+        root: PathBuf,
+        text: &str,
+        thread_id: Option<String>,
+        client: Option<crate::state::ClientMessage>,
+    ) {
         let engine = match self.engine(marble, &root) {
             Ok(engine) => engine,
             Err(error) => {
-                self.block(&marble.id, &error);
+                self.fail_before_acceptance(
+                    marble,
+                    text,
+                    &error,
+                    thread_id.as_deref(),
+                    client.as_ref(),
+                );
+                self.resume_held();
                 return;
             }
         };
         let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
         let conversation = &mut *guard;
+        conversation.set_store(self.store.as_deref());
         let conversation_id = {
             let state = self.lock_state();
             state
@@ -1093,12 +1244,18 @@ impl PrismPool {
         let mut live_turn = self
             .live
             .begin(text, &marble.name, &conversation_id, &request_id);
-        let input = crate::normalize::engine_input(
+        let mut input = crate::normalize::engine_input(
             &self.lock_state(),
             Some(&conversation_id),
             &marble.id,
             text,
         );
+        if let Some(context) = thread_id
+            .as_deref()
+            .and_then(|id| self.lock_state().thread_preamble(id))
+        {
+            input.text = format!("{context}\n\n{}", input.text);
+        }
         let turn = crate::MarbleTurn {
             conversation_id: (!conversation_id.is_empty()).then_some(conversation_id),
             request_id,
@@ -1106,7 +1263,11 @@ impl PrismPool {
         };
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut on_accepted = |conversation_id: &str, task_id: &str| {
-            accepted = Some((conversation_id.to_string(), task_id.to_string()));
+            if let Some((_, previous)) =
+                accepted.replace((conversation_id.to_string(), task_id.to_string()))
+            {
+                self.cancels.forget(&previous);
+            }
             if let Some(depth) = self
                 .pending_depths
                 .lock()
@@ -1134,6 +1295,7 @@ impl PrismPool {
                     record.task_ids.push(task_id.to_string());
                 }
                 state.upsert_task(TaskRecord {
+                    marble_id: marble.id.clone(),
                     id: task_id.to_string(),
                     conversation_id: conversation_id.to_string(),
                     status: "running".into(),
@@ -1142,7 +1304,13 @@ impl PrismPool {
                     at: now,
                     routine_id: String::new(),
                 });
+                state.bind_thread(task_id, thread_id.as_deref());
                 state.push_transcript(TranscriptEntry {
+                    id: client
+                        .as_ref()
+                        .map(|message| message.entry_id.clone())
+                        .unwrap_or_default(),
+                    client_message_id: client.as_ref().map(|message| message.id.clone()),
                     conversation_id: conversation_id.to_string(),
                     kind: "user".into(),
                     text: text.to_string(),
@@ -1156,6 +1324,19 @@ impl PrismPool {
                 state.clone()
             };
             self.persist(&snapshot);
+            if let Some(client) = &client
+                && let Some(entry) = snapshot
+                    .transcript
+                    .iter()
+                    .find(|entry| entry.id == client.entry_id)
+            {
+                self.events.publish(
+                    conversation_id,
+                    task_id,
+                    "entry",
+                    serde_json::to_value(entry).unwrap(),
+                );
+            }
             self.events.publish(
                 conversation_id,
                 task_id,
@@ -1202,6 +1383,16 @@ impl PrismPool {
                     };
                     state.set_task_status(&reply.task_id, status);
                     state.conversation_mut(&reply.conversation_id).updated_at = now;
+                    if !reply.reasoning.trim().is_empty() {
+                        state.push_transcript(TranscriptEntry {
+                            conversation_id: reply.conversation_id.clone(),
+                            kind: "reasoning".into(),
+                            text: reply.reasoning.clone(),
+                            task_id: reply.task_id.clone(),
+                            at: now,
+                            ..Default::default()
+                        });
+                    }
                     if !reply.text.trim().is_empty() {
                         state.push_transcript(TranscriptEntry {
                             conversation_id: reply.conversation_id.clone(),
@@ -1242,8 +1433,26 @@ impl PrismPool {
                     .remove(&marble.id)
                 {
                     for waiter in waiters {
-                        let _ = waiter.send(Err(error.to_string()));
+                        let _ = waiter.send(Err(crate::failure::MESSAGE.to_string()));
                     }
+                }
+                if accepted.is_none() {
+                    if conversation.transport_failed() {
+                        self.lock_state()
+                            .presence
+                            .runtime
+                            .note_engine_failure(conversation.engine_id(), error.to_string());
+                    }
+                    self.fail_before_acceptance(
+                        marble,
+                        text,
+                        &error.to_string(),
+                        thread_id.as_deref(),
+                        client.as_ref(),
+                    );
+                    drop(guard);
+                    self.resume_held();
+                    return;
                 }
                 let snapshot = {
                     let mut state = self.lock_state();
@@ -1259,22 +1468,15 @@ impl PrismPool {
                             .lock()
                             .unwrap_or_else(|error| error.into_inner())
                             .remove(task_id);
-                        crate::everyone::mirror_settlement(&mut state, task_id, "", "failed");
                         self.cancels.forget(task_id);
                         state.set_task_status(task_id, "failed");
-                        state.push_transcript(TranscriptEntry {
-                            conversation_id: conversation_id.clone(),
-                            kind: "system".into(),
-                            text: format!("{} could not finish: {error}", marble.name),
-                            task_id: task_id.clone(),
-                            at: now,
-                            ..Default::default()
-                        });
+                        state.record_failure(conversation_id, task_id, &error.to_string());
+                        crate::everyone::mirror_settlement(&mut state, task_id, "", "failed");
                         state.conversation_mut(conversation_id).updated_at = now;
                     }
                     state
                         .prism
-                        .note_settled(&marble.id, "failed", &error.to_string());
+                        .note_settled(&marble.id, "failed", crate::failure::MESSAGE);
                     state.bump();
                     state.clone()
                 };
@@ -1286,28 +1488,97 @@ impl PrismPool {
                     json!({
                         "marble": marble.id,
                         "status": "failed",
-                        "message": error.to_string(),
+                        "message": crate::failure::MESSAGE,
                         "revision": snapshot.revision,
                     }),
                 );
             }
         }
+        drop(guard);
+        self.resume_held();
     }
 
-    /// Leave a marble visibly blocked, with the reason it could not work.
-    fn block(&self, id: &str, error: &str) {
+    fn fail_before_acceptance(
+        &self,
+        marble: &PrismMarble,
+        text: &str,
+        error: &str,
+        thread_id: Option<&str>,
+        client: Option<&crate::state::ClientMessage>,
+    ) {
+        let task_id = format!("failed-{}", crate::next_request_id());
         let snapshot = {
             let mut state = self.lock_state();
-            state.prism.note_settled(id, "failed", error);
+            let conversation_id = if marble.conversation_id.is_empty() {
+                format!("recovered-{task_id}")
+            } else {
+                marble.conversation_id.clone()
+            };
+            let now = now_millis();
+            let checkpoint = state
+                .conversations
+                .iter()
+                .find(|record| record.id == conversation_id)
+                .and_then(|record| {
+                    state
+                        .tasks
+                        .iter()
+                        .rev()
+                        .find(|task| {
+                            task.conversation_id == conversation_id
+                                && task.status != "queued"
+                                && !task.id.starts_with("queued-")
+                        })
+                        .filter(|task| task.id == record.retry_task_id && task.prompt == text)
+                        .and_then(|task| record.checkpoints.get(&task.id).copied())
+                });
+            let conversation = state.conversation_mut(&conversation_id);
+            if let Some(checkpoint) = checkpoint {
+                conversation.checkpoints.insert(task_id.clone(), checkpoint);
+            }
+            if conversation.title.is_empty() {
+                conversation.title = format!("{} · {}", marble.name, truncate(text, 64));
+            }
+            conversation.updated_at = now;
+            conversation.task_ids.push(task_id.clone());
+            state.upsert_task(TaskRecord {
+                id: task_id.clone(),
+                conversation_id: conversation_id.clone(),
+                marble_id: marble.id.clone(),
+                status: "failed".into(),
+                owner: "prism".into(),
+                prompt: text.to_string(),
+                at: now,
+                ..Default::default()
+            });
+            state.bind_thread(&task_id, thread_id);
+            if let Some(client) = client {
+                state.push_transcript(TranscriptEntry {
+                    id: client.entry_id.clone(),
+                    client_message_id: Some(client.id.clone()),
+                    conversation_id: conversation_id.clone(),
+                    kind: "user".into(),
+                    text: text.into(),
+                    task_id: task_id.clone(),
+                    at: now,
+                    ..Default::default()
+                });
+            }
+            state.record_failure(&conversation_id, &task_id, error);
+            crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), &task_id);
+            crate::everyone::mirror_settlement(&mut state, &task_id, "", "failed");
+            state
+                .prism
+                .note_settled(&marble.id, "failed", crate::failure::MESSAGE);
             state.bump();
             state.clone()
         };
         self.persist(&snapshot);
         self.events.publish(
             "",
-            "",
+            &task_id,
             "prism",
-            json!({ "marble": id, "status": "failed", "message": error }),
+            json!({ "marble": marble.id, "status": "failed", "message": crate::failure::MESSAGE }),
         );
     }
 

@@ -100,6 +100,160 @@ data directory.
 The full product guide, HTTP surface, Tailscale setup, and the iOS client are
 documented in [docs/marble.md](../../docs/marble.md).
 
+## Updating an existing source-checkout host
+
+The host binary is `glass-marble`, not `glass` or `glass-core`. The installer
+records the absolute path of the executable used to run `install-service`:
+the documented `cargo run` installation therefore normally points at
+`target/debug/glass-marble`. Check the existing definition before rebuilding:
+
+```sh
+# Linux: inspect ExecStart
+systemctl --user cat dev.glass.marble.service
+# macOS: inspect ProgramArguments[0]
+plutil -p "$HOME/Library/LaunchAgents/dev.glass.marble.plist"
+```
+
+From the checkout, on `fix/marble-round2`, for a service using `target/debug`:
+
+```sh
+git pull --rebase
+cargo build -p glass-marble --locked
+systemctl --user restart dev.glass.marble.service  # Linux
+# macOS, instead of systemctl, for an already loaded login agent:
+launchctl kickstart -k "gui/$(id -u)/dev.glass.marble"
+```
+
+For a service using `target/release/glass-marble`, build with `--release`
+instead. For a Cargo-installed host at `~/.cargo/bin/glass-marble`, replace the
+build command with `cargo install --path crates/glass-marble --locked --force`.
+For a manually copied executable, stop the service, replace that executable
+with the new build, then start it. Restarting a foreground host means stopping
+the old process and repeating its original `serve` invocation with the same
+workspace, data directory, token, and engine settings. Rebuilding alone does
+not update a running process. No unit rewrite or `daemon-reload` is needed if
+only the executable changed.
+
+Marble state/settings remain in `--data-dir` / `GLASS_MARBLE_DATA_DIR`, defaulting
+to `$XDG_DATA_HOME/glass-marble` or `~/.local/share/glass-marble`. Core provider
+configuration is separate: `$XDG_CONFIG_HOME/glass-core/config.toml` or
+`~/.config/glass-core/config.toml`. Preserve the existing service environment;
+Core is selected by `--core-binary`, `GLASS_CORE_BINARY`, or `glass-core` on PATH.
+
+Confirm the running host (use its configured host, port, and HTTP/HTTPS scheme):
+
+```sh
+curl -sS http://127.0.0.1:4783/healthz | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["build"]))'
+git rev-parse HEAD
+```
+
+`build` is `{ "version": "0.3.14", "gitCommit": "<full SHA>",
+"gitCommitShort": "<12-character SHA>" }`; compare `gitCommit` to the checkout's
+HEAD. `/healthz` needs no token and includes the build even when health is 503.
+The authenticated SSE `hello` event adds the same `build` object next to its
+existing `cursor`. `glass-marble --version` prints the version and both SHAs,
+but checks the executable on disk, not the running service. Git metadata is
+captured at build time; source archives or builds without Git report `unknown`
+for both SHAs.
+
+## Optimistic sends
+
+Chat sends (`POST /api/turns`, `/api/everyone`, and `/api/prism/dispatch`) accept
+`client_message_id` or `clientMessageId`. IDs must be 1–128 printable ASCII
+characters (spaces allowed); invalid IDs, including conflicting aliases, return
+`400 invalid_client_message_id` without sending. IDs are scoped to the chat,
+not the thread. New default chats use an initial-send scope until the engine
+assigns their conversation ID; first named sends also retain their initial
+Marble scope. Reusing an ID returns the original successful response without
+another send, even after restart. Omit the field for the existing behavior.
+
+Successful responses add `client_message_id` and `entry_id` (the stable user
+entry ID), including Everyone multi-agent responses. User entries expose
+`client_message_id` in history, thread detail, and `entry` SSE event data. The
+host saves the send receipt before returning success. If it restarts during
+admission before a response was saved, retry returns `409 client_message_pending`
+rather than risk executing the message twice.
+
+## Structural text blocks and live replies
+
+Marble requests Core protocol v2 with
+`optionalCapabilities: ["textBlockBoundaries"]`. It streams visible text live
+only when Core acknowledges `capabilities.textBlockBoundaries: true`; an older
+Core retains the existing buffered behavior. Core's internal `text_block_start`
+notifications do not pass through to Marble clients.
+
+At each new block (or tool boundary), the host publishes `text_reset` with
+`data: {"text":""}` under the same `conversationId` and `taskId`, followed by
+existing `reasoning` deltas containing the previous block. Paragraphs are
+separated with `\n\n`. Subsequent `text` deltas append the new current block;
+the final `reply.data.text` and assistant entry contain only the final block.
+Empty or failed final blocks never fall back to an earlier planning block.
+
+Clients must handle `text_reset` by clearing the matching task's visible live
+text and streamed reply, without clearing reasoning, tools or task identity.
+The bundled web client implements this. Marble iOS needs the equivalent handler
+in `MarbleStore.handle`; its existing `reasoning` handling remains unchanged and
+collapsed by default. Until that handler ships, its append-only live buffer can
+retain earlier block text until the authoritative final `reply` arrives.
+
+## Everyone settlement
+
+Everyone reserves one `kind: "pending"` transcript row per addressed agent before
+dispatch. Its `id`, position and `at` remain unchanged when it becomes an
+`assistant`, `failure`, or cancellation `system` row. `entry` SSE events announce
+pending rows and their assigned task IDs; clients must upsert by entry ID, not
+append a second row on `reply`. Failure replies include the entry's `failure`
+object. Existing tool rows and lifecycle events remain separate.
+
+Busy named agents wait in the persisted admission queue instead of losing their
+answer. `answering` includes queued agents; `busy` reports unavailable admission
+(for example, no pool or a full queue). Each engine sees its own durable history,
+not other agents' current or previous Everyone replies. A thread adds only its
+parent message. Successful earlier answers, including incorrect ones, remain in
+that agent's history. A latest failed request retries from its pre-input checkpoint.
+
+Before any tool has started, transient generation failures (network/provider
+timeouts and HTTP 429/502/503/504) retry once automatically for Everyone. The
+logical task/user/reply entry identities remain stable; the second Core attempt
+uses a checkpoint fork and a distinct durable submission. `task_retry` reports
+`attempt: 1`, `phase: "generation"`, and `reason: "transient_failure"`. Cold
+conversation creation also retries transient admission once. Provider rejections,
+empty replies, and exhausted retries become structured failures with manual
+`POST /api/turns/retry` available. `failure.retryable` continues to describe manual
+Retry availability, not automatic replay eligibility. Completed tool side effects
+and an unresponsive host-level runtime deadline are not automatically replayed;
+they require an explicit Retry rather than risking duplicate side effects.
+
+## History paging
+
+These transcript endpoints accept `limit` and an exclusive `before` entry-ID cursor:
+
+- `GET /api/everyone?limit=50&before=<entry-id>`
+- `GET /api/transcript?conversationId=<chat-id>&limit=50&before=<entry-id>`
+- `GET /api/threads/<thread-id>?limit=50&before=<entry-id>`
+
+The first request omits `before` and gets the latest N entries. Each page retains
+transcript order (oldest to newest within that page). Prepend older pages without
+reversing them. IDs, not timestamps, avoid gaps at equal timestamps and keep a
+pending row's cursor valid when that row settles. Upsert SSE changes by ID;
+timestamp `after` polling alone does not detect updates to existing entries.
+
+Every response adds `hasMore` and `nextBefore` (the oldest returned entry ID when
+older entries exist, otherwise `null`). Pass `nextBefore` back as `before`.
+Thread metadata stays under `thread`; the parent entry appears only on the page
+containing it, not as a redundant copy on every page. Existing entry fields and
+transcript `cursor`, `omitted`, `revision`, and `conversationId` remain unchanged.
+
+Defaults are backward compatible: without paging parameters Everyone and thread
+detail still return all retained entries; `/api/transcript` still returns the
+latest 500. `before` without `limit` uses 500. Explicit limits clamp to 1–1000;
+non-integer/overflowing limits return 400 `invalid_limit`. Empty, control-character
+or over-256-byte cursors return 400 `invalid_cursor`; unknown, pruned or out-of-scope
+entry IDs return 404 `unknown_cursor`. `before` cannot combine with `after` or
+`around` (400 `conflicting_cursors`). Existing `after`, `around`, and `main=1`
+transcript behavior is preserved. Keep the same conversation/thread/main filter
+while paging; an invalidated cursor requires reloading the newest page.
+
 ## Checks
 
 ```text

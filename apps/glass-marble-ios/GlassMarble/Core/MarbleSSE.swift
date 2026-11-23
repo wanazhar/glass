@@ -5,6 +5,13 @@ struct MarbleSSEFrame: Equatable {
     var id: String?
     var event: String?
     var data: String
+
+    /// The replay boundary captured by the host when it subscribes this client.
+    var replayCursor: UInt64? {
+        guard event == "hello" else { return nil }
+        struct Hello: Decodable { let cursor: UInt64 }
+        return (try? JSONDecoder().decode(Hello.self, from: Data(data.utf8)))?.cursor
+    }
 }
 
 /// Incremental SSE parser decoupled from the transport: feed whole lines

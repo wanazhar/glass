@@ -145,7 +145,7 @@ struct ConversationListView: View {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return sortedConversations }
         return sortedConversations.filter { conversation in
-            if conversation.title.lowercased().contains(needle) {
+            if conversation.displayTitle.lowercased().contains(needle) {
                 return true
             }
             return store.state.tasks.contains { task in

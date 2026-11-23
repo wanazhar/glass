@@ -210,6 +210,36 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testConversationListSearchOpensMatchingChat() {
         openDefaultChats()
+        searchConversations("conversation 150")
+        let hit = app.staticTexts["Fixture conversation 150"]
+        XCTAssertTrue(hit.waitForExistence(timeout: 5))
+        hit.tap()
+        let title = app.navigationBars.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Fixture conversation 150,")
+        ).firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+    }
+
+    func testConversationListSearchFindsSavedEmptyChatByDisplayedTitle() {
+        openDefaultChats()
+        app.buttons["chat.compose"].tap()
+        assertHittable("No messages yet")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        let list = app.collectionViews.firstMatch
+        let emptyChat = list.staticTexts["New Chat"]
+        let otherChat = list.staticTexts["Fixture conversation 0"]
+        XCTAssertTrue(emptyChat.waitForExistence(timeout: 5))
+        XCTAssertTrue(otherChat.exists)
+
+        searchConversations("New Chat")
+        XCTAssertTrue(otherChat.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(emptyChat.isHittable)
+        emptyChat.tap()
+        assertHittable("No messages yet")
+    }
+
+    private func searchConversations(_ query: String) {
         let search = app.searchFields.firstMatch
         if !search.exists {
             let button = app.buttons["Search"].firstMatch
@@ -221,14 +251,7 @@ final class GlassMarbleUITests: XCTestCase {
         }
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
-        search.typeText("conversation 150")
-        let hit = app.staticTexts["Fixture conversation 150"]
-        XCTAssertTrue(hit.waitForExistence(timeout: 5))
-        hit.tap()
-        let title = app.navigationBars.descendants(matching: .any).matching(
-            NSPredicate(format: "label BEGINSWITH %@", "Fixture conversation 150,")
-        ).firstMatch
-        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        search.typeText(query)
     }
 
     func testOnboardingScreenshot() {

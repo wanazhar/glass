@@ -999,6 +999,9 @@ final class LiveHostE2ETests: XCTestCase {
         let actions = try call("desktop/report")
         XCTAssertEqual(actions.components(separatedBy: "click:right").count - 1, 1, "one right click: \(actions)")
         XCTAssertTrue(actions.contains("click:left"), "a tap is a left click: \(actions)")
+        // Hand control back so later tests start from Glass holding the desktop.
+        app.buttons["desktop.giveBack"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["desktop.takeControl"].waitForExistence(timeout: 10), "control goes back")
     }
 
     /// With keep-alive on, the open conversation's stream survives a long stretch in the background: a reply

@@ -1860,7 +1860,6 @@ fn uncovered_labels(
     stack: Option<&[Value]>,
     windows: Option<&[Value]>,
 ) -> LabelSelection {
-    const SAMPLES: u32 = 5;
     let mut selection = LabelSelection {
         nodes: Vec::new(),
         hidden: 0,
@@ -1873,13 +1872,7 @@ fn uncovered_labels(
     selection.nodes = nodes
         .into_iter()
         .filter_map(|mut node| {
-            let bounds = &node["bounds"];
-            let (x, y, width, height) = (
-                bounds["x"].as_f64()?,
-                bounds["y"].as_f64()?,
-                bounds["width"].as_f64()?,
-                bounds["height"].as_f64()?,
-            );
+            let bounds = LabelRect::from_value(&node["bounds"])?;
             let Some(owner) = label_window_owner(&node["owningWindow"], windows, stack) else {
                 selection.unknown += 1;
                 return None;
@@ -1893,15 +1886,32 @@ fn uncovered_labels(
                     .iter()
                     .any(|window| window["visible"] == true && window_covers(window, px, py))
             };
-            let visible = (0..SAMPLES * SAMPLES).any(|sample| {
-                let column = f64::from(sample % SAMPLES) + 0.5;
-                let row = f64::from(sample / SAMPLES) + 0.5;
-                !covered(
-                    x + width * column / f64::from(SAMPLES),
-                    y + height * row / f64::from(SAMPLES),
-                )
-            });
-            if !visible {
+            let mut visible = vec![bounds];
+            for window in stack[owner + 1..]
+                .iter()
+                .filter(|window| window["visible"] == true)
+            {
+                let Some(occluder) = LabelRect::from_value(window) else {
+                    continue;
+                };
+                visible = visible
+                    .into_iter()
+                    .flat_map(|rect| rect.subtract(occluder))
+                    .collect();
+                if visible.is_empty() {
+                    break;
+                }
+            }
+            let visible_pixels = visible
+                .iter()
+                .map(|rect| {
+                    (rect.right - rect.left)
+                        * WIDTH as f64
+                        * (rect.bottom - rect.top)
+                        * HEIGHT as f64
+                })
+                .sum::<f64>();
+            if visible_pixels < 1.0 {
                 selection.hidden += 1;
                 return None;
             }
@@ -1923,6 +1933,70 @@ struct LabelSelection {
     nodes: Vec<Value>,
     hidden: usize,
     unknown: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LabelRect {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl LabelRect {
+    fn from_value(value: &Value) -> Option<Self> {
+        let left = value["x"].as_f64()?;
+        let top = value["y"].as_f64()?;
+        let right = left + value["width"].as_f64()?;
+        let bottom = top + value["height"].as_f64()?;
+        (left.is_finite()
+            && top.is_finite()
+            && right.is_finite()
+            && bottom.is_finite()
+            && right > left
+            && bottom > top)
+            .then_some(Self {
+                left,
+                top,
+                right,
+                bottom,
+            })
+    }
+
+    fn subtract(self, other: Self) -> Vec<Self> {
+        let left = self.left.max(other.left);
+        let top = self.top.max(other.top);
+        let right = self.right.min(other.right);
+        let bottom = self.bottom.min(other.bottom);
+        if left >= right || top >= bottom {
+            return vec![self];
+        }
+        [
+            Self {
+                bottom: top,
+                ..self
+            },
+            Self {
+                top: bottom,
+                ..self
+            },
+            Self {
+                left: self.left,
+                top,
+                right: left,
+                bottom,
+            },
+            Self {
+                left: right,
+                top,
+                right: self.right,
+                bottom,
+            },
+        ]
+        .into_iter()
+        .filter(|rect| rect.right > rect.left && rect.bottom > rect.top)
+        .collect()
+    }
 }
 
 fn rectangles_overlap(a: &Value, b: &Value) -> bool {
@@ -2795,6 +2869,99 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn labels_keep_one_to_three_pixel_strips_on_every_edge() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let rect = |x: f64, y: f64, width: f64, height: f64| json!({"x":x / WIDTH as f64,"y":y / HEIGHT as f64,"width":width / WIDTH as f64,"height":height / HEIGHT as f64});
+        let node = json!({
+            "owningWindow":{"windowId":"editor"},
+            "bounds":rect(100.0, 100.0, 100.0, 100.0),
+            "pointerTarget":{"x":150.0 / WIDTH as f64,"y":150.0 / HEIGHT as f64},
+        });
+        for pixels in 1..=3 {
+            let strip = f64::from(pixels);
+            for bounds in [
+                rect(100.0 + strip, 100.0, 100.0 - strip, 100.0),
+                rect(100.0, 100.0, 100.0 - strip, 100.0),
+                rect(100.0, 100.0 + strip, 100.0, 100.0 - strip),
+                rect(100.0, 100.0, 100.0, 100.0 - strip),
+            ] {
+                let mut occluder = bounds;
+                occluder["visible"] = json!(true);
+                let stack = [editor.clone(), occluder];
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert_eq!(
+                    (selection.hidden, selection.unknown),
+                    (0, 0),
+                    "{pixels}px strip"
+                );
+                assert_eq!(selection.nodes.len(), 1);
+                assert!(selection.nodes[0]["pointerTarget"].is_null());
+            }
+        }
+        let clear = uncovered_labels(vec![node], Some(&[editor]), Some(&windows));
+        assert_eq!(clear.nodes.len(), 1);
+        assert!(!clear.nodes[0]["pointerTarget"].is_null());
+    }
+
+    #[test]
+    fn labels_subtract_the_union_of_occluders_and_require_one_visible_pixel() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true});
+        let node = json!({"owningWindow":{"windowId":"editor"},"bounds":{"x":0.0,"y":0.0,"width":0.5,"height":0.5}});
+        let left = json!({"visible":true,"x":0.0,"y":0.0,"width":0.3,"height":0.5});
+        let right = json!({"visible":true,"x":0.2,"y":0.0,"width":0.3,"height":0.5});
+        let stack = [editor.clone(), left, right];
+        let hidden = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+        assert_eq!(
+            (hidden.nodes.len(), hidden.hidden, hidden.unknown),
+            (0, 1, 0)
+        );
+        let mut small = node;
+        small["bounds"]["width"] = json!(0.5 / WIDTH as f64);
+        small["bounds"]["height"] = json!(1.0 / HEIGHT as f64);
+        assert_eq!(
+            uncovered_labels(vec![small.clone()], Some(&[editor.clone()]), Some(&windows)).hidden,
+            1
+        );
+        small["bounds"]["width"] = json!(1.0 / WIDTH as f64);
+        assert_eq!(
+            uncovered_labels(vec![small], Some(&[editor]), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rectangle_subtraction_preserves_disjoint_fragments_and_rejects_empty_bounds() {
+        let rect = |x: f64, y: f64, width: f64, height: f64| {
+            LabelRect::from_value(&json!({"x":x,"y":y,"width":width,"height":height})).unwrap()
+        };
+        let full = rect(0.0, 0.0, 10.0, 10.0);
+        assert!(full.subtract(full).is_empty());
+        assert_eq!(full.subtract(rect(10.0, 0.0, 5.0, 5.0)), [full]);
+        let fragments = full.subtract(rect(2.0, 3.0, 4.0, 5.0));
+        assert_eq!(
+            fragments,
+            [
+                rect(0.0, 0.0, 10.0, 3.0),
+                rect(0.0, 8.0, 10.0, 2.0),
+                rect(0.0, 3.0, 2.0, 5.0),
+                rect(6.0, 3.0, 4.0, 5.0),
+            ]
+        );
+        for bounds in [
+            json!({}),
+            json!({"x":0,"y":0,"width":0,"height":1}),
+            json!({"x":0,"y":0,"width":1,"height":-1}),
+            json!({"x":1e308,"y":0,"width":1e308,"height":1}),
+        ] {
+            assert!(LabelRect::from_value(&bounds).is_none());
+        }
     }
 
     #[test]

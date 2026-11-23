@@ -965,7 +965,15 @@ impl NativeDocument {
                 }
                 NativeScriptCommand::Focus { node_index } => {
                     let id = self.resolve_script_node_id(*node_index, &script_nodes);
-                    events.extend(self.apply_script_focus(id)?);
+                    // HTML focus() is a no-op for targets that are not focusable areas.
+                    match self.apply_script_focus(id) {
+                        Ok(focus_events) => events.extend(focus_events),
+                        Err(
+                            NativeEngineError::TargetNotActionable { .. }
+                            | NativeEngineError::DisabledTarget,
+                        ) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
                 NativeScriptCommand::Blur { node_index } => {
                     let id = self.resolve_script_node_id(*node_index, &script_nodes);

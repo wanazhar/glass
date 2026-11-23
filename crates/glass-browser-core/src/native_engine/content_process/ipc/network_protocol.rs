@@ -356,7 +356,7 @@ pub(in crate::native_engine::content_process) async fn load_parent_worker_script
         .get("max_source_bytes")
         .and_then(Value::as_u64)
         .and_then(|bytes| usize::try_from(bytes).ok())
-        .filter(|bytes| *bytes > 0 && *bytes <= MAX_NATIVE_SCRIPT_BYTES)
+        .filter(|bytes| *bytes > 0 && *bytes <= MAX_NATIVE_SCRIPT_SOURCE_BYTES)
         .ok_or_else(|| {
             NativeEngineError::worker_failure(
                 "decode parent worker script request",
@@ -1008,7 +1008,7 @@ pub(in crate::native_engine::content_process) async fn load_parent_page_script_a
         .get("max_source_bytes")
         .and_then(Value::as_u64)
         .and_then(|bytes| usize::try_from(bytes).ok())
-        .filter(|bytes| *bytes > 0 && *bytes <= MAX_NATIVE_SCRIPT_BYTES)
+        .filter(|bytes| *bytes > 0 && *bytes <= MAX_NATIVE_SCRIPT_SOURCE_BYTES)
         .ok_or_else(|| {
             NativeEngineError::worker_failure(
                 "decode parent page script request",

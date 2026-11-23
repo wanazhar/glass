@@ -140,7 +140,7 @@ pub(super) fn load_local_dynamic_page_script_sources(
                     loader.load_local_blob_script(
                         document_url,
                         &href,
-                        MAX_NATIVE_SCRIPT_BYTES,
+                        MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                         integrity.as_deref(),
                         object_url.as_ref(),
                     )
@@ -148,7 +148,7 @@ pub(super) fn load_local_dynamic_page_script_sources(
                     loader.load_local_file_script_with_policy(
                         document_url,
                         &href,
-                        MAX_NATIVE_SCRIPT_BYTES,
+                        MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                         parser_inserted,
                         nonce.as_deref(),
                         integrity.as_deref(),
@@ -198,7 +198,7 @@ pub(super) fn load_local_dynamic_page_script_sources(
                     loader.load_local_blob_script(
                         document_url,
                         &href,
-                        MAX_NATIVE_SCRIPT_BYTES,
+                        MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                         integrity.as_deref(),
                         object_url.as_ref(),
                     )
@@ -206,7 +206,7 @@ pub(super) fn load_local_dynamic_page_script_sources(
                     loader.load_local_file_script_with_policy(
                         document_url,
                         &href,
-                        MAX_NATIVE_SCRIPT_BYTES,
+                        MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                         parser_inserted,
                         nonce.as_deref(),
                         integrity.as_deref(),

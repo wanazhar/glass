@@ -597,7 +597,7 @@ impl NativeWorkerRegistry {
                 document_url: owner_url,
                 href: &href,
                 referrer_url: None,
-                max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 module_type: None,
                 credentials_mode: None,
                 referrer_policy,
@@ -873,7 +873,7 @@ impl NativeWorkerRegistry {
                 document_url: owner_url,
                 href: &href,
                 referrer_url: None,
-                max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 module_type: None,
                 credentials_mode: is_module.then_some(credentials.as_str()),
                 referrer_policy,
@@ -1446,7 +1446,7 @@ impl NativeWorkerRegistry {
                 document_url: worker_url,
                 href: &target,
                 referrer_url: Some(module_referrer),
-                max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 module_type: Some(module_type),
                 credentials_mode: worker_credentials_mode.as_deref(),
                 referrer_policy: Some(referrer_policy),
@@ -1503,7 +1503,7 @@ impl NativeWorkerRegistry {
             .map(String::len)
             .sum::<usize>()
             .saturating_add(added_bytes);
-        let byte_limit = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+        let byte_limit = MAX_NATIVE_MODULE_GRAPH_BYTES;
         if total_bytes > byte_limit {
             return Err(NativeEngineError::limit(
                 "native Worker module graph bytes",
@@ -1651,7 +1651,7 @@ impl NativeWorkerRegistry {
                         document_url: &worker_url,
                         href: &specifier,
                         referrer_url: Some(&worker_url),
-                        max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                        max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                         module_type: None,
                         credentials_mode: None,
                         referrer_policy: Some(worker_referrer_policy),
@@ -1738,10 +1738,10 @@ impl NativeWorkerRegistry {
                 .len()
                 .saturating_add(script_source.len())
                 .saturating_add(2);
-            if next_length > MAX_NATIVE_SCRIPT_BYTES {
+            if next_length > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
                 return Err(NativeEngineError::limit(
                     "combined worker importScripts source",
-                    MAX_NATIVE_SCRIPT_BYTES,
+                    MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                     next_length,
                 ));
             }
@@ -1839,7 +1839,7 @@ impl NativeWorkerRegistry {
                         document_url: owner_url,
                         href: &target,
                         referrer_url: Some(&module_base_url),
-                        max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                        max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                         module_type: Some(request.module_type),
                         credentials_mode,
                         referrer_policy: module_referrer_policy,
@@ -1862,10 +1862,10 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 total_bytes = total_bytes.saturating_add(resource.body.len());
-                if total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+                if total_bytes > MAX_NATIVE_MODULE_GRAPH_BYTES {
                     return Err(NativeEngineError::limit(
                         "native Worker module graph bytes",
-                        MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                        MAX_NATIVE_MODULE_GRAPH_BYTES,
                         total_bytes,
                     ));
                 }
@@ -1911,7 +1911,7 @@ pub(crate) async fn load_service_worker_entry(
                     owner_url,
                     script_url,
                     None,
-                    MAX_NATIVE_SCRIPT_BYTES,
+                    MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                     None,
                     None,
                     referrer_policy,
@@ -1929,7 +1929,7 @@ pub(crate) async fn load_service_worker_entry(
         .load_worker_async_with_referrer_policy(
             referrer_url,
             script_url,
-            MAX_NATIVE_SCRIPT_BYTES,
+            MAX_NATIVE_SCRIPT_SOURCE_BYTES,
             referrer_policy,
         )
         .await

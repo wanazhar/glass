@@ -438,10 +438,10 @@ impl NativeJavaScriptRuntime {
                 "must not be empty",
             ));
         }
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        if source.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
             return Err(NativeEngineError::limit(
                 "script source",
-                MAX_NATIVE_SCRIPT_BYTES,
+                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 source.len(),
             ));
         }
@@ -1577,10 +1577,10 @@ impl NativeJavaScriptRuntime {
             .map(|_| rewrite_static_json_module_specifiers(source))
             .transpose()?;
         let source = transformed_module_source.as_deref().unwrap_or(source);
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        if source.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
             return Err(NativeEngineError::limit(
                 "worker script source",
-                MAX_NATIVE_SCRIPT_BYTES,
+                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 source.len(),
             ));
         }
@@ -2726,10 +2726,10 @@ impl NativeJavaScriptRuntime {
                 "must not be empty",
             ));
         }
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        if source.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
             return Err(NativeEngineError::limit(
                 "module source",
-                MAX_NATIVE_SCRIPT_BYTES,
+                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 source.len(),
             ));
         }

@@ -597,7 +597,7 @@ impl NativeServiceWorkerRegistry {
             ));
         } else {
             loader
-                .load_worker_async(script_url, script_url, MAX_NATIVE_SCRIPT_BYTES)
+                .load_worker_async(script_url, script_url, MAX_NATIVE_SCRIPT_SOURCE_BYTES)
                 .await?
         }
         .ok_or_else(|| NativeEngineError::Network {
@@ -991,10 +991,10 @@ impl NativeServiceWorkerRegistry {
             scope_url.origin().ascii_serialization(),
             scope_url.path()
         );
-        if script.len() > MAX_NATIVE_SCRIPT_BYTES {
+        if script.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
             return Err(NativeEngineError::limit(
                 "service worker script URL",
-                MAX_NATIVE_SCRIPT_BYTES,
+                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 script.len(),
             ));
         }

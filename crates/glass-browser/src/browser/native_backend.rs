@@ -11848,6 +11848,55 @@ fn native_main_frame_id(context_id: &str) -> String {
 }
 
 fn native_error(error: NativeEngineError) -> BrowserBackendError {
+    bound_native_error_text(native_error_unbounded(error))
+}
+
+fn bound_native_error_text(error: BrowserBackendError) -> BrowserBackendError {
+    use crate::browser::session::truncate_utf8_bytes;
+    use crate::browser_backend::{MAX_DIAGNOSTIC_BYTES, MAX_LIMITATION_BYTES};
+    let id = |value: String| truncate_utf8_bytes(&value, MAX_BACKEND_ID_BYTES);
+    let reason = |value: String| truncate_utf8_bytes(&value, MAX_DIAGNOSTIC_BYTES);
+    match error {
+        BrowserBackendError::InvalidConfiguration {
+            field,
+            reason: text,
+        } => BrowserBackendError::InvalidConfiguration {
+            field: id(field),
+            reason: reason(text),
+        },
+        BrowserBackendError::Connection {
+            operation,
+            reason: text,
+        } => BrowserBackendError::Connection {
+            operation: id(operation),
+            reason: reason(text),
+        },
+        BrowserBackendError::UnsupportedOperation {
+            operation,
+            reason: text,
+        } => BrowserBackendError::UnsupportedOperation {
+            operation: id(operation),
+            reason: reason(text),
+        },
+        BrowserBackendError::Lifecycle {
+            operation,
+            state,
+            reason: text,
+        } => BrowserBackendError::Lifecycle {
+            operation: id(operation),
+            state: truncate_utf8_bytes(&state, MAX_LIMITATION_BYTES),
+            reason: reason(text),
+        },
+        BrowserBackendError::SelectionFailed { reason: text } => {
+            BrowserBackendError::SelectionFailed {
+                reason: reason(text),
+            }
+        }
+        other => other,
+    }
+}
+
+fn native_error_unbounded(error: NativeEngineError) -> BrowserBackendError {
     match error {
         NativeEngineError::InvalidConfiguration { field, reason } => {
             BrowserBackendError::InvalidConfiguration { field, reason }
@@ -11985,6 +12034,28 @@ mod tests {
         NativeMessagePortTransfer, NativeNodeSubtreeTransfer, NativeOrigin,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn native_errors_bound_long_diagnostics_to_backend_limits() {
+        use crate::browser_backend::BackendContract as _;
+        let error = super::native_error(crate::browser::native_engine::NativeEngineError::Worker {
+            operation: "o".repeat(crate::browser_backend::MAX_BACKEND_ID_BYTES + 10),
+            reason: "é".repeat(crate::browser_backend::MAX_DIAGNOSTIC_BYTES),
+        });
+        let crate::browser_backend::BrowserBackendError::Connection { operation, reason } = &error
+        else {
+            panic!("worker errors must map to connection errors: {error:?}");
+        };
+        assert_eq!(
+            operation.len(),
+            crate::browser_backend::MAX_BACKEND_ID_BYTES
+        );
+        assert!(reason.len() <= crate::browser_backend::MAX_DIAGNOSTIC_BYTES);
+        assert!(reason.starts_with('é'));
+        error
+            .validate()
+            .expect("bounded native errors must satisfy backend error validation");
+    }
 
     #[tokio::test]
     async fn page_metadata_reports_pending_when_native_state_is_busy() {

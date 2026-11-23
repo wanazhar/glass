@@ -18,13 +18,14 @@ use super::fetch_stream::{
 };
 use super::interaction::{MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES};
 use super::javascript::{
-    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES,
-    MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES, MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES,
-    MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHES,
-    MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES, MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES,
-    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
-    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerCacheBatchEntry,
-    NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState, NativeServiceWorkerClientMessage,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_SOURCE_BYTES,
+    MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
+    MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES,
+    MAX_NATIVE_SERVICE_WORKER_CACHES, MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+    MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
+    NativeScriptEvaluation, NativeServiceWorkerCacheBatchEntry, NativeServiceWorkerCacheEntry,
+    NativeServiceWorkerCacheState, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerMessageEvent,
     NativeServiceWorkerOpenWindowRequest, NativeServiceWorkerRegistrationProfile,
     NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerProfile,

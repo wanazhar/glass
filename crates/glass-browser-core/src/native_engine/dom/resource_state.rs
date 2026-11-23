@@ -615,6 +615,29 @@ impl NativeDocument {
             .or_else(|| resource.video_frames.first())
     }
 
+    /// Return the live playback clock recorded for a loaded media element:
+    /// (playing, current time in milliseconds, playback rate).
+    pub(crate) fn media_playback_snapshot(&self, node_id: NativeNodeId) -> (bool, u64, f64) {
+        let Some(resource) = self
+            .media_resources
+            .get(&node_id.index())
+            .filter(|resource| resource.source == self.media_current_src(node_id))
+        else {
+            return (false, 0, 0.0);
+        };
+        let playback_rate = resource.playback_rate_millionths as f64 / 1_000_000.0;
+        let elapsed_millis = resource
+            .playback_started_at
+            .filter(|_| resource.is_playing)
+            .map(|started_at| started_at.elapsed().as_millis() as f64 * playback_rate)
+            .unwrap_or_default();
+        let current_time_millis = (resource.current_time_millis as f64 + elapsed_millis)
+            .max(0.0)
+            .min(resource.duration_millis.unwrap_or(u64::MAX) as f64)
+            as u64;
+        (resource.is_playing, current_time_millis, playback_rate)
+    }
+
     pub(crate) fn set_media_frame_time(
         &mut self,
         node_index: u32,

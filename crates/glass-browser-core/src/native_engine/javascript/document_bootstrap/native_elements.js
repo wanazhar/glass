@@ -763,6 +763,11 @@
       mediaVideoHeight: () => mediaVideoHeight,
       mediaError: () => mediaError,
       mediaReset: resetMediaState,
+      mediaPlayback: () => ({{
+        playing: Boolean(entry.mediaPlaying),
+        currentTimeMillis: Number(entry.mediaCurrentTimeMillis) || 0,
+        rate: Number(entry.mediaPlaybackRate) || 1,
+      }}),
       mediaLoad: () => pushCommand({{ kind: "mediaLoad", node_index: entry.nodeIndex }}),
       mediaFrameTime: (timeMillis, playing, playbackRate) => pushCommand({{ kind: "mediaFrameTime", node_index: entry.nodeIndex, time_millis: Math.max(0, Math.trunc(Number(timeMillis) || 0)), playing: Boolean(playing), playback_rate: Number(playbackRate) }}),
     }});

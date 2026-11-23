@@ -78,11 +78,11 @@ pub(crate) fn execute_inline_scripts(
         NativePageScript::ImportMap(import_map.clone()),
     )];
     let mut page_import_maps = document
-        .page_import_map_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
+        .page_import_map_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_SOURCE_BYTES)
         .into_iter()
         .peekable();
     for (index, source) in document
-        .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
+        .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_SOURCE_BYTES)
         .into_iter()
         .enumerate()
     {
@@ -173,7 +173,7 @@ pub(crate) fn execute_inline_scripts(
                 match loader.load_local_file_script_with_policy(
                     document_url,
                     &href,
-                    MAX_NATIVE_SCRIPT_BYTES,
+                    MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                     parser_inserted,
                     nonce.as_deref(),
                     integrity.as_deref(),
@@ -211,7 +211,7 @@ pub(crate) fn execute_inline_scripts(
                 match loader.load_local_file_script_with_policy(
                     document_url,
                     &request_url,
-                    MAX_NATIVE_SCRIPT_BYTES,
+                    MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                     parser_inserted,
                     nonce.as_deref(),
                     integrity.as_deref(),
@@ -359,7 +359,7 @@ pub(super) fn load_local_file_module_graph_with_import_map_and_existing(
     let mut pending = vec![(root_name, root_base_url, root_source.clone())];
     let mut import_edges = 0usize;
     let mut total_bytes = existing_module_bytes.saturating_add(root_source.len());
-    let maximum_module_bytes = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+    let maximum_module_bytes = MAX_NATIVE_MODULE_GRAPH_BYTES;
     if total_bytes > maximum_module_bytes {
         return Err(NativeEngineError::limit(
             "native file module graph bytes",
@@ -408,7 +408,7 @@ pub(super) fn load_local_file_module_graph_with_import_map_and_existing(
                 .load_local_file_script_with_policy(
                     document_url,
                     &target,
-                    MAX_NATIVE_SCRIPT_BYTES,
+                    MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                     true,
                     None,
                     import_map.integrity_for_url(&target),
@@ -1169,7 +1169,7 @@ pub(crate) fn execute_dynamic_page_scripts(
         .values()
         .map(String::len)
         .fold(0usize, usize::saturating_add);
-    let maximum_module_bytes = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+    let maximum_module_bytes = MAX_NATIVE_MODULE_GRAPH_BYTES;
     if module_bytes > maximum_module_bytes {
         return Err(NativeEngineError::limit(
             "native page module graph bytes",

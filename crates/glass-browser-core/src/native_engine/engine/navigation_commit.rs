@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_NATIVE_SRCDOC_MEDIA: usize = 64;
+
 impl NativeEngine {
     pub(super) fn prepare_navigation(
         &mut self,
@@ -14,7 +16,59 @@ impl NativeEngine {
         url: &str,
     ) -> Result<PreparedNavigation, NativeEngineError> {
         let resource = self.loader.load_async(url).await?;
-        self.prepare_navigation_resource(resource)
+        let mut prepared = self.prepare_navigation_resource(resource)?;
+        let media_events = self
+            .load_inherited_network_media(&mut prepared.document, &prepared.resource.url)
+            .await?;
+        prepared.initial_events.extend(media_events);
+        Ok(prepared)
+    }
+
+    /// Load network media for an iframe srcdoc document. Its data: URL is only
+    /// a transport for the markup; relative sources resolve against the
+    /// embedding network document, so they need the network media path.
+    async fn load_inherited_network_media(
+        &mut self,
+        document: &mut NativeDocument,
+        document_url: &str,
+    ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+        let Some(policy_document_url) = document
+            .inherited_base_url()
+            .filter(|base_url| is_network_url(base_url))
+            .map(str::to_owned)
+        else {
+            return Ok(Vec::new());
+        };
+        let media_base_url = document.effective_base_url(document_url);
+        let mut events = Vec::new();
+        for (node_index, source) in document
+            .external_media_links()
+            .into_iter()
+            .take(MAX_NATIVE_SRCDOC_MEDIA)
+        {
+            let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+            if document.media_load_attempted_for_node(node_id) {
+                continue;
+            }
+            document.mark_media_load(node_index, source.clone())?;
+            let metadata = self
+                .loader
+                .load_media_async_with_context(&policy_document_url, &media_base_url, &source, None)
+                .await?;
+            let event_kind = match metadata {
+                Some(metadata) => {
+                    document.set_media_resource(node_index, source, metadata)?;
+                    NativeEventKind::Load
+                }
+                None => {
+                    document.set_media_error(node_index, source)?;
+                    NativeEventKind::Error
+                }
+            };
+            events.push((node_index, event_kind));
+        }
+        document.refresh_media_loads();
+        Ok(events)
     }
 
     pub(super) fn prepare_navigation_content(
@@ -273,7 +327,11 @@ impl NativeEngine {
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
-        self.origin = prepared.resource.origin;
+        let inherited_origin = self
+            .embedding_origin
+            .take()
+            .filter(|_| self.embedding_base_url.is_some());
+        self.origin = inherited_origin.unwrap_or(prepared.resource.origin);
         self.document_frame_sources = prepared.frame_sources;
         self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.embedding_base_url = None;
@@ -457,7 +515,11 @@ impl NativeEngine {
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
-        self.origin = prepared.resource.origin;
+        let inherited_origin = self
+            .embedding_origin
+            .take()
+            .filter(|_| self.embedding_base_url.is_some());
+        self.origin = inherited_origin.unwrap_or(prepared.resource.origin);
         self.document_frame_sources = prepared.frame_sources;
         self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.embedding_base_url = None;

@@ -885,7 +885,7 @@ pub(super) async fn mutate_script_document(
     let dynamic_sources = next.take_newly_attached_page_script_sources(
         &effective_commands,
         super::super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
-        MAX_NATIVE_SCRIPT_BYTES,
+        MAX_NATIVE_SCRIPT_SOURCE_BYTES,
     );
     if !dynamic_sources.is_empty() {
         dynamic_result = if let Some(loader) = loader.as_deref_mut() {

@@ -22,10 +22,10 @@ pub(super) fn read_script_commands<'js>(
             reason: "native JavaScript host commands were invalid".into(),
         }
     })?;
-    if commands.len() > super::super::interaction::MAX_NATIVE_EFFECTS {
+    if commands.len() > super::super::interaction::MAX_NATIVE_SCRIPT_HOST_COMMANDS {
         return Err(NativeEngineError::limit(
             "script host commands",
-            super::super::interaction::MAX_NATIVE_EFFECTS,
+            super::super::interaction::MAX_NATIVE_SCRIPT_HOST_COMMANDS,
             commands.len(),
         ));
     }

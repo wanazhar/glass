@@ -524,6 +524,145 @@ async fn native_runtime_srcdoc_inherits_parent_base_for_relative_media_loading_i
 }
 
 #[test]
+fn native_runtime_http_editor_bundle_composes_a_playable_srcdoc_video() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_runtime_http_editor_bundle_composes_a_playable_srcdoc_video_inner());
+    });
+}
+
+// Offline reduction of the MDN tabbed video example (#91): a large editor
+// bundle selects text, builds hundreds of nodes in one turn, focuses a
+// CSS-hidden control, then writes an iframe srcdoc whose relative WebM source
+// must load from the embedding origin and play through contentDocument.
+async fn native_runtime_http_editor_bundle_composes_a_playable_srcdoc_video_inner() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let bundle = format!(
+        "/*{}*/\n{}",
+        "x".repeat(64 * 1024),
+        concat!(
+            "(() => {",
+            "const editor = document.getElementById('editor');",
+            "for (let index = 0; index < 300; index += 1) editor.appendChild(document.createElement('span'));",
+            "const range = document.createRange(); range.selectNodeContents(editor);",
+            "const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range);",
+            "editor.focus();",
+            "document.getElementById('output-iframe').srcdoc = '<!doctype html><video controls><source src=\"/media/clip.webm\" type=\"video/webm\"></video>';",
+            "window.__editorReady = selection.rangeCount === 1;",
+            "})();",
+        )
+    );
+    assert!(bundle.len() > 16 * 1024);
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let bundle = bundle.clone();
+            tokio::spawn(async move {
+                let mut request = [0_u8; 8192];
+                let read = stream.read(&mut request).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]);
+                let path = request.split_whitespace().nth(1).unwrap_or("/");
+                let (status, content_type, body): (&str, &str, Vec<u8>) = match path {
+                    "/pages/editor.html" => (
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        b"<!doctype html><title>Editor</title><style>.hidden{display:none}</style><div id='editor' class='hidden' tabindex='0'></div><iframe id='output-iframe'></iframe><script src='/js/editor-bundle.js'></script>".to_vec(),
+                    ),
+                    "/js/editor-bundle.js" => {
+                        ("200 OK", "text/javascript", bundle.into_bytes())
+                    }
+                    "/media/clip.webm" => (
+                        "200 OK",
+                        "video/webm",
+                        include_bytes!(
+                            "../../../../glass-browser-core/tests/fixtures/native-media/sixty-one-frames-vp8.webm"
+                        )
+                        .to_vec(),
+                    ),
+                    _ => ("404 Not Found", "text/plain", Vec::new()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            });
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/pages/editor.html")),
+    )
+    .await
+    .unwrap();
+    let video = "(() => { const frame = document.getElementById('output-iframe'); const doc = frame && frame.contentDocument; return doc && doc.querySelector('video'); })()";
+    let mut state = serde_json::Value::Null;
+    for _ in 0..50 {
+        state = session
+            .script(format!(
+                "(() => {{ const video = {video}; return [window.__editorReady === true, document.getElementById('editor').children.length, !!video, video ? video.readyState : -1, video ? video.currentSrc : '', video ? video.videoWidth : 0, video ? video.duration > 0 : false]; }})()"
+            ))
+            .await
+            .unwrap()
+            .value;
+        if state[3].as_i64() == Some(2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        state,
+        serde_json::json!([
+            true,
+            300,
+            true,
+            2,
+            format!("http://{address}/media/clip.webm"),
+            16,
+            true
+        ])
+    );
+
+    let playing = session
+        .script(format!(
+            "(() => {{ const video = {video}; video.muted = true; video.play(); return video.paused; }})()"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(playing.value, serde_json::json!(false));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let progressed = session
+        .script(format!(
+            "(() => {{ const video = {video}; return [video.paused, video.currentTime >= 0.25]; }})()"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(progressed.value, serde_json::json!([false, true]));
+    session
+        .script(format!(
+            "(() => {{ const video = {video}; video.pause(); return video.paused; }})()"
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let paused = session
+        .script(format!(
+            "(() => {{ const video = {video}; return video.paused; }})()"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(paused.value, serde_json::json!(true));
+    session.close().await.unwrap();
+    server.abort();
+}
+
+#[test]
 fn native_runtime_session_exposes_agent_inspection_and_target_discovery() {
     run_native_browser_worker_test(|runtime| {
         runtime

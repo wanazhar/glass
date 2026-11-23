@@ -30,10 +30,13 @@ struct ComposerView: View {
             if dictation.isListening {
                 RecordingBar(dictation: dictation)
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                attachMenu
-                field
-                trailingButton
+            // One glass container, so the message box and its buttons float and blend as one bar.
+            GlassGroup(spacing: 8) {
+                HStack(alignment: .bottom, spacing: 8) {
+                    attachMenu
+                    field
+                    trailingButton
+                }
             }
             if case .unavailable(let message) = dictation.state {
                 Text(message).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -77,9 +80,11 @@ struct ComposerView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Take Control") { Task { await composer.claimControl() } }
-                .glassButtonStyle(prominent: true)
+                .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("composer.takeControl")
         }
+        .padding(12)
+        .glassPanel(cornerRadius: 18)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("composer.readOnly")
     }
@@ -116,40 +121,37 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 20, style: .continuous))
+        .glassPanel(cornerRadius: 20, interactive: true)
     }
 
-    @ViewBuilder
     private var trailingButton: some View {
-        GlassGroup(spacing: 8) {
-            HStack(spacing: 8) {
-                if composer.trimmed.isEmpty {
-                    Button(dictation.isListening ? "Stop Recording" : "Dictate", systemImage: dictation.isListening ? "mic.slash" : "mic") {
-                        let base = composer.text.isEmpty ? "" : composer.text + " "
-                        Task { await dictation.toggle { composer.text = base + $0 } }
-                    }
-                    .labelStyle(.iconOnly)
-                    .glassButtonStyle()
-                    .disabled(!canWrite)
-                    .accessibilityIdentifier("composer.dictate")
+        HStack(spacing: 8) {
+            if composer.trimmed.isEmpty {
+                Button(dictation.isListening ? "Stop Recording" : "Dictate", systemImage: dictation.isListening ? "mic.slash" : "mic") {
+                    let base = composer.text.isEmpty ? "" : composer.text + " "
+                    Task { await dictation.toggle { composer.text = base + $0 } }
                 }
-                if active, composer.trimmed.isEmpty {
-                    Button("Stop", systemImage: "stop.fill") { Task { await composer.stop() } }
-                        .keyCommand(.stop)
-                        .labelStyle(.iconOnly)
-                        .glassButtonStyle(prominent: true)
-                        .disabled(!canWrite)
-                        .accessibilityIdentifier("composer.stop")
-                } else {
-                    Button("Send", systemImage: "arrow.up") {
-                        dictation.stop()
-                        Task { await composer.send(active: active, canWrite: canWrite) }
-                    }
+                .labelStyle(.iconOnly)
+                .glassButtonStyle()
+                .disabled(!canWrite)
+                .accessibilityIdentifier("composer.dictate")
+            }
+            if active, composer.trimmed.isEmpty {
+                Button("Stop", systemImage: "stop.fill") { Task { await composer.stop() } }
+                    .keyCommand(.stop)
                     .labelStyle(.iconOnly)
                     .glassButtonStyle(prominent: true)
-                    .disabled(!canWrite || composer.trimmed.isEmpty || composer.sending)
-                    .accessibilityIdentifier("composer.send")
+                    .disabled(!canWrite)
+                    .accessibilityIdentifier("composer.stop")
+            } else {
+                Button("Send", systemImage: "arrow.up") {
+                    dictation.stop()
+                    Task { await composer.send(active: active, canWrite: canWrite) }
                 }
+                .labelStyle(.iconOnly)
+                .glassButtonStyle(prominent: true)
+                .disabled(!canWrite || composer.trimmed.isEmpty || composer.sending)
+                .accessibilityIdentifier("composer.send")
             }
         }
     }
@@ -194,10 +196,13 @@ struct ComposerView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
+        .padding(12)
+        .glassPanel(cornerRadius: 18)
     }
 
     private var contextChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
+            GlassGroup(spacing: 6) {
             HStack(spacing: 6) {
                 ForEach(composer.context) { attachment in
                     HStack(spacing: 4) {
@@ -210,12 +215,15 @@ struct ComposerView: View {
                     .font(.caption)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Color(.tertiarySystemFill), in: .capsule)
+                    .floatingGlass()
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("composer.context")
                 }
             }
+            }
+            .padding(.vertical, 2)
         }
+        .scrollClipDisabled()
         .accessibilityIdentifier("composer.contextChips")
     }
 
@@ -373,13 +381,14 @@ struct RecordingBar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Stop", systemImage: "stop.fill") { dictation.stop() }
                 .tint(.red)
-                .glassButtonStyle(prominent: true)
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
                 .accessibilityIdentifier("composer.recording.stop")
         }
         .padding(.leading, 14)
         .padding(.trailing, 6)
         .padding(.vertical, 6)
-        .background(Color(.secondarySystemBackground), in: .capsule)
+        .floatingGlass()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Recording")
         .accessibilityIdentifier("composer.recording")

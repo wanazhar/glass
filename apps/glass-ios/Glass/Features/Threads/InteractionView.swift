@@ -70,8 +70,8 @@ struct InteractionView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 16, style: .continuous))
+        .padding(16)
+        .glassPanel(cornerRadius: 24)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("interaction")
         .onDisappear { secret = "" }

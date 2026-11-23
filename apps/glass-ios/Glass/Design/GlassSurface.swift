@@ -13,6 +13,33 @@ extension View {
     }
 }
 
+extension View {
+    /// A floating Liquid Glass panel over content, for controls that sit in a bar: the message box,
+    /// a docked decision, a notice above it, the desktop's controls. iOS 18–25 keep the plain grouped
+    /// fill they had, with no imitation of glass.
+    @ViewBuilder
+    func glassPanel(cornerRadius: CGFloat = 22, interactive: Bool = false) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(interactive ? .regular.interactive() : .regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+}
+
+extension View {
+    /// Floats glass controls along the bottom edge with no backing of their own. On iOS 26 this is a
+    /// safe-area bar, so content runs edge to edge beneath it and gets the system scroll-edge effect.
+    @ViewBuilder
+    func floatingBar(@ViewBuilder _ bar: () -> some View) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: .bottom, content: bar)
+        } else {
+            safeAreaInset(edge: .bottom, content: bar)
+        }
+    }
+}
+
 /// Groups adjacent floating glass controls so they blend and morph together on iOS 26.
 struct GlassGroup<Content: View>: View {
     var spacing: CGFloat

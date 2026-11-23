@@ -6,6 +6,14 @@ struct DesktopView: View {
     enum Pointer: String, CaseIterable, Identifiable {
         case tap = "Tap", trackpad = "Trackpad", scroll = "Scroll", pan = "Pan"
         var id: String { rawValue }
+        var symbol: String {
+            switch self {
+            case .tap: "hand.tap"
+            case .trackpad: "cursorarrow.motionlines"
+            case .scroll: "arrow.up.and.down"
+            case .pan: "hand.draw"
+            }
+        }
     }
 
     @Environment(AppModel.self) private var app
@@ -120,7 +128,7 @@ struct DesktopView: View {
     // MARK: Running
 
     private func running(_ status: DesktopStatus) -> some View {
-        VStack(spacing: 0) {
+        Group {
             GeometryReader { geometry in
                 let viewport = DesktopViewport(container: geometry.size, image: model.frame?.size ?? CGSize(width: 16, height: 10),
                                                zoom: zoom, pan: pan)
@@ -180,15 +188,16 @@ struct DesktopView: View {
                     }
                 }
             }
-            .clipped()
             .focusable(status.youHaveControl && !model.disconnected)
             .focused($keyboardFocus)
             .onKeyPress(phases: .down) { press in
                 guard status.youHaveControl, !model.disconnected else { return .ignored }
                 return handle(press) ? .handled : .ignored
             }
-            controls(status)
         }
+        // The picture runs edge to edge; a zoomed desktop slides under the glass bars and controls.
+        .background(Color.black.ignoresSafeArea())
+        .floatingBar { controls(status) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -216,67 +225,95 @@ struct DesktopView: View {
     }
 
     private func controls(_ status: DesktopStatus) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(status.controlSummary).font(.subheadline.weight(.semibold))
-                    Text(pictureSummary).font(.footnote).foregroundStyle(.secondary)
-                    if showStats {
-                        Text(model.stats.summary + " · \(model.streamWidth) px"
-                             + (model.lastResumeMs.map { "\nBack live \($0) ms after returning" } ?? ""))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("desktop.stats")
+        GlassGroup(spacing: 10) {
+            VStack(spacing: 10) {
+                if status.youHaveControl, showKeys, !model.disconnected {
+                    keys
+                        .padding(14)
+                        .glassPanel(cornerRadius: 22)
+                }
+                HStack(spacing: 10) {
+                    statusPanel(status)
+                    if !status.youHaveControl {
+                        Button("Take control") { Task { await model.takeControl() } }
+                            .glassButtonStyle(prominent: true)
+                            .controlSize(.large)
+                            .disabled(model.busy != nil)
+                            .accessibilityIdentifier("desktop.takeControl")
                     }
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("desktop.state")
-                Spacer()
-                if status.youHaveControl {
-                    Button { showKeys.toggle(); if showKeys { keyboardFocus = false } } label: {
-                        Label("Keys", systemImage: "keyboard")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(model.disconnected)
-                    .accessibilityIdentifier("desktop.keys")
-                    Button("Give back") { Task { await model.giveBackControl() } }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("desktop.giveBack")
-                } else {
-                    Button("Take control") { Task { await model.takeControl() } }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("desktop.takeControl")
-                }
-            }
-            .disabled(model.busy != nil)
-            if status.youHaveControl {
-                HStack {
-                    Picker("Touch", selection: $pointer) {
-                        ForEach(Pointer.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("desktop.pointer")
-                    Toggle(isOn: $rightClick) { Label("Right click", systemImage: "cursorarrow.click.2") }
-                        .toggleStyle(.button)
-                        .labelStyle(.iconOnly)
-                        .accessibilityHint("The next tap or click is a right click.")
-                }
-                Text(pointer == .pan ? "Drag to move around the zoomed desktop. Pinch to zoom."
-                     : "Tap to click. Two-finger tap or touch and hold to right-click. Two fingers scroll. Pinch to zoom.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if showKeys, !model.disconnected { keys }
-            } else {
-                Text(status.lease == "read-only" ? "Nobody can use the mouse or keyboard. Take control to use them."
-                                                 : "Glass is using the mouse and keyboard. Take control to use them yourself.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            if let message = model.error ?? status.error {
-                Label(message, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.secondary)
+                if status.youHaveControl { controlRow }
             }
         }
-        .padding()
-        .background(Color(.systemBackground))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+        .frame(maxWidth: 760)
+    }
+
+    private func statusPanel(_ status: DesktopStatus) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(status.controlSummary).font(.subheadline.weight(.semibold))
+            Text(pictureSummary).font(.footnote).foregroundStyle(.secondary)
+            if showStats {
+                Text(model.stats.summary + " · \(model.streamWidth) px"
+                     + (model.lastResumeMs.map { "\nBack live \($0) ms after returning" } ?? ""))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("desktop.stats")
+            }
+            Text(status.youHaveControl
+                 ? (pointer == .pan ? "Drag to move around the zoomed desktop. Pinch to zoom."
+                    : "Tap to click. Two-finger tap or touch and hold to right-click. Two fingers scroll. Pinch to zoom.")
+                 : (status.lease == "read-only" ? "Nobody can use the mouse or keyboard. Take control to use them."
+                    : "Glass is using the mouse and keyboard. Take control to use them yourself."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            if let message = model.error ?? status.error {
+                Label(message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .glassPanel(cornerRadius: 22)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("desktop.state")
+    }
+
+    /// Floating capsules for the pointer mode, right click, Keys and Give back while you have control.
+    private var controlRow: some View {
+        HStack(spacing: 10) {
+            Menu {
+                Picker("Touch", selection: $pointer) {
+                    ForEach(Pointer.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
+                }
+            } label: {
+                Label(pointer.rawValue, systemImage: pointer.symbol)
+            }
+            .glassButtonStyle()
+            .accessibilityLabel("Touch")
+            .accessibilityValue(pointer.rawValue)
+            .accessibilityIdentifier("desktop.pointer")
+            Button("Right click", systemImage: "cursorarrow.click.2") { rightClick.toggle() }
+                .labelStyle(.iconOnly)
+                .glassButtonStyle(prominent: rightClick)
+                .accessibilityAddTraits(rightClick ? .isSelected : [])
+                .accessibilityHint("The next tap or click is a right click.")
+                .accessibilityIdentifier("desktop.rightClick")
+            Spacer(minLength: 0)
+            Button { showKeys.toggle(); if showKeys { keyboardFocus = false } } label: {
+                Label("Keys", systemImage: "keyboard")
+            }
+            .glassButtonStyle(prominent: showKeys && !model.disconnected)
+            .disabled(model.disconnected)
+            .accessibilityIdentifier("desktop.keys")
+            Button("Give back") { Task { await model.giveBackControl() } }
+                .glassButtonStyle()
+                .accessibilityIdentifier("desktop.giveBack")
+        }
+        .disabled(model.busy != nil)
     }
 
     private var pictureSummary: String {

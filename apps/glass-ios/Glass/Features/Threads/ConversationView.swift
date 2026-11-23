@@ -108,7 +108,7 @@ struct ConversationView: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
-            .composerBar {
+            .floatingBar {
                 bottomBar(proxy)
                     .onGeometryChange(for: CGFloat.self, of: \.size.height) { _, _ in
                         guard following else { return }
@@ -267,7 +267,7 @@ struct ConversationView: View {
                     .font(.footnote)
                 }
                 .padding(12)
-                .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12, style: .continuous))
+                .glassPanel(cornerRadius: 18)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("conversation.notice")
             }
@@ -423,19 +423,6 @@ struct WorkingBubble: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityIdentifier("conversation.activity")
-    }
-}
-
-private extension View {
-    /// On iOS 26 the composer sits in a safe-area bar, so content scrolling
-    /// beneath it gets the system scroll-edge effect instead of showing through.
-    @ViewBuilder
-    func composerBar(@ViewBuilder _ bar: () -> some View) -> some View {
-        if #available(iOS 26.0, *) {
-            safeAreaBar(edge: .bottom, content: bar)
-        } else {
-            safeAreaInset(edge: .bottom, content: bar)
-        }
     }
 }
 

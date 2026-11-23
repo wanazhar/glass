@@ -803,6 +803,9 @@ impl ProductState {
                     .tasks
                     .iter()
                     .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
+                    || self.control.queue.iter().any(|entry| {
+                        entry.conversation_id.as_deref() == Some(conversation.id.as_str())
+                    })
                 {
                     keep.insert(index);
                 }
@@ -1290,6 +1293,52 @@ mod tests {
             state.transcript_for("empty-0")[0].text,
             "engine creation failed"
         );
+    }
+
+    #[test]
+    fn control_queued_chats_are_protected_in_both_retention_caps() {
+        for needs_engine_session in [false, true] {
+            let limit = if needs_engine_session {
+                UNSENT_CONVERSATION_LIMIT
+            } else {
+                CONVERSATION_LIMIT
+            };
+            let mut state = ProductState::default();
+            for index in 0..=limit {
+                let id = format!("chat-{index}");
+                let record = state.conversation_mut(&id);
+                record.needs_engine_session = needs_engine_session;
+                record.updated_at = index as u64;
+                if !needs_engine_session {
+                    state.push_transcript(TranscriptEntry {
+                        conversation_id: id,
+                        kind: "assistant".into(),
+                        text: "saved answer".into(),
+                        ..Default::default()
+                    });
+                }
+            }
+            state
+                .control
+                .enqueue(Some("chat-0".into()), "held message")
+                .unwrap();
+            assert!(state.tasks.is_empty());
+            assert!(state.prune(2_000).is_empty());
+            assert!(
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "chat-0")
+            );
+            state.control.take_queue();
+            assert_eq!(state.prune(2_001).conversations, 1);
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "chat-0")
+            );
+        }
     }
 
     #[test]

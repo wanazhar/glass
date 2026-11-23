@@ -4892,6 +4892,65 @@ fn a_created_chat_survives_reload_and_accepts_its_first_message() {
 }
 
 #[test]
+fn a_paused_created_chat_survives_pruning_and_runs_on_resume() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::with_persistence("paused-created-chat", Vec::new(), true);
+    fixture.install_default_worker_with_args(vec!["--strict-conversations".into()]);
+    let (status, reply) = fixture.post("/api/conversations", json!({}));
+    assert_eq!(status, 201, "{reply}");
+    let id = reply["conversation"]["id"].as_str().unwrap().to_string();
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .conversation_mut(&id)
+        .updated_at = 0;
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let prompt = "First message held while paused";
+    let (status, reply) = fixture.post("/api/turns", json!({"conversationId":id,"text":prompt}));
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply["queued"], true);
+    for _ in 0..glass_marble::state::UNSENT_CONVERSATION_LIMIT + 1 {
+        assert_eq!(fixture.post("/api/conversations", json!({})).0, 201);
+    }
+    let mut loaded = fixture.store.as_ref().unwrap().load().unwrap();
+    assert!(loaded.tasks.is_empty());
+    assert_eq!(
+        loaded.control.queue[0].conversation_id.as_deref(),
+        Some(id.as_str())
+    );
+    loaded.prune(glass_marble::worker::now_millis());
+    assert!(
+        loaded
+            .conversations
+            .iter()
+            .any(|record| record.id == id && record.needs_engine_session)
+    );
+    *fixture.state.lock().unwrap() = loaded;
+    assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+    let task = fixture.settled(prompt);
+    assert_eq!(task.status, "completed");
+    assert_eq!(task.conversation_id, id);
+    let state = fixture.state.lock().unwrap();
+    let record = state
+        .conversations
+        .iter()
+        .find(|record| record.id == id)
+        .unwrap();
+    assert!(!record.needs_engine_session);
+    assert!(!record.engine_conversation_id.is_empty());
+    assert!(
+        state
+            .transcript_for(&id)
+            .iter()
+            .any(|entry| entry.kind == "assistant")
+    );
+    assert!(state.control.queue.is_empty());
+}
+
+#[test]
 fn everyone_default_recovers_after_first_admission_fails() {
     if !python3_available() {
         return;

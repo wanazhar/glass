@@ -8,11 +8,13 @@
 //! own tools, and only `glass.*` integrations come back to this process for an
 //! explicit decision.
 
+pub mod build_info;
 pub mod control;
 pub mod conversation;
 pub mod crates;
 pub mod events;
 pub mod everyone;
+pub mod failure;
 pub mod host;
 pub mod live;
 pub mod lock;
@@ -27,6 +29,7 @@ pub mod server;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod threads;
 pub mod tls;
 pub mod tools;
 pub mod turn;

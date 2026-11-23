@@ -11,6 +11,7 @@ enum MarbleMarkdownBlock: Equatable {
     case quote([MarbleMarkdownBlock])
     case list(ordered: Bool, items: [MarbleMarkdownListItem])
     case code(language: String, code: String)
+    case math(String)
     case table(header: [String], alignments: [MarbleMarkdownAlignment], rows: [[String]])
     case rule
 }
@@ -86,6 +87,13 @@ enum MarbleMarkdown {
                 continue
             }
 
+            if let math = displayMath(in: lines[index...]) {
+                flush()
+                blocks.append(.math(MarbleMath.readable(math.source)))
+                index = math.nextIndex
+                continue
+            }
+
             if let heading = heading(trimmed) {
                 flush()
                 blocks.append(heading)
@@ -147,6 +155,34 @@ enum MarbleMarkdown {
         }
         flush()
         return blocks
+    }
+
+    private static func displayMath(in lines: ArraySlice<String>) -> (source: String, nextIndex: Int)? {
+        guard let first = lines.first?.trimmingCharacters(in: .whitespaces) else { return nil }
+        let close: String
+        if first.hasPrefix("$$"), !first.hasPrefix("$$$") {
+            close = "$$"
+        } else if first.hasPrefix(#"\["#) {
+            close = #"\]"#
+        } else {
+            return nil
+        }
+        var content: [String] = []
+        for index in lines.indices {
+            let line = lines[index].trimmingCharacters(in: .whitespaces)
+            if index != lines.startIndex && (fenceMarker(line) != nil || line.hasPrefix(#"\["#)) {
+                return nil
+            }
+            let part = index == lines.startIndex ? String(line.dropFirst(2)) : line
+            if part.hasSuffix(close) {
+                content.append(String(part.dropLast(2)))
+                let source = content.joined(separator: "\n")
+                guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                return (source, index + 1)
+            }
+            content.append(part)
+        }
+        return nil
     }
 
     /// An opening code fence: three or more backticks or tildes. A backtick

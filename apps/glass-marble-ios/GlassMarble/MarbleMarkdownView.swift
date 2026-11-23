@@ -3,7 +3,7 @@ import SwiftUI
 /// Native rendering of a reply's Markdown: quotes, lists, tables, code, and
 /// links. Parsing lives in `MarbleMarkdown`; this view only draws its blocks,
 /// so it can be swapped for the shared rich components when they land.
-struct MarbleMarkdownView: View {
+struct MarbleMarkdownView: View, Equatable {
     var text: String
     var font: Font = .body
     var color: Color = .primary
@@ -17,7 +17,8 @@ struct MarbleMarkdownView: View {
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
-        return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+        let readable = MarbleMath.inline(in: value)
+        return (try? AttributedString(markdown: readable, options: options)) ?? AttributedString(readable)
     }
 }
 
@@ -78,6 +79,12 @@ private struct MarbleMarkdownBlocks: View {
             }
         case .code(let language, let code):
             MarbleCodeBlock(code: code, language: language)
+        case .math(let value):
+            Text(value)
+                .font(.system(.body, design: .serif))
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
         case .table(let header, let alignments, let rows):
             MarbleTableBlock(header: header, alignments: alignments, rows: rows)
         case .rule:

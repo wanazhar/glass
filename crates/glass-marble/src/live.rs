@@ -310,9 +310,10 @@ impl LiveTurn {
     /// Record how far the reply has got. Writes are paced, so this is cheap
     /// enough to call for every streamed delta.
     pub fn progress(&mut self, text: &str, reasoning: &str) {
+        let retracted = !text.starts_with(&self.record.text);
         self.record.text = text.to_string();
         self.record.reasoning = reasoning.to_string();
-        if self.written.elapsed() >= PARTIAL_INTERVAL {
+        if retracted || self.written.elapsed() >= PARTIAL_INTERVAL {
             self.flush();
         }
     }
@@ -363,6 +364,74 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn retracted_text_is_never_restored_as_a_reply_within_the_write_interval() {
+        for replacement in ["", "Answer."] {
+            let dir = dir(if replacement.is_empty() {
+                "cleared"
+            } else {
+                "replaced"
+            });
+            let journal = LiveStore::in_data_dir(&dir);
+            let mut turn = journal
+                .begin("answer", "Marble", "conv-1", "req-1")
+                .unwrap();
+            turn.note_task("conv-1", "task-1");
+            turn.progress("Planning.", "");
+            turn.flush();
+            turn.written = Instant::now() + Duration::from_secs(60);
+            turn.progress(replacement, "Planning.");
+            let saved: LiveRecord = serde_json::from_slice(&fs::read(&turn.path).unwrap()).unwrap();
+            assert_eq!(saved.text, replacement);
+            assert_eq!(saved.reasoning, "Planning.");
+            drop(turn);
+
+            let mut state = ProductState::default();
+            let outcome = journal.recover(&mut state);
+            assert_eq!(outcome.turns, 1);
+            assert_eq!(outcome.partials, usize::from(!replacement.is_empty()));
+            let replies: Vec<_> = state
+                .transcript
+                .iter()
+                .filter(|entry| entry.kind == "assistant")
+                .map(|entry| entry.text.as_str())
+                .collect();
+            assert_eq!(
+                replies,
+                if replacement.is_empty() {
+                    vec![]
+                } else {
+                    vec![replacement]
+                }
+            );
+            assert!(
+                state
+                    .transcript
+                    .iter()
+                    .any(|entry| entry.kind == "reasoning" && entry.text == "Planning.")
+            );
+            assert!(journal.recover(&mut state).is_empty());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn append_only_progress_remains_paced() {
+        let dir = dir("append-paced");
+        let journal = LiveStore::in_data_dir(&dir);
+        let mut turn = journal
+            .begin("answer", "Marble", "conv-1", "req-1")
+            .unwrap();
+        turn.progress("Answer", "");
+        turn.flush();
+        turn.written = Instant::now() + Duration::from_secs(60);
+        turn.progress("Answer continues", "");
+        let saved: LiveRecord = serde_json::from_slice(&fs::read(&turn.path).unwrap()).unwrap();
+        assert_eq!(saved.text, "Answer");
+        turn.finish();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -417,6 +486,7 @@ mod tests {
         let journal = LiveStore::in_data_dir(&dir);
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "task-1".into(),
             conversation_id: "conv-1".into(),
             status: "running".into(),
@@ -479,6 +549,7 @@ mod tests {
         let journal = LiveStore::in_data_dir(&dir);
         let mut state = ProductState::default();
         state.tasks.push(TaskRecord {
+            marble_id: String::new(),
             id: "task-1".into(),
             conversation_id: "conv-1".into(),
             status: "completed".into(),

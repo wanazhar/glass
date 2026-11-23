@@ -159,7 +159,11 @@ public struct MarbleConnectionStatus: Equatable, Sendable {
     /// this is not yet Offline: one immediate reconnect is attempted first.
     /// A second failure — or a drop from a stream that never opened — is.
     public mutating func streamEnded(_ reason: String?) {
-        if suspended || resumeGrace { return }
+        if suspended { return }
+        if resumeGrace {
+            resumeGrace = false
+            return
+        }
         switch state {
         case .connected where probing:
             state = .offline(reason: reason ?? "The connection dropped")

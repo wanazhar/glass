@@ -71,22 +71,9 @@ struct MemoryView: View {
                         )
                     }
                 } header: {
-                    Text("Voice and reach")
+                    Text("Voice")
                 } footer: {
                     Text("Speech stays on this device.")
-                }
-
-                Section {
-                    Label(
-                        store.notificationState.apnsConfigured
-                            ? "Push is configured. This phone registered when it connected."
-                            : "No push yet. Add an APNs key in the host's Control panel.",
-                        systemImage: store.notificationState.apnsConfigured
-                            ? "bell.badge"
-                            : "bell.slash"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Memory")

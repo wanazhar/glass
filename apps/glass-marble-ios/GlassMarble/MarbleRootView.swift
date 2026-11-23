@@ -14,11 +14,12 @@ final class MarbleNavigationModel: ObservableObject {
     func selectTab(_ tab: MarbleTab) { state.selectTab(tab) }
     func openConversation(_ id: String) { state.openConversation(id) }
     func openMarble(_ id: String) { state.openMarble(id) }
+    func openThread(_ id: String) { state.openThread(id) }
     func openMarbleInfo(_ id: String, fromEveryone: Bool = false) {
         state.openMarbleInfo(id, fromEveryone: fromEveryone)
     }
     func setEveryonePath(_ path: [ChatRoute]) { state.everyonePath = path }
-    func newChat() { state.newChat() }
+    func openNewChat(_ id: String?) { state.openNewChat(id) }
     func draftResolved(_ id: String) { state.draftResolved(id) }
     func deleted(_ id: String) { state.deleted(id) }
     func notificationTapped(_ id: String) { state.notificationTapped(id) }
@@ -30,7 +31,6 @@ final class MarbleNavigationModel: ObservableObject {
 struct MarbleRootView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @Environment(\.scenePhase) private var scenePhase
     @State private var showsIntroduction = false
     @AppStorage("marble.introduced") private var introduced = false
     @SceneStorage("marble.tab") private var storedTab = MarbleTab.everyone.rawValue
@@ -44,18 +44,21 @@ struct MarbleRootView: View {
                     Tab(value: MarbleTab.everyone) {
                         EveryoneTabView()
                     } label: {
-                        MarbleTabIcon(title: "Everyone", systemImage: "bubble.left.and.bubble.right")
+                        MarbleTabIcon(title: "Everyone", systemImage: "bubble.left.and.text.bubble.right.fill")
                     }
+                    .accessibilityIdentifier("tab.everyone")
                     Tab(value: MarbleTab.marbles) {
                         MarblesTabView()
                     } label: {
-                        MarbleTabIcon(title: "Marbles", systemImage: "circle.hexagongrid")
+                        MarbleTabIcon(title: "Marbles", systemImage: "person.2.fill")
                     }
+                    .accessibilityIdentifier("tab.marbles")
                     Tab(value: MarbleTab.settings) {
                         NavigationStack { SettingsView() }
                     } label: {
-                        MarbleTabIcon(title: "Settings", systemImage: "gearshape")
+                        MarbleTabIcon(title: "Settings", systemImage: "gearshape.fill")
                     }
+                    .accessibilityIdentifier("tab.settings")
                     .badge(store.state.approvals.count + store.memory.suggestions.count)
                 }
             } else {
@@ -65,13 +68,6 @@ struct MarbleRootView: View {
             }
         }
         .task { store.start() }
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .active: store.appBecameActive()
-            case .background, .inactive: store.appBecameInactive()
-            @unknown default: break
-            }
-        }
         .onAppear {
             if let restored = MarbleTab(rawValue: storedTab) {
                 navigation.selectTab(restored)
@@ -81,7 +77,7 @@ struct MarbleRootView: View {
             showsIntroduction = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .marbleOpenConversation)) { note in
-            guard let id = note.object as? String else { return }
+            guard let id = note.object as? String, !store.isDeletedConversation(id) else { return }
             navigation.notificationTapped(id)
         }
         .onChange(of: store.onboarded) { _, onboarded in
@@ -116,18 +112,65 @@ private struct MarbleTabIcon: View {
 
 /// The Everyone tab: the shared chat; avatar taps push a marble's info.
 struct EveryoneTabView: View {
+    @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var query = ""
 
     var body: some View {
         NavigationStack(path: everyonePath) {
-            EveryoneView()
-                .navigationDestination(for: ChatRoute.self) { route in
-                    switch route {
-                    case .marbleInfo(let id): MarbleInfoView(marbleId: id)
-                    default: EveryoneView()
+            List {
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    MarbleSearchSection(query: query) { hit in
+                        NavigationLink(value: ChatRoute.searchHit(
+                            conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
+                        )) { MarbleSearchRow(hit: hit) }
+                    }
+                } else {
+                    everyoneLink
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Chats")
+            .searchable(text: $query, prompt: "Search all chats")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
+            }
+            .navigationDestination(for: ChatRoute.self) { route in
+                switch route {
+                case .marbleInfo(let id):
+                    MarbleInfoView(marbleId: id)
+                        .toolbarVisibility(.hidden, for: .tabBar)
+                case .everyoneChat:
+                    EveryoneView()
+                case .conversation, .draft:
+                    MarbleChatView(route: route)
+                default:
+                    MarbleThreadDestination(route: route)
+                }
+            }
+        }
+    }
+
+    private var everyoneLink: some View {
+        NavigationLink(value: ChatRoute.everyoneChat) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Everyone")
+                    if let last = store.everyoneEntries.last(where: {
+                        ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
+                    }) {
+                        Text(last.text)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
+            } icon: {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .foregroundStyle(.tint)
+            }
         }
+        .accessibilityIdentifier("chat.everyone")
     }
 
     private var everyonePath: Binding<[ChatRoute]> {
@@ -155,15 +198,17 @@ struct MarblesTabView: View {
                         MarbleChatScreen(marbleId: id)
                     case .marbleInfo(let id):
                         MarbleInfoView(marbleId: id)
-                    default:
+                    case .conversation, .draft:
                         MarbleChatView(route: route)
+                    default:
+                        MarbleThreadDestination(route: route)
                     }
                 }
         }
         .onAppear {
             // A notification that launched the app arrived before this stack
             // existed; honour it now that the path can hold it.
-            if let id = navigation.drainPendingOpen() {
+            if let id = navigation.drainPendingOpen(), !store.isDeletedConversation(id) {
                 navigation.notificationTapped(id)
             }
         }
@@ -199,11 +244,11 @@ struct MarbleChatView: View {
     }
 
     var body: some View {
-        TranscriptView()
-        .safeAreaInset(edge: .top) {
+        TranscriptView(conversationId: conversationId)
+        .marbleChatBar(edge: .top) {
             approvalRail
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
                 isWorking: store.isWorking,
@@ -213,8 +258,8 @@ struct MarbleChatView: View {
                 onStop: { Task { await store.cancelActiveTask() } },
                 onDictate: { dictation.toggle() }
             )
-            .marbleComposerBackground()
         }
+        .toolbarVisibility(.hidden, for: .tabBar)
         .onAppear { store.selectedConversationId = conversationId }
         .onDisappear {
             if store.selectedConversationId == conversationId {
@@ -228,7 +273,8 @@ struct MarbleChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.title ?? "Marble")
+                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New Chat")
+                    .marbleToolbarTitle()
             }
             if conversationId != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -244,6 +290,11 @@ struct MarbleChatView: View {
                     .accessibilityLabel("Chat actions")
                 }
             }
+            if let conversationId {
+                ToolbarItem(placement: .topBarTrailing) {
+                    MarbleThreadInboxLink(conversationId: conversationId)
+                }
+            }
         }
         .alert("Rename chat", isPresented: $renaming) {
             TextField("Title", text: $renameDraft)
@@ -256,12 +307,10 @@ struct MarbleChatView: View {
         }
         .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
-                if let conversation = store.state.conversation(conversationId ?? "") {
-                    let id = conversation.id
+                if let conversationId {
                     Task {
-                        await store.delete(conversation)
-                        if !store.state.conversations.contains(where: { $0.id == id }) {
-                            navigation.deleted(id)
+                        if await store.delete(conversationId: conversationId) {
+                            navigation.deleted(conversationId)
                         }
                     }
                 }
@@ -318,30 +367,20 @@ struct MarbleChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             }
-            .background(.bar)
         }
     }
 
-    private func send() {
-        let text = draft
-        draft = ""
+    private func send(_ text: String) -> Bool {
         if dictation.isRecording { dictation.stop() }
-        Task {
-            await store.send(text)
-            if case .draft = route, let id = store.selectedConversationId {
-                navigation.draftResolved(id)
-            }
+        return store.send(text, to: .conversation(conversationId), entries: store.transcript(for: conversationId)) { [weak navigation] id in
+            if case .draft = route { navigation?.draftResolved(id) }
         }
     }
 
     /// Send the draft into the running turn, keeping its context.
-    private func steer() {
-        let text = draft
+    private func steer(_ text: String) async -> Bool {
         if dictation.isRecording { dictation.stop() }
-        Task {
-            let accepted = await store.steer(text)
-            draft = MarbleSteer.draft(after: text, current: draft, accepted: accepted)
-        }
+        return await store.steer(text)
     }
 }
 

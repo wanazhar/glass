@@ -140,7 +140,21 @@ struct ConnectionSettingsView: View {
             Section {
                 LabeledContent("Host", value: store.endpoint?.displayHost ?? "not connected")
                 LabeledContent("Status", value: store.statusLabel)
-                Button("Reconnect now") { store.reconnect(force: true) }
+                Button(store.connectionPaused ? "Connect" : "Reconnect now") { store.reconnect(force: true) }
+            }
+            Section {
+                Toggle("Keep connection alive in background", isOn: $store.backgroundConnectionEnabled)
+                    .accessibilityIdentifier("settings.backgroundConnection")
+                if store.locationPermissionDenied {
+                    Text("Allow location while using Marble in iPhone Settings to keep the connection open.")
+                        .foregroundStyle(.secondary)
+                }
+            } footer: {
+                Text("While connected, Marble uses low-accuracy location updates to stay online. This can use more battery, and iOS shows the location indicator. Marble does not save or send your location.")
+            }
+            Section {
+                MarbleAppVersionRows()
+                MarbleHostVersionRow()
             }
             Section {
                 Button("Change host…") { showsChangeHost = true }
@@ -191,7 +205,7 @@ struct NotificationSettingsView: View {
                     set: { _ in Task { await store.toggleVoice() } }
                 ))
             } footer: {
-                Text("Alerts only arrive while Marble is open or recently used — remote push isn't available with this signing.")
+                Text("Marble alerts you to new replies in other chats. With background connection enabled, alerts can also arrive while Marble is in the background.")
             }
         }
         .navigationTitle("Notifications")
@@ -244,19 +258,41 @@ struct AboutSettingsView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("Version") { Text(versionLabel) }
+                MarbleAppVersionRows()
+                MarbleHostVersionRow()
                 NavigationLink("About this host") { AboutHostView() }
             }
         }
         .navigationTitle("About")
     }
+}
+
+private struct MarbleAppVersionRows: View {
+    var body: some View {
+        LabeledContent("App version", value: versionLabel)
+        if let commit = Bundle.main.object(forInfoDictionaryKey: "MarbleGitCommit") as? String, !commit.isEmpty {
+            LabeledContent("App commit", value: String(commit.prefix(12)))
+        }
+    }
 
     private var versionLabel: String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "dev"
-        let build = info?["CFBundleVersion"] as? String ?? ""
-        let commit = info?["MarbleGitCommit"] as? String ?? "dev"
-        return "\(version) (\(build)) · \(commit)"
+        guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else { return version }
+        return "\(version) (\(build))"
+    }
+}
+
+private struct MarbleHostVersionRow: View {
+    @EnvironmentObject private var store: MarbleStore
+
+    var body: some View {
+        if let build = store.hostBuild {
+            LabeledContent("Host version", value: "\(build.version) · \(build.gitCommitShort)")
+        } else {
+            Text("Host version unknown (older host — update it)")
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -410,7 +446,7 @@ struct AboutHostView: View {
         Form {
             Section(header: Text("Host")) {
                 LabeledContent("Address", value: store.endpoint?.displayHost ?? "not connected")
-                LabeledContent("Host version", value: store.hostVersion ?? "unknown")
+                MarbleHostVersionRow()
                 LabeledContent("Engine", value: store.engineHealth?.health ?? "unknown")
             }
             Section {
@@ -453,4 +489,3 @@ private struct ModelPickerRow: View {
         }
     }
 }
-

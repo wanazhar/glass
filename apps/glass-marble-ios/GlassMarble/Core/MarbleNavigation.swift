@@ -17,6 +17,11 @@ public enum MarbleTab: String, Sendable, CaseIterable {
 /// holds marble screens and the default assistant's chats; the Everyone
 /// stack only needs a marble's info card when an avatar is tapped.
 public enum ChatRoute: Hashable, Sendable {
+    /// The shared chat, pushed from the Everyone inbox.
+    case everyoneChat
+    case threadInbox(String)
+    case thread(String)
+    case searchHit(conversationId: String, threadId: String?, entryId: String?)
     /// A not-yet-created conversation. It gains a real id on the first send.
     case draft
     case conversation(String)
@@ -41,6 +46,32 @@ public struct MarbleNavigation: Sendable, Equatable {
             return nil
         }
     }
+
+    /// Visible chat for foreground notifications. Inactive tabs can retain
+    /// their paths even while another screen is on top.
+    func visibleChat(namedConversation: (String) -> String?) -> String? {
+        switch activeChatRoute {
+        case .everyoneChat: return everyoneConversationId
+        case .marbleChat(let id): return namedConversation(id)
+        case .conversation(let id), .searchHit(let id, nil, _): return id
+        default: return nil
+        }
+    }
+
+    var visibleThreadId: String? {
+        switch activeChatRoute {
+        case .thread(let id), .searchHit(_, let id?, _): return id
+        default: return nil
+        }
+    }
+
+    private var activeChatRoute: ChatRoute? {
+        switch tab {
+        case .everyone: return everyonePath.last
+        case .marbles: return chatPath.last
+        case .settings: return nil
+        }
+    }
     /// Set by the scene when a notification launch arrives before the view
     /// exists; the Chats tab drains it on first appearance.
     public private(set) var pendingOpen: String?
@@ -56,6 +87,14 @@ public struct MarbleNavigation: Sendable, Equatable {
         tab = newTab
     }
 
+    mutating func openThread(_ id: String) {
+        if tab == .everyone {
+            everyonePath.append(.thread(id))
+        } else {
+            chatPath.append(.thread(id))
+        }
+    }
+
     /// A list row or transcript-search hit; replaces any draft on top.
     public mutating func openConversation(_ id: String) {
         tab = .marbles
@@ -69,8 +108,20 @@ public struct MarbleNavigation: Sendable, Equatable {
     /// The toolbar's compose button pushes a draft chat.
     public mutating func newChat() {
         tab = .marbles
-        if case .draft = chatPath.last { return }
-        chatPath.append(.draft)
+        openNewChat(nil)
+    }
+
+    /// Compose from the current inbox and return there on Back.
+    mutating func openNewChat(_ id: String?) {
+        let route = id.map(ChatRoute.conversation) ?? .draft
+        switch tab {
+        case .everyone:
+            if everyonePath.last != route { everyonePath.append(route) }
+        case .marbles:
+            if chatPath.last != route { chatPath.append(route) }
+        case .settings:
+            break
+        }
     }
 
     /// A roster row: the default assistant opens its chats list, a named
@@ -92,6 +143,10 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     /// The first send resolved the draft into a real conversation.
     public mutating func draftResolved(_ id: String) {
+        if tab == .everyone, case .draft = everyonePath.last {
+            everyonePath[everyonePath.count - 1] = .conversation(id)
+            return
+        }
         guard case .draft = chatPath.last else { return }
         chatPath[chatPath.count - 1] = .conversation(id)
     }
@@ -100,16 +155,33 @@ public struct MarbleNavigation: Sendable, Equatable {
         if !chatPath.isEmpty { chatPath.removeLast() }
     }
 
-    /// Deleting the chat on screen pops back to the list.
+    /// Remove every path to the deleted conversation, including destinations
+    /// pushed from it and search results on the other tab.
     public mutating func deleted(_ id: String) {
-        chatPath.removeAll { route in
-            if case let .conversation(existing) = route { return existing == id }
-            return false
+        func belongsToConversation(_ route: ChatRoute) -> Bool {
+            switch route {
+            case .conversation(let existing), .threadInbox(let existing), .searchHit(let existing, _, _):
+                return existing == id
+            default:
+                return false
+            }
         }
+        if let index = chatPath.firstIndex(where: belongsToConversation) {
+            chatPath.removeSubrange(index...)
+        }
+        if let index = everyonePath.firstIndex(where: belongsToConversation) {
+            everyonePath.removeSubrange(index...)
+        }
+        if pendingOpen == id { pendingOpen = nil }
     }
 
     /// A notification tap takes the person straight to that chat.
     public mutating func notificationTapped(_ id: String) {
+        if id == everyoneConversationId {
+            tab = .everyone
+            everyonePath = [.everyoneChat]
+            return
+        }
         tab = .marbles
         chatPath = [.marbleChats, .conversation(id)]
     }
@@ -142,42 +214,32 @@ public struct MarbleNavigation: Sendable, Equatable {
 public struct MarbleScrollFollow: Sendable, Equatable {
     /// Distance from the bottom (points) that still counts as "at the end".
     public var snapThreshold: Double
-    /// Minimum interval between follow-scrolls during streaming.
-    public var throttleInterval: TimeInterval
     public private(set) var following = true
-    private var lastFollow: TimeInterval = 0
+    private var atBottom = true
 
-    public init(snapThreshold: Double = 120, throttleInterval: TimeInterval = 0.15) {
+    public init(snapThreshold: Double = 12) {
         self.snapThreshold = snapThreshold
-        self.throttleInterval = throttleInterval
     }
 
     /// The person moved the scroll position; only their movement re-arms or
     /// disarms following.
     public mutating func userMoved(distanceFromBottom: Double) {
+        layoutMoved(distanceFromBottom: distanceFromBottom)
         following = distanceFromBottom <= snapThreshold
     }
 
-    /// New content arrived. Follows only when the person is at the end and
-    /// the throttle allows it; returns whether a scroll should happen.
-    public mutating func shouldFollow(now: TimeInterval) -> Bool {
-        guard following, now - lastFollow >= throttleInterval else { return false }
-        lastFollow = now
-        return true
+    /// Layout can reach the bottom by shrinking history or growing the
+    /// viewport, even when the reader hasn't moved the scroll position.
+    public mutating func layoutMoved(distanceFromBottom: Double) {
+        atBottom = distanceFromBottom <= 1
     }
 
-    /// The first load jumps without animation or throttle.
-    public mutating func initialFollow(now: TimeInterval) -> Bool {
-        lastFollow = now
-        return true
-    }
+    public var showJumpButton: Bool { !following && !atBottom }
 
-    /// The "Jump to latest" button: shown when not following.
-    public var showJumpButton: Bool { !following }
+    mutating func pauseForSearchJump() { following = false }
 
     /// Tapping the button re-arms following and scrolls.
-    public mutating func jumpToLatest(now: TimeInterval) {
+    public mutating func jumpToLatest() {
         following = true
-        lastFollow = now
     }
 }

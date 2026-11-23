@@ -215,7 +215,13 @@ pub struct ControlEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message: Option<crate::state::ClientMessage>,
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub id: String,
+    #[serde(default)]
+    pub marble_id: Option<String>,
     #[serde(default)]
     pub conversation_id: Option<String>,
     pub text: String,
@@ -427,7 +433,16 @@ impl ControlState {
         conversation_id: Option<String>,
         text: impl Into<String>,
     ) -> Result<QueuedTurn, String> {
-        self.enqueue_turn(conversation_id, None, false, text)
+        self.enqueue_turn(conversation_id, None, false, text, None)
+    }
+
+    pub fn enqueue_marble(
+        &mut self,
+        marble_id: String,
+        conversation_id: Option<String>,
+        text: String,
+    ) -> Result<QueuedTurn, String> {
+        self.enqueue_turn(conversation_id, None, false, text, Some(marble_id))
     }
 
     /// Hold one routine firing while admission is paused, keeping its routine.
@@ -446,6 +461,7 @@ impl ControlState {
             Some(routine_id.into()),
             override_pause,
             text,
+            None,
         )
     }
 
@@ -455,6 +471,7 @@ impl ControlState {
         routine_id: Option<String>,
         routine_override: bool,
         text: impl Into<String>,
+        marble_id: Option<String>,
     ) -> Result<QueuedTurn, String> {
         if self.queue.len() >= QUEUE_LIMIT {
             return Err(format!(
@@ -462,7 +479,10 @@ impl ControlState {
             ));
         }
         let entry = QueuedTurn {
+            client_message: None,
+            thread_id: None,
             id: next_id("queued"),
+            marble_id,
             conversation_id,
             text: text.into(),
             at: now_millis(),

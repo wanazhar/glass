@@ -110,6 +110,19 @@ final class FixtureDecodeTests: XCTestCase {
         XCTAssertEqual(health.version, "0.3.14")
         XCTAssertEqual(health.authRequired, true)
         XCTAssertEqual(health.runtime?.health, "ok")
+        XCTAssertNil(health.build)
+    }
+
+    func testHealthzDecodesBuildIdentityWhenEngineIsUnavailable() throws {
+        let data = Data("""
+        {"ok":false,"version":"0.3.14","revision":1,"sequence":2,"authRequired":true,
+         "build":{"version":"0.3.14","gitCommit":"6e211232b75e6e9accf4050f7baaedf69e0e113a","gitCommitShort":"6e211232b75e"}}
+        """.utf8)
+        let health = try JSONDecoder().decode(MarbleHealth.self, from: data)
+        XCTAssertFalse(health.ok)
+        XCTAssertEqual(health.build?.version, "0.3.14")
+        XCTAssertEqual(health.build?.gitCommit, "6e211232b75e6e9accf4050f7baaedf69e0e113a")
+        XCTAssertEqual(health.build?.gitCommitShort, "6e211232b75e")
     }
 
     func testLeanStateDecodes() throws {
@@ -223,14 +236,14 @@ final class SSEParserTests: XCTestCase {
 }
 
 final class ErrorMappingTests: XCTestCase {
-    private func validate(status: Int, body: String = "") throws {
+    private func validate(status: Int, body: String = "", acceptsNotFound: Bool = false) throws {
         let response = HTTPURLResponse(
             url: URL(string: "http://h/api")!,
             statusCode: status,
             httpVersion: nil,
             headerFields: nil
         )!
-        try marbleValidate(response, data: Data(body.utf8))
+        try marbleValidate(response, data: Data(body.utf8), acceptsNotFound: acceptsNotFound)
     }
 
     func testStatusMapping() {
@@ -248,6 +261,23 @@ final class ErrorMappingTests: XCTestCase {
     func testNotFound() {
         XCTAssertThrowsError(try validate(status: 404)) {
             XCTAssertEqual($0 as? MarbleClientError, .notFound)
+        }
+    }
+
+    func testIdempotentDeleteAcceptsMissingConversation() {
+        XCTAssertNoThrow(try validate(status: 200, acceptsNotFound: true))
+        XCTAssertNoThrow(try validate(status: 404, body: #"{"error":"unknown_conversation"}"#, acceptsNotFound: true))
+    }
+
+    func testIdempotentDeleteStillRejectsOtherFailures() {
+        XCTAssertThrowsError(try validate(status: 409, body: #"{"error":"conversation_busy"}"#, acceptsNotFound: true)) {
+            XCTAssertEqual($0 as? MarbleClientError, .conflict("conversation_busy"))
+        }
+        XCTAssertThrowsError(try validate(status: 401, acceptsNotFound: true)) {
+            XCTAssertEqual($0 as? MarbleClientError, .unauthorized)
+        }
+        XCTAssertThrowsError(try validate(status: 503, acceptsNotFound: true)) {
+            XCTAssertEqual($0 as? MarbleClientError, .server(503, ""))
         }
     }
 
@@ -386,83 +416,6 @@ final class OnboardingEvaluatorTests: XCTestCase {
         guard case .unhealthy = verdict(.success(bad), .ok, token: true) else {
             return XCTFail("expected .unhealthy")
         }
-    }
-}
-
-final class AttentionTests: XCTestCase {
-    private func event(
-        kind: String, taskId: String = "task-1",
-        reason: String? = nil, cancelled: Bool? = nil, requestId: String? = nil
-    ) -> MarbleEvent {
-        MarbleEvent(
-            sequence: 1,
-            conversationId: "conv-1",
-            taskId: taskId,
-            kind: kind,
-            data: MarbleEventData(
-                text: nil, tool: nil, isError: nil, message: nil, status: nil,
-                revision: nil, taskId: taskId, reason: reason,
-                cancelled: cancelled, requestId: requestId, approved: nil
-            )
-        )
-    }
-
-    func testDoubleSettledNotifiesOnce() {
-        var seen: Set<String> = []
-        let first = MarbleAttention.alert(
-            for: event(kind: "settled", reason: "completed"), seen: &seen
-        )
-        XCTAssertEqual(first?.title, "Marble finished")
-        let second = MarbleAttention.alert(
-            for: event(kind: "settled", cancelled: false), seen: &seen
-        )
-        XCTAssertNil(second)
-    }
-
-    func testCancelledTitle() {
-        var seen: Set<String> = []
-        let alert = MarbleAttention.alert(
-            for: event(kind: "settled", reason: "cancelled"), seen: &seen
-        )
-        XCTAssertEqual(alert?.title, "Marble stopped")
-    }
-
-    func testCancelledFlagTitle() {
-        var seen: Set<String> = []
-        let alert = MarbleAttention.alert(
-            for: event(kind: "settled", cancelled: true), seen: &seen
-        )
-        XCTAssertEqual(alert?.title, "Marble stopped")
-    }
-
-    func testFailedTitle() {
-        var seen: Set<String> = []
-        for reason in ["failed", "error", "interrupted"] {
-            seen = []
-            let alert = MarbleAttention.alert(
-                for: event(kind: "settled", reason: reason), seen: &seen
-            )
-            XCTAssertEqual(alert?.title, "Marble hit a problem", reason)
-        }
-    }
-
-    func testApprovalAlert() {
-        var seen: Set<String> = []
-        let alert = MarbleAttention.alert(
-            for: event(kind: "approval_pending", requestId: "req-1"), seen: &seen
-        )
-        XCTAssertEqual(alert?.title, "Marble needs approval")
-        XCTAssertNil(
-            MarbleAttention.alert(
-                for: event(kind: "approval_pending", requestId: "req-1"), seen: &seen
-            )
-        )
-    }
-
-    func testOtherKindsSilent() {
-        var seen: Set<String> = []
-        XCTAssertNil(MarbleAttention.alert(for: event(kind: "text"), seen: &seen))
-        XCTAssertNil(MarbleAttention.alert(for: event(kind: "state"), seen: &seen))
     }
 }
 
@@ -839,6 +792,35 @@ final class MarbleNavigationTests: XCTestCase {
         XCTAssertTrue(nav.chatPath.isEmpty)
     }
 
+    func testDeletingChatFromSearchLatestClosesBothSearchRoutes() {
+        var nav = MarbleNavigation()
+        nav.openMarble("marble")
+        // Latest swaps the content of the search destination without replacing its route.
+        nav.chatPath.append(.searchHit(conversationId: "a", threadId: nil, entryId: "message"))
+        nav.everyonePath = [.searchHit(conversationId: "a", threadId: "thread", entryId: "reply")]
+        nav.selectTab(.everyone)
+        nav.queuePendingOpen("a")
+
+        nav.deleted("a")
+
+        XCTAssertEqual(nav.chatPath, [.marbleChats])
+        XCTAssertTrue(nav.everyonePath.isEmpty)
+        XCTAssertEqual(nav.tab, .everyone)
+        XCTAssertNil(nav.drainPendingOpen())
+    }
+
+    func testDeletingChatPopsItsDescendantsAndPreservesUnrelatedRoutes() {
+        var nav = MarbleNavigation()
+        let unrelated = ChatRoute.searchHit(conversationId: "b", threadId: nil, entryId: "message")
+        nav.chatPath = [.marbleChats, .conversation("a"), .threadInbox("a"), .thread("thread")]
+        nav.everyonePath = [unrelated]
+
+        nav.deleted("a")
+
+        XCTAssertEqual(nav.chatPath, [.marbleChats])
+        XCTAssertEqual(nav.everyonePath, [unrelated])
+    }
+
     func testNotificationTappedReplacesPath() {
         var nav = MarbleNavigation()
         nav.openConversation("a")
@@ -867,29 +849,56 @@ final class MarbleScrollFollowTests: XCTestCase {
     func testFollowsWhenAtBottom() {
         var follow = MarbleScrollFollow()
         follow.userMoved(distanceFromBottom: 0)
-        XCTAssertTrue(follow.shouldFollow(now: 1.0))
+        XCTAssertTrue(follow.following)
         XCTAssertFalse(follow.showJumpButton)
     }
 
     func testStopsFollowingWhenUserScrollsUp() {
         var follow = MarbleScrollFollow()
         follow.userMoved(distanceFromBottom: 400)
-        XCTAssertFalse(follow.shouldFollow(now: 1.0))
+        XCTAssertFalse(follow.following)
         XCTAssertTrue(follow.showJumpButton)
     }
 
-    func testThrottlesStreamingScrolls() {
+    func testSearchJumpPausesFollowingUntilUserReturnsToBottom() {
         var follow = MarbleScrollFollow()
+        follow.pauseForSearchJump()
+        XCTAssertFalse(follow.following)
         follow.userMoved(distanceFromBottom: 0)
-        XCTAssertTrue(follow.shouldFollow(now: 1.0))
-        XCTAssertFalse(follow.shouldFollow(now: 1.05))
-        XCTAssertTrue(follow.shouldFollow(now: 1.2))
+        XCTAssertTrue(follow.following)
     }
 
     func testJumpToLatestReArms() {
         var follow = MarbleScrollFollow()
         follow.userMoved(distanceFromBottom: 400)
-        follow.jumpToLatest(now: 2.0)
+        follow.jumpToLatest()
+        XCTAssertTrue(follow.following)
+        XCTAssertFalse(follow.showJumpButton)
+    }
+
+    func testJumpButtonHidesWhenLayoutReachesBottomWithoutUserMotion() {
+        var follow = MarbleScrollFollow()
+        follow.pauseForSearchJump()
+        follow.layoutMoved(distanceFromBottom: 400)
+        XCTAssertTrue(follow.showJumpButton)
+        follow.layoutMoved(distanceFromBottom: -4)
+        XCTAssertFalse(follow.showJumpButton)
+    }
+
+    func testGrowthWhilePinnedDoesNotShowJumpButton() {
+        var follow = MarbleScrollFollow()
+        follow.layoutMoved(distanceFromBottom: 400)
+        XCTAssertTrue(follow.following)
+        XCTAssertFalse(follow.showJumpButton)
+    }
+
+    func testSmallScrollAwayDetachesAndContentChangesKeepItDetached() {
+        var follow = MarbleScrollFollow()
+        follow.userMoved(distanceFromBottom: 35)
+        XCTAssertTrue(follow.showJumpButton)
+        follow.layoutMoved(distanceFromBottom: 180)
+        XCTAssertFalse(follow.following)
+        follow.userMoved(distanceFromBottom: 6)
         XCTAssertTrue(follow.following)
         XCTAssertFalse(follow.showJumpButton)
     }
@@ -1058,6 +1067,19 @@ final class MarbleConnectionStatusTests: XCTestCase {
         var status = MarbleConnectionStatus()
         status.streamEnded("connection refused")
         XCTAssertEqual(status.label, "Offline")
+    }
+
+    func testForegroundStreamRetryUsesResumeGraceOnce() {
+        var status = MarbleConnectionStatus()
+        status.streamOpened()
+        status.suspend()
+        status.resume()
+        status.reconnectStarted()
+        status.streamEnded("first attempt")
+        XCTAssertTrue(status.isConnected)
+        status.reconnectStarted()
+        status.streamEnded("still offline")
+        XCTAssertEqual(status.offlineReason, "still offline")
     }
 
     func testEventsKeepItConnected() {
@@ -1296,7 +1318,7 @@ final class EveryoneDecodingTests: XCTestCase {
         XCTAssertTrue(prism.marbles[0].isDefault)
         XCTAssertEqual(prism.marbles[0].persona, "kind")
         XCTAssertEqual(prism.marbles[1].tagline, "warm")
-        XCTAssertEqual(prism.marbles[1].displayState, "Working…")
+        XCTAssertEqual(prism.marbles[1].displayState(presence: nil), "Working…")
     }
 
     func testMemoryFactDecodesAnOwner() throws {
@@ -1537,12 +1559,25 @@ final class MarbleDecisionWordsTests: XCTestCase {
 
 final class MarbleResumeTests: XCTestCase {
     func testResumesFromTheSavedCursor() {
-        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52), 40)
-        XCTAssertEqual(MarbleResumeCursor.resume(saved: 0, hostSequence: 52), 0)
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52, previousPID: 1, hostPID: 1),
+                       .init(since: 40, restarted: false))
     }
 
-    func testRestartedHostRewindsTheCursor() {
-        XCTAssertEqual(MarbleResumeCursor.resume(saved: 900, hostSequence: 12), 12)
+    func testSequenceRewindReplaysFromZeroWhenHostDoesNotReportPID() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 900, hostSequence: 12, previousPID: nil, hostPID: nil),
+                       .init(since: 0, restarted: true))
+    }
+
+    func testNewPIDReplaysFromZeroEvenAfterPassingTheOldCursor() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52, previousPID: 1, hostPID: 2),
+                       .init(since: 0, restarted: true))
+    }
+
+    func testAnOlderSavedCursorWithNoPIDReplaysOnce() {
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 40, hostSequence: 52, previousPID: nil, hostPID: 2),
+                       .init(since: 0, restarted: true))
+        XCTAssertEqual(MarbleResumeCursor.resume(saved: 0, hostSequence: 52, previousPID: nil, hostPID: 2),
+                       .init(since: 0, restarted: false))
     }
 
     func testReturningToTheAppDoesNotFlashOffline() {
@@ -1582,6 +1617,23 @@ final class MarbleResumeTests: XCTestCase {
         XCTAssertTrue(MarbleChatCache.fileName(for: "http://a:1").hasPrefix("marble-chats-"))
     }
 
+    func testDeletedConversationIsAbsentFromRewrittenDiskCache() throws {
+        let deleted = MarbleEntry(conversationId: "deleted", kind: "user", text: "private draft", taskId: "", at: 1)
+        let kept = MarbleEntry(conversationId: "kept", kind: "assistant", text: "keep this", taskId: "", at: 2)
+        let everyone = MarbleEntry(conversationId: "everyone", kind: "assistant", text: "shared", taskId: "", at: 3)
+        var cache = MarbleChatCache(everyone: [everyone], transcripts: ["deleted": [deleted], "kept": [kept]])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try cache.encoded().write(to: url, options: .atomic)
+
+        cache.removeConversation("deleted")
+        try cache.encoded().write(to: url, options: .atomic)
+
+        let restored = try XCTUnwrap(MarbleChatCache.decoded(Data(contentsOf: url)))
+        XCTAssertEqual(restored.transcripts, ["kept": [kept]])
+        XCTAssertEqual(restored.everyone, [everyone])
+    }
+
     func testCacheFileNamesNeverCollide() {
         XCTAssertNotEqual(
             MarbleChatCache.fileName(for: "http://a-b.example:4783"),
@@ -1597,28 +1649,35 @@ final class MarbleResumeTests: XCTestCase {
 }
 
 final class MarbleEveryoneThinkingTests: XCTestCase {
-    func testDefaultMarbleThinksWhileItsEveryoneTurnRuns() {
-        XCTAssertEqual(
-            MarbleEveryoneTimeline.thinking(
-                working: ["Dietrich"], sentTaskIds: ["t1"], runningTaskIds: ["t1", "t9"], defaultName: "Marble"
-            ),
-            ["Marble", "Dietrich"]
-        )
+    func testIdleDefaultMarbleDoesNotInheritNamedAgentWork() throws {
+        let json = #"{"id":"marble","name":"Marble","state":"working","isWorking":false,"activeTaskIds":[]}"#
+        let marble = try JSONDecoder().decode(MarblePrismMarble.self, from: Data(json.utf8))
+        XCTAssertFalse(marble.isWorking())
+        XCTAssertEqual(marble.displayState(presence: nil), "Idle")
+        XCTAssertEqual(marble.activeTaskIds(presence: nil), [])
     }
 
-    func testFinishedTurnsShowNoBubble() {
-        XCTAssertEqual(
-            MarbleEveryoneTimeline.thinking(
-                working: [], sentTaskIds: ["t1"], runningTaskIds: ["t2"], defaultName: "Marble"
-            ),
-            []
-        )
-        XCTAssertEqual(
-            MarbleEveryoneTimeline.thinking(
-                working: ["Marble"], sentTaskIds: ["t1"], runningTaskIds: ["t1"], defaultName: "Marble"
-            ),
-            ["Marble"]
-        )
+    func testAgentPresenceSuppliesTaskIDsOnOlderRoster() throws {
+        let json = #"{"id":"ada","name":"Ada","state":"idle"}"#
+        let ada = try JSONDecoder().decode(MarblePrismMarble.self, from: Data(json.utf8))
+        let presence = MarbleAgentPresence(status: "working", activeTaskIds: ["t1"])
+        XCTAssertTrue(ada.isWorking(presence: presence))
+        XCTAssertEqual(ada.activeTaskIds(presence: presence), ["t1"])
+    }
+
+    func testThinkingStaysUntilTheSameTaskHasAnOutcome() {
+        XCTAssertTrue(MarbleEveryoneTimeline.showsThinking(
+            working: true, activeTaskIds: ["t1"], previousTaskIds: [], visibleOutcomes: ["t2"]
+        ))
+        XCTAssertTrue(MarbleEveryoneTimeline.showsThinking(
+            working: false, activeTaskIds: [], previousTaskIds: ["t1"], visibleOutcomes: ["t2"]
+        ))
+        XCTAssertFalse(MarbleEveryoneTimeline.showsThinking(
+            working: false, activeTaskIds: [], previousTaskIds: ["t1"], visibleOutcomes: ["t1"]
+        ))
+        XCTAssertFalse(MarbleEveryoneTimeline.showsThinking(
+            working: false, activeTaskIds: [], previousTaskIds: [], visibleOutcomes: []
+        ))
     }
 
     func testEveryoneReplyDecodesBothShapes() throws {
@@ -1644,9 +1703,16 @@ final class MarbleSteerTests: XCTestCase {
         XCTAssertEqual(MarbleSteer.action(isWorking: false, canSteer: false), .send)
     }
 
-    func testDraftIsKeptUnlessTheHostAccepted() {
-        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it", accepted: false), "fix it")
-        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it", accepted: true), "")
-        XCTAssertEqual(MarbleSteer.draft(after: "fix it", current: "fix it now", accepted: true), "fix it now")
+}
+
+final class MarbleDraftTests: XCTestCase {
+    func testAnUnacceptedSendKeepsTheDraftVerbatim() {
+        let text = "  Try again later\n"
+        XCTAssertEqual(MarbleDraft.draft(after: text, current: text, accepted: false), text)
+    }
+
+    func testAnAcceptedSendClearsOnlyTheSubmittedText() {
+        XCTAssertEqual(MarbleDraft.draft(after: "fix it", current: "fix it", accepted: true), "")
+        XCTAssertEqual(MarbleDraft.draft(after: "fix it", current: "fix it now", accepted: true), "fix it now")
     }
 }

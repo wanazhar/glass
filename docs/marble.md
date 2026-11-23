@@ -567,6 +567,7 @@ recognition rather than falling back to a network service.
 | `/` | GET | Product UI |
 | `/healthz` | GET | Version, revision, posture, waiting and running turns, engine health, document and backup state, last write error; `503` when the engine or the last write is unhealthy |
 | `/api/login` | POST | Exchange the access token for an HTTP-only session cookie |
+| `/api/logout` | POST | Clear the browser's HTTP-only session cookie |
 | `/api/state` | GET | Revisioned product document plus presence, memory, routines, voice, notifications, retention; `?lean=1` omits the transcript; revalidates with `ETag` and `If-None-Match` |
 | `/api/transcript?conversationId=…&after=…` | GET | Bounded history for one conversation, resumable from a cursor; unknown or deleted conversations return `404 not_found` |
 | `/api/transcript/search?q=…` | GET | Newest transcript matches across conversations |
@@ -578,8 +579,10 @@ recognition rather than falling back to a network service.
 | `/api/prism/marbles/{id}/update` | POST | Change a marble's name, role, shape, hue, or workspace |
 | `/api/prism/marbles/{id}/remove` | POST | Take a marble off the roster; its conversation stays |
 | `/api/prism/dispatch` | POST | Hand one prompt to several marbles at once (`text`, optional `marbles`) |
-| `/api/events?since=N` | GET | Server-sent events with an immediate `: connected` comment, bounded replay from a cursor, and a keepalive comment every 15 seconds |
-| `/api/turns` | POST | Admit a durable turn (`202` accepted, or `202` queued with its place in line while the worker is busy), queue it while paused, or apply an explicit memory command |
+| `/api/everyone` | GET / POST | Read the shared timeline (`after` timestamp), or send a message (`text`); mentions select who answers |
+| `/api/everyone/clear` | POST | Clear the shared timeline without deleting individual chats |
+| `/api/events?since=N` | GET | Server-sent events with an immediate `: connected` comment, a `hello` event announcing the current `cursor`, bounded replay (from zero if the requested cursor is ahead of the host), and a keepalive comment every 15 seconds |
+| `/api/turns` | POST | Admit a durable turn (`202` accepted or queued), hold it while paused, or apply an explicit memory command. Optional `marbleId` selects a named Marble, including before its first chat; memory belongs to that Marble and held messages retain the target |
 | `/api/turns/steer` | POST | Correct the running turn (`text`, optional `taskId` and `conversationId`) |
 | `/api/turns/retry` | POST | Repeat the newest failed, cancelled, or interrupted turn (`taskId` or `conversationId` to choose one) |
 | `/api/tasks/{id}/cancel` | POST | Remove a queued task before execution (`200`, cancelled), or request cancellation of a running task (`202`); settled tasks return `409`, unknown tasks `404` |
@@ -748,27 +751,50 @@ tailscale serve --bg 4783
 
 ## Web UI
 
-`glass-marble serve` serves one page that adapts from a phone to a wide desktop:
-a collapsible conversation rail with transcript search, a transcript that renders
-model text as text rather than HTML, live tool activity, approval cards with
-Allow, Always here, and Deny, memory suggestion cards, a correction field while a
-turn runs, task cancellation, an unlock dialog for token-protected hosts, and two
-sheets:
+`glass-marble serve` embeds vanilla HTML, CSS and JavaScript, with no build step.
+The public `/app.css`, `/app.js` and `/logic.js` assets have explicit content types,
+`nosniff`, and `Cache-Control: no-cache`. Token hosts open an unlock dialog before
+private data can be read; sign-out clears the HTTP-only session cookie.
 
-- **Assistant** — presence, remembered facts with Edit and Forget, waiting
-  suggestions, conversations with Rename and Delete, routines with
-  Run/Pause/Remove, missed-run counts and next run, the model, webhook and APNs
-  settings with quiet hours and a test button, registered devices, recent
-  deliveries, Export everything, and the read-aloud switch.
-- **Control** — posture, pause and stop, grants, denied paths, the tool
-  inventory, the queued messages, and the decision ledger.
-- **Prism** — the marble roster with a shape, a hue, and a live state per
-  marble, a swarm composer, and an editor for adding a marble. A dispatch,
-  removal, or refusal is reported inside the sheet, where the person acting is
-  looking, rather than only in the header behind it.
+Four hash-routed destinations work with browser back and forward:
 
-Safe-area insets keep the composer above the home indicator, and the layout
-honours reduced-motion preferences.
+- **Everyone** (`#/everyone`) is home: a shared timeline with named speakers,
+  coloured glyphs, plain handoff lines, a mention-completing composer and a hint
+  following the host's exact answer rule. `@Name` asks the named Marble,
+  `@everyone` asks all named Marbles, and unaddressed messages ask the default
+  Marble. Clear asks for confirmation and leaves individual chats intact.
+- **Marbles** (`#/marbles`) lists personalities and live status. Wide screens
+  also show the Marble rows directly in the rail.
+- **Marble chats** (`#/m/<id>`) show safe minimal markdown, collapsed Thought,
+  tool steps, inline approvals and memory suggestions, Stop, corrections and
+  Retry. The default Marble's Earlier chats picker has search, rename, delete
+  and export; New chat clears the selected history. A missing chat explains
+  what happened rather than looking empty.
+- **Activity** (`#/activity`) and **Settings** (`#/settings`) are
+  operational screens: Activity groups attention requests, running and queued
+  turns, pause/resume and stop, scheduled routines and recent work. Routines
+  offer interval or daily choices, custom `every:15m` / `daily:09:30` syntax,
+  timezone, catch-up and quiet hours. Settings holds connection health,
+  permissions, grants, denied paths and decision history, model, notifications,
+  devices, voice, exports and the workspace map. Notification tests report each
+  channel separately; empty webhook-token fields retain the saved token unless
+  removal is selected. Quiet hours use clock inputs with a saved UTC offset.
+  Permission radio choices save immediately with inline confirmation or errors.
+  Schedules use plain words and relative next-run dates; the Add routine button
+  opens the creation form. Connection uses compact label/value rows.
+  **Marble info** (`#/m/<id>/info`) edits identity, personality, workspace and
+  memory, with shape and hue choices and a live glyph preview. **New Marble**
+  (`#/new`) starts with the next unused hue and shows host refusals inline.
+  Memory creation sends an explicit owner: a Marble ID for private facts, or
+  an empty string for shared facts. Omitting the owner retains the historical
+  default-Marble behavior; editing a fact preserves its owner. Info opens on the right at 1200px, in a
+  sheet from 900px, and as a pushed screen on phones.
+
+At 900px the rail becomes a bottom tab bar. Glass is limited to navigation,
+the top bar and the composer; content uses plain surfaces. System fonts,
+light/dark themes, safe-area insets, reduced transparency and reduced motion
+are supported. Stream connectivity, request failures and `/healthz` engine
+health are independent. Operation errors stay beside the action.
 
 ## iOS client
 

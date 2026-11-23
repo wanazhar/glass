@@ -5,11 +5,11 @@ enum MarbleTheme {
     /// AccentColor carries the same values), used for interactive tint only.
     static let tint = Color.accentColor
 
-    /// A marble's own colour, from its roster hue.
-    static func marble(hue: Int?) -> Color {
+    /// The shared hue for a marble's avatar, name and reply.
+    static func marble(hue: Int, brightness: Double = 0.72) -> Color {
         Color(
-            hue: Double(((hue ?? 210) % 360 + 360) % 360) / 360,
-            saturation: 0.55, brightness: 0.72
+            hue: Double((hue % 360 + 360) % 360) / 360,
+            saturation: 0.55, brightness: brightness
         )
     }
 
@@ -24,7 +24,7 @@ enum MarbleTheme {
 }
 
 extension View {
-    /// Background for controls that float above content — the composer bar.
+    /// Background for controls that float above the transcript.
     /// Real glass on iOS 26, the system bar material below it, and an opaque
     /// fill when transparency is reduced.
     @ViewBuilder
@@ -34,6 +34,30 @@ extension View {
         } else {
             modifier(MarbleFloatingBar(shape: shape))
         }
+    }
+
+    @ViewBuilder
+    func marbleChatBar<Bar: View>(edge: VerticalEdge, @ViewBuilder content: () -> Bar) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: edge, spacing: 0, content: content)
+        } else {
+            safeAreaInset(edge: edge, spacing: 0, content: content)
+        }
+    }
+
+    @ViewBuilder
+    func marbleChatScrollEdges() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        } else {
+            self
+        }
+    }
+
+    func marbleToolbarTitle() -> some View {
+        padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .marbleFloating()
     }
 }
 
@@ -70,26 +94,37 @@ struct MarbleTitleView: View {
     var title: String
     @EnvironmentObject private var store: MarbleStore
 
+    private var connectionText: String? {
+        if store.connectionPaused { return "Not connected" }
+        switch store.connection {
+        case .idle: return "Not connected"
+        case .connecting: return "Connecting…"
+        case .live: return nil
+        case .offline: return "Offline"
+        }
+    }
+
     var body: some View {
+        let connectionText = connectionText
         VStack(spacing: 0) {
             HStack(spacing: 5) {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
-                if store.connection == .live {
+                if connectionText == nil {
                     Circle()
                         .fill(.green)
                         .frame(width: 6, height: 6)
                 }
             }
-            if store.connection != .live {
-                Text(store.connection == .offline ? "Offline" : "Connecting…")
+            if let connectionText {
+                Text(connectionText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(store.connection == .live ? "connected" : store.connection == .offline ? "offline" : "connecting")")
+        .accessibilityLabel("\(title), \(connectionText ?? "Connected")")
     }
 }
 
@@ -137,6 +172,9 @@ struct MarbleWorkingDots: View {
 /// quiet line saying who is working.
 struct MarbleThinkingBubble: View {
     var name: String = "Marble"
+    var retrying = false
+
+    private var title: String { retrying ? "\(name) is retrying" : "\(name) is working" }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -147,12 +185,12 @@ struct MarbleThinkingBubble: View {
                     Color(.secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous)
                 )
-            Text("\(name) is working")
+            Text(title)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(name) is working")
+        .accessibilityLabel(title)
     }
 }

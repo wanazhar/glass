@@ -54,17 +54,39 @@ enum MarbleMentions {
     /// Whether `@word` appears bounded by non-word characters — `@Ada` matches
     /// but `radar` and `@adaptive` do not.
     private static func mentioned(_ word: String, in text: String) -> Bool {
+        mentionPosition(word, in: text) != nil
+    }
+
+    static func responders(in text: String, roster: [MarblePrismMarble]) -> [String] {
+        let text = text.lowercased()
+        let mentions = roster.compactMap { marble -> (String, String.Index)? in
+            let named = mentionPosition(marble.name.lowercased(), in: text)
+            let alias = marble.isDefault ? mentionPosition("marble", in: text) : nil
+            return [named, alias].compactMap { $0 }.min().map { (marble.id, $0) }
+        }.sorted { $0.1 < $1.1 }.map(\.0)
+        var ids = mentions
+        if mentioned("everyone", in: text) {
+            ids += roster.map(\.id).filter { !mentions.contains($0) }
+        }
+        return ids.isEmpty ? ["marble"] : ids
+    }
+
+    private static func mentionPosition(_ word: String, in text: String) -> String.Index? {
+        guard !word.isEmpty else { return nil }
         var rest = text[...]
         let needle = "@\(word)"
         while let at = rest.range(of: needle) {
             let after = rest[at.upperBound...]
-            guard let next = after.first else { return true }
-            if !next.isLetter && !next.isNumber && next != "-" && next != "_" {
-                return true
+            if let next = after.unicodeScalars.first {
+                if !CharacterSet.alphanumerics.contains(next) && next != "-" && next != "_" {
+                    return at.lowerBound
+                }
+            } else {
+                return at.lowerBound
             }
             rest = after
         }
-        return false
+        return nil
     }
 
     /// A hue no roster marble uses yet, so a new marble is distinguishable at
@@ -142,10 +164,10 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
         entry: MarbleEntry,
         marbles: [MarblePrismMarble]
     ) -> MarbleSpeakerStyle? {
-        guard entry.kind == "assistant" || entry.kind == "handoff",
-              !entry.speaker.isEmpty
+        guard ["assistant", "pending", "handoff", "failure", "tool"].contains(entry.kind),
+              !entry.speaker.isEmpty || !entry.speakerName.isEmpty
         else { return nil }
-        if let marble = marbles.first(where: { $0.id == entry.speaker }) {
+        if let marble = marbles.first(where: { $0.id == entry.speaker || $0.name == entry.speakerName }) {
             return MarbleSpeakerStyle(
                 name: entry.speakerName.isEmpty ? marble.name : entry.speakerName,
                 hue: marble.hue,
@@ -161,20 +183,48 @@ struct MarbleSpeakerStyle: Equatable, Sendable {
 
 /// How a host `everyone` event changes a fetched Everyone timeline.
 enum MarbleEveryoneTimeline {
-    /// Who the thinking bubbles are for: named marbles the host reports as
-    /// working, plus the default Marble while a turn this iPhone sent to
-    /// Everyone is still running (the roster keeps it idle for those).
-    static func thinking(
-        working: [String],
-        sentTaskIds: Set<String>,
-        runningTaskIds: Set<String>,
-        defaultName: String
-    ) -> [String] {
-        var names = working
-        if !sentTaskIds.isDisjoint(with: runningTaskIds), !names.contains(defaultName) {
-            names.insert(defaultName, at: 0)
+    static func settling(_ event: MarbleEvent, reserved: MarbleEntry?, at: UInt64) -> MarbleEntry? {
+        guard let id = event.data.entryId, let kind = event.data.entryKind,
+              ["assistant", "failure"].contains(kind), let text = event.data.text else { return nil }
+        var entry = reserved ?? MarbleEntry(
+            conversationId: event.conversationId, kind: kind, text: text, taskId: event.taskId, at: at
+        )
+        entry.serverID = id
+        entry.threadId = event.data.threadId ?? entry.threadId
+        entry.kind = kind
+        entry.text = text
+        entry.taskId = event.taskId
+        if let sender = event.data.sender, !sender.isEmpty { entry.speakerName = sender }
+        entry.failure = event.data.failure
+        entry.cancelled = event.data.cancelled
+        return entry
+    }
+
+    static func applying(_ updates: [MarbleEntry], to entries: [MarbleEntry]) -> [MarbleEntry] {
+        var rows = entries
+        for update in updates {
+            if let index = rows.firstIndex(where: { $0.id == update.id }) {
+                if update.kind != "pending" || rows[index].kind == "pending" {
+                    rows[index] = update
+                }
+            } else {
+                let index = update.kind == "user" ? rows.firstIndex {
+                    $0.kind == "pending" && $0.at >= update.at
+                } : nil
+                rows.insert(update, at: index ?? rows.endIndex)
+            }
         }
-        return names
+        return rows
+    }
+
+    /// The state and transcript are fetched separately. Keep a bubble through
+    /// that transition, then let the visible outcome replace it.
+    static func showsThinking(
+        working: Bool, activeTaskIds: [String], previousTaskIds: [String], visibleOutcomes: Set<String>
+    ) -> Bool {
+        if working && activeTaskIds.isEmpty { return true }
+        let pending = working ? activeTaskIds : previousTaskIds
+        return pending.contains { !visibleOutcomes.contains($0) }
     }
 
     /// Whether the event says the shared timeline changed, so a fetched copy

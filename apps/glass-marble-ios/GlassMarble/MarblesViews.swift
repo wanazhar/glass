@@ -12,10 +12,7 @@ struct MarbleAvatar: View {
             .foregroundStyle(.white)
             .frame(width: size, height: size)
             .background(
-                Color(
-                    hue: Double((hue % 360 + 360) % 360) / 360,
-                    saturation: 0.55, brightness: 0.72
-                ),
+                MarbleTheme.marble(hue: hue),
                 in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
             )
             .accessibilityHidden(true)
@@ -115,75 +112,82 @@ struct EveryoneView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
-    @State private var follow = MarbleScrollFollow()
-    @State private var userDriven = false
     @State private var showsActivity = false
-
-    private static let bottomAnchor = "everyone-bottom"
+    private let target = MarbleSendTarget.everyone()
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if entries.isEmpty && !store.loaded {
-                        ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
-                    } else if entries.isEmpty {
-                        ContentUnavailableView {
-                            Text("No one has spoken yet")
-                        } description: {
-                            Text("Say something, or name a Marble with @ to call on it.")
-                        }
-                    }
-                    ForEach(entries) { entry in
-                        MarbleEntryView(
-                            entry: entry,
-                            speaker: store.speakerStyle(for: entry)
-                        )
-                    }
-                    ForEach(store.everyoneThinking, id: \.self) { name in
-                        MarbleThinkingBubble(name: name)
-                    }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchor)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(maxWidth: 820, alignment: .leading)
-                .frame(maxWidth: .infinity)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .onScrollPhaseChange { _, phase in
-                userDriven = phase == .tracking || phase == .interacting || phase == .decelerating
-            }
-            .onScrollGeometryChange(for: Double.self) { geometry in
-                geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height
-            } action: { _, distance in
-                if userDriven { follow.userMoved(distanceFromBottom: distance) }
-            }
-            .onChange(of: entries.count) { _, _ in scrollIfFollowing(proxy) }
-            .onChange(of: store.everyoneThinking.count) { _, _ in scrollIfFollowing(proxy) }
-            .onAppear {
-                if follow.initialFollow(now: now()) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-                // Lazy rows settle their heights after the first pass; land
-                // on the real end once they have.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    if follow.following { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-                }
-            }
-            .onChange(of: store.loaded) { _, _ in scrollIfFollowing(proxy) }
-            .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: follow.following)
+        let presentation = store.outgoingPresentation(store.everyoneEntries, to: target, conversationId: everyoneConversationId)
+        let entries = store.withLiveToolRows(presentation.entries, conversationId: everyoneConversationId)
+        let serverWorking = Set(store.everyoneThinking.map(\.id))
+        let reservedAgents = Set(entries.lazy.filter { $0.kind == "pending" }.map(\.speaker))
+        let responders = presentation.responders + store.prism.marbles.map(\.id).filter {
+            serverWorking.contains($0) && !reservedAgents.contains($0) && !presentation.responders.contains($0)
         }
-        .safeAreaInset(edge: .top, spacing: 0) { header }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        let turns = store.everyoneTurns
+        ScrollView {
+            // Lay out the loaded page together so the newest edge has
+            // its final height before the first frame of the push.
+            VStack(alignment: .leading, spacing: 16) {
+                if entries.isEmpty && store.everyoneHistoryLoading {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
+                        .accessibilityLabel("Loading messages")
+                } else if entries.isEmpty && store.historyErrors.contains(everyoneConversationId) {
+                    MarbleHistoryUnavailable { await store.openEveryoneHistory() }
+                } else if entries.isEmpty {
+                    ContentUnavailableView {
+                        Text("No one has spoken yet")
+                    } description: {
+                        Text("Say something, or name a Marble with @ to call on it.")
+                    }
+                }
+                let transcript = MarbleReasoningAssociation(entries)
+                ForEach(transcript.standalone, id: \.rowID) { entry in
+                    MarbleEntryView(
+                        entry: entry,
+                        speaker: store.speakerStyle(for: entry),
+                        reasoning: transcript.attached[entry.id],
+                        usesThreadActionsDialog: true
+                    )
+                }
+                ForEach(turns.filter { $0.isRunning || $0.id == turns.last?.id }) { task in
+                    let reasoning = store.reasoning(for: task.id)
+                    if store.isTaskWorking(task) && !reasoning.isEmpty
+                        && !entries.contains(where: {
+                            $0.taskId == task.id && ["reasoning", "pending", "assistant", "failure"].contains($0.kind)
+                        }) {
+                        MarbleReasoningRow(text: reasoning, speaker: store.agentName(for: task.id))
+                    }
+                    MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
+                }
+                ForEach(responders, id: \.self) { id in
+                    MarbleThinkingBubble(name: store.prism.marbles.first(where: { $0.id == id })?.name ?? "Marble")
+                }
+                MarbleTranscriptEnd(bottomPadding: 12)
+            }
+            .marbleHistoryScrollTargets()
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .marbleFollowsLatest(
+            hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target), startsAtLatest: true
+        ) { beforePrepend in
+            await store.loadOlderHistory(everyoneConversationId, beforePrepend: beforePrepend)
+        }
+        .marbleComposerInset { composer }
+        .task { await store.openEveryoneHistory() }
+        .toolbarVisibility(.hidden, for: .tabBar)
         .navigationTitle("Everyone")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: "Everyone")
+                    .marbleToolbarTitle()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                MarbleThreadInboxLink(conversationId: everyoneConversationId)
             }
         }
         .sheet(isPresented: $showsActivity) {
@@ -198,24 +202,7 @@ struct EveryoneView: View {
         }
     }
 
-    private var entries: [MarbleEntry] { store.everyoneEntries }
-
-    private func now() -> TimeInterval { Date().timeIntervalSinceReferenceDate }
-
-    private func scrollIfFollowing(_ proxy: ScrollViewProxy) {
-        // A new row is a discrete change, not streaming: no throttle.
-        guard follow.following else { return }
-        // Wait one pass so the new row has its height before scrolling to it.
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-            }
-        }
-    }
-
-    /// Who's in the room, on the same bar as the title so messages scroll
-    /// under material rather than behind bare avatars; plus a line when
-    /// something needs a decision.
+    /// Who's in the room and whether a request needs a decision.
     private var header: some View {
         VStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -227,7 +214,7 @@ struct EveryoneView: View {
                             VStack(spacing: 3) {
                                 MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 28)
                                     .overlay(alignment: .bottomTrailing) {
-                                        if marble.isWorking {
+                                        if store.isAgentWorking(marble) {
                                             Circle()
                                                 .fill(Color.accentColor)
                                                 .frame(width: 9, height: 9)
@@ -267,15 +254,9 @@ struct EveryoneView: View {
                 .buttonStyle(.plain)
             }
         }
-        .background {
-            // Reaches up behind the navigation bar so title, avatars, and
-            // the request line read as one solid bar.
-            Rectangle()
-                .fill(.bar)
-                .background(Color(.systemBackground).opacity(0.7))
-                .overlay(alignment: .bottom) { Divider() }
-                .ignoresSafeArea(edges: .top)
-        }
+        .marbleFloating()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
     }
 
     /// The composer with @Name completion from the roster.
@@ -313,18 +294,12 @@ struct EveryoneView: View {
                 draft: $draft,
                 isWorking: false,
                 placeholder: "Message Everyone",
-                onSend: send,
+                onSend: { store.send($0, to: target, entries: store.everyoneEntries) },
                 onStop: {}
             )
         }
-        .marbleComposerBackground()
     }
 
-    private func send() {
-        let text = draft
-        draft = ""
-        Task { await store.sendEveryone(text) }
-    }
 }
 
 /// The roster: every marble with its look, one line of personality, and what
@@ -350,7 +325,7 @@ struct MarblesView: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
-                            Text(marble.displayState)
+                            Text(store.agentState(for: marble))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -494,9 +469,11 @@ struct MarbleChatScreen: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarVisibility(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: marble?.name ?? "Marble")
+                    .marbleToolbarTitle()
             }
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.marbleInfo(marbleId)) {
@@ -504,84 +481,79 @@ struct MarbleChatScreen: View {
                 }
                 .accessibilityLabel("About this Marble")
             }
+            if let conversationId = marble?.conversationId, !conversationId.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    MarbleThreadInboxLink(conversationId: conversationId)
+                }
+            }
         }
     }
 
-    private static let bottomAnchor = "marble-chat-bottom"
-
     @ViewBuilder
     private func transcript(_ marble: MarblePrismMarble) -> some View {
-        let entries = store.marbleTranscript(marble)
-        ScrollViewReader { proxy in
-            ScrollView {
+        let target = MarbleSendTarget.marble(marble.id)
+        let durable = store.marbleTranscript(marble)
+        let presentation = store.outgoingPresentation(durable, to: target, conversationId: marble.conversationId)
+        let entries = store.withLiveToolRows(presentation.entries, conversationId: marble.conversationId)
+        let working = store.isAgentWorking(marble)
+        let active = store.latestTurn(in: marble.conversationId)
+        let thinking = !presentation.responders.isEmpty || working
+            || store.isAwaitingReply(in: marble.conversationId, entries: entries)
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if entries.isEmpty && !marble.isWorking {
+                    if entries.isEmpty && store.marbleHistoryLoading(marble) {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
+                            .accessibilityLabel("Loading messages")
+                    } else if entries.isEmpty && store.historyErrors.contains(marble.conversationId) {
+                        MarbleHistoryUnavailable { await store.openMarbleHistory(marble) }
+                    } else if entries.isEmpty && !thinking {
                         ContentUnavailableView {
                             Text("Nothing yet")
                         } description: {
                             Text("Say hello — \(marble.name) answers in its own voice.")
                         }
                     }
-                    ForEach(entries) { entry in
-                        MarbleEntryView(entry: entry)
+                    let transcript = MarbleReasoningAssociation(entries)
+                    ForEach(transcript.standalone, id: \.rowID) { entry in
+                        MarbleEntryView(entry: entry, replyHue: marble.hue, reasoning: transcript.attached[entry.id])
                     }
-                    if marble.isWorking {
+                    let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
+                    if working && !reasoning.isEmpty
+                        && !entries.contains(where: {
+                            $0.taskId == active?.id && ["reasoning", "assistant"].contains($0.kind)
+                        }) {
+                        MarbleReasoningRow(text: reasoning)
+                    }
+                    MarbleTurnTail(task: active, entries: entries, showsLiveTools: true)
+                    if thinking && !entries.contains(where: { $0.kind == "assistant" && $0.taskId == active?.id }) {
                         MarbleThinkingBubble(name: marble.name)
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchor)
+                    MarbleTranscriptEnd(bottomPadding: 12)
                 }
+                .marbleHistoryScrollTargets()
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .onChange(of: entries.count) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: marble.isWorking) { _, _ in scrollToLatest(proxy) }
-            .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                }
-            }
-            .marbleKeepsLatestVisible(proxy: proxy, anchor: Self.bottomAnchor, following: true)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .scrollDismissesKeyboard(.interactively)
+        .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
+            await store.loadOlderHistory(marble.conversationId, beforePrepend: beforePrepend)
+        }
+        .task(id: marble.conversationId) { await store.openMarbleHistory(marble) }
+        .onDisappear { store.closeMarbleHistory(marble.conversationId) }
+        .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
-                isWorking: marble.isWorking,
+                isWorking: working,
                 placeholder: "Message \(marble.name)",
                 canSteer: false,
-                onSend: { send(marble) },
+                onSend: { store.send($0, to: target, entries: durable) },
                 onStop: { Task { await store.stop(marble) } }
             )
-            .marbleComposerBackground()
         }
     }
 
-    private func scrollToLatest(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-        }
-    }
-
-    private func send(_ marble: MarblePrismMarble) {
-        let text = draft
-        draft = ""
-        Task {
-            // A marble with no chat yet goes through Everyone's dispatch so
-            // its first turn creates its durable conversation.
-            if marble.conversationId.isEmpty {
-                await store.sendToMarble(marble, text: text)
-            } else {
-                store.selectedConversationId = marble.conversationId
-                await store.send(text)
-            }
-        }
-    }
 }
 
 /// A marble's info: who it is (editable), its look, its memory, its workspace,

@@ -770,17 +770,19 @@ impl ProductState {
             }
         }
 
-        // Conversations: newest activity wins, but anything still working stays.
+        // Unsent chats do not displace history; otherwise newest activity wins.
         if self.conversations.len() > CONVERSATION_LIMIT {
-            let mut order: Vec<usize> = (0..self.conversations.len()).collect();
+            let mut order: Vec<usize> = (0..self.conversations.len())
+                .filter(|index| !self.conversations[*index].needs_engine_session)
+                .collect();
             order.sort_by_key(|index| std::cmp::Reverse(self.conversations[*index].updated_at));
             let mut keep: std::collections::HashSet<usize> =
                 order.into_iter().take(CONVERSATION_LIMIT).collect();
             for (index, conversation) in self.conversations.iter().enumerate() {
-                if self
-                    .tasks
-                    .iter()
-                    .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
+                if conversation.needs_engine_session
+                    || self.tasks.iter().any(|task| {
+                        task.conversation_id == conversation.id && !settled(&task.status)
+                    })
                 {
                     keep.insert(index);
                 }
@@ -1155,6 +1157,55 @@ mod tests {
         assert_eq!(state.retention.last_trim_at, 9_999);
         assert!(state.retention.trimmed_transcript > 0);
         assert!(state.prune(10_000).is_empty(), "a second pass is a no-op");
+    }
+
+    #[test]
+    fn unsent_created_chats_do_not_displace_saved_history() {
+        let mut state = ProductState::default();
+        for index in 0..CONVERSATION_LIMIT {
+            let id = format!("saved-{index}");
+            state.conversation_mut(&id).updated_at = index as u64;
+            state.push_transcript(TranscriptEntry {
+                conversation_id: id,
+                kind: "assistant".into(),
+                text: format!("answer {index}"),
+                ..Default::default()
+            });
+        }
+        for id in ["empty-1", "empty-2"] {
+            let record = state.conversation_mut(id);
+            record.updated_at = 1_000;
+            record.needs_engine_session = true;
+        }
+        let mut state = ProductState::decode(&state.encode()).unwrap();
+        let summary = state.prune(2_000);
+        assert_eq!(summary.conversations, 0);
+        assert_eq!(summary.transcript, 0);
+        assert_eq!(state.conversations.len(), CONVERSATION_LIMIT + 2);
+        assert_eq!(state.transcript.len(), CONVERSATION_LIMIT);
+        assert!(state.prune(2_001).is_empty());
+
+        state.conversation_mut("empty-1").needs_engine_session = false;
+        state.push_transcript(TranscriptEntry {
+            conversation_id: "empty-1".into(),
+            kind: "user".into(),
+            text: "first message".into(),
+            ..Default::default()
+        });
+        assert_eq!(state.prune(2_002).conversations, 1);
+        assert!(
+            !state
+                .conversations
+                .iter()
+                .any(|record| record.id == "saved-0")
+        );
+        assert!(
+            state
+                .conversations
+                .iter()
+                .any(|record| record.id == "empty-2")
+        );
+        assert_eq!(state.transcript.len(), CONVERSATION_LIMIT);
     }
 
     #[test]

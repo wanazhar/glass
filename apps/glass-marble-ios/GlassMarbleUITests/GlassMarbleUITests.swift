@@ -182,14 +182,14 @@ final class GlassMarbleUITests: XCTestCase {
         app.tabBars.buttons["Everyone"].tap()
         app.buttons["chat.compose"].tap()
         XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["No messages yet"].exists)
+        assertHittable("No messages yet")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["chat.compose"].isHittable)
 
         openDefaultChats()
         app.staticTexts["New Chat"].tap()
         XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["No messages yet"].exists)
+        assertHittable("No messages yet")
     }
 
     func testEveryonePushSupportsNativeBackSwipe() {

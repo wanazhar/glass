@@ -2624,14 +2624,16 @@ extension MarbleStore {
             }
         }
         store.state = state
-        // A turn keeps emitting text so streaming-follow behavior is testable.
+        // The long chat keeps emitting text so streaming-follow behavior is testable.
         Task { @MainActor [weak store] in
             var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))
                 guard let store else { return }
                 tick += 1
-                store.liveText = "Streaming fixture reply \(tick) " + String(repeating: "…", count: tick % 40)
+                store.live["fixture-0", default: LiveBuffers()].text =
+                    "Streaming fixture reply \(tick) " + String(repeating: "…", count: tick % 40)
+                store.syncLive()
             }
         }
         return store

@@ -665,6 +665,18 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 "allOf":[{"if":{"properties":{"until":{"const":"text"}}},"then":{"required":["text"]}}]
             }).to_string(),
         ));
+        tools.push((
+            "desktop_record".to_string(),
+            "Record the managed desktop identified by the latest desktop_status.sessionId to an MP4 video, for when the user asks for a recording or to show how a task was done. `start` begins recording at 10 frames per second and stops by itself after maxSeconds (default 300, at most 600); `stop` finishes the file and returns its workspace path under .gc-artifacts/desktop/recordings/; `status` says whether one is running. Only one recording runs at a time. Not for looking at the screen: use desktop_screenshot. Examples: {\"action\":\"start\",\"sessionId\":\"<from desktop_status>\"}; {\"action\":\"stop\",\"sessionId\":\"<from desktop_status>\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["start","stop","status"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "maxSeconds":{"type":"integer","minimum":1,"maximum":600,"default":300,"description":"start only: stop recording automatically after this many seconds."}
+                }
+            }).to_string(),
+        ));
     }
     if let Some(secrets) = crate::secret_placeholders::description() {
         for tool in &mut tools {
@@ -809,7 +821,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
-        assert_eq!(full.len(), 10);
+        assert_eq!(full.len(), 11);
+        assert_eq!(full[10].0, "desktop_record");
         assert_eq!(full[9].0, "desktop_wait");
         let wait: Value = serde_json::from_str(&full[9].2).unwrap();
         assert_eq!(wait["additionalProperties"], false);

@@ -27,6 +27,13 @@ const MAX_FALLBACK_SEGMENTS: usize = 8;
 /// Maximum UTF-8 byte length of a single locator segment.
 const MAX_SEGMENT_BYTES: usize = 1024;
 
+/// The page itself carries the document title as its accessible name, so a
+/// button named like the page ("Export" on a page titled "Export") must not
+/// count as ambiguous with it.
+fn is_document_root(role: &str) -> bool {
+    role.eq_ignore_ascii_case("RootWebArea") || role.eq_ignore_ascii_case("WebArea")
+}
+
 impl CdpBrowserSession {
     pub(crate) async fn resolve_element(&self, target: &str) -> BrowserResult<ResolvedElement> {
         // Fallback chain: split on " | " (pipe with surrounding spaces)
@@ -307,7 +314,9 @@ impl CdpBrowserSession {
         let matches: Vec<&InteractiveElement> = match locator {
             Locator::AccessibleName(name) => interactive
                 .iter()
-                .filter(|element| element.name.eq_ignore_ascii_case(name))
+                .filter(|element| {
+                    element.name.eq_ignore_ascii_case(name) && !is_document_root(&element.role)
+                })
                 .take(AMBIGUOUS_CANDIDATE_LIMIT + 1)
                 .collect(),
             Locator::RoleAndName { role, name } => interactive
@@ -380,5 +389,15 @@ impl CdpBrowserSession {
             | Locator::RoleAndName { .. }
             | Locator::Ordinal(_) => Ok(TargetResolution::NotFound),
         }
+    }
+}
+
+#[cfg(test)]
+mod document_root_tests {
+    #[test]
+    fn accessible_name_skips_the_document_root() {
+        assert!(super::is_document_root("RootWebArea"));
+        assert!(super::is_document_root("webarea"));
+        assert!(!super::is_document_root("button"));
     }
 }

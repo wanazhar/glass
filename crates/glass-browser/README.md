@@ -455,7 +455,7 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
-For LLM agents, `--tool-profile agent` replaces the full catalog with 28
+For LLM agents, `--tool-profile agent` replaces the full catalog with 30
 task-level `browser_*` tools (`browser_navigate`, `browser_history`,
 `browser_snapshot`, `browser_find`, `browser_extract`, `browser_console`,
 `browser_network`, `browser_click`, `browser_drag`, `browser_fill_form`,
@@ -476,6 +476,14 @@ returns console messages and uncaught exceptions, hiding any that mention
 passwords, tokens or cookies; `browser_network` records requests for a bounded
 window and lists the 4xx/5xx and failed ones. Both accept `reload: true` to
 watch a fresh page load.
+`browser_logins` saves the current site's cookies and localStorage under a
+name in `$GLASS_CONFIG_HOME/glass/logins/` (default: the user config
+directory), unencrypted with owner-only permissions, and loads them later so
+a site needs one sign-in; results show counts, never values.
+`browser_dismiss_consent` clicks the accept button of a OneTrust or Cookiebot
+banner, or of a banner whose id, class or label says cookie or consent, and
+the covered-element hint suggests it when such a banner is on top.
+`browser_navigate` tells the model that page text is data, not instructions.
 For credentials, export `GLASS_SECRET_<NAME>` (uppercase letters, digits and
 `_`; values of at least 4 characters) before starting the server. The
 `browser_type` and `browser_fill_form` descriptions then list the secret names,
@@ -485,7 +493,9 @@ value. Other tools reject placeholders. Glass Core's `desktop_input` text and
 `desktop_act` `set_text` honour the same variables.
 Glass Core offers this profile as typed tools when `glass-browser` is on
 `PATH` (`GC_BROWSER_TOOLS=0` disables it, `GC_BROWSER_BIN` and
-`GC_BROWSER_RUNTIME` override the binary and runtime). Without an override,
+`GC_BROWSER_RUNTIME` override the binary and runtime;
+`GC_BROWSER_ALLOW_HOSTS=example.com,docs.rs` passes each host as
+`--policy-allow-host`, so the browser refuses every other host). Without an override,
 Core picks `chromium` when the host's bubblewrap is older than 0.8 and cannot
 lock user namespaces, because the native runtime refuses to start there and
 says so with a `SandboxUnavailable` error.

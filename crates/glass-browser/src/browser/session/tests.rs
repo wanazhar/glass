@@ -2321,6 +2321,38 @@ async fn compact_observation_bounds_accessibility_while_snapshot_remains_full() 
 
 #[tokio::test]
 async fn hardened_navigation_intercepts_private_redirects_before_following() {
+    assert_policy_blocks_redirect(
+        BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn development_host_allowlist_intercepts_redirects_before_following() {
+    let policy = BrowserPolicy::development(std::env::current_dir().unwrap())
+        .unwrap()
+        .with_host_rules(["allowed.test".into()], [])
+        .unwrap();
+    assert!(policy.requires_network_interception());
+    assert_policy_blocks_redirect(policy).await;
+}
+
+async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
+    for (resource, frame, denied) in [
+        ("Document", "frame-1", true),
+        ("Image", "frame-1", false),
+        ("Document", "child-frame", false),
+    ] {
+        assert_policy_blocks_request(policy.clone(), resource, frame, denied).await;
+    }
+}
+
+async fn assert_policy_blocks_request(
+    policy: BrowserPolicy,
+    resource: &'static str,
+    frame: &'static str,
+    denied: bool,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2354,6 +2386,8 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
                     "sessionId": "route-1",
                     "params": {
                         "requestId": "redirect-1",
+                        "resourceType": resource,
+                        "frameId": frame,
                         "request": {"url": "http://127.0.0.1/private"}
                     }
                 })
@@ -2395,10 +2429,10 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
     let cdp = CdpClient::connect(&format!("ws://{address}"))
         .await
         .unwrap();
-    let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
     let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
         .await
         .unwrap();
+    cdp.set_active_route(Some("route-1".into()), Some("selected-iframe".into()), None);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(1);
@@ -2413,10 +2447,16 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
         record_policy_event_receiver_error(receiver_error, &interception.lagged_events),
         Some(1)
     );
-    assert!(matches!(
-        interception.take_denial().await,
-        Some(PolicyError::Denied { .. })
-    ));
+    assert!(interception.take_denial().await.is_none());
+    assert_eq!(
+        matches!(
+            interception
+                .take_navigation_denial(Some("route-1".into()), Some("frame-1"))
+                .await,
+            Some(PolicyError::Denied { .. })
+        ),
+        denied
+    );
     assert_eq!(interception.take_lagged_events(), 1);
     assert_eq!(interception.take_lagged_events(), 0);
     interception.shutdown().await;

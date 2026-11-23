@@ -81,6 +81,9 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+tokio::task_local! {
+    static INTERNAL_LOGIN_CALL: bool;
+}
 #[cfg(feature = "native-engine")]
 const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(feature = "native-engine")]
@@ -2148,6 +2151,75 @@ async fn handle_request_with_viewport_unredacted(
             text.zip(tabs)
                 .map(|(text, tabs)| agent_tools::PageState { text, tabs })
         }};
+    }
+    macro_rules! inner_result {
+        ($tool:expr, $arguments:expr) => {{
+            let response = INTERNAL_LOGIN_CALL
+                .scope(true, async { call_inner!($tool, $arguments) })
+                .await;
+            match response.and_then(|response| response.result) {
+                Some(result) => {
+                    let text = result["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    if result["isError"] == true {
+                        Err(text)
+                    } else {
+                        Ok(text)
+                    }
+                }
+                None => Err("browser tool failed".to_owned()),
+            }
+        }};
+    }
+    if agent_tool == "browser_logins" {
+        let name = agent_arguments["name"].as_str().unwrap_or_default();
+        let outcome =
+            policy
+                .with_authorized_profile(async {
+                    match agent_arguments["action"].as_str().unwrap_or_default() {
+                        "list" => agent_tools::list_logins(),
+                        "delete" => agent_tools::delete_login(name),
+                        "save" => match inner_result!("cookies", json!({})) {
+                            Ok(cookies) => inner_result!(
+                                "evaluate",
+                                json!({"expression": agent_tools::READ_LOGIN_STORAGE})
+                            )
+                            .and_then(|page| agent_tools::save_login(name, &cookies, &page)),
+                            Err(error) => Err(error),
+                        },
+                        _ => match agent_tools::read_login(name) {
+                            Ok(login) => async {
+                                inner_result!("setCookies", json!({"cookies": login["cookies"]}))?;
+                                inner_result!("navigate", json!({"url": login["url"]}))?;
+                                let restored = inner_result!(
+                                    "evaluate",
+                                    json!({"expression": agent_tools::write_login_storage(&login)})
+                                )?;
+                                agent_tools::check_login_storage_restore(&restored)?;
+                                inner_result!("reload", json!({}))?;
+                                Ok::<_, String>(agent_tools::loaded_login(name, &login))
+                            }
+                            .await,
+                            Err(error) => Err(error),
+                        },
+                    }
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|outcome| outcome);
+        let (text, is_error) = match outcome {
+            Ok(text) => (text, false),
+            Err(error) => {
+                let hint = agent_tools::recovery_hint(&agent_tool, &error);
+                (format!("{error}\n{hint}"), true)
+            }
+        };
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":super::secrets::redact(&text)}],"isError":is_error}),
+        ));
     }
     if let Some((reload, reload_arguments)) = agent_tools::pre_reload(&agent_tool, &agent_arguments)
     {
@@ -8030,6 +8102,12 @@ fn serialized_result_mode<T: Serialize + ?Sized>(
     value: &T,
     mode: ResponseMode,
 ) -> BrowserResult<Value> {
+    if INTERNAL_LOGIN_CALL
+        .try_with(|internal| *internal)
+        .unwrap_or(false)
+    {
+        return serialized_result(value);
+    }
     let value = serde_json::to_value(value)?;
     let projected = project_and_store(value, mode, "mcp", default_result_store_path())?;
     Ok(text_result(serde_json::to_string(&projected)?))
@@ -9500,6 +9578,94 @@ mod tests {
         )
         .await
         .expect("native MCP tool should return a response")
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_logins_round_trip_without_internal_diagnostics() {
+        const CHILD: &str = "GLASS_LOGIN_REGRESSION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = PdfTestDirectory::new();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mcp::server::tests::native_logins_round_trip_without_internal_diagnostics",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("GLASS_CONFIG_HOME", root.path())
+                .env("XDG_CACHE_HOME", root.path().join("cache"))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}/", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let mut first = true;
+                    loop {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let mut request = [0;4096];
+                        let _ = stream.read(&mut request).await;
+                        let body = "<!doctype html><title>Login</title><body>Account</body>";
+                        let cookie = if first { "Set-Cookie: sid=login-cookie-value; Path=/\r\n" } else { "" };
+                        first = false;
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    }
+                });
+                let (mut session, mut native) = (None, None);
+                let options = SessionOptions {incognito:true, ..SessionOptions::default()};
+                let policy = BrowserPolicy::development(std::env::temp_dir()).unwrap();
+                let navigation = invoke_native_mcp_tool("navigate", json!({"url":url}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(navigation.result.as_ref().unwrap()["isError"], true, "{navigation:?}");
+                native.as_ref().unwrap().script("localStorage.setItem('login-token', 'storage-value')").await.unwrap();
+                let count = || std::fs::read_dir(default_result_store_path()).map(|entries| entries.count()).unwrap_or(0);
+                let before = count();
+                let saved = invoke_native_mcp_tool("browser_logins", json!({"action":"save","name":"work"}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(saved.result.as_ref().unwrap()["isError"], true, "{saved:?}");
+                assert_eq!(count(), before);
+                assert_eq!(super::super::agent_tools::read_login("work").unwrap()["storage"]["login-token"], "storage-value");
+                native.take().unwrap().close().await.unwrap();
+                let loaded = invoke_native_mcp_tool("browser_logins", json!({"action":"load","name":"work"}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(loaded.result.as_ref().unwrap()["isError"], true, "{loaded:?}");
+                let fresh = native.as_ref().unwrap();
+                assert_eq!(fresh.script("localStorage.getItem('login-token')").await.unwrap().value, "storage-value");
+                assert!(fresh.native_cookies().await.unwrap().iter().any(|c| c.name=="sid" && c.value=="login-cookie-value"));
+                let denied = BrowserPolicy::ci(std::env::temp_dir()).unwrap();
+                for action in ["list", "delete"] {
+                    let result = invoke_native_mcp_tool("browser_logins", json!({"action":action,"name":"work"}), &mut session, &mut native, &options, &denied).await.result.unwrap();
+                    assert_eq!(result["isError"], true);
+                    assert!(result["content"][0]["text"].as_str().unwrap().contains("PersistentProfile"));
+                }
+                assert!(super::super::agent_tools::read_login("work").is_ok());
+                for html in ["<div id=onetrust-banner-sdk><button id=onetrust-accept-btn-handler>Accept</button></div>", "<div id=cookie-notice><button>Accept all</button></div>"] {
+                    let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+                    let navigated = invoke_native_mcp_tool("navigate", json!({"url":format!("data:text/html,{encoded}")}), &mut session, &mut native, &options, &policy).await;
+                    assert_ne!(navigated.result.unwrap()["isError"], true);
+                    let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
+                    assert_ne!(result["isError"], true, "{result}");
+                }
+                for html in [
+                    "<div class=cookie-consent-pending><button onclick=\"document.body.setAttribute('data-choice','invitation')\">Accept invitation</button></div>",
+                    "<div class=cookie-consent-pending><button onclick=\"document.body.setAttribute('data-choice','invitation')\">Accept invitation</button><div role=dialog aria-label='Cookie consent'>We use cookies<button onclick=\"document.body.setAttribute('data-choice','cookies')\">Accept all</button></div></div>",
+                ] {
+                    let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+                    let navigated = invoke_native_mcp_tool("navigate", json!({"url":format!("data:text/html,{encoded}")}), &mut session, &mut native, &options, &policy).await;
+                    assert_ne!(navigated.result.unwrap()["isError"], true);
+                    let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
+                    assert_eq!(result["isError"] == true, !html.contains("role=dialog"), "{result}");
+                    let choice = native.as_ref().unwrap().script("document.body.getAttribute('data-choice')").await.unwrap().value;
+                    assert_ne!(choice, "invitation");
+                    if html.contains("role=dialog") { assert_eq!(choice, "cookies"); }
+                }
+                native.take().unwrap().close().await.unwrap();
+                server.abort();
+            });
+        }).unwrap().join().unwrap();
     }
 
     #[cfg(feature = "native-engine")]

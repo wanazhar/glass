@@ -78,7 +78,13 @@ impl CdpBrowserSession {
         }
         self.cdp
             .with_current_route(async {
-                let value = serde_json::to_value(cookies)?;
+                let mut value = serde_json::to_value(cookies)?;
+                // CDP rejects `null` for optional cookie fields such as sameSite.
+                for cookie in value.as_array_mut().into_iter().flatten() {
+                    if let Some(fields) = cookie.as_object_mut() {
+                        fields.retain(|_, field| !field.is_null());
+                    }
+                }
                 self.cdp.set_cookies(value).await?;
                 Ok(())
             })

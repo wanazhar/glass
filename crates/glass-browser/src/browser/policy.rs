@@ -203,6 +203,10 @@ pub struct BrowserPolicy {
     workspace_root: PathBuf,
 }
 
+tokio::task_local! {
+    static AUTHORIZED_PROFILE_POLICY: usize;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PolicyError {
@@ -422,6 +426,14 @@ impl BrowserPolicy {
         &self.workspace_root
     }
 
+    pub(crate) fn requires_network_interception(&self) -> bool {
+        matches!(
+            self.preset,
+            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+        ) || !self.allowed_hosts.is_empty()
+            || !self.denied_hosts.is_empty()
+    }
+
     pub async fn prepare_hardened_session(
         &mut self,
         attached: bool,
@@ -547,6 +559,15 @@ impl BrowserPolicy {
     }
 
     pub fn require(&self, capability: PolicyCapability) -> Result<(), PolicyError> {
+        if capability == PolicyCapability::PersistentProfile
+            && AUTHORIZED_PROFILE_POLICY
+                .try_with(|identity| {
+                    *identity == std::sync::Arc::as_ptr(&self.confirmation_tokens) as usize
+                })
+                .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let decision = self.decide(capability);
         emit_policy_decision(capability, &decision);
         match decision {
@@ -573,6 +594,19 @@ impl BrowserPolicy {
                 }
             }
         }
+    }
+
+    pub(crate) async fn with_authorized_profile<F: std::future::Future>(
+        &self,
+        operation: F,
+    ) -> Result<F::Output, PolicyError> {
+        self.require(PolicyCapability::PersistentProfile)?;
+        Ok(AUTHORIZED_PROFILE_POLICY
+            .scope(
+                std::sync::Arc::as_ptr(&self.confirmation_tokens) as usize,
+                operation,
+            )
+            .await)
     }
 
     /// Check a capability without consuming a confirmation token. Batch
@@ -966,6 +1000,66 @@ fn ipv6_in_prefix(value: u128, network: u128, prefix: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn one_profile_approval_covers_only_its_scoped_operation() {
+        let policy = BrowserPolicy::new(
+            PolicyPreset::Hardened,
+            std::env::temp_dir(),
+            [],
+            [PolicyCapability::PersistentProfile],
+        )
+        .unwrap()
+        .with_confirmation_tokens([PolicyCapability::PersistentProfile])
+        .unwrap();
+        let cloned = policy.clone();
+        policy
+            .with_authorized_profile(async {
+                assert!(cloned.require(PolicyCapability::PersistentProfile).is_ok());
+                assert!(cloned.require(PolicyCapability::PersistentProfile).is_ok());
+                let other = BrowserPolicy::hardened(std::env::temp_dir()).unwrap();
+                assert!(other.require(PolicyCapability::PersistentProfile).is_err());
+                assert!(cloned.require(PolicyCapability::Evaluate).is_err());
+                let separate_task = cloned.clone();
+                assert!(
+                    tokio::spawn(async move {
+                        separate_task
+                            .require(PolicyCapability::PersistentProfile)
+                            .is_err()
+                    })
+                    .await
+                    .unwrap()
+                );
+            })
+            .await
+            .unwrap();
+        assert!(policy.require(PolicyCapability::PersistentProfile).is_err());
+        assert!(policy.with_authorized_profile(async {}).await.is_err());
+    }
+
+    #[test]
+    fn development_host_rules_require_redirect_interception() {
+        let root = std::env::temp_dir();
+        let policy = BrowserPolicy::development(&root).unwrap();
+        assert!(!policy.requires_network_interception());
+        let policy = policy.with_host_rules(["allowed.test".into()], []).unwrap();
+        assert!(policy.requires_network_interception());
+        assert!(
+            policy
+                .require_existing_target_url("https://allowed.test/")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .require_existing_target_url("https://blocked.test/redirect")
+                .is_err()
+        );
+        let denied = BrowserPolicy::development(root)
+            .unwrap()
+            .with_host_rules([], ["blocked.test".into()])
+            .unwrap();
+        assert!(denied.requires_network_interception());
+    }
 
     #[test]
     fn hardened_capabilities_are_typed_denials_or_confirmations() {

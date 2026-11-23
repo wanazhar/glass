@@ -169,14 +169,7 @@ async fn observe_async(
         };
         let identity_source = fallback.as_deref().unwrap_or(&raw_name);
         let identity = window_name_identity(identity_source);
-        if !window_identity_matches(&window_root.role, &window_root.identity, &role, &identity)
-            || !matches!(
-                role.to_ascii_lowercase().as_str(),
-                "frame" | "window" | "dialog"
-            )
-            || !states.contains(State::Visible)
-            || !states.contains(State::Showing)
-        {
+        if !window_scope_is_current(window_root, &role, &identity, states) {
             return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
         }
     }
@@ -394,10 +387,7 @@ async fn observe_async(
         let states = states_result.unwrap_or_else(|_| StateSet::empty());
         let role_lower = role.to_ascii_lowercase();
         let is_password = is_password_role(&role_lower);
-        let is_window = matches!(
-            role_lower.as_str(),
-            "frame" | "window" | "dialog" | "alert" | "file chooser"
-        );
+        let is_window = is_window_role(&role);
         let visible = states.contains(State::Visible) && states.contains(State::Showing);
         let tree_visible = states.contains(State::Visible);
         let can_activate_role = role_can_activate(&role_lower);
@@ -1002,10 +992,7 @@ async fn label_window_inventory(
         for child in children {
             let window = child.as_accessible_proxy(connection).await.ok()?;
             let role = window.get_role_name().await.ok()?;
-            if !matches!(
-                role.to_ascii_lowercase().as_str(),
-                "frame" | "window" | "dialog" | "alert" | "file chooser"
-            ) {
+            if !is_window_role(&role) {
                 continue;
             }
             let title = window.name().await.ok()?;
@@ -1318,6 +1305,24 @@ fn window_identity_matches(
     current_identity: &str,
 ) -> bool {
     observed_role.eq_ignore_ascii_case(current_role) && observed_identity == current_identity
+}
+
+fn is_window_role(role: &str) -> bool {
+    ["frame", "window", "dialog", "alert", "file chooser"]
+        .iter()
+        .any(|window_role| role.eq_ignore_ascii_case(window_role))
+}
+
+fn window_scope_is_current(
+    window: &WindowRoot,
+    role: &str,
+    identity: &str,
+    states: StateSet,
+) -> bool {
+    is_window_role(role)
+        && window_identity_matches(&window.role, &window.identity, role, identity)
+        && states.contains(State::Visible)
+        && states.contains(State::Showing)
 }
 
 fn should_follow_related_object(
@@ -1826,16 +1831,17 @@ mod tests {
         assert!(targets.is_empty());
     }
     use super::{
-        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, UNSUPPORTED_CLICK_RECOVERY,
-        accessibility_target_id, accessibility_window_id_from_parts, bounded_accessible_name,
-        bounds_from_extents, display_accessible_name, focused_query_role_is_leaf,
-        focused_search_result_is_actionable, is_password_role, is_pointer_fallback_candidate,
-        node_is_relevant, owner_is_within_ancestor_limit, pointer_target_from_extents,
-        protect_text_value, query_can_issue_action_tokens, query_is_focused, query_matches,
+        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, ObjectRefOwned, RelationType, State, StateSet,
+        UNSUPPORTED_CLICK_RECOVERY, WindowRoot, accessibility_target_id, accessibility_window_id,
+        accessibility_window_id_from_parts, bounded_accessible_name, bounds_from_extents,
+        display_accessible_name, focused_query_role_is_leaf, focused_search_result_is_actionable,
+        is_password_role, is_pointer_fallback_candidate, is_window_role, node_is_relevant,
+        owner_is_within_ancestor_limit, pointer_target_from_extents, protect_text_value,
+        query_can_issue_action_tokens, query_is_focused, query_matches,
         query_prefers_document_content, query_scan_is_done, query_skips_app_menus,
         role_matches_hint, should_follow_related_object, target_can_be_exposed,
         text_edit_is_supported, unverified_click_result, validate_query, window_id_is_in_scope,
-        window_identity_matches, window_name_identity, window_title_terms,
+        window_identity_matches, window_name_identity, window_scope_is_current, window_title_terms,
         withhold_unverified_query_tokens,
     };
     use serde_json::json;
@@ -2280,6 +2286,81 @@ mod tests {
                 "Downloads",
             )
         );
+    }
+
+    #[test]
+    fn issued_window_selectors_accept_visible_file_choosers_and_alerts() {
+        let visible = StateSet::new(State::Visible | State::Showing);
+        for role in ["frame", "window", "dialog", "file chooser", "alert"] {
+            assert!(is_window_role(role));
+            let window = WindowRoot {
+                object: ObjectRefOwned::from_static_str_unchecked(":1.8", "/window/3"),
+                application: "Editor".into(),
+                role: role.into(),
+                identity: window_name_identity("Choose a file"),
+            };
+            let id = accessibility_window_id(
+                "session-a",
+                &window.object,
+                &window.role,
+                &window.identity,
+            );
+            let windows = std::collections::HashMap::from([(id.clone(), window)]);
+            let cached = windows.get(&id).unwrap();
+            assert!(
+                window_scope_is_current(cached, role, &cached.identity, visible),
+                "{role}"
+            );
+            assert!(window_scope_is_current(
+                cached,
+                &role.to_ascii_uppercase(),
+                &cached.identity,
+                visible
+            ));
+            assert!(!window_scope_is_current(
+                cached,
+                role,
+                &window_name_identity("Another window"),
+                visible
+            ));
+            assert!(!window_scope_is_current(
+                cached,
+                "push button",
+                &cached.identity,
+                visible
+            ));
+            for states in [
+                StateSet::empty(),
+                StateSet::new(State::Visible),
+                StateSet::new(State::Showing),
+            ] {
+                assert!(!window_scope_is_current(
+                    cached,
+                    role,
+                    &cached.identity,
+                    states
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn window_scopes_reject_empty_and_nonwindow_roles_even_with_matching_identity() {
+        for role in ["", "application", "push button", "unknown"] {
+            assert!(!is_window_role(role));
+            let window = WindowRoot {
+                object: ObjectRefOwned::from_static_str_unchecked(":1.8", "/window/3"),
+                application: "Editor".into(),
+                role: role.into(),
+                identity: window_name_identity("Choose a file"),
+            };
+            assert!(!window_scope_is_current(
+                &window,
+                role,
+                &window.identity,
+                StateSet::new(State::Visible | State::Showing)
+            ));
+        }
     }
 
     #[test]

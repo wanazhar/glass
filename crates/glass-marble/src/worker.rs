@@ -18,13 +18,13 @@ use crate::events::EventBus;
 use crate::live::LiveStore;
 use crate::memory;
 use crate::notify::{self, Notification};
-use crate::state::{ProductState, TaskRecord, TranscriptEntry};
+use crate::state::{ConversationRecord, ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::{
-    InboundMessage, MarbleError, MarbleTurn, TurnOptions, conversation::Conversation,
-    conversation::SteerRequest, to_turn_input,
+    MarbleError, MarbleTurn, TurnOptions, conversation::Conversation, conversation::SteerRequest,
 };
-use glass_runtime_client::{TurnInput, protocol::ContextBlock};
+#[cfg(test)]
+use glass_runtime_client::TurnInput;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -35,6 +35,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// One message waiting for the durable turn worker.
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
+    pub client_message: Option<crate::state::ClientMessage>,
+    pub thread_id: Option<String>,
     pub conversation_id: Option<String>,
     pub text: String,
     pub request_id: String,
@@ -185,6 +187,7 @@ struct InboxState {
     routine: VecDeque<TurnCommand>,
     /// Live [`TurnSender`] handles; the last one leaving stops the worker.
     senders: usize,
+    closed: bool,
 }
 
 fn lock_inbox(inbox: &Inbox) -> std::sync::MutexGuard<'_, InboxState> {
@@ -219,9 +222,12 @@ impl std::error::Error for TurnWorkerGone {}
 ///
 /// Every clone keeps the worker alive, so dropping the last surface stops it
 /// once its current turn settles.
+type LaneQueues = Arc<Mutex<Vec<(Arc<Inbox>, Arc<AtomicUsize>)>>>;
+
 pub struct TurnSender {
     inbox: Arc<Inbox>,
     live: bool,
+    lanes: LaneQueues,
 }
 
 impl TurnSender {
@@ -233,19 +239,24 @@ impl TurnSender {
                 ready: Condvar::new(),
             }),
             live: false,
+            lanes: Arc::default(),
         }
     }
 
     /// Queue one command; the answer is its place among the commands waiting in
     /// front of it in the same lane.
     pub fn send(&self, command: TurnCommand) -> Result<usize, TurnWorkerGone> {
+        self.send_owned(command).map_err(|_| TurnWorkerGone)
+    }
+
+    fn send_owned(&self, command: TurnCommand) -> Result<usize, Box<TurnCommand>> {
         if !self.live {
-            return Err(TurnWorkerGone);
+            return Err(Box::new(command));
         }
         let lane = command.request.lane();
         let mut state = lock_inbox(&self.inbox);
-        if state.senders == 0 {
-            return Err(TurnWorkerGone);
+        if state.senders == 0 || state.closed {
+            return Err(Box::new(command));
         }
         let position = match lane {
             TurnLane::Human => {
@@ -260,6 +271,29 @@ impl TurnSender {
         drop(state);
         self.inbox.ready.notify_one();
         Ok(position)
+    }
+
+    pub(crate) fn remove_queued(&self, task_id: &str) {
+        fn remove(inbox: &Inbox, task_id: &str) -> usize {
+            let mut state = lock_inbox(inbox);
+            let before = state.human.len() + state.routine.len();
+            state
+                .human
+                .retain(|command| format!("queued-{}", command.request.request_id) != task_id);
+            state
+                .routine
+                .retain(|command| format!("queued-{}", command.request.request_id) != task_id);
+            before - state.human.len() - state.routine.len()
+        }
+        remove(&self.inbox, task_id);
+        for (inbox, in_flight) in self
+            .lanes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+        {
+            in_flight.fetch_sub(remove(inbox, task_id), Ordering::Relaxed);
+        }
     }
 
     /// Commands handed over that the worker has not started yet.
@@ -296,6 +330,7 @@ impl Clone for TurnSender {
         Self {
             inbox: Arc::clone(&self.inbox),
             live: self.live,
+            lanes: self.lanes.clone(),
         }
     }
 }
@@ -322,6 +357,12 @@ pub struct TurnInbox {
     inbox: Arc<Inbox>,
 }
 
+impl Drop for TurnInbox {
+    fn drop(&mut self) {
+        lock_inbox(&self.inbox).closed = true;
+    }
+}
+
 impl TurnInbox {
     /// A sender for every surface, and the worker's own receiving handle.
     pub fn channel() -> (TurnSender, Self) {
@@ -330,6 +371,7 @@ impl TurnInbox {
                 human: VecDeque::new(),
                 routine: VecDeque::new(),
                 senders: 1,
+                closed: false,
             }),
             ready: Condvar::new(),
         });
@@ -337,6 +379,7 @@ impl TurnInbox {
             TurnSender {
                 inbox: Arc::clone(&inbox),
                 live: true,
+                lanes: Arc::default(),
             },
             Self { inbox },
         )
@@ -427,7 +470,7 @@ pub struct TurnPool {
 
 /// One lane's runtime handle, as the dispatcher sees it.
 struct LaneRuntime {
-    sender: mpsc::Sender<TurnCommand>,
+    sender: TurnSender,
     /// Commands handed to this lane that have not settled yet, including the
     /// one it is running. The dispatcher sends new chats to the lightest lane.
     in_flight: Arc<AtomicUsize>,
@@ -436,8 +479,8 @@ struct LaneRuntime {
 /// One lane's queue, created before its engine so work can be handed over while
 /// that engine is still starting.
 struct LaneQueue {
-    sender: mpsc::Sender<TurnCommand>,
-    receiver: mpsc::Receiver<TurnCommand>,
+    sender: TurnSender,
+    receiver: TurnInbox,
     steer_tx: mpsc::Sender<SteerRequest>,
     steer_rx: mpsc::Receiver<SteerRequest>,
     in_flight: Arc<AtomicUsize>,
@@ -471,10 +514,12 @@ pub fn spawn_turn_pool(
     timeout: Duration,
     cancels: CancelRegistry,
 ) -> Result<TurnPool, MarbleError> {
+    events.attach_replies(&mut lock(&state));
     let lanes = lanes.max(1);
     let (sender, inbox) = TurnInbox::channel();
     let steer = SteerSink::default();
     let wiring = LaneWiring {
+        queues: sender.lanes.clone(),
         factory,
         state: Arc::clone(&state),
         store,
@@ -490,13 +535,30 @@ pub fn spawn_turn_pool(
         .name("glass-marble-turns".into())
         .spawn(move || {
             let mut next = 1;
-            while let Some(command) = inbox.recv() {
-                let lane = choose_lane(
+            let mut everyone_lane = None;
+            while let Some(mut command) = inbox.recv() {
+                let everyone = lock(&wiring.state).everyone_pending.contains_key(
+                    &format!("queued-{}", command.request.request_id),
+                );
+                if everyone && command.request.conversation_id.is_none() {
+                    command.request.conversation_id = crate::everyone::default_conversation(&lock(&wiring.state));
+                }
+                let lane = if everyone {
+                    if command.request.conversation_id.is_some() {
+                        everyone_lane = Some(choose_lane(&wiring.state, command.request.conversation_id.as_deref(), &runtimes, &mut next));
+                    }
+                    *everyone_lane.get_or_insert_with(|| choose_lane(
+                        &wiring.state,
+                        command.request.conversation_id.as_deref(),
+                        &runtimes,
+                        &mut next,
+                    ))
+                } else { choose_lane(
                     &wiring.state,
                     command.request.conversation_id.as_deref(),
                     &runtimes,
                     &mut next,
-                );
+                ) };
                 if runtimes[lane].is_none() {
                     // Starting an engine launches a subprocess and greets it,
                     // which can take seconds. Doing that here would hold up
@@ -542,6 +604,7 @@ pub fn spawn_turn_pool(
 
 /// What every lane thread needs besides its own engine session.
 struct LaneWiring {
+    queues: LaneQueues,
     factory: LaneFactory,
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
@@ -555,14 +618,19 @@ struct LaneWiring {
 impl LaneWiring {
     /// The queue one lane drains, ready before its engine is.
     fn queue(&self) -> LaneQueue {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = TurnInbox::channel();
         let (steer_tx, steer_rx) = mpsc::channel();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        self.queues
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((sender.inbox.clone(), in_flight.clone()));
         LaneQueue {
             sender,
             receiver,
             steer_tx,
             steer_rx,
-            in_flight: Arc::new(AtomicUsize::new(0)),
+            in_flight,
         }
     }
 
@@ -638,7 +706,7 @@ impl LaneWiring {
                         // later, instead of leaving them in a queue nothing
                         // drains.
                         let reason = error.to_string();
-                        for command in receiver.iter() {
+                        while let Some(command) = receiver.recv() {
                             in_flight.fetch_sub(1, Ordering::Relaxed);
                             undelivered(
                                 &parts.state,
@@ -673,12 +741,12 @@ fn hand_over(
         return Some(command);
     };
     runtime.in_flight.fetch_add(1, Ordering::Relaxed);
-    match runtime.sender.send(command) {
-        Ok(()) => None,
-        Err(mpsc::SendError(command)) => {
+    match runtime.sender.send_owned(command) {
+        Ok(_) => None,
+        Err(command) => {
             Arc::clone(&runtime.in_flight).fetch_sub(1, Ordering::Relaxed);
             runtimes[lane] = None;
-            Some(command)
+            Some(*command)
         }
     }
 }
@@ -698,17 +766,42 @@ fn undelivered(
 ) {
     let TurnCommand { request, accepted } = command;
     let queued_id = format!("queued-{}", request.request_id);
-    let conversation_id = request.conversation_id.clone().unwrap_or_default();
+    let conversation_id = request
+        .conversation_id
+        .clone()
+        .unwrap_or_else(|| format!("recovered-{queued_id}"));
     let message = error.to_string();
     let snapshot = {
         let mut guard = lock(state);
-        guard.set_task_status(&queued_id, "failed");
+        if guard
+            .tasks
+            .iter()
+            .any(|task| task.id == queued_id && task.status == "cancelled")
+        {
+            return;
+        }
+        guard.upsert_task(TaskRecord {
+            id: queued_id.clone(),
+            conversation_id: conversation_id.clone(),
+            status: "failed".into(),
+            owner: "agent".into(),
+            prompt: request.text.clone(),
+            at: now_millis(),
+            marble_id: String::new(),
+            routine_id: request.routine_id.clone().unwrap_or_default(),
+        });
+        guard.bind_thread(&queued_id, request.thread_id.as_deref());
+        guard.conversation_mut(&conversation_id);
+        if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
+            task.conversation_id = conversation_id.clone();
+        }
+        guard.record_failure(&conversation_id, &queued_id, &message);
+        crate::everyone::claim(&mut guard, &queued_id, &queued_id);
+        crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
         guard.bump();
         guard.clone()
     };
-    if let Some(store) = store {
-        store::persist(store, &snapshot);
-    }
+    store::persist_optional(store, &snapshot);
     // Whoever is still waiting for admission hears the failure; a surface that
     // already answered `202` learns it from the row and the stream.
     let _ = accepted.send(Err(error));
@@ -716,19 +809,26 @@ fn undelivered(
         &conversation_id,
         &queued_id,
         "error",
-        json!({"message": message, "revision": snapshot.revision}),
+        json!({"message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&message), "revision": snapshot.revision}),
     );
 }
 
 /// Drain one lane's queue until the last sender is gone.
 fn drain(
     lane: u8,
-    receiver: mpsc::Receiver<TurnCommand>,
+    receiver: TurnInbox,
     in_flight: Arc<AtomicUsize>,
     mut conversation: Conversation,
     parts: LaneParts,
 ) {
-    while let Ok(command) = receiver.recv() {
+    loop {
+        let Some(command) = receiver.recv_timeout(Duration::from_secs(1)) else {
+            if lock_inbox(&receiver.inbox).senders == 0 {
+                break;
+            }
+            conversation.check_idle_transport(&parts.state);
+            continue;
+        };
         run_command(
             command,
             lane,
@@ -760,17 +860,17 @@ fn choose_lane(
     if runtimes.is_empty() {
         return 0;
     }
-    if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
-        let bound = state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+    let mut state = lock(state);
+    let record = conversation_id.and_then(|id| {
+        state
             .conversations
-            .iter()
+            .iter_mut()
             .find(|record| record.id == id)
-            .map(|record| usize::from(record.lane));
-        if let Some(lane) = bound {
-            return lane.min(runtimes.len() - 1);
-        }
+    });
+    if let Some(record) = &record
+        && record.lane != ConversationRecord::UNASSIGNED_LANE
+    {
+        return usize::from(record.lane).min(runtimes.len() - 1);
     }
     let mut best = *next % runtimes.len();
     let mut best_load = usize::MAX;
@@ -786,6 +886,10 @@ fn choose_lane(
         }
     }
     *next = (best + 1) % runtimes.len();
+    if let Some(record) = record {
+        // Reserve the lane before dispatch so queued first sends share it.
+        record.lane = best as u8;
+    }
     best
 }
 
@@ -819,12 +923,24 @@ fn run_command(
     cancels: &CancelRegistry,
 ) {
     let TurnCommand { request, accepted } = command;
+    conversation.set_store(store);
     let mut sender = Some(accepted);
     // The surface records a queued placeholder before handing the message over,
     // so a `202 queued` is visible in the document. The real task replaces it as
     // soon as the engine issues an id, and it is removed if the turn never
     // starts at all.
     let queued_id = format!("queued-{}", request.request_id);
+    {
+        let mut guard = lock(state);
+        if guard
+            .tasks
+            .iter()
+            .any(|task| task.id == queued_id && task.status == "cancelled")
+        {
+            return;
+        }
+        guard.set_task_status(&queued_id, "running");
+    }
     // A firing waits in the routine lane, and the routine can be removed or
     // disabled while it waits. Running it then would be work nobody asked for
     // any more, so drop the placeholder and say why instead of starting a turn.
@@ -837,9 +953,7 @@ fn run_command(
             guard.bump();
             guard.clone()
         };
-        if let Some(store) = store {
-            store::persist(store, &snapshot);
-        }
+        store::persist_optional(store, &snapshot);
         events.publish(
             "",
             "",
@@ -860,14 +974,15 @@ fn run_command(
         Ok(true) => {
             let (snapshot, restarts) = {
                 let mut guard = lock(state);
-                guard.presence.runtime.note_restart();
+                guard
+                    .presence
+                    .runtime
+                    .note_engine_restart(conversation.engine_id());
                 guard.bump();
                 let restarts = guard.presence.runtime.restarts;
                 (guard.clone(), restarts)
             };
-            if let Some(store) = store {
-                store::persist(store, &snapshot);
-            }
+            store::persist_optional(store, &snapshot);
             events.publish(
                 "",
                 "",
@@ -878,7 +993,10 @@ fn run_command(
         Err(error) => {
             {
                 let mut guard = lock(state);
-                guard.presence.runtime.note_failure(error.to_string());
+                guard
+                    .presence
+                    .runtime
+                    .note_engine_failure(conversation.engine_id(), error.to_string());
                 guard.tasks.retain(|task| task.id != queued_id);
                 guard.bump();
             }
@@ -911,11 +1029,37 @@ fn run_command(
         guard.model.trim().to_string()
     };
     conversation.set_model((!model.is_empty()).then_some(model));
-    let turn = MarbleTurn {
-        conversation_id: request.conversation_id.clone(),
+    let conversation_id = request.conversation_id.clone().or_else(|| {
+        let state = lock(state);
+        state
+            .everyone_pending
+            .contains_key(&queued_id)
+            .then(|| crate::everyone::default_conversation(&state))
+            .flatten()
+            .filter(|id| {
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == *id && record.lane == lane)
+            })
+    });
+    let mut turn = MarbleTurn {
+        conversation_id: conversation_id.clone(),
         request_id: request.request_id.clone(),
-        input: turn_input(state, &prompt),
+        input: crate::normalize::engine_input(
+            &lock(state),
+            conversation_id.as_deref(),
+            "marble",
+            &prompt,
+        ),
     };
+    if let Some(context) = request
+        .thread_id
+        .as_deref()
+        .and_then(|id| lock(state).thread_preamble(id))
+    {
+        turn.input.text = format!("{context}\n\n{}", turn.input.text);
+    }
     let mut accepted_turn: Option<AcceptedTurn> = None;
     let routine_id = request.routine_id.clone();
     let cancel = Arc::clone(&request.cancel);
@@ -924,7 +1068,9 @@ fn run_command(
             conversation_id: conversation_id.to_string(),
             task_id: task_id.to_string(),
         };
-        accepted_turn = Some(identity.clone());
+        if let Some(previous) = accepted_turn.replace(identity.clone()) {
+            cancels.forget(&previous.task_id);
+        }
         // The worker registers the flag, so every admitted turn is cancellable —
         // including one a routine fired or one a resume dispatched.
         cancels.register(task_id, Arc::clone(&cancel));
@@ -947,7 +1093,10 @@ fn run_command(
                 record.task_ids.push(task_id.to_string());
             }
             guard.tasks.retain(|task| task.id != queued_id);
+            guard.bind_thread(task_id, request.thread_id.as_deref());
+            crate::everyone::claim(&mut guard, &queued_id, task_id);
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: task_id.to_string(),
                 conversation_id: conversation_id.to_string(),
                 status: "running".into(),
@@ -957,11 +1106,21 @@ fn run_command(
                 routine_id: routine_id.clone().unwrap_or_default(),
             });
             guard.push_transcript(TranscriptEntry {
+                id: request
+                    .client_message
+                    .as_ref()
+                    .map(|message| message.entry_id.clone())
+                    .unwrap_or_default(),
+                client_message_id: request
+                    .client_message
+                    .as_ref()
+                    .map(|message| message.id.clone()),
                 conversation_id: conversation_id.to_string(),
                 kind: "user".into(),
                 text: prompt.clone(),
                 task_id: task_id.to_string(),
                 at: now,
+                ..Default::default()
             });
             if let Some(routine_id) = &routine_id {
                 if request.routine_counted {
@@ -972,17 +1131,28 @@ fn run_command(
                     guard.routines.note_run(routine_id, task_id, now);
                 }
             }
-            guard.memory.note_use();
+            guard.memory.note_use("marble");
             guard.clone()
         };
-        if let Some(store) = store {
-            store::persist(store, &snapshot);
-        }
+        store::persist_optional(store, &snapshot);
         // The conversation is durable with its lane before the caller is told
         // it exists, so the very next turn or correction is routed to the
         // engine that owns the session instead of guessing lane zero.
         if let Some(sender) = sender.take() {
             let _ = sender.send(Ok(identity));
+        }
+        if let Some(client) = &request.client_message
+            && let Some(entry) = snapshot
+                .transcript
+                .iter()
+                .find(|entry| entry.id == client.entry_id)
+        {
+            events.publish(
+                conversation_id,
+                task_id,
+                "entry",
+                serde_json::to_value(entry).unwrap(),
+            );
         }
         events.publish(
             conversation_id,
@@ -1024,6 +1194,7 @@ fn run_command(
                         text: reply.reasoning.clone(),
                         task_id: reply.task_id.clone(),
                         at: now,
+                        ..Default::default()
                     });
                 }
                 if !reply.text.trim().is_empty() {
@@ -1033,9 +1204,11 @@ fn run_command(
                         text: reply.text.clone(),
                         task_id: reply.task_id.clone(),
                         at: now,
+                        ..Default::default()
                     });
                 }
                 guard.routines.note_settled(&reply.task_id, status);
+                crate::everyone::mirror_settlement(&mut guard, &reply.task_id, &reply.text, status);
                 // A durable detail is offered, never memorized silently.
                 let suggestion = memory::detect(&prompt).and_then(|(text, kind, reason)| {
                     guard
@@ -1045,9 +1218,7 @@ fn run_command(
                 });
                 (guard.clone(), suggestion)
             };
-            if let Some(store) = store {
-                store::persist(store, &snapshot);
-            }
+            store::persist_optional(store, &snapshot);
             events.publish(
                 &reply.conversation_id,
                 &reply.task_id,
@@ -1101,50 +1272,68 @@ fn run_command(
             }
         }
         Err(error) => {
+            if conversation.transport_failed() {
+                lock(state)
+                    .presence
+                    .runtime
+                    .note_engine_failure(conversation.engine_id(), error.to_string());
+            }
             if let Some(sender) = sender.take() {
                 // The turn never started, so the queued placeholder must not
                 // outlive it and look like work that is still waiting.
                 let snapshot = {
                     let mut guard = lock(state);
-                    guard.tasks.retain(|task| task.id != queued_id);
+                    let conversation_id = request
+                        .conversation_id
+                        .clone()
+                        .unwrap_or_else(|| format!("recovered-{queued_id}"));
+                    guard.upsert_task(TaskRecord {
+                        id: queued_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                        status: "failed".into(),
+                        owner: "agent".into(),
+                        prompt: request.text.clone(),
+                        at: now_millis(),
+                        marble_id: String::new(),
+                        routine_id: request.routine_id.clone().unwrap_or_default(),
+                    });
+                    guard.conversation_mut(&conversation_id);
+                    if let Some(task) = guard.tasks.iter_mut().find(|t| t.id == queued_id) {
+                        task.conversation_id = conversation_id.clone();
+                    }
+                    guard.bind_thread(&queued_id, request.thread_id.as_deref());
+                    guard.record_failure(&conversation_id, &queued_id, &error.to_string());
+                    crate::everyone::claim(&mut guard, &queued_id, &queued_id);
+                    crate::everyone::mirror_settlement(&mut guard, &queued_id, "", "failed");
                     guard.bump();
                     guard.clone()
                 };
-                if let Some(store) = store {
-                    store::persist(store, &snapshot);
-                }
+                store::persist_optional(store, &snapshot);
                 let _ = sender.send(Err(error));
                 return;
             }
             if let Some(identity) = &accepted_turn {
                 cancels.forget(&identity.task_id);
-                let transport_failed = conversation.transport_failed();
                 let snapshot = {
                     let mut guard = lock(state);
                     guard.presence.mark_settled();
-                    if transport_failed {
-                        guard.presence.runtime.note_failure(error.to_string());
-                    }
                     guard.bump();
                     guard.set_task_status(&identity.task_id, "failed");
                     guard.routines.note_settled(&identity.task_id, "failed");
-                    guard.push_transcript(TranscriptEntry {
-                        conversation_id: identity.conversation_id.clone(),
-                        kind: "system".into(),
-                        text: error.to_string(),
-                        task_id: identity.task_id.clone(),
-                        at: now_millis(),
-                    });
+                    guard.record_failure(
+                        &identity.conversation_id,
+                        &identity.task_id,
+                        &error.to_string(),
+                    );
+                    crate::everyone::mirror_settlement(&mut guard, &identity.task_id, "", "failed");
                     guard.clone()
                 };
-                if let Some(store) = store {
-                    store::persist(store, &snapshot);
-                }
+                store::persist_optional(store, &snapshot);
                 events.publish(
                     &identity.conversation_id,
                     &identity.task_id,
                     "error",
-                    json!({"message": error.to_string(), "revision": snapshot.revision}),
+                    json!({"message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&error.to_string()), "revision": snapshot.revision}),
                 );
                 notify::spawn_delivery(
                     snapshot.notifications.clone(),
@@ -1152,13 +1341,18 @@ fn run_command(
                     Notification::new(
                         "failed",
                         "Marble hit a problem",
-                        error.to_string(),
+                        crate::failure::MESSAGE,
                         &identity.conversation_id,
                         &identity.task_id,
                     ),
                 );
             } else {
-                events.publish("", "", "error", json!({ "message": error.to_string() }));
+                events.publish(
+                    "",
+                    &format!("queued-{}", request.request_id),
+                    "error",
+                    json!({ "message": crate::failure::MESSAGE }),
+                );
             }
         }
     }
@@ -1166,22 +1360,17 @@ fn run_command(
 
 /// Carry remembered facts into the turn as context, so memory is used rather
 /// than merely stored.
+#[cfg(test)]
 fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
-    let mut input = to_turn_input(&InboundMessage::new(text));
-    let block = {
-        let guard = lock(state);
-        guard.memory.context_block()
-    };
-    if let Some(block) = block {
-        input.context.push(ContextBlock::Text { text: block });
-    }
-    input
+    crate::normalize::engine_input(&lock(state), None, "marble", text)
 }
 
 /// Convenience constructor for one inbound message.
 impl TurnRequest {
     pub fn new(conversation_id: Option<String>, text: impl Into<String>) -> Self {
         Self {
+            client_message: None,
+            thread_id: None,
             conversation_id,
             text: text.into(),
             request_id: crate::next_request_id(),
@@ -1216,11 +1405,33 @@ mod tests {
     use super::*;
 
     fn lane_with(load: usize) -> Option<LaneRuntime> {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = TurnInbox::channel();
         Some(LaneRuntime {
             sender,
             in_flight: Arc::new(AtomicUsize::new(load)),
         })
+    }
+
+    #[test]
+    fn cancellation_removes_commands_from_a_lane_queue() {
+        let (sender, _) = TurnInbox::channel();
+        let (lane, receiver) = TurnInbox::channel();
+        let in_flight = Arc::new(AtomicUsize::new(1));
+        sender
+            .lanes
+            .lock()
+            .unwrap()
+            .push((lane.inbox.clone(), in_flight.clone()));
+        let request = TurnRequest::new(None, "never run");
+        let id = format!("queued-{}", request.request_id);
+        lane.send(TurnCommand {
+            request,
+            accepted: mpsc::channel().0,
+        })
+        .unwrap();
+        sender.remove_queued(&id);
+        assert!(receiver.try_recv().is_none());
+        assert_eq!(in_flight.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1229,6 +1440,7 @@ mod tests {
         {
             let mut guard = state.lock().unwrap();
             guard.conversation_mut("c-2").lane = 2;
+            guard.conversation_mut("empty").lane = ConversationRecord::UNASSIGNED_LANE;
             guard.bump();
         }
         let runtimes = vec![lane_with(0), lane_with(0), lane_with(0)];
@@ -1246,11 +1458,14 @@ mod tests {
         // real lane instead of failing the admission.
         let mut next = 0;
         assert_eq!(choose_lane(&state, Some("unknown"), &busy, &mut next), 1);
+        next = 0;
+        assert_eq!(choose_lane(&state, Some("empty"), &busy, &mut next), 1);
+        assert_eq!(choose_lane(&state, Some("empty"), &busy, &mut next), 1);
     }
 
     #[test]
     fn a_lane_whose_thread_stopped_hands_the_command_back() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = TurnInbox::channel();
         // The lane's thread is gone, so its queue can never reach an engine.
         drop(receiver);
         let mut runtimes = vec![Some(LaneRuntime {
@@ -1380,16 +1595,14 @@ mod tests {
         let mut product = ProductState::default();
         let plain = turn_input(&Arc::new(Mutex::new(product.clone())), "hello");
         assert!(plain.context.is_empty());
+        assert!(plain.text.contains("Current date and time:"));
         product
             .memory
-            .remember("my name is Azhar", "role", "c1", true)
+            .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
-        assert_eq!(with_memory.context.len(), 1);
-        assert_eq!(with_memory.text, "hello");
-        match &with_memory.context[0] {
-            ContextBlock::Text { text } => assert!(text.contains("my name is Azhar")),
-            other => panic!("unexpected context block: {other:?}"),
-        }
+        assert!(with_memory.context.is_empty());
+        assert!(with_memory.text.ends_with("[User message]\nhello"));
+        assert!(with_memory.text.contains("my name is Azhar"));
     }
 }

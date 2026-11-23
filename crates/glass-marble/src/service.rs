@@ -46,6 +46,8 @@ pub struct ServiceSpec {
     pub port: u16,
     pub profile: String,
     pub token_file: Option<PathBuf>,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
     pub log_file: PathBuf,
 }
 
@@ -68,6 +70,14 @@ impl ServiceSpec {
         if let Some(token_file) = &self.token_file {
             arguments.push("--token-file".to_string());
             arguments.push(token_file.display().to_string());
+        }
+        if let Some(tls_cert) = &self.tls_cert {
+            arguments.push("--tls-cert".to_string());
+            arguments.push(tls_cert.display().to_string());
+        }
+        if let Some(tls_key) = &self.tls_key {
+            arguments.push("--tls-key".to_string());
+            arguments.push(tls_key.display().to_string());
         }
         arguments
     }
@@ -288,6 +298,8 @@ mod tests {
             port: 4783,
             profile: "workspace".into(),
             token_file: Some(PathBuf::from("/home/azhar/.marble-token")),
+            tls_cert: None,
+            tls_key: None,
             log_file: PathBuf::from("/home/azhar/.local/share/glass-marble/marble.log"),
         }
     }

@@ -19,6 +19,8 @@ pub const WORKSPACE_LIST: &str = "glass.workspace.list";
 pub const WORKSPACE_READ: &str = "glass.workspace.read";
 pub const WORKSPACE_WRITE: &str = "glass.workspace.write";
 pub const WORKSPACE_SEARCH: &str = "glass.workspace.search";
+/// Ask another marble to take part of a job and bring back the result.
+pub const MARBLE_ASK: &str = "glass.marble.ask";
 
 /// Whether one governed tool changes the workspace.
 pub fn is_write_tool(name: &str) -> bool {
@@ -367,12 +369,27 @@ impl ToolOutcome {
     }
 }
 
+/// A marble-ask handler: the scope asks, the handler answers.
+pub type AskHandler = std::sync::Arc<dyn Fn(&ToolScope, &Value) -> ToolOutcome + Send + Sync>;
+
 /// Workspace-scoped tool executor owned by the marble host.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolRouter {
     root: PathBuf,
     /// Paths other chats are working in, shared by every lane in this process.
     leases: PathLeases,
+    /// Runs `glass.marble.ask` when the host wires a roster behind it.
+    ask: Option<AskHandler>,
+}
+
+impl std::fmt::Debug for ToolRouter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolRouter")
+            .field("root", &self.root)
+            .field("ask", &self.ask.is_some())
+            .finish()
+    }
 }
 
 impl ToolRouter {
@@ -383,7 +400,17 @@ impl ToolRouter {
         Ok(Self {
             root,
             leases: PathLeases::shared(),
+            ask: None,
         })
+    }
+
+    /// Wire the marble-ask handler for this session.
+    pub fn with_ask(
+        mut self,
+        handler: impl Fn(&ToolScope, &Value) -> ToolOutcome + Send + Sync + 'static,
+    ) -> Self {
+        self.ask = Some(std::sync::Arc::new(handler));
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -451,6 +478,20 @@ impl ToolRouter {
                 }),
             },
             ToolDefinition {
+                name: MARBLE_ASK.into(),
+                description: "Ask another Marble to take part of the job and bring back its                      answer. Use it when another Marble's personality or memory fits the work                      better. You cannot ask yourself, and a Marble that is busy declines."
+                    .into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "description": "The Marble's name."},
+                        "instruction": {"type": "string", "description": "What to do, in plain words."}
+                    },
+                    "required": ["to", "instruction"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDefinition {
                 name: CRATES_TOOL.into(),
                 description: "List the Rust crates in this workspace with their packages, the \
                      binaries they ship, the siblings they depend on, and how this host can reach \
@@ -482,6 +523,13 @@ impl ToolRouter {
             WORKSPACE_SEARCH => self.search(arguments),
             WORKSPACE_WRITE => self.write(scope, arguments),
             CRATES_TOOL => self.crates(arguments),
+            MARBLE_ASK => self
+                .ask
+                .as_ref()
+                .map(|handler| handler(scope, arguments))
+                .unwrap_or_else(|| {
+                    ToolOutcome::error("asking another Marble is not available here")
+                }),
             other => ToolOutcome::error(format!("host has no tool named {other}")),
         }
     }

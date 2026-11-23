@@ -8,10 +8,13 @@
 //! own tools, and only `glass.*` integrations come back to this process for an
 //! explicit decision.
 
+pub mod build_info;
 pub mod control;
 pub mod conversation;
 pub mod crates;
 pub mod events;
+pub mod everyone;
+pub mod failure;
 pub mod host;
 pub mod live;
 pub mod lock;
@@ -26,13 +29,18 @@ pub mod server;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod threads;
+pub mod tls;
 pub mod tools;
 pub mod turn;
 pub mod voice;
 pub mod worker;
 
 pub use control::{ControlEntry, ControlGrant, ControlProfile, ControlState, QueuedTurn, Verdict};
-pub use conversation::{ApprovalInbox, CancelToken, Conversation, SteerRequest};
+pub use conversation::{
+    ApprovalInbox, CancelToken, Conversation, SteerRequest, default_assistant_instructions,
+    marble_session_instructions,
+};
 pub use crates::{BinaryReach, CRATES_TOOL, CrateMap, WorkspaceCrate};
 pub use events::{EventBus, TurnEvent};
 pub use host::{Approval, HostPolicy};
@@ -45,7 +53,9 @@ pub use notify::{
     NotificationSettings, QuietHours, recent_deliveries,
 };
 pub use presence::{PresenceState, RuntimeHealth, Waiting};
-pub use prism::{PRISM_LIMIT, PrismDispatch, PrismMarble, PrismPool, PrismState, plan_dispatch};
+pub use prism::{
+    PRISM_LIMIT, PrismDispatch, PrismMarble, PrismPool, PrismPoolParts, PrismState, plan_dispatch,
+};
 pub use routine::{Routine, RoutineState, Schedule, parse_schedule};
 pub use scheduler::{TICK, spawn_scheduler};
 pub use server::{

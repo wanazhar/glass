@@ -123,7 +123,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 - [Browser crate](../crates/glass-browser/README.md) and
   [Glass development crate](../crates/glass-dev/README.md) — package-level
   APIs and ownership.
-- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant, with a supervised engine, one instance per data directory, health that reports what is actually wrong, and the design note on concurrent sessions
+- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant, with Everyone and Marble chats, shared named-chat intake and paused-message cancellation, responsive web navigation, restart-aware event cursors, and one instance per data directory
   built on the mixed-tool runtime: governance, presence, memory, routines,
   webhook and APNs notifications, on-device voice, a token-protected HTTP
   surface, a responsive WebUI, and the iOS client.
@@ -443,7 +443,8 @@ current user instructions.
 - [Release notes](releases/0.3.14.md) and
   [release evidence](release-evidence.md) — source records and publication
   evidence with version boundaries intact.
-- [Changelog](../CHANGELOG.md) — unreleased changes and historical release
+- [Changelog](../CHANGELOG.md) — unreleased changes, including the Marble web
+  redesign, and historical release
   entries.
 - Generated and fixture Markdown is classified as `generated` in the catalog;
   those files are consumed by tools, tests, or product builds, not user guides.

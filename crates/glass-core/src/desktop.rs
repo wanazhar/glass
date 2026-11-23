@@ -2924,7 +2924,12 @@ mod tests {
         small["bounds"]["width"] = json!(0.5 / WIDTH as f64);
         small["bounds"]["height"] = json!(1.0 / HEIGHT as f64);
         assert_eq!(
-            uncovered_labels(vec![small.clone()], Some(&[editor.clone()]), Some(&windows)).hidden,
+            uncovered_labels(
+                vec![small.clone()],
+                Some(std::slice::from_ref(&editor)),
+                Some(&windows)
+            )
+            .hidden,
             1
         );
         small["bounds"]["width"] = json!(1.0 / WIDTH as f64);

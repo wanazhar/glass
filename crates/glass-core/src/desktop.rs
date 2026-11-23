@@ -1954,7 +1954,7 @@ fn label_window_owner(owner: &Value, windows: &[Value], stack: &[Value]) -> Opti
     let clients = stack
         .iter()
         .enumerate()
-        .filter(|(_, client)| client["pid"].as_u64() == Some(pid))
+        .filter(|(_, client)| client["occluderOnly"] != true && client["pid"].as_u64() == Some(pid))
         .collect::<Vec<_>>();
     let peers = windows
         .iter()
@@ -2794,6 +2794,33 @@ mod tests {
                 .nodes
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn labels_are_occluded_by_popups_but_never_owned_by_them() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
+        let node = json!({"owningWindow":{"windowId":"editor"},"bounds":{"x":0.25,"y":0.15,"width":0.1,"height":0.1}});
+        let stack = [editor.clone(), popup.clone()];
+        assert_eq!(
+            label_window_owner(&node["owningWindow"], &windows, &stack),
+            Some(0)
+        );
+        let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+        assert_eq!((selection.hidden, selection.unknown), (1, 0));
+        assert!(selection.nodes.is_empty());
+        let below = [popup.clone(), editor];
+        assert_eq!(
+            uncovered_labels(vec![node.clone()], Some(&below), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+        assert_eq!(
+            label_window_owner(&node["owningWindow"], &windows, &[popup]),
+            None
         );
     }
 

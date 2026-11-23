@@ -80,20 +80,6 @@ fn parse_list(output: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Parses `xprop -root _NET_CLIENT_LIST_STACKING`, bottom to top.
-fn parse_stacking(output: &str) -> Vec<u64> {
-    output
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .split_once('#')
-        .map(|(_, ids)| ids)
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|id| u64::from_str_radix(id.trim().strip_prefix("0x")?, 16).ok())
-        .collect()
-}
-
 fn window_number(window: &Value) -> Option<u64> {
     u64::from_str_radix(window["id"].as_str()?.strip_prefix("0x")?, 16).ok()
 }
@@ -117,17 +103,13 @@ fn stack(display: &str, xauthority: &Path) -> Result<Vec<Value>, String> {
         "xprop",
         display,
         xauthority,
-        &["-root", "_NET_CLIENT_LIST_STACKING", "_NET_CURRENT_DESKTOP"],
+        &["-root", "_NET_CURRENT_DESKTOP"],
     )?;
-    let order = parse_stacking(&output);
     let desktop = property_numbers(&output, "_NET_CURRENT_DESKTOP")
         .first()
         .copied()
         .ok_or("X11 current desktop is unavailable")?;
     for window in &mut windows {
-        if !window_number(window).is_some_and(|id| order.contains(&id)) {
-            return Err("X11 client list changed while reading window stacking".into());
-        }
         let id = window["id"].as_str().ok_or("missing window id")?;
         let properties = x11_command(
             "xprop",
@@ -145,7 +127,88 @@ fn stack(display: &str, xauthority: &Path) -> Result<Vec<Value>, String> {
         let geometry = x11_command("xwininfo", display, xauthority, &["-id", id])?;
         apply_stack_metadata(window, &properties, &geometry, desktop)?;
     }
+    let tree = x11_command("xwininfo", display, xauthority, &["-root", "-tree"])?;
+    include_popup_occluders(windows, &tree, desktop, |id| {
+        x11_command(
+            "xwininfo",
+            display,
+            xauthority,
+            &["-id", &format!("0x{id:x}")],
+        )
+    })
+}
+
+fn root_stacking(tree: &str, clients: &[u64]) -> Result<Vec<u64>, String> {
+    let mut groups: Vec<(u64, Vec<u64>)> = Vec::new();
+    let mut root_indent = None;
+    for line in tree.lines() {
+        let trimmed = line.trim_start();
+        let Some(id) = trimmed
+            .split_whitespace()
+            .next()
+            .and_then(|id| id.strip_prefix("0x"))
+            .and_then(|id| u64::from_str_radix(id, 16).ok())
+        else {
+            continue;
+        };
+        let indent = line.len() - trimmed.len();
+        if indent == *root_indent.get_or_insert(indent) {
+            groups.push((id, Vec::new()));
+        }
+        if clients.contains(&id)
+            && let Some((_, group)) = groups.last_mut()
+        {
+            group.push(id);
+        }
+    }
+    let found = groups
+        .iter()
+        .flat_map(|(_, group)| group)
+        .collect::<Vec<_>>();
+    if clients.iter().any(|id| !found.contains(&id)) {
+        return Err("X11 client list changed while reading the root window tree".into());
+    }
+    Ok(groups
+        .into_iter()
+        .rev()
+        .flat_map(|(root, group)| {
+            if group.is_empty() {
+                vec![root]
+            } else {
+                group.into_iter().rev().collect()
+            }
+        })
+        .collect())
+}
+
+fn include_popup_occluders(
+    mut windows: Vec<Value>,
+    tree: &str,
+    desktop: i64,
+    mut geometry: impl FnMut(u64) -> Result<String, String>,
+) -> Result<Vec<Value>, String> {
+    let clients = windows.iter().filter_map(window_number).collect::<Vec<_>>();
+    let order = root_stacking(tree, &clients)?;
+    for id in order.iter().filter(|id| !clients.contains(id)) {
+        let geometry = geometry(*id)?;
+        if geometry_field(&geometry, "Override Redirect State:") != Some("yes")
+            || geometry_field(&geometry, "Map State:") != Some("IsViewable")
+            || geometry_field(&geometry, "Class:") != Some("InputOutput")
+        {
+            continue;
+        }
+        let mut popup = json!({"id":format!("0x{id:x}"),"occluderOnly":true});
+        apply_stack_metadata(&mut popup, "", &geometry, desktop)?;
+        popup["visible"] = json!(true);
+        windows.push(popup);
+    }
     Ok(order_by_stacking(windows, &order))
+}
+
+fn geometry_field<'a>(geometry: &'a str, name: &str) -> Option<&'a str> {
+    geometry
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(name).map(str::trim))
 }
 
 fn property_numbers(output: &str, name: &str) -> Vec<i64> {
@@ -169,11 +232,7 @@ fn apply_stack_metadata(
     geometry: &str,
     desktop: i64,
 ) -> Result<(), String> {
-    let field = |name: &str| {
-        geometry
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(name).map(str::trim))
-    };
+    let field = |name: &str| geometry_field(geometry, name);
     let number = |name: &str| {
         field(name)
             .and_then(|value| value.parse::<i64>().ok())
@@ -248,11 +307,19 @@ fn x11_command(
                 format!("Could not run {program}: {error}")
             }
         })?;
+    let mut pipe = child
+        .stdout
+        .take()
+        .ok_or("X11 command produced no output")?;
+    let reader = std::thread::spawn(move || {
+        let mut stdout = String::new();
+        std::io::Read::read_to_string(&mut pipe, &mut stdout).map(|_| stdout)
+    });
     let status = wait_bounded(&mut child)?;
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut pipe, &mut stdout);
-    }
+    let stdout = reader
+        .join()
+        .map_err(|_| "X11 command reader stopped")?
+        .map_err(|error| error.to_string())?;
     if status.success() {
         Ok(stdout)
     } else {
@@ -506,10 +573,7 @@ mod tests {
 
     #[test]
     fn stacking_orders_listed_windows_bottom_to_top() {
-        let order = parse_stacking(
-            "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0xe00003, 0x1a00007, 0x2200004",
-        );
-        assert_eq!(order, [0xe00003, 0x1a00007, 0x2200004]);
+        let order = [0xe00003, 0x1a00007, 0x2200004];
         let windows = vec![
             json!({"id": "0x02200004", "title": "Files"}),
             json!({"id": "0x01a00007", "title": "Mousepad"}),
@@ -520,7 +584,86 @@ mod tests {
             .map(|window| window["title"].clone())
             .collect();
         assert_eq!(titles, ["Mousepad", "Files"]);
-        assert!(parse_stacking("_NET_CLIENT_LIST_STACKING:  not found.").is_empty());
+    }
+
+    #[test]
+    fn x11_commands_drain_large_window_trees() {
+        const DISPLAY: &str = "glass-large-window-tree-test";
+        let tree = "x".repeat(256 * 1024);
+        if std::env::var("DISPLAY").as_deref() == Ok(DISPLAY) {
+            println!("{tree}");
+            return;
+        }
+        let output = x11_command(
+            std::env::current_exe().unwrap().to_str().unwrap(),
+            DISPLAY,
+            Path::new("/nonexistent-xauthority"),
+            &[
+                "--exact",
+                "desktop::windows::tests::x11_commands_drain_large_window_trees",
+                "--nocapture",
+            ],
+        )
+        .unwrap();
+        assert!(output.contains(&tree));
+    }
+
+    #[test]
+    fn popup_occluders_follow_root_stacking_without_including_managed_frames() {
+        let tree = "  Root window id: 0xff\n     5 children:\n     0x20 frame\n        0x2 client\n     0x3 popup\n     0x10 frame\n        0x11 wrapper\n           0x1 client\n     0x4 popup\n     0x5 hidden\n";
+        let windows = vec![json!({"id":"0x1"}), json!({"id":"0x2"})];
+        let geometry = "Absolute upper-left X: -10\nAbsolute upper-left Y: 50\nWidth: 200\nHeight: 100\nOverride Redirect State: yes\nMap State: IsViewable\nClass: InputOutput\n";
+        let stacked = include_popup_occluders(windows, tree, 0, |id| {
+            assert!([3, 4, 5].contains(&id), "managed frames are not occluders");
+            Ok(if id == 5 {
+                geometry.replace("IsViewable", "IsUnMapped")
+            } else {
+                geometry.into()
+            })
+        })
+        .unwrap();
+        let ids = stacked.iter().filter_map(window_number).collect::<Vec<_>>();
+        assert_eq!(ids, [4, 1, 3, 2]);
+        assert_eq!(stacked[2]["visible"], true);
+        assert_eq!(stacked[2]["occluderOnly"], true);
+        assert_eq!(stacked[2]["x"], -10.0 / WIDTH as f64);
+        assert_eq!(stacked[2]["width"], 200.0 / WIDTH as f64);
+        assert!(stacked[2]["pid"].is_null());
+    }
+
+    #[test]
+    fn popup_occluders_require_viewable_output_windows_and_propagate_errors() {
+        let tree = "     0x1 popup\n";
+        let geometry = "Absolute upper-left X: 0\nAbsolute upper-left Y: 0\nWidth: 100\nHeight: 100\nOverride Redirect State: yes\nMap State: IsViewable\nClass: InputOutput\n";
+        for excluded in [
+            geometry.replace("yes", "no"),
+            geometry.replace("IsViewable", "IsUnviewable"),
+            geometry.replace("IsViewable", "IsUnMapped"),
+            geometry.replace("InputOutput", "InputOnly"),
+        ] {
+            assert!(
+                include_popup_occluders(vec![], tree, 0, |_| Ok(excluded.clone()))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(
+            include_popup_occluders(vec![], "", 0, |_| panic!("no windows"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(include_popup_occluders(vec![], tree, 0, |_| Err("closed".into())).is_err());
+        assert!(
+            include_popup_occluders(vec![], tree, 0, |_| Ok(geometry.replace("Width: 100", "")))
+                .is_err()
+        );
+        assert!(
+            include_popup_occluders(vec![json!({"id":"0x2"})], tree, 0, |_| {
+                panic!("missing client must fail closed")
+            })
+            .unwrap_err()
+            .contains("root window tree")
+        );
     }
 
     #[test]
@@ -544,12 +687,6 @@ mod tests {
                 2
             )
             .is_err()
-        );
-        assert_eq!(
-            parse_stacking(
-                "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0x1, 0x2\n_NET_CURRENT_DESKTOP(CARDINAL) = 2"
-            ),
-            [1, 2]
         );
     }
 
@@ -780,6 +917,45 @@ mod xvfb_tests {
         assert_eq!(events.matches("ButtonPress").count(), 6, "{events}");
         assert!(events.matches("MotionNotify").count() >= 10, "{events}");
 
+        {
+            let _popup = spawn(
+                &display,
+                "xmessage",
+                &[
+                    "-title",
+                    "GlassPopup",
+                    "-xrm",
+                    "*overrideRedirect: true",
+                    "-geometry",
+                    "200x100+200+150",
+                    "popup",
+                ],
+                Stdio::null(),
+            );
+            let stacked = eventually(
+                || {
+                    let stacked = stack(&display, xauthority).ok()?;
+                    stacked
+                        .iter()
+                        .any(|window| window["occluderOnly"] == true)
+                        .then_some(stacked)
+                },
+                "the override-redirect popup in the occluder stack",
+            );
+            let owner = stacked
+                .iter()
+                .position(|window| window["id"] == id)
+                .unwrap();
+            assert!(stacked[owner + 1..].iter().any(|window| {
+                window["occluderOnly"] == true
+                    && super::super::window_covers(
+                        window,
+                        250.0 / WIDTH as f64,
+                        200.0 / HEIGHT as f64,
+                    )
+            }));
+        }
+
         // xev ignores WM_DELETE_WINDOW, so close a window that honours it.
         let _message = spawn(
             &display,
@@ -798,7 +974,9 @@ mod xvfb_tests {
         let top = |display: &str| {
             stack(display, xauthority)
                 .ok()?
-                .last()
+                .iter()
+                .rev()
+                .find(|window| window["occluderOnly"] != true)
                 .and_then(|window| window["title"].as_str().map(str::to_owned))
         };
         eventually(

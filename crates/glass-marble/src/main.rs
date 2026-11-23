@@ -23,7 +23,7 @@ const CHAT_LANES: usize = 3;
 #[command(
     name = "glass-marble",
     about = "Always-on, self-hosted personal assistant built on Glass Core",
-    version
+    version = glass_marble::build_info::CLI_VERSION
 )]
 struct Cli {
     /// One-shot message. Omit when using a subcommand.
@@ -69,6 +69,20 @@ enum Commands {
         /// How long a governed tool waits for a human decision before failing closed.
         #[arg(long, default_value_t = 600)]
         approval_wait_secs: u64,
+        /// PEM certificate chain; with --tls-key the port also serves HTTPS.
+        #[arg(long, value_name = "PATH", requires = "tls_key")]
+        tls_cert: Option<PathBuf>,
+        /// PEM private key for --tls-cert.
+        #[arg(long, value_name = "PATH", requires = "tls_cert")]
+        tls_key: Option<PathBuf>,
+    },
+    /// Provision a TLS certificate for `serve --tls-cert` — a real Tailscale
+    /// cert when `tailscale cert` can make one, else a self-signed fallback.
+    /// Tailscale certs expire in ~90 days: rerun and restart to renew.
+    TlsCert {
+        /// Where cert.pem and key.pem land. Defaults to <data-dir>/tls.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
     },
     /// Check this host's data, engine, and configuration.
     Doctor,
@@ -90,6 +104,12 @@ enum Commands {
         profile: String,
         #[arg(long, value_name = "PATH")]
         token_file: Option<PathBuf>,
+        /// PEM certificate chain the service serves HTTPS with.
+        #[arg(long, value_name = "PATH", requires = "tls_key")]
+        tls_cert: Option<PathBuf>,
+        /// PEM private key for --tls-cert.
+        #[arg(long, value_name = "PATH", requires = "tls_cert")]
+        tls_key: Option<PathBuf>,
         /// Write the unit file instead of printing it for review.
         #[arg(long)]
         write: bool,
@@ -152,6 +172,8 @@ fn run() -> Result<(), MarbleError> {
                 timeout_secs,
                 profile,
                 approval_wait_secs,
+                tls_cert,
+                tls_key,
             } => serve(
                 &cli,
                 ServeOptions {
@@ -162,6 +184,8 @@ fn run() -> Result<(), MarbleError> {
                     token_file,
                     timeout_secs,
                     approval_wait_secs,
+                    tls_cert,
+                    tls_key,
                     profile: ControlProfile::parse(&profile).ok_or_else(|| {
                         MarbleError::Protocol(format!(
                             "unknown control profile {profile}: use observe, workspace, or unattended"
@@ -169,6 +193,14 @@ fn run() -> Result<(), MarbleError> {
                     })?,
                 },
             ),
+            Commands::TlsCert { dir } => {
+                let dir = dir.unwrap_or_else(|| data_dir.join("tls"));
+                let made = glass_marble::tls::make_identity(&dir)
+                    .map_err(MarbleError::Protocol)?;
+                glass_marble::tls::describe(&made, &mut std::io::stdout())
+                    .map_err(MarbleError::Io)?;
+                Ok(())
+            }
             Commands::Doctor => doctor(&cli, &cwd, &data_dir),
             Commands::Restore { from } => restore(&data_dir, from.as_deref()),
             Commands::InstallService {
@@ -176,6 +208,8 @@ fn run() -> Result<(), MarbleError> {
                 host,
                 profile,
                 token_file,
+                tls_cert,
+                tls_key,
                 write,
             } => install_service(
                 &cli,
@@ -186,6 +220,8 @@ fn run() -> Result<(), MarbleError> {
                     host: &host,
                     profile: &profile,
                     token_file,
+                    tls_cert,
+                    tls_key,
                     write,
                 },
             ),
@@ -265,6 +301,8 @@ struct ServeOptions<'a> {
     token_file: Option<PathBuf>,
     timeout_secs: u64,
     approval_wait_secs: u64,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
     profile: ControlProfile,
 }
 
@@ -277,6 +315,8 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         token_file,
         timeout_secs,
         approval_wait_secs,
+        tls_cert,
+        tls_key,
         profile,
     } = options;
     let token = read_token(token_file.as_deref())?;
@@ -322,6 +362,19 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     if recovered > 0 {
         tracing::warn!(recovered, "marked interrupted turns from the previous run");
     }
+    // Tasks recorded for conversations that no longer exist are orphans —
+    // nothing can open them, and a surface would show them as work anyway.
+    let orphaned = loaded.prune_orphaned_tasks();
+    let orphaned_everyone = loaded.prune_everyone_entries();
+    if orphaned_everyone > 0 {
+        tracing::info!(
+            orphaned_everyone,
+            "dropped Everyone entries quoting deleted turns"
+        );
+    }
+    if orphaned > 0 {
+        tracing::info!(orphaned, "pruned tasks whose conversations are gone");
+    }
     // A document written by an older build may already be past the bounds, so
     // the first thing a restart does is fold it back in.
     let pruned = loaded.prune(glass_marble::worker::now_millis());
@@ -345,6 +398,23 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     let lane_events = events.clone();
     let lane_state = Arc::clone(&state);
     let approval_wait = approval_wait_secs.max(30);
+    // The Prism roster gets its own engine per marble, started on first use: a
+    // host that never swarms pays nothing for it, and each marble keeps a
+    // workspace and session of its own.
+    let prism_factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(runtime_factory(cli));
+    let prism = Arc::new(PrismPool::new(glass_marble::prism::PrismPoolParts {
+        factory: prism_factory,
+        cwd: cwd.to_path_buf(),
+        sessions: sessions_dir(data_dir).join("prism"),
+        state: Arc::clone(&state),
+        store: Some(Arc::clone(&store)),
+        live: live.clone(),
+        events: events.clone(),
+        cancels: cancels.clone(),
+        approvals: approvals.clone(),
+        timeout,
+    }));
+    let lane_prism = Arc::downgrade(&prism);
     let lane_factory: LaneFactory = Arc::new(move |index| {
         let sessions = if index == 0 {
             lane_root.clone()
@@ -361,12 +431,31 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
             &sessions,
             HostPolicy::asking(),
             lane_approvals.clone(),
-            ToolRouter::new(&lane_cwd)?,
+            ToolRouter::new(&lane_cwd)?.with_ask({
+                let pool = lane_prism.clone();
+                move |scope, arguments| {
+                    let Some(pool) = pool.upgrade() else {
+                        return glass_marble::tools::ToolOutcome::error("the marble pool is gone");
+                    };
+                    pool.ask(scope, arguments)
+                }
+            }),
             lane_events.clone(),
         )?;
+        let instructions_state = Arc::clone(&lane_state);
+        let instructions_cwd = lane_cwd.clone();
         Ok(conversation
             .with_model(lane_model.clone())
             .with_product(Arc::clone(&lane_state))
+            .with_instructions_fn(move || {
+                let persona = {
+                    let guard = instructions_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    guard.prism.default_persona.clone()
+                };
+                glass_marble::default_assistant_instructions(&persona, &instructions_cwd)
+            })
             .with_respawn(move || {
                 let mut command = Command::new(&respawn_binary);
                 command.arg("runtime");
@@ -395,22 +484,6 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
         TICK,
     );
     notify::spawn_event_watcher(events.clone(), Arc::clone(&state));
-    // The Prism roster gets its own engine per marble, started on first use: a
-    // host that never swarms pays nothing for it, and each marble keeps a
-    // workspace and session of its own.
-    let prism_factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(runtime_factory(cli));
-    let prism = Arc::new(PrismPool::new(glass_marble::prism::PrismPoolParts {
-        factory: prism_factory,
-        cwd: cwd.to_path_buf(),
-        sessions: sessions_dir(data_dir).join("prism"),
-        state: Arc::clone(&state),
-        store: Some(Arc::clone(&store)),
-        live: live.clone(),
-        events: events.clone(),
-        cancels: cancels.clone(),
-        approvals: approvals.clone(),
-        timeout,
-    }));
     // The workspace's own crates, read once at startup: which crate owns a
     // behaviour is a question about the manifest, not about a file path.
     let crate_map = glass_marble::CrateMap::load(cwd);
@@ -429,6 +502,20 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     .with_steer_sink(pool.steer)
     .with_prism(Arc::clone(&prism))
     .with_crates(crate_map);
+    prism.resume_held();
+    let server = match (tls_cert, tls_key) {
+        (Some(cert), Some(key)) => {
+            let identity =
+                glass_marble::tls::load_identity(&cert, &key).map_err(MarbleError::Protocol)?;
+            tracing::info!(
+                cert_sha256 = %identity.leaf_sha256_hex(),
+                cert = %cert.display(),
+                "serving HTTPS on the same port"
+            );
+            server.with_tls(Arc::new(identity))
+        }
+        _ => server,
+    };
     let address = server.local_addr();
     println!("glass-marble listening on http://{address}");
     println!("pid: {}", std::process::id());
@@ -640,6 +727,8 @@ struct ServiceOptions<'a> {
     host: &'a str,
     profile: &'a str,
     token_file: Option<PathBuf>,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
     write: bool,
 }
 
@@ -652,6 +741,8 @@ fn install_service(cli: &Cli, options: ServiceOptions<'_>) -> Result<(), MarbleE
         host,
         profile,
         token_file,
+        tls_cert,
+        tls_key,
         write,
     } = options;
     let profile = ControlProfile::parse(profile).ok_or_else(|| {
@@ -668,6 +759,8 @@ fn install_service(cli: &Cli, options: ServiceOptions<'_>) -> Result<(), MarbleE
         port,
         profile: profile.as_str().to_string(),
         token_file,
+        tls_cert,
+        tls_key,
         log_file: service::default_log_file(data_dir),
     };
     let outcome = service::install(service::current_platform(), &spec, write)

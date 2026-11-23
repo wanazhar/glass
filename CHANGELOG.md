@@ -22,6 +22,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Marble's web UI now uses Everyone, Marbles, Activity, and Settings, with
+  responsive navigation, named chats, identity and memory editors, scheduled
+  activity, and separate connection and engine-health indicators. Markdown
+  replies render safely, and paused messages can be withdrawn before resuming.
 - Glass Core is the sole resident engine. Glass no longer includes the Pi
   runtime, selector, setup flow, or Pi-specific command surface. Glass retains
   ownership of browser, Git, review, and workspace integrations while Core

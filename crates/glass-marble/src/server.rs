@@ -18,13 +18,16 @@ use crate::voice;
 use crate::worker::{CancelRegistry, SteerSink, TurnCommand, TurnRequest, TurnSender, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 pub const STATIC_HTML: &str = include_str!("static/index.html");
+const STATIC_CSS: &str = include_str!("static/app.css");
+const STATIC_JS: &str = include_str!("static/app.js");
+const STATIC_LOGIC: &str = include_str!("static/logic.js");
 /// Largest accepted JSON request body.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Largest accepted request head.
@@ -194,6 +197,27 @@ fn host_of(authority: &str) -> &str {
     authority.split('/').next().unwrap_or(authority)
 }
 
+/// Percent-decoding for a path segment: no `+` handling, which is a query-only
+/// form convention. Approval request ids carry `:` and clients send it escaped.
+fn decode_path_segment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16)
+        {
+            decoded.push(byte);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
 fn decode_query(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -248,6 +272,11 @@ impl AccessPolicy {
         self.token.is_some()
     }
 
+    /// The configured token, for the tls-proof HMAC; never logged or served raw.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     fn matches(&self, candidate: &str) -> bool {
         self.token
             .as_deref()
@@ -291,6 +320,60 @@ impl AccessPolicy {
     /// Validate a token submitted to the login route.
     pub fn accepts_token(&self, candidate: &str) -> bool {
         self.matches(candidate)
+    }
+}
+
+/// Which credential channel a request carried. The log records the channel,
+/// never the credential.
+fn auth_kind(head: &RequestHead) -> &'static str {
+    if head.header("authorization").is_some() {
+        "bearer"
+    } else if head.header("x-marble-token").is_some() {
+        "x-marble-token"
+    } else if head.cookie(SESSION_COOKIE).is_some() {
+        "cookie"
+    } else if head.query_param("token").is_some() {
+        "query"
+    } else {
+        "none"
+    }
+}
+
+/// One request/response line for the service log. The path is logged without
+/// its query string because the query may carry a `token=` credential, and the
+/// user agent is the only header value that may appear here.
+struct RequestLog<'a> {
+    peer: &'a str,
+    method: &'a str,
+    path: &'a str,
+    status: u16,
+    auth: &'a str,
+    tls: bool,
+    authorized: bool,
+    head_bytes: usize,
+    content_length: usize,
+    user_agent: &'a str,
+    elapsed: Duration,
+}
+
+impl RequestLog<'_> {
+    fn line(&self) -> String {
+        let agent: String = self.user_agent.chars().take(60).collect();
+        format!(
+            "request peer={} method={} path={} status={} auth={} tls={} authorized={} \
+             head={}B body={}B ua=\"{}\" ms={}",
+            self.peer,
+            printable(self.method),
+            printable(self.path),
+            self.status,
+            self.auth,
+            if self.tls { "yes" } else { "no" },
+            if self.authorized { "yes" } else { "no" },
+            self.head_bytes,
+            self.content_length,
+            agent,
+            self.elapsed.as_millis()
+        )
     }
 }
 
@@ -370,6 +453,7 @@ impl LoginThrottle {
 
 /// Local server owning product state, events, and explicit host decisions.
 pub struct MarbleServer {
+    client_send_lock: Mutex<()>,
     listener: TcpListener,
     state: Arc<Mutex<ProductState>>,
     store: Option<Arc<StateStore>>,
@@ -385,11 +469,23 @@ pub struct MarbleServer {
     prism: Option<Arc<PrismPool>>,
     /// The workspace crate map, when the host was started inside one.
     crates: Option<CrateMap>,
+    /// The TLS identity, when the operator serves https on the same port.
+    tls: Option<Arc<crate::tls::TlsIdentity>>,
 }
 
 impl MarbleServer {
     pub fn new(parts: MarbleServerParts) -> Self {
+        {
+            let mut state = parts.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.ensure_entry_ids();
+            state.prune_threads();
+            parts.events.attach_replies(&mut state);
+            for (task, thread) in &state.task_threads {
+                parts.events.bind_thread(task, thread);
+            }
+        }
         Self {
+            client_send_lock: Mutex::new(()),
             listener: parts.listener,
             state: parts.state,
             store: parts.store,
@@ -402,7 +498,14 @@ impl MarbleServer {
             login: LoginThrottle::default(),
             prism: None,
             crates: None,
+            tls: None,
         }
+    }
+
+    /// Serve https on the same port next to plain http.
+    pub fn with_tls(mut self, tls: Arc<crate::tls::TlsIdentity>) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Attach the Prism pool. Sessions that never swarm keep the roster read-only.
@@ -453,6 +556,7 @@ impl MarbleServer {
         let path = head.path();
         if head.method == "GET" && (path == "/" || path == "/index.html") {
             return Response::html(STATIC_HTML)
+                .with_header("Cache-Control", "no-cache")
                 .with_header("X-Content-Type-Options", "nosniff")
                 .with_header("Referrer-Policy", "no-referrer")
                 .with_header(
@@ -460,6 +564,23 @@ impl MarbleServer {
                     "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
                      script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
                 );
+        }
+        if head.method == "GET" {
+            let asset = match path {
+                "/app.css" => Some((STATIC_CSS, "text/css; charset=utf-8")),
+                "/app.js" => Some((STATIC_JS, "text/javascript; charset=utf-8")),
+                "/logic.js" => Some((STATIC_LOGIC, "text/javascript; charset=utf-8")),
+                _ => None,
+            };
+            if let Some((body, content_type)) = asset {
+                return Response {
+                    status: 200,
+                    body: body.into(),
+                    headers: vec![("Content-Type".into(), content_type.into())],
+                }
+                .with_header("Cache-Control", "no-cache")
+                .with_header("X-Content-Type-Options", "nosniff");
+            }
         }
         if head.method == "GET" && path == "/healthz" {
             // Liveness means the pieces Marble depends on are actually working:
@@ -494,6 +615,7 @@ impl MarbleServer {
                 json!({
                     "ok": healthy,
                     "version": env!("CARGO_PKG_VERSION"),
+                    "build": crate::build_info::document(),
                     "pid": std::process::id(),
                     "revision": revision,
                     "sequence": self.events.sequence(),
@@ -517,6 +639,15 @@ impl MarbleServer {
         if head.method == "POST" && path == "/api/login" {
             return self.login(body, peer);
         }
+        if head.method == "POST" && path == "/api/logout" {
+            if !head.same_origin() {
+                return Response::error(403, "cross_origin_request");
+            }
+            return Response::json(200, json!({"ok": true})).with_header(
+                "Set-Cookie",
+                "marble_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+            );
+        }
         if !self.policy.authorize(head) {
             return Response::error(401, "unauthorized");
         }
@@ -528,20 +659,57 @@ impl MarbleServer {
                 || head.query_param("transcript").as_deref() == Some("0");
             return self.state_response(head, lean);
         }
+        if path == "/api/threads" {
+            return self.threads_route(head, body);
+        }
+        if head.method == "GET"
+            && let Some(id) = path.strip_prefix("/api/threads/")
+        {
+            let state = self.lock_state();
+            return match state
+                .threads
+                .iter()
+                .find(|t| t.id == decode_path_segment(id))
+            {
+                Some(thread) => match history_page(state.thread_entry_refs(thread), head, None) {
+                    Ok(page) => Response::json(
+                        200,
+                        json!({"thread":thread,"entries":page.entries,"hasMore":page.has_more,"nextBefore":page.next_before}),
+                    ),
+                    Err(response) => response,
+                },
+                None => Response::error(404, "unknown_thread"),
+            };
+        }
+        if head.method == "GET" && path == "/api/search" {
+            let query = head.query_param("q").unwrap_or_default();
+            let thread = head.query_param("thread_id");
+            let limit = head
+                .query_param("limit")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30);
+            return Response::json(
+                200,
+                json!({"hits":self.lock_state().search_messages(&query, thread.as_deref(), limit)}),
+            );
+        }
         if head.method == "GET" && path == "/api/transcript/search" {
             return self.search_transcript(head);
         }
         if head.method == "GET" && path == "/api/transcript" {
             return self.transcript_response(head);
         }
+        if head.method == "POST" && path == "/api/conversations" {
+            return self.create_conversation();
+        }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/conversations/")
         {
             if let Some(id) = rest.strip_suffix("/rename") {
-                return self.rename_conversation(id, body);
+                return self.rename_conversation(&decode_path_segment(id), body);
             }
             if let Some(id) = rest.strip_suffix("/delete") {
-                return self.delete_conversation(id);
+                return self.delete_conversation(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/events" {
@@ -551,7 +719,7 @@ impl MarbleServer {
             return self.set_model(body);
         }
         if head.method == "POST" && path == "/api/turns" {
-            return self.handle_turn(body);
+            return self.client_send(path, body);
         }
         if head.method == "POST" && path == "/api/turns/steer" {
             return self.steer_turn(body);
@@ -581,7 +749,7 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/control/grants/")
             && let Some(grant_id) = rest.strip_suffix("/revoke")
         {
-            return self.revoke_grant(grant_id);
+            return self.revoke_grant(&decode_path_segment(grant_id));
         }
         if head.method == "GET" && path == "/api/export" {
             return self.export_response(head);
@@ -601,17 +769,26 @@ impl MarbleServer {
         if head.method == "POST" && path == "/api/prism/marbles" {
             return self.add_marble(body);
         }
+        if head.method == "POST" && path == "/api/everyone" {
+            return self.client_send(path, body);
+        }
+        if head.method == "POST" && path == "/api/everyone/clear" {
+            return self.clear_everyone();
+        }
+        if head.method == "GET" && path == "/api/everyone" {
+            return self.everyone_timeline(head);
+        }
         if head.method == "POST" && path == "/api/prism/dispatch" {
-            return self.dispatch_swarm(body);
+            return self.client_send(path, body);
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/prism/marbles/")
         {
             if let Some(id) = rest.strip_suffix("/update") {
-                return self.update_marble(id, body);
+                return self.update_marble(&decode_path_segment(id), body);
             }
             if let Some(id) = rest.strip_suffix("/remove") {
-                return self.remove_marble(id);
+                return self.remove_marble(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/memory" {
@@ -624,16 +801,16 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/memory/")
         {
             if let Some(id) = rest.strip_suffix("/forget") {
-                return self.forget_memory(id);
+                return self.forget_memory(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/update") {
-                return self.update_memory(id, body);
+                return self.update_memory(&decode_path_segment(id), body);
             }
             if let Some(id) = rest.strip_suffix("/accept") {
-                return self.accept_suggestion(id);
+                return self.accept_suggestion(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/dismiss") {
-                return self.dismiss_suggestion(id);
+                return self.dismiss_suggestion(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/routines" {
@@ -652,19 +829,19 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/routines/")
         {
             if let Some(id) = rest.strip_suffix("/run") {
-                return self.run_routine(id);
+                return self.run_routine(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/enable") {
-                return self.set_routine_enabled(id, true);
+                return self.set_routine_enabled(&decode_path_segment(id), true);
             }
             if let Some(id) = rest.strip_suffix("/disable") {
-                return self.set_routine_enabled(id, false);
+                return self.set_routine_enabled(&decode_path_segment(id), false);
             }
             if let Some(id) = rest.strip_suffix("/remove") {
-                return self.remove_routine(id);
+                return self.remove_routine(&decode_path_segment(id));
             }
             if let Some(id) = rest.strip_suffix("/catch-up") {
-                return self.set_routine_catch_up(id, body);
+                return self.set_routine_catch_up(&decode_path_segment(id), body);
             }
         }
         if head.method == "GET" && path == "/api/notifications" {
@@ -687,7 +864,7 @@ impl MarbleServer {
                 .strip_prefix("/api/devices/")
                 .and_then(|rest| rest.strip_suffix("/remove"))
         {
-            return self.remove_device(token);
+            return self.remove_device(&decode_path_segment(token));
         }
         if head.method == "GET" && path == "/api/voice" {
             return self.voice_response();
@@ -702,13 +879,13 @@ impl MarbleServer {
             && let Some(rest) = path.strip_prefix("/api/tasks/")
             && let Some(task_id) = rest.strip_suffix("/cancel")
         {
-            return self.cancel_task(task_id);
+            return self.cancel_task(&decode_path_segment(task_id));
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/approvals/")
             && let Some((request_id, action)) = rest.rsplit_once('/')
         {
-            return self.decide_approval(request_id, action, body);
+            return self.decide_approval(&decode_path_segment(request_id), action, body);
         }
         Response::error(404, "not_found")
     }
@@ -806,7 +983,7 @@ impl MarbleServer {
 
     /// `GET /api/prism` — the marble roster and what it has done.
     fn prism_response(&self) -> Response {
-        let mut document = { self.lock_state().prism.document() };
+        let mut document = { self.lock_state().prism_document() };
         if let Value::Object(map) = &mut document {
             map.insert("engine".into(), json!(self.prism.is_some()));
         }
@@ -835,6 +1012,7 @@ impl MarbleServer {
                 &field("glyph"),
                 hue,
                 &field("workspace"),
+                &field("persona"),
             ) {
                 Ok(marble) => marble.clone(),
                 Err(message) => {
@@ -850,7 +1028,7 @@ impl MarbleServer {
         self.save_state();
         self.events
             .publish("", "", "prism", json!({"marble": marble.id, "added": true}));
-        let roster = { self.lock_state().prism.document() };
+        let roster = { self.lock_state().prism_document() };
         Response::json(202, json!({"ok": true, "marble": marble, "prism": roster}))
     }
 
@@ -865,6 +1043,10 @@ impl MarbleServer {
             .get("hue")
             .and_then(Value::as_u64)
             .map(|hue| hue as u16);
+        // A persona (or a rename) only reaches the model when the next
+        // conversation starts, so an identity change drops the marble's engine
+        // and its conversation id. The transcript rows stay — the old chat is
+        // still readable.
         let outcome = {
             let mut guard = self.lock_state();
             match guard.prism.update(
@@ -874,18 +1056,25 @@ impl MarbleServer {
                 text("glyph"),
                 hue,
                 text("workspace"),
+                text("persona"),
             ) {
-                Ok(()) => {
+                Ok(identity_changed) => {
+                    if identity_changed {
+                        guard.prism.restart_conversation(id);
+                    }
                     guard.bump();
-                    Ok(guard.prism.get(id).cloned())
+                    Ok((guard.prism.get(id).cloned(), identity_changed))
                 }
                 Err(message) => Err(message),
             }
         };
         match outcome {
-            Ok(marble) => {
+            Ok((marble, identity_changed)) => {
+                if identity_changed && let Some(pool) = &self.prism {
+                    pool.shutdown_marble(id);
+                }
                 self.save_state();
-                let roster = { self.lock_state().prism.document() };
+                let roster = { self.lock_state().prism_document() };
                 Response::json(200, json!({"ok": true, "marble": marble, "prism": roster}))
             }
             Err(message) => Response::json(
@@ -901,23 +1090,56 @@ impl MarbleServer {
 
     /// `POST /api/prism/marbles/{id}/remove` — take a marble off the roster.
     ///
-    /// Its conversation stays in the document: leaving a roster is a change of
-    /// who works, not permission to delete what was already said.
+    /// Remove its registered chat and recovered history targeting it.
     fn remove_marble(&self, id: &str) -> Response {
+        if let Some(pool) = &self.prism {
+            pool.shutdown_marble(id);
+        }
         let removed = {
             let mut guard = self.lock_state();
             match guard.prism.remove(id) {
                 Ok(conversation) => {
+                    let conversations: std::collections::HashSet<String> = guard
+                        .tasks
+                        .iter()
+                        .filter(|task| task.marble_id == id)
+                        .map(|task| task.conversation_id.clone())
+                        .chain(std::iter::once(conversation.clone()))
+                        .filter(|id| !id.is_empty())
+                        .collect();
+                    let mut deleted = Vec::new();
+                    // Its chat, tasks, and the Everyone lines quoting them go
+                    // with the marble — "Remove Ada and her chat" means gone,
+                    // not just off the roster. A conversation that refuses
+                    // (a turn still running) is left readable rather than
+                    // torn down mid-turn.
+                    for candidate in conversations {
+                        if guard.delete_conversation(&candidate).is_ok() {
+                            deleted.push(candidate);
+                        } else {
+                            tracing::info!(
+                                marble = %id,
+                                conversation = %candidate,
+                                "removed a marble whose chat could not be deleted; chat kept"
+                            );
+                        }
+                    }
                     guard.bump();
-                    Ok(conversation)
+                    Ok((conversation, deleted))
                 }
                 Err(message) => Err(message),
             }
         };
         match removed {
-            Ok(conversation) => {
-                if let Some(pool) = &self.prism {
-                    pool.shutdown_marble(id);
+            Ok((conversation, deleted)) => {
+                if let Some(store) = &self.store {
+                    let live = crate::live::LiveStore::for_store(store);
+                    for conversation in deleted {
+                        let removed = live.remove_conversation(&conversation);
+                        if removed > 0 {
+                            tracing::info!(removed, conversation = %conversation, "cleared live journal for a removed marble");
+                        }
+                    }
                 }
                 self.save_state();
                 self.events.publish(
@@ -934,8 +1156,521 @@ impl MarbleServer {
         }
     }
 
+    /// `POST /api/everyone/clear` — empty the shared timeline. The plane
+    /// itself stays; only what was said in it goes.
+    fn clear_everyone(&self) -> Response {
+        let removed = {
+            let mut guard = self.lock_state();
+            let removed = guard.clear_everyone();
+            if removed > 0 {
+                guard.bump();
+            }
+            removed
+        };
+        self.save_state();
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "everyone",
+            json!({"cleared": removed}),
+        );
+        Response::json(200, json!({"ok": true, "cleared": removed}))
+    }
+
+    /// `GET /api/everyone?after=` — the shared timeline, newest entries after a
+    /// timestamp so a surface can poll without re-reading the whole plane.
+    fn everyone_timeline(&self, head: &RequestHead) -> Response {
+        let after: u64 = head
+            .query_param("after")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let main = head.query_param("main").as_deref() == Some("1");
+        let guard = self.lock_state();
+        let entries = guard
+            .transcript
+            .iter()
+            .filter(|entry| {
+                entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && entry.at > after
+                    && (!main || entry.thread_id.is_none())
+            })
+            .collect();
+        let page = match history_page(entries, head, None) {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+        Response::json(
+            200,
+            json!({"ok": true, "entries": page.entries, "hasMore":page.has_more,"nextBefore":page.next_before}),
+        )
+    }
+
+    fn client_send(&self, path: &str, body: &str) -> Response {
+        let send = |client| match path {
+            "/api/everyone" => self.post_everyone(body, client),
+            "/api/prism/dispatch" => self.dispatch_swarm(body, client),
+            _ => self.handle_turn(body, client),
+        };
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let Some(value) = parsed
+            .get("client_message_id")
+            .or_else(|| parsed.get("clientMessageId"))
+        else {
+            return send(None);
+        };
+        let Some(id) = value.as_str().filter(|id| {
+            !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| (32..=126).contains(&byte))
+        }) else {
+            return Response::error(400, "invalid_client_message_id");
+        };
+        if parsed
+            .get("client_message_id")
+            .zip(parsed.get("clientMessageId"))
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Response::error(400, "invalid_client_message_id");
+        }
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if text.is_empty() {
+            return Response::error(400, "empty_message");
+        }
+        if text.len() > 64 * 1024 {
+            return Response::error(413, "message_too_large");
+        }
+        let _serial = self
+            .client_send_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let scope = {
+            let state = self.lock_state();
+            if path == "/api/everyone" {
+                "everyone".to_string()
+            } else if let Some(cv) = parsed
+                .get("conversationId")
+                .and_then(Value::as_str)
+                .filter(|cv| !cv.is_empty())
+            {
+                cv.to_string()
+            } else if let Some(thread) = parsed
+                .get("thread_id")
+                .or_else(|| parsed.get("threadId"))
+                .and_then(Value::as_str)
+                .and_then(|id| state.threads.iter().find(|thread| thread.id == id))
+            {
+                thread.conversation_id.clone()
+            } else {
+                let marble = parsed.get("marbleId").and_then(Value::as_str).or_else(|| {
+                    parsed
+                        .get("marbles")
+                        .and_then(Value::as_array)
+                        .and_then(|ids| ids.first())
+                        .and_then(Value::as_str)
+                });
+                match marble {
+                    Some(id) => state
+                        .prism
+                        .get(id)
+                        .map(|marble| marble.conversation_id.clone())
+                        .filter(|cv| !cv.is_empty())
+                        .unwrap_or_else(|| format!("marble:{id}")),
+                    None => "new:marble".into(),
+                }
+            }
+        };
+        {
+            let state = self.lock_state();
+            if let Some(previous) = state
+                .client_sends
+                .iter()
+                .find(|send| send.message.id == id && send.scopes.contains(&scope))
+            {
+                return match &previous.response {
+                    Some(response) => Response::json(previous.status, response.clone()),
+                    None => Response::error(409, "client_message_pending"),
+                };
+            }
+        }
+        let client = crate::state::ClientMessage {
+            id: id.into(),
+            entry_id: format!("entry-{}", crate::next_request_id()),
+        };
+        {
+            let mut state = self.lock_state();
+            state.client_sends.push(crate::state::ClientSend {
+                message: client.clone(),
+                scopes: vec![scope.clone()],
+                status: 202,
+                response: None,
+            });
+            state.bump();
+            if let Some(store) = &self.store
+                && store.save(&state).is_err()
+            {
+                state
+                    .client_sends
+                    .retain(|send| send.message.entry_id != client.entry_id);
+                return Response::error(503, "state_save_failed");
+            }
+        }
+        let mut response = send(Some(client.clone()));
+        if response.status >= 400 {
+            self.lock_state()
+                .client_sends
+                .retain(|send| send.message.entry_id != client.entry_id);
+            self.save_state();
+            return response;
+        }
+        let mut document: Value =
+            serde_json::from_str(&response.body).unwrap_or_else(|_| json!({}));
+        document["client_message_id"] = json!(id);
+        document["entry_id"] = json!(client.entry_id);
+        let entry = {
+            let mut state = self.lock_state();
+            if !state
+                .transcript
+                .iter()
+                .any(|entry| entry.id == client.entry_id)
+            {
+                state.push_transcript(crate::state::TranscriptEntry {
+                    id: client.entry_id.clone(),
+                    client_message_id: Some(id.into()),
+                    conversation_id: document["conversationId"]
+                        .as_str()
+                        .filter(|cv| !cv.is_empty())
+                        .unwrap_or(
+                            if scope.starts_with("new:") || scope.starts_with("marble:") {
+                                ""
+                            } else {
+                                &scope
+                            },
+                        )
+                        .into(),
+                    kind: "user".into(),
+                    text: parsed["text"].as_str().unwrap_or_default().trim().into(),
+                    task_id: document["taskId"].as_str().unwrap_or_default().into(),
+                    thread_id: parsed
+                        .get("thread_id")
+                        .or_else(|| parsed.get("threadId"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    at: now_millis(),
+                    ..Default::default()
+                });
+            }
+            let entry = state
+                .transcript
+                .iter()
+                .find(|entry| entry.id == client.entry_id)
+                .unwrap()
+                .clone();
+            if !entry.conversation_id.is_empty() {
+                document["conversationId"] = json!(entry.conversation_id);
+            }
+            if !entry.task_id.is_empty() && document["taskId"].as_str().is_none_or(str::is_empty) {
+                document["taskId"] = json!(entry.task_id);
+            }
+            let receipt = state
+                .client_sends
+                .iter_mut()
+                .find(|send| send.message.entry_id == client.entry_id)
+                .unwrap();
+            receipt.status = response.status;
+            receipt.response = Some(document.clone());
+            state.bump();
+            if let Some(store) = &self.store
+                && store.save(&state).is_err()
+            {
+                return Response::error(503, "state_save_failed");
+            }
+            entry
+        };
+        response.body = document.to_string();
+        if path == "/api/everyone" {
+            self.events.publish(
+                "everyone",
+                &entry.task_id,
+                "entry",
+                serde_json::to_value(&entry).unwrap(),
+            );
+        }
+        response
+    }
+
+    /// `POST /api/everyone` — one line to the shared plane; the marbles it
+    /// names answer, or the default assistant when it names nobody.
+    fn post_everyone(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
+        let parsed: Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return Response::error(400, "invalid_json"),
+        };
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if text.is_empty() {
+            return Response::error(400, "empty_message");
+        }
+        if text.len() > 64 * 1024 {
+            return Response::error(413, "message_too_large");
+        }
+        let thread =
+            match self.requested_thread(&parsed, Some(crate::everyone::EVERYONE_CONVERSATION)) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
+        let entry_id = {
+            let mut guard = self.lock_state();
+            if thread
+                .as_ref()
+                .is_some_and(|id| !guard.threads.iter().any(|t| &t.id == id))
+            {
+                return Response::error(404, "unknown_thread");
+            }
+            crate::everyone::mirror(
+                &mut guard,
+                crate::everyone::USER_SPEAKER,
+                "You",
+                "user",
+                text.clone(),
+                "",
+                None,
+            );
+            let entry = guard
+                .transcript
+                .last_mut()
+                .expect("the user entry was just mirrored");
+            entry.thread_id = thread.clone();
+            if let Some(client) = &client {
+                entry.id = client.entry_id.clone();
+                entry.client_message_id = Some(client.id.clone());
+            }
+            let entry_id = entry.id.clone();
+            if let Some(id) = &thread {
+                guard.refresh_thread(id);
+            }
+            guard.bump();
+            entry_id
+        };
+        self.save_state();
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "everyone",
+            json!({"kind": "user", "thread_id":thread}),
+        );
+        let plan = crate::everyone::plan(&self.lock_state(), &text);
+        match plan {
+            crate::everyone::EveryoneTarget::Default => {
+                let mut request = TurnRequest::new(
+                    crate::everyone::default_conversation(&self.lock_state()),
+                    text.clone(),
+                );
+                request.thread_id = thread.clone();
+                let key = format!("queued-{}", request.request_id);
+                {
+                    let mut guard = self.lock_state();
+                    crate::everyone::reserve(
+                        &mut guard,
+                        &entry_id,
+                        &key,
+                        "marble",
+                        "Marble",
+                        thread.as_deref(),
+                    );
+                    guard.bump();
+                }
+                self.save_state();
+                let response = self.submit_request(request);
+                if response.status >= 400 {
+                    self.fail_everyone_dispatch("marble", &key, &text, "default admission failed");
+                }
+                response
+            }
+            crate::everyone::EveryoneTarget::Named(ids) => {
+                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
+            }
+            crate::everyone::EveryoneTarget::All => {
+                let ids: Vec<String> = {
+                    let guard = self.lock_state();
+                    guard
+                        .prism
+                        .marbles
+                        .iter()
+                        .map(|marble| marble.id.clone())
+                        .collect()
+                };
+                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
+            }
+        }
+    }
+
+    /// Reserve replies before dispatch; busy named engines drain their queue.
+    fn dispatch_everyone(
+        &self,
+        text: &str,
+        ids: Vec<String>,
+        thread: Option<&str>,
+        entry_id: &str,
+    ) -> Response {
+        if ids.is_empty() {
+            let mut guard = self.lock_state();
+            crate::everyone::mirror(
+                &mut guard,
+                "",
+                "",
+                "system",
+                "There are no Marbles to answer yet.",
+                "",
+                None,
+            );
+            guard.bump();
+            drop(guard);
+            self.save_state();
+            return Response::json(200, json!({"ok": true, "answering": [], "busy": []}));
+        }
+        let mut prepared = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in &ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if id == crate::everyone::DEFAULT_SPEAKER {
+                let mut request = TurnRequest::new(
+                    crate::everyone::default_conversation(&self.lock_state()),
+                    text.to_string(),
+                );
+                request.thread_id = thread.map(str::to_string);
+                let key = format!("queued-{}", request.request_id);
+                let mut state = self.lock_state();
+                crate::everyone::reserve(&mut state, entry_id, &key, id, "Marble", thread);
+                prepared.push((id.clone(), "Marble".to_string(), key, Some(request)));
+            } else {
+                let mut state = self.lock_state();
+                let Some(marble) = state.prism.get(id).cloned() else {
+                    continue;
+                };
+                let queued = state.control.enqueue_marble(
+                    id.clone(),
+                    Some(marble.conversation_id.clone()),
+                    text.to_string(),
+                );
+                let key = match queued {
+                    Ok(entry) => {
+                        state
+                            .control
+                            .queue
+                            .iter_mut()
+                            .find(|e| e.id == entry.id)
+                            .unwrap()
+                            .thread_id = thread.map(str::to_string);
+                        entry.id
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, marble = %id, "Everyone queue is full");
+                        format!("failed-{}", crate::next_request_id())
+                    }
+                };
+                crate::everyone::reserve(&mut state, entry_id, &key, id, &marble.name, thread);
+                prepared.push((id.clone(), marble.name, key, None));
+            }
+        }
+        self.lock_state().bump();
+        self.save_state();
+        let mut answering = Vec::new();
+        let mut busy = Vec::new();
+        for (id, name, key, request) in prepared {
+            if id == crate::everyone::DEFAULT_SPEAKER {
+                let response = self.submit_request(request.unwrap());
+                if response.status < 400 {
+                    answering.push("Marble".to_string());
+                } else {
+                    busy.push("Marble".to_string());
+                    self.fail_everyone_dispatch(&id, &key, text, "default admission failed");
+                }
+                continue;
+            }
+            if self.prism.is_none() || key.starts_with("failed-") {
+                self.fail_everyone_dispatch(&id, &key, text, "named admission unavailable");
+                busy.push(name);
+                continue;
+            }
+            answering.push(name);
+        }
+        if let Some(pool) = &self.prism {
+            pool.resume_held();
+        }
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "everyone",
+            json!({"kind": "dispatch", "answering": answering}),
+        );
+        Response::json(
+            202,
+            json!({"ok": true, "answering": answering, "busy": busy}),
+        )
+    }
+
+    fn fail_everyone_dispatch(&self, speaker: &str, source: &str, prompt: &str, error: &str) {
+        let mut state = self.lock_state();
+        if !state.everyone_pending.contains_key(source) {
+            return;
+        }
+        state.control.queue.retain(|entry| entry.id != source);
+        let conversation_id = state
+            .prism
+            .get(speaker)
+            .map(|m| m.conversation_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| format!("recovered-{source}"));
+        let thread = state
+            .transcript
+            .iter()
+            .find(|e| e.kind == "pending" && e.task_id == source)
+            .and_then(|e| e.thread_id.clone());
+        state.bind_thread(source, thread.as_deref());
+        state
+            .conversation_mut(&conversation_id)
+            .task_ids
+            .push(source.into());
+        state.upsert_task(crate::TaskRecord {
+            id: source.into(),
+            conversation_id: conversation_id.clone(),
+            marble_id: if speaker == "marble" {
+                String::new()
+            } else {
+                speaker.into()
+            },
+            owner: if speaker == "marble" {
+                "agent"
+            } else {
+                "prism"
+            }
+            .into(),
+            status: "failed".into(),
+            prompt: prompt.into(),
+            at: crate::worker::now_millis(),
+            ..Default::default()
+        });
+        crate::everyone::claim(&mut state, source, source);
+        state.record_failure(&conversation_id, source, error);
+        crate::everyone::mirror_settlement(&mut state, source, "", "failed");
+        state.bump();
+        drop(state);
+        self.save_state();
+    }
+
     /// `POST /api/prism/dispatch` — hand one prompt to several marbles at once.
-    fn dispatch_swarm(&self, body: &str) -> Response {
+    fn dispatch_swarm(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
         let Some(pool) = self.prism.as_ref() else {
             return Response::json(
                 503,
@@ -965,12 +1700,16 @@ impl MarbleServer {
                         .map(str::to_string)
                         .collect()
                 });
-        match pool.dispatch(&text, ids.as_deref()) {
+        let thread = match self.requested_thread(&parsed, None) {
+            Ok(id) => id,
+            Err(response) => return response,
+        };
+        match pool.dispatch_client_in_thread(&text, ids.as_deref(), thread.as_deref(), client) {
             Ok(dispatch) => {
                 let mut document = dispatch.document();
                 if let Value::Object(map) = &mut document {
                     map.insert("ok".into(), json!(true));
-                    map.insert("prism".into(), self.lock_state().prism.document());
+                    map.insert("prism".into(), self.lock_state().prism_document());
                 }
                 Response::json(202, document)
             }
@@ -1054,7 +1793,7 @@ impl MarbleServer {
             }
             // Derived documents: the raw counters are not the whole story.
             map.insert("presence".into(), snapshot.presence.document(&snapshot));
-            map.insert("prism".into(), snapshot.prism.document());
+            map.insert("prism".into(), snapshot.prism_document());
             map.insert("memory".into(), snapshot.memory.document());
             map.insert("routines".into(), snapshot.routines.document());
             map.insert("notifications".into(), snapshot.notifications.document());
@@ -1175,6 +1914,24 @@ impl MarbleServer {
         Response::json(200, json!({"query": query, "hits": hits}))
     }
 
+    fn create_conversation(&self) -> Response {
+        let id = format!("chat-{}", crate::next_request_id());
+        let conversation = {
+            let mut state = self.lock_state();
+            let record = state.conversation_mut(&id);
+            record.updated_at = now_millis();
+            record.lane = crate::state::ConversationRecord::UNASSIGNED_LANE;
+            record.needs_engine_session = true;
+            let conversation = record.clone();
+            state.bump();
+            conversation
+        };
+        self.save_state();
+        self.events
+            .publish(&id, "", "conversation", json!({"created": id}));
+        Response::json(201, json!({"conversation": conversation}))
+    }
+
     fn rename_conversation(&self, id: &str, body: &str) -> Response {
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
@@ -1218,6 +1975,14 @@ impl MarbleServer {
         match outcome {
             Ok(()) => {
                 self.save_state();
+                // Its live journal goes too — a deleted chat must not replay
+                // a recovered turn into the transcript on the next boot.
+                if let Some(store) = &self.store {
+                    let removed = crate::live::LiveStore::for_store(store).remove_conversation(id);
+                    if removed > 0 {
+                        tracing::info!(removed, conversation = %id, "cleared live journal for a deleted conversation");
+                    }
+                }
                 self.events
                     .publish("", "", "conversation", json!({"deleted": id}));
                 Response::json(
@@ -1238,6 +2003,70 @@ impl MarbleServer {
     /// `GET /api/transcript?conversationId=…&after=…` — bounded history for one
     /// conversation. `after` is inclusive so entries that share a millisecond
     /// are never lost; clients deduplicate by content.
+    fn threads_route(&self, head: &RequestHead, body: &str) -> Response {
+        if head.method == "GET" {
+            let conversation = head.query_param("conversation_id").unwrap_or_default();
+            let state = self.lock_state();
+            let mut threads: Vec<_> = state
+                .threads
+                .iter()
+                .filter(|t| t.conversation_id == conversation)
+                .collect();
+            threads.sort_by_key(|t| std::cmp::Reverse(t.last_activity_at));
+            return Response::json(200, json!({"threads":threads}));
+        }
+        if head.method != "POST" {
+            return Response::error(405, "method_not_allowed");
+        }
+        let Ok(value) = serde_json::from_str::<Value>(body) else {
+            return Response::error(400, "invalid_json");
+        };
+        let (Some(conversation), Some(parent)) = (
+            value["conversation_id"].as_str(),
+            value["parent_entry_id"].as_str(),
+        ) else {
+            return Response::error(400, "missing_parent");
+        };
+        let thread = {
+            let mut state = self.lock_state();
+            let thread = state.create_thread(conversation, parent);
+            if thread.is_some() {
+                state.bump();
+            }
+            thread
+        };
+        match thread {
+            Some(thread) => {
+                self.save_state();
+                Response::json(200, json!({"thread":thread}))
+            }
+            None => Response::error(404, "unknown_parent"),
+        }
+    }
+
+    fn requested_thread(
+        &self,
+        value: &Value,
+        conversation: Option<&str>,
+    ) -> Result<Option<String>, Response> {
+        match value.get("thread_id").or_else(|| value.get("threadId")) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(id)) => {
+                let state = self.lock_state();
+                let thread = state
+                    .threads
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .ok_or_else(|| Response::error(404, "unknown_thread"))?;
+                if conversation.is_some_and(|c| c != thread.conversation_id) {
+                    return Err(Response::error(409, "thread_conversation_mismatch"));
+                }
+                Ok(Some(id.clone()))
+            }
+            _ => Err(Response::error(400, "invalid_thread_id")),
+        }
+    }
+
     fn transcript_response(&self, head: &RequestHead) -> Response {
         let conversation_id = head.query_param("conversationId").unwrap_or_default();
         if !conversation_id.is_empty() && !valid_conversation_id(&conversation_id) {
@@ -1250,23 +2079,33 @@ impl MarbleServer {
             },
             _ => None,
         };
-        let limit = head
-            .query_param("limit")
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .map(|value| value.clamp(1, 1_000))
-            .unwrap_or(500);
         let guard = self.lock_state();
-        let mut entries: Vec<&crate::state::TranscriptEntry> = guard
+        if !conversation_id.is_empty()
+            && !guard
+                .conversations
+                .iter()
+                .any(|conversation| conversation.id == conversation_id)
+        {
+            return Response::json(
+                404,
+                json!({"error": "not_found", "message": "This chat no longer exists"}),
+            );
+        }
+        let main = head.query_param("main").as_deref() == Some("1");
+        let around = head.query_param("around");
+        let entries: Vec<&crate::state::TranscriptEntry> = guard
             .transcript
             .iter()
             .filter(|entry| conversation_id.is_empty() || entry.conversation_id == conversation_id)
-            .filter(|entry| after.is_none_or(|cursor| entry.at >= cursor))
+            .filter(|entry| !main || entry.thread_id.is_none())
+            .filter(|entry| around.is_some() || after.is_none_or(|cursor| entry.at >= cursor))
             .collect();
-        let omitted = entries.len().saturating_sub(limit);
-        if omitted > 0 {
-            entries.drain(..omitted);
-        }
-        let cursor = entries
+        let page = match history_page(entries, head, Some(500)) {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+        let cursor = page
+            .entries
             .iter()
             .map(|entry| entry.at)
             .max()
@@ -1275,10 +2114,12 @@ impl MarbleServer {
             200,
             json!({
                 "conversationId": conversation_id,
-                "entries": entries,
+                "entries": page.entries,
                 "cursor": cursor,
-                "omitted": omitted,
+                "omitted": page.omitted,
                 "revision": guard.revision,
+                "hasMore": page.has_more,
+                "nextBefore": page.next_before,
             }),
         )
     }
@@ -1304,7 +2145,35 @@ impl MarbleServer {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let kind = parsed.get("kind").and_then(Value::as_str).unwrap_or("fact");
-        self.remember_text(text, kind, "", true)
+        let owner = parsed
+            .get("owner")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !owner.is_empty() {
+            let known = {
+                let guard = self.lock_state();
+                owner == "marble" || guard.prism.get(owner).is_some()
+            };
+            if !known {
+                return Response::json(
+                    400,
+                    json!({"error": "invalid_memory", "message": "unknown memory owner"}),
+                );
+            }
+        }
+        self.remember_text(text, kind, "", true, parsed.get("owner").map(|_| owner))
+    }
+
+    fn memory_owner(&self, conversation_id: &str, owner: Option<&str>) -> String {
+        if let Some(owner) = owner {
+            return owner.to_string();
+        }
+        self.lock_state()
+            .prism
+            .owner_of(conversation_id)
+            .map(|marble| marble.id.clone())
+            .unwrap_or_else(|| "marble".to_string())
     }
 
     fn remember_text(
@@ -1313,10 +2182,16 @@ impl MarbleServer {
         kind: &str,
         conversation_id: &str,
         explicit: bool,
+        owner: Option<&str>,
     ) -> Response {
+        // The owner of a remembered statement is the marble whose chat taught
+        // it, unless the caller named an owner explicitly.
+        let owner = self.memory_owner(conversation_id, owner);
         let outcome = {
             let mut guard = self.lock_state();
-            let outcome = guard.memory.remember(text, kind, conversation_id, explicit);
+            let outcome = guard
+                .memory
+                .remember(text, kind, conversation_id, explicit, &owner);
             if outcome.is_ok() {
                 guard.bump();
             }
@@ -1415,11 +2290,12 @@ impl MarbleServer {
         )
     }
 
-    /// Explicit "forget: …" command: drop every fact matching the text.
-    fn forget_text(&self, query: &str) -> Response {
+    /// Explicit "forget: …" command: drop matching facts owned by this chat.
+    fn forget_text(&self, query: &str, conversation_id: &str, owner: Option<&str>) -> Response {
+        let owner = self.memory_owner(conversation_id, owner);
         let forgotten = {
             let mut guard = self.lock_state();
-            let forgotten = guard.memory.forget_matching(query);
+            let forgotten = guard.memory.forget_matching(query, &owner);
             if forgotten > 0 {
                 guard.bump();
             }
@@ -1441,7 +2317,20 @@ impl MarbleServer {
     fn accept_suggestion(&self, id: &str) -> Response {
         let fact = {
             let mut guard = self.lock_state();
-            let fact = guard.memory.accept(id);
+            let owner = guard
+                .memory
+                .suggestions
+                .iter()
+                .find(|suggestion| suggestion.id == id)
+                .map(|suggestion| {
+                    guard
+                        .prism
+                        .owner_of(&suggestion.conversation_id)
+                        .map(|marble| marble.id.clone())
+                        .unwrap_or_else(|| "marble".to_string())
+                })
+                .unwrap_or_else(|| "marble".to_string());
+            let fact = guard.memory.accept(id, &owner);
             if fact.is_some() {
                 guard.bump();
             }
@@ -1630,6 +2519,7 @@ impl MarbleServer {
         {
             let mut guard = self.lock_state();
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: queued_id.clone(),
                 conversation_id: routine.conversation_id.clone().unwrap_or_default(),
                 status: "queued".into(),
@@ -2083,7 +2973,13 @@ impl MarbleServer {
             if paused {
                 Vec::new()
             } else {
-                guard.control.take_queue()
+                let (held, queued) = guard
+                    .control
+                    .take_queue()
+                    .into_iter()
+                    .partition(|entry| entry.marble_id.is_some());
+                guard.control.queue = held;
+                queued
             }
         };
         self.save_state();
@@ -2093,8 +2989,11 @@ impl MarbleServer {
         let mut queued = queued;
         queued.sort_by_key(|entry| entry.routine_id.is_some());
         let mut requests = Vec::with_capacity(queued.len());
+        let mut dispatched = 0usize;
         for entry in queued {
             let mut request = TurnRequest::new(entry.conversation_id, entry.text);
+            request.client_message = entry.client_message;
+            request.thread_id = entry.thread_id;
             if let Some(routine_id) = entry.routine_id {
                 // A held firing resumes as a firing: it goes back in the routine
                 // lane, and its run was counted when admission held it, so only
@@ -2111,8 +3010,14 @@ impl MarbleServer {
         if !requests.is_empty() {
             let mut guard = self.lock_state();
             for request in &requests {
+                let queued_id = format!("queued-{}", request.request_id);
+                if let Some(routine_id) = &request.routine_id {
+                    guard.routines.note_admitted(routine_id, &queued_id);
+                    guard.routines.note_status(routine_id, "queued");
+                }
                 guard.upsert_task(TaskRecord {
-                    id: format!("queued-{}", request.request_id),
+                    marble_id: String::new(),
+                    id: queued_id,
                     conversation_id: request.conversation_id.clone().unwrap_or_default(),
                     status: "queued".into(),
                     owner: "agent".into(),
@@ -2125,14 +3030,15 @@ impl MarbleServer {
             drop(guard);
             self.save_state();
         }
-        let mut dispatched = 0usize;
         for request in requests {
             let queued_id = format!("queued-{}", request.request_id);
             // A held message for a marble's conversation resumes into that
             // marble's engine, not into the chat engine that cannot see it.
-            if let Some((_, outcome)) =
-                self.dispatch_to_owner(request.conversation_id.as_deref(), &request.text)
-            {
+            if let Some((_, outcome)) = self.dispatch_to_owner(
+                request.conversation_id.as_deref(),
+                &request.text,
+                request.thread_id.as_deref(),
+            ) {
                 match outcome {
                     Ok(_) => dispatched += 1,
                     Err(refusal) => tracing::warn!(
@@ -2155,6 +3061,9 @@ impl MarbleServer {
                     self.forget_queued(&queued_id);
                 }
             }
+        }
+        if !paused && let Some(pool) = &self.prism {
+            dispatched += pool.resume_held();
         }
         self.events.publish(
             "",
@@ -2319,7 +3228,7 @@ impl MarbleServer {
         )
     }
 
-    fn handle_turn(&self, body: &str) -> Response {
+    fn handle_turn(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
             Err(_) => return Response::error(400, "invalid_json"),
@@ -2341,6 +3250,25 @@ impl MarbleServer {
             Some(Value::String(id)) if valid_conversation_id(id) => Some(id.clone()),
             Some(_) => return Response::error(400, "invalid_conversation_id"),
         };
+        let marble = match parsed.get("marbleId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => match self.lock_state().prism.get(id).cloned() {
+                Some(marble) => Some(marble),
+                None => return Response::error(404, "unknown_marble"),
+            },
+            Some(_) => return Response::error(400, "invalid_marble_id"),
+        };
+        if let (Some(marble), Some(conversation)) = (&marble, &conversation_id)
+            && &marble.conversation_id != conversation
+        {
+            return Response::error(400, "conversation_owner_mismatch");
+        }
+        let conversation_id = conversation_id.or_else(|| {
+            marble
+                .as_ref()
+                .map(|marble| marble.conversation_id.clone())
+                .filter(|id| !id.is_empty())
+        });
         // Explicit memory instructions are answered by the product itself: a
         // remembered fact is a durable write, not a model turn.
         match memory::parse_command(&text) {
@@ -2350,23 +3278,73 @@ impl MarbleServer {
                     &kind,
                     conversation_id.as_deref().unwrap_or_default(),
                     true,
+                    marble.as_ref().map(|marble| marble.id.as_str()),
                 );
             }
-            Some(MemoryCommand::Forget { text: query }) => return self.forget_text(&query),
+            Some(MemoryCommand::Forget { text: query }) => {
+                return self.forget_text(
+                    &query,
+                    conversation_id.as_deref().unwrap_or_default(),
+                    marble.as_ref().map(|marble| marble.id.as_str()),
+                );
+            }
             None => {}
         }
-        self.submit_text(conversation_id, text)
+        let thread = match self.requested_thread(&parsed, conversation_id.as_deref()) {
+            Ok(id) => id,
+            Err(response) => return response,
+        };
+        let conversation_id = conversation_id.or_else(|| {
+            thread.as_ref().and_then(|id| {
+                self.lock_state()
+                    .threads
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .map(|t| t.conversation_id.clone())
+            })
+        });
+        self.submit_text_for_thread(
+            conversation_id,
+            text,
+            marble.map(|marble| marble.id),
+            thread,
+            client,
+        )
     }
 
-    /// Hold a message while admission is paused, or hand it to the worker.
-    fn submit_text(&self, conversation_id: Option<String>, text: String) -> Response {
+    fn submit_text_for_thread(
+        &self,
+        conversation_id: Option<String>,
+        text: String,
+        marble_id: Option<String>,
+        thread: Option<String>,
+        client: Option<crate::state::ClientMessage>,
+    ) -> Response {
+        let marble_id = marble_id.or_else(|| {
+            let state = self.lock_state();
+            conversation_id
+                .as_deref()
+                .and_then(|id| state.prism.owner_of(id))
+                .map(|marble| marble.id.clone())
+        });
         if self.lock_state().control.paused {
             // Paused admission is a queue, not a rejection: the message keeps its
             // place, and resuming dispatches it in arrival order.
             let queued = {
                 let mut guard = self.lock_state();
-                match guard.control.enqueue(conversation_id, text) {
-                    Ok(entry) => {
+                let result = match marble_id {
+                    Some(id) => guard.control.enqueue_marble(id, conversation_id, text),
+                    None => guard.control.enqueue(conversation_id, text),
+                };
+                match result {
+                    Ok(mut entry) => {
+                        entry.thread_id = thread.clone();
+                        if let Some(queued) =
+                            guard.control.queue.iter_mut().find(|q| q.id == entry.id)
+                        {
+                            queued.thread_id = thread.clone();
+                            queued.client_message = client.clone();
+                        }
                         let position = guard.control.queue.len();
                         guard.bump();
                         Ok((entry, position))
@@ -2398,35 +3376,33 @@ impl MarbleServer {
                 }
             };
         }
-        // A conversation belongs to the engine that created its session. A
-        // marble's chat therefore goes back to that marble, so the same chat is
-        // continuable from any surface and runs beside the chat engine instead
-        // of waiting behind it.
-        if let Some((marble, outcome)) = self.dispatch_to_owner(conversation_id.as_deref(), &text) {
-            return match outcome {
-                Ok(dispatch) => Response::json(
-                    202,
-                    json!({
-                        "accepted": true,
-                        "queued": false,
-                        "conversationId": marble.conversation_id,
-                        "requestId": "",
-                        "marbleId": marble.id,
-                        "marbleName": marble.name,
-                        // The pool records the durable task while the turn is
-                        // admitted; the surface learns it from the next state.
-                        "taskId": "",
-                        "message": format!("{} is answering in its own conversation", marble.name),
-                        "dispatch": dispatch.document(),
-                    }),
-                ),
-                Err(refusal) => Response::json(
-                    refusal.status,
-                    json!({"error": refusal.code, "message": refusal.message}),
-                ),
+        if let Some(id) = marble_id {
+            let Some(marble) = self.lock_state().prism.get(&id).cloned() else {
+                return Response::error(404, "unknown_marble");
             };
+            let mut response = self.dispatch_swarm(
+                &json!({"text": text, "marbles": [id], "thread_id":thread}).to_string(),
+                client,
+            );
+            if response.status == 202
+                && let Ok(Value::Object(mut document)) =
+                    serde_json::from_str::<Value>(&response.body)
+            {
+                document.insert("accepted".into(), json!(true));
+                document.insert("queued".into(), json!(false));
+                document.insert("conversationId".into(), json!(marble.conversation_id));
+                document.insert("requestId".into(), json!(""));
+                document.insert("taskId".into(), json!(""));
+                document.insert("marbleId".into(), json!(marble.id));
+                document.insert("marbleName".into(), json!(marble.name));
+                response.body = Value::Object(document).to_string();
+            }
+            return response;
         }
-        self.submit_request(TurnRequest::new(conversation_id, text))
+        let mut request = TurnRequest::new(conversation_id, text);
+        request.client_message = client;
+        request.thread_id = thread;
+        self.submit_request(request)
     }
 
     /// The marble that keeps a conversation, when the roster has one.
@@ -2434,6 +3410,7 @@ impl MarbleServer {
         &self,
         conversation_id: Option<&str>,
         text: &str,
+        thread: Option<&str>,
     ) -> Option<(
         PrismMarble,
         Result<crate::prism::PrismDispatch, DispatchRefusal>,
@@ -2444,7 +3421,8 @@ impl MarbleServer {
             state.prism.owner_of(id).cloned()
         }?;
         let prism = self.prism.as_ref()?;
-        let outcome = prism.dispatch(text, Some(std::slice::from_ref(&marble.id)));
+        let outcome =
+            prism.dispatch_in_thread(text, Some(std::slice::from_ref(&marble.id)), thread);
         Some((marble, outcome))
     }
 
@@ -2456,6 +3434,26 @@ impl MarbleServer {
     /// the immediate answer when the worker is free; when it is not, the `202`
     /// says where the message stands, and it is already in the worker's channel.
     fn submit_request(&self, request: TurnRequest) -> Response {
+        if let Some(id) = &request.conversation_id {
+            let mut state = self.lock_state();
+            let retry = state
+                .conversations
+                .iter()
+                .find(|c| &c.id == id)
+                .map(|c| c.retry_task_id.clone())
+                .unwrap_or_default();
+            if state.transcript.iter().any(|e| {
+                e.task_id == retry
+                    && e.kind == "failure"
+                    && e.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    && e.speaker == crate::everyone::DEFAULT_SPEAKER
+            }) {
+                state.everyone_pending.insert(
+                    format!("queued-{}", request.request_id),
+                    crate::everyone::DEFAULT_SPEAKER.into(),
+                );
+            }
+        }
         let request_id = request.request_id.clone();
         let queued_id = format!("queued-{request_id}");
         let conversation_id = request.conversation_id.clone().unwrap_or_default();
@@ -2466,6 +3464,7 @@ impl MarbleServer {
         {
             let mut guard = self.lock_state();
             guard.upsert_task(TaskRecord {
+                marble_id: String::new(),
                 id: queued_id.clone(),
                 conversation_id: conversation_id.clone(),
                 status: "queued".into(),
@@ -2474,6 +3473,7 @@ impl MarbleServer {
                 at: now_millis(),
                 routine_id: request.routine_id.clone().unwrap_or_default(),
             });
+            guard.bind_thread(&queued_id, request.thread_id.as_deref());
             guard.bump();
         }
         self.save_state();
@@ -2503,7 +3503,7 @@ impl MarbleServer {
                 self.forget_queued(&queued_id);
                 return Response::json(
                     502,
-                    json!({"error": "turn_failed", "message": error.to_string()}),
+                    json!({"error": "turn_failed", "message": crate::failure::MESSAGE, "failure":crate::failure::FailureInfo::of(&error.to_string())}),
                 );
             }
             Err(_) => {
@@ -2518,6 +3518,7 @@ impl MarbleServer {
                     json!({
                         "queued": true,
                         "accepted": false,
+                        "taskId": queued_id,
                         "requestId": request_id,
                         "position": position,
                         "message": "the assistant is busy; this message keeps its place and runs next",
@@ -2543,7 +3544,10 @@ impl MarbleServer {
         let removed = {
             let mut guard = self.lock_state();
             let before = guard.tasks.len();
-            guard.tasks.retain(|task| task.id != queued_id);
+            guard.tasks.retain(|task| {
+                task.id != queued_id
+                    || matches!(task.status.as_str(), "failed" | "cancelled" | "interrupted")
+            });
             let removed = guard.tasks.len() != before;
             if removed {
                 guard.bump();
@@ -2607,7 +3611,42 @@ impl MarbleServer {
             );
         }
         let retrying = task.id.clone();
-        let mut response = self.submit_text(Some(task.conversation_id), task.prompt);
+        let retry_conversation = task.conversation_id.clone();
+        {
+            let mut state = self.lock_state();
+            state.conversation_mut(&task.conversation_id).retry_task_id = task.id.clone();
+            if let Some(speaker) = state
+                .transcript
+                .iter()
+                .find(|e| {
+                    e.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                        && e.task_id == task.id
+                        && e.kind == "failure"
+                })
+                .map(|e| e.speaker.clone())
+                && speaker != crate::everyone::DEFAULT_SPEAKER
+            {
+                state
+                    .everyone_pending
+                    .insert(format!("marble:{speaker}"), speaker);
+            }
+        }
+        self.save_state();
+        // A turn recovered from a lost queue lives in a placeholder chat the
+        // engine never created, so repeating it starts a fresh conversation.
+        let conversation =
+            (!task.conversation_id.starts_with("recovered-")).then_some(task.conversation_id);
+        let marble_id = (!task.marble_id.is_empty()).then_some(task.marble_id);
+        let thread = self.lock_state().task_threads.get(&retrying).cloned();
+        let mut response =
+            self.submit_text_for_thread(conversation, task.prompt, marble_id, thread, None);
+        if response.status >= 400 {
+            self.lock_state()
+                .conversation_mut(&retry_conversation)
+                .retry_task_id
+                .clear();
+            self.save_state();
+        }
         // Name the turn being repeated, so a surface can say what it restarted.
         if let Ok(mut body) = serde_json::from_str::<Value>(&response.body)
             && let Value::Object(ref mut map) = body
@@ -2724,6 +3763,74 @@ impl MarbleServer {
     /// dispatched all answer here. A task that already settled is reported as
     /// such rather than as unknown.
     fn cancel_task(&self, task_id: &str) -> Response {
+        let queued = {
+            let mut guard = self.lock_state();
+            if let Some(index) = guard
+                .control
+                .queue
+                .iter()
+                .position(|entry| entry.id == task_id)
+            {
+                let entry = guard.control.queue.remove(index);
+                guard.bind_thread(task_id, entry.thread_id.as_deref());
+                if let Some(routine_id) = &entry.routine_id {
+                    guard.routines.note_admitted(routine_id, task_id);
+                }
+                guard.upsert_task(TaskRecord {
+                    id: entry.id,
+                    conversation_id: entry.conversation_id.unwrap_or_default(),
+                    marble_id: entry.marble_id.unwrap_or_default(),
+                    status: "queued".into(),
+                    owner: "agent".into(),
+                    prompt: entry.text,
+                    at: entry.at,
+                    routine_id: entry.routine_id.unwrap_or_default(),
+                });
+            }
+            if let Some(task) = guard
+                .tasks
+                .iter_mut()
+                .find(|task| task.id == task_id && task.status == "queued")
+            {
+                task.status = "cancelled".into();
+                if task.conversation_id.is_empty() {
+                    task.conversation_id = format!("recovered-{task_id}");
+                }
+                let conversation_id = task.conversation_id.clone();
+                let prompt = task.prompt.clone();
+                let conversation = guard.conversation_mut(&conversation_id);
+                conversation.updated_at = now_millis();
+                if conversation.title.is_empty() {
+                    conversation.title = prompt.chars().take(64).collect();
+                }
+                guard.push_transcript(crate::state::TranscriptEntry {
+                    conversation_id,
+                    task_id: task_id.into(),
+                    kind: "system".into(),
+                    text: "Cancelled before it started".into(),
+                    at: now_millis(),
+                    ..Default::default()
+                });
+                guard.routines.note_settled(task_id, "cancelled");
+                crate::everyone::claim(&mut guard, task_id, task_id);
+                crate::everyone::mirror_settlement(&mut guard, task_id, "", "cancelled");
+                guard.bump();
+                true
+            } else {
+                false
+            }
+        };
+        if queued {
+            self.turn_tx.remove_queued(task_id);
+            self.save_state();
+            self.events.publish(
+                "",
+                task_id,
+                "state",
+                json!({"status": "cancelled", "message": "Cancelled before it started"}),
+            );
+            return Response::json(200, json!({"cancelled": true, "taskId": task_id}));
+        }
         if self.cancels.request(task_id) {
             self.events
                 .publish("", task_id, "cancel_requested", json!({"taskId": task_id}));
@@ -2809,13 +3916,10 @@ impl MarbleServer {
     }
 
     fn save_state(&self) {
-        let Some(store) = &self.store else {
-            return;
-        };
         // Persist straight from the borrowed document: a full clone per mutation
         // is the most expensive part of a write that is otherwise bounded.
         let guard = self.lock_state();
-        crate::store::persist(store, &guard)
+        crate::store::persist_optional(self.store.as_deref(), &guard)
     }
 
     pub fn serve(self) -> std::io::Result<()> {
@@ -2832,6 +3936,27 @@ impl MarbleServer {
                 active.fetch_sub(1, Ordering::SeqCst);
                 // Refusing here is honest: accepting the socket and queueing it
                 // would only move the queue into the kernel and hold a thread.
+                let peer = stream
+                    .peer_addr()
+                    .map(|address| address.ip().to_string())
+                    .unwrap_or_default();
+                tracing::info!(
+                    "{}",
+                    RequestLog {
+                        peer: &peer,
+                        method: "-",
+                        path: "-",
+                        status: 503,
+                        auth: "none",
+                        tls: false,
+                        authorized: false,
+                        head_bytes: 0,
+                        content_length: 0,
+                        user_agent: "-",
+                        elapsed: Duration::ZERO,
+                    }
+                    .line()
+                );
                 let mut stream = stream;
                 let _ = write_response(
                     &mut stream,
@@ -2867,51 +3992,162 @@ impl MarbleServer {
             .peer_addr()
             .map(|address| address.ip().to_string())
             .unwrap_or_default();
-        // Read through a clone so the buffer survives across requests while the
-        // responses are written to the original stream.
-        let mut reader = BufReader::new(stream.try_clone()?);
+        // Peek (without consuming) at the connection's first bytes: a TLS
+        // ClientHello on this port gets a real handshake when a cert is
+        // configured, a fatal alert otherwise.
+        let mut first = [0u8; 3];
+        let mut n = stream.peek(&mut first)?;
+        for _ in 0..100 {
+            if n >= 3 || n == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            n = stream.peek(&mut first)?;
+        }
+        if is_tls_handshake(&first[..n]) {
+            let Some(tls) = self.tls.clone() else {
+                tracing::info!(
+                    "tls handshake on plain-http port peer={peer} — this host serves HTTP; \
+                     use http:// not https://"
+                );
+                let _ = stream.write_all(&[0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28]);
+                return Ok(());
+            };
+            let connection = match rustls::ServerConnection::new(Arc::clone(&tls.config)) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::warn!("TLS handshake setup failed for {peer}: {error}");
+                    return Ok(());
+                }
+            };
+            return self.serve_stream(
+                IoBuf::new(rustls::StreamOwned::new(connection, stream)),
+                &peer,
+                true,
+            );
+        }
+        self.serve_stream(IoBuf::new(stream), &peer, false)
+    }
+
+    /// One connection, plain or TLS, sharing routing and keep-alive.
+    fn serve_stream<S: Read + Write>(
+        &self,
+        mut conn: IoBuf<S>,
+        peer: &str,
+        tls: bool,
+    ) -> std::io::Result<()> {
         let mut served = 0usize;
         loop {
-            let head_bytes = read_head(&mut reader)?;
+            let started = std::time::Instant::now();
+            let head_bytes = read_head(&mut conn)?;
             if head_bytes.is_empty() {
                 return Ok(());
             }
             served += 1;
             let head_text = String::from_utf8_lossy(&head_bytes).to_string();
             let head = parse_head(&head_text);
-            let body = match read_body(&mut reader, &head)? {
+            let body = match read_body(&mut conn, &head)? {
                 BodyRead::Bytes(body) => String::from_utf8_lossy(&body).to_string(),
                 BodyRead::TooLarge => {
+                    self.log_request(peer, head_bytes.len(), &head, 413, started, tls);
                     return write_response(
-                        &mut stream,
+                        &mut conn,
                         Response::error(413, "body_too_large"),
                         false,
                     );
                 }
             };
             if head.method == "GET" && head.path() == "/api/events" {
-                if !self.policy.authorize(&head) {
-                    return write_response(
-                        &mut stream,
-                        Response::error(401, "unauthorized"),
-                        false,
-                    );
+                let authorized = self.policy.authorize(&head);
+                if !authorized {
+                    self.log_request(peer, head_bytes.len(), &head, 401, started, tls);
+                    return write_response(&mut conn, Response::error(401, "unauthorized"), false);
                 }
-                return self.stream_events(&head, &mut stream);
+                self.log_request(peer, head_bytes.len(), &head, 200, started, tls);
+                return self.stream_events(&head, &mut conn);
             }
-            let response = self.handle_request_from(&head, &body, &peer);
+            let response = if head.method == "GET" && head.path() == "/api/tls-proof" {
+                self.tls_proof(&head, tls)
+            } else {
+                self.handle_request_from(&head, &body, peer)
+            };
+            let status = response.status;
+            self.log_request(peer, head_bytes.len(), &head, status, started, tls);
             let keep_alive = wants_keep_alive(&head)
                 && response.status < 400
                 && served < MAX_REQUESTS_PER_CONNECTION;
-            write_response(&mut stream, response, keep_alive)?;
+            write_response(&mut conn, response, keep_alive)?;
             if !keep_alive {
                 return Ok(());
             }
         }
     }
 
+    /// Unauthenticated proof that a client holding the token saw this
+    /// certificate: HMAC-SHA256 keyed on the token over the leaf hash it
+    /// observed and a caller-chosen nonce. TLS connections only.
+    fn tls_proof(&self, head: &RequestHead, tls: bool) -> Response {
+        if !tls {
+            return Response::error(400, "tls_only");
+        }
+        let Some(identity) = &self.tls else {
+            return Response::error(404, "not_found");
+        };
+        let Some(token) = self.policy.token() else {
+            return Response::error(404, "not_found");
+        };
+        let nonce = head.query_param("nonce").unwrap_or_default();
+        let valid_nonce = (32..=128).contains(&nonce.len())
+            && nonce.chars().all(|character| character.is_ascii_hexdigit());
+        if !valid_nonce {
+            return Response::error(400, "bad_nonce");
+        }
+        let cert_sha256 = identity.leaf_sha256_hex();
+        let proof = crate::tls::tls_proof(token, &nonce, &cert_sha256);
+        Response::json(
+            200,
+            json!({
+                "certSha256": cert_sha256,
+                "proof": proof,
+            }),
+        )
+    }
+
+    /// One line per request, after its status is known.
+    fn log_request(
+        &self,
+        peer: &str,
+        head_bytes: usize,
+        head: &RequestHead,
+        status: u16,
+        started: std::time::Instant,
+        tls: bool,
+    ) {
+        let content_length = head
+            .header("content-length")
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        tracing::info!(
+            "{}",
+            RequestLog {
+                peer,
+                method: &head.method,
+                path: head.path(),
+                status,
+                auth: auth_kind(head),
+                tls,
+                authorized: self.policy.authorize(head),
+                head_bytes,
+                content_length,
+                user_agent: head.header("user-agent").unwrap_or("-"),
+                elapsed: started.elapsed(),
+            }
+            .line()
+        );
+    }
+
     /// Server-sent events with bounded replay from the client's own cursor.
-    fn stream_events(&self, head: &RequestHead, stream: &mut TcpStream) -> std::io::Result<()> {
+    fn stream_events(&self, head: &RequestHead, stream: &mut impl Write) -> std::io::Result<()> {
         let since = head
             .query_param("since")
             .and_then(|value| value.parse::<u64>().ok())
@@ -2920,8 +4156,17 @@ impl MarbleServer {
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\n\
               Cache-Control: no-store\r\nConnection: close\r\nX-Accel-Buffering: no\r\n\r\n",
         )?;
+        stream.write_all(b": connected\n\n")?;
         stream.flush()?;
         let receiver = self.events.subscribe();
+        let cursor = self.events.sequence();
+        write!(
+            stream,
+            "event: hello\ndata: {}\n\n",
+            json!({"cursor": cursor, "build": crate::build_info::document()})
+        )?;
+        stream.flush()?;
+        let since = if since > cursor { 0 } else { since };
         for event in self.events.since(since) {
             write_event(stream, &event)?;
         }
@@ -2975,6 +4220,60 @@ fn etag_matches(head: &RequestHead, etag: &str) -> bool {
         .unwrap_or(false)
 }
 
+struct HistoryPage<'a> {
+    entries: Vec<&'a crate::TranscriptEntry>,
+    has_more: bool,
+    next_before: Option<String>,
+    omitted: usize,
+}
+
+fn history_page<'a>(
+    mut entries: Vec<&'a crate::TranscriptEntry>,
+    head: &RequestHead,
+    default_limit: Option<usize>,
+) -> Result<HistoryPage<'a>, Response> {
+    let before = head.query_param("before");
+    let around = head.query_param("around");
+    if before.is_some() && (around.is_some() || head.query_param("after").is_some()) {
+        return Err(Response::error(400, "conflicting_cursors"));
+    }
+    let limit = match head.query_param("limit") {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map(|n| n.clamp(1, 1_000))
+            .map_err(|_| Response::error(400, "invalid_limit"))?,
+        None => default_limit.unwrap_or(if before.is_some() { 500 } else { usize::MAX }),
+    };
+    if let Some(id) = before {
+        if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+            return Err(Response::error(400, "invalid_cursor"));
+        }
+        let index = entries
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or_else(|| Response::error(404, "unknown_cursor"))?;
+        entries.truncate(index);
+    }
+    let start = if let Some(id) = &around {
+        let index = entries
+            .iter()
+            .position(|e| e.id == *id)
+            .ok_or_else(|| Response::error(404, "unknown_entry"))?;
+        index
+            .saturating_sub(limit / 2)
+            .min(entries.len().saturating_sub(limit))
+    } else {
+        entries.len().saturating_sub(limit)
+    };
+    let entries: Vec<_> = entries.into_iter().skip(start).take(limit).collect();
+    Ok(HistoryPage {
+        has_more: start > 0,
+        next_before: (start > 0).then(|| entries[0].id.clone()),
+        omitted: if around.is_some() { 0 } else { start },
+        entries,
+    })
+}
+
 fn valid_conversation_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -2983,7 +4282,7 @@ fn valid_conversation_id(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
-fn write_event(stream: &mut TcpStream, event: &TurnEvent) -> std::io::Result<()> {
+fn write_event(stream: &mut impl Write, event: &TurnEvent) -> std::io::Result<()> {
     let data = serde_json::to_string(&EventBus::encode(event)).unwrap_or_default();
     stream.write_all(
         format!(
@@ -2996,7 +4295,7 @@ fn write_event(stream: &mut TcpStream, event: &TurnEvent) -> std::io::Result<()>
 }
 
 fn write_response(
-    stream: &mut TcpStream,
+    stream: &mut impl Write,
     response: Response,
     keep_alive: bool,
 ) -> std::io::Result<()> {
@@ -3100,6 +4399,75 @@ fn read_chunked_body(reader: &mut impl BufRead) -> std::io::Result<BodyRead> {
     }
 }
 
+/// One connection's buffered reader plus writer, so plain TCP and
+/// `rustls::StreamOwned` share the routing loop without a `try_clone`.
+struct IoBuf<S> {
+    inner: S,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl<S: Read> IoBuf<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            buf: Vec::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl<S: Read> Read for IoBuf<S> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let available = self.fill_buf()?;
+        let n = available.len().min(out.len());
+        out[..n].copy_from_slice(&available[..n]);
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl<S: Read> BufRead for IoBuf<S> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.pos >= self.buf.len() {
+            self.buf.resize(8192, 0);
+            let read = self.inner.read(&mut self.buf)?;
+            self.buf.truncate(read);
+            self.pos = 0;
+        }
+        Ok(&self.buf[self.pos..])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.pos = (self.pos + amount).min(self.buf.len());
+    }
+}
+
+impl<S: Write> Write for IoBuf<S> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A TLS handshake record: content type 0x16, version 0x03 0x00..0x04.
+fn is_tls_handshake(buf: &[u8]) -> bool {
+    buf.len() >= 3 && buf[0] == 0x16 && buf[1] == 0x03 && buf[2] <= 0x04
+}
+
+/// Log fields may come from bytes that were not HTTP at all (e.g. a TLS
+/// ClientHello); binary fields collapse to `<binary>` instead of raw bytes.
+fn printable(field: &str) -> &str {
+    if field.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+        field
+    } else {
+        "<binary>"
+    }
+}
+
 fn read_head(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -3149,11 +4517,115 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_segments_decode_percent_escapes() {
+        assert_eq!(
+            decode_path_segment("host%3Asession%3Atask%3Acall-1"),
+            "host:session:task:call-1"
+        );
+        assert_eq!(decode_path_segment("plain-id"), "plain-id");
+        assert_eq!(decode_path_segment("a+b"), "a+b");
+        assert_eq!(decode_path_segment("trailing%"), "trailing%");
+        assert_eq!(decode_path_segment("bad%zz"), "bad%zz");
+    }
+
+    #[test]
     fn query_tokens_decode_and_match() {
         let head = RequestHead::new("GET", "/api/events?since=4&token=a%2Bb+c");
         assert_eq!(head.query_param("since"), Some("4".to_string()));
         assert_eq!(head.query_param("token"), Some("a+b c".to_string()));
         assert_eq!(head.path(), "/api/events");
+    }
+
+    #[test]
+    fn request_log_line_never_carries_a_token_or_query() {
+        let head = RequestHead::new("GET", "/api/state?lean=1&token=super-secret")
+            .with_header("authorization", "Bearer super-secret")
+            .with_header("user-agent", "GlassMarble/1 CFNetwork/1 Darwin/24")
+            .with_header("content-length", "42");
+        assert_eq!(auth_kind(&head), "bearer");
+        let line = RequestLog {
+            peer: "100.64.0.5",
+            method: &head.method,
+            path: head.path(),
+            status: 401,
+            auth: auth_kind(&head),
+            tls: false,
+            authorized: false,
+            head_bytes: 256,
+            content_length: 42,
+            user_agent: head.header("user-agent").unwrap_or("-"),
+            elapsed: Duration::from_millis(7),
+        }
+        .line();
+        assert!(line.contains("peer=100.64.0.5"));
+        assert!(line.contains("method=GET"));
+        assert!(line.contains("path=/api/state"));
+        assert!(line.contains("status=401"));
+        assert!(line.contains("auth=bearer"));
+        assert!(line.contains("authorized=no"));
+        assert!(line.contains("head=256B"));
+        assert!(line.contains("body=42B"));
+        assert!(line.contains("ms=7"));
+        assert!(!line.contains("super-secret"));
+        assert!(!line.contains("?"));
+        assert!(!line.contains("lean=1"));
+
+        let long_agent = "x".repeat(120);
+        let truncated = RequestLog {
+            peer: "",
+            method: "GET",
+            path: "/",
+            status: 200,
+            auth: "none",
+            tls: false,
+            authorized: false,
+            head_bytes: 0,
+            content_length: 0,
+            user_agent: &long_agent,
+            elapsed: Duration::ZERO,
+        }
+        .line();
+        assert!(truncated.contains(&"x".repeat(60)));
+        assert!(!truncated.contains(&"x".repeat(61)));
+    }
+
+    #[test]
+    fn tls_handshake_detection() {
+        for version in 0x00u8..=0x04 {
+            assert!(is_tls_handshake(&[0x16, 0x03, version, 0x00]));
+        }
+        // A real ClientHello head: handshake record, TLS 1.0 on the wire.
+        assert!(is_tls_handshake(&[0x16, 0x03, 0x01, 0x01, 0x2f]));
+        assert!(!is_tls_handshake(b"GET / HTTP/1.1\r\n"));
+        assert!(!is_tls_handshake(b"POST /api/turns HTTP/1.1\r\n"));
+        assert!(!is_tls_handshake(b""));
+        assert!(!is_tls_handshake(&[0x16]));
+        assert!(!is_tls_handshake(&[0x16, 0x03]));
+        // Alert record, not a handshake.
+        assert!(!is_tls_handshake(&[0x15, 0x03, 0x01]));
+        assert!(!is_tls_handshake(&[0x16, 0x03, 0x05]));
+    }
+
+    #[test]
+    fn request_log_sanitises_binary_method_and_path() {
+        let line = RequestLog {
+            peer: "1.2.3.4",
+            method: "\u{16}\u{3}\u{1}",
+            path: "\u{0}\u{1}\u{2}",
+            status: 0,
+            auth: "none",
+            tls: false,
+            authorized: false,
+            head_bytes: 512,
+            content_length: 0,
+            user_agent: "-",
+            elapsed: Duration::ZERO,
+        }
+        .line();
+        assert!(line.contains("method=<binary>"), "{line}");
+        assert!(line.contains("path=<binary>"), "{line}");
+        assert_eq!(printable("GET"), "GET");
+        assert_eq!(printable("/api/state"), "/api/state");
     }
 
     #[test]

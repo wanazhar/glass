@@ -7,8 +7,10 @@
 use crate::MarbleError;
 use crate::state::ProductState;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -106,7 +108,11 @@ pub fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "document".into());
-    let temp = parent.join(format!("{name}.tmp"));
+    // Several threads persist the same document; a shared temporary name let
+    // one writer rename another's half-written file, or find it already gone.
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!("{name}.{}-{sequence}.tmp", std::process::id()));
     {
         let mut file = fs::File::create(&temp)?;
         std::io::Write::write_all(&mut file, bytes)?;
@@ -150,15 +156,23 @@ impl StateStore {
     /// start rather than overwrite what the operator had.
     pub fn load(&self) -> Result<ProductState, MarbleError> {
         match fs::read_to_string(&self.path) {
-            Ok(encoded) => match serde_json::from_str(&encoded) {
-                Ok(state) => Ok(state),
+            Ok(encoded) => match serde_json::from_str::<ProductState>(&encoded) {
+                Ok(mut state) => {
+                    state.ensure_entry_ids();
+                    state.prune_threads();
+                    Ok(state)
+                }
                 Err(error) => {
                     tracing::warn!(
                         %error,
                         path = %self.path.display(),
                         "product state is unreadable; trying the newest daily backup"
                     );
-                    self.recover_from_backup(&error)
+                    self.recover_from_backup(&error).map(|mut state| {
+                        state.ensure_entry_ids();
+                        state.prune_threads();
+                        state
+                    })
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -222,12 +236,15 @@ impl StateStore {
             MarbleError::Protocol(format!("cannot read {}: {error}", path.display()))
         })?;
         let document = value.get("state").cloned().unwrap_or(value);
-        serde_json::from_value(document).map_err(|error| {
+        let mut state: ProductState = serde_json::from_value(document).map_err(|error| {
             MarbleError::Protocol(format!(
                 "{} is not a marble product document: {error}",
                 path.display()
             ))
-        })
+        })?;
+        state.ensure_entry_ids();
+        state.prune_threads();
+        Ok(state)
     }
 
     /// Replace the live document with a daily backup, or with `from` (a backup
@@ -359,7 +376,28 @@ impl StateStore {
         })?;
         // The temporary file is named after the document so a failed write
         // leaves nothing else behind; `write_durably` fsyncs before the rename.
-        write_durably(&self.path, &encoded).map_err(MarbleError::Io)?;
+        // The error names the file it could not write — "No such file or
+        // directory" alone does not say which directory went missing.
+        // Saves are serialised per document, and an older snapshot that loses
+        // the race never replaces a newer revision already on disk.
+        static SAVED: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+        let mut saved = SAVED
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if saved
+            .get(&self.path)
+            .is_some_and(|revision| *revision > state.revision)
+        {
+            return Ok(());
+        }
+        write_durably(&self.path, &encoded).map_err(|error| {
+            MarbleError::Protocol(format!("cannot write {}: {error}", self.path.display()))
+        })?;
+        saved.insert(self.path.clone(), state.revision);
+        if let Some(events) = &state.thread_events.0 {
+            events.publish_replies(state);
+        }
         Ok(())
     }
 }
@@ -370,12 +408,27 @@ impl StateStore {
 /// Serving does not use this: a surface that would write the document back must
 /// report an unreadable file instead of quietly starting over.
 pub fn load_or_default(data_dir: &Path) -> ProductState {
-    StateStore::in_data_dir(data_dir)
-        .load()
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "starting from empty marble product state");
-            ProductState::default()
-        })
+    let store = StateStore::in_data_dir(data_dir);
+    let mut state = store.load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "starting from empty marble product state");
+        ProductState::default()
+    });
+    // Tasks recorded for conversations that no longer exist are orphans —
+    // nothing can open them, and a surface would show them as work anyway.
+    let orphaned = state.prune_orphaned_tasks();
+    let orphaned_everyone = state.prune_everyone_entries();
+    if orphaned_everyone > 0 {
+        tracing::info!(
+            orphaned_everyone,
+            "dropped Everyone entries quoting deleted turns"
+        );
+    }
+    if orphaned > 0 {
+        tracing::info!(orphaned, "pruned tasks whose conversations are gone");
+        state.bump();
+        persist(&store, &state);
+    }
+    state
 }
 
 /// Persist one snapshot, keeping the revision the caller already bumped.
@@ -387,9 +440,18 @@ pub fn persist(store: &StateStore, state: &ProductState) {
     }
 }
 
+pub(crate) fn persist_optional(store: Option<&StateStore>, state: &ProductState) {
+    if let Some(store) = store {
+        persist(store, state);
+    } else if let Some(events) = &state.thread_events.0 {
+        events.publish_replies(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::TaskRecord;
 
     fn data_dir(name: &str) -> PathBuf {
         let dir =
@@ -405,6 +467,61 @@ mod tests {
         let dir = data_dir("missing");
         let store = StateStore::in_data_dir(&dir);
         assert_eq!(store.load().unwrap(), ProductState::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_default_prunes_tasks_without_a_conversation() {
+        // Test pollution and older documents leave tasks behind when their
+        // conversation is gone. A load drops them and persists the fix.
+        let dir = data_dir("orphans");
+        let store = StateStore::in_data_dir(&dir);
+        let mut state = ProductState::default();
+        state.conversation_mut("kept").title = "real".into();
+        state.tasks.push(TaskRecord {
+            marble_id: String::new(),
+            id: "t-kept".into(),
+            conversation_id: "kept".into(),
+            status: "completed".into(),
+            owner: "agent".into(),
+            prompt: "real work".into(),
+            at: 1,
+            routine_id: String::new(),
+        });
+        state.tasks.push(TaskRecord {
+            marble_id: String::new(),
+            id: "t-orphan".into(),
+            conversation_id: "gone".into(),
+            status: "interrupted".into(),
+            owner: "agent".into(),
+            prompt: "leftover".into(),
+            at: 2,
+            routine_id: String::new(),
+        });
+        store.save(&state).unwrap();
+
+        let loaded = load_or_default(&dir);
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.tasks[0].id, "t-kept");
+        // The document on disk is fixed too, so the next boot sees no orphans.
+        let reloaded = store.load().unwrap();
+        assert_eq!(reloaded.tasks.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_data_directory_is_recreated_on_save() {
+        // Deleting the data directory under a running store used to surface as
+        // a bare "No such file or directory". The save recreates whatever the
+        // path needs instead of failing the write.
+        let dir = data_dir("deleted");
+        let store = StateStore::in_data_dir(&dir);
+        let mut state = ProductState::default();
+        state.bump();
+        store.save(&state).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(store.load().unwrap(), state);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -513,6 +630,35 @@ mod tests {
         assert_eq!(store.newest_backup(), Some(path));
         let (restored, _) = store.restore(None).unwrap();
         assert_eq!(restored, state);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_saves_never_fail_or_regress_the_revision() {
+        let dir = data_dir("concurrent");
+        let store = std::sync::Arc::new(StateStore::in_data_dir(&dir));
+        let handles: Vec<_> = (1..=32u64)
+            .map(|revision| {
+                let store = std::sync::Arc::clone(&store);
+                std::thread::spawn(move || {
+                    let state = ProductState {
+                        revision,
+                        ..ProductState::default()
+                    };
+                    store.save(&state)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(store.load().unwrap().revision, 32);
+        let leftovers = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -1,0 +1,76 @@
+id: 1
+event: queued
+data: {"conversationId":"","data":{"position":1,"requestId":"18ea0739cd5e9aa0-0","taskId":"queued-18ea0739cd5e9aa0-0"},"kind":"queued","sequence":1,"taskId":"queued-18ea0739cd5e9aa0-0"}
+
+id: 2
+event: state
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"revision":7,"status":"running"},"kind":"state","sequence":2,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 3
+event: turn_start
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{},"kind":"turn_start","sequence":3,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 4
+event: waiting
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{},"kind":"waiting","sequence":4,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 5
+event: reasoning
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"text":"We"},"kind":"reasoning","sequence":5,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 6
+event: usage
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"cacheRead":6144,"cacheWrite":0,"input":225,"output":21},"kind":"usage","sequence":6,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 7
+event: text
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"text":"fixturemark"},"kind":"text","sequence":7,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 8
+event: reasoning
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"text":" need answer exactly word fixturemark no tools needed. Must obey exact reply."},"kind":"reasoning","sequence":8,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 9
+event: settled
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"reason":"completed"},"kind":"settled","sequence":9,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 10
+event: settled
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"cancelled":false,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5","usage":{"cacheRead":6144,"cacheWrite":0,"input":225,"output":21}},"kind":"settled","sequence":10,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+id: 11
+event: state
+data: {"conversationId":"durable-4d9e15f3003b331aac043ba5925a12ae","data":{"revision":8,"status":"completed"},"kind":"state","sequence":11,"taskId":"generation-1e09739cc895fde0144343c1c0fd43c5"}
+
+: keepalive
+
+
+id: 505
+event: tool_start
+data: {"conversationId":"durable-48c220ae3e557c6d1e59b717803c8a34","data":{"callId":"call_1d6d259f0a73459ab423a5af","name":"glass.workspace.write","title":"alpha-deny-m3.txt"},"kind":"tool_start","sequence":505,"taskId":"generation-05a9afde450a610794475707555663fe"}
+
+
+id: 506
+event: tool_start
+data: {"conversationId":"durable-48c220ae3e557c6d1e59b717803c8a34","data":{"arguments":{"content":"alpha-deny-m3","path":"alpha-deny-m3.txt"},"callId":"call_1d6d259f0a73459ab423a5af","requestId":"host:durable-48c220ae3e557c6d1e59b717803c8a34:5:call_1d6d259f0a73459ab423a5af","tool":"glass.workspace.write"},"kind":"tool_start","sequence":506,"taskId":"generation-05a9afde450a610794475707555663fe"}
+
+
+id: 507
+event: approval_pending
+data: {"conversationId":"durable-48c220ae3e557c6d1e59b717803c8a34","data":{"arguments":{"content":"alpha-deny-m3","path":"alpha-deny-m3.txt"},"callId":"call_1d6d259f0a73459ab423a5af","conflict":null,"requestId":"host:durable-48c220ae3e557c6d1e59b717803c8a34:5:call_1d6d259f0a73459ab423a5af","tool":"glass.workspace.write"},"kind":"approval_pending","sequence":507,"taskId":"generation-05a9afde450a610794475707555663fe"}
+
+
+id: 508
+event: approval_resolved
+data: {"conversationId":"durable-48c220ae3e557c6d1e59b717803c8a34","data":{"approved":false,"requestId":"host:durable-48c220ae3e557c6d1e59b717803c8a34:5:call_1d6d259f0a73459ab423a5af"},"kind":"approval_resolved","sequence":508,"taskId":"generation-05a9afde450a610794475707555663fe"}
+
+
+id: 509
+event: tool_end
+data: {"conversationId":"durable-48c220ae3e557c6d1e59b717803c8a34","data":{"approved":false,"callId":"call_1d6d259f0a73459ab423a5af","isError":true,"requestId":"host:durable-48c220ae3e557c6d1e59b717803c8a34:5:call_1d6d259f0a73459ab423a5af","text":"marble declined glass.workspace.write: declined on this surface","tool":"glass.workspace.write"},"kind":"tool_end","sequence":509,"taskId":"generation-05a9afde450a610794475707555663fe"}
+
+
+id: 511
+event: tool_end
+data: {"conversationId":"durable-48c220ae3e557c6d1e59b717803c8a34","data":{"callId":"call_1d6d259f0a73459ab423a5af","isError":true,"text":"error: marble declined glass.workspace.write: declined on this surface"},"kind":"tool_end","sequence":511,"taskId":"generation-05a9afde450a610794475707555663fe"}
+

@@ -66,6 +66,10 @@ pub struct MemoryFact {
     pub explicit: bool,
     #[serde(default)]
     pub conversation_id: String,
+    /// Which marble keeps this fact. Empty means shared with every marble;
+    /// `"marble"` is the default assistant's own memory.
+    #[serde(default)]
+    pub owner: String,
 }
 
 /// Something Marble noticed and wants permission to keep.
@@ -112,6 +116,7 @@ impl MemoryState {
         kind: &str,
         conversation_id: &str,
         explicit: bool,
+        owner: &str,
     ) -> Result<MemoryFact, String> {
         let text = normalize(text);
         if text.is_empty() {
@@ -123,11 +128,9 @@ impl MemoryState {
             ));
         }
         let candidate = text.to_ascii_lowercase();
-        if let Some(existing) = self
-            .facts
-            .iter_mut()
-            .find(|fact| normalize(&fact.text).to_ascii_lowercase() == candidate)
-        {
+        if let Some(existing) = self.facts.iter_mut().find(|fact| {
+            fact.owner == owner && normalize(&fact.text).to_ascii_lowercase() == candidate
+        }) {
             existing.updated_at = now_millis();
             existing.explicit = existing.explicit || explicit;
             return Ok(existing.clone());
@@ -147,6 +150,7 @@ impl MemoryState {
             uses: 0,
             explicit,
             conversation_id: conversation_id.to_string(),
+            owner: owner.to_string(),
         };
         self.facts.push(fact.clone());
         self.suggestions
@@ -170,11 +174,17 @@ impl MemoryState {
             ));
         }
         let candidate = text.to_ascii_lowercase();
-        if self
+        let owner = &self
             .facts
             .iter()
-            .any(|fact| fact.id != id && normalize(&fact.text).to_ascii_lowercase() == candidate)
-        {
+            .find(|fact| fact.id == id)
+            .ok_or_else(|| "unknown memory".to_string())?
+            .owner;
+        if self.facts.iter().any(|fact| {
+            fact.id != id
+                && &fact.owner == owner
+                && normalize(&fact.text).to_ascii_lowercase() == candidate
+        }) {
             return Err("an equivalent memory is already kept".into());
         }
         let fact = self
@@ -198,15 +208,16 @@ impl MemoryState {
         self.facts.len() != before
     }
 
-    /// Forget every fact whose text contains `query`.
-    pub fn forget_matching(&mut self, query: &str) -> usize {
+    /// Forget matching facts belonging to one owner.
+    pub fn forget_matching(&mut self, query: &str, owner: &str) -> usize {
         let needle = normalize(query).to_ascii_lowercase();
         if needle.is_empty() {
             return 0;
         }
         let before = self.facts.len();
-        self.facts
-            .retain(|fact| !normalize(&fact.text).to_ascii_lowercase().contains(&needle));
+        self.facts.retain(|fact| {
+            fact.owner != owner || !normalize(&fact.text).to_ascii_lowercase().contains(&needle)
+        });
         before - self.facts.len()
     }
 
@@ -252,8 +263,9 @@ impl MemoryState {
         Some(suggestion)
     }
 
-    /// Save one suggestion as a fact.
-    pub fn accept(&mut self, id: &str) -> Option<MemoryFact> {
+    /// Save one suggestion as a fact. `owner` is the marble whose chat the
+    /// suggestion came from, or `"marble"` for the default assistant.
+    pub fn accept(&mut self, id: &str, owner: &str) -> Option<MemoryFact> {
         let suggestion = self
             .suggestions
             .iter()
@@ -265,6 +277,7 @@ impl MemoryState {
             &suggestion.kind,
             &suggestion.conversation_id,
             false,
+            owner,
         )
         .ok()
     }
@@ -277,14 +290,20 @@ impl MemoryState {
     }
 
     /// Context block prepended to a turn so the assistant actually knows what
-    /// it was told to remember.
-    pub fn context_block(&self) -> Option<String> {
-        if self.facts.is_empty() {
+    /// it was told to remember. One speaker sees the shared facts plus its own:
+    /// `"marble"` for the default assistant, a marble id for a named one.
+    pub fn context_block_for(&self, owner: &str) -> Option<String> {
+        let facts: Vec<&MemoryFact> = self
+            .facts
+            .iter()
+            .filter(|fact| fact.owner.is_empty() || fact.owner == owner)
+            .collect();
+        if facts.is_empty() {
             return None;
         }
         let mut lines = Vec::new();
         let mut budget = 2000usize;
-        for fact in &self.facts {
+        for fact in facts {
             let line = format!("- {}: {}", fact.kind, fact.text);
             if line.len() > budget {
                 break;
@@ -301,10 +320,13 @@ impl MemoryState {
         ))
     }
 
-    /// Count one use of every fact carried into a turn.
-    pub fn note_use(&mut self) {
+    /// Count one use of every fact carried into a turn — the shared ones plus
+    /// the speaker's own.
+    pub fn note_use(&mut self, owner: &str) {
         for fact in self.facts.iter_mut() {
-            fact.uses = fact.uses.saturating_add(1);
+            if fact.owner.is_empty() || fact.owner == owner {
+                fact.uses = fact.uses.saturating_add(1);
+            }
         }
     }
 
@@ -452,6 +474,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_scopes_shared_and_owned_facts_to_the_speaker() {
+        let mut memory = MemoryState::default();
+        memory
+            .remember("shared fact", "fact", "", true, "")
+            .unwrap();
+        memory
+            .remember("ada only", "fact", "c1", true, "marble-ada")
+            .unwrap();
+        memory
+            .remember("default only", "fact", "c2", true, "marble")
+            .unwrap();
+
+        let ada = memory.context_block_for("marble-ada").unwrap();
+        assert!(ada.contains("shared fact"));
+        assert!(ada.contains("ada only"));
+        assert!(!ada.contains("default only"));
+
+        let marble = memory.context_block_for("marble").unwrap();
+        assert!(marble.contains("shared fact"));
+        assert!(marble.contains("default only"));
+        assert!(!marble.contains("ada only"));
+
+        let nobody = memory.context_block_for("marble-ben").unwrap();
+        assert!(nobody.contains("shared fact"));
+        assert!(!nobody.contains("ada only"));
+
+        memory.note_use("marble-ada");
+        assert_eq!(memory.facts[0].uses, 1, "shared fact counts");
+        assert_eq!(memory.facts[1].uses, 1, "ada's own fact counts");
+        assert_eq!(memory.facts[2].uses, 0, "another speaker's fact does not");
+    }
+
+    #[test]
     fn explicit_commands_are_parsed_and_ordinary_prose_is_not() {
         assert_eq!(
             parse_command("Remember this: the deploy key lives in 1Password"),
@@ -489,19 +544,39 @@ mod tests {
     fn remembering_is_idempotent_and_bounded() {
         let mut memory = MemoryState::default();
         let first = memory
-            .remember("I prefer  tabs ", "preference", "c1", true)
+            .remember("I prefer  tabs ", "preference", "c1", true, "")
             .unwrap();
         assert_eq!(first.text, "I prefer tabs");
         let second = memory
-            .remember("i prefer tabs", "preference", "c1", false)
+            .remember("i prefer tabs", "preference", "c1", false, "")
             .unwrap();
         assert_eq!(first.id, second.id);
         assert_eq!(memory.facts.len(), 1);
-        assert!(memory.remember("", "fact", "c1", true).is_err());
+        assert!(memory.remember("", "fact", "c1", true, "").is_err());
         assert!(
             memory
-                .remember(&"x".repeat(MAX_FACT_CHARS + 1), "fact", "c1", true)
+                .remember(&"x".repeat(MAX_FACT_CHARS + 1), "fact", "c1", true, "")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn identical_facts_keep_their_requested_owner() {
+        let mut memory = MemoryState::default();
+        let shared = memory
+            .remember("Keep it short", "fact", "", true, "")
+            .unwrap();
+        let private = memory
+            .remember("Keep it short", "fact", "", true, "ada")
+            .unwrap();
+        assert_ne!(shared.id, private.id);
+        assert_eq!(private.owner, "ada");
+        assert_eq!(
+            memory
+                .remember("Keep it short", "fact", "", true, "ada")
+                .unwrap()
+                .id,
+            private.id
         );
     }
 
@@ -526,7 +601,9 @@ mod tests {
                 )
                 .is_none()
         );
-        let fact = memory.accept(&suggestion.id).expect("accepted suggestion");
+        let fact = memory
+            .accept(&suggestion.id, "marble")
+            .expect("accepted suggestion");
         assert_eq!(fact.text, "I prefer short commit messages");
         assert!(memory.suggestions.is_empty());
         assert!(
@@ -543,13 +620,43 @@ mod tests {
     }
 
     #[test]
+    fn editing_memory_checks_duplicates_only_within_its_owner() {
+        let mut memory = MemoryState::default();
+        let ada = memory
+            .remember("prefer short replies", "fact", "", true, "ada")
+            .unwrap();
+        memory
+            .remember("prefer short replies", "fact", "", true, "ben")
+            .unwrap();
+        let updated = memory
+            .update(&ada.id, "prefer short replies", "preference")
+            .unwrap();
+        assert_eq!(updated.kind, "preference");
+        assert_eq!(updated.owner, "ada");
+        memory
+            .remember("check the sources", "fact", "", true, "ben")
+            .unwrap();
+        assert!(memory.update(&ada.id, "check the sources", "fact").is_ok());
+        memory
+            .remember("keep a changelog", "fact", "", true, "ada")
+            .unwrap();
+        assert!(memory.update(&ada.id, "keep a changelog", "fact").is_err());
+        assert_eq!(
+            memory
+                .update("missing", "check the sources", "fact")
+                .unwrap_err(),
+            "unknown memory"
+        );
+    }
+
+    #[test]
     fn editing_a_memory_keeps_its_identity_and_rejects_duplicates() {
         let mut memory = MemoryState::default();
         let fact = memory
-            .remember("my timezone is UTC", "fact", "c1", true)
+            .remember("my timezone is UTC", "fact", "c1", true, "")
             .unwrap();
         memory
-            .remember("the office wifi is glassnet", "fact", "c1", true)
+            .remember("the office wifi is glassnet", "fact", "c1", true, "")
             .unwrap();
         let updated = memory
             .update(&fact.id, "  my timezone is Asia/Kolkata ", "preference")
@@ -572,12 +679,15 @@ mod tests {
     fn forgetting_removes_by_id_and_by_text() {
         let mut memory = MemoryState::default();
         let fact = memory
-            .remember("my name is Azhar", "role", "c1", true)
+            .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
         memory
-            .remember("the office wifi is glassnet", "fact", "c1", true)
+            .remember("the office wifi is glassnet", "fact", "c1", true, "")
             .unwrap();
-        assert_eq!(memory.forget_matching("wifi"), 1);
+        assert_eq!(memory.forget_matching("", ""), 0);
+        assert_eq!(memory.forget_matching("   ", ""), 0);
+        assert_eq!(memory.forget_matching("wifi", "someone-else"), 0);
+        assert_eq!(memory.forget_matching("wifi", ""), 1);
         assert_eq!(memory.facts.len(), 1);
         assert!(memory.forget(&fact.id));
         assert!(memory.facts.is_empty());
@@ -600,13 +710,13 @@ mod tests {
     #[test]
     fn memory_is_carried_into_a_turn_as_context() {
         let mut memory = MemoryState::default();
-        assert!(memory.context_block().is_none());
+        assert!(memory.context_block_for("marble").is_none());
         memory
-            .remember("my name is Azhar", "role", "c1", true)
+            .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
-        let block = memory.context_block().unwrap();
+        let block = memory.context_block_for("marble").unwrap();
         assert!(block.contains("role: my name is Azhar"));
-        memory.note_use();
+        memory.note_use("marble");
         assert_eq!(memory.facts[0].uses, 1);
         assert_eq!(memory.document()["count"], json!(1));
     }

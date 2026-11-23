@@ -2,58 +2,20 @@ import SwiftUI
 
 struct ConversationListView: View {
     @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var searchText = ""
     @State private var renaming: MarbleConversation?
     @State private var renameDraft = ""
     @State private var deleting: MarbleConversation?
 
     var body: some View {
-        List(selection: $store.selectedConversationId) {
-            Section("Conversations") {
-                if store.state.conversations.isEmpty {
-                    Text("No conversations yet")
-                        .font(.footnote)
-                        .foregroundStyle(MarblePalette.muted)
-                }
-                ForEach(filteredConversations) { conversation in
-                    ConversationRow(conversation: conversation)
-                        .tag(Optional(conversation.id))
-                        .contextMenu {
-                            Button("Rename") {
-                                renaming = conversation
-                                renameDraft = conversation.title
-                            }
-                            Button("Delete", role: .destructive) {
-                                deleting = conversation
-                            }
-                        }
-                }
-            }
-
-            Section("Durable tasks") {
-                if store.state.tasks.isEmpty {
-                    Text("No durable tasks yet")
-                        .font(.footnote)
-                        .foregroundStyle(MarblePalette.muted)
-                }
-                ForEach(recentTasks) { task in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(task.prompt.isEmpty ? task.id : task.prompt)
-                            .font(.footnote)
-                            .lineLimit(2)
-                        Text("\(task.status) · \(task.owner)")
-                            .font(.caption2)
-                            .foregroundStyle(statusTone(task.status))
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
+        List {
+            searchSection
+            conversationSection
         }
-        .scrollContentBackground(.hidden)
-        .background(MarbleBackdrop())
         .navigationTitle("Glass Marble")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, placement: .sidebar, prompt: "Search conversations")
+        .searchable(text: $searchText, prompt: "Search conversations")
         .alert("Rename conversation", isPresented: renameBinding) {
             TextField("Title", text: $renameDraft)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -72,35 +34,31 @@ struct ConversationListView: View {
             Button("Delete", role: .destructive) {
                 guard let conversation = deleting else { return }
                 deleting = nil
-                Task { await store.delete(conversation) }
+                Task {
+                    if await store.delete(conversationId: conversation.id) {
+                        navigation.deleted(conversation.id)
+                    }
+                }
             }
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: {
             Text("Its transcript is removed from the host. A conversation with a running turn cannot be deleted.")
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    store.selectedConversationId = nil
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .accessibilityLabel("New conversation")
-            }
+            ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
         }
         // The navigation title already says which app this is; the strip below
         // only has to say which host is answering and what it is doing.
         .safeAreaInset(edge: .top) {
             HStack(spacing: 8) {
-                MarbleMarbleMark()
-                Text(store.endpoint.displayHost)
+                Text(store.endpoint?.displayHost ?? "not connected")
                     .font(.caption)
-                    .foregroundStyle(MarblePalette.muted)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                MarbleStatusPill(
+                MarbleStatusText(
                     label: store.statusLabel,
-                    tone: store.connection == .live ? MarblePalette.success : MarblePalette.muted
+                    tone: store.connection == .live ? .green : .secondary
                 )
             }
             .padding(.horizontal, 16)
@@ -122,15 +80,72 @@ struct ConversationListView: View {
         )
     }
 
+    @ViewBuilder
+    private var searchSection: some View {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            MarbleSearchSection(query: searchText) { hit in
+                NavigationLink(value: ChatRoute.searchHit(
+                    conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
+                )) { MarbleSearchRow(hit: hit) }
+            }
+        }
+    }
+
+    private var conversationSection: some View {
+        Section {
+            ForEach(filteredConversations) { conversation in
+                conversationRow(conversation)
+            }
+            if filteredConversations.isEmpty {
+                VStack(spacing: 8) {
+                    Text("No chats yet")
+                        .font(.callout)
+                    Text("Start one with the compose button.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            }
+        }
+    }
+
+    private func conversationRow(_ conversation: MarbleConversation) -> some View {
+        NavigationLink(value: ChatRoute.conversation(conversation.id)) {
+            ConversationRow(
+                conversation: conversation,
+                line: store.stateLine(for: conversation)
+            )
+        }
+        .contextMenu {
+            Button("Rename") {
+                renaming = conversation
+                renameDraft = conversation.title
+            }
+            Button("Delete", role: .destructive) {
+                deleting = conversation
+            }
+        }
+    }
+
     private var sortedConversations: [MarbleConversation] {
-        store.state.conversations.sorted { $0.updatedAt > $1.updatedAt }
+        // Everyone and each marble's own chat have their own tabs; this list
+        // is the default assistant's conversations.
+        store.state.conversations
+            .filter { conversation in
+                conversation.id != everyoneConversationId
+                    && !store.prism.marbles.contains {
+                        !$0.isDefault && $0.conversationId == conversation.id
+                    }
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private var filteredConversations: [MarbleConversation] {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return sortedConversations }
         return sortedConversations.filter { conversation in
-            if conversation.title.lowercased().contains(needle) {
+            if conversation.displayTitle.lowercased().contains(needle) {
                 return true
             }
             return store.state.tasks.contains { task in
@@ -139,31 +154,73 @@ struct ConversationListView: View {
         }
     }
 
-    private var recentTasks: [MarbleTask] {
-        Array(store.state.tasks.sorted { $0.at > $1.at }.prefix(8))
+}
+
+struct MarbleNewChatButton: View {
+    @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var creating = false
+    @State private var failure: String?
+
+    var body: some View {
+        Button(action: create) {
+            Label("New Chat", systemImage: "square.and.pencil")
+                .labelStyle(.iconOnly)
+        }
+        .accessibilityIdentifier("chat.compose")
+        .disabled(creating)
+        .alert("Couldn’t create chat", isPresented: Binding(
+            get: { failure != nil },
+            set: { if !$0 { failure = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(failure ?? "")
+        }
     }
 
-    private func statusTone(_ status: String) -> Color {
-        switch status {
-        case "completed": return MarblePalette.success
-        case "failed": return MarblePalette.danger
-        case "running": return MarblePalette.accent
-        default: return MarblePalette.muted
+    private func create() {
+        let origin = navigation.state
+        creating = true
+        Task {
+            defer { creating = false }
+            do {
+                let conversation = try await store.createConversation()
+                open(conversation.id, from: origin)
+            } catch MarbleClientError.notFound {
+                // Older hosts create a chat when its first message is sent.
+                open(nil, from: origin)
+            } catch is CancellationError {
+            } catch {
+                failure = error.localizedDescription
+            }
         }
+    }
+
+    private func open(_ id: String?, from origin: MarbleNavigation) {
+        let current = navigation.state
+        guard current.tab == origin.tab,
+              current.everyonePath == origin.everyonePath,
+              current.chatPath == origin.chatPath else { return }
+        navigation.openNewChat(id)
     }
 }
 
 private struct ConversationRow: View {
     var conversation: MarbleConversation
+    var line: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(conversation.title.isEmpty ? conversation.id : conversation.title)
+            Text(conversation.displayTitle)
                 .font(.callout)
                 .lineLimit(1)
-            Text(conversation.taskIds.count == 1 ? "1 turn" : "\(conversation.taskIds.count) turns")
-                .font(.caption2)
-                .foregroundStyle(MarblePalette.muted)
+            if let line {
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .padding(.vertical, 2)
     }

@@ -128,14 +128,61 @@ fn stack(display: &str, xauthority: &Path) -> Result<Vec<Value>, String> {
         apply_stack_metadata(window, &properties, &geometry, desktop)?;
     }
     let tree = x11_command("xwininfo", display, xauthority, &["-root", "-tree"])?;
-    include_popup_occluders(windows, &tree, desktop, |id| {
+    let mut windows = include_popup_occluders(windows, &tree, desktop, |id| {
         x11_command(
             "xwininfo",
             display,
             xauthority,
             &["-id", &format!("0x{id:x}")],
         )
-    })
+    })?;
+    for window in windows
+        .iter_mut()
+        .filter(|window| window["occluderOnly"] == true)
+    {
+        let id = window_number(window).ok_or("missing popup window id")?;
+        window["pid"] = json!(popup_process_id(id, |id| {
+            x11_command(
+                "xprop",
+                display,
+                xauthority,
+                &[
+                    "-id",
+                    &format!("0x{id:x}"),
+                    "_NET_WM_PID",
+                    "WM_CLIENT_LEADER",
+                ],
+            )
+        })?);
+    }
+    Ok(windows)
+}
+
+fn popup_process_id(
+    id: u64,
+    mut properties: impl FnMut(u64) -> Result<String, String>,
+) -> Result<Option<i64>, String> {
+    let output = properties(id)?;
+    let pid = |output: &str| {
+        property_numbers(output, "_NET_WM_PID")
+            .first()
+            .copied()
+            .filter(|pid| *pid > 0)
+    };
+    if let Some(pid) = pid(&output) {
+        return Ok(Some(pid));
+    }
+    let leader = output.lines().find_map(|line| {
+        let (property, value) = line.split_once('#')?;
+        if property.trim() != "WM_CLIENT_LEADER(WINDOW): window id" {
+            return None;
+        }
+        u64::from_str_radix(value.trim().strip_prefix("0x")?, 16).ok()
+    });
+    match leader.filter(|leader| *leader != 0 && *leader != id) {
+        Some(leader) => Ok(pid(&properties(leader)?)),
+        None => Ok(None),
+    }
 }
 
 fn root_stacking(tree: &str, clients: &[u64]) -> Result<Vec<u64>, String> {
@@ -606,6 +653,52 @@ mod tests {
         )
         .unwrap();
         assert!(output.contains(&tree));
+    }
+
+    #[test]
+    fn popup_process_ids_use_the_popup_or_its_client_leader() {
+        assert_eq!(
+            popup_process_id(3, |id| {
+                assert_eq!(id, 3);
+                Ok(
+                    "_NET_WM_PID(CARDINAL) = 11\nWM_CLIENT_LEADER(WINDOW): window id # 0x4\n"
+                        .into(),
+                )
+            })
+            .unwrap(),
+            Some(11)
+        );
+        assert_eq!(
+            popup_process_id(3, |id| {
+                Ok(match id {
+                    3 => "_NET_WM_PID: not found.\nWM_CLIENT_LEADER(WINDOW): window id # 0x4\n",
+                    4 => "_NET_WM_PID(CARDINAL) = 11\n",
+                    _ => panic!("unexpected window"),
+                }
+                .into())
+            })
+            .unwrap(),
+            Some(11)
+        );
+        for output in [
+            "",
+            "_NET_WM_PID(CARDINAL) = 0",
+            "_NET_WM_PID(CARDINAL) = -1",
+            "WM_CLIENT_LEADER(WINDOW): window id # 0x3",
+            "WM_CLIENT_LEADER(WINDOW): window id # 0x0",
+            "WM_CLIENT_LEADER(WINDOW): window id # invalid",
+        ] {
+            assert_eq!(popup_process_id(3, |_| Ok(output.into())).unwrap(), None);
+        }
+        assert!(popup_process_id(3, |_| Err("closed".into())).is_err());
+        assert!(
+            popup_process_id(3, |id| if id == 3 {
+                Ok("WM_CLIENT_LEADER(WINDOW): window id # 0x4".into())
+            } else {
+                Err("closed leader".into())
+            })
+            .is_err()
+        );
     }
 
     #[test]

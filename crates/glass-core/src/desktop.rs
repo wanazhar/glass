@@ -1881,13 +1881,14 @@ fn uncovered_labels(
                 selection.hidden += 1;
                 return None;
             }
+            let surface = label_popup_surface(&node, bounds, owner, stack).unwrap_or(owner);
             let covered = |px: f64, py: f64| {
-                stack[owner + 1..]
+                stack[surface + 1..]
                     .iter()
                     .any(|window| window["visible"] == true && window_covers(window, px, py))
             };
             let mut visible = vec![bounds];
-            for window in stack[owner + 1..]
+            for window in stack[surface + 1..]
                 .iter()
                 .filter(|window| window["visible"] == true)
             {
@@ -2053,6 +2054,48 @@ fn label_window_owner(owner: &Value, windows: &[Value], stack: &[Value]) -> Opti
         .count()
         == 1)
         .then_some(*index)
+}
+
+fn label_popup_surface(
+    node: &Value,
+    bounds: LabelRect,
+    owner: usize,
+    stack: &[Value],
+) -> Option<usize> {
+    let role = node["role"].as_str()?;
+    if ![
+        "menu",
+        "popup menu",
+        "menu item",
+        "check menu item",
+        "radio menu item",
+    ]
+    .iter()
+    .any(|menu_role| role.eq_ignore_ascii_case(menu_role))
+    {
+        return None;
+    }
+    let pid = stack[owner]["pid"].as_u64().filter(|pid| *pid > 0)?;
+    let mut candidates = stack
+        .iter()
+        .enumerate()
+        .skip(owner + 1)
+        .filter_map(|(index, window)| {
+            if window["occluderOnly"] != true
+                || window["visible"] != true
+                || window["pid"].as_u64() != Some(pid)
+            {
+                return None;
+            }
+            let popup = LabelRect::from_value(window)?;
+            (popup.left <= bounds.left
+                && popup.top <= bounds.top
+                && popup.right >= bounds.right
+                && popup.bottom >= bounds.bottom)
+                .then_some(index)
+        });
+    let surface = candidates.next()?;
+    candidates.next().is_none().then_some(surface)
 }
 
 fn label_legend(observation: &Value, nodes: &[Value], hidden: usize, unknown: usize) -> String {
@@ -2967,6 +3010,67 @@ mod tests {
         ] {
             assert!(LabelRect::from_value(&bounds).is_none());
         }
+    }
+
+    #[test]
+    fn menu_labels_use_their_popup_surface_without_exposing_covered_frame_controls() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
+        let menu = json!({"role":"menu item","owningWindow":{"windowId":"editor"},"bounds":{"x":0.2,"y":0.1,"width":0.3,"height":0.3},"pointerTarget":{"x":0.3,"y":0.2}});
+        let stack = [editor.clone(), popup.clone()];
+        for role in ["menu item", "check menu item", "radio menu item"] {
+            let mut item = menu.clone();
+            item["role"] = json!(role);
+            let selection = uncovered_labels(vec![item.clone()], Some(&stack), Some(&windows));
+            assert_eq!(selection.nodes, [item]);
+            assert_eq!((selection.hidden, selection.unknown), (0, 0));
+        }
+        let mut underlying = menu.clone();
+        underlying["role"] = json!("push button");
+        let selection = uncovered_labels(vec![underlying], Some(&stack), Some(&windows));
+        assert!(selection.nodes.is_empty());
+        assert_eq!(selection.hidden, 1);
+
+        for pid in [json!(22), Value::Null, json!(0)] {
+            let mut foreign = popup.clone();
+            foreign["pid"] = pid;
+            let selection = uncovered_labels(
+                vec![menu.clone()],
+                Some(&[editor.clone(), foreign]),
+                Some(&windows),
+            );
+            assert!(selection.nodes.is_empty());
+            assert_eq!(selection.hidden, 1);
+        }
+        let ambiguous = [editor.clone(), popup.clone(), popup.clone()];
+        assert!(
+            uncovered_labels(vec![menu.clone()], Some(&ambiguous), Some(&windows))
+                .nodes
+                .is_empty()
+        );
+        let mut cover = popup.clone();
+        cover["pid"] = json!(22);
+        let above = [editor.clone(), popup.clone(), cover];
+        assert!(
+            uncovered_labels(vec![menu.clone()], Some(&above), Some(&windows))
+                .nodes
+                .is_empty()
+        );
+        let mut partial = popup.clone();
+        partial["width"] = json!(0.15);
+        let partial_stack = [editor.clone(), popup.clone(), partial];
+        let selection = uncovered_labels(vec![menu.clone()], Some(&partial_stack), Some(&windows));
+        assert_eq!(selection.nodes.len(), 1);
+        assert!(selection.nodes[0]["pointerTarget"].is_null());
+        let mut hidden = popup;
+        hidden["visible"] = json!(false);
+        assert_eq!(
+            uncovered_labels(vec![menu], Some(&[editor, hidden]), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
     }
 
     #[test]

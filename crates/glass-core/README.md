@@ -29,7 +29,20 @@ The first block is implicit. Block IDs are opaque and scoped to the turn.
 
 Anthropic block indices, Responses item/content identifiers, and typed Chat
 content parts supply boundaries. The extension does not infer them from prose.
-Provider text deltas, accumulated answers, session records and tools remain
+For opted-in hosts, compatible Chat `thinking`, structured `reasoning`, and
+`reasoning_details` text also use the reasoning channel. Content parts marked
+`thought: true` or typed as reasoning/thinking are private rather than answer
+text. Responses reasoning-text events use that channel too. Encrypted reasoning
+and signatures are not exposed. Explicit empty Chat/Responses content-part
+starts preserve boundaries just like empty Anthropic blocks.
+
+Legacy provider text deltas, accumulated answers, session records and tools remain
 unchanged. Opted-in durable streams flush pending text before each boundary;
 legacy hosts see no new events or capability fields. Existing initializers in
 the Rust and TypeScript runtime clients remain opted out.
+
+Only `anthropic`, `openai`, and `openai-responses` are provider adapter kinds.
+Gemini, OpenRouter, DeepSeek and Ollama require their OpenAI-compatible endpoints;
+their native wire formats are not adapters. Anonymous text chunks (including
+single anonymous array parts repeated across frames) cannot identify a new block.
+No prose heuristic separates planning from an answer in such a stream.

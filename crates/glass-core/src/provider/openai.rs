@@ -505,6 +505,63 @@ struct Partial {
     args: String,
 }
 
+fn reasoning_fragments(value: &Value, output: &mut String) {
+    match value {
+        Value::String(text) => output.push_str(text),
+        Value::Array(parts) => {
+            for part in parts {
+                reasoning_fragments(part, output);
+            }
+        }
+        Value::Object(_) if value["type"] != "reasoning.encrypted" => {
+            for key in [
+                "text",
+                "thinking",
+                "reasoning",
+                "summary",
+                "content",
+                "value",
+            ] {
+                if let Some(text) = value.get(key) {
+                    reasoning_fragments(text, output);
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn private_part(part: &Value) -> bool {
+    part["thought"] == true
+        || matches!(
+            part["type"].as_str(),
+            Some(
+                "thinking"
+                    | "reasoning"
+                    | "reasoning_text"
+                    | "reasoning.text"
+                    | "reasoning.summary"
+            )
+        )
+}
+
+fn response_block(v: &Value) -> Option<String> {
+    let item = v["item_id"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| v["output_index"].as_u64().map(|n| n.to_string()))
+        .or_else(|| {
+            (v.get("content_id").is_some() || v.get("content_index").is_some())
+                .then(|| "message".into())
+        })?;
+    let content = v["content_id"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| v["content_index"].as_u64().unwrap_or(0).to_string());
+    Some(format!("responses:{item}:{content}"))
+}
+
 /// Decodes chat-completions SSE.
 ///
 /// The wire shape is awkward for tools: `tool_calls` arrive as an array whose
@@ -523,6 +580,13 @@ struct StreamEvents<R: Read> {
 }
 
 impl<R: Read> StreamEvents<R> {
+    fn reasoning(&mut self, text: String) {
+        if !text.is_empty() {
+            self.acc.reasoning.push_str(&text);
+            self.outbox.push_back(Event::Reasoning(text));
+        }
+    }
+
     fn new(reader: R) -> Self {
         Self {
             blocks: super::TextBlocks::default(),
@@ -713,28 +777,43 @@ impl<R: Read> StreamEvents<R> {
                     if let Some(t) = v["delta"].as_str() {
                         if self.blocks.enabled
                             && !t.is_empty()
-                            && let Some(item) = v["item_id"]
-                                .as_str()
-                                .map(str::to_owned)
-                                .or_else(|| v["output_index"].as_u64().map(|n| n.to_string()))
-                                .or_else(|| {
-                                    (v.get("content_id").is_some()
-                                        || v.get("content_index").is_some())
-                                    .then(|| "message".into())
-                                })
+                            && let Some(block) = response_block(v)
                         {
-                            let content = v["content_id"]
-                                .as_str()
-                                .map(str::to_owned)
-                                .unwrap_or_else(|| {
-                                    v["content_index"].as_u64().unwrap_or(0).to_string()
-                                });
-                            self.outbox
-                                .extend(self.blocks.start(format!("responses:{item}:{content}")));
+                            self.outbox.extend(self.blocks.start(block));
                         }
                         self.acc.text.push_str(t);
                         self.outbox.push_back(Event::Text(t.into()));
                     }
+                }
+                "response.content_part.added"
+                    if self.blocks.enabled
+                        && matches!(
+                            v["part"]["type"].as_str(),
+                            Some("output_text" | "refusal")
+                        ) =>
+                {
+                    if let Some(block) = response_block(v) {
+                        self.outbox.extend(self.blocks.start(block));
+                    }
+                }
+                "response.reasoning_text.delta" | "response.reasoning_text.done"
+                    if self.blocks.enabled =>
+                {
+                    let key = (
+                        format!("reasoning-text:{}:{}", v["item_id"], v["content_index"]),
+                        0,
+                    );
+                    let previous = self.acc.summaries.entry(key).or_default();
+                    let text = if kind.ends_with(".delta") {
+                        v["delta"].as_str().unwrap_or("")
+                    } else if previous.is_empty() {
+                        v["text"].as_str().unwrap_or("")
+                    } else {
+                        ""
+                    };
+                    previous.push_str(text);
+                    let text = text.to_string();
+                    self.reasoning(text);
                 }
                 "response.reasoning_summary_text.delta"
                 | "response.reasoning_summary_text.done" => {
@@ -861,7 +940,23 @@ impl<R: Read> StreamEvents<R> {
         {
             self.outbox.push_back(Event::ChatReasoning(t.into()));
         }
-        if let Some(t) = delta
+        if self.blocks.enabled {
+            if let Some(d) = delta {
+                for key in [
+                    "reasoning_content",
+                    "reasoning",
+                    "thinking",
+                    "reasoning_details",
+                ] {
+                    let mut text = String::new();
+                    reasoning_fragments(&d[key], &mut text);
+                    if !text.is_empty() {
+                        self.reasoning(text);
+                        break;
+                    }
+                }
+            }
+        } else if let Some(t) = delta
             .and_then(|d| d.get("reasoning_content").and_then(Value::as_str))
             .or_else(|| {
                 delta
@@ -885,9 +980,22 @@ impl<R: Read> StreamEvents<R> {
             // Some compatible endpoints return typed text parts or refusals.
             if let Some(parts) = d["content"].as_array() {
                 for (index, part) in parts.iter().enumerate() {
+                    if self.blocks.enabled && private_part(part) {
+                        let mut text = String::new();
+                        reasoning_fragments(part, &mut text);
+                        self.reasoning(text);
+                        continue;
+                    }
                     if matches!(part["type"].as_str(), Some("text" | "output_text"))
-                        && let Some(t) = part["text"].as_str().filter(|t| !t.is_empty())
+                        || (self.blocks.enabled && part.get("type").is_none())
                     {
+                        let text = part["text"].as_str().or_else(|| {
+                            self.blocks
+                                .enabled
+                                .then(|| part["text"]["value"].as_str())
+                                .flatten()
+                        });
+                        let Some(t) = text else { continue };
                         if self.blocks.enabled {
                             let id = part["id"].as_str().map(str::to_owned).unwrap_or_else(|| {
                                 part["index"]
@@ -897,8 +1005,10 @@ impl<R: Read> StreamEvents<R> {
                             });
                             self.outbox.extend(self.blocks.start(format!("chat:{id}")));
                         }
-                        self.acc.text.push_str(t);
-                        self.outbox.push_back(Event::Text(t.into()));
+                        if !t.is_empty() {
+                            self.acc.text.push_str(t);
+                            self.outbox.push_back(Event::Text(t.into()));
+                        }
                     }
                 }
             }
@@ -1726,6 +1836,111 @@ mod protocol_regressions {
 #[cfg(test)]
 mod reasoning_tests {
     use super::*;
+    mod dietrich {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/dietrich_provider.rs"
+        ));
+    }
+
+    #[test]
+    fn dietrich_structured_reasoning_and_blocks_are_separate_when_opted_in() {
+        for case in dietrich::cases() {
+            if case.provider == "anthropic" {
+                continue;
+            }
+            let mut stream = StreamEvents::new(std::io::empty());
+            stream.blocks.enabled = true;
+            for frame in &case.frames {
+                stream.consume(frame);
+            }
+            let mut visible = String::new();
+            let mut reasoning = String::new();
+            for event in stream.outbox {
+                match event {
+                    Event::Text(text) => visible.push_str(&text),
+                    Event::Reasoning(text) => reasoning.push_str(&text),
+                    Event::TextBlockStart(_) => reasoning.push_str(&std::mem::take(&mut visible)),
+                    _ => {}
+                }
+            }
+            assert_eq!(visible, dietrich::ANSWER, "{}", case.name);
+            assert_eq!(reasoning, dietrich::PLAN, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn thought_marked_text_retains_the_exact_legacy_concatenation_without_opt_in() {
+        let case = dietrich::cases().remove(0);
+        let mut stream = StreamEvents::new(std::io::empty());
+        for frame in &case.frames {
+            stream.consume(frame);
+        }
+        assert_eq!(
+            stream.acc.text,
+            format!("{}{}", dietrich::PLAN, dietrich::ANSWER)
+        );
+        assert!(
+            stream
+                .outbox
+                .iter()
+                .all(|event| matches!(event, Event::Text(_)))
+        );
+    }
+
+    #[test]
+    fn no_structure_cannot_be_distinguished_from_ordinary_text_deltas() {
+        let mut stream = StreamEvents::new(std::io::empty());
+        stream.blocks.enabled = true;
+        for text in [dietrich::PLAN, dietrich::ANSWER] {
+            stream.consume(&json!({"choices":[{"delta":{"content":text}}]}));
+        }
+        assert_eq!(
+            stream.acc.text,
+            format!("{}{}", dietrich::PLAN, dietrich::ANSWER)
+        );
+        assert!(
+            stream
+                .outbox
+                .iter()
+                .all(|event| matches!(event, Event::Text(_)))
+        );
+    }
+
+    #[test]
+    fn empty_explicit_parts_retract_previous_text_without_creating_empty_text_events() {
+        for responses in [false, true] {
+            let mut stream = StreamEvents::new(std::io::empty());
+            stream.blocks.enabled = true;
+            if responses {
+                stream.consume(&json!({"type":"response.output_text.delta","item_id":"m","content_index":0,"delta":dietrich::PLAN}));
+                stream.consume(&json!({"type":"response.content_part.added","item_id":"m","content_index":1,"part":{"type":"output_text","text":""}}));
+            } else {
+                stream.consume(&json!({"choices":[{"delta":{"content":[{"type":"text","index":0,"text":dietrich::PLAN}]}}]}));
+                stream.consume(&json!({"choices":[{"delta":{"content":[{"type":"text","index":1,"text":""}]}}]}));
+            }
+            assert_eq!(stream.outbox.len(), 2);
+            assert!(matches!(
+                stream.outbox.back(),
+                Some(Event::TextBlockStart(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_or_encrypted_reasoning_never_becomes_visible_or_satisfies_an_answer() {
+        let mut stream = StreamEvents::new(std::io::empty());
+        stream.blocks.enabled = true;
+        stream.consume(&json!({"choices":[{"delta":{"thinking":"","reasoning_details":[{"type":"reasoning.encrypted","text":"SECRET","data":"SECRET"}]}}]}));
+        stream.seal();
+        assert!(
+            stream
+                .outbox
+                .iter()
+                .all(|event| matches!(event, Event::Error(_)))
+        );
+    }
+
     #[test]
     fn public_summary_deltas_and_done_are_not_duplicated() {
         let mut s = StreamEvents::new(std::io::empty());

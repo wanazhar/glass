@@ -37,14 +37,19 @@ pub(super) fn inject(
         close: loaded.close_display,
     };
     match action {
-        "pointer-double-click" => {
+        "pointer-double-click" | "pointer-triple-click" => {
             let (x, y) = coordinates(value)?;
             let button = button_id(value["button"].as_str().unwrap_or("left"))
                 .ok_or(InputError::Invalid("button must be left, middle, or right"))?;
             unsafe {
                 (loaded.motion)(xdisplay, 0, x, y, 0);
             }
-            for _ in 0..2 {
+            let clicks = if action == "pointer-triple-click" {
+                3
+            } else {
+                2
+            };
+            for _ in 0..clicks {
                 unsafe {
                     (loaded.button)(xdisplay, button as c_uint, 1, 0);
                     (loaded.button)(xdisplay, button as c_uint, 0, 0);
@@ -198,7 +203,7 @@ pub(super) fn inject(
         }
         _ => {
             return Err(InputError::Invalid(
-                "action must be pointer-move, pointer-button, pointer-click, pointer-double-click, pointer-drag, key, key-tap, key-chord, text, or scroll",
+                "action must be pointer-move, pointer-button, pointer-click, pointer-double-click, pointer-triple-click, pointer-drag, key, key-tap, key-chord, text, or scroll",
             ));
         }
     }

@@ -1541,6 +1541,7 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_clipboard"
             | "desktop_windows"
             | "desktop_files"
+            | "desktop_wait"
     )
 }
 
@@ -1557,7 +1558,11 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
     }
     let result = match call.name.as_str() {
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
+        "desktop_input" if args["action"] == "paste" => {
+            paste(&args, workspace).map(|value| value.to_string())
+        }
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
+        "desktop_wait" => wait_for_desktop(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
         "desktop_clipboard" => {
             Desktop::agent_clipboard(&args, workspace).map(|value| value.to_string())
@@ -1603,6 +1608,110 @@ fn host_session() -> &'static str {
 
 /// Appends a concrete recovery step to errors whose text does not already
 /// tell the model what to call next.
+/// `desktop_input` `paste`: write the clipboard, then press Control+V.
+fn paste(args: &Value, workspace: &Path) -> Result<Value, String> {
+    let session_id = args["sessionId"]
+        .as_str()
+        .ok_or("sessionId is required from desktop_status")?;
+    let text = args["text"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .ok_or("paste needs non-empty text")?;
+    Desktop::agent_clipboard(
+        &json!({"action":"write","sessionId":session_id,"text":text}),
+        workspace,
+    )?;
+    Desktop::agent_input(
+        &json!({"action":"key-chord","sessionId":session_id,"keys":["Control","V"]}),
+    )?;
+    Ok(json!({"sent":true,"sessionId":session_id,"pastedBytes":text.len()}))
+}
+
+/// Whether any `name` in an observation contains `text`, case-insensitive.
+fn observation_names_contain(observation: &Value, text: &str) -> bool {
+    match observation {
+        Value::Object(object) => {
+            let visible = object
+                .get("states")
+                .and_then(Value::as_array)
+                .is_some_and(|states| {
+                    ["visible", "showing"]
+                        .iter()
+                        .all(|state| states.iter().any(|value| value == state))
+                })
+                && object.get("onscreen") != Some(&Value::Bool(false));
+            (visible
+                && object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.to_lowercase().contains(&text.to_lowercase())))
+                || ["nodes", "children"].iter().any(|key| {
+                    object
+                        .get(*key)
+                        .is_some_and(|value| observation_names_contain(value, text))
+                })
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(|item| observation_names_contain(item, text)),
+        _ => false,
+    }
+}
+
+fn wait_for_desktop(args: &Value) -> Result<Value, String> {
+    let session_id = args["sessionId"]
+        .as_str()
+        .ok_or("sessionId is required from desktop_status")?;
+    let timeout_ms = args["timeoutMs"]
+        .as_u64()
+        .unwrap_or(5000)
+        .clamp(250, 30_000);
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_millis(timeout_ms);
+    let waited = || started.elapsed().as_millis() as u64;
+    match args["until"].as_str() {
+        Some("change") => {
+            let first = Desktop::agent_frame(session_id, &Value::Null)?["jpeg"].clone();
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let frame = Desktop::agent_frame(session_id, &Value::Null)?;
+                if frame["jpeg"] != first {
+                    return Ok(json!({"changed":true,"waitedMs":waited(),"sessionId":session_id}));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "The screen did not change within {timeout_ms} ms.\nNext: call desktop_screenshot to see the current state; the action may have failed or need a longer timeoutMs."
+                    ));
+                }
+            }
+        }
+        Some("text") => {
+            let text = args["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && text.len() <= 120)
+                .ok_or("until=text needs text of 1-120 bytes")?;
+            loop {
+                let observation = Desktop::agent_observe(
+                    &json!({"sessionId":session_id,"query":format!("name:{text}")}),
+                )?;
+                if observation_names_contain(&observation, text) {
+                    return Ok(
+                        json!({"found":true,"text":text,"waitedMs":waited(),"sessionId":session_id}),
+                    );
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "No visible element named like \"{text}\" appeared within {timeout_ms} ms.\nNext: call desktop_screenshot to see the screen; try a shorter phrase, or until=\"change\" for text that is not exposed to accessibility."
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+        _ => Err("desktop_wait until must be change or text".into()),
+    }
+}
+
 fn with_next_step(error: String) -> String {
     let lower = error.to_ascii_lowercase();
     if lower.contains("call desktop_") || lower.contains("install") {
@@ -2168,6 +2277,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn desktop_wait_matches_names_not_queries() {
+        assert!(super::is_tool("desktop_wait"));
+        let observation = json!({"query":"saved","nodes":[{"name":"Untitled","children":[{"name":"Document Saved","states":["visible","showing"],"onscreen":true}]}]});
+        assert!(super::observation_names_contain(&observation, "saved"));
+        for node in [
+            json!({"name":"Saved","states":["visible","showing"],"onscreen":false}),
+            json!({"name":"Saved","states":["visible"]}),
+            json!({"name":"Saved"}),
+        ] {
+            assert!(!super::observation_names_contain(
+                &json!({"nodes":[node]}),
+                "saved"
+            ));
+        }
+        assert!(!super::observation_names_contain(
+            &json!({"query":"saved","nodes":[{"name":"Untitled"}]}),
+            "saved"
+        ));
+        let error = super::wait_for_desktop(&json!({"until":"soon","sessionId":"s"})).unwrap_err();
+        assert!(error.contains("change or text"), "{error}");
+        let error = super::paste(
+            &json!({"sessionId":"s","text":""}),
+            Path::new("/nonexistent"),
+        )
+        .unwrap_err();
+        assert!(error.contains("non-empty"), "{error}");
+    }
+
     fn trace_route_label(tool_name: &str, action: &str) -> String {
         let tool_name = match tool_name {
             "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app" => tool_name,
@@ -2180,7 +2318,9 @@ mod tests {
                 "pointer-move"
                 | "pointer-click"
                 | "pointer-double-click"
+                | "pointer-triple-click"
                 | "pointer-drag"
+                | "paste"
                 | "scroll"
                 | "key"
                 | "key-tap"

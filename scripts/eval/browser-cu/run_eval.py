@@ -196,7 +196,8 @@ def run_task(task, families, args, base, data_dir, workspace, bin_dir):
         with (workspace / "receipt-0921.txt").open("xb") as receipt:
             receipt.write((HERE / "fixtures" / "receipt-0921.txt").read_bytes())
     prompt = task["prompt"].format(base=base)
-    env = dict(os.environ, XDG_DATA_HOME=str(data_dir), PATH=f"{bin_dir}:{os.environ['PATH']}")
+    env = dict(os.environ, XDG_DATA_HOME=str(data_dir), PATH=f"{bin_dir}:{os.environ['PATH']}",
+               GLASS_CONFIG_HOME=str(workspace / ".gc-artifacts" / "config"))
     command = [args.glass_core, "--yolo", "run", "--json"]
     if args.model:
         command += ["--model", args.model]

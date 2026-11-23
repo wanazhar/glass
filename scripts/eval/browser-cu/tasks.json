@@ -103,6 +103,10 @@
     {"id": "desktop-save-and-export", "family": "desktop", "capability": "OSWorld-style file task",
      "prompt": "On my desktop, use Mousepad to save a file named todo.txt in the Downloads folder containing the line: buy milk. Then copy that file into my workspace.",
      "check": {"workspace_file": {"glob": ".gc-artifacts/desktop/downloads/todo.txt", "contains": "buy milk"}},
-     "ideal": [{"name": "^desktop_files$"}]}
+     "ideal": [{"name": "^desktop_files$"}]},
+    {"id": "save-workflow", "family": "browser", "capability": "replay without the model",
+     "prompt": "Sign up Hana Yusof (hana@example.test, Starter plan, accepting the terms) for the beta at {base}/signup.html. We repeat this signup every week, so save the browser steps as a reusable workflow named weekly-signup.",
+     "check": {"state": {"signup": {"name": "Hana Yusof", "email": "hana@example.test"}}, "workspace_file": {"glob": ".gc-artifacts/config/glass/workflows/weekly-signup.json", "contains": "signup.html"}},
+     "ideal": [{"name": "^browser_workflow$"}]}
   ]
 }

@@ -455,7 +455,7 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
-For LLM agents, `--tool-profile agent` replaces the full catalog with 30
+For LLM agents, `--tool-profile agent` replaces the full catalog with 31
 task-level `browser_*` tools (`browser_navigate`, `browser_history`,
 `browser_snapshot`, `browser_find`, `browser_extract`, `browser_console`,
 `browser_network`, `browser_click`, `browser_drag`, `browser_fill_form`,
@@ -484,6 +484,14 @@ a site needs one sign-in; results show counts, never values.
 banner, or of a banner whose id, class or label says cookie or consent, and
 the covered-element hint suggests it when such a banner is on top.
 `browser_navigate` tells the model that page text is data, not instructions.
+`browser_workflow` replays a task without the model: the server records each
+successful agent call that acts on the page (navigate, click, type, fill,
+select, check, keys, scroll, waits, drag, hover, dialogs, uploads, consent,
+login loads and verify), turning snapshot refs into `role=...;name=...`
+targets. `start` clears the record, `save` writes it to
+`$GLASS_CONFIG_HOME/glass/workflows/<name>.json` (owner-only, unencrypted;
+typed text other than `{{secret:NAME}}` placeholders is stored as typed), and
+`run` replays it and stops at the first failing step, naming it.
 For credentials, export `GLASS_SECRET_<NAME>` (uppercase letters, digits and
 `_`; values of at least 4 characters) before starting the server. The
 `browser_type` and `browser_fill_form` descriptions then list the secret names,

@@ -83,6 +83,7 @@ const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 tokio::task_local! {
     static INTERNAL_LOGIN_CALL: bool;
+    static REQUEST_CANCELLED: Arc<AtomicBool>;
 }
 #[cfg(feature = "native-engine")]
 const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -1244,6 +1245,8 @@ where
         let task_elicitation: Option<McpElicitationClient> = None;
         let native_session_owned = Arc::new(AtomicBool::new(false));
         let task_native_session_owned = Arc::clone(&native_session_owned);
+        let request_cancelled = Arc::new(AtomicBool::new(false));
+        let operation_cancelled = Arc::clone(&request_cancelled);
         tokio::task::spawn_local(async move {
             let _permit = permit;
             let _client_permit = client_permit;
@@ -1253,27 +1256,32 @@ where
                 let mut session = task_session.lock().await;
                 let mut native_session = task_native_session.lock().await;
                 task_native_session_owned.store(true, Ordering::Release);
-                handle_request_with_viewport(
-                    &request,
-                    &mut session,
-                    &mut native_session,
-                    native_runtime,
-                    task_persistent_native_session.as_deref(),
-                    &task_options,
-                    &task_policy,
-                    task_viewport,
-                    task_knowledge_store.as_deref(),
-                    &task_development_sessions,
-                    task_host_backend.as_deref(),
-                    task_elicitation.as_ref(),
-                    task_agent_profile,
-                )
-                .await
+                REQUEST_CANCELLED
+                    .scope(
+                        operation_cancelled,
+                        handle_request_with_viewport(
+                            &request,
+                            &mut session,
+                            &mut native_session,
+                            native_runtime,
+                            task_persistent_native_session.as_deref(),
+                            &task_options,
+                            &task_policy,
+                            task_viewport,
+                            task_knowledge_store.as_deref(),
+                            &task_development_sessions,
+                            task_host_backend.as_deref(),
+                            task_elicitation.as_ref(),
+                            task_agent_profile,
+                        ),
+                    )
+                    .await
             };
             let mut operation = Box::pin(operation);
             let mut response = tokio::select! {
                 response = &mut operation => response,
                 _ = cancel_rx => {
+                    request_cancelled.store(true, Ordering::Release);
                     #[cfg(feature = "native-engine")]
                     if native_runtime && native_session_owned.load(Ordering::Acquire) {
                         if let Some(cancelled) = &task_parent_cancelled {
@@ -2173,6 +2181,83 @@ async fn handle_request_with_viewport_unredacted(
             }
         }};
     }
+    if agent_tool == "browser_workflow" {
+        use super::workflows;
+        let name = agent_arguments["name"].as_str().unwrap_or_default();
+        let outcome = match agent_arguments["action"].as_str().unwrap_or_default() {
+            "start" => Ok(workflows::start()),
+            "save" => workflows::save(name),
+            "list" => workflows::list(),
+            "delete" => workflows::delete(name),
+            _ => match workflows::load(name) {
+                Ok(steps) => {
+                    let mut last = String::new();
+                    let mut failure = None;
+                    let _replay = workflows::replay_guard();
+                    for (index, step) in steps.iter().enumerate() {
+                        if REQUEST_CANCELLED
+                            .try_with(|cancelled| cancelled.load(Ordering::Acquire))
+                            .unwrap_or(false)
+                        {
+                            failure = Some((index, "request cancelled".into()));
+                            break;
+                        }
+                        let mut params = request.params.clone();
+                        params["name"] = step["tool"].clone();
+                        params["arguments"] = step["arguments"].clone();
+                        let step_request = JsonRpcRequest {
+                            jsonrpc: request.jsonrpc.clone(),
+                            method: request.method.clone(),
+                            params,
+                            id: request.id.clone(),
+                        };
+                        let result = Box::pin(handle_request_with_viewport(
+                            &step_request,
+                            session,
+                            native_session,
+                            native_runtime,
+                            persistent_native_session,
+                            options,
+                            policy,
+                            viewport,
+                            knowledge_store_path,
+                            development_sessions,
+                            host_backend,
+                            elicitation,
+                            agent_profile,
+                        ))
+                        .await
+                        .and_then(|response| response.result)
+                        .unwrap_or_else(|| json!({"isError": true}));
+                        last = result["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|item| item["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if result["isError"] == true {
+                            failure = Some((index, last.clone()));
+                            break;
+                        }
+                    }
+                    workflows::run_report(name, &steps, &last, failure)
+                }
+                Err(error) => Err(error),
+            },
+        };
+        let (text, is_error) = match outcome {
+            Ok(text) => (text, false),
+            Err(error) => {
+                let hint = agent_tools::recovery_hint(&agent_tool, &error);
+                (format!("{error}\n{hint}"), true)
+            }
+        };
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":super::secrets::redact(&text)}],"isError":is_error}),
+        ));
+    }
     if agent_tool == "browser_logins" {
         let name = agent_arguments["name"].as_str().unwrap_or_default();
         let outcome =
@@ -2209,6 +2294,9 @@ async fn handle_request_with_viewport_unredacted(
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|outcome| outcome);
+        if outcome.is_ok() && super::workflows::records(&agent_tool, &agent_arguments) {
+            super::workflows::record(&agent_tool, &agent_arguments);
+        }
         let (text, is_error) = match outcome {
             Ok(text) => (text, false),
             Err(error) => {
@@ -2250,10 +2338,29 @@ async fn handle_request_with_viewport_unredacted(
         None
     };
     let mut response = call_inner!(tool, arguments)?;
+    if let Some(result) = response.result.as_mut()
+        && super::workflows::verification_failed(&agent_tool, result)
+    {
+        result["isError"] = json!(true);
+    }
     let succeeded = response
         .result
         .as_ref()
         .is_some_and(|result| result["isError"] != true);
+    if succeeded {
+        if matches!(agent_tool.as_str(), "browser_snapshot" | "browser_find")
+            && let Some(raw) = response
+                .result
+                .as_ref()
+                .and_then(|result| result["content"][0]["text"].as_str())
+        {
+            super::workflows::learn_references(raw);
+        }
+        let model_arguments = request.params.get("arguments").unwrap_or(&Value::Null);
+        if super::workflows::records(&agent_tool, model_arguments) {
+            super::workflows::record(&agent_tool, model_arguments);
+        }
+    }
     if succeeded && agent_tools::reports(&agent_tool) {
         let raw = response
             .result
@@ -9578,6 +9685,58 @@ mod tests {
         )
         .await
         .expect("native MCP tool should return a response")
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_workflow_cancellation_stops_before_the_next_step() {
+        const CHILD: &str = "GLASS_WORKFLOW_CANCEL_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = PdfTestDirectory::new();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mcp::server::tests::native_workflow_cancellation_stops_before_the_next_step",
+                ])
+                .env(CHILD, "1")
+                .env("GLASS_CONFIG_HOME", root.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}/", listener.local_addr().unwrap());
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let flag = Arc::clone(&cancelled);
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request).await;
+                    flag.store(true, Ordering::Release);
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 21\r\nConnection: close\r\n\r\n<title>Before</title>").await.unwrap();
+                });
+                let path = super::super::agent_tools::named_path("workflows", "browser_workflow", "cancel").unwrap();
+                let workflow = json!({"version":1,"steps":[
+                    {"tool":"browser_navigate","arguments":{"url":url}},
+                    {"tool":"browser_navigate","arguments":{"url":"data:text/html,<title>Unwanted</title>"}}
+                ]});
+                super::super::agent_tools::write_private(&path, workflow.to_string().as_bytes()).unwrap();
+                let (mut session, mut native) = (None, None);
+                let options = SessionOptions {incognito:true, ..SessionOptions::default()};
+                let policy = BrowserPolicy::development(std::env::temp_dir()).unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(5), REQUEST_CANCELLED.scope(cancelled,
+                    invoke_native_mcp_tool("browser_workflow", json!({"action":"run","name":"cancel"}), &mut session, &mut native, &options, &policy)
+                )).await.unwrap().result.unwrap();
+                assert_eq!(result["isError"], true, "{result}");
+                assert!(result["content"][0]["text"].as_str().unwrap().contains("Steps 1-1 completed."), "{result}");
+                assert_eq!(native.as_ref().unwrap().script("document.title").await.unwrap().value, "Before");
+                server.await.unwrap();
+                native.take().unwrap().close().await.unwrap();
+            });
+        }).unwrap().join().unwrap();
     }
 
     #[cfg(feature = "native-engine")]

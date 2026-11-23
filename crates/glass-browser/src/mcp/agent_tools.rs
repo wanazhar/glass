@@ -184,6 +184,11 @@ pub(crate) fn agent_tools() -> Vec<Value> {
             json!({"type":"object","properties":{"action":{"type":"string","enum":["save","load","list","delete"]},"name":{"type":"string","pattern":"^[A-Za-z0-9._-]{1,64}$","description":"Login name, e.g. the site name; required except for list."}},"required":["action"],"additionalProperties":false}),
         ),
         tool(
+            "browser_workflow",
+            "Replay a multi-step browser task without reasoning through each step again. Steps that act on the page (navigate, click, type, fill, select, check, keys, scroll, waits, drag, hover, dialogs, uploads, consent, login loads, verify) are recorded; snapshot refs become role and name targets. \"start\" clears the record, \"save\" stores it under a name after the task succeeds, \"run\" replays it and stops at the first failing step. Not for one-off tasks. Example: {\"action\":\"run\",\"name\":\"weekly-report\"}.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["start","save","run","list","delete"]},"name":{"type":"string","pattern":"^[A-Za-z0-9._-]{1,64}$","description":"Workflow name; required for save, run and delete."}},"required":["action"],"additionalProperties":false}),
+        ),
+        tool(
             "browser_dismiss_consent",
             "Close a cookie or consent banner by clicking its own accept button (OneTrust, Cookiebot, or a banner whose id, class or label says cookie or consent). Use when a banner covers the page or an action reports it is covered by one. If it reports nothing found, click the banner's button with browser_click. Example: {}.",
             json!({"type":"object","properties":{},"additionalProperties":false}),
@@ -347,7 +352,19 @@ pub(crate) fn translate(name: &str, arguments: &Value) -> Result<(&'static str, 
                 ));
             }
             if action != "list" {
-                login_path(need(a, "name", name)?)?;
+                named_path("logins", name, need(a, "name", name)?)?;
+            }
+            ("cookies", json!({}))
+        }
+        "browser_workflow" => {
+            let action = need(a, "action", name)?;
+            if !matches!(action, "start" | "save" | "run" | "list" | "delete") {
+                return Err(format!(
+                    "{name} action must be start, save, run, list or delete, not `{action}`."
+                ));
+            }
+            if matches!(action, "save" | "run" | "delete") {
+                named_path("workflows", name, need(a, "name", name)?)?;
             }
             ("cookies", json!({}))
         }
@@ -617,16 +634,22 @@ pub(crate) fn normalize_key(key: &str) -> String {
         .join("+")
 }
 
-fn logins_dir() -> std::path::PathBuf {
+/// `$GLASS_CONFIG_HOME/glass/<kind>` (default: the user config directory).
+pub(crate) fn config_dir(kind: &str) -> std::path::PathBuf {
     std::env::var_os("GLASS_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(dirs::config_dir)
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("glass")
-        .join("logins")
+        .join(kind)
 }
 
-fn login_path(name: &str) -> Result<std::path::PathBuf, String> {
+fn logins_dir() -> std::path::PathBuf {
+    config_dir("logins")
+}
+
+/// The JSON file for `name` under [`config_dir`], after checking the name.
+pub(crate) fn named_path(kind: &str, tool: &str, name: &str) -> Result<std::path::PathBuf, String> {
     let valid = (1..=64).contains(&name.len())
         && name
             .chars()
@@ -634,10 +657,26 @@ fn login_path(name: &str) -> Result<std::path::PathBuf, String> {
         && !name.starts_with('.');
     if !valid {
         return Err(format!(
-            "browser_logins name `{name}` must be 1-64 letters, digits, '.', '_' or '-', not starting with '.'."
+            "{tool} name `{name}` must be 1-64 letters, digits, '.', '_' or '-', not starting with '.'."
         ));
     }
-    Ok(logins_dir().join(format!("{name}.json")))
+    Ok(config_dir(kind).join(format!("{name}.json")))
+}
+
+fn login_path(name: &str) -> Result<std::path::PathBuf, String> {
+    named_path("logins", "browser_logins", name)
+}
+
+/// Write `bytes` to `path`, creating its directory, readable by the owner only.
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(path)?, bytes)
 }
 
 /// Page script returning the URL, origin and full localStorage as JSON.
@@ -662,16 +701,8 @@ pub(crate) fn save_login(name: &str, cookies: &str, page: &str) -> Result<String
     let cookie_count = cookies.as_array().map_or(0, Vec::len);
     let storage_count = page["storage"].as_object().map_or(0, |s| s.len());
     let login = json!({"url": page["url"], "origin": origin, "cookies": cookies, "storage": page["storage"]});
-    std::fs::create_dir_all(logins_dir()).map_err(|e| format!("browser_logins: {e}"))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options
-        .open(&path)
+    write_private(&path, login.to_string().as_bytes())
         .map_err(|e| format!("browser_logins: cannot write {}: {e}", path.display()))?;
-    std::io::Write::write_all(&mut file, login.to_string().as_bytes())
-        .map_err(|e| format!("browser_logins: {e}"))?;
     Ok(format!(
         "Saved login \"{name}\" for {origin}: {cookie_count} cookies, {storage_count} localStorage keys. Load it later with {{\"action\":\"load\",\"name\":\"{name}\"}}."
     ))
@@ -1289,6 +1320,10 @@ fn generic_hint(tool: &str, error: &str) -> &'static str {
         "Next: if a banner is still visible, browser_find \"cookie\" for its accept or close button and click it with browser_click; otherwise continue."
     } else if tool == "browser_logins" && !lower.contains("policy") {
         "Next: call browser_logins {\"action\":\"list\"} for saved names; to save one, sign in first (browser_navigate, browser_fill_form), then save."
+    } else if tool == "browser_workflow" && lower.contains("stopped at step") {
+        "Next: call browser_snapshot to see the page, finish the remaining steps yourself, then browser_workflow start, redo the task and save it again if the site changed."
+    } else if tool == "browser_workflow" && !lower.contains("policy") {
+        "Next: call browser_workflow {\"action\":\"list\"} for saved names; to make one, do the task once with browser_* tools, then {\"action\":\"save\",\"name\":\"<name>\"}."
     } else if tool == "browser_extract" && !lower.contains("policy") {
         "Next: call browser_snapshot to see how the data is laid out; drop or fix `within`, try another kind, or read it with browser_get_text."
     } else if error.starts_with("connection failure during content sandbox: SandboxUnavailable:") {
@@ -1338,7 +1373,7 @@ mod tests {
     #[test]
     fn agent_tools_have_when_to_use_text_examples_and_closed_schemas() {
         let tools = agent_tools();
-        assert!(tools.len() <= 30, "agent profile must stay small");
+        assert!(tools.len() <= 31, "agent profile must stay small");
         for tool in &tools {
             let name = tool["name"].as_str().unwrap();
             assert!(name.starts_with("browser_"), "{name}");

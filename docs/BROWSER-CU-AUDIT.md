@@ -132,7 +132,11 @@ causes wrong tool choice, **P2** is polish.
    the same when/when-not style, key aliases, pixel coordinates matching the
    screenshot, a `desktop_clipboard` tool, explicit X11/Wayland reporting in
    `desktop_status`, and Xvfb integration tests.
-5. **Later (P2).** Scroll-until-visible, Wayland host attach (PipeWire portal
+5. **Replay without the model (P2).** `browser_workflow` records the agent
+   calls that act on the page, turns snapshot refs into role and name
+   targets, saves them under a name and replays them, stopping at the first
+   failing step so the model takes over there.
+6. **Later (P2).** Scroll-until-visible, Wayland host attach (PipeWire portal
    capture, libei input), consistent `glass.browser.*` aliases in Glass.
 
 ## Tool-selection eval
@@ -159,6 +163,9 @@ since: finding text on a long page, extracting a table, a console error, a
 failed request, a cookie banner over a form, saving a PDF, pasting long text on
 the desktop, listing windows, recording the desktop, and an OSWorld-style task
 that saves a file in the desktop's Downloads and copies it into the workspace.
+`save-workflow` asks for a signup to be saved as a reusable browser workflow;
+the runner points `GLASS_CONFIG_HOME` into the workspace's `.gc-artifacts`,
+which it clears before each task.
 File outputs are checked with `workspace_file` (a glob, plus optional
 `starts_with` or `contains`).
 

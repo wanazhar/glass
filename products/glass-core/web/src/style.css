@@ -4391,3 +4391,98 @@ body,button,input,textarea,select { font-family: var(--font-sans); }
    the position that holds the reading anchor stable. Trimming bounds itself to
    the 240-container contract; this spacer is content-free layout room. */
 .timeline.tail-lines::after { content: ""; display: block; height: 100vh; }
+
+/* Reply components (glass-ui blocks) */
+.ui-component { margin: 12px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.ui-component .ui-body { padding: 12px 14px; display: grid; gap: 10px; }
+.ui-component .ui-body > :first-child { margin-top: 0; }
+.ui-component p { margin: 0; }
+.ui-pending { padding: 12px 14px; color: var(--muted); }
+.ui-dim { color: var(--muted); font-size: 0.92em; }
+.ui-example { color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.ui-badges, .ui-buttons, .ui-entities { display: flex; flex-wrap: wrap; gap: 6px; }
+.ui-badge { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface2); color: var(--text); }
+.ui-badge.info { background: #9cc7e833; } .ui-badge.success { background: var(--accent-bg); color: var(--accent); }
+.ui-badge.warning { background: #e8d49c33; } .ui-badge.danger { background: #f0a69c33; color: var(--red); }
+.ui-badge.outlined { background: transparent; border: 1px solid var(--line); }
+.ui-entity a { text-decoration: underline dotted; }
+.ui-rows { list-style: none; margin: 0; padding: 0; display: grid; }
+.ui-rows li { display: grid; gap: 2px; padding: 8px 0; border-top: 1px solid var(--line); }
+.ui-rows li:first-child { border-top: 0; padding-top: 0; }
+.ui-kpi-line { display: flex; align-items: baseline; gap: 10px; }
+.ui-kpi-value { font-size: 1.8em; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ui-delta.up { color: var(--accent); } .ui-delta.down { color: var(--red); }
+.ui-segment { display: inline-flex; gap: 2px; background: var(--surface2); border-radius: 8px; padding: 2px; justify-self: start; }
+.ui-segment button { border: 0; background: transparent; color: var(--muted); padding: 3px 10px; border-radius: 6px; }
+.ui-segment button[aria-pressed="true"] { background: var(--surface); color: var(--text); }
+.ui-button { display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface2); color: var(--text); text-decoration: none; cursor: pointer; font: inherit; }
+.ui-button.primary { background: var(--accent); color: var(--bg); border-color: transparent; }
+.ui-button.plain { background: transparent; border-color: transparent; color: var(--accent); }
+.ui-button[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.ui-counter { display: flex; align-items: center; gap: 10px; }
+.ui-counter span { flex: 1; }
+.ui-counter button { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface2); color: var(--text); }
+.ui-counter output { min-width: 3ch; text-align: center; font-variant-numeric: tabular-nums; }
+.ui-copy { display: flex; gap: 8px; align-items: center; }
+.ui-copy code { flex: 1; overflow-x: auto; white-space: pre; font-family: var(--font-mono); background: var(--surface2); padding: 6px 8px; border-radius: 6px; }
+.ui-copy button { border: 1px solid var(--line); border-radius: 8px; background: var(--surface2); color: var(--text); padding: 4px 10px; }
+.ui-choices { display: grid; gap: 8px; }
+.ui-choice { display: grid; gap: 2px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.ui-choice[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ui-choices > .ui-button { justify-self: start; }
+.ui-form { display: grid; gap: 10px; }
+.ui-form label { display: grid; gap: 4px; }
+.ui-form fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; }
+.ui-form .ui-check { display: flex; gap: 6px; align-items: center; }
+.ui-form input:not([type="radio"]):not([type="checkbox"]), .ui-form select, .ui-form textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.ui-form > .ui-button { justify-self: start; }
+.ui-filter { justify-self: start; display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.ui-component table { border-collapse: collapse; width: 100%; }
+.ui-component th, .ui-component td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.ui-chart { width: 100%; max-height: 260px; }
+.ui-chart text { fill: var(--muted); font-size: 10px; }
+.ui-axis { stroke: var(--line); }
+.ui-chart-pie { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.ui-chart-pie svg { width: 160px; height: 160px; }
+.ui-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.ui-chart-pie .ui-legend { display: grid; }
+.ui-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+.ui-strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(200px, 70%); gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory; }
+.ui-strip > * { scroll-snap-align: start; }
+.ui-card { display: grid; gap: 4px; align-content: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.ui-product .ui-card, .ui-business .ui-card, .ui-video .ui-card { border: 0; padding: 0; }
+.ui-card pre { margin: 4px 0 0; max-height: 160px; overflow: auto; font-family: var(--font-mono); font-size: 12px; }
+.ui-picture { color: var(--accent); }
+.ui-rating { color: var(--text); }
+.ui-facts { display: grid; gap: 2px; margin: 0; }
+.ui-facts span { display: flex; gap: 8px; }
+.ui-facts dt { color: var(--muted); min-width: 64px; }
+.ui-facts dd { margin: 0; }
+.ui-disclosure summary { cursor: pointer; font-weight: 600; }
+.ui-disclosure-body { padding-top: 6px; }
+.ui-checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ui-checklist .done { color: var(--muted); text-decoration: line-through; }
+.ui-progress { display: grid; gap: 4px; }
+.ui-progress-head { display: flex; justify-content: space-between; }
+.ui-progress progress { width: 100%; height: 8px; appearance: none; border: 0; border-radius: 4px; background: var(--surface2); overflow: hidden; }
+.ui-progress progress::-webkit-progress-bar { background: var(--surface2); }
+.ui-progress progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+.ui-progress progress::-moz-progress-bar { background: var(--accent); }
+.ui-progress.gradient progress::-webkit-progress-value { background: linear-gradient(90deg, var(--accent), var(--purple)); }
+.ui-ring { display: flex; align-items: center; gap: 10px; position: relative; }
+.ui-ring svg { width: 56px; height: 56px; transform: rotate(-90deg); }
+.ui-ring circle { fill: none; stroke-width: 3.5; }
+.ui-ring .ui-track { stroke: var(--surface2); } .ui-ring .ui-fill { stroke: var(--accent); stroke-linecap: round; }
+.ui-ring > span { position: absolute; left: 0; width: 56px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ui-timeline, .ui-flow, .ui-sources { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+.ui-timeline li::marker { color: var(--dim); }
+.ui-timeline .done::marker { color: var(--accent); } .ui-timeline .current { font-weight: 600; }
+.ui-timeline .pending { color: var(--muted); }
+.ui-flow li p, .ui-timeline li p, .ui-sources li p { color: var(--muted); margin-top: 2px; }
+.ui-writing-body { white-space: pre-wrap; padding: 10px 12px; background: var(--surface2); border-radius: 8px; }
+.ui-forecast { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; }
+.ui-forecast li { display: grid; gap: 2px; font-size: 13px; }
+.ui-score { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; text-align: center; }
+.ui-score > div { display: grid; }
+.ui-price { font-weight: 600; }
+.ui-html button { justify-self: start; }

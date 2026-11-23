@@ -13,9 +13,9 @@ reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 341 |
-| Serialized `tools` array | 187,386 UTF-8 bytes |
-| Four-bytes-per-token estimate | 46,847 tokens (rounded up) |
+| Negotiated tools | 344 |
+| Serialized `tools` array | 188,585 UTF-8 bytes |
+| Four-bytes-per-token estimate | 47,147 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -61,14 +61,20 @@ workspace catalog. This is a regression alarm, not permission to consume the
 remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
-The measured full-product catalog is 23,546 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
+The measured full-product catalog is 24,745 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 187,386-byte development inventory covers autonomous tasks, measured
+current 188,585-byte development inventory covers autonomous tasks, measured
 experiments, debugger inspection, governed-kernel operations, Core-owned Agent
 runtime setup, workspace-local Agent todos, Git fetch/pull/merge/rebase, and
 the explicit native/Chromium browser backend options, tool descriptions, and
 Core-owned slash-command discovery and forwarding.
+The optional combined download target adds 131 schema bytes without adding a
+tool; it authorizes and subscribes before clicking so immediate downloads are captured.
+The history tools (`back`, `forward`, and `reload`) add three tools and 515 bytes
+to the preceding 341-tool, 187,923-byte measurement.
+The opt-in `consoleText` diagnostics argument adds a further 147 schema bytes,
+without changing the tool count.
 Glass no longer exposes a separate resident-agent trust or coding-permission
 gate; Core owns resident tool decisions and permissions.
 `glass` exposes the same typed resident services used by Glass Core, the TUI, CLI, and

@@ -1738,7 +1738,7 @@ mod tests {
         assert_eq!(started.target_id.as_deref(), Some("page-target-explicit"));
 
         let defaulted = BrowserStartConfig::default();
-        assert_eq!(defaulted.attach, false);
+        assert!(!defaulted.attach);
         assert_eq!(defaulted.target_id, None);
     }
 

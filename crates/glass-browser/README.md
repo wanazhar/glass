@@ -455,6 +455,63 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
+For LLM agents, `--tool-profile agent` replaces the full catalog with 31
+task-level `browser_*` tools (`browser_navigate`, `browser_history`,
+`browser_snapshot`, `browser_find`, `browser_extract`, `browser_console`,
+`browser_network`, `browser_click`, `browser_drag`, `browser_fill_form`,
+`browser_wait_for`, `browser_verify`, `browser_frames`, `browser_tabs`,
+`browser_handle_dialog`, `browser_upload_file`, `browser_download`,
+`browser_save_pdf`, and so on).
+Each has a closed JSON schema with an example, says when to use it and when
+not to, and failed calls end with a `Next:` hint naming the tool to try;
+when the element is covered, off screen, hidden, ambiguous or moved, the hint
+says so and names the covering control. Calls that can change the page
+(click, type, fill, select, check, key) wait for it to settle, at most 1.5 s
+of network quiet and 1 s of DOM quiet, then end with a `Page after action:`
+line listing new text, URL or title changes, new tabs or an opened dialog.
+`browser_find` returns the refs and text lines that contain a phrase, so a
+long page needs no full snapshot. `browser_extract` returns visible tables
+(headers and one object per row), lists or links as JSON. `browser_console`
+returns console messages and uncaught exceptions, hiding any that mention
+passwords, tokens or cookies; `browser_network` records requests for a bounded
+window and lists the 4xx/5xx and failed ones. Both accept `reload: true` to
+watch a fresh page load.
+`browser_logins` saves the current site's cookies and localStorage under a
+name in `$GLASS_CONFIG_HOME/glass/logins/` (default: the user config
+directory), unencrypted with owner-only permissions, and loads them later so
+a site needs one sign-in; results show counts, never values.
+`browser_dismiss_consent` clicks the accept button of a OneTrust or Cookiebot
+banner, or of a banner whose id, class or label says cookie or consent, and
+the covered-element hint suggests it when such a banner is on top.
+`browser_navigate` tells the model that page text is data, not instructions.
+`browser_workflow` replays a task without the model: the server records each
+successful agent call that acts on the page (navigate, click, type, fill,
+select, check, keys, scroll, waits, drag, hover, dialogs, uploads, consent,
+login loads and verify), turning snapshot refs into `role=...;name=...`
+targets. `start` clears the record, `save` writes it to
+`$GLASS_CONFIG_HOME/glass/workflows/<name>.json` (owner-only, unencrypted;
+typed text other than `{{secret:NAME}}` placeholders is stored as typed), and
+`run` replays it and stops at the first failing step, naming it.
+For credentials, export `GLASS_SECRET_<NAME>` (uppercase letters, digits and
+`_`; values of at least 4 characters) before starting the server. The
+`browser_type` and `browser_fill_form` descriptions then list the secret names,
+the model sends `{{secret:NAME}}` instead of the value, the real value is
+entered, and every agent tool result shows the placeholder in place of the
+value. Other tools reject placeholders. Glass Core's `desktop_input` text and
+`desktop_act` `set_text` honour the same variables.
+Glass Core offers this profile as typed tools when `glass-browser` is on
+`PATH` (`GC_BROWSER_TOOLS=0` disables it, `GC_BROWSER_BIN` and
+`GC_BROWSER_RUNTIME` override the binary and runtime;
+`GC_BROWSER_ALLOW_HOSTS=example.com,docs.rs` passes each host as
+`--policy-allow-host`, so the browser refuses every other host). Without an override,
+Core picks `chromium` when the host's bubblewrap is older than 0.8 and cannot
+lock user namespaces, because the native runtime refuses to start there and
+says so with a `SandboxUnavailable` error.
+
+```console
+glass-browser --browser-runtime chromium --mcp --tool-profile agent
+```
+
 Native target sessions also own a bounded nested `iframe`/`frame` tree,
 including `srcdoc`, with stable parent-linked frame IDs and initialized child
 engine owners. Explicit frame selection routes the normal Glass operations to

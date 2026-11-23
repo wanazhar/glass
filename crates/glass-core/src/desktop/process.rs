@@ -503,6 +503,39 @@ pub(super) fn environment_dependency_error(environment: Environment) -> Option<S
     }
 }
 
+/// FFmpeg 5.1 renamed `-vsync` to `-fps_mode`; Ubuntu 22.04 and Debian 11
+/// still ship 4.x, which rejects the new spelling and exits before the first
+/// frame.
+fn frame_rate_mode_flag() -> &'static str {
+    static FLAG: OnceLock<&'static str> = OnceLock::new();
+    FLAG.get_or_init(|| {
+        let version = command("ffmpeg", &["-version"])
+            .stdout(Stdio::piped())
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+        ffmpeg_frame_rate_mode_flag(version.as_deref().unwrap_or_default())
+    })
+}
+
+fn ffmpeg_frame_rate_mode_flag(version_output: &str) -> &'static str {
+    let release = version_output
+        .split_whitespace()
+        .nth(2)
+        .unwrap_or_default()
+        .trim_start_matches('n');
+    let mut parts = release.split(|c: char| !c.is_ascii_digit());
+    let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    match major {
+        Some(major) if major < 5 || (major == 5 && minor < 1) => "-vsync",
+        _ => "-fps_mode",
+    }
+}
+
 pub(super) fn start_capture(
     display: &str,
     auth_file: &Path,
@@ -526,7 +559,7 @@ pub(super) fn start_capture(
             "-f",
             "x11grab",
             "-framerate",
-            "15",
+            "30",
             "-video_size",
             "1280x800",
             "-i",
@@ -538,7 +571,7 @@ pub(super) fn start_capture(
             "1",
             "-flush_packets",
             "1",
-            "-fps_mode",
+            frame_rate_mode_flag(),
             "passthrough",
             "-f",
             "rawvideo",
@@ -716,7 +749,7 @@ fn startup_diagnostic(log: &Path, session_directory: &Path) -> String {
     format!("; bounded private startup stderr: {}", detail.trim())
 }
 
-fn command(program: &str, args: &[&str]) -> Command {
+pub(super) fn command(program: &str, args: &[&str]) -> Command {
     let mut command = Command::new(program);
     apply_private_process_environment(&mut command);
     command
@@ -877,6 +910,24 @@ fn wait_for_display(display: &str, auth_file: &Path, child: &mut Child) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ffmpeg_frame_rate_mode_flag_matches_installed_release() {
+        for (version, flag) in [
+            (
+                "ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c)",
+                "-vsync",
+            ),
+            ("ffmpeg version 5.0.1 Copyright", "-vsync"),
+            ("ffmpeg version 5.1.6-0+deb12u1 Copyright", "-fps_mode"),
+            ("ffmpeg version n6.1.1 Copyright", "-fps_mode"),
+            ("ffmpeg version 7.1 Copyright", "-fps_mode"),
+            ("ffmpeg version N-112233-gabcdef Copyright", "-fps_mode"),
+            ("", "-fps_mode"),
+        ] {
+            assert_eq!(ffmpeg_frame_rate_mode_flag(version), flag, "{version}");
+        }
+    }
 
     #[test]
     fn desktop_storage_root_rejects_symlinks_without_changing_target_permissions() {

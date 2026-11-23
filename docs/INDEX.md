@@ -8,6 +8,13 @@ The [Connect guide](../products/glass-core/docs/connect.md) covers unified conve
 
 The [development runtime guide](development-runtime.md) explains process completion without model polling, ranked Glass tool discovery, resumed-session catalog refresh, and shared conversation resumption across Glass, GC, and Connect WebUI. `glass resume` continues chats in the Glass interface.
 
+[Reply components](../products/glass-core/docs/reply-components.md) describe
+the shared `glass-ui` schema, per-turn client render capabilities, and the
+Markdown fallback that keeps component replies readable in the terminal.
+
+The [native iOS parity plan](GLASS-IOS-FULL-PLAN.md) records gateway contracts,
+shared-client design, milestone acceptance checks, and verification limits.
+
 The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)
 describes the shared desktop picker and quick, reusable, status, and stop commands.
 
@@ -91,7 +98,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 | Running or building the self-hosted personal assistant | [Glass Marble](marble.md) | [Host runtime protocol](../products/glass-core/docs/reference/runtime.md), [Security](../SECURITY.md) |
 | Sharing a same-host desktop with an agent | [Glass Core remote workspace](../products/glass-core/docs/connect.md#shared-desktop) | [Quick XFCE and reusable GNOME](../products/glass-core/docs/connect.md#available-desktop-choices), [touch gestures, screenshots in nested projects, and responsive control handoffs](../products/glass-core/docs/connect.md#viewing-and-control), [transport measurements](../products/glass-core/docs/connect.md#transport-measurements) |
 | Providing sensitive input outside chat | [Glass Core remote workspace](../products/glass-core/docs/connect.md#authorization-and-http) | HTTPS owner-capability links and local masked terminal prompts |
-| Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
+| Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog, including navigation history](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser), [glass-dev docs.rs](https://docs.rs/glass-dev) |
 | Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |
 | Reviewing native browser journeys and scale profiles | [Native browser journey corpus](architecture/native-journey-corpus.md#native-browser-journey-corpus) | [Native browser engine](architecture/native-engine.md), [backend capability matrix](backend-capability-matrix.json) |
@@ -131,7 +138,8 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
   [`glass-browser-core`](../crates/glass-browser-core/README.md),
   [`glass-marble`](../crates/glass-marble/README.md),
   [`glass-runtime-client`](../crates/glass-runtime-client/README.md),
-  [`glass-mod-api`](../crates/glass-mod-api/README.md), and
+  [`glass-mod-api`](../crates/glass-mod-api/README.md),
+  [`glass-marble`](../crates/glass-marble/README.md), and
   [`glass-tui`](../crates/glass-tui/README.md). These are Cargo workspace
   members, not additional user-facing Glass products.
 
@@ -245,7 +253,7 @@ current user instructions.
 
 ## Interface references
 
-- [Rust SDK](rust-sdk.md) — crate setup, ownership, common API flows, modules,
+- [Rust SDK](rust-sdk.md) — crate setup, ownership, common API flows, public modules including web UI action and inspection contracts,
   Cargo features, errors, privacy, and shutdown.
 - [Runnable examples](examples.md) — all checked-in Cargo examples, inputs,
   environment requirements, and output/claim boundaries.
@@ -253,8 +261,10 @@ current user instructions.
   cancellation, concurrency, errors, security, and response modes.
 - [MCP tool catalog](mcp-tools.md) — every tool in the current checkout's
   negotiated conformance inventory grouped by domain.
-- [MCP schema budget](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
+- [MCP schema budget and live source measurements, including history tools and opt-in console text](mcp-schema-budget.md) and [registry metadata](mcp-registry.json)
   — inventory-size policy and distribution metadata.
+- [Browser and computer-use audit](BROWSER-CU-AUDIT.md) — Linux tool surfaces,
+  gaps, prioritized plan, and the tool-selection eval.
 - [Protocol](protocol.md) and [schema compatibility](schema-compatibility.md) —
   canonical request/response envelopes and additive version rules.
 - [Experience Layer CLI](cli/experience.md) — shared response projections and

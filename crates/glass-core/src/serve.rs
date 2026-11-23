@@ -173,9 +173,30 @@ fn connect_cancellable(
 fn send(stream: &mut UnixStream, value: Value) {
     if let Ok(mut line) = serde_json::to_string(&value) {
         line.push('\n');
-        let _ = stream.write_all(line.as_bytes());
-        let _ = stream.flush();
+        let _ = write_line(stream, line.as_bytes());
     }
+}
+
+/// Writes one whole line to a possibly non-blocking client. Local sockets can
+/// buffer as little as 8 KiB (macOS), so a replay snapshot needs several
+/// writes; a reader that stops draining for two seconds is treated as gone.
+fn write_line(stream: &mut UnixStream, mut bytes: &[u8]) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !bytes.is_empty() {
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    stream.flush()
 }
 
 /// Send to every attached client, dropping any whose pipe stopped taking
@@ -186,12 +207,7 @@ fn broadcast(clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>, value: Valu
     };
     line.push('\n');
     let mut slots = clients.borrow_mut();
-    slots.retain_mut(|c| {
-        c.stream
-            .write_all(line.as_bytes())
-            .and_then(|_| c.stream.flush())
-            .is_ok()
-    });
+    slots.retain_mut(|c| write_line(&mut c.stream, line.as_bytes()).is_ok());
 }
 
 enum Incoming {
@@ -379,7 +395,10 @@ fn accept_followup(
     if seen.contains_key(&id) || queue.iter().any(|v| v["request_id"] == id) {
         return Ok((json!({"request_id":id}), false));
     }
-    let value = json!({"t":"prompt","text":text,"request_id":id});
+    let mut value = json!({"t":"prompt","text":text,"request_id":id});
+    if let Some(client) = message.get("client") {
+        value["client"] = client.clone();
+    }
     let mut next = queue.clone();
     next.push_back(value.clone());
     save_followups(path, &next)?;
@@ -1344,6 +1363,7 @@ pub fn serve(
                     .with_image_input(cfg.image_input)
                     .prime_extensions()
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
+                    .with_client_render(crate::components::ClientRender::from_message(&message).as_ref())
                     .with_live(cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&turn_factory))
                     .with_limits(cfg.max_tokens,cfg.reasoning_budget,usize::MAX)
@@ -1839,7 +1859,7 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                         // before any uncertain prompt is resent.
                         send(
                             &mut stream,
-                            json!({"t":"prompt", "text":pending.text, "request_id":pending.id}),
+                            json!({"t":"prompt", "text":pending.text, "request_id":pending.id, "client":crate::components::ClientRender::tui()}),
                         );
                     }
                     shown_prompt = render(&mut out, value, shown_prompt)?;
@@ -1883,6 +1903,7 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                                     "t": "prompt",
                                     "text": pending.text,
                                     "request_id": pending.id,
+                                    "client": crate::components::ClientRender::tui(),
                                 }),
                             );
                             shown_prompt = false;
@@ -2208,6 +2229,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn large_lines_reach_non_blocking_clients_intact() {
+        let (mut server, peer) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut line = String::new();
+            std::io::BufReader::new(peer).read_line(&mut line).unwrap();
+            line
+        });
+        let text = "x".repeat(512 * 1024);
+        send(&mut server, json!({"t":"replay","text":text}));
+        let line = reader.join().unwrap();
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["text"].as_str().unwrap().len(), 512 * 1024);
+    }
+
+    #[test]
     fn replay_is_bounded_and_marks_utf8_previews() {
         let entries = (0..200)
             .map(|n| json!({"role":"tool","text":"界".repeat(40_000),"n":n}))
@@ -2474,6 +2512,28 @@ mod followup_regression {
         reserved["inbox_recorded"] = json!(true);
         assert!(accept_followup(&path, &mut queue, &reserved, &seen).is_err());
         assert_eq!(queue.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn queued_followups_keep_the_sending_clients_capabilities() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-queue-client-{}-{}.json",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let mut queue = VecDeque::new();
+        let client = json!({"name":"ios","schema":1,"components":["table"]});
+        let message = json!({"t":"prompt","text":"Compare","request_id":"c","client":client});
+        accept_followup(
+            &path,
+            &mut queue,
+            &message,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(queue[0]["client"], client);
+        let render = crate::components::ClientRender::from_message(&queue[0]).unwrap();
+        assert_eq!(render.components, ["table"]);
         std::fs::remove_file(path).unwrap();
     }
     #[test]

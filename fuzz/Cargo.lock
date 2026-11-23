@@ -356,6 +356,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -990,6 +991,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gif",
  "glass-browser-core",
+ "glass-tui",
  "harfrust",
  "hmac",
  "html5ever",
@@ -1044,6 +1046,7 @@ dependencies = [
  "image-webp",
  "jpeg-encoder",
  "libc",
+ "matroska-demuxer",
  "png",
  "regex",
  "reqwest",
@@ -1058,8 +1061,11 @@ dependencies = [
  "ttf-parser",
  "url",
  "webp-rust",
+ "windows-sys 0.61.2",
  "wuff",
  "zune-jpeg",
+ "zvidlib-core",
+ "zvidlib-vp8",
 ]
 
 [[package]]
@@ -1070,6 +1076,24 @@ dependencies = [
  "libfuzzer-sys",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "glass-mod-api"
+version = "0.3.14"
+
+[[package]]
+name = "glass-tui"
+version = "0.3.14"
+dependencies = [
+ "crossterm",
+ "glass-mod-api",
+ "libc",
+ "ratatui",
+ "ratatui-core",
+ "serde_json",
+ "unicode-width",
+ "zeroize",
 ]
 
 [[package]]
@@ -1608,6 +1632,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "matroska-demuxer"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbf36668475a45a46bf8710e927e7458b7c387e7c46ddb5457ae0c71cf5e817"
 
 [[package]]
 name = "memchr"
@@ -2693,6 +2723,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal_size"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3616,4 +3656,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b554da611136df9905629a243ee2e9a92453e0c4476d91185133d9b9c058af15"
 dependencies = [
  "zune-core",
+]
+
+[[package]]
+name = "zvidlib-build"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4703bf6f711ae09b600c6272c6e629d4b9e9857c6aea50bb599f65bec876c169"
+
+[[package]]
+name = "zvidlib-color"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c337a4d5bae5eae15934c4d4081bf6a4be04d309332b018d8c2dfa494f95934"
+dependencies = [
+ "zvidlib-core",
+]
+
+[[package]]
+name = "zvidlib-core"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "568189ce764b4890342f24ed013595066b6beb0d8e30af37bb755fafae074b90"
+
+[[package]]
+name = "zvidlib-vp8"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed40a5ba17bf2b7db9b9ae08a9c5669753332be34f3b346439a1c1188aa3834a"
+dependencies = [
+ "zvidlib-build",
+ "zvidlib-color",
+ "zvidlib-core",
 ]

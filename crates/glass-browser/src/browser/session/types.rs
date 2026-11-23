@@ -2317,9 +2317,12 @@ impl VerificationPredicate {
             return Err("verification predicate nesting exceeds four levels".into());
         }
         match self {
-            Self::UrlEquals { value }
-            | Self::TitleContains { value }
-            | Self::TextContains { value } => {
+            Self::UrlEquals { value } => {
+                if value.is_empty() || value.len() > 8192 {
+                    return Err("verification URL must be 1..=8192 bytes".into());
+                }
+            }
+            Self::TitleContains { value } | Self::TextContains { value } => {
                 if value.is_empty() || value.len() > 1024 {
                     return Err("verification text must be 1..=1024 bytes".into());
                 }
@@ -2746,6 +2749,7 @@ pub(crate) fn truncate_visible_text(text: &str, max_bytes: usize) -> String {
     truncate_visible_text_with_status(text, max_bytes).0
 }
 
+#[cfg(test)]
 pub(crate) fn collect_diagnostic_event(
     event: &CdpEventWithParams,
     console: &mut Vec<ConsoleEvidence>,
@@ -2753,13 +2757,46 @@ pub(crate) fn collect_diagnostic_event(
     request_indexes: &mut HashMap<String, usize>,
     dropped: &mut u64,
 ) {
+    collect_diagnostic_event_with(event, console, network, request_indexes, dropped, false);
+}
+
+/// Like [`collect_diagnostic_event`]; with `console_text` the console
+/// arguments and uncaught exceptions are kept, after sensitive-marker redaction.
+pub(crate) fn collect_diagnostic_event_with(
+    event: &CdpEventWithParams,
+    console: &mut Vec<ConsoleEvidence>,
+    network: &mut Vec<NetworkEvidence>,
+    request_indexes: &mut HashMap<String, usize>,
+    dropped: &mut u64,
+    console_text: bool,
+) {
     match event.method.as_str() {
         "Runtime.consoleAPICalled" => {
+            let text = if console_text {
+                redact_diagnostic_text(&console_arguments_text(&event.params["args"]))
+            } else {
+                "[console arguments redacted]".to_string()
+            };
             push_bounded(
                 console,
                 ConsoleEvidence {
                     level: bounded_diagnostic_text(event.params["type"].as_str().unwrap_or("log")),
-                    text: "[console arguments redacted]".to_string(),
+                    text,
+                },
+                dropped,
+            );
+        }
+        "Runtime.exceptionThrown" if console_text => {
+            let details = &event.params["exceptionDetails"];
+            let text = details["exception"]["description"]
+                .as_str()
+                .or_else(|| details["text"].as_str())
+                .unwrap_or("Uncaught exception");
+            push_bounded(
+                console,
+                ConsoleEvidence {
+                    level: "exception".to_string(),
+                    text: redact_diagnostic_text(text),
                 },
                 dropped,
             );
@@ -2836,6 +2873,25 @@ pub(crate) fn push_bounded<T>(values: &mut Vec<T>, value: T, dropped: &mut u64) 
     }
 }
 
+fn console_arguments_text(args: &Value) -> String {
+    args.as_array()
+        .map(|args| {
+            args.iter()
+                .map(|arg| match &arg["value"] {
+                    Value::String(text) => text.clone(),
+                    Value::Null => arg["description"]
+                        .as_str()
+                        .or_else(|| arg["type"].as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    value => value.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn bounded_diagnostic_text(value: &str) -> String {
     truncate_utf8_bytes(value, MAX_DIAGNOSTIC_TEXT_BYTES)
 }
@@ -2848,6 +2904,7 @@ pub(crate) fn redact_diagnostic_text(value: &str) -> String {
     {
         return "[redacted sensitive console entry]".to_string();
     }
+    let value = crate::mcp::secrets::redact(value);
     let redacted = value
         .split_whitespace()
         .map(|part| {
@@ -3867,6 +3924,21 @@ pub(crate) fn wait_timeout(condition: &str, deadline: Duration, last_state: &str
 impl Locator {
     pub fn parse(value: &str) -> BrowserResult<Self> {
         let value = value.trim().trim_matches('"');
+        if let Some(encoded) = value.strip_prefix("role64=") {
+            use base64::Engine;
+            let (role, name) = encoded
+                .split_once(";name64=")
+                .ok_or("invalid encoded role/name locator")?;
+            let decode = |text: &str| -> BrowserResult<String> {
+                let text =
+                    String::from_utf8(base64::engine::general_purpose::STANDARD.decode(text)?)?;
+                nonempty_locator(&text, "encoded role/name")
+            };
+            return Ok(Self::RoleAndName {
+                role: decode(role)?,
+                name: decode(name)?,
+            });
+        }
         if parse_revisioned_reference(value)?.is_some() {
             return Ok(Self::Reference(value.to_string()));
         }
@@ -3998,9 +4070,9 @@ pub(crate) fn visible_text_contains_expression(text: &str) -> BrowserResult<Stri
     Ok(format!(
         r#"(() => {{
             const wanted = {text};
+            let visibleText = '';
             const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {{
-                if (!(node.nodeValue || '').includes(wanted)) continue;
                 const element = node.parentElement;
                 if (!element) continue;
                 if (element.checkVisibility && !element.checkVisibility({{checkOpacity:true, checkVisibilityCSS:true}})) continue;
@@ -4017,9 +4089,9 @@ pub(crate) fn visible_text_contains_expression(text: &str) -> BrowserResult<Stri
                         if (right <= left || bottom <= top) {{ hidden = true; break; }}
                     }}
                 }}
-                if (!hidden) return true;
+                if (!hidden) visibleText += node.nodeValue || '';
             }}
-            return false;
+            return visibleText.includes(wanted);
         }})()"#
     ))
 }

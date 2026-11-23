@@ -81,6 +81,10 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+tokio::task_local! {
+    static INTERNAL_LOGIN_CALL: bool;
+    static REQUEST_CANCELLED: Arc<AtomicBool>;
+}
 #[cfg(feature = "native-engine")]
 const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(feature = "native-engine")]
@@ -100,7 +104,7 @@ struct JsonRpcRequest {
     id: RequestId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 enum RequestId {
     #[default]
     Missing,
@@ -472,6 +476,7 @@ enum ToolInvocation<'a> {
     },
     Diagnostics {
         duration_ms: u64,
+        console_text: bool,
     },
     AcceptDialog,
     DismissDialog,
@@ -479,6 +484,7 @@ enum ToolInvocation<'a> {
     Download {
         destination: std::path::PathBuf,
         timeout_ms: u64,
+        target: Option<&'a str>,
     },
     ListTargets,
     CreateTarget {
@@ -503,6 +509,10 @@ enum ToolInvocation<'a> {
     SessionStorage,
     PrintToPdf {
         options: serde_json::Value,
+    },
+    History {
+        action: &'static str,
+        expected_revision: Option<u64>,
     },
     FillForm {
         fields: Vec<(String, String)>,
@@ -1198,6 +1208,7 @@ where
         let task_session = Arc::clone(&session);
         let task_native_session = Arc::clone(&native_session);
         let task_options = options.clone();
+        let task_agent_profile = cli.tool_profile == crate::cli::args::ToolProfile::Agent;
         let task_policy = policy.clone();
         let task_viewport = viewport;
         let task_knowledge_store = cli.knowledge_store.clone();
@@ -1234,6 +1245,8 @@ where
         let task_elicitation: Option<McpElicitationClient> = None;
         let native_session_owned = Arc::new(AtomicBool::new(false));
         let task_native_session_owned = Arc::clone(&native_session_owned);
+        let request_cancelled = Arc::new(AtomicBool::new(false));
+        let operation_cancelled = Arc::clone(&request_cancelled);
         tokio::task::spawn_local(async move {
             let _permit = permit;
             let _client_permit = client_permit;
@@ -1243,26 +1256,32 @@ where
                 let mut session = task_session.lock().await;
                 let mut native_session = task_native_session.lock().await;
                 task_native_session_owned.store(true, Ordering::Release);
-                handle_request_with_viewport(
-                    &request,
-                    &mut session,
-                    &mut native_session,
-                    native_runtime,
-                    task_persistent_native_session.as_deref(),
-                    &task_options,
-                    &task_policy,
-                    task_viewport,
-                    task_knowledge_store.as_deref(),
-                    &task_development_sessions,
-                    task_host_backend.as_deref(),
-                    task_elicitation.as_ref(),
-                )
-                .await
+                REQUEST_CANCELLED
+                    .scope(
+                        operation_cancelled,
+                        handle_request_with_viewport(
+                            &request,
+                            &mut session,
+                            &mut native_session,
+                            native_runtime,
+                            task_persistent_native_session.as_deref(),
+                            &task_options,
+                            &task_policy,
+                            task_viewport,
+                            task_knowledge_store.as_deref(),
+                            &task_development_sessions,
+                            task_host_backend.as_deref(),
+                            task_elicitation.as_ref(),
+                            task_agent_profile,
+                        ),
+                    )
+                    .await
             };
             let mut operation = Box::pin(operation);
             let mut response = tokio::select! {
                 response = &mut operation => response,
                 _ = cancel_rx => {
+                    request_cancelled.store(true, Ordering::Release);
                     #[cfg(feature = "native-engine")]
                     if native_runtime && native_session_owned.load(Ordering::Acquire) {
                         if let Some(cancelled) = &task_parent_cancelled {
@@ -1571,7 +1590,7 @@ async fn mutation_lease_error(
     } else if !tool_requires_mutation_lease(tool_name) {
         return None;
     }
-    let arguments = request.params.get("arguments")?;
+    let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
     let lease = arguments.get("mutationLease").and_then(Value::as_object);
     let token = lease
         .and_then(|lease| lease.get("token"))
@@ -1637,10 +1656,49 @@ fn workflow_status_error_code(message: &str) -> i32 {
     }
 }
 
+/// Write the base64 PDF from printToPdf to the path the agent asked for.
+fn save_pdf_result(
+    request: &JsonRpcRequest,
+    result: &Value,
+    policy: &BrowserPolicy,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let path = request.params["arguments"]["path"]
+        .as_str()
+        .unwrap_or_default();
+    super::agent_tools::pdf_path(path).and_then(|path| {
+        let path = policy
+            .require_output_path(&path)
+            .map_err(|error| error.to_string())?;
+        if !path.starts_with(policy.workspace_root()) {
+            return Err("PDF output escapes the configured workspace root".into());
+        }
+        let encoded = result["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .or_else(|| value["result"].as_str())
+                    .map(str::to_owned)
+            })
+            .ok_or("printToPdf returned no PDF data")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("printToPdf returned invalid base64: {error}"))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        Ok(json!({"path": path, "bytes": bytes.len()}).to_string())
+    })
+}
+
 fn tool_requires_mutation_lease(tool_name: &str) -> bool {
     !matches!(
         tool_name,
-        "screenshot"
+        "browser_snapshot"
+            | "browser_get_text"
+            | "browser_screenshot"
+            | "screenshot"
             | "observe"
             | "observeBootstrap"
             | "observeKnowledge"
@@ -1910,12 +1968,516 @@ async fn handle_request(
         &development_sessions,
         None,
         None,
+        false,
     )
     .await
 }
 
+/// Route `browser_*` agent-profile calls through the full catalog and add a
+/// next step to their failures.
 #[allow(clippy::too_many_arguments)]
 async fn handle_request_with_viewport(
+    request: &JsonRpcRequest,
+    session: &mut Option<CdpBrowserSession>,
+    native_session: &mut Option<BrowserRuntimeSession>,
+    native_runtime: bool,
+    persistent_native_session: Option<&str>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
+    knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
+    agent_profile: bool,
+) -> Option<JsonRpcResponse> {
+    let mut response = handle_request_with_viewport_unredacted(
+        request,
+        session,
+        native_session,
+        native_runtime,
+        persistent_native_session,
+        options,
+        policy,
+        viewport,
+        knowledge_store_path,
+        development_sessions,
+        host_backend,
+        elicitation,
+        agent_profile,
+    )
+    .await?;
+    if request.method != "tools/list"
+        && let Some(result) = response.result.as_mut()
+    {
+        super::secrets::redact_mcp_result(result);
+    }
+    if let Some(error) = response.error.as_mut() {
+        error.message = super::secrets::redact(&error.message);
+        if let Some(data) = error.data.as_mut() {
+            super::secrets::redact_value(data);
+        }
+    }
+    Some(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_with_viewport_unredacted(
+    request: &JsonRpcRequest,
+    session: &mut Option<CdpBrowserSession>,
+    native_session: &mut Option<BrowserRuntimeSession>,
+    native_runtime: bool,
+    persistent_native_session: Option<&str>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
+    knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
+    agent_profile: bool,
+) -> Option<JsonRpcResponse> {
+    use super::agent_tools;
+    if request.method == "tools/list" && agent_profile {
+        let mut tools = agent_tools::tools_for_runtime(native_runtime);
+        if native_runtime {
+            tools.retain(|tool| tool["name"] != "browser_handle_dialog");
+        }
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"tools": tools}),
+        ));
+    }
+    let agent_tool = (request.method == "tools/call")
+        .then(|| request.params.get("name").and_then(Value::as_str))
+        .flatten()
+        .filter(|name| agent_tools::is_agent_tool(name))
+        .map(str::to_owned);
+    let Some(agent_tool) = agent_tool else {
+        return Box::pin(handle_request_inner(
+            request,
+            session,
+            native_session,
+            native_runtime,
+            persistent_native_session,
+            options,
+            policy,
+            viewport,
+            knowledge_store_path,
+            development_sessions,
+            host_backend,
+            elicitation,
+        ))
+        .await;
+    };
+    if !agent_tools::live_diagnostics_supported(&agent_tool, native_runtime) {
+        return Some(success_response(
+            request.id.response_value(),
+            json!({
+                "content":[{"type":"text","text":"Live console/network capture is unsupported on native; use the Chromium runtime."}],
+                "isError":true
+            }),
+        ));
+    }
+    let arguments = request.params.get("arguments").unwrap_or(&Value::Null);
+    if native_runtime && agent_tool == "browser_handle_dialog" {
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":"Manual dialog decisions require Chromium. Native dialogs use form elicitation during the original operation; a later decision cannot change an already returned confirm or prompt."}],"isError":true}),
+        ));
+    }
+    let arguments = match super::secrets::inject(&agent_tool, arguments) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({"content":[{"type":"text","text":message}],"isError":true}),
+            ));
+        }
+    };
+    let agent_arguments = arguments.clone();
+    let (tool, arguments) = match agent_tools::translate(&agent_tool, &arguments) {
+        Ok(translated) => translated,
+        Err(message) => {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({"content":[{"type":"text","text":message}],"isError":true}),
+            ));
+        }
+    };
+    macro_rules! call_inner {
+        ($tool:expr, $arguments:expr) => {{
+            let mut params = request.params.clone();
+            params["name"] = json!($tool);
+            params["arguments"] = $arguments;
+            let translated = JsonRpcRequest {
+                jsonrpc: request.jsonrpc.clone(),
+                method: request.method.clone(),
+                params,
+                id: request.id.clone(),
+            };
+            Box::pin(handle_request_inner(
+                &translated,
+                session,
+                native_session,
+                native_runtime,
+                persistent_native_session,
+                options,
+                policy,
+                viewport,
+                knowledge_store_path,
+                development_sessions,
+                host_backend,
+                elicitation,
+            ))
+            .await
+        }};
+    }
+    // Reads around an action are best effort and bounded, so a page blocked
+    // by a dialog or a busy renderer delays the action by seconds, not 30 s.
+    macro_rules! inner_text {
+        ($tool:expr, $arguments:expr) => {{
+            tokio::time::timeout(Duration::from_secs(2), async {
+                call_inner!($tool, $arguments)
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|response| {
+                let result = response.result?;
+                (result["isError"] != true)
+                    .then(|| result["content"][0]["text"].as_str().map(str::to_owned))
+                    .flatten()
+            })
+        }};
+    }
+    macro_rules! page_state {
+        () => {{
+            let text = inner_text!("getText", json!({}));
+            let tabs = inner_text!("listTargets", json!({}))
+                .and_then(|tabs| serde_json::from_str::<Value>(&tabs).ok());
+            text.zip(tabs)
+                .map(|(text, tabs)| agent_tools::PageState { text, tabs })
+        }};
+    }
+    macro_rules! inner_result {
+        ($tool:expr, $arguments:expr) => {{
+            let response = INTERNAL_LOGIN_CALL
+                .scope(true, async { call_inner!($tool, $arguments) })
+                .await;
+            match response.and_then(|response| response.result) {
+                Some(result) => {
+                    let text = result["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    if result["isError"] == true {
+                        Err(text)
+                    } else {
+                        Ok(text)
+                    }
+                }
+                None => Err("browser tool failed".to_owned()),
+            }
+        }};
+    }
+    if agent_tool == "browser_workflow" {
+        use super::workflows;
+        let name = agent_arguments["name"].as_str().unwrap_or_default();
+        let outcome = match agent_arguments["action"].as_str().unwrap_or_default() {
+            "start" => Ok(workflows::start()),
+            "save" => workflows::save(name),
+            "list" => workflows::list(),
+            "delete" => workflows::delete(name),
+            _ => match workflows::load(name) {
+                Ok(steps) => {
+                    let mut last = String::new();
+                    let mut failure = None;
+                    let _replay = workflows::replay_guard();
+                    for (index, step) in steps.iter().enumerate() {
+                        if REQUEST_CANCELLED
+                            .try_with(|cancelled| cancelled.load(Ordering::Acquire))
+                            .unwrap_or(false)
+                        {
+                            failure = Some((index, "request cancelled".into()));
+                            break;
+                        }
+                        let mut params = request.params.clone();
+                        params["name"] = step["tool"].clone();
+                        params["arguments"] = step["arguments"].clone();
+                        let step_request = JsonRpcRequest {
+                            jsonrpc: request.jsonrpc.clone(),
+                            method: request.method.clone(),
+                            params,
+                            id: request.id.clone(),
+                        };
+                        let result = Box::pin(handle_request_with_viewport(
+                            &step_request,
+                            session,
+                            native_session,
+                            native_runtime,
+                            persistent_native_session,
+                            options,
+                            policy,
+                            viewport,
+                            knowledge_store_path,
+                            development_sessions,
+                            host_backend,
+                            elicitation,
+                            agent_profile,
+                        ))
+                        .await
+                        .and_then(|response| response.result)
+                        .unwrap_or_else(|| json!({"isError": true}));
+                        last = result["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|item| item["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if result["isError"] == true {
+                            failure = Some((index, last.clone()));
+                            break;
+                        }
+                    }
+                    workflows::run_report(name, &steps, &last, failure)
+                }
+                Err(error) => Err(error),
+            },
+        };
+        let (text, is_error) = match outcome {
+            Ok(text) => (text, false),
+            Err(error) => {
+                let hint = agent_tools::recovery_hint(&agent_tool, &error);
+                (format!("{error}\n{hint}"), true)
+            }
+        };
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":super::secrets::redact(&text)}],"isError":is_error}),
+        ));
+    }
+    if agent_tool == "browser_logins" {
+        let name = agent_arguments["name"].as_str().unwrap_or_default();
+        let outcome =
+            policy
+                .with_authorized_profile(async {
+                    match agent_arguments["action"].as_str().unwrap_or_default() {
+                        "list" => agent_tools::list_logins(),
+                        "delete" => agent_tools::delete_login(name),
+                        "save" => match inner_result!("cookies", json!({})) {
+                            Ok(cookies) => inner_result!(
+                                "evaluate",
+                                json!({"expression": agent_tools::READ_LOGIN_STORAGE})
+                            )
+                            .and_then(|page| agent_tools::save_login(name, &cookies, &page)),
+                            Err(error) => Err(error),
+                        },
+                        _ => match agent_tools::read_login(name) {
+                            Ok(login) => async {
+                                inner_result!("setCookies", json!({"cookies": login["cookies"]}))?;
+                                inner_result!("navigate", json!({"url": login["url"]}))?;
+                                let restored = inner_result!(
+                                    "evaluate",
+                                    json!({"expression": agent_tools::write_login_storage(&login)})
+                                )?;
+                                agent_tools::check_login_storage_restore(&restored)?;
+                                inner_result!("reload", json!({}))?;
+                                Ok::<_, String>(agent_tools::loaded_login(name, &login))
+                            }
+                            .await,
+                            Err(error) => Err(error),
+                        },
+                    }
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|outcome| outcome);
+        if outcome.is_ok() && super::workflows::records(&agent_tool, &agent_arguments) {
+            super::workflows::record(&agent_tool, &agent_arguments);
+        }
+        let (text, is_error) = match outcome {
+            Ok(text) => (text, false),
+            Err(error) => {
+                let hint = agent_tools::recovery_hint(&agent_tool, &error);
+                (format!("{error}\n{hint}"), true)
+            }
+        };
+        return Some(success_response(
+            request.id.response_value(),
+            json!({"content":[{"type":"text","text":super::secrets::redact(&text)}],"isError":is_error}),
+        ));
+    }
+    if let Some((reload, reload_arguments)) = agent_tools::pre_reload(&agent_tool, &agent_arguments)
+    {
+        let _ = inner_text!(reload, reload_arguments);
+    }
+    let before = if agent_tools::mutates_page(&agent_tool) {
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": agent_tools::WATCH_MUTATIONS, "timeoutMs": 1000})
+        );
+        page_state!()
+    } else {
+        None
+    };
+    let network_tracker = if before.is_some() && !native_runtime {
+        if let Some(session) = session.as_ref() {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                session.start_network_quiet_tracking(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut response = call_inner!(tool, arguments)?;
+    if let Some(result) = response.result.as_mut()
+        && super::workflows::verification_failed(&agent_tool, result)
+    {
+        result["isError"] = json!(true);
+    }
+    let succeeded = response
+        .result
+        .as_ref()
+        .is_some_and(|result| result["isError"] != true);
+    if succeeded {
+        if matches!(agent_tool.as_str(), "browser_snapshot" | "browser_find")
+            && let Some(raw) = response
+                .result
+                .as_ref()
+                .and_then(|result| result["content"][0]["text"].as_str())
+        {
+            super::workflows::learn_references(raw);
+        }
+        let model_arguments = request.params.get("arguments").unwrap_or(&Value::Null);
+        if super::workflows::records(&agent_tool, model_arguments) {
+            super::workflows::record(&agent_tool, model_arguments);
+        }
+    }
+    if succeeded && agent_tools::reports(&agent_tool) {
+        let raw = response
+            .result
+            .as_ref()
+            .and_then(|result| result["content"][0]["text"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let page_text = if agent_tool == "browser_find" {
+            inner_text!("getText", json!({}))
+        } else {
+            None
+        };
+        let report =
+            agent_tools::read_report(&agent_tool, &agent_arguments, &raw, page_text.as_deref());
+        if let Some(result) = response.result.as_mut() {
+            *result = match report {
+                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
+                Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
+            };
+        }
+    }
+    if succeeded
+        && agent_tool == "browser_save_pdf"
+        && let Some(result) = response.result.as_mut()
+    {
+        match save_pdf_result(request, result, policy) {
+            Ok(text) => result["content"] = json!([{"type": "text", "text": text}]),
+            Err(error) => {
+                *result = json!({"content": [{"type": "text", "text": format!("{error} | Next: pass a writable path such as \"page.pdf\".")}], "isError": true});
+            }
+        }
+    }
+    let dialog_open = response.result.as_ref().is_some_and(|result| {
+        result["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("\"dialogOpen\":true"))
+    });
+    if succeeded && dialog_open {
+        if let Some(content) = response
+            .result
+            .as_mut()
+            .and_then(|result| result["content"].as_array_mut())
+        {
+            content.push(json!({"type": "text", "text": agent_tools::DIALOG_OPENED}));
+        }
+    } else if succeeded && let Some(before) = before {
+        // Let the page settle before reading it back: no requests for 250 ms
+        // (at most 1.5 s), then no DOM mutations for 300 ms after the action
+        // (at most 1 s). A page that stays busy just ends the wait.
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": agent_tools::WATCH_MUTATIONS, "timeoutMs": 1000})
+        );
+        if let Some(tracker) = network_tracker {
+            if let Some(session) = session.as_ref() {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(1500),
+                    session.wait_for_tracked_network_quiet(
+                        tracker,
+                        Duration::from_millis(250),
+                        Duration::from_millis(1500),
+                    ),
+                )
+                .await;
+            }
+        } else {
+            let _ = inner_text!(
+                "wait",
+                json!({"condition": "network-quiet=250", "timeoutMs": 1500})
+            );
+        }
+        let _ = inner_text!(
+            "wait",
+            json!({"condition": agent_tools::DOM_QUIET, "timeoutMs": 1000})
+        );
+        if let Some(after) = page_state!()
+            && let Some(content) = response
+                .result
+                .as_mut()
+                .and_then(|result| result["content"].as_array_mut())
+        {
+            content.push(json!({
+                "type": "text",
+                "text": agent_tools::change_summary(&agent_tool, &before, &after)
+            }));
+        }
+    }
+    if let Some(result) = response.result.as_mut()
+        && result["isError"] == true
+        && let Some(content) = result["content"].as_array_mut()
+    {
+        let error = content
+            .first()
+            .and_then(|item| item["text"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        content.push(json!({
+            "type": "text",
+            "text": agent_tools::recovery_hint(&agent_tool, &error)
+        }));
+    }
+    if let Some(content) = response
+        .result
+        .as_mut()
+        .and_then(|result| result["content"].as_array_mut())
+    {
+        for item in content {
+            if let Some(text) = item["text"].as_str() {
+                item["text"] = json!(super::secrets::redact(text));
+            }
+        }
+    }
+    Some(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_inner(
     request: &JsonRpcRequest,
     session: &mut Option<CdpBrowserSession>,
     native_session: &mut Option<BrowserRuntimeSession>,
@@ -2144,6 +2706,12 @@ fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<Stri
     if error
         .downcast_ref::<NativeMcpFormElicitationRequired>()
         .is_some()
+    {
+        return Some(error.to_string());
+    }
+    if let Some(crate::browser_backend::BrowserBackendError::Connection { reason, .. }) =
+        error.downcast_ref::<crate::browser_backend::BrowserBackendError>()
+        && reason.starts_with("SandboxUnavailable:")
     {
         return Some(error.to_string());
     }
@@ -3010,9 +3578,12 @@ async fn call_tool(
                 )
                 .await?,
         )?)),
-        ToolInvocation::Diagnostics { duration_ms } => serialized_result(
+        ToolInvocation::Diagnostics {
+            duration_ms,
+            console_text,
+        } => serialized_result(
             &session
-                .diagnostics(Duration::from_millis(duration_ms))
+                .diagnostics_with(Duration::from_millis(duration_ms), console_text)
                 .await?,
         ),
         ToolInvocation::AcceptDialog => {
@@ -3027,9 +3598,10 @@ async fn call_tool(
         ToolInvocation::Download {
             destination,
             timeout_ms,
+            target,
         } => serialized_result(
             &session
-                .wait_for_download(&destination, Duration::from_millis(timeout_ms))
+                .capture_download(&destination, Duration::from_millis(timeout_ms), target)
                 .await?,
         ),
         ToolInvocation::ListTargets => serialized_result(&session.list_targets().await?),
@@ -3061,6 +3633,21 @@ async fn call_tool(
             let opts: crate::browser::session::PdfOptions = serde_json::from_value(options)
                 .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result(&session.print_to_pdf(&opts).await?)
+        }
+        ToolInvocation::History {
+            action,
+            expected_revision,
+        } => {
+            let revision = expected_revision.unwrap_or_else(|| {
+                session
+                    .page_revision
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            });
+            serialized_result(&match action {
+                "back" => session.go_back_with_revision(revision).await?,
+                "forward" => session.go_forward_with_revision(revision).await?,
+                _ => session.reload_with_revision(revision).await?,
+            })
         }
         ToolInvocation::FillForm {
             fields,
@@ -3804,6 +4391,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "diagnostics" => Ok(ToolInvocation::Diagnostics {
             duration_ms: optional_u64(arguments, "durationMs", 1_000)?,
+            console_text: optional_bool(arguments, "consoleText")?,
         }),
         "acceptDialog" => Ok(ToolInvocation::AcceptDialog),
         "dismissDialog" => Ok(ToolInvocation::DismissDialog),
@@ -3811,6 +4399,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "download" => Ok(ToolInvocation::Download {
             destination: std::path::PathBuf::from(required_string(arguments, "destination")?),
             timeout_ms: optional_u64(arguments, "timeoutMs", 30_000)?,
+            target: optional_string(arguments, "target")?,
         }),
         "listTargets" => Ok(ToolInvocation::ListTargets),
         "createTarget" => Ok(ToolInvocation::CreateTarget {
@@ -3835,6 +4424,14 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "sessionStorage" => Ok(ToolInvocation::SessionStorage),
         "printToPdf" => Ok(ToolInvocation::PrintToPdf {
             options: arguments.clone(),
+        }),
+        "back" | "forward" | "reload" => Ok(ToolInvocation::History {
+            action: match tool_name {
+                "back" => "back",
+                "forward" => "forward",
+                _ => "reload",
+            },
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "fillForm" => {
             let arr = arguments["fields"]
@@ -4861,7 +5458,7 @@ async fn native_mcp_observation(
         ToolInvocation::ObserveDelta => {
             serialized_result_mode(&session.native_observe_delta().await?, response_mode)
         }
-        ToolInvocation::Diagnostics { duration_ms } => serialized_result_mode(
+        ToolInvocation::Diagnostics { duration_ms, .. } => serialized_result_mode(
             &session
                 .native_diagnostics(Duration::from_millis(duration_ms))
                 .await?,
@@ -6139,11 +6736,24 @@ async fn call_native_tool_on_session_impl(
         ToolInvocation::Download {
             destination,
             timeout_ms,
+            target,
         } => {
             policy.require(crate::browser::policy::PolicyCapability::Download)?;
             let destination = policy.require_existing_path(&destination)?;
             if !destination.is_dir() {
                 return Err("native download destination must be an existing directory".into());
+            }
+            if let Some(target) = target {
+                return serialized_result_mode(
+                    &session
+                        .native_capture_download(
+                            &destination,
+                            Duration::from_millis(timeout_ms),
+                            target,
+                        )
+                        .await?,
+                    response_mode,
+                );
             }
             serialized_result_mode(
                 &session
@@ -6193,7 +6803,7 @@ async fn call_native_tool_on_session_impl(
             session.native_import_checkpoint(&checkpoint).await?;
             serialized_result_mode(&json!({"status": "checkpoint_imported"}), response_mode)
         }
-        ToolInvocation::Diagnostics { duration_ms } => serialized_result_mode(
+        ToolInvocation::Diagnostics { duration_ms, .. } => serialized_result_mode(
             &session
                 .native_diagnostics(Duration::from_millis(duration_ms))
                 .await?,
@@ -6207,6 +6817,20 @@ async fn call_native_tool_on_session_impl(
             let options: crate::browser::session::PdfOptions = serde_json::from_value(options)
                 .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result_mode(&session.native_print_to_pdf(&options).await?, response_mode)
+        }
+        ToolInvocation::History {
+            action,
+            expected_revision,
+        } => {
+            let outcome = match (action, expected_revision) {
+                ("back", None) => session.go_back().await?,
+                ("back", Some(revision)) => session.go_back_with_revision(revision).await?,
+                ("forward", None) => session.go_forward().await?,
+                ("forward", Some(revision)) => session.go_forward_with_revision(revision).await?,
+                (_, None) => session.native_reload().await?,
+                (_, Some(revision)) => session.reload_with_revision(revision).await?,
+            };
+            serialized_result_mode(&outcome, response_mode)
         }
         ToolInvocation::FillForm {
             fields,
@@ -7192,7 +7816,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "diagnostics",
             description: "Collect bounded, redacted console and network evidence in an explicit scope.",
-            input_schema: json!({"type":"object","properties":{"durationMs":{"type":"integer","minimum":1,"maximum":30000,"default":1000}}}),
+            input_schema: json!({"type":"object","properties":{"durationMs":{"type":"integer","minimum":1,"maximum":30000,"default":1000},"consoleText":{"type":"boolean","default":false,"description":"Keep console arguments and uncaught exceptions, after sensitive-marker redaction."}}}),
         },
         Tool {
             name: "acceptDialog",
@@ -7211,8 +7835,8 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "download",
-            description: "Wait for one download into an authorized existing directory.",
-            input_schema: json!({"type":"object","properties":{"destination":{"type":"string"},"timeoutMs":{"type":"integer","minimum":1,"maximum":30000,"default":30000}},"required":["destination"]}),
+            description: "Capture one download into an authorized existing directory. Give target to authorize and subscribe before clicking an immediate download link in the same operation.",
+            input_schema: json!({"type":"object","properties":{"destination":{"type":"string"},"target":{"type":"string"},"timeoutMs":{"type":"integer","minimum":1,"maximum":30000,"default":30000}},"required":["destination"]}),
         },
         Tool {
             name: "listTargets",
@@ -7268,6 +7892,21 @@ fn tools() -> Vec<Tool> {
             name: "sessionStorage",
             description: "Read sessionStorage items (bounded to 64 entries, 1 KiB per value). Requires persistent profile.",
             input_schema: json!({"type":"object","properties":{}}),
+        },
+        Tool {
+            name: "back",
+            description: "Go one entry back in the active page's history.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
+            name: "forward",
+            description: "Go one entry forward in the active page's history.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
+        },
+        Tool {
+            name: "reload",
+            description: "Reload the active page.",
+            input_schema: json!({"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":0}}}),
         },
         Tool {
             name: "printToPdf",
@@ -7570,6 +8209,12 @@ fn serialized_result_mode<T: Serialize + ?Sized>(
     value: &T,
     mode: ResponseMode,
 ) -> BrowserResult<Value> {
+    if INTERNAL_LOGIN_CALL
+        .try_with(|internal| *internal)
+        .unwrap_or(false)
+    {
+        return serialized_result(value);
+    }
     let value = serde_json::to_value(value)?;
     let projected = project_and_store(value, mode, "mcp", default_result_store_path())?;
     Ok(text_result(serde_json::to_string(&projected)?))
@@ -7829,6 +8474,86 @@ mod tests {
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
 
+    struct PdfTestDirectory(std::path::PathBuf);
+
+    impl PdfTestDirectory {
+        fn new() -> Self {
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).unwrap();
+            let path = std::env::temp_dir()
+                .join(format!("glass-mcp-pdf-{:032x}", u128::from_le_bytes(nonce)));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for PdfTestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pdf_outputs_decode_native_projection_and_reject_invalid_data() {
+        let workspace = PdfTestDirectory::new();
+        let policy = super::BrowserPolicy::development(workspace.path()).unwrap();
+        let output = workspace.path().join("native.pdf");
+        let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":output}}})).unwrap();
+        for payload in [
+            serde_json::json!("JVBERi0="),
+            serde_json::json!({"result":"JVBERi0=","detailAvailability":{}}),
+        ] {
+            let result = serde_json::json!({"content":[{"text":payload.to_string()}]});
+            let report = super::save_pdf_result(&request, &result, &policy).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&report).unwrap()["bytes"],
+                5
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        }
+        for text in ["not JSON", "{}", "null", "\"!invalid!\"", "{\"result\":42}"] {
+            let result = serde_json::json!({"content":[{"text":text}]});
+            assert!(super::save_pdf_result(&request, &result, &policy).is_err());
+            assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        }
+    }
+
+    #[test]
+    fn pdf_outputs_follow_workspace_policy() {
+        let workspace = PdfTestDirectory::new();
+        let outside = PdfTestDirectory::new();
+        let policy = super::BrowserPolicy::ci(workspace.path()).unwrap();
+        let result = serde_json::json!({"content":[{"text":"\"JVBERi0=\""}]});
+        let save = |path: &std::path::Path, result: &serde_json::Value| {
+            let request = serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"path":path}}})).unwrap();
+            super::save_pdf_result(&request, result, &policy)
+        };
+        let output = workspace.path().join("page.pdf");
+        assert!(save(&output, &result).is_ok());
+        assert_eq!(std::fs::read(&output).unwrap(), b"%PDF-");
+        assert!(save(&outside.path().join("page.pdf"), &result).is_err());
+        assert!(save(&workspace.path().join("missing/page.pdf"), &result).is_err());
+        assert!(save(&workspace.path().join("empty.pdf"), &serde_json::json!({})).is_err());
+        assert!(!workspace.path().join("empty.pdf").exists());
+        #[cfg(unix)]
+        {
+            let protected = outside.path().join("protected.pdf");
+            std::fs::write(&protected, b"unchanged").unwrap();
+            let link = workspace.path().join("escape.pdf");
+            std::os::unix::fs::symlink(&protected, &link).unwrap();
+            assert!(save(&link, &result).is_err());
+            let directory = workspace.path().join("escape");
+            std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+            assert!(save(&directory.join("new.pdf"), &result).is_err());
+            assert_eq!(std::fs::read(protected).unwrap(), b"unchanged");
+            assert!(!outside.path().join("new.pdf").exists());
+        }
+    }
+
     #[test]
     fn cancellation_map_poison_is_recovered_for_cleanup_and_cancellation() {
         let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
@@ -7879,6 +8604,180 @@ mod tests {
             lease_context_for_request(true, "tools/list", None),
             Ok(None)
         ));
+    }
+
+    #[tokio::test]
+    async fn tool_discovery_preserves_protocol_fields_with_matching_secrets() {
+        const MARKER: &str = "GLASS_DISCOVERY_REDACTION_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::server::tests::tool_discovery_preserves_protocol_fields_with_matching_secrets", "--nocapture"])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_FIELD", "name")
+                .env("GLASS_SECRET_TOOL", "browser_snapshot")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let request: JsonRpcRequest =
+            serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request_with_viewport(
+            &request,
+            &mut None,
+            &mut None,
+            false,
+            None,
+            &SessionOptions::default(),
+            &policy,
+            None,
+            None,
+            &(),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert!(
+            result["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "browser_snapshot")
+        );
+        assert!(result["tools"][0]["inputSchema"].is_object());
+    }
+
+    #[tokio::test]
+    async fn daemon_aliases_classify_reads_and_accept_validated_lease_metadata() {
+        let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
+        let lease = manager
+            .lock()
+            .await
+            .acquire("session", "client", current_time_ms(), 30_000)
+            .unwrap();
+        for (name, arguments, needs_lease) in [
+            ("browser_snapshot", json!({}), false),
+            ("browser_click", json!({"target":"name=Save"}), true),
+            (
+                "browser_click",
+                json!({"target":"name=Save","leaseToken":"invalid"}),
+                true,
+            ),
+            (
+                "browser_click",
+                json!({"target":"name=Save","leaseToken":lease.token}),
+                false,
+            ),
+            (
+                "browser_click",
+                json!({"target":"name=Save","mutationLease":{"token":lease.token}}),
+                false,
+            ),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":name,"arguments":arguments}
+            })).unwrap();
+            assert_eq!(
+                mutation_lease_error(&request, &manager, "session", "client")
+                    .await
+                    .is_some(),
+                needs_lease
+            );
+            let (_, translated) = super::super::agent_tools::translate(name, &arguments).unwrap();
+            assert!(translated.get("mutationLease").is_none());
+            assert!(translated.get("leaseToken").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_catalog_is_request_scoped_and_native_manual_dialogs_are_unavailable() {
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let options = SessionOptions::default();
+        for (agent, native) in [(true, false), (false, false), (true, true), (false, false)] {
+            let request: JsonRpcRequest =
+                serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+                    .unwrap();
+            let response = handle_request_with_viewport(
+                &request,
+                &mut None,
+                &mut None,
+                native,
+                None,
+                &options,
+                &policy,
+                None,
+                None,
+                &(),
+                None,
+                None,
+                agent,
+            )
+            .await
+            .unwrap();
+            let tools = response.result.unwrap()["tools"]
+                .as_array()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                tools.iter().any(|tool| tool["name"] == "browser_snapshot"),
+                agent
+            );
+            assert_eq!(
+                tools
+                    .iter()
+                    .any(|tool| tool["name"] == "browser_handle_dialog"),
+                agent && !native
+            );
+        }
+        let request: JsonRpcRequest = serde_json::from_value(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_handle_dialog","arguments":{"accept":true}}})).unwrap();
+        let response = handle_request_with_viewport(
+            &request,
+            &mut None,
+            &mut None,
+            true,
+            None,
+            &options,
+            &policy,
+            None,
+            None,
+            &(),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("form elicitation")
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_mutation_alias_requires_lease_without_arguments() {
+        let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
+        for params in [
+            json!({"name":"browser_download"}),
+            json!({"name":"browser_download","arguments":null}),
+            json!({"name":"browser_download","arguments":{}}),
+        ] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call", "params":params
+            }))
+            .unwrap();
+            assert!(
+                mutation_lease_error(&request, &manager, "session", "client")
+                    .await
+                    .is_some()
+            );
+        }
     }
 
     #[tokio::test]
@@ -8130,6 +9029,78 @@ mod tests {
         let rendered = format!("{metadata:?}");
         assert!(!rendered.contains("private-request-id"));
         assert!(!rendered.contains("super-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn unlisted_session_reads_redact_text_structured_results_and_errors() {
+        const MARKER: &str = "GLASS_REDACTION_TEST_CHILD";
+        const SECRET: &str = "unique-secret-value\"\\end";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::server::tests::unlisted_session_reads_redact_text_structured_results_and_errors", "--nocapture"])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_TEST", SECRET)
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        struct Reads;
+        impl HostMcpToolBackend for Reads {
+            fn tools(&self) -> Vec<HostMcpTool> {
+                vec![HostMcpTool {
+                    name: "getText".into(),
+                    description: "test read".into(),
+                    input_schema: json!({}),
+                }]
+            }
+            fn call(&self, _: &str, arguments: Value) -> Result<Value, String> {
+                if arguments["fail"] == true {
+                    Err(format!("failed: {SECRET}"))
+                } else {
+                    Ok(json!({"text":SECRET,"nested":[SECRET]}))
+                }
+            }
+        }
+        for fail in [false, true] {
+            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getText","arguments":{"fail":fail}}})).unwrap();
+            let response = handle_request_with_viewport(
+                &request,
+                &mut None,
+                &mut None,
+                false,
+                None,
+                &SessionOptions::default(),
+                &BrowserPolicy::development(std::env::temp_dir()).unwrap(),
+                None,
+                None,
+                &DevelopmentSessionStore::default(),
+                Some(&Reads),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+            let result = response.result.unwrap();
+            if fail {
+                assert_eq!(result["content"][0]["text"], "failed: {{secret:TEST}}");
+            } else {
+                assert_eq!(result["structuredContent"]["text"], "{{secret:TEST}}");
+                let text: Value =
+                    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(text["nested"][0], "{{secret:TEST}}");
+            }
+        }
+        let before = crate::mcp::agent_tools::PageState {
+            text: String::new(),
+            tabs: json!([]),
+        };
+        let after = crate::mcp::agent_tools::PageState {
+            text: format!("{}{SECRET}", "x".repeat(150)),
+            tabs: json!([{"active":true,"title":format!("{}{SECRET}","x".repeat(110)),"url":format!("https://example.test/{}{SECRET}","x".repeat(170))}]),
+        };
+        let summary = crate::mcp::agent_tools::change_summary("browser_click", &before, &after);
+        assert!(!summary.contains("unique-secret"), "{summary}");
+        assert!(summary.contains("{{secret:"), "{summary}");
     }
 
     #[test]
@@ -8710,9 +9681,150 @@ mod tests {
             &development_sessions,
             None,
             None,
+            false,
         )
         .await
         .expect("native MCP tool should return a response")
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_workflow_cancellation_stops_before_the_next_step() {
+        const CHILD: &str = "GLASS_WORKFLOW_CANCEL_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = PdfTestDirectory::new();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mcp::server::tests::native_workflow_cancellation_stops_before_the_next_step",
+                ])
+                .env(CHILD, "1")
+                .env("GLASS_CONFIG_HOME", root.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}/", listener.local_addr().unwrap());
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let flag = Arc::clone(&cancelled);
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request).await;
+                    flag.store(true, Ordering::Release);
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 21\r\nConnection: close\r\n\r\n<title>Before</title>").await.unwrap();
+                });
+                let path = super::super::agent_tools::named_path("workflows", "browser_workflow", "cancel").unwrap();
+                let workflow = json!({"version":1,"steps":[
+                    {"tool":"browser_navigate","arguments":{"url":url}},
+                    {"tool":"browser_navigate","arguments":{"url":"data:text/html,<title>Unwanted</title>"}}
+                ]});
+                super::super::agent_tools::write_private(&path, workflow.to_string().as_bytes()).unwrap();
+                let (mut session, mut native) = (None, None);
+                let options = SessionOptions {incognito:true, ..SessionOptions::default()};
+                let policy = BrowserPolicy::development(std::env::temp_dir()).unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(5), REQUEST_CANCELLED.scope(cancelled,
+                    invoke_native_mcp_tool("browser_workflow", json!({"action":"run","name":"cancel"}), &mut session, &mut native, &options, &policy)
+                )).await.unwrap().result.unwrap();
+                assert_eq!(result["isError"], true, "{result}");
+                assert!(result["content"][0]["text"].as_str().unwrap().contains("Steps 1-1 completed."), "{result}");
+                assert_eq!(native.as_ref().unwrap().script("document.title").await.unwrap().value, "Before");
+                server.await.unwrap();
+                native.take().unwrap().close().await.unwrap();
+            });
+        }).unwrap().join().unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_logins_round_trip_without_internal_diagnostics() {
+        const CHILD: &str = "GLASS_LOGIN_REGRESSION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = PdfTestDirectory::new();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mcp::server::tests::native_logins_round_trip_without_internal_diagnostics",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("GLASS_CONFIG_HOME", root.path())
+                .env("XDG_CACHE_HOME", root.path().join("cache"))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}/", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let mut first = true;
+                    loop {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let mut request = [0;4096];
+                        let _ = stream.read(&mut request).await;
+                        let body = "<!doctype html><title>Login</title><body>Account</body>";
+                        let cookie = if first { "Set-Cookie: sid=login-cookie-value; Path=/\r\n" } else { "" };
+                        first = false;
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    }
+                });
+                let (mut session, mut native) = (None, None);
+                let options = SessionOptions {incognito:true, ..SessionOptions::default()};
+                let policy = BrowserPolicy::development(std::env::temp_dir()).unwrap();
+                let navigation = invoke_native_mcp_tool("navigate", json!({"url":url}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(navigation.result.as_ref().unwrap()["isError"], true, "{navigation:?}");
+                native.as_ref().unwrap().script("localStorage.setItem('login-token', 'storage-value')").await.unwrap();
+                let count = || std::fs::read_dir(default_result_store_path()).map(|entries| entries.count()).unwrap_or(0);
+                let before = count();
+                let saved = invoke_native_mcp_tool("browser_logins", json!({"action":"save","name":"work"}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(saved.result.as_ref().unwrap()["isError"], true, "{saved:?}");
+                assert_eq!(count(), before);
+                assert_eq!(super::super::agent_tools::read_login("work").unwrap()["storage"]["login-token"], "storage-value");
+                native.take().unwrap().close().await.unwrap();
+                let loaded = invoke_native_mcp_tool("browser_logins", json!({"action":"load","name":"work"}), &mut session, &mut native, &options, &policy).await;
+                assert_ne!(loaded.result.as_ref().unwrap()["isError"], true, "{loaded:?}");
+                let fresh = native.as_ref().unwrap();
+                assert_eq!(fresh.script("localStorage.getItem('login-token')").await.unwrap().value, "storage-value");
+                assert!(fresh.native_cookies().await.unwrap().iter().any(|c| c.name=="sid" && c.value=="login-cookie-value"));
+                let denied = BrowserPolicy::ci(std::env::temp_dir()).unwrap();
+                for action in ["list", "delete"] {
+                    let result = invoke_native_mcp_tool("browser_logins", json!({"action":action,"name":"work"}), &mut session, &mut native, &options, &denied).await.result.unwrap();
+                    assert_eq!(result["isError"], true);
+                    assert!(result["content"][0]["text"].as_str().unwrap().contains("PersistentProfile"));
+                }
+                assert!(super::super::agent_tools::read_login("work").is_ok());
+                for html in ["<div id=onetrust-banner-sdk><button id=onetrust-accept-btn-handler>Accept</button></div>", "<div id=cookie-notice><button>Accept all</button></div>"] {
+                    let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+                    let navigated = invoke_native_mcp_tool("navigate", json!({"url":format!("data:text/html,{encoded}")}), &mut session, &mut native, &options, &policy).await;
+                    assert_ne!(navigated.result.unwrap()["isError"], true);
+                    let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
+                    assert_ne!(result["isError"], true, "{result}");
+                }
+                for html in [
+                    "<div class=cookie-consent-pending><button onclick=\"document.body.setAttribute('data-choice','invitation')\">Accept invitation</button></div>",
+                    "<div class=cookie-consent-pending><button onclick=\"document.body.setAttribute('data-choice','invitation')\">Accept invitation</button><div role=dialog aria-label='Cookie consent'>We use cookies<button onclick=\"document.body.setAttribute('data-choice','cookies')\">Accept all</button></div></div>",
+                ] {
+                    let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+                    let navigated = invoke_native_mcp_tool("navigate", json!({"url":format!("data:text/html,{encoded}")}), &mut session, &mut native, &options, &policy).await;
+                    assert_ne!(navigated.result.unwrap()["isError"], true);
+                    let result = invoke_native_mcp_tool("browser_dismiss_consent", json!({}), &mut session, &mut native, &options, &policy).await.result.unwrap();
+                    assert_eq!(result["isError"] == true, !html.contains("role=dialog"), "{result}");
+                    let choice = native.as_ref().unwrap().script("document.body.getAttribute('data-choice')").await.unwrap().value;
+                    assert_ne!(choice, "invitation");
+                    if html.contains("role=dialog") { assert_eq!(choice, "cookies"); }
+                }
+                native.take().unwrap().close().await.unwrap();
+                server.abort();
+            });
+        }).unwrap().join().unwrap();
     }
 
     #[cfg(feature = "native-engine")]

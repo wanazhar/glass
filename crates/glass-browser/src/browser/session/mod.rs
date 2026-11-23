@@ -37,7 +37,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -57,7 +57,7 @@ use super::dom::{
     CompactInteractiveElement, CompactRanking, DomNode, parse_accessibility_tree, parse_dom_tree,
 };
 use super::mouse::{MouseEngine, Point};
-use super::policy::{BrowserPolicy, PolicyCapability, PolicyError, PolicyPreset};
+use super::policy::{BrowserPolicy, PolicyCapability, PolicyError};
 use super::profile::{ProfileLock, ProfileManager};
 
 mod classification;
@@ -287,11 +287,14 @@ fn record_policy_event_receiver_error(
     }
 }
 
+type DocumentPolicyDenials = Arc<Mutex<BTreeMap<(Option<String>, String), PolicyError>>>;
+
 struct PolicyInterception {
     cdp: CdpClient,
     sessions: Arc<Mutex<HashSet<String>>>,
     paused: PausedPolicyRequests,
     last_denial: Arc<Mutex<Option<PolicyError>>>,
+    document_denials: DocumentPolicyDenials,
     lagged_events: Arc<AtomicU64>,
     worker: tokio::task::JoinHandle<()>,
 }
@@ -306,11 +309,13 @@ impl PolicyInterception {
         let sessions = Arc::new(Mutex::new(HashSet::from([initial_session.clone()])));
         let paused = Arc::new(Mutex::new(HashSet::new()));
         let last_denial = Arc::new(Mutex::new(None));
+        let document_denials = Arc::new(Mutex::new(BTreeMap::new()));
         let lagged_events = Arc::new(AtomicU64::new(0));
         let worker_cdp = cdp.clone();
         let worker_sessions = Arc::clone(&sessions);
         let worker_paused = Arc::clone(&paused);
         let worker_denial = Arc::clone(&last_denial);
+        let worker_documents = Arc::clone(&document_denials);
         let worker_lagged_events = Arc::clone(&lagged_events);
         let worker = tokio::spawn(async move {
             loop {
@@ -358,7 +363,15 @@ impl PolicyInterception {
                         serde_json::json!({"requestId": &request_id}),
                     ),
                     Err(error) => {
-                        *worker_denial.lock().await = Some(error);
+                        if event.params["resourceType"] == "Document"
+                            && let Some(frame) = event.params["frameId"].as_str()
+                        {
+                            let mut denials = worker_documents.lock().await;
+                            if denials.len() >= 128 {
+                                denials.pop_first();
+                            }
+                            denials.insert((event.session_id.clone(), frame.to_owned()), error);
+                        }
                         (
                             "Fetch.failRequest",
                             serde_json::json!({
@@ -388,13 +401,33 @@ impl PolicyInterception {
             sessions,
             paused,
             last_denial,
+            document_denials,
             lagged_events,
             worker,
         })
     }
 
     async fn take_denial(&self) -> Option<PolicyError> {
-        self.last_denial.lock().await.take()
+        self.take_navigation_denial(
+            self.cdp.current_session_id(),
+            self.cdp.active_frame().as_deref(),
+        )
+        .await
+    }
+
+    async fn take_navigation_denial(
+        &self,
+        session: Option<String>,
+        frame: Option<&str>,
+    ) -> Option<PolicyError> {
+        if let Some(error) = self.last_denial.lock().await.take() {
+            return Some(error);
+        }
+        let frame = frame?;
+        self.document_denials
+            .lock()
+            .await
+            .remove(&(session, frame.to_owned()))
     }
 
     fn take_lagged_events(&self) -> u64 {
@@ -947,10 +980,7 @@ impl CdpBrowserSession {
         }
         let event_setup_ms = startup_elapsed_ms(event_setup_started);
         let policy_arm_started = Instant::now();
-        let policy_interception = if matches!(
-            policy.preset(),
-            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-        ) {
+        let policy_interception = if policy.requires_network_interception() {
             Some(PolicyInterception::start(cdp.clone(), policy.clone(), session_id.clone()).await?)
         } else {
             None
@@ -982,10 +1012,40 @@ impl CdpBrowserSession {
         let mut topology_events = cdp.subscribe_events_with_params();
         let topology_for_events = Arc::clone(&topology);
         let cdp_for_events = cdp.clone();
+        // Chrome pauses auto-attached targets (for example a window.open
+        // popup) until they are resumed, even without waitForDebuggerOnStart,
+        // and the opener's click never completes meanwhile. The hardened
+        // presets resume them after arming interception instead.
+        let resume_attached_targets = !policy.requires_network_interception();
         tokio::spawn(async move {
             loop {
                 match topology_events.recv().await {
                     Ok(event) => {
+                        if event.method == "Target.targetCreated"
+                            && event.params["targetInfo"]["type"] == "page"
+                        {
+                            cdp_for_events.mark_foreground_stale();
+                        }
+                        if resume_attached_targets
+                            && event.method == "Target.attachedToTarget"
+                            && let Some(attached) = event.params["sessionId"].as_str()
+                        {
+                            let cdp = cdp_for_events.clone();
+                            let attached = attached.to_owned();
+                            let page = event.params["targetInfo"]["type"] == "page";
+                            tokio::spawn(async move {
+                                if page {
+                                    let _ = emulate_focus(&cdp, &attached).await;
+                                }
+                                let _ = cdp
+                                    .send_to_session(
+                                        &attached,
+                                        "Runtime.runIfWaitingForDebugger",
+                                        None,
+                                    )
+                                    .await;
+                            });
+                        }
                         let mut topology = topology_for_events.lock().await;
                         let selected_frame = topology.active_frame_id.clone();
                         let selected_session = topology.active_session_id.clone();
@@ -1017,14 +1077,12 @@ impl CdpBrowserSession {
                 }
             }
         });
+        let _ = emulate_focus(&cdp, &session_id).await;
         cdp.send_browser(
             "Target.setAutoAttach",
             Some(serde_json::json!({
                 "autoAttach": true,
-                "waitForDebuggerOnStart": matches!(
-                    policy.preset(),
-                    PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-                ),
+                "waitForDebuggerOnStart": policy.requires_network_interception(),
                 "flatten": true
             })),
         )
@@ -1361,3 +1419,17 @@ fn validate_viewport_dimensions(width: i64, height: i64) -> BrowserResult<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// Keep a page rendering as if focused. Without this, a page loses
+/// requestAnimationFrame as soon as it opens a popup, and actions on it stall.
+async fn emulate_focus(
+    cdp: &CdpClient,
+    session_id: &str,
+) -> Result<serde_json::Value, crate::browser::cdp::CdpError> {
+    cdp.send_to_session(
+        session_id,
+        "Emulation.setFocusEmulationEnabled",
+        Some(serde_json::json!({"enabled": true})),
+    )
+    .await
+}

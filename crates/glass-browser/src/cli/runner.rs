@@ -18,6 +18,7 @@ use crate::browser::native_engine::{
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
+use crate::browser::session::BatchMode;
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, CdpBrowserSession, CheckpointV1, Cookie, InteractionMode,
     KnowledgeConfidence, KnowledgeStore, Locator, MAX_WORKFLOW_SOURCE_BYTES, PdfOptions,
@@ -28,7 +29,6 @@ use crate::browser::session::{
     compile_workflow, default_knowledge_store_path, diff_workflows, format_workflow_yaml,
     preview_workflow, record_semantic_events,
 };
-use crate::browser::session::BatchMode;
 use crate::browser::{BackendFactory, CdpSessionBackend};
 use crate::browser_backend::{
     ActionRequest, BackendProfile, BrowserBackendDispatcher, BrowserCapability, ClickModifiers,
@@ -245,7 +245,7 @@ pub async fn dispatch_browser(cli: Cli) -> BrowserResult<()> {
 }
 
 async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserResult<()> {
-    if let Some(Commands::Doctor { json }) = &mut cli.command {
+    if let Some(Commands::Doctor { json, .. }) = &mut cli.command {
         *json |= json_output_requested();
     }
     if let Some(Commands::Logs { json, .. }) = &mut cli.command {
@@ -311,7 +311,17 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             dispatch_daemon(&cli, action).await?;
             return Ok(());
         }
-        Some(Commands::Doctor { json }) => {
+        Some(Commands::Doctor {
+            json,
+            browser_discovery_only,
+        }) => {
+            if *browser_discovery_only {
+                let path = crate::browser::chrome::resolve_chrome_path(cli.chrome_path.clone());
+                print_json(
+                    &serde_json::json!({"browser":{"chromeAvailable":path.is_some(),"chromePath":path,"defaultRuntime":cli.browser_runtime.browser_family()}}),
+                )?;
+                return Ok(());
+            }
             dispatch_doctor(&cli, &policy, *json).await?;
             return Ok(());
         }
@@ -1057,9 +1067,9 @@ fn validate_alternative_runtime_command(
         } if native => Ok(()),
         Commands::Batch { .. } if native => Ok(()),
         Commands::Script { .. } if native => Ok(()),
-        Commands::Script { .. } => Err(
-            "scripted browser checks currently require the native or Chromium runtime".into(),
-        ),
+        Commands::Script { .. } => {
+            Err("scripted browser checks currently require the native or Chromium runtime".into())
+        }
         Commands::Workflow { action: None, .. } if native => Ok(()),
         Commands::WorkflowResume { .. } if native => Ok(()),
         Commands::Navigate { .. }
@@ -2701,6 +2711,7 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         "platform": manifest.constraints.platform,
         "executable": executable,
         "browser": {
+            "defaultRuntime": cli.browser_runtime.browser_family(),
             "family": manifest.constraints.browser_family,
             "version": browser_version,
             "chromeAvailable": browser_available,

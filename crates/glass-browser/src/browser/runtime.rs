@@ -30,6 +30,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "native-engine")]
+use super::session::CdpBrowserSession;
+#[cfg(feature = "native-engine")]
 use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
     ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence,
@@ -463,6 +465,16 @@ impl BrowserRuntimeSession {
         .await
     }
 
+    /// Reload the active native history entry.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_reload(&self) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.reload().await?),
+            _ => Err("native reload is only available on the native runtime".into()),
+        }
+    }
+
     /// Reload the active native history entry only when its observation is current.
     #[cfg(feature = "native-engine")]
     pub async fn reload_with_revision(
@@ -890,6 +902,37 @@ impl BrowserRuntimeSession {
             }
             _ => Err("native downloads are only available on the native runtime".into()),
         }
+    }
+
+    /// Capture exactly the download created by the target under the operation lock.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_capture_download(
+        &self,
+        destination: &std::path::Path,
+        deadline: Duration,
+        target: &str,
+    ) -> BrowserResult<DownloadOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        let BackendStartup::Native(backend) = &self.backend else {
+            return Err("native downloads are only available on the native runtime".into());
+        };
+        let before = backend.download_ids()?;
+        self.action_unlocked(SemanticAction::ClickWithModifiers {
+            target: target.to_owned(),
+            modifiers: Default::default(),
+        })
+        .await?;
+        let created: Vec<_> = backend
+            .download_ids()?
+            .into_iter()
+            .filter(|id| !before.contains(id))
+            .collect();
+        if created.len() != 1 {
+            return Err("target must create exactly one new native download".into());
+        }
+        Ok(backend
+            .wait_for_download_id(destination, deadline, &created[0])
+            .await?)
     }
 
     /// Return the completed native download count for causal verification.
@@ -2347,28 +2390,10 @@ impl BrowserRuntimeSession {
     pub async fn native_dismiss_consent(
         &self,
     ) -> BrowserResult<super::session::ConsentDismissalOutcome> {
-        const SCRIPT: &str = r#"(() => {
-            const visible = (el) => {
-                if (!el) return false;
-                const style = getComputedStyle(el);
-                const rect = el.getBoundingClientRect();
-                return style.display !== 'none' && style.visibility !== 'hidden' &&
-                    Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0;
-            };
-            const click = (root, selectors) => {
-                for (const selector of selectors) {
-                    const el = root.querySelector(selector);
-                    if (visible(el)) { el.click(); return true; }
-                }
-                return false;
-            };
-            const oneTrust = document.querySelector('#onetrust-banner-sdk, #onetrust-consent-sdk, .onetrust-pc-dark-filter');
-            if (oneTrust) return {framework:'onetrust', dismissed: click(document, ['#onetrust-accept-btn-handler', '#onetrust-reject-all-handler'])};
-            const cookiebot = document.querySelector('#CybotCookiebotDialog, [data-template="cookiebot"]');
-            if (cookiebot) return {framework:'cookiebot', dismissed: click(cookiebot, ['#CybotCookiebotDialogBodyLevelButtonAccept', '#CybotCookiebotDialogBodyButtonDecline'])};
-            return {framework:null, dismissed:false};
-        })()"#;
-        let mut value = self.script(SCRIPT).await?.value;
+        let mut value = self
+            .script(CdpBrowserSession::consent_dismiss_expression())
+            .await?
+            .value;
         if let Some(text) = value.as_str() {
             value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
         }

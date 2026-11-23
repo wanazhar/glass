@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Shipping preferences</title></head>
+<body><main><h1>Shipping preferences</h1>
+<label for="city">Delivery city</label>
+<input id="city" role="combobox" aria-expanded="false" aria-controls="lb" aria-autocomplete="list" autocomplete="off">
+<ul id="lb" role="listbox" hidden></ul><button id="save">Save preferences</button><p id="out" role="status"></p>
+<script>const cities=['Kota Bharu','Kota Kinabalu','Kuala Lumpur','Kuala Terengganu','Kuantan','Kuching'];const inp=document.getElementById('city'),lb=document.getElementById('lb');let act=-1,opts=[],chosen=null;
+function render(){lb.innerHTML='';opts=cities.filter(c=>c.toLowerCase().startsWith(inp.value.toLowerCase())&&inp.value);opts.forEach((c,i)=>{const li=document.createElement('li');li.role='option';li.id='o'+i;li.textContent=c;li.setAttribute('aria-selected',i===act);li.onmousedown=e=>{e.preventDefault();pick(i)};lb.appendChild(li);});lb.hidden=!opts.length;inp.setAttribute('aria-expanded',!!opts.length);}
+function pick(i){chosen=opts[i];inp.value=chosen;lb.hidden=true;act=-1;}
+inp.addEventListener('input',()=>{chosen=null;act=-1;render();});
+inp.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){act=Math.min(act+1,opts.length-1);render();e.preventDefault();}else if(e.key==='ArrowUp'){act=Math.max(act-1,0);render();e.preventDefault();}else if(e.key==='Enter'&&act>=0){pick(act);e.preventDefault();}});
+document.getElementById('save').onclick=async()=>{if(!chosen){document.getElementById('out').textContent='Choose a city from the suggestions.';return;}await fetch('/api/city',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({city:chosen})});document.getElementById('out').textContent='Saved '+chosen;};</script>
+</main></body></html>

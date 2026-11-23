@@ -27,6 +27,30 @@ fn path(dir: &Path) -> std::path::PathBuf {
     dir.join("history.jsonl")
 }
 
+struct WriterLock(File);
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn lock(dir: &Path) -> io::Result<WriterLock> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join("history.lock"))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err(io::Error::other("Invalid history lock"));
+    }
+    fs2::FileExt::try_lock_exclusive(&file)?;
+    Ok(WriterLock(file))
+}
+
 fn open_regular(path: &Path, append: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options
@@ -100,23 +124,9 @@ pub fn record(dir: &Path, text: &str) {
     if line.len() > MAX_ENTRY_BYTES {
         return;
     }
-    let lock = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(dir.join("history.lock"));
-    let Ok(lock) = lock else {
+    let Ok(_lock) = lock(dir) else {
         return;
     };
-    if !lock
-        .metadata()
-        .is_ok_and(|meta| meta.is_file() && meta.nlink() == 1)
-        || fs2::FileExt::try_lock_exclusive(&lock).is_err()
-    {
-        return;
-    }
     let Ok((bytes, size)) = window(dir) else {
         return;
     };
@@ -167,6 +177,18 @@ pub fn record(dir: &Path, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn releasing_writer_unlocks_even_with_a_duplicated_descriptor() {
+        let dir = scratch("lock-duplicate");
+        let guard = lock(&dir).unwrap();
+        let inherited = guard.0.try_clone().unwrap();
+        drop(guard);
+        record(&dir, "available");
+        assert_eq!(load(&dir), vec!["available"]);
+        drop(inherited);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

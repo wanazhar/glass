@@ -930,6 +930,8 @@ exports are authoritative for individual items.
 | `task_protocol` | Strict authored semantic task contract |
 | `terminal_graphics` | Herdr, Kitty, ANSI, and semantic terminal render adapters |
 | `tui` | Standalone browser TUI reducer, responsive layouts, semantic selection, and bounded live presentation |
+| `web_action` | Marble web UI action names, stable test IDs, server-owned execution state, and explicit allow/deny decisions |
+| `web_inspect` | Headless web UI inspection results with a stable element tree and screenshot evidence |
 | `web_ir` | Stable Web IR reconciliation, validation, diff, and continuity |
 | `workspace` | Workspace identity, ownership, attachments, lifecycle, and persistence |
 

@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Projects admin</title></head>
+<body><main><h1>Projects</h1><table><tr><th>Project</th><th></th></tr>
+<tr><td>Alpha</td><td><button data-p="Alpha">Delete</button></td></tr><tr><td>Beta</td><td><button data-p="Beta">Delete</button></td></tr></table><p id="out" role="status"></p>
+<script>document.querySelectorAll('button[data-p]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete project '+b.dataset.p+'? This cannot be undone.'))return;
+await fetch('/api/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({project:b.dataset.p})});b.closest('tr').remove();document.getElementById('out').textContent='Deleted '+b.dataset.p;});</script>
+</main></body></html>

@@ -415,6 +415,16 @@ impl Drop for Guard {
         for thread in lock_for_cleanup(&self.hub.workers).drain(..) {
             let _ = thread.join();
         }
+        for worker in lock_for_cleanup(&self.hub.state).agents.values() {
+            if worker.info.workspace != self.hub.workspace
+                && worker
+                    .info
+                    .workspace
+                    .starts_with(self.hub.dir.join("worktrees"))
+            {
+                crate::browser_tools::release_workspace(&worker.info.workspace);
+            }
+        }
         let _ = fs::remove_file(socket(&self.hub.owner));
         lock_for_cleanup(hubs()).remove(&self.hub.owner);
     }
@@ -1010,8 +1020,18 @@ impl Hub {
         }
         let info = worker.info.clone();
         self.persist(&info)?;
+        let release_browser = action == "archive"
+            && info.workspace != self.workspace
+            && info.workspace.starts_with(self.dir.join("worktrees"))
+            && !state.agents.values().any(|other| {
+                other.info.status != "archived" && other.info.workspace == info.workspace
+            });
         state.revision += 1;
         self.changed.notify_all();
+        drop(state);
+        if release_browser {
+            crate::browser_tools::release_workspace(&info.workspace);
+        }
         Ok(info.receipt())
     }
     fn launch(self: &Arc<Self>, id: String) {
@@ -3339,6 +3359,97 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(3));
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+    #[test]
+    fn archiving_releases_only_unshared_worktree_browsers() {
+        use std::os::unix::fs::PermissionsExt;
+        const MARKER: &str = "GLASS_ARCHIVE_BROWSER_TEST";
+        if std::env::var_os(MARKER).is_none() {
+            let root =
+                std::env::temp_dir().join(format!("gc-archive-browser-{}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            let script = root.join("browser");
+            fs::write(&script, r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+count = 0
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    if request['method'] == 'tools/call':
+        pathlib.Path('browser.pid').write_text(str(os.getpid()))
+        count += 1
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'content':[{'type':'text','text':str(count)}]}}), flush=True)
+"#).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "team::tests::archiving_releases_only_unshared_worktree_browsers",
+                ])
+                .env(MARKER, "1")
+                .env("GC_BROWSER_BIN", script)
+                .env("GC_BROWSER_RUNTIME", "chromium")
+                .status()
+                .unwrap();
+            fs::remove_dir_all(root).unwrap();
+            assert!(status.success());
+            return;
+        }
+        let (guard, dir, _) = fixture();
+        let workspace = dir.join("worktrees/owned");
+        fs::create_dir_all(&workspace).unwrap();
+        let mut ids = Vec::new();
+        for name in ["one", "two"] {
+            let info = guard
+                .hub
+                .request(&json!({"action":"create","name":name,"text":"check"}))
+                .unwrap();
+            settled(&guard.hub);
+            let id = info["id"].as_str().unwrap().to_owned();
+            guard
+                .hub
+                .state
+                .lock()
+                .unwrap()
+                .agents
+                .get_mut(&id)
+                .unwrap()
+                .info
+                .workspace = workspace.clone();
+            ids.push(id);
+        }
+        let call = |path: &Path| {
+            crate::browser_tools::execute(
+                &glass_mod_api::ToolCall {
+                    id: "test".into(),
+                    name: "browser_snapshot".into(),
+                    arguments: "{}".into(),
+                },
+                path,
+            )
+        };
+        assert_eq!(call(&dir).body, "1");
+        assert_eq!(call(&workspace).body, "1");
+        let pid: i32 = fs::read_to_string(workspace.join("browser.pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        guard
+            .hub
+            .request(&json!({"action":"archive","id":ids[0]}))
+            .unwrap();
+        assert_eq!(call(&workspace).body, "2");
+        guard
+            .hub
+            .request(&json!({"action":"archive","id":ids[1]}))
+            .unwrap();
+        // SAFETY: signal zero only checks whether the already-reaped child exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(call(&dir).body, "2");
+        crate::browser_tools::release_workspace(&dir);
+        drop(guard);
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn persistent_context_and_accounting_survive_followups() {

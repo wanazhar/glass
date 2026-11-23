@@ -74,9 +74,9 @@ impl CdpBrowserSession {
                 self.cdp
                     .dispatch_mouse_event("mousePressed", x, y, Some("left"), Some(1))
                     .await?;
-                self.cdp
+                self.unless_dialog_opens(self.cdp
                     .dispatch_mouse_event("mouseReleased", x, y, Some("left"), Some(1))
-                    .await?;
+                    ).await?;
                 let (target_id, frame_id) = self.ensured_route_identity().await?;
                 self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                 Ok(CoordinateClickOutcome {
@@ -657,9 +657,14 @@ impl CdpBrowserSession {
         self.cdp
             .dispatch_mouse_event("mousePressed", point.x, point.y, Some("left"), Some(1))
             .await?;
-        self.cdp
-            .dispatch_mouse_event("mouseReleased", point.x, point.y, Some("left"), Some(1))
-            .await?;
+        self.unless_dialog_opens(self.cdp.dispatch_mouse_event(
+            "mouseReleased",
+            point.x,
+            point.y,
+            Some("left"),
+            Some(1),
+        ))
+        .await?;
         Ok(Some(true))
     }
 
@@ -804,7 +809,12 @@ impl CdpBrowserSession {
                     .await?;
                 let (target_id, frame_id) = self.route_identity().await?;
                 let current_revision = self.invalidate_observation().await;
-                let after = self.page_info().await.ok();
+                let dialog_open = self.dialog_blocking().await;
+                let after = if dialog_open {
+                    None
+                } else {
+                    self.page_info().await.ok()
+                };
                 self.mark_lifecycle_phase(LifecyclePhase::ActionVerified);
                 Ok(ActionOutcome {
                     status: ActionStatus::Succeeded,
@@ -837,6 +847,7 @@ impl CdpBrowserSession {
                             .as_ref()
                             .zip(after.as_ref())
                             .is_some_and(|(before, after)| before.frame_id != after.frame_id),
+                        dialog_open,
                         ..ActionVerificationEvidence::default()
                     },
                     evidence: None,
@@ -899,15 +910,18 @@ impl CdpBrowserSession {
                     armed: true,
                 });
             }
-            self.cdp
-                .dispatch_mouse_event(
-                    &event.event_type,
-                    event.x,
-                    event.y,
-                    Some(&event.button),
-                    Some(event.click_count),
-                )
-                .await?;
+            let dispatch = self.cdp.dispatch_mouse_event(
+                &event.event_type,
+                event.x,
+                event.y,
+                Some(&event.button),
+                Some(event.click_count),
+            );
+            if event.event_type == "mouseReleased" {
+                self.unless_dialog_opens(dispatch).await?;
+            } else {
+                dispatch.await?;
+            }
             if event.event_type == "mouseReleased"
                 && let Some(mut guard) = pressed.take()
             {
@@ -1132,7 +1146,14 @@ impl CdpBrowserSession {
                 self.download_sequence.load(Ordering::Relaxed),
             )
         };
-        if let Some(interception) = &self.policy_interception {
+        // Page script is paused while a dialog is open, so evaluating would
+        // stall until the CDP deadline; report the dialog instead.
+        let dialog_blocking = self.dialog_blocking().await;
+        if let Some(interception) = self
+            .policy_interception
+            .as_ref()
+            .filter(|_| !dialog_blocking)
+        {
             // A same-route command is an ordering barrier for synchronous
             // click/form navigation. The interception itself remains active
             // for delayed page-authored navigation after this action returns.
@@ -1143,7 +1164,11 @@ impl CdpBrowserSession {
             }
         }
         let (target_id, frame_id) = self.route_identity().await?;
-        let after_page = self.page_info().await.ok();
+        let after_page = if dialog_blocking {
+            None
+        } else {
+            self.page_info().await.ok()
+        };
         let (popup_opened, dialog_open) = {
             let topology = self.topology.lock().await;
             (
@@ -1250,8 +1275,41 @@ impl CdpBrowserSession {
         self.current_page_context_id().await
     }
 
+    /// Whether a JavaScript dialog is open and pausing page script.
+    pub(crate) async fn dialog_blocking(&self) -> bool {
+        self.topology.lock().await.pending_dialog.is_some()
+    }
+
+    /// Await an input command that a JavaScript dialog may block.
+    ///
+    /// Chromium answers `Input.dispatchMouseEvent` only after a dialog opened
+    /// by that event closes, so return as soon as the dialog is reported and
+    /// let the caller surface it.
+    pub(crate) async fn unless_dialog_opens<T>(
+        &self,
+        command: impl std::future::Future<Output = Result<T, crate::browser::cdp::CdpError>>,
+    ) -> BrowserResult<()> {
+        let mut command = std::pin::pin!(command);
+        loop {
+            tokio::select! {
+                result = &mut command => {
+                    result?;
+                    return Ok(());
+                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    if self.topology.lock().await.pending_dialog.is_some() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) async fn invalidate_observation(&self) -> u64 {
         let revision = self.page_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.dialog_blocking().await {
+            return revision;
+        }
         let expression = format!("globalThis.__glassPageRevision = {revision}; {revision}");
         let _ = self.cdp.evaluate(&expression).await;
         revision

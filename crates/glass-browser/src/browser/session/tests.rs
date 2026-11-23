@@ -3,6 +3,7 @@ use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use crate::browser::dom::AxNode;
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
@@ -1508,6 +1509,69 @@ fn verification_failures_are_bounded_and_typed() {
 }
 
 #[test]
+fn verification_urls_accept_the_advertised_byte_limit() {
+    for size in [1, 1024, 1025, 8192] {
+        assert!(
+            VerificationPredicate::UrlEquals {
+                value: "a".repeat(size)
+            }
+            .validate(0)
+            .is_ok()
+        );
+    }
+    for size in [0, 8193] {
+        assert!(
+            VerificationPredicate::UrlEquals {
+                value: "a".repeat(size)
+            }
+            .validate(0)
+            .is_err()
+        );
+    }
+    for predicate in [
+        VerificationPredicate::TitleContains {
+            value: "a".repeat(1025),
+        },
+        VerificationPredicate::TextContains {
+            value: "a".repeat(1025),
+        },
+    ] {
+        assert!(predicate.validate(0).is_err());
+    }
+}
+
+#[cfg(feature = "native-engine")]
+#[test]
+fn visible_text_verification_joins_visible_inline_nodes() {
+    let runtime = rquickjs::Runtime::new().unwrap();
+    let context = rquickjs::Context::full(&runtime).unwrap();
+    context.with(|ctx| {
+        for (parts, expected) in [
+            (serde_json::json!([["Order ", true], ["confirmed", true]]), true),
+            (serde_json::json!([["Order confirmed", false]]), false),
+            (serde_json::json!([["Order ", true], ["confirmed", false]]), false),
+            (serde_json::json!([]), false),
+        ] {
+            let fixture = format!(r#"
+                globalThis.NodeFilter = {{SHOW_TEXT:4}};
+                globalThis.getComputedStyle = () => ({{display:'inline',visibility:'visible',opacity:'1',overflow:'visible'}});
+                globalThis.document = {{body:{{}},createTreeWalker:() => {{
+                    const nodes = {parts}.map(([text,visible]) => ({{nodeValue:text,parentElement:{{
+                        checkVisibility:()=>visible,
+                        getBoundingClientRect:()=>({{left:0,top:0,right:100,bottom:20,width:100,height:20}})
+                    }}}}));
+                    let index = 0;
+                    return {{nextNode:()=>nodes[index++]}};
+                }}}};
+            "#);
+            ctx.eval::<(), _>(fixture).unwrap();
+            let expression = visible_text_contains_expression("Order confirmed").unwrap();
+            assert_eq!(ctx.eval::<bool, _>(expression).unwrap(), expected, "{parts}");
+        }
+    });
+}
+
+#[test]
 fn diagnostics_redact_secrets_and_bound_retention() {
     let redacted =
         redact_diagnostic_url("https://user:pass@example.test/path?token=secret&empty=#fragment");
@@ -1582,6 +1646,78 @@ fn diagnostics_redact_secrets_and_bound_retention() {
     assert_eq!(console.len(), MAX_DIAGNOSTIC_EVENTS);
     assert_eq!(console[0].text, "[console arguments redacted]");
     assert_eq!(dropped, 1);
+}
+
+#[test]
+fn diagnostic_console_text_keeps_messages_and_exceptions_but_redacts_secrets() {
+    let event = |method: &str, params: serde_json::Value| CdpEventWithParams {
+        method: method.to_string(),
+        session_id: None,
+        params,
+    };
+    let mut console = Vec::new();
+    let mut network = Vec::new();
+    let mut indexes = HashMap::new();
+    let mut dropped = 0;
+    for (method, params) in [
+        (
+            "Runtime.consoleAPICalled",
+            serde_json::json!({"type":"error","args":[{"type":"string","value":"Checkout failed:"},{"type":"number","value":402},{"type":"object","description":"Object"}]}),
+        ),
+        (
+            "Runtime.consoleAPICalled",
+            serde_json::json!({"type":"log","args":[{"type":"string","value":"password=hunter2"}]}),
+        ),
+        (
+            "Runtime.exceptionThrown",
+            serde_json::json!({"exceptionDetails":{"text":"Uncaught","exception":{"description":"Error: Boom"}}}),
+        ),
+    ] {
+        collect_diagnostic_event_with(
+            &event(method, params),
+            &mut console,
+            &mut network,
+            &mut indexes,
+            &mut dropped,
+            true,
+        );
+    }
+    assert_eq!(console[0].text, "Checkout failed: 402 Object");
+    assert_eq!(console[1].text, "[redacted sensitive console entry]");
+    assert_eq!(console[2].level, "exception");
+    assert_eq!(console[2].text, "Error: Boom");
+    for method in ["Runtime.consoleAPICalled", "Runtime.exceptionThrown"] {
+        let text = format!("{} password=hidden", "x".repeat(20_000));
+        let params = if method == "Runtime.consoleAPICalled" {
+            serde_json::json!({"args":[{"value":text}]})
+        } else {
+            serde_json::json!({"exceptionDetails":{"text":text}})
+        };
+        collect_diagnostic_event_with(
+            &event(method, params),
+            &mut console,
+            &mut network,
+            &mut indexes,
+            &mut dropped,
+            true,
+        );
+        assert_eq!(
+            console.last().unwrap().text,
+            "[redacted sensitive console entry]"
+        );
+    }
+    let mut quiet = Vec::new();
+    collect_diagnostic_event(
+        &event(
+            "Runtime.exceptionThrown",
+            serde_json::json!({"exceptionDetails":{"text":"Uncaught"}}),
+        ),
+        &mut quiet,
+        &mut network,
+        &mut indexes,
+        &mut dropped,
+    );
+    assert!(quiet.is_empty());
 }
 
 #[test]
@@ -1798,6 +1934,133 @@ async fn diagnostics_snapshot_includes_session_readiness_metadata() {
     assert!(!serialized.to_string().contains("password"));
     assert!(!serialized.to_string().contains("cookie"));
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn action_network_tracking_includes_requests_started_before_the_wait() {
+    for (request, completes, finish_ms, quiet_ms, deadline_ms) in [
+        (true, true, 900, 250, 1500),
+        (false, true, 900, 250, 1500),
+        (true, false, 900, 250, 50),
+        (true, true, 20, 110, 175),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, mut reader) = accept_async(stream).await.unwrap().split();
+            let writer = Arc::new(Mutex::new(writer));
+            while let Some(Ok(Message::Text(text))) = reader.next().await {
+                let command: Value = serde_json::from_str(&text).unwrap();
+                if command["method"] == "Runtime.evaluate" && request {
+                    writer.lock().await.send(Message::Text(json!({"method":"Network.requestWillBeSent","params":{"requestId":"save","type":"Fetch"}}).to_string().into())).await.unwrap();
+                    for _ in 0..300 {
+                        writer
+                            .lock()
+                            .await
+                            .send(Message::Text(
+                                json!({"method":"Runtime.consoleAPICalled","params":{}})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    if completes {
+                        let writer = Arc::clone(&writer);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(finish_ms)).await;
+                            let _ = writer.lock().await.send(Message::Text(json!({"method":"Network.loadingFinished","params":{"requestId":"save"}}).to_string().into())).await;
+                        });
+                    }
+                }
+                writer
+                    .lock()
+                    .await
+                    .send(Message::Text(
+                        json!({"id":command["id"],"result":{}}).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                if command["method"] == "Network.disable" {
+                    break;
+                }
+            }
+        });
+        let cdp = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let session = test_session(cdp.clone());
+        let tracker = session.start_network_quiet_tracking().await.unwrap();
+        cdp.send("Runtime.evaluate", Some(json!({"expression":"save()"})))
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let deadline = Duration::from_millis(deadline_ms);
+        let result = tokio::time::timeout(
+            deadline,
+            session.wait_for_tracked_network_quiet(
+                tracker,
+                Duration::from_millis(quiet_ms),
+                deadline,
+            ),
+        )
+        .await;
+        assert_eq!(matches!(result, Ok(Ok(_))), completes, "{result:?}");
+        if request && completes {
+            assert!(started.elapsed() >= Duration::from_millis(finish_ms));
+        }
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn network_quiet_reports_route_loss_without_network_events() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        while let Some(Ok(Message::Text(text))) = websocket.next().await {
+            let request: Value = serde_json::from_str(&text).unwrap();
+            websocket
+                .send(Message::Text(
+                    json!({"id":request["id"],"result":{}}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+        }
+    });
+    let cdp = CdpClient::connect(&format!("ws://{address}"))
+        .await
+        .unwrap();
+    let session = Arc::new(test_session(cdp.clone()));
+    let tracker = session.start_network_quiet_tracking().await.unwrap();
+    let closed = Arc::clone(&session);
+    let closer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut topology = closed.topology.lock().await;
+        topology.active_target_id = None;
+        topology.active_frame_id = None;
+        topology.active_session_id = None;
+        closed.cdp.set_active_target_route(None, None, None, None);
+    });
+    let result = tokio::time::timeout(
+        Duration::from_millis(750),
+        session.wait_for_tracked_network_quiet(
+            tracker,
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+        ),
+    )
+    .await;
+    assert!(matches!(result, Ok(Err(_))), "{result:?}");
+    closer.await.unwrap();
+    cdp.close().await;
+    server.abort();
 }
 
 #[tokio::test]
@@ -2058,6 +2321,38 @@ async fn compact_observation_bounds_accessibility_while_snapshot_remains_full() 
 
 #[tokio::test]
 async fn hardened_navigation_intercepts_private_redirects_before_following() {
+    assert_policy_blocks_redirect(
+        BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn development_host_allowlist_intercepts_redirects_before_following() {
+    let policy = BrowserPolicy::development(std::env::current_dir().unwrap())
+        .unwrap()
+        .with_host_rules(["allowed.test".into()], [])
+        .unwrap();
+    assert!(policy.requires_network_interception());
+    assert_policy_blocks_redirect(policy).await;
+}
+
+async fn assert_policy_blocks_redirect(policy: BrowserPolicy) {
+    for (resource, frame, denied) in [
+        ("Document", "frame-1", true),
+        ("Image", "frame-1", false),
+        ("Document", "child-frame", false),
+    ] {
+        assert_policy_blocks_request(policy.clone(), resource, frame, denied).await;
+    }
+}
+
+async fn assert_policy_blocks_request(
+    policy: BrowserPolicy,
+    resource: &'static str,
+    frame: &'static str,
+    denied: bool,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2091,6 +2386,8 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
                     "sessionId": "route-1",
                     "params": {
                         "requestId": "redirect-1",
+                        "resourceType": resource,
+                        "frameId": frame,
                         "request": {"url": "http://127.0.0.1/private"}
                     }
                 })
@@ -2132,10 +2429,10 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
     let cdp = CdpClient::connect(&format!("ws://{address}"))
         .await
         .unwrap();
-    let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
     let interception = PolicyInterception::start(cdp.clone(), policy, "route-1".to_string())
         .await
         .unwrap();
+    cdp.set_active_route(Some("route-1".into()), Some("selected-iframe".into()), None);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(1);
@@ -2150,10 +2447,16 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
         record_policy_event_receiver_error(receiver_error, &interception.lagged_events),
         Some(1)
     );
-    assert!(matches!(
-        interception.take_denial().await,
-        Some(PolicyError::Denied { .. })
-    ));
+    assert!(interception.take_denial().await.is_none());
+    assert_eq!(
+        matches!(
+            interception
+                .take_navigation_denial(Some("route-1".into()), Some("frame-1"))
+                .await,
+            Some(PolicyError::Denied { .. })
+        ),
+        denied
+    );
     assert_eq!(interception.take_lagged_events(), 1);
     assert_eq!(interception.take_lagged_events(), 0);
     interception.shutdown().await;

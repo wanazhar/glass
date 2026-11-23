@@ -11,6 +11,7 @@
   "tools": [
     "acceptDialog",
     "actAndVerify",
+    "back",
     "backendStatus",
     "backendTest",
     "batch",
@@ -46,6 +47,7 @@
     "extractWebIr",
     "fillForm",
     "findTarget",
+    "forward",
     "getDOM",
     "getText",
     "hover",
@@ -80,6 +82,7 @@
     "printToPdf",
     "reconcileReferences",
     "recoverRun",
+    "reload",
     "replayAttach",
     "replayDiff",
     "replayInspect",

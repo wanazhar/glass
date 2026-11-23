@@ -38,16 +38,44 @@ const CONSENT_DISMISS_FUNCTION: &str = r#"function() {
             '#CybotCookiebotDialogBodyLevelButtonAccept', '#CybotCookiebotDialogBodyButtonDecline'
         ])});
     }
+    const named = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[role=banner],dialog,[id],[class],[aria-label]')].filter(el => {
+        const label = ['id', 'class', 'aria-label'].map(name => el.getAttribute(name) || '').join(' ');
+        const role = el.getAttribute('role');
+        return /cookie|consent|gdpr/i.test(label) &&
+            (el.matches('dialog') || role === 'dialog' || role === 'alertdialog' || role === 'banner' ||
+             /(?:cookie|consent|gdpr)[-_ ]*(?:banner|dialog|notice)|(?:banner|dialog|notice)[-_ ]*(?:cookie|consent|gdpr)/i.test(label));
+    });
+    const accept = /^(accept|accept all|allow all|i agree|agree|got it|ok|okay|reject all|decline|(?:accept(?: all)? cookies|allow(?: all)? cookies|reject(?: all)? cookies)(?: and continue)?)$/i;
+    for (const box of named.filter(visible).slice(0, 20)) {
+        const label = ['id', 'class', 'aria-label'].map(name => box.getAttribute(name) || '').join(' ');
+        const context = box.cloneNode(true);
+        context.querySelectorAll('button,a,[role=button],input,script,style').forEach(el => el.remove());
+        const cookieContext = /cookie/i.test(label) || /\bcookies?\b/i.test(context.textContent || '');
+        const button = [...box.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')]
+            .filter(visible)
+            .find(b => {
+                const text = (b.innerText || b.value || '').trim();
+                return accept.test(text) && (cookieContext || /\bcookies?\b/i.test(text));
+            });
+        if (button) { button.click(); return JSON.stringify({framework:'generic', dismissed:true}); }
+    }
     return JSON.stringify({framework:null, dismissed:false});
 }"#;
 
 impl CdpBrowserSession {
+    pub(crate) fn consent_dismiss_expression() -> String {
+        format!("({CONSENT_DISMISS_FUNCTION})()")
+    }
+
     /// Dismiss a visible OneTrust/Cookiebot consent control, if recognized.
-    /// This only clicks documented consent controls; it does not bypass bot
-    /// protection or search arbitrary page buttons.
+    /// This only clicks documented consent controls, or an accept/reject
+    /// button inside an element named as a cookie or consent banner; it does
+    /// not bypass bot protection or search arbitrary page buttons.
     pub async fn dismiss_consent(&self) -> BrowserResult<ConsentDismissalOutcome> {
         self.policy.require(PolicyCapability::ConsentDismissal)?;
-        let raw = self.evaluate_value(CONSENT_DISMISS_FUNCTION).await?;
+        let raw = self
+            .evaluate_value(&Self::consent_dismiss_expression())
+            .await?;
         let value = raw.as_str().unwrap_or_default();
         let parsed: Value = serde_json::from_str(value).unwrap_or_default();
         let outcome = match (

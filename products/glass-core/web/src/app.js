@@ -14,6 +14,7 @@ import { renderCommandData } from "./command-results.js";
 import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot, renderActivityConsole } from "./activity.js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import * as components from "./components.js";
 import { draftStore } from "./drafts.js";
 import { attention } from "./notifications.js";
 import {
@@ -227,6 +228,8 @@ async function api(path, data, signal, options = {}) {
 }
 async function send(message) {
   if (!view.id) throw Error("Choose a thread first");
+  if (message.t === "prompt" || message.t === "steer")
+    message = { ...message, client: components.client() };
   return api("send", { id: view.id, ...sessionFields(), message });
 }
 async function loadOwnerImage(image, path) {
@@ -410,8 +413,22 @@ $("#latest").onclick = async () => {
   follow();
 };
 let codeId = 0;
+function componentBlock(source) {
+  const component = components.parse(source);
+  if (!component) {
+    if (!/\}\s*$/.test(source))
+      return `<div class="ui-component ui-pending" role="status">Preparing view…</div>`;
+    return marked.parse(components.fallback(null, source));
+  }
+  const html = components.render(component, "ui-" + ++codeId, {
+    markdown: (body) => marked.parse(body),
+  });
+  return html ?? marked.parse(components.fallback(component, source));
+}
 const renderer = {
   code({ text: source, lang }) {
+    if (components.FENCE === (lang || "").trim().toLowerCase())
+      return componentBlock(source);
     const info = (lang || "text").split(/\s+/);
     const language = info[0].toLowerCase();
     const filename = info.slice(1).map(part => part.replace(/^(?:file(?:name)?|title)=/i, "").replace(/^["']|["']$/g, "")).find(part => /\.[a-z0-9]+$/i.test(part))?.slice(0, 240);
@@ -640,7 +657,10 @@ function markdown(node, source, streaming = false) {
         "data-html",
         "id",
       ],
-      FORBID_TAGS: ["style", "iframe", "object", "embed", "form", "input"],
+      FORBID_TAGS:
+        token.type === "code" && token.lang?.trim().toLowerCase() === components.FENCE
+          ? ["style", "iframe", "object", "embed"]
+          : ["style", "iframe", "object", "embed", "form", "input"],
       ALLOW_DATA_ATTR: true,
     });
     const settled = !streaming || i < blocks.length - 1;
@@ -3700,7 +3720,87 @@ async function renderDiagram(button, id) {
     button.disabled = false;
   }
 }
+function compose(text) {
+  const prompt = $("#prompt");
+  prompt.value = prompt.value.trim() ? prompt.value.trimEnd() + "\n\n" + text : text;
+  saveDraft();
+  prompt.dispatchEvent(new Event("input"));
+  prompt.focus();
+  notice("Added to your message. Edit it or send it.");
+}
+function componentAction(button) {
+  const value = button.dataset.value ?? "";
+  const figure = button.closest(".ui-component");
+  switch (button.dataset.uiAction) {
+    case "copy":
+      copyText(value);
+      return;
+    case "compose":
+      compose(value);
+      return;
+    case "count": {
+      const box = button.closest(".ui-counter"), out = box.querySelector("[data-ui-count]");
+      const step = Number(box.dataset.step) || 1;
+      let next = Number(out.textContent) + Number(value) * step;
+      if (box.dataset.min !== "") next = Math.max(Number(box.dataset.min), next);
+      if (box.dataset.max !== "") next = Math.min(Number(box.dataset.max), next);
+      out.textContent = String(+next.toFixed(6));
+      return;
+    }
+    case "range": {
+      let v = {};
+      try { v = JSON.parse(value); } catch { return; }
+      const line = figure.querySelector("[data-ui-kpi]");
+      const delta = v.delta == null ? "" : `<span class="ui-delta ${v.trend === "down" ? "down" : v.trend === "up" ? "up" : ""}"></span>`;
+      line.innerHTML = `<span class="ui-kpi-value"></span>${delta}`;
+      line.querySelector(".ui-kpi-value").textContent = v.value ?? "";
+      if (delta) line.querySelector(".ui-delta").textContent = v.delta;
+      for (const b of button.parentElement.children) b.setAttribute("aria-pressed", String(b === button));
+      return;
+    }
+    case "choose": {
+      const group = button.closest(".ui-choices");
+      const on = button.getAttribute("aria-pressed") !== "true";
+      if (!group.dataset.multiple)
+        for (const b of group.querySelectorAll(".ui-choice")) b.setAttribute("aria-pressed", "false");
+      button.setAttribute("aria-pressed", String(on));
+      return;
+    }
+    case "choices": {
+      const picked = [...button.closest(".ui-choices").querySelectorAll('.ui-choice[aria-pressed="true"]')].map((b) => b.dataset.value);
+      if (!picked.length) return notice("Choose an option first.");
+      const title = figure.querySelector(".block-head span")?.textContent;
+      compose(components.formAnswer(title, [["Selected", picked.join(", ")]]));
+    }
+  }
+}
+document.addEventListener("submit", (e) => {
+  const form = e.target.closest(".ui-form");
+  if (!form) return;
+  e.preventDefault();
+  const answers = [];
+  for (const node of form.querySelectorAll("[data-field]")) {
+    const label = node.closest("label")?.firstChild?.textContent?.trim() || node.querySelector("legend")?.textContent || node.dataset.field;
+    const value = node.tagName === "FIELDSET"
+      ? [...node.querySelectorAll("input:checked")].map((i) => i.dataset.option).join(", ")
+      : node.value;
+    if (value) answers.push([label, value]);
+  }
+  if (!answers.length) return notice("Fill in at least one answer.");
+  compose(components.formAnswer(form.closest(".ui-component")?.querySelector(".block-head span")?.textContent, answers));
+});
+document.addEventListener("change", (e) => {
+  const select = e.target.closest('.ui-component select[data-ui-action="filter"]');
+  if (!select) return;
+  for (const row of select.closest(".ui-component").querySelectorAll("tbody tr"))
+    row.hidden = Boolean(select.value) && row.dataset.filterValue !== select.value;
+});
 document.addEventListener("click", async (e) => {
+  const action = e.target.closest(".ui-component [data-ui-action]");
+  if (action && action.tagName === "BUTTON") {
+    componentAction(action);
+    return;
+  }
   const image = e.target.closest(".prose img");
   if (image?.src) {
     preview(image.alt || "Image", "Image", image.src, "image");

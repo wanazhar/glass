@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Stand-in for the `tailscale` CLI used by `glass-core connect` in E2E runs.
+
+Reports a running node and records `serve` routes in $GLASS_E2E_ROOT/serve.json,
+which tailnet-proxy.py reads to play the role of Tailscale Serve.
+"""
+import json, os, sys
+
+root = os.environ["GLASS_E2E_ROOT"]
+host = os.environ.get("GLASS_E2E_HOST", "glass-e2e.tail0e2e.ts.net")
+routes_path = os.path.join(root, "serve.json")
+args = sys.argv[1:]
+
+def routes():
+    try:
+        with open(routes_path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+if args[:2] == ["status", "--json"]:
+    print(json.dumps({
+        "BackendState": "Running",
+        "Self": {"DNSName": host + ".", "UserID": 1},
+        "User": {"1": {"LoginName": "owner@example.test"}},
+        "TailscaleIPs": ["127.0.0.1"],
+    }))
+elif args[:3] == ["serve", "status", "--json"]:
+    web = {f"{host}:{port}": {"Handlers": {"/": {"Proxy": target}}} for port, target in routes().items()}
+    print(json.dumps({"TCP": {}, "Web": web}))
+elif args and args[0] == "serve":
+    flag = next(a for a in args if a.startswith("--http"))
+    port = flag.split("=", 1)[1]
+    current = routes()
+    if args[-1] == "off":
+        current.pop(port, None)
+    else:
+        current[port] = args[-1]
+    with open(routes_path, "w") as f:
+        json.dump(current, f)
+else:
+    sys.exit(f"fake-tailscale: unsupported {args}")

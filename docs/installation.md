@@ -60,6 +60,15 @@ cargo install glass-dev --locked
 cargo install glass-browser --locked
 ```
 
+A from-source install compiles the native browser engine, QuickJS, Tree-sitter
+grammars, and bundled SQLite, so it can take a long time on a small machine.
+`cargo install` from crates.io uses Cargo's default release profile. A
+`--path` install in this repository uses the workspace `release` profile,
+which is performance-oriented (`opt-level = 3`, no LTO). Use
+`--profile release-size` when you want the smallest official binaries. For
+faster local compiles, install `mold` and `sccache` and see
+`scripts/cargo-config.local.toml.example` and `scripts/ci-local.sh`.
+
 `glass-dev` owns both executable names for the complete product. `glass-browser`
 owns only `glass-browser` and exports the `glass_browser` Rust library. Cargo
 does not allow both packages to install that same executable into one root.

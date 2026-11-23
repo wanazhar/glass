@@ -287,6 +287,7 @@ const COMMAND_ROOTS: &[&str] = &[
     "config",
     "connect",
     "context",
+    "desktop",
     "contract",
     "details",
     "diagnostics",
@@ -552,6 +553,7 @@ fn present_command_references_with_prefix(text: &str, prefix: &str) -> String {
         "config",
         "connect",
         "context",
+        "desktop",
         "contract",
         "details",
         "diagnostics",
@@ -867,6 +869,11 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "Validate a bounded local JSON result contract. Unsupported schema keywords fail explicitly; no provider request is made.",
             "gc contract result-schema.json result.json",
         ),
+        "desktop" => (
+            "gc desktop quick|reusable|attach|status|stop [--json]",
+            "Start, inspect or stop the managed Linux desktop for this workspace without opening the terminal UI. Starts the local Connect manager when needed; agents then see the desktop tools.",
+            "gc desktop quick --json\ngc desktop status --json\ngc desktop stop",
+        ),
         "diagnostics" => (
             "gc diagnostics --suite [--json] | gc diagnostics SESSION [--json] [--save FILE]",
             "Preview allowlisted local diagnostic metadata. Prompts, commands, outputs and credentials are omitted. Saving creates a new private file; nothing is uploaded.",
@@ -992,8 +999,8 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc send SESSION_ID \"Please focus on the parser\"",
         ),
         "connect" => (
-            "gc connect [--local | --http]\ngc connect status\ngc connect stop\ngc connect secret-link",
-            "Open the installable web workspace through private Tailscale HTTPS. Existing routes are preserved. Closing the browser does not stop tasks. --http adds a tailnet HTTP link using the host IP. --local uses a private loopback access link. secret-link prints the private HTTPS link for sensitive input. stop removes only GC remote access; served tasks continue.",
+            "gc connect [--local | --http]\ngc connect status\ngc connect qr\ngc connect stop\ngc connect secret-link",
+            "Open the installable web workspace through private Tailscale HTTPS. Existing routes are preserved. Closing the browser does not stop tasks. --http adds a tailnet HTTP link using the host IP. --local uses a private loopback access link. qr prints the owner link as a QR code for the Glass iOS app. secret-link prints the private HTTPS link for sensitive input. stop removes only GC remote access; served tasks continue.",
             "gc connect\ngc connect status",
         ),
         "serve" => (

@@ -91,6 +91,35 @@ fn label(value: &Value, key: &str) -> Result<String, String> {
     }
     Ok(s.into())
 }
+/// Runs a whole-file Git action from the repository root: status paths are relative to the root,
+/// while the conversation folder may be a subdirectory of it.
+fn git_file(workspace: &std::path::Path, args: &[&str], path: &str) -> Result<String, String> {
+    let top = String::from_utf8(crate::workflows::git(
+        workspace,
+        &["rev-parse", "--show-toplevel"],
+        None,
+    )?)
+    .map_err(|e| e.to_string())?;
+    let mut args = args.to_vec();
+    args.extend(["--", path]);
+    String::from_utf8(crate::workflows::git(
+        std::path::Path::new(top.trim_end_matches('\n')),
+        &args,
+        None,
+    )?)
+    .map_err(|e| e.to_string())
+}
+/// The selected Git patch, byte for byte: `git apply` rejects a patch whose last line lost its newline.
+fn patch_text(value: &Value) -> Result<&str, String> {
+    let patch = value["patch"].as_str().unwrap_or("");
+    if patch.len() > 60000 {
+        return Err("Command value exceeds 60000 bytes".into());
+    }
+    if patch.trim().is_empty() {
+        return Err("Supply the selected patch with its diff header".into());
+    }
+    Ok(patch)
+}
 fn checkpoint_dir(s: &Session) -> std::path::PathBuf {
     config::data_dir().join("checkpoints").join(&s.id)
 }
@@ -163,7 +192,11 @@ pub fn form(name: &str) -> Value {
             ("text", "Instructions (optional)", "textarea"),
         ],
         "login" => vec![
-            ("action", "list | use | api | oauth | callback", "text"),
+            (
+                "action",
+                "list | use | api | oauth | callback | device | device-poll",
+                "text",
+            ),
             ("args", "Saved connection ID / OAuth attempt ID", "text"),
             (
                 "provider",
@@ -175,7 +208,7 @@ pub fn form(name: &str) -> Value {
             ("label", "Connection name", "text"),
             (
                 "secret",
-                "API key or complete OAuth callback URL",
+                "API key, OAuth callback URL, or authorization code",
                 "password",
             ),
         ],
@@ -357,6 +390,16 @@ pub fn form(name: &str) -> Value {
     };
     json!({"fields":fields.into_iter().map(|(key,label,kind)|json!({"key":key,"label":label,"kind":kind})).collect::<Vec<_>>(),"confirm":matches!(name,"handoff"|"undo"|"restore"|"forget"|"rewrite"|"bg"|"security"|"profiles"|"login"|"logout"|"git"|"pr"|"init"|"capture"|"rewind"|"extensions"|"agents"|"plan"),"model_request":matches!(name,"compact"|"plan"|"init"|"btw"|"code-review"|"advisor"|"retry"|"queue-run"|"doctor")})
 }
+/// Staging directory for one thread's web uploads, keyed by its canonical session path.
+pub(crate) fn upload_dir(session_path: &std::path::Path) -> std::path::PathBuf {
+    let path = session_path
+        .canonicalize()
+        .unwrap_or_else(|_| session_path.to_path_buf());
+    config::data_dir()
+        .join("web-uploads")
+        .join(crate::workspace::hash(path.as_os_str().as_encoded_bytes()))
+}
+
 pub fn execute(
     name: &str,
     v: &Value,
@@ -958,9 +1001,7 @@ pub fn execute(
                 if upload.len() != 64 || !upload.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err("Invalid upload token".into());
                 }
-                config::data_dir()
-                    .join("web-uploads")
-                    .join(&s.id)
+                upload_dir(&s.path)
                     .join(upload)
                     .to_string_lossy()
                     .into_owned()
@@ -1296,12 +1337,37 @@ pub(crate) fn changes(cfg: &config::Config) -> Result<Value, String> {
         )?)
         .map_err(|e| e.to_string())?
     );
+    value["modeChanged"] = json!(mode_changes(&crate::workflows::git(
+        &cfg.workspace,
+        &["diff", "--raw", "-z", "--no-renames", "--no-ext-diff"],
+        None
+    )?));
     if value.to_string().len() > 2_000_000 {
         return Err(
             "Changes preview exceeds 2 MB; use native Git review or narrow the changes".into(),
         );
     }
     Ok(value)
+}
+
+/// Literal paths whose mode differs in `git diff --raw -z` output, so clients need not parse
+/// patch headers, where Git quotes unusual filenames.
+fn mode_changes(raw: &[u8]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut fields = raw.split(|b| *b == 0);
+    while let Some(meta) = fields.next() {
+        let Some(path) = fields.next() else { break };
+        let meta = String::from_utf8_lossy(meta);
+        let mut modes = meta.trim_start_matches(':').split(' ');
+        if let (Some(old), Some(new)) = (modes.next(), modes.next())
+            && old != new
+            && old != "000000"
+            && new != "000000"
+        {
+            paths.push(String::from_utf8_lossy(path).into_owned());
+        }
+    }
+    paths
 }
 
 fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
@@ -1341,14 +1407,11 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
                 return Err("Supply a path or commit message".into());
             }
             let output = match action.as_str() {
-                "stage" => capture(&["add", "--", &arg])?,
-                "unstage" => capture(&["restore", "--staged", "--", &arg])?,
-                "revert-file" => capture(&["restore", "--", &arg])?,
+                "stage" => git_file(&cfg.workspace, &["add"], &arg)?,
+                "unstage" => git_file(&cfg.workspace, &["restore", "--staged"], &arg)?,
+                "revert-file" => git_file(&cfg.workspace, &["restore"], &arg)?,
                 "stage-patch" | "unstage-patch" | "revert-patch" => {
-                    let patch = label(v, "patch")?;
-                    if patch.is_empty() {
-                        return Err("Supply the selected patch with its diff header".into());
-                    }
+                    let patch = patch_text(v)?;
                     let mut options = vec!["apply"];
                     if action != "revert-patch" {
                         options.push("--cached");
@@ -1374,16 +1437,27 @@ fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
         _ => Err("Choose status, diff, stage, unstage, or commit".into()),
     }
 }
+enum LoginFlow {
+    Browser(Box<crate::auth::Attempt>),
+    Device(crate::auth::DeviceAttempt),
+}
 struct LoginAttempt {
     session: String,
     created: std::time::Instant,
-    attempt: crate::auth::Attempt,
+    flow: LoginFlow,
 }
 fn login_attempts() -> &'static std::sync::Mutex<std::collections::HashMap<String, LoginAttempt>> {
     static STORE: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, LoginAttempt>>,
     > = std::sync::OnceLock::new();
     STORE.get_or_init(Default::default)
+}
+fn device_model(value: &Value) -> Result<String, String> {
+    let model = label(value, "model")?;
+    if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
+        return Err("Choose a ChatGPT model ID up to 256 bytes before completing sign-in".into());
+    }
+    Ok(model)
 }
 pub(crate) fn login(
     cfg: &mut config::Config,
@@ -1435,12 +1509,104 @@ pub(crate) fn login(
                 LoginAttempt {
                     session: owner.to_string(),
                     created: std::time::Instant::now(),
-                    attempt,
+                    flow: LoginFlow::Browser(Box::new(attempt)),
                 },
             );
             Ok(
-                json!({"attempt":id,"authorize_url":url,"instructions":"Open the sign-in link. After authorization, paste the complete final localhost callback URL here using action callback. The callback may not load on your phone; its URL is sufficient."}),
+                json!({"attempt":id,"authorize_url":url,"instructions":"Open the sign-in link. ChatGPT returns to a 127.0.0.1 address that only the device running the browser can open. If the page does not load, copy its full address (or just the code value) and submit it here with action callback."}),
             )
+        }
+        "device" => {
+            // The browser never contacts this host, so a phone web UI or an
+            // SSH session can finish sign-in inside the app.
+            let device = crate::auth::DeviceAttempt::start()?;
+            let mut attempts = login_attempts().lock().map_err(|_| "Sign-in unavailable")?;
+            attempts.retain(|_, v| v.created.elapsed().as_secs() < 600);
+            if attempts.len() >= 8 {
+                return Err("Too many sign-in attempts; wait ten minutes".into());
+            }
+            let id = crate::auth::random(24)?;
+            let payload = json!({
+                "attempt": id,
+                "device": {
+                    "user_code": device.user_code,
+                    "verification_uri": device.verification_uri,
+                    "interval": device.interval,
+                    "expires_in": device.expires_at.saturating_sub(crate::auth::now()),
+                },
+                "instructions": "Open the verification link on any device, enter the code, and approve ChatGPT access. This page finishes sign-in automatically."
+            });
+            attempts.insert(
+                id,
+                LoginAttempt {
+                    session: owner.to_string(),
+                    created: std::time::Instant::now(),
+                    flow: LoginFlow::Device(device),
+                },
+            );
+            Ok(payload)
+        }
+        "device-poll" => {
+            let attempt_id = label(v, "args")?;
+            let device = {
+                let attempts = login_attempts().lock().map_err(|_| "Sign-in unavailable")?;
+                let a = attempts
+                    .get(&attempt_id)
+                    .ok_or("Sign-in attempt missing or expired")?;
+                if a.session != owner || a.created.elapsed().as_secs() >= 600 {
+                    return Err("Sign-in attempt does not belong to this session or expired".into());
+                }
+                match &a.flow {
+                    LoginFlow::Device(device) => device.clone(),
+                    LoginFlow::Browser(_) => {
+                        return Err("This sign-in is not a device attempt".into());
+                    }
+                }
+            };
+            let model = device_model(v)?;
+            if v["confirmed"] != true {
+                return Err("Confirm saving this connection on the host".into());
+            }
+            let credential = match device.poll() {
+                Ok(Some(credential)) => credential,
+                Ok(None) => return Ok(json!({"status":"pending"})),
+                Err(error) => {
+                    if let Ok(mut attempts) = login_attempts().lock() {
+                        attempts.remove(&attempt_id);
+                    }
+                    return Err(error);
+                }
+            };
+            if let Ok(mut attempts) = login_attempts().lock() {
+                attempts.remove(&attempt_id);
+            }
+            let id = crate::auth::random(16)?;
+            // Device-code tokens are Codex OAuth tokens: use the ChatGPT
+            // backend the provider adapter adds account headers for.
+            let provider = "openai-responses".to_string();
+            let endpoint = "https://chatgpt.com/backend-api/codex".to_string();
+            let name = label(v, "label")?;
+            let connection = crate::auth::Connection {
+                id: id.clone(),
+                label: if name.is_empty() {
+                    format!("ChatGPT · {}", credential.email)
+                } else {
+                    name
+                },
+                provider,
+                base_url: endpoint,
+                model,
+                api_key_env: None,
+                credential: Some(id.clone()),
+            };
+            crate::auth::edit(|store| {
+                store.credentials.insert(id.clone(), credential);
+                store.connections.push(connection.clone());
+                store.active = Some(id.clone());
+                Ok(())
+            })?;
+            crate::auth::configure(cfg, &connection);
+            Ok(json!({"connected":connection.label,"model":connection.model,"status":"connected"}))
         }
         "api" | "callback" => {
             let requested_model = label(v, "model")?;
@@ -1467,7 +1633,11 @@ pub(crate) fn login(
                             "Sign-in attempt does not belong to this session or expired".into()
                         );
                     }
-                    attempts.remove(&attempt_id).unwrap().attempt
+                    let flow = attempts.remove(&attempt_id).unwrap().flow;
+                    let LoginFlow::Browser(attempt) = flow else {
+                        return Err("This sign-in is not a browser attempt".into());
+                    };
+                    attempt
                 };
                 (
                     "openai-responses".into(),
@@ -1497,6 +1667,7 @@ pub(crate) fn login(
                     email: String::new(),
                     id_token: String::new(),
                     scopes: Vec::new(),
+                    flow: String::new(),
                 };
                 (provider, endpoint, credential)
             };
@@ -1527,7 +1698,7 @@ pub(crate) fn login(
             crate::auth::configure(cfg, &connection);
             Ok(json!({"connected":connection.label,"model":connection.model}))
         }
-        _ => Err("Choose list, use, api, oauth, or callback".into()),
+        _ => Err("Choose list, use, api, oauth, callback, device, or device-poll".into()),
     }
 }
 
@@ -1834,6 +2005,22 @@ pub fn finish_heavy(
 mod mutation_tests {
     use super::*;
     #[test]
+    fn device_sign_in_requires_an_explicit_model() {
+        for value in [
+            json!({}),
+            json!({"model":""}),
+            json!({"model":"   "}),
+            json!({"model":"bad\nmodel"}),
+            json!({"model":"x".repeat(257)}),
+        ] {
+            assert!(device_model(&value).is_err());
+        }
+        assert_eq!(
+            device_model(&json!({"model":"gpt-5-codex"})).unwrap(),
+            "gpt-5-codex"
+        );
+    }
+    #[test]
     fn naming_is_local_and_unconfirmed_destructive_commands_do_nothing() {
         let path = std::env::temp_dir().join(format!("gc-web-commands-{}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
@@ -1884,6 +2071,59 @@ mod mutation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn whole_file_git_actions_resolve_from_the_repository_root() {
+        let root = std::env::temp_dir().join(format!("glass-git-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("tools");
+        std::fs::create_dir_all(nested.join("tools")).unwrap();
+        let run = |args: &[&str]| crate::workflows::git(&root, args, None).unwrap();
+        run(&["init", "-q"]);
+        std::fs::write(nested.join("build.sh"), "top\n").unwrap();
+        std::fs::write(nested.join("tools/build.sh"), "nested\n").unwrap();
+        run(&["add", "."]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        std::fs::write(nested.join("build.sh"), "changed\n").unwrap();
+        std::fs::write(nested.join("tools/build.sh"), "changed\n").unwrap();
+        super::git_file(&nested, &["restore"], "tools/build.sh").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(nested.join("build.sh")).unwrap(),
+            "top\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(nested.join("tools/build.sh")).unwrap(),
+            "changed\n"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mode_changes_use_literal_paths_from_raw_diff() {
+        let z = "0000000000000000000000000000000000000000";
+        let raw = format!(
+            ":100644 100755 {z} {z} M\0d\u{e9}ploiement.sh\0:100644 100644 {z} {z} M\0notes.md\0:000000 100644 {z} {z} A\0new.txt\0"
+        );
+        assert_eq!(
+            super::mode_changes(raw.as_bytes()),
+            vec!["d\u{e9}ploiement.sh".to_string()]
+        );
+    }
+
+    #[test]
+    fn selected_patches_keep_their_final_newline() {
+        let patch = "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-hello\n+world\n";
+        assert_eq!(super::patch_text(&json!({"patch": patch})).unwrap(), patch);
+        assert!(super::patch_text(&json!({"patch": "  \n"})).is_err());
+    }
+
     #[test]
     fn every_native_command_has_a_browser_route() {
         let local = [

@@ -329,6 +329,8 @@ pub struct Agent<'a> {
     base_prompt: String,
     /// Skill catalogue, appended after the prompt.
     catalogue: Option<String>,
+    /// Who sent this turn and what it renders; never checkpointed.
+    client_context: String,
     /// Project instructions from AGENTS.md / CLAUDE.md.
     project_instructions: Option<String>,
     /// Called as the loop makes progress. `None` disables reporting entirely.
@@ -548,6 +550,7 @@ impl<'a> Agent<'a> {
             max_tool_rounds: usize::MAX,
             base_prompt: String::new(),
             catalogue: None,
+            client_context: String::new(),
             project_instructions: None,
             on_progress: None,
             input_keys: None,
@@ -614,15 +617,6 @@ impl<'a> Agent<'a> {
         self
     }
 
-    /// Register the post-write hook registry; runs after a write and records
-    /// the result on the turn.
-    pub fn with_post_write_hooks(
-        mut self,
-        registry: crate::hooks_shell::HookRegistry,
-    ) -> Self {
-        self.post_write_hooks = registry;
-        self
-    }
     /// Exclusive host execution: no built-ins, extensions, or local tool guards.
     /// The host owns authorization and every side effect.
     pub fn with_host_tools(
@@ -713,6 +707,9 @@ impl<'a> Agent<'a> {
             }
             tools
         };
+        if !self.read_only && self.mixed_hosted.is_none() {
+            tools.extend(crate::browser_tools::schemas());
+        }
         tools.extend(desktop_schemas_for_state(desktop_state, self.read_only));
         if crate::team::actor_context(&self.session.id).is_some() {
             tools.push(crate::team::schema());
@@ -974,6 +971,13 @@ impl<'a> Agent<'a> {
         self.base_prompt = base;
         self.catalogue = catalogue;
         self.project_instructions = project_instructions;
+        self
+    }
+
+    /// Per-turn client capabilities: names the client and, when it renders
+    /// components, adds their catalog to this turn's system prompt only.
+    pub fn with_client_render(mut self, render: Option<&crate::components::ClientRender>) -> Self {
+        self.client_context = crate::components::prompt_context(render);
         self
     }
 
@@ -1416,7 +1420,9 @@ impl<'a> Agent<'a> {
                             &[],
                         ));
                     }
-                    self.session.append(Record::Assistant(out.text.clone()));
+                    self.session.append(Record::Assistant(
+                        crate::components::normalize(&out.text).into_owned(),
+                    ));
                 }
                 self.session.append(Record::Meta("Response cancelled; streamed output was preserved and pending tools were not executed.".into()));
                 return Ok(out);
@@ -1510,7 +1516,9 @@ impl<'a> Agent<'a> {
                                 &[],
                             ));
                         }
-                        self.session.append(Record::Assistant(out.text.clone()));
+                        self.session.append(Record::Assistant(
+                            crate::components::normalize(&out.text).into_owned(),
+                        ));
                     }
                     if !out.text.trim().is_empty() || !out.tool_calls.is_empty() {
                         // A Meta record is only honest when something survived;
@@ -1810,7 +1818,9 @@ impl<'a> Agent<'a> {
                 ));
             }
             if !out.text.trim().is_empty() {
-                self.session.append(Record::Assistant(out.text.clone()));
+                self.session.append(Record::Assistant(
+                    crate::components::normalize(&out.text).into_owned(),
+                ));
             }
 
             // Give mods a look at the finished turn.
@@ -2567,6 +2577,7 @@ impl<'a> Agent<'a> {
         } else if call.name == "bash"
             || crate::web_tools::is_tool(&call.name)
             || crate::desktop::is_tool(&call.name)
+            || crate::browser_tools::is_tool(&call.name)
             || self.extensions.has_tool(&call.name)
         {
             self.run_tool_pumped(call, pump);
@@ -2698,6 +2709,7 @@ impl<'a> Agent<'a> {
         if call.name != "bash"
             && !crate::web_tools::is_tool(&call.name)
             && !crate::desktop::is_tool(&call.name)
+            && !crate::browser_tools::is_tool(&call.name)
             && !self.extensions.has_tool(&call.name)
         {
             self.run_tool(call);
@@ -2763,6 +2775,10 @@ impl<'a> Agent<'a> {
         }
         if crate::desktop::is_tool(&call.name) {
             self.run_desktop_observably(call, pump);
+            return;
+        }
+        if crate::browser_tools::is_tool(&call.name) {
+            self.run_browser_observably(call, pump);
             return;
         }
         // Read-before-write is checked here rather than in `run_tool`, because a
@@ -2838,6 +2854,37 @@ impl<'a> Agent<'a> {
     /// Keep the terminal responsive while a read-only web request is in flight.
     /// A steer does not cancel or repeat the request; its bounded result is
     /// recorded once when the HTTP/MCP operation settles.
+    fn run_browser_observably(
+        &mut self,
+        call: &ToolCall,
+        pump: &mut impl FnMut(&mut Option<String>),
+    ) {
+        let inner = call.clone();
+        let workspace = self.workspace.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::browser_tools::execute(&inner, &workspace));
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.finish_tool(call, result);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.finish_tool(
+                        call,
+                        tools::Outcome::err("browser worker ended without a result"),
+                    );
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            pump(&mut self.steer);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     fn run_web_observably(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
         let inner = call.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -3382,6 +3429,7 @@ impl<'a> Agent<'a> {
             || call.name == "web_secret_request"
             || call.name == "revoke_secret"
             || crate::desktop::is_tool(&call.name)
+            || crate::browser_tools::is_tool(&call.name)
             || (self.checkpoint_tools
                 && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait"))
             || self.extensions.has_tool(&call.name)
@@ -3467,6 +3515,8 @@ impl<'a> Agent<'a> {
             outcome = crate::web_tools::execute(call);
         } else if crate::desktop::is_tool(&call.name) {
             outcome = crate::desktop::execute_tool(call, self.workspace);
+        } else if crate::browser_tools::is_tool(&call.name) {
+            outcome = crate::browser_tools::execute(call, self.workspace);
         } else if self.checkpoint_tools
             && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait")
         {
@@ -3732,7 +3782,9 @@ impl<'a> Agent<'a> {
                 self.input_keys.is_some() || self.human.is_some(),
             )
         };
-        self.refresh_desktop_context(system)
+        let mut system = self.refresh_desktop_context(system);
+        system.push_str(&self.client_context);
+        system
     }
 
     /// Desktop availability is owned by Connect and can change while a Core
@@ -3741,6 +3793,9 @@ impl<'a> Agent<'a> {
     fn refresh_desktop_context(&self, system: String) -> String {
         let base = system
             .split(DESKTOP_CONTEXT_MARKER)
+            .next()
+            .unwrap_or(&system)
+            .split(crate::components::CONTEXT_MARKER)
             .next()
             .unwrap_or(&system)
             .to_owned();
@@ -4141,7 +4196,7 @@ fn connect_desktop_context(
                     let tool_names = if read_only {
                         "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
                     } else {
-                        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`"
+                        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`, `desktop_launch_app`, `desktop_clipboard`, `desktop_windows`, `desktop_files`, `desktop_wait`, `desktop_record`"
                     };
                     let session_id: String = session_id
                         .chars()
@@ -4688,7 +4743,12 @@ mod warm_integration {
                 "desktop_observe",
                 "desktop_act",
                 "desktop_input",
-                "desktop_launch_app"
+                "desktop_launch_app",
+                "desktop_clipboard",
+                "desktop_windows",
+                "desktop_files",
+                "desktop_wait",
+                "desktop_record"
             ]
         );
         assert_eq!(
@@ -7041,7 +7101,6 @@ mod recovery_tests {
 mod ext_cancel_tests {
     use super::*;
     use crate::ext::Registry;
-    use std::path::Path;
 
     fn python() -> Option<String> {
         for c in ["python3", "python"] {
@@ -7087,11 +7146,7 @@ for line in sys.stdin:
             ),
         )
         .unwrap();
-        let mut extensions = Registry::load(
-            &[format!("{py} {}", script.display())],
-            Path::new("."),
-            "mock",
-        );
+        let mut extensions = Registry::load(&[format!("{py} {}", script.display())], &dir, "mock");
 
         let provider = CapturingProviderWithToolCall::default();
         let mut session = Session::create(&dir).unwrap();
@@ -7103,7 +7158,7 @@ for line in sys.stdin:
             &mut state,
             &no_mods,
             &mut extensions,
-            Path::new("."),
+            &dir,
         )
         .with_prompt("turn".into(), None, None);
         // The provider asks for the slow tool; the steer arrives while the

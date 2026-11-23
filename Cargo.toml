@@ -43,10 +43,15 @@ debug = false
 inherits = "dev"
 debug = true
 
+# Performance-oriented default used by `cargo build --release` and
+# `cargo install --path`. This is also what AGENTS.md describes. Registry
+# `cargo install` uses Cargo's default release profile (the workspace
+# profile is not published). For the smallest official binaries, use
+# `--profile release-size`.
 [profile.release]
-opt-level = "z"
-lto = "thin"
-codegen-units = 1
+opt-level = 3
+lto = false
+codegen-units = 16
 panic = "abort"
 strip = "symbols"
 
@@ -54,6 +59,7 @@ strip = "symbols"
 inherits = "release"
 opt-level = "z"
 lto = "fat"
+codegen-units = 1
 
 # Glass Core keeps its original size/LTO profile without changing Glass's
 # default release profile.
@@ -61,3 +67,4 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+codegen-units = 1

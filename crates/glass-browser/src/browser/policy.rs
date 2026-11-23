@@ -101,8 +101,43 @@ fn decision_events() -> &'static Mutex<VecDeque<PolicyDecisionEvent>> {
     STORE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
+#[cfg(test)]
+mod decision_test_isolation {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ACCESS: Mutex<()> = Mutex::new(());
+    thread_local! { static OWNER: Cell<bool> = const { Cell::new(false) }; }
+
+    pub(super) fn access() -> Option<MutexGuard<'static, ()>> {
+        if OWNER.get() {
+            None
+        } else {
+            Some(ACCESS.lock().unwrap_or_else(|error| error.into_inner()))
+        }
+    }
+
+    pub(super) struct Sequence {
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Sequence {
+        fn drop(&mut self) {
+            OWNER.set(false);
+        }
+    }
+
+    pub(super) fn sequence() -> Sequence {
+        let guard = ACCESS.lock().unwrap_or_else(|error| error.into_inner());
+        OWNER.set(true);
+        Sequence { _guard: guard }
+    }
+}
+
 /// Emit one policy decision outcome without changing enforcement.
 pub fn emit_policy_decision(capability: PolicyCapability, decision: &PolicyDecision) {
+    #[cfg(test)]
+    let _access = decision_test_isolation::access();
     let event = PolicyDecisionEvent::new(capability, decision.clone());
     let Ok(mut events) = decision_events().lock() else {
         return;
@@ -115,6 +150,8 @@ pub fn emit_policy_decision(capability: PolicyCapability, decision: &PolicyDecis
 
 /// Bounded policy decision events emitted so far.
 pub fn policy_decision_events() -> Vec<PolicyDecisionEvent> {
+    #[cfg(test)]
+    let _access = decision_test_isolation::access();
     decision_events()
         .lock()
         .map(|events| events.iter().cloned().collect())
@@ -123,6 +160,8 @@ pub fn policy_decision_events() -> Vec<PolicyDecisionEvent> {
 
 /// Drop emitted policy decision events.
 pub fn clear_policy_decisions() {
+    #[cfg(test)]
+    let _access = decision_test_isolation::access();
     decision_events()
         .lock()
         .map(|mut events| events.clear())
@@ -162,6 +201,10 @@ pub struct BrowserPolicy {
     confirmation_tokens: std::sync::Arc<std::sync::Mutex<BTreeMap<PolicyCapability, u32>>>,
     pinned_hosts: BTreeMap<String, IpAddr>,
     workspace_root: PathBuf,
+}
+
+tokio::task_local! {
+    static AUTHORIZED_PROFILE_POLICY: usize;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -383,6 +426,14 @@ impl BrowserPolicy {
         &self.workspace_root
     }
 
+    pub(crate) fn requires_network_interception(&self) -> bool {
+        matches!(
+            self.preset,
+            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+        ) || !self.allowed_hosts.is_empty()
+            || !self.denied_hosts.is_empty()
+    }
+
     pub async fn prepare_hardened_session(
         &mut self,
         attached: bool,
@@ -508,6 +559,15 @@ impl BrowserPolicy {
     }
 
     pub fn require(&self, capability: PolicyCapability) -> Result<(), PolicyError> {
+        if capability == PolicyCapability::PersistentProfile
+            && AUTHORIZED_PROFILE_POLICY
+                .try_with(|identity| {
+                    *identity == std::sync::Arc::as_ptr(&self.confirmation_tokens) as usize
+                })
+                .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let decision = self.decide(capability);
         emit_policy_decision(capability, &decision);
         match decision {
@@ -534,6 +594,19 @@ impl BrowserPolicy {
                 }
             }
         }
+    }
+
+    pub(crate) async fn with_authorized_profile<F: std::future::Future>(
+        &self,
+        operation: F,
+    ) -> Result<F::Output, PolicyError> {
+        self.require(PolicyCapability::PersistentProfile)?;
+        Ok(AUTHORIZED_PROFILE_POLICY
+            .scope(
+                std::sync::Arc::as_ptr(&self.confirmation_tokens) as usize,
+                operation,
+            )
+            .await)
     }
 
     /// Check a capability without consuming a confirmation token. Batch
@@ -928,6 +1001,66 @@ fn ipv6_in_prefix(value: u128, network: u128, prefix: u32) -> bool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn one_profile_approval_covers_only_its_scoped_operation() {
+        let policy = BrowserPolicy::new(
+            PolicyPreset::Hardened,
+            std::env::temp_dir(),
+            [],
+            [PolicyCapability::PersistentProfile],
+        )
+        .unwrap()
+        .with_confirmation_tokens([PolicyCapability::PersistentProfile])
+        .unwrap();
+        let cloned = policy.clone();
+        policy
+            .with_authorized_profile(async {
+                assert!(cloned.require(PolicyCapability::PersistentProfile).is_ok());
+                assert!(cloned.require(PolicyCapability::PersistentProfile).is_ok());
+                let other = BrowserPolicy::hardened(std::env::temp_dir()).unwrap();
+                assert!(other.require(PolicyCapability::PersistentProfile).is_err());
+                assert!(cloned.require(PolicyCapability::Evaluate).is_err());
+                let separate_task = cloned.clone();
+                assert!(
+                    tokio::spawn(async move {
+                        separate_task
+                            .require(PolicyCapability::PersistentProfile)
+                            .is_err()
+                    })
+                    .await
+                    .unwrap()
+                );
+            })
+            .await
+            .unwrap();
+        assert!(policy.require(PolicyCapability::PersistentProfile).is_err());
+        assert!(policy.with_authorized_profile(async {}).await.is_err());
+    }
+
+    #[test]
+    fn development_host_rules_require_redirect_interception() {
+        let root = std::env::temp_dir();
+        let policy = BrowserPolicy::development(&root).unwrap();
+        assert!(!policy.requires_network_interception());
+        let policy = policy.with_host_rules(["allowed.test".into()], []).unwrap();
+        assert!(policy.requires_network_interception());
+        assert!(
+            policy
+                .require_existing_target_url("https://allowed.test/")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .require_existing_target_url("https://blocked.test/redirect")
+                .is_err()
+        );
+        let denied = BrowserPolicy::development(root)
+            .unwrap()
+            .with_host_rules([], ["blocked.test".into()])
+            .unwrap();
+        assert!(denied.requires_network_interception());
+    }
+
     #[test]
     fn hardened_capabilities_are_typed_denials_or_confirmations() {
         let root = std::env::current_dir().unwrap();
@@ -968,6 +1101,7 @@ mod tests {
 
     #[test]
     fn hardened_denial_emits_policy_decision_event_and_grants_nothing() {
+        let _sequence = decision_test_isolation::sequence();
         clear_policy_decisions();
         let policy = BrowserPolicy::hardened(std::env::current_dir().unwrap()).unwrap();
         assert!(policy.require(PolicyCapability::Evaluate).is_err());
@@ -988,6 +1122,7 @@ mod tests {
 
     #[test]
     fn policy_decision_events_evict_oldest_entry_at_capacity() {
+        let _sequence = decision_test_isolation::sequence();
         clear_policy_decisions();
         for index in 1..=257 {
             emit_policy_decision(

@@ -260,13 +260,13 @@ pub mod terminal_graphics;
 /// Ratatui terminal interface.
 pub mod tui;
 mod update;
-/// Stable Glass Web IR v1 reconciliation and validation.
-pub mod web_ir;
 /// Small web UI action contract with named actions, server-owned state, and
 /// explicit Allow/Deny decisions.
 pub mod web_action;
 /// Headless web UI inspection with stable element trees and screenshots.
 pub mod web_inspect;
+/// Stable Glass Web IR v1 reconciliation and validation.
+pub mod web_ir;
 /// Bounded workspace identity and lifecycle contracts.
 pub mod workspace;
 

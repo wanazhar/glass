@@ -13,11 +13,25 @@ export const settingsSections = [
 const aliases={index:'general',models:'general',integrations:'tools',memory:'tools',profiles:'instructions',permissions:'advanced',effective:'advanced'};
 export const settingDestination=name=>({settings:'general',login:'connections',logout:'connections',model:'general',mods:'tools',extensions:'tools',skills:'tools','skill-doctor':'tools',profiles:'instructions',theme:'appearance',animation:'appearance',tools:'appearance',security:'advanced','settings-info':'advanced'}[name]);
 export const configurationCommands=new Set(['login','logout','mods','extensions','profiles','skills','skill-doctor','security','settings-info','animation']);
+function deviceModel(value){
+  const model=String(value??'').trim();
+  if(!model||new TextEncoder().encode(model).length>256||/\p{Cc}/u.test(model))return null;
+  return model;
+}
+export function confirmDeviceModel(device){
+  device.confirmedModel=deviceModel(device.model);
+  return Boolean(device.confirmedModel);
+}
+export function devicePollRequest(device,revision){
+  const model=deviceModel(device?.confirmedModel);
+  if(!model)return null;
+  return {revision,action:'device-poll',args:device.attempt,model,confirmed:true};
+}
 export function settingsPage({api,context,appearance,error,visibility,resumeChat,navigation}) {
   const root=document.querySelector('#settings-page');
   const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   let data=null,load=null,active=false,version=0,section='general',query='',saving=false,returnFocus=null,scroll=0,historyIndex=Number(history.state?.glassSettingsIndex)||0,reverting=false;
-  let drafts=new Map(),pending=null,addConnection=false,oauth=null,refreshing=false,feedbackTimer=null;
+  let drafts=new Map(),pending=null,addConnection=false,oauth=null,device=null,deviceTimer=null,refreshing=false,feedbackTimer=null;
   history.replaceState({...history.state,glassSettingsIndex:historyIndex},'',location.href);
   const currentURL=()=>new URL(location.href);
   const icon=node=>createElement(node,{'aria-hidden':'true',focusable:'false',width:16,height:16,'stroke-width':1.7});
@@ -50,6 +64,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     for(const [label,discard]of [['Keep editing',false],['Discard changes',true]]){const b=el('button',discard?'quiet':'command-run',label);b.onclick=()=>{box.remove();const action=pending;pending=null;if(discard){drafts.clear();addConnection=false;oauth=null;action?.();}};box.append(b);}
     root.querySelector('.settings-content').prepend(box);box.querySelector('button').focus();
   }
+  function stopDevice(){if(deviceTimer){clearInterval(deviceTimer);deviceTimer=null;}}
   async function request(change){
     if(saving||refreshing){feedback('Wait for the current settings request to finish.');return false;}
     saving=true;feedback('Saving…');root.setAttribute('aria-busy','true');
@@ -89,7 +104,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
       preference(models,{key:'model',label:'Default model',value:defaults.model,save:saveDefault('model')});
     }
     const responses=group(parent,'Responses');
-    preference(responses,{key:'max_tokens',label:'Maximum output tokens',help:'Includes provider reasoning when counted as output.',value:defaults.max_tokens,type:'number',save:saveDefault('max_tokens',v=>Number(v))});
+    preference(responses,{key:'max_tokens',label:'Maximum output tokens',help:'Includes provider reasoning when counted as output. ChatGPT Codex controls its own output limit; this preference is not sent.',value:defaults.max_tokens,type:'number',save:saveDefault('max_tokens',v=>Number(v))});
     preference(responses,{key:'reasoning_budget',label:'Reasoning allowance',help:'Leave empty to use the provider default.',value:defaults.reasoning_budget,type:'number',save:saveDefault('reasoning_budget',v=>v.trim()===''?null:Number(v))});
     preference(responses,{key:'adaptive_pacing',label:'Adaptive pacing',help:'Adjust request timing to provider pressure.',value:defaults.adaptive_pacing,type:'checkbox',save:saveDefault('adaptive_pacing')});
     preference(responses,{key:'image_input',label:'Image input',help:'Enable only for models that support images.',value:defaults.image_input,type:'checkbox',save:saveDefault('image_input')});
@@ -99,7 +114,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
     const form=el('form','connection-form');form.append(el('h3','',callback?'Complete sign-in':'Add a connection'));
     const inputs={},formKey=callback?'oauth-form':'connection-form',saved=drafts.get(callback?'oauth-form':'connection-form')||{};
     const remember=()=>drafts.set(formKey,Object.fromEntries(Object.entries(inputs).map(([key,input])=>[key,input.value])));
-    const fields=callback?[['model','Model','text'],['label','Connection name','text'],['secret','Final callback URL','password']]:[['label','Connection name','text'],['provider','Provider','select'],['endpoint','API endpoint','url'],['model','Model','text'],['secret','API key','password']];
+    const fields=callback?[['model','Model','text'],['label','Connection name','text'],['secret','Callback URL or code','password']]:[['label','Connection name','text'],['provider','Provider','select'],['endpoint','API endpoint','url'],['model','Model','text'],['secret','API key','password']];
     for(const [key,label,type]of fields){const field=el('label','',label),input=el(type==='select'?'select':'input');input.name=key;input.setAttribute('aria-label',label);if(type==='select'){for(const [v,t]of [['openai','OpenAI compatible'],['openai-responses','OpenAI Responses'],['anthropic','Anthropic']]){const o=el('option','',t);o.value=v;input.append(o);}}else input.type=type;input.required=!['label'].includes(key);input.autocomplete=type==='password'?'new-password':'off';if(saved[key]!==undefined)input.value=saved[key];input.oninput=remember;inputs[key]=input;field.append(input);form.append(field);}
     if(inputs.endpoint){inputs.endpoint.value=saved.endpoint||'https://api.openai.com/v1';inputs.provider.onchange=()=>{inputs.endpoint.value=inputs.provider.value==='anthropic'?'https://api.anthropic.com':'https://api.openai.com/v1';remember();};}
     const save=el('button','command-run',callback?'Complete sign-in':'Save connection');save.type='submit';form.append(save);const cancel=el('button','quiet','Cancel');cancel.type='button';cancel.onclick=()=>guard(()=>{addConnection=false;oauth=null;renderBody();});form.append(cancel);
@@ -114,10 +129,25 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
       const actions=el('div','connection-actions');if(account.id!==data.active_connection){const use=el('button','quiet','Use as default');use.onclick=async()=>{if(await request({action:'connection-use',id:account.id}))renderBody();};actions.append(use);}
       const remove=el('button','quiet','Remove');remove.onclick=()=>{const confirm=el('div','connection-confirm');confirm.setAttribute('role','alert');confirm.append(el('p','','Remove this connection? Chats using it may need to reconnect.'));for(const [label,yes]of [['Cancel',false],['Remove connection',true]]){const b=el('button',yes?'command-run':'quiet',label);b.onclick=async()=>{if(!yes){confirm.remove();remove.disabled=false;delete remove.dataset.locked;}else if(await request({action:'connection-remove',id:account.id,confirmed:true}))renderBody();};confirm.append(b);}card.append(confirm);remove.disabled=true;remove.dataset.locked='true';};actions.append(remove);card.append(actions);box.append(card);
     }
-    const add=el('button','command-run');add.append(icon(Plus),el('span','','Add connection'));add.disabled=addConnection;add.onclick=()=>guard(()=>{addConnection=true;oauth=null;renderBody();});box.append(add);
+    const add=el('button','command-run');add.append(icon(Plus),el('span','','Add connection'));add.disabled=addConnection;add.onclick=()=>guard(()=>{addConnection=true;oauth=null;stopDevice();device=null;renderBody();});box.append(add);
     if(addConnection)accountForm(box);
-    const oauthButton=el('button','quiet','Connect ChatGPT');oauthButton.onclick=()=>guard(async()=>{if(await request({action:'oauth'})){addConnection=false;oauth=data.sign_in;renderBody();}});box.append(oauthButton);
-    if(oauth){const link=el('a','command-run','Continue sign-in');link.href=oauth.authorize_url;link.target='_blank';link.rel='noopener noreferrer';box.append(link);text(box,'After signing in, paste the final localhost callback URL below.');accountForm(box,true);}
+    const oauthButton=el('button','quiet','Connect ChatGPT');oauthButton.onclick=()=>guard(async()=>{stopDevice();device=null;if(await request({action:'oauth'})){addConnection=false;oauth=data.sign_in;renderBody();}});box.append(oauthButton);
+    const deviceButton=el('button','quiet','Connect with a device code');deviceButton.onclick=()=>guard(async()=>{oauth=null;stopDevice();device=null;if(await request({action:'device'})){addConnection=false;device=data.sign_in;renderBody();}});box.append(deviceButton);
+    if(oauth){const link=el('a','command-run','Continue sign-in');link.href=oauth.authorize_url;link.target='_blank';link.rel='noopener noreferrer';box.append(link);text(box,'After signing in, the browser returns to a 127.0.0.1 address only that device can open. If the page does not load, paste its full address or just the code below.');accountForm(box,true);}
+    if(device?.device){
+      const card=el('div','connection-form');card.append(el('h3','','ChatGPT device sign-in'));
+      const model=el('input');model.type='text';model.setAttribute('aria-label','ChatGPT model ID');model.placeholder='Model ID available to your ChatGPT account';model.maxLength=256;model.required=true;model.value=device.model||'';model.readOnly=Boolean(device.confirmedModel);model.oninput=()=>{device.model=model.value;};card.append(model);
+      text(card,'Choose a model ID supported by your ChatGPT account. Your global provider model is not reused.');
+      const link=el('a','command-run','Open verification page');link.href=device.device.verification_uri;link.target='_blank';link.rel='noopener noreferrer';card.append(link);
+      const codeLine=el('p','');codeLine.append(el('strong','',device.device.user_code));card.append(codeLine);
+      text(card,'Enter this code on the verification page from any device. Confirm your model below to finish sign-in after approval.');text(card,'If ChatGPT rejects the code, enable device code authorization in ChatGPT → Settings → Security.');
+      const status=el('p','quiet',device.confirmedModel?'Waiting for approval…':'Enter and confirm a ChatGPT model ID.');card.append(status);
+      const confirm=el('button','command-run','Confirm model');confirm.type='button';confirm.disabled=Boolean(device.confirmedModel);confirm.onclick=()=>{if(!confirmDeviceModel(device)){status.textContent='Enter a valid ChatGPT model ID before confirming.';return;}model.value=device.confirmedModel;model.readOnly=true;confirm.disabled=true;status.textContent='Model confirmed. Waiting for approval…';};card.append(confirm);
+      const copy=el('button','quiet','Copy code');copy.type='button';copy.onclick=()=>{navigator.clipboard?.writeText(device.device.user_code).then(()=>feedback('Code copied'),()=>{});};card.append(copy);
+      const cancel=el('button','quiet','Cancel');cancel.type='button';cancel.onclick=()=>guard(()=>{stopDevice();device=null;renderBody();});card.append(cancel);
+      box.append(card);
+      if(!deviceTimer){const wait=Math.max(3,Number(device.device.interval)||5)*1000;deviceTimer=setInterval(async()=>{const change=devicePollRequest(device,data.revision);if(!change)return;try{const next=await api('settings',change);if(next?.sign_in?.status==='connected'){stopDevice();device=null;data=next;feedback('ChatGPT connected');renderBody();}else if(status.isConnected)status.textContent='Waiting for approval…';}catch(e){stopDevice();if(status.isConnected){status.textContent=e.message;status.classList.add('settings-error');}}},wait);}
+    }
   }
   function tools(parent){
     const mods=group(parent,'Optional native modules','Optional behaviors added to the built-in tools for new conversations.');
@@ -161,7 +191,7 @@ export function settingsPage({api,context,appearance,error,visibility,resumeChat
   async function render(resume=true){
     const token=++version,u=currentURL();active=u.searchParams.has('settings');
     closeSelect();root.hidden=!active;document.querySelector('.workspace').hidden=active;document.querySelector('.workspace').inert=active;document.body.classList.toggle('settings-open',active);if(active){document.querySelector('#open-settings').setAttribute('aria-current','page');document.querySelector('#open-chat').removeAttribute('aria-current');}else{document.querySelector('#open-chat').setAttribute('aria-current','page');document.querySelector('#open-settings').removeAttribute('aria-current');}visibility?.(active);
-    if(!active){for(const link of sidebarSections.children)link.removeAttribute('aria-current');drafts.clear();oauth=null;addConnection=false;document.title=(context().title||'Conversation')+' · Glass';document.querySelector('#conversation')?.scrollTo({top:scroll});returnFocus?.focus({preventScroll:true});if(resume)await resumeChat?.();return;}
+    if(!active){for(const link of sidebarSections.children)link.removeAttribute('aria-current');drafts.clear();oauth=null;addConnection=false;stopDevice();device=null;document.title=(context().title||'Conversation')+' · Glass';document.querySelector('#conversation')?.scrollTo({top:scroll});returnFocus?.focus({preventScroll:true});if(resume)await resumeChat?.();return;}
     section=aliases[u.searchParams.get('settings')]||u.searchParams.get('settings');if(!settingsSections.some(s=>s.id===section))section='general';u.searchParams.set('settings',section);u.searchParams.delete('setting');history.replaceState(history.state,'',u);
     root.replaceChildren();root.classList.remove('settings-search-open');for(const link of sidebarSections.children){if(link.dataset.section===section)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');const url=currentURL();url.searchParams.set('settings',link.dataset.section);link.href=url.pathname+url.search;}
     const header=el('header','settings-header'),back=iconButton('Back to conversation',ArrowLeft,close);back.title='Back to conversation';

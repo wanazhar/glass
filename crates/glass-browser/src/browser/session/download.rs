@@ -13,6 +13,16 @@ impl CdpBrowserSession {
         destination: &Path,
         deadline: Duration,
     ) -> BrowserResult<DownloadOutcome> {
+        self.capture_download(destination, deadline, None).await
+    }
+
+    /// Authorize and subscribe before optionally clicking a download control.
+    pub async fn capture_download(
+        &self,
+        destination: &Path,
+        deadline: Duration,
+        target: Option<&str>,
+    ) -> BrowserResult<DownloadOutcome> {
         self.policy.require(PolicyCapability::Download)?;
         if deadline.is_zero() || deadline > MAX_DIAGNOSTIC_DURATION {
             return Err("download deadline must be between 1 ms and 30 seconds".into());
@@ -68,6 +78,12 @@ impl CdpBrowserSession {
             }
         };
         let result = tokio::time::timeout(deadline, async {
+            if let Some(target) = target {
+                let outcome = self.click(target).await?;
+                if outcome.status != ActionStatus::Succeeded {
+                    return Err("download trigger click did not succeed".into());
+                }
+            }
             let mut guid = None;
             let mut filename = String::new();
             loop {

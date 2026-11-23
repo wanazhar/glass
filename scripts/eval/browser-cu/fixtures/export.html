@@ -1,0 +1,2 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Monthly report</title></head><body><main><h1>Monthly report</h1><button id="export">Export</button><p id="status" role="status"></p>
+<script>document.getElementById('export').onclick=()=>{document.getElementById('status').textContent='Something went wrong.';throw new Error('Export quota exceeded for workspace 7 (limit 20 exports per day)');};</script></main></body></html>

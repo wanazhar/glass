@@ -3383,6 +3383,29 @@ mod tests {
     }
 
     #[test]
+    fn long_workflow_urls_match_the_published_schema_limit() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../docs/schema/workflow-v1.schema.json"
+        ))
+        .unwrap();
+        let branch = schema["$defs"]["predicate"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| branch["properties"]["urlEquals"].is_object())
+            .unwrap();
+        assert_eq!(branch["properties"]["urlEquals"]["maxLength"], 8192);
+        for size in [1025, 1500, 8192] {
+            let mut value: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../tests/fixtures/workflow-minimal.json"
+            ))
+            .unwrap();
+            value["terminalCondition"]["urlEquals"] = serde_json::Value::String("a".repeat(size));
+            assert!(WorkflowDefinition::from_json(&value.to_string()).is_ok());
+        }
+    }
+
+    #[test]
     fn evaluate_is_rejected_before_execution() {
         let mut workflow = definition();
         workflow.steps[0].action = BatchStep::Evaluate {

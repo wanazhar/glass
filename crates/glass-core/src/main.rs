@@ -13,6 +13,7 @@ mod attempt_log;
 mod attention;
 mod auth;
 mod blobs;
+mod browser_tools;
 mod btw;
 mod budget;
 #[allow(dead_code)]
@@ -24,6 +25,7 @@ mod cli;
 mod command_menus;
 mod compact;
 mod completions;
+mod components;
 mod concurrency;
 mod config;
 mod connect;
@@ -92,6 +94,7 @@ mod resume_picker;
 mod rewind;
 mod runtime;
 mod sandbox;
+mod secret_placeholders;
 mod secrets;
 mod serve;
 mod session;
@@ -461,6 +464,29 @@ fn main() {
             if let Err(error) = history_inspector::command(&args[1..], args[0] == "handoff") {
                 cli::error("History", &error);
                 std::process::exit(2);
+            }
+            return;
+        }
+        Some("desktop") => {
+            let json = args.iter().any(|a| a == "--json");
+            let action = args
+                .get(1)
+                .filter(|a| *a != "--json")
+                .map_or("status", String::as_str);
+            let result = config::load(&config::default_path())
+                .map_err(|e| e.to_string())
+                .and_then(|cfg| connect::desktop_for_tui(cfg, action));
+            match result {
+                Ok(status) if json => emit_json(status),
+                Ok(status) => cli::report("Desktop", &status),
+                Err(error) => {
+                    if json {
+                        emit_json(serde_json::json!({"error": error}));
+                    } else {
+                        cli::error("Desktop", &error);
+                    }
+                    std::process::exit(2);
+                }
             }
             return;
         }

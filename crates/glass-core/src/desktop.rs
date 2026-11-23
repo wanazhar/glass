@@ -24,10 +24,14 @@ use std::{
 mod accessibility;
 mod apps;
 mod capture;
+mod clipboard;
+mod files;
 mod input;
 mod process;
+mod recording;
 mod supervisor;
 mod updates;
+mod windows;
 use capture::Frames;
 
 const WIDTH: u32 = 1280;
@@ -39,6 +43,31 @@ const MAX_CACHED_ACCESSIBILITY_WINDOWS: usize = 64;
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
 type VerifiedDesktopFrame = (String, PathBuf, u64, u64, Arc<capture::Frame>);
+
+/// One streamed frame with its timing: capture sequence and clock, JPEG bytes, encode time, and age at send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimedFrame {
+    pub seq: u64,
+    pub time_ms: u64,
+    pub jpeg: Vec<u8>,
+    pub encode_ms: u64,
+    pub age_ms: u64,
+    /// Changes only when the picture does; equal values mean an identical frame.
+    pub content: u64,
+}
+
+impl From<(u64, u64, Vec<u8>)> for TimedFrame {
+    fn from((seq, time_ms, jpeg): (u64, u64, Vec<u8>)) -> Self {
+        Self {
+            seq,
+            time_ms,
+            jpeg,
+            encode_ms: 0,
+            age_ms: 0,
+            content: seq,
+        }
+    }
+}
 const STALE_WINDOW_SELECTOR_RECOVERY: &str = "windowId is stale or no longer visible; call desktop_observe without windowId, then use a fresh visible windowId from its windows list";
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -259,6 +288,8 @@ impl Desktop {
                 "frameTimeMs": null,
                 "error": restore_error,
                 "regionUpdates": 1,
+                "displayServer": "x11",
+                "hostSession": host_session(),
                 "capabilities": capabilities
             });
         };
@@ -289,6 +320,8 @@ impl Desktop {
                 restore_error.as_deref()
             },
             "regionUpdates": 1,
+            "displayServer": "x11",
+            "hostSession": host_session(),
                 "capabilities": capabilities
         })
     }
@@ -978,21 +1011,23 @@ impl Desktop {
                 text,
             )
         };
-        let result =
-            accessibility::act(&session_bus_address, &target, action.as_str(), text.as_deref());
+        let result = accessibility::act(
+            &session_bus_address,
+            &target,
+            action.as_str(),
+            text.as_deref(),
+        );
         drop(control);
         // Bounded post-action wait for typed actions before the refreshed
         // observation reaches the caller.
         if matches!(action, DesktopAction::Focus | DesktopAction::SetText) {
             post_action_wait_until(
-                || {
-                    let verified = match &result {
-                        Ok(value) => {
-                            value.get("verified").and_then(Value::as_bool).unwrap_or(false)
-                        }
-                        Err(_) => false,
-                    };
-                    verified
+                || match &result {
+                    Ok(value) => value
+                        .get("verified")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    Err(_) => false,
                 },
                 Duration::from_secs(2),
             );
@@ -1056,6 +1091,44 @@ impl Desktop {
         Ok(Some(update))
     }
 
+    /// Like `frame_after`, plus how old the frame is when it leaves and how long JPEG encoding took,
+    /// so viewers can see where desktop latency comes from. A frame whose picture still matches
+    /// `unchanged` comes back without JPEG bytes, so a viewer that already shows it costs no encode.
+    pub fn timed_frame_after_unless(
+        &self,
+        after: u64,
+        timeout: Duration,
+        unchanged: Option<u64>,
+    ) -> Result<Option<TimedFrame>, String> {
+        self.frame_after_for_session(None, after, timeout)
+            .and_then(|frame| {
+                frame
+                    .map(|(_, _, seq, captured, frame)| {
+                        if unchanged == Some(frame.content) {
+                            return Ok(TimedFrame {
+                                seq,
+                                time_ms: captured,
+                                jpeg: Vec::new(),
+                                encode_ms: 0,
+                                age_ms: 0,
+                                content: frame.content,
+                            });
+                        }
+                        let encoding = Instant::now();
+                        let jpeg = frame.jpeg()?.to_vec();
+                        Ok(TimedFrame {
+                            seq,
+                            time_ms: captured,
+                            encode_ms: encoding.elapsed().as_millis() as u64,
+                            age_ms: frame.captured_at.elapsed().as_millis() as u64,
+                            content: frame.content,
+                            jpeg,
+                        })
+                    })
+                    .transpose()
+            })
+    }
+
     pub fn frame_after(
         &self,
         after: u64,
@@ -1113,7 +1186,8 @@ impl Desktop {
             if Instant::now() >= deadline {
                 return Ok(None);
             }
-            thread::sleep(Duration::from_millis(40));
+            // A new frame lands every ~33 ms; checking often keeps waiting out of the latency budget.
+            thread::sleep(Duration::from_millis(4));
         };
         let guard = self
             .session
@@ -1188,6 +1262,22 @@ impl Desktop {
 
     pub(crate) fn agent_start() -> Result<Value, String> {
         Self::agent_request(&json!({"action":"start"}))
+    }
+
+    pub fn agent_files(value: &Value, workspace: &Path) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"files","value":value,"workspace":workspace}))
+    }
+
+    pub fn agent_record(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"record","value":value}))
+    }
+
+    pub fn agent_windows(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"windows","value":value}))
+    }
+
+    pub fn agent_clipboard(value: &Value, workspace: &Path) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"clipboard","value":value,"workspace":workspace}))
     }
 
     pub fn agent_launch_app(value: &Value) -> Result<Value, String> {
@@ -1365,8 +1455,8 @@ impl Desktop {
         Ok(())
     }
 
-    fn agent_frame(session_id: &str) -> Result<Value, String> {
-        Self::agent_request(&json!({"action":"frame","sessionId":session_id}))
+    fn agent_frame(session_id: &str, region: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"frame","sessionId":session_id,"region":region}))
     }
 
     fn agent_request(request: &Value) -> Result<Value, String> {
@@ -1453,21 +1543,39 @@ pub fn is_tool(name: &str) -> bool {
             | "desktop_observe"
             | "desktop_act"
             | "desktop_launch_app"
+            | "desktop_clipboard"
+            | "desktop_windows"
+            | "desktop_files"
+            | "desktop_wait"
+            | "desktop_record"
     )
 }
 
 pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::tools::Outcome {
-    let args = match serde_json::from_str::<Value>(&call.arguments) {
+    let mut args = match serde_json::from_str::<Value>(&call.arguments) {
         Ok(value) if value.is_object() => value,
         Ok(_) => return crate::tools::Outcome::err("arguments must be a JSON object"),
         Err(error) => {
             return crate::tools::Outcome::err(format!("invalid JSON arguments: {error}"));
         }
     };
+    if let Err(error) = crate::secret_placeholders::inject(&call.name, &mut args) {
+        return crate::tools::Outcome::err(error);
+    }
     let result = match call.name.as_str() {
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
+        "desktop_input" if args["action"] == "paste" => {
+            paste(&args, workspace).map(|value| value.to_string())
+        }
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
+        "desktop_wait" => wait_for_desktop(&args).map(|value| value.to_string()),
+        "desktop_record" => Desktop::agent_record(&args).map(|value| value.to_string()),
         "desktop_launch_app" => Desktop::agent_launch_app(&args).map(|value| value.to_string()),
+        "desktop_clipboard" => {
+            Desktop::agent_clipboard(&args, workspace).map(|value| value.to_string())
+        }
+        "desktop_windows" => Desktop::agent_windows(&args).map(|value| value.to_string()),
+        "desktop_files" => Desktop::agent_files(&args, workspace).map(|value| value.to_string()),
         "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
         "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
@@ -1476,16 +1584,162 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
                 .and_then(Value::as_str)
                 .ok_or_else(|| "sessionId is required from desktop_status".to_owned());
             session_id.and_then(|session_id| {
-                Desktop::agent_frame(session_id)
+                Desktop::agent_frame(session_id, &args["region"])
                     .and_then(|value| save_agent_frame(workspace, &value))
             })
         }
         _ => Err("unknown desktop tool".into()),
     };
     match result {
-        Ok(body) => crate::tools::Outcome::ok(body),
-        Err(error) => crate::tools::Outcome::err(error),
+        Ok(body) => crate::tools::Outcome::ok(crate::secret_placeholders::redact(&body)),
+        Err(error) => {
+            crate::tools::Outcome::err(crate::secret_placeholders::redact(&with_next_step(error)))
+        }
     }
+}
+
+/// The human's own graphical session type. Managed desktops always run on a
+/// private Xvfb X11 display, so a Wayland host only changes what the human
+/// sees, never what the agent controls.
+fn host_session() -> &'static str {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland");
+    if wayland {
+        "wayland"
+    } else if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
+        "x11"
+    } else {
+        "none"
+    }
+}
+
+/// Appends a concrete recovery step to errors whose text does not already
+/// tell the model what to call next.
+/// `desktop_input` `paste`: write the clipboard, then press Control+V.
+fn paste(args: &Value, workspace: &Path) -> Result<Value, String> {
+    let session_id = args["sessionId"]
+        .as_str()
+        .ok_or("sessionId is required from desktop_status")?;
+    let text = args["text"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .ok_or("paste needs non-empty text")?;
+    Desktop::agent_clipboard(
+        &json!({"action":"write","sessionId":session_id,"text":text}),
+        workspace,
+    )?;
+    Desktop::agent_input(
+        &json!({"action":"key-chord","sessionId":session_id,"keys":["Control","V"]}),
+    )?;
+    Ok(json!({"sent":true,"sessionId":session_id,"pastedBytes":text.len()}))
+}
+
+/// Whether any `name` in an observation contains `text`, case-insensitive.
+fn observation_names_contain(observation: &Value, text: &str) -> bool {
+    match observation {
+        Value::Object(object) => {
+            let visible = object
+                .get("states")
+                .and_then(Value::as_array)
+                .is_some_and(|states| {
+                    ["visible", "showing"]
+                        .iter()
+                        .all(|state| states.iter().any(|value| value == state))
+                })
+                && object.get("onscreen") != Some(&Value::Bool(false));
+            (visible
+                && object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.to_lowercase().contains(&text.to_lowercase())))
+                || ["nodes", "children"].iter().any(|key| {
+                    object
+                        .get(*key)
+                        .is_some_and(|value| observation_names_contain(value, text))
+                })
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(|item| observation_names_contain(item, text)),
+        _ => false,
+    }
+}
+
+fn wait_for_desktop(args: &Value) -> Result<Value, String> {
+    let session_id = args["sessionId"]
+        .as_str()
+        .ok_or("sessionId is required from desktop_status")?;
+    let timeout_ms = args["timeoutMs"]
+        .as_u64()
+        .unwrap_or(5000)
+        .clamp(250, 30_000);
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_millis(timeout_ms);
+    let waited = || started.elapsed().as_millis() as u64;
+    match args["until"].as_str() {
+        Some("change") => {
+            let first = Desktop::agent_frame(session_id, &Value::Null)?["jpeg"].clone();
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let frame = Desktop::agent_frame(session_id, &Value::Null)?;
+                if frame["jpeg"] != first {
+                    return Ok(json!({"changed":true,"waitedMs":waited(),"sessionId":session_id}));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "The screen did not change within {timeout_ms} ms.\nNext: call desktop_screenshot to see the current state; the action may have failed or need a longer timeoutMs."
+                    ));
+                }
+            }
+        }
+        Some("text") => {
+            let text = args["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && text.len() <= 120)
+                .ok_or("until=text needs text of 1-120 bytes")?;
+            loop {
+                let observation = Desktop::agent_observe(
+                    &json!({"sessionId":session_id,"query":format!("name:{text}")}),
+                )?;
+                if observation_names_contain(&observation, text) {
+                    return Ok(
+                        json!({"found":true,"text":text,"waitedMs":waited(),"sessionId":session_id}),
+                    );
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "No visible element named like \"{text}\" appeared within {timeout_ms} ms.\nNext: call desktop_screenshot to see the screen; try a shorter phrase, or until=\"change\" for text that is not exposed to accessibility."
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+        _ => Err("desktop_wait until must be change or text".into()),
+    }
+}
+
+fn with_next_step(error: String) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("call desktop_") || lower.contains("install") {
+        return error;
+    }
+    let next = if lower.contains("desktop service is unavailable")
+        || lower.contains("no managed desktop session")
+    {
+        "no managed desktop is running. Ask the human to start one (`gc desktop quick`, or /desktop quick in the TUI); for web pages use the browser_* tools instead."
+    } else if lower.contains("held by the other participant") {
+        "the human has desktop control. Wait, then call desktop_status until lease is \"agent\" before sending input."
+    } else if lower.contains("read-only") {
+        "input is disabled in read-only mode; use desktop_observe or desktop_screenshot to report what you see."
+    } else if lower.contains("sessionid") {
+        "call desktop_status and pass its current sessionId."
+    } else if lower.contains("frame") && lower.contains("stale") {
+        "the capture is not producing frames; call desktop_status, and use desktop_observe, which does not need frames."
+    } else {
+        return error;
+    };
+    format!("{error}\nNext: {next}")
 }
 
 fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
@@ -1543,9 +1797,21 @@ fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
     file.sync_all()
         .map_err(|e| format!("Could not save desktop screenshot: {e}"))?;
     prune_agent_frames(&directory, &format!("desktop-{session_id}-"), &path);
+    let zoom = match (
+        value["region"]["x"].as_f64(),
+        value["region"]["y"].as_f64(),
+        value["region"]["width"].as_f64(),
+        value["region"]["height"].as_f64(),
+        value["imageWidth"].as_u64(),
+        value["imageHeight"].as_u64(),
+    ) {
+        (Some(x), Some(y), Some(w), Some(h), Some(iw), Some(ih)) => format!(
+            " It is a {iw}x{ih} zoom of region x={x}, y={y}, width={w}, height={h}: a pixel (px, py) in it maps to desktop_input x = {x} + px / {iw} * {w}, y = {y} + py / {ih} * {h}."
+        ),
+        _ => String::new(),
+    };
     Ok(format!(
-        "Fresh desktop frame {} saved to `.gc-artifacts/desktop/{filename}`. Use `view_image` with that relative path to inspect its pixels.",
-        seq
+        "Fresh desktop frame {seq} saved to `.gc-artifacts/desktop/{filename}`.{zoom} Use `view_image` with that relative path to inspect its pixels."
     ))
 }
 
@@ -1679,17 +1945,31 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         },
         Some("act") => desktop.act_accessibility(&request["value"]),
         Some("launch_app") => desktop.launch_app(&request["value"]),
+        Some("clipboard") => request["workspace"]
+            .as_str()
+            .ok_or_else(|| "trusted thread workspace is required".to_owned())
+            .and_then(|workspace| desktop.clipboard(&request["value"], Path::new(workspace))),
+        Some("windows") => desktop.windows(&request["value"]),
+        Some("files") => request["workspace"].as_str()
+            .ok_or_else(|| "trusted thread workspace is required".to_owned())
+            .and_then(|workspace| desktop.files(&request["value"], Path::new(workspace))),
+        Some("record") => desktop.record(&request["value"]),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
                 .and_then(|frame| match frame {
-                    Some((session_id, workspace_root, seq, captured, frame)) => Ok(json!({
-                        "sessionId":session_id,
-                        "workspaceRoot":workspace_root,
-                        "seq":seq,
-                        "capturedAtMs":captured,
-                        "jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)
-                    })),
+                    Some((session_id, workspace_root, seq, captured, frame)) => {
+                        let mut value = if request["region"].is_null() {
+                            json!({"jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)})
+                        } else {
+                            capture::zoom(&frame.rgb, &request["region"])?
+                        };
+                        value["sessionId"] = json!(session_id);
+                        value["workspaceRoot"] = json!(workspace_root);
+                        value["seq"] = json!(seq);
+                        value["capturedAtMs"] = json!(captured);
+                        Ok(value)
+                    }
                     None => {
                         Ok(json!({"error":"Desktop frame source did not produce a fresh frame"}))
                     }
@@ -1708,6 +1988,24 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_errors_name_the_next_call() {
+        let next = |error: &str| super::with_next_step(error.to_owned());
+        assert!(
+            next("Connect desktop service is unavailable: refused").contains("gc desktop quick")
+        );
+        assert!(
+            next("Desktop input lease is held by the other participant")
+                .contains("lease is \"agent\"")
+        );
+        assert!(
+            next("sessionId is required from desktop_status").contains("Next: call desktop_status")
+        );
+        let already = "Accessibility target is stale; call desktop_observe again";
+        assert_eq!(next(already), already);
+        assert_eq!(next("unexpected failure"), "unexpected failure");
+    }
+
     use super::*;
     use std::{
         collections::BTreeMap,
@@ -1987,6 +2285,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn desktop_wait_matches_names_not_queries() {
+        assert!(super::is_tool("desktop_wait"));
+        assert!(super::is_tool("desktop_record"));
+        let observation = json!({"query":"saved","nodes":[{"name":"Untitled","children":[{"name":"Document Saved","states":["visible","showing"],"onscreen":true}]}]});
+        assert!(super::observation_names_contain(&observation, "saved"));
+        for node in [
+            json!({"name":"Saved","states":["visible","showing"],"onscreen":false}),
+            json!({"name":"Saved","states":["visible"]}),
+            json!({"name":"Saved"}),
+        ] {
+            assert!(!super::observation_names_contain(
+                &json!({"nodes":[node]}),
+                "saved"
+            ));
+        }
+        assert!(!super::observation_names_contain(
+            &json!({"query":"saved","nodes":[{"name":"Untitled"}]}),
+            "saved"
+        ));
+        let error = super::wait_for_desktop(&json!({"until":"soon","sessionId":"s"})).unwrap_err();
+        assert!(error.contains("change or text"), "{error}");
+        let error = super::paste(
+            &json!({"sessionId":"s","text":""}),
+            Path::new("/nonexistent"),
+        )
+        .unwrap_err();
+        assert!(error.contains("non-empty"), "{error}");
+    }
+
     fn trace_route_label(tool_name: &str, action: &str) -> String {
         let tool_name = match tool_name {
             "desktop_observe" | "desktop_act" | "desktop_input" | "desktop_launch_app" => tool_name,
@@ -1996,7 +2324,16 @@ mod tests {
             ("desktop_act", "click" | "focus" | "set_text") => action,
             (
                 "desktop_input",
-                "pointer-move" | "pointer-click" | "scroll" | "key" | "key-tap" | "key-chord"
+                "pointer-move"
+                | "pointer-click"
+                | "pointer-double-click"
+                | "pointer-triple-click"
+                | "pointer-drag"
+                | "paste"
+                | "scroll"
+                | "key"
+                | "key-tap"
+                | "key-chord"
                 | "text",
             ) => action,
             ("desktop_launch_app", "list" | "launch") => action,
@@ -2130,7 +2467,7 @@ mod tests {
         assert_eq!(status["frameTimeMs"], Value::Null);
     }
 
-    fn desktop_with_test_session(workspace: &Path, session_id: &str) -> Desktop {
+    pub(super) fn desktop_with_test_session(workspace: &Path, session_id: &str) -> Desktop {
         let desktop = Desktop::new(workspace.to_path_buf());
         *desktop.session.lock().unwrap() = Some(ManagedSession {
             id: session_id.to_owned(),
@@ -2350,8 +2687,11 @@ mod tests {
     fn typed_desktop_actions_and_bounded_post_action_waits_are_enforced() {
         assert_eq!(DesktopAction::parse("click").unwrap(), DesktopAction::Click);
         assert_eq!(DesktopAction::parse("focus").unwrap(), DesktopAction::Focus);
-        assert_eq!(DesktopAction::parse("set_text").unwrap(), DesktopAction::SetText);
-        let parse_error = DesktopAction::parse("drag").err().expect("typed parse must fail");
+        assert_eq!(
+            DesktopAction::parse("set_text").unwrap(),
+            DesktopAction::SetText
+        );
+        let parse_error = DesktopAction::parse("drag").expect_err("typed parse must fail");
         assert_eq!(parse_error, "action must be click, focus, or set_text");
         assert_eq!(DesktopAction::Click.as_str(), "click");
         assert_eq!(DesktopAction::Focus.as_str(), "focus");

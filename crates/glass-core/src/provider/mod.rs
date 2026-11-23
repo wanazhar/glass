@@ -552,13 +552,21 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     let mut tools = vec![
         (
             "desktop_status".to_string(),
-            "Read the live status of the managed desktop shared with GC, Glass resident agents, and the human through Connect. Reports its sessionId, exact display, workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. Does not start or stop a desktop.".to_string(),
+            "Read the live status of the managed desktop shared with GC, Glass resident agents, and the human through Connect. Call this first for any task in a desktop application. Reports its sessionId, exact display, size (width, height), workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. displayServer is always \"x11\" (a private Xvfb display, never the human's own screen); hostSession is the human's session type (x11, wayland, or none). Does not start or stop a desktop. Not for web pages in the agent browser: use the browser_* tools for those.".to_string(),
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease.".to_string(),
-            serde_json::json!({"type":"object","properties":{"sessionId":{"type":"string","maxLength":64}},"required":["sessionId"],"additionalProperties":false}).to_string(),
+            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/(width - 1), y=py/(height - 1) using desktop_status width and height. To read small text or check a detail, pass `region` to zoom: that part of the screen is returned at full resolution, enlarged up to 4x, and the result says how to map its pixels back to desktop_input coordinates. Example: {\"sessionId\":\"<from desktop_status>\",\"region\":{\"x\":0.5,\"y\":0,\"width\":0.5,\"height\":0.25}} zooms on the top-right quarter. For web pages use browser_screenshot.".to_string(),
+            serde_json::json!({"type":"object","properties":{
+                "sessionId":{"type":"string","maxLength":64},
+                "region":{"type":"object","description":"Optional zoom area as fractions of the screen; at least 0.02 wide and tall.","properties":{
+                    "x":{"type":"number","minimum":0,"maximum":1},
+                    "y":{"type":"number","minimum":0,"maximum":1},
+                    "width":{"type":"number","minimum":0.02,"maximum":1},
+                    "height":{"type":"number","minimum":0.02,"maximum":1}
+                },"required":["x","y","width","height"],"additionalProperties":false}
+            },"required":["sessionId"],"additionalProperties":false}).to_string(),
         ),
         (
             "desktop_observe".to_string(),
@@ -592,24 +600,29 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_input".to_string(),
-            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the managed session identified by the latest desktop_status.sessionId, and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the managed session identified by the latest desktop_status.sessionId, and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Use `pointer-double-click` at x/y to open a file or select a word, and `pointer-drag` from x/y to toX/toY (left button held) to move a window, slider or selection in one call. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected. `pointer-triple-click` selects a whole line or paragraph. To enter more than a short phrase (up to 4096 UTF-8 bytes), use `paste`: it puts the text on the clipboard and presses Control+V, which is faster and safer than `text` for long input.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["action","sessionId"],
                 "properties":{
                     "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from desktop_status; the manager rejects stale sessions."},
-                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","key-tap","key-chord","text","scroll"]},
-                    "x":{"type":"number","minimum":0,"maximum":1},
-                    "y":{"type":"number","minimum":0,"maximum":1},
+                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","pointer-double-click","pointer-triple-click","pointer-drag","key","key-tap","key-chord","text","paste","scroll"]},
+                    "x":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen width: 0 is the left edge, 1 the right, 0.5 the center. From a desktop_screenshot pixel, x = px / (desktop_status.width - 1)."},
+                    "y":{"type":"number","minimum":0,"maximum":1,"description":"Fraction of the screen height: 0 is the top edge, 1 the bottom. From a desktop_screenshot pixel, y = py / (desktop_status.height - 1)."},
+                    "toX":{"type":"number","minimum":0,"maximum":1,"description":"pointer-drag only: where to drop, as a fraction of the screen width."},
+                    "toY":{"type":"number","minimum":0,"maximum":1,"description":"pointer-drag only: where to drop, as a fraction of the screen height."},
                     "button":{"type":"string","enum":["left","middle","right"]},
                     "pressed":{"type":"boolean"},
                     "key":{"type":"string","maxLength":16},
                     "keys":{"type":"array","minItems":2,"maxItems":4,"items":{"type":"string","maxLength":16},"description":"Modifiers first, then one key; for example [\"Alt\",\"F2\"]."},
-                    "text":{"type":"string","maxLength":512,"description":"At most 512 UTF-8 bytes; newline and tab are allowed, other control characters are rejected."},
+                    "text":{"type":"string","maxLength":4096,"description":"For `text`: at most 512 UTF-8 bytes; newline and tab are allowed, other control characters are rejected. For `paste`: at most 4096 UTF-8 bytes."},
                     "deltaX":{"type":"number","minimum":-800,"maximum":800},
                     "deltaY":{"type":"number","minimum":-800,"maximum":800}
                 }
             ,"allOf":[
                 {"if":{"properties":{"action":{"const":"pointer-click"}}},"then":{"required":["x","y","button"]}},
+                {"if":{"properties":{"action":{"enum":["pointer-double-click","pointer-triple-click"]}}},"then":{"required":["x","y"]}},
+                {"if":{"properties":{"action":{"enum":["text","paste"]}}},"then":{"required":["text"]}},
+                {"if":{"properties":{"action":{"const":"pointer-drag"}}},"then":{"required":["x","y","toX","toY"]}},
                 {"if":{"properties":{"action":{"enum":["pointer-move","scroll"]}}},"then":{"required":["x","y"]}},
                 {"if":{"properties":{"action":{"const":"pointer-button"}}},"then":{"required":["button","pressed"]}}
                 ,{"if":{"properties":{"action":{"const":"key"}}},"then":{"required":["key","pressed"]}}
@@ -632,6 +645,84 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 "allOf":[{"if":{"properties":{"action":{"const":"launch"}}},"then":{"required":["desktopEntryId"]}}]
             }).to_string(),
         ));
+        tools.push((
+            "desktop_clipboard".to_string(),
+            "Read or replace the clipboard of the managed desktop identified by the latest desktop_status.sessionId. Use it to move text between desktop applications, or to paste text that is too long or awkward to type: write it here, then send Control+V with desktop_input key-chord. Writing requires the agent input lease; reading returns at most 4096 UTF-8 bytes with `truncated` set when there was more. Not for the agent browser: use browser_clipboard for web pages. Examples: {\"action\":\"read\",\"sessionId\":\"<from desktop_status>\"}; {\"action\":\"write\",\"sessionId\":\"<from desktop_status>\",\"text\":\"Quarterly report\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["read","write"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "text":{"type":"string","maxLength":4096,"description":"Text to place on the clipboard; required for write. Maximum 4096 UTF-8 bytes, not characters. Newline and tab are allowed."}
+                },
+                "allOf":[{"if":{"properties":{"action":{"const":"write"}}},"then":{"required":["text"]}}]
+            }).to_string(),
+        ));
+        tools.push((
+            "desktop_windows".to_string(),
+            "List the application windows of the managed desktop identified by the latest desktop_status.sessionId, with title, app and position as screen fractions, or bring one to the front (`focus`) or close it (`close`) by its id. Use it to find a window hidden behind another, to check which apps are open, or to close an app or dialog you are done with. Ids are X11 window ids such as \"0x01a00007\" from the latest list; they are not desktop_observe windowId selectors. focus and close need the agent input lease; close asks the app to close, so it may show a save prompt. Not for browser tabs: use browser_tabs. Examples: {\"action\":\"list\",\"sessionId\":\"<from desktop_status>\"}; {\"action\":\"focus\",\"sessionId\":\"<from desktop_status>\",\"id\":\"0x01a00007\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["list","focus","close"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "id":{"type":"string","maxLength":10,"pattern":"^0x[0-9a-fA-F]+$","description":"Window id from desktop_windows list; required for focus and close."}
+                },
+                "allOf":[{"if":{"properties":{"action":{"enum":["focus","close"]}}},"then":{"required":["id"]}}]
+            }).to_string(),
+        ));
+        tools.push((
+            "desktop_files".to_string(),
+            "Move files between the workspace and the managed desktop's private Downloads folder, for the desktop identified by the latest desktop_status.sessionId. Desktop apps save downloads there, and your workspace file tools cannot reach it. `list` shows what is in Downloads; `export` copies one file (by name) into the workspace at .gc-artifacts/desktop/downloads/<name>; `import` copies a workspace file (path, relative to the workspace) into Downloads so an app's file dialog can open it. Files up to 100 MiB; existing files with the same name are replaced. Not for browser downloads in the agent browser: browser_* tools save those in the workspace. Examples: {\"action\":\"export\",\"sessionId\":\"<from desktop_status>\",\"name\":\"invoice.pdf\"}; {\"action\":\"import\",\"sessionId\":\"<from desktop_status>\",\"path\":\"data/report.csv\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["list","import","export"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "name":{"type":"string","maxLength":255,"description":"export only: a file name from desktop_files list, without slashes."},
+                    "path":{"type":"string","maxLength":4096,"description":"import only: a workspace-relative file path."}
+                },
+                "allOf":[
+                    {"if":{"properties":{"action":{"const":"export"}}},"then":{"required":["name"]}},
+                    {"if":{"properties":{"action":{"const":"import"}}},"then":{"required":["path"]}}
+                ]
+            }).to_string(),
+        ));
+    }
+    if include_input {
+        tools.push((
+            "desktop_wait".to_string(),
+            "Wait until the managed desktop identified by the latest desktop_status.sessionId changes, instead of taking repeated screenshots. `until:\"change\"` returns as soon as the screen differs from when the call started (a window opened, a page loaded, a progress bar finished). `until:\"text\"` returns once a visible accessible element's name contains `text`, case-insensitive. Use it after an action whose result appears slowly. On timeout it returns an error; then take desktop_screenshot to see what happened. Not for web pages in the agent browser: use browser_wait_for. Examples: {\"until\":\"change\",\"sessionId\":\"<from desktop_status>\"}; {\"until\":\"text\",\"sessionId\":\"<from desktop_status>\",\"text\":\"Saved\",\"timeoutMs\":10000}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["until","sessionId"],
+                "properties":{
+                    "until":{"type":"string","enum":["change","text"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "text":{"type":"string","minLength":1,"maxLength":120,"description":"until=text only: words a window, dialog or control name should contain."},
+                    "timeoutMs":{"type":"integer","minimum":250,"maximum":30000,"default":5000}
+                },
+                "allOf":[{"if":{"properties":{"until":{"const":"text"}}},"then":{"required":["text"]}}]
+            }).to_string(),
+        ));
+        tools.push((
+            "desktop_record".to_string(),
+            "Record the managed desktop identified by the latest desktop_status.sessionId to an MP4 video, for when the user asks for a recording or to show how a task was done. `start` begins recording at 10 frames per second and stops by itself after maxSeconds (default 300, at most 600); `stop` finishes the file and returns its workspace path under .gc-artifacts/desktop/recordings/; `status` says whether one is running. Only one recording runs at a time. Not for looking at the screen: use desktop_screenshot. Examples: {\"action\":\"start\",\"sessionId\":\"<from desktop_status>\"}; {\"action\":\"stop\",\"sessionId\":\"<from desktop_status>\"}.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action","sessionId"],
+                "properties":{
+                    "action":{"type":"string","enum":["start","stop","status"]},
+                    "sessionId":{"type":"string","maxLength":64,"description":"Required sessionId from the latest desktop_status."},
+                    "maxSeconds":{"type":"integer","minimum":1,"maximum":600,"default":300,"description":"start only: stop recording automatically after this many seconds."}
+                }
+            }).to_string(),
+        ));
+    }
+    if let Some(secrets) = crate::secret_placeholders::description() {
+        for tool in &mut tools {
+            if matches!(tool.0.as_str(), "desktop_act" | "desktop_input") {
+                tool.1.push_str(&secrets);
+            }
+        }
     }
     tools
 }
@@ -769,7 +860,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
-        assert_eq!(full.len(), 6);
+        assert_eq!(full.len(), 11);
+        assert_eq!(full[10].0, "desktop_record");
+        assert_eq!(full[9].0, "desktop_wait");
+        let wait: Value = serde_json::from_str(&full[9].2).unwrap();
+        assert_eq!(wait["additionalProperties"], false);
+        let input: Value = serde_json::from_str(&full[4].2).unwrap();
+        let actions = input["properties"]["action"]["enum"].to_string();
+        assert!(actions.contains("pointer-triple-click") && actions.contains("paste"));
+        assert_eq!(full[8].0, "desktop_files");
+        assert_eq!(full[7].0, "desktop_windows");
+        let windows: Value = serde_json::from_str(&full[7].2).unwrap();
+        assert_eq!(
+            windows["properties"]["action"]["enum"],
+            serde_json::json!(["list", "focus", "close"])
+        );
+        let screenshot: Value = serde_json::from_str(&full[1].2).unwrap();
+        assert_eq!(
+            screenshot["properties"]["region"]["additionalProperties"],
+            false
+        );
+        assert_eq!(full[6].0, "desktop_clipboard");
+        let clipboard: Value = serde_json::from_str(&full[6].2).unwrap();
+        assert_eq!(clipboard["additionalProperties"], false);
+        assert_eq!(
+            clipboard["properties"]["action"]["enum"],
+            serde_json::json!(["read", "write"])
+        );
+        for (name, _, _) in &full {
+            assert!(name.starts_with("desktop_"));
+        }
         assert!(full[0].1.contains("frameTimeMs"));
         for name in ["desktop_screenshot", "desktop_observe"] {
             let schema: Value =

@@ -598,6 +598,154 @@ fn named_profile_mcp(
 }
 
 #[tokio::test]
+async fn targeted_download_after_popup_and_dialog_keeps_the_opener_responsive() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    const HTML: &str = "<title>Download opener</title><button style='position:absolute;left:10px;top:10px' onclick=\"window.open('about:blank')\">Open preview</button><button style='position:absolute;left:10px;top:100px' onclick=\"confirm('Continue?')\">Confirm</button><a style='position:absolute;left:600px;top:400px' href='/report.csv' download='report.csv'>Download report</a>";
+    let fixture = FixtureServer::start(HTML).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let directory = std::env::current_dir()
+        .unwrap()
+        .join(format!(".popup-download-{}-{port}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let session = CdpBrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(required_chrome()),
+        profile: format!("popup-download-{port}"),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        headed: false,
+        interaction_mode: InteractionMode::Human,
+        audit: false,
+        policy: None,
+    })
+    .await
+    .unwrap();
+    session.navigate(&fixture.url).await.unwrap();
+    session.click("text=Open preview").await.unwrap();
+    assert_eq!(session.list_targets().await.unwrap().len(), 2);
+    assert_eq!(
+        session.evaluate("document.title").await.unwrap(),
+        json!("Download opener")
+    );
+    session.click("text=Confirm").await.unwrap();
+    session.accept_dialog().await.unwrap();
+    let result = session
+        .capture_download(
+            &directory,
+            std::time::Duration::from_secs(10),
+            Some("text=Download report"),
+        )
+        .await;
+    session.close().await.unwrap();
+    fixture.close().await;
+    let bytes = std::fs::read(directory.join("report.csv"));
+    std::fs::remove_dir_all(directory).unwrap();
+    let outcome = result.unwrap();
+    assert_eq!(outcome.state, "completed");
+    assert_eq!(bytes.unwrap(), HTML.as_bytes());
+}
+
+#[tokio::test]
+async fn consent_dialogs_accept_explicit_cookie_choices_only() {
+    if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let session = CdpBrowserSession::start(&SessionOptions {
+        port,
+        chrome_path: Some(required_chrome()),
+        profile: "consent-choices-e2e".into(),
+        incognito: true,
+        attach: false,
+        target_id: None,
+        frame_id: None,
+        audit: false,
+        policy: None,
+        headed: false,
+        interaction_mode: InteractionMode::Fast,
+    })
+    .await
+    .unwrap();
+    for (html, dismissed) in [
+        (
+            "<dialog open aria-label='Cookie consent'><button onclick='window.choice=true'>Accept all cookies and continue</button></dialog>",
+            true,
+        ),
+        (
+            "<div id='cookie-notice'><button onclick='window.choice=true'>Got it</button></div>",
+            true,
+        ),
+        (
+            "<div id='cookie-notice'><button onclick='window.choice=true'>Accept invitation</button></div>",
+            false,
+        ),
+        (
+            "<dialog open aria-label='Payment'><button onclick='window.choice=true'>Accept all cookies</button></dialog>",
+            false,
+        ),
+        (
+            "<dialog open aria-label='GDPR request'><button onclick='window.unrelatedChoice=true'>OK</button></dialog><div id='cookie-notice'><button onclick='window.choice=true'>Accept all</button></div>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='GDPR request'><button onclick='window.unrelatedChoice=true'>OK</button></dialog>",
+            false,
+        ),
+        (
+            "<dialog open aria-label='GDPR consent'>We use cookies.<button onclick='window.choice=true'>OK</button></dialog>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='Privacy consent'>Choose your preferences<button onclick='window.choice=true'>Accept all cookies</button></dialog>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='GDPR consent'><button onclick='window.unrelatedChoice=true'>OK</button><button onclick='window.choice=true'>Reject all cookies and continue</button></dialog>",
+            true,
+        ),
+        (
+            "<dialog open aria-label='Privacy consent'><button onclick='window.unrelatedChoice=true'>OK</button><button style='display:none' onclick='window.choice=true'>Accept all cookies</button></dialog>",
+            false,
+        ),
+        ("", false),
+    ] {
+        session
+            .evaluate(&format!(
+                "window.choice=false; window.unrelatedChoice=false; document.body.innerHTML={}",
+                json!(html)
+            ))
+            .await
+            .unwrap();
+        let result = session.dismiss_consent().await.unwrap();
+        assert_eq!(
+            matches!(
+                result,
+                glass_browser::browser::session::ConsentDismissalOutcome::Dismissed
+            ),
+            dismissed,
+            "{html}"
+        );
+        assert_eq!(
+            session.evaluate("window.choice").await.unwrap(),
+            json!(dismissed)
+        );
+        assert_eq!(
+            session.evaluate("window.unrelatedChoice").await.unwrap(),
+            json!(false)
+        );
+    }
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
     if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
         eprintln!("skipping browser smoke test; set GLASS_E2E=1 to run it");

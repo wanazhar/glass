@@ -142,6 +142,12 @@ pub struct Cli {
     #[arg(long)]
     pub mcp: bool,
 
+    /// MCP tool catalog. `agent` lists a small `browser_*` profile written
+    /// for models that choose tools on their own; `full` lists every tool.
+    /// `browser_*` calls are accepted under both profiles.
+    #[arg(long = "tool-profile", value_enum, default_value_t = ToolProfile::Full)]
+    pub tool_profile: ToolProfile,
+
     /// Terminal workspace layout. Auto uses terminal geometry only.
     #[arg(long = "tui-layout", global = true, value_enum, default_value_t = TuiLayout::Auto)]
     pub tui_layout: TuiLayout,
@@ -304,6 +310,7 @@ impl Cli {
     pub(crate) fn mcp_cli(&self) -> Box<Self> {
         let mut argv = vec!["glass".into(), "--mcp".into()];
         argv.extend(self.session_cli_flags());
+        push_enum_flag(&mut argv, "--tool-profile", self.tool_profile);
         // The derived Clap graph is deep enough to overflow Tokio's 4 MiB
         // worker stack. Parse off-worker with a bounded, explicit stack.
         Self::try_parse_from_on_dedicated_stack(argv)
@@ -316,6 +323,14 @@ fn push_enum_flag(args: &mut Vec<String>, flag: &str, value: impl ValueEnum) {
         args.push(flag.into());
         args.push(value.get_name().into());
     }
+}
+
+/// MCP tool catalog selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum ToolProfile {
+    #[default]
+    Full,
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -509,6 +524,8 @@ pub enum Commands {
         /// Emit the stable machine-readable diagnostic contract.
         #[arg(long)]
         json: bool,
+        #[arg(long, hide = true)]
+        browser_discovery_only: bool,
     },
 
     /// Read the current workspace's local, privacy-safe tool error log.
@@ -2848,7 +2865,7 @@ mod tests {
         let cli = try_parse_cli(["glass", "doctor"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Doctor { json: false })
+            Some(Commands::Doctor { json: false, .. })
         ));
     }
 

@@ -4,6 +4,9 @@
 //! Provides browser automation tools, prompts, and resources to MCP clients
 //! with policy-gated execution and bounded response sizes.
 
+pub(crate) mod agent_tools;
 pub mod prompts;
 pub mod resources;
+pub(crate) mod secrets;
 pub mod server;
+pub(crate) mod workflows;

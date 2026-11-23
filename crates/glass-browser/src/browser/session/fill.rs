@@ -83,6 +83,7 @@ impl CdpBrowserSession {
         }
 
         // Phase 1: resolve all locators atomically
+        let context_id = self.page_context_id().await?;
         let mut resolved: Vec<(String, ResolvedElement)> = Vec::with_capacity(total);
         for (target, _value) in fields {
             let element = self.resolve_element(target).await?;
@@ -94,7 +95,8 @@ impl CdpBrowserSession {
         let mut filled = 0usize;
 
         for ((target, element), (_t, value)) in resolved.iter().zip(fields.iter()) {
-            let (action, success, error) = self.fill_single_field(element, value).await;
+            let (action, success, error) =
+                self.fill_single_field(element, value, &context_id).await;
             if success {
                 filled += 1;
             }
@@ -143,19 +145,41 @@ impl CdpBrowserSession {
         &self,
         element: &ResolvedElement,
         value: &str,
+        context_id: &str,
     ) -> (String, bool, Option<String>) {
-        let role = element.role.as_deref().unwrap_or("").to_lowercase();
-        let input_type = element.input_type.as_deref().unwrap_or("").to_lowercase();
-
-        let Some(ref reference) = element.reference else {
-            return (
-                "none".to_string(),
-                false,
-                Some("element has no reference".to_string()),
-            );
+        let current_context = match self.page_context_id().await {
+            Ok(context) => context,
+            Err(error) => return ("none".into(), false, Some(error.to_string())),
         };
+        let reference = match form_field_reference(
+            element,
+            context_id,
+            &current_context,
+            self.page_revision
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ) {
+            Ok(reference) => reference,
+            Err(error) => return ("none".into(), false, Some(error)),
+        };
+        let reference = reference.as_str();
 
-        if matches!(role.as_str(), "listbox" | "combobox") {
+        let metadata = match self.form_control_metadata(element).await {
+            Ok(metadata) => metadata,
+            Err(error) => return ("none".into(), false, Some(error.to_string())),
+        };
+        let role = element
+            .role
+            .as_deref()
+            .or(metadata["role"].as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let input_type = metadata["type"]
+            .as_str()
+            .or(element.input_type.as_deref())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if metadata["tag"] == "SELECT" {
             match self.select_option(reference, value).await {
                 Ok(_) => ("select".to_string(), true, None),
                 Err(e) => ("select".to_string(), false, Some(e.to_string())),
@@ -178,17 +202,88 @@ impl CdpBrowserSession {
                 Err(e) => ("click".to_string(), false, Some(e.to_string())),
             }
         } else {
+            let dropdown = matches!(role.as_str(), "combobox" | "listbox");
+            if dropdown && metadata["editable"].as_bool() != Some(true) {
+                return (
+                    "none".into(),
+                    false,
+                    Some("form control is a non-editable ARIA dropdown; interact with its options instead".into()),
+                );
+            }
             match self.type_text(value, Some(reference)).await {
+                Ok(_) if dropdown => match self.form_control_metadata(element).await {
+                    Ok(after)
+                        if after["value"] != metadata["value"]
+                            || (!value.is_empty() && after["value"].as_str() == Some(value)) =>
+                    {
+                        ("type".into(), true, None)
+                    }
+                    Ok(_) => (
+                        "type".into(),
+                        false,
+                        Some(
+                            "form control value did not change; interact with its options instead"
+                                .into(),
+                        ),
+                    ),
+                    Err(error) => ("type".into(), false, Some(error.to_string())),
+                },
                 Ok(_) => ("type".to_string(), true, None),
                 Err(e) => ("type".to_string(), false, Some(e.to_string())),
             }
         }
     }
+
+    async fn form_control_metadata(&self, element: &ResolvedElement) -> BrowserResult<Value> {
+        let object = self
+            .cdp
+            .resolve_node_object(element.node_id, element.backend_dom_node_id)
+            .await?;
+        let result = self.cdp.call_on_object(&object,
+            "function() { return {tag: this.tagName, role: this.getAttribute('role'), type: this.type || '', editable: this.isContentEditable || ((this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') && !this.readOnly && !this.disabled), value: this.value ?? this.textContent}; }").await;
+        let _ = self.cdp.release_object(&object).await;
+        Ok(result?.result.value.unwrap_or_default())
+    }
+}
+
+fn form_field_reference(
+    element: &ResolvedElement,
+    planned_context: &str,
+    current_context: &str,
+    revision: u64,
+) -> Result<String, String> {
+    if planned_context != current_context {
+        return Err("form document changed; observe and resolve the form again".into());
+    }
+    let node = element
+        .backend_dom_node_id
+        .filter(|id| *id > 0)
+        .ok_or_else(|| "form element has no stable backend node identity".to_string())?;
+    Ok(format!("r{revision}:c{current_context}:b{node}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planned_form_fields_keep_node_identity_across_own_revisions() {
+        let mut element = ResolvedElement {
+            node_id: None,
+            backend_dom_node_id: Some(42),
+            label: "Email".into(),
+            reference: Some("r1:cpage:b42".into()),
+            role: None,
+            input_type: None,
+        };
+        assert_eq!(
+            form_field_reference(&element, "page", "page", 3).unwrap(),
+            "r3:cpage:b42"
+        );
+        assert!(form_field_reference(&element, "page", "replacement", 3).is_err());
+        element.backend_dom_node_id = None;
+        assert!(form_field_reference(&element, "page", "page", 3).is_err());
+    }
 
     #[test]
     fn fill_field_result_success_serializes_without_error() {

@@ -3479,10 +3479,7 @@ mod tests {
             start.input_schema["properties"]["targetId"]["type"],
             "string"
         );
-        assert_eq!(
-            start.input_schema["properties"]["targetId"]["minLength"],
-            1
-        );
+        assert_eq!(start.input_schema["properties"]["targetId"]["minLength"], 1);
         assert_eq!(
             attach.input_schema["properties"]["targetId"]["type"],
             "string"

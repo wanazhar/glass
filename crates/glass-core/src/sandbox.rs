@@ -667,13 +667,13 @@ pub(crate) fn is_sensitive(name: &str) -> bool {
     .any(|needle| upper.contains(needle))
 }
 
-/// Remove sensitive variables from a shell child when scrubbing is on.
+/// Always remove placeholder credentials; optionally scrub other sensitive variables.
 pub fn scrub_env(cmd: &mut Command) {
-    if !STATE.get().is_some_and(|s| s.scrub_env) {
-        return;
-    }
+    let scrub_all = STATE.get().is_some_and(|s| s.scrub_env);
     for (key, _) in std::env::vars_os() {
-        if is_sensitive(&key.to_string_lossy()) {
+        if key.as_encoded_bytes().starts_with(b"GLASS_SECRET_")
+            || (scrub_all && is_sensitive(&key.to_string_lossy()))
+        {
             cmd.env_remove(key);
         }
     }
@@ -2269,6 +2269,20 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn declared_extension_jail_denies_undeclared_writes_in_child_processes() {
+        const CHILD: &str = "GC_EXTENSION_JAIL_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sandbox::tests::declared_extension_jail_denies_undeclared_writes_in_child_processes",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         if landlock::abi().is_none() {
             return;
         }

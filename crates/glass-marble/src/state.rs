@@ -20,6 +20,8 @@ pub const TRANSCRIPT_LIMIT: usize = 4_000;
 pub const TASK_LIMIT: usize = 500;
 /// Conversations the product keeps, by most recent activity.
 pub const CONVERSATION_LIMIT: usize = 100;
+/// Unsent empty conversations kept separately from saved history.
+pub const UNSENT_CONVERSATION_LIMIT: usize = 10;
 
 /// What retention has trimmed, so a long-running instance stays legible.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +50,7 @@ impl RetentionState {
                 "transcript": TRANSCRIPT_LIMIT,
                 "tasks": TASK_LIMIT,
                 "conversations": CONVERSATION_LIMIT,
+                "unsentConversations": UNSENT_CONVERSATION_LIMIT,
             },
             "trimmedTranscript": self.trimmed_transcript,
             "trimmedTasks": self.trimmed_tasks,
@@ -770,19 +773,36 @@ impl ProductState {
             }
         }
 
-        // Unsent chats do not displace history; otherwise newest activity wins.
-        if self.conversations.len() > CONVERSATION_LIMIT {
-            let mut order: Vec<usize> = (0..self.conversations.len())
-                .filter(|index| !self.conversations[*index].needs_engine_session)
+        // Unsent empty chats have their own cap and never displace history.
+        if self.conversations.len() > UNSENT_CONVERSATION_LIMIT {
+            let with_content: std::collections::HashSet<&str> = self
+                .transcript
+                .iter()
+                .map(|entry| entry.conversation_id.as_str())
                 .collect();
+            let (mut empty, mut order): (Vec<usize>, Vec<usize>) = (0..self.conversations.len())
+                .partition(|index| {
+                    let conversation = &self.conversations[*index];
+                    conversation.needs_engine_session
+                        && !with_content.contains(conversation.id.as_str())
+                });
             order.sort_by_key(|index| std::cmp::Reverse(self.conversations[*index].updated_at));
-            let mut keep: std::collections::HashSet<usize> =
-                order.into_iter().take(CONVERSATION_LIMIT).collect();
+            empty.sort_by_key(|index| {
+                (
+                    std::cmp::Reverse(self.conversations[*index].updated_at),
+                    std::cmp::Reverse(*index),
+                )
+            });
+            let mut keep: std::collections::HashSet<usize> = order
+                .into_iter()
+                .take(CONVERSATION_LIMIT)
+                .chain(empty.into_iter().take(UNSENT_CONVERSATION_LIMIT))
+                .collect();
             for (index, conversation) in self.conversations.iter().enumerate() {
-                if conversation.needs_engine_session
-                    || self.tasks.iter().any(|task| {
-                        task.conversation_id == conversation.id && !settled(&task.status)
-                    })
+                if self
+                    .tasks
+                    .iter()
+                    .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
                 {
                     keep.insert(index);
                 }
@@ -1161,51 +1181,115 @@ mod tests {
 
     #[test]
     fn unsent_created_chats_do_not_displace_saved_history() {
-        let mut state = ProductState::default();
-        for index in 0..CONVERSATION_LIMIT {
-            let id = format!("saved-{index}");
-            state.conversation_mut(&id).updated_at = index as u64;
+        for history_count in [0, CONVERSATION_LIMIT] {
+            let mut state = ProductState::default();
+            for index in 0..history_count {
+                let id = format!("saved-{index}");
+                state.conversation_mut(&id).updated_at = index as u64;
+                state.push_transcript(TranscriptEntry {
+                    conversation_id: id,
+                    kind: "assistant".into(),
+                    text: format!("answer {index}"),
+                    ..Default::default()
+                });
+            }
+            for index in 0..UNSENT_CONVERSATION_LIMIT + 2 {
+                let record = state.conversation_mut(&format!("empty-{index}"));
+                record.updated_at = 1_000 + index as u64;
+                record.needs_engine_session = true;
+            }
+            let mut state = ProductState::decode(&state.encode()).unwrap();
+            let summary = state.prune(2_000);
+            assert_eq!(summary.conversations, 2);
+            assert_eq!(summary.transcript, 0);
+            assert_eq!(
+                state.conversations.len(),
+                history_count + UNSENT_CONVERSATION_LIMIT
+            );
+            assert_eq!(state.transcript.len(), history_count);
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|record| matches!(record.id.as_str(), "empty-0" | "empty-1"))
+            );
+            for index in 0..history_count {
+                assert_eq!(
+                    state.transcript_for(&format!("saved-{index}"))[0].text,
+                    format!("answer {index}")
+                );
+            }
+            assert!(state.prune(2_001).is_empty());
+
+            state.conversation_mut("empty-11").needs_engine_session = false;
             state.push_transcript(TranscriptEntry {
-                conversation_id: id,
-                kind: "assistant".into(),
-                text: format!("answer {index}"),
+                conversation_id: "empty-11".into(),
+                kind: "user".into(),
+                text: "first message".into(),
                 ..Default::default()
             });
+            assert_eq!(
+                state.prune(2_002).conversations,
+                usize::from(history_count == CONVERSATION_LIMIT)
+            );
+            assert!(
+                !state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "saved-0")
+            );
+            assert!(
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == "empty-2")
+            );
+            assert_eq!(
+                state.transcript.len(),
+                (history_count + 1).min(CONVERSATION_LIMIT)
+            );
         }
-        for id in ["empty-1", "empty-2"] {
-            let record = state.conversation_mut(id);
-            record.updated_at = 1_000;
-            record.needs_engine_session = true;
-        }
-        let mut state = ProductState::decode(&state.encode()).unwrap();
-        let summary = state.prune(2_000);
-        assert_eq!(summary.conversations, 0);
-        assert_eq!(summary.transcript, 0);
-        assert_eq!(state.conversations.len(), CONVERSATION_LIMIT + 2);
-        assert_eq!(state.transcript.len(), CONVERSATION_LIMIT);
-        assert!(state.prune(2_001).is_empty());
+    }
 
-        state.conversation_mut("empty-1").needs_engine_session = false;
+    #[test]
+    fn unsent_chat_retention_preserves_content_and_unfinished_turns() {
+        let mut state = ProductState::default();
+        for index in 0..UNSENT_CONVERSATION_LIMIT + 2 {
+            let record = state.conversation_mut(&format!("empty-{index}"));
+            record.needs_engine_session = true;
+            record.updated_at = index as u64;
+        }
         state.push_transcript(TranscriptEntry {
-            conversation_id: "empty-1".into(),
-            kind: "user".into(),
-            text: "first message".into(),
+            conversation_id: "empty-0".into(),
+            kind: "failure".into(),
+            text: "engine creation failed".into(),
             ..Default::default()
         });
-        assert_eq!(state.prune(2_002).conversations, 1);
-        assert!(
-            !state
-                .conversations
-                .iter()
-                .any(|record| record.id == "saved-0")
-        );
+        state.tasks.push(TaskRecord {
+            id: "queued".into(),
+            conversation_id: "empty-1".into(),
+            status: "queued".into(),
+            ..Default::default()
+        });
+        assert!(state.prune(2_000).is_empty());
+        state.tasks[0].status = "cancelled".into();
+        assert_eq!(state.prune(2_001).conversations, 1);
         assert!(
             state
                 .conversations
                 .iter()
-                .any(|record| record.id == "empty-2")
+                .any(|record| record.id == "empty-0")
         );
-        assert_eq!(state.transcript.len(), CONVERSATION_LIMIT);
+        assert!(
+            !state
+                .conversations
+                .iter()
+                .any(|record| record.id == "empty-1")
+        );
+        assert_eq!(
+            state.transcript_for("empty-0")[0].text,
+            "engine creation failed"
+        );
     }
 
     #[test]

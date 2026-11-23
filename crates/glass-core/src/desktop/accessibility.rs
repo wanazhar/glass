@@ -19,6 +19,7 @@ const MAX_WINDOW_ROOTS: usize = 64;
 const MAX_NAME_CHARS: usize = 120;
 const MAX_VALUE_CHARS: usize = 160;
 const MAX_ACTIONS: usize = 8;
+pub(super) const BOUNDS_ROUNDING_SCALE: f64 = 10_000.0;
 const DBUS_CALL_TIMEOUT: Duration = Duration::from_millis(500);
 const OBSERVATION_BUDGET: Duration = Duration::from_secs(3);
 const FOCUSED_SEARCH_BUDGET: Duration = Duration::from_secs(12);
@@ -53,6 +54,21 @@ pub(super) struct WindowRoot {
     pub application: String,
     pub role: String,
     pub identity: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuContainer {
+    Bar,
+    Popup,
+}
+
+fn child_menu_container(role: &str, inherited: Option<MenuContainer>) -> Option<MenuContainer> {
+    match role {
+        "menu bar" => Some(MenuContainer::Bar),
+        "menu" | "popup menu" => Some(MenuContainer::Popup),
+        _ if is_window_role(role) => None,
+        _ => inherited,
+    }
 }
 
 pub(super) fn observe(
@@ -283,6 +299,7 @@ async fn observe_async(
                     Some(application_name),
                     None::<Value>,
                     None::<ObjectRefOwned>,
+                    None::<MenuContainer>,
                 ));
             }
         }
@@ -295,6 +312,7 @@ async fn observe_async(
                     None::<String>,
                     None::<Value>,
                     None::<ObjectRefOwned>,
+                    None::<MenuContainer>,
                 ));
             }
         }
@@ -304,7 +322,7 @@ async fn observe_async(
         || (!discovered.is_empty()
             && pending
                 .iter()
-                .all(|(_, depth, application, _, _)| *depth > 0 && application.is_some()));
+                .all(|(_, depth, application, _, _, _)| *depth > 0 && application.is_some()));
 
     let mut nodes = Vec::new();
     let mut applications = scoped_application_names;
@@ -346,8 +364,14 @@ async fn observe_async(
     #[cfg(test)]
     let mut test_pruned_branches = Vec::<Value>::new();
     let started = Instant::now();
-    while let Some((object, depth, parent_application, parent_window, parent_window_object)) =
-        pending.pop_front()
+    while let Some((
+        object,
+        depth,
+        parent_application,
+        parent_window,
+        parent_window_object,
+        parent_menu_container,
+    )) = pending.pop_front()
     {
         if visited >= node_budget || started.elapsed() >= traversal_budget {
             truncated = true;
@@ -643,6 +667,7 @@ async fn observe_async(
                 "name": name,
                 "application": application.clone(),
                 "owningWindow": if query.is_some() { window.clone() } else { None },
+                "inPopupMenu": parent_menu_container == Some(MenuContainer::Popup),
                 "states": state_names(states),
                 "actions": action_names,
                 "pointerFallback": pointer_fallback_candidate,
@@ -785,6 +810,7 @@ async fn observe_async(
                             application.clone(),
                             window.clone(),
                             window_object.clone(),
+                            None,
                         );
                         // Browser content queries need the document before the
                         // browser chrome; otherwise a long page can consume
@@ -874,6 +900,7 @@ async fn observe_async(
                                 application.clone(),
                                 window.clone(),
                                 window_object.clone(),
+                                child_menu_container(&role_lower, parent_menu_container),
                             ));
                         }
                     }
@@ -1432,7 +1459,7 @@ fn bounds_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
     if right <= left || bottom <= top {
         return None;
     }
-    let round = |value: f64| (value * 10_000.0).round() / 10_000.0;
+    let round = |value: f64| (value * BOUNDS_ROUNDING_SCALE).round() / BOUNDS_ROUNDING_SCALE;
     Some(json!({
         "x": round(left as f64 / super::WIDTH as f64),
         "y": round(top as f64 / super::HEIGHT as f64),
@@ -1830,12 +1857,14 @@ mod tests {
         );
         assert!(targets.is_empty());
     }
+    use super::super::{HEIGHT, LabelRect, WIDTH, label_popup_surface, uncovered_labels};
     use super::{
-        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, ObjectRefOwned, RelationType, State, StateSet,
-        UNSUPPORTED_CLICK_RECOVERY, WindowRoot, accessibility_target_id, accessibility_window_id,
-        accessibility_window_id_from_parts, bounded_accessible_name, bounds_from_extents,
-        display_accessible_name, focused_query_role_is_leaf, focused_search_result_is_actionable,
-        is_password_role, is_pointer_fallback_candidate, is_window_role, node_is_relevant,
+        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, MenuContainer, ObjectRefOwned, RelationType,
+        State, StateSet, UNSUPPORTED_CLICK_RECOVERY, WindowRoot, accessibility_target_id,
+        accessibility_window_id, accessibility_window_id_from_parts, bounded_accessible_name,
+        bounds_from_extents, child_menu_container, display_accessible_name,
+        focused_query_role_is_leaf, focused_search_result_is_actionable, is_password_role,
+        is_pointer_fallback_candidate, is_window_role, node_is_relevant,
         owner_is_within_ancestor_limit, pointer_target_from_extents, protect_text_value,
         query_can_issue_action_tokens, query_is_focused, query_matches,
         query_prefers_document_content, query_scan_is_done, query_skips_app_menus,
@@ -1845,6 +1874,69 @@ mod tests {
         withhold_unverified_query_tokens,
     };
     use serde_json::json;
+
+    #[test]
+    fn menu_ancestry_distinguishes_popup_items_from_menu_bar_commands() {
+        let bar = child_menu_container("menu bar", None);
+        assert_eq!(bar, Some(MenuContainer::Bar));
+        assert_eq!(child_menu_container("menu item", bar), bar);
+        let popup = child_menu_container("menu", bar);
+        assert_eq!(popup, Some(MenuContainer::Popup));
+        for role in ["menu item", "check menu item", "radio menu item", "panel"] {
+            assert_eq!(child_menu_container(role, popup), popup);
+        }
+        assert_eq!(child_menu_container("popup menu", None), popup);
+        assert_eq!(child_menu_container("menu bar", popup), bar);
+        assert_eq!(child_menu_container("frame", popup), None);
+        assert_eq!(child_menu_container("dialog", popup), None);
+        assert_eq!(child_menu_container("menu item", None), None);
+    }
+
+    #[test]
+    fn popup_association_accepts_pixel_derived_edge_aligned_menu_rows() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        for (x, y) in [(0, 0), (1, 1), (37, 53), (127, 79)] {
+            for (width, height) in [(102, 100), (200, 25), (102, 25)] {
+                let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":x as f64 / WIDTH as f64,"y":y as f64 / HEIGHT as f64,"width":width as f64 / WIDTH as f64,"height":height as f64 / HEIGHT as f64});
+                let bounds = bounds_from_extents((x, y, 102, 25)).unwrap();
+                let node = json!({"role":"menu item","inPopupMenu":true,"owningWindow":{"windowId":"editor"},"bounds":bounds,"pointerTarget":{"x":(x + 51) as f64 / WIDTH as f64,"y":(y + 12) as f64 / HEIGHT as f64}});
+                let stack = [editor.clone(), popup];
+                assert_eq!(
+                    label_popup_surface(
+                        &node,
+                        LabelRect::from_value(&node["bounds"]).unwrap(),
+                        0,
+                        &stack
+                    ),
+                    Some(1)
+                );
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert_eq!(selection.nodes, [node]);
+                assert_eq!((selection.hidden, selection.unknown), (0, 0));
+            }
+        }
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":37.0 / WIDTH as f64,"y":53.0 / HEIGHT as f64,"width":102.0 / WIDTH as f64,"height":25.0 / HEIGHT as f64});
+        let stack = [editor, popup];
+        for extents in [
+            (36, 53, 102, 25),
+            (37, 52, 102, 25),
+            (37, 53, 103, 25),
+            (37, 53, 102, 26),
+        ] {
+            let bounds = bounds_from_extents(extents).unwrap();
+            let node = json!({"role":"menu item","inPopupMenu":true,"bounds":bounds});
+            assert_eq!(
+                label_popup_surface(
+                    &node,
+                    LabelRect::from_value(&node["bounds"]).unwrap(),
+                    0,
+                    &stack
+                ),
+                None
+            );
+        }
+    }
 
     #[test]
     fn unsupported_accessibility_click_error_has_grounded_pointer_recovery() {

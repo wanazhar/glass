@@ -2063,15 +2063,10 @@ fn label_popup_surface(
     stack: &[Value],
 ) -> Option<usize> {
     let role = node["role"].as_str()?;
-    if ![
-        "menu",
-        "popup menu",
-        "menu item",
-        "check menu item",
-        "radio menu item",
-    ]
-    .iter()
-    .any(|menu_role| role.eq_ignore_ascii_case(menu_role))
+    if node["inPopupMenu"] != true
+        || !["menu item", "check menu item", "radio menu item"]
+            .iter()
+            .any(|menu_role| role.eq_ignore_ascii_case(menu_role))
     {
         return None;
     }
@@ -2088,10 +2083,12 @@ fn label_popup_surface(
                 return None;
             }
             let popup = LabelRect::from_value(window)?;
-            (popup.left <= bounds.left
-                && popup.top <= bounds.top
-                && popup.right >= bounds.right
-                && popup.bottom >= bounds.bottom)
+            let origin_error = 0.5 / accessibility::BOUNDS_ROUNDING_SCALE + f64::EPSILON;
+            let edge_error = 1.0 / accessibility::BOUNDS_ROUNDING_SCALE + f64::EPSILON;
+            (popup.left <= bounds.left + origin_error
+                && popup.top <= bounds.top + origin_error
+                && popup.right + edge_error >= bounds.right
+                && popup.bottom + edge_error >= bounds.bottom)
                 .then_some(index)
         });
     let surface = candidates.next()?;
@@ -3017,7 +3014,7 @@ mod tests {
         let windows = [json!({"windowId":"editor","pid":11})];
         let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
         let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
-        let menu = json!({"role":"menu item","owningWindow":{"windowId":"editor"},"bounds":{"x":0.2,"y":0.1,"width":0.3,"height":0.3},"pointerTarget":{"x":0.3,"y":0.2}});
+        let menu = json!({"role":"menu item","inPopupMenu":true,"owningWindow":{"windowId":"editor"},"bounds":{"x":0.2,"y":0.1,"width":0.3,"height":0.3},"pointerTarget":{"x":0.3,"y":0.2}});
         let stack = [editor.clone(), popup.clone()];
         for role in ["menu item", "check menu item", "radio menu item"] {
             let mut item = menu.clone();
@@ -3071,6 +3068,37 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn menu_bar_items_cannot_borrow_an_unrelated_same_pid_popup_surface() {
+        let back = json!({"pid":11,"title":"Back","visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let front = json!({"pid":11,"title":"Front","visible":true,"x":0.2,"y":0.0,"width":0.3,"height":0.1});
+        let mut back_window = back.clone();
+        back_window["windowId"] = json!("back");
+        let mut front_window = front.clone();
+        front_window["windowId"] = json!("front");
+        let windows = [back_window, front_window];
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
+        let stack = [back, front, popup];
+        let mut command = json!({"role":"menu item","name":"Help","inPopupMenu":false,"owningWindow":{"windowId":"back"},"bounds":{"x":0.25,"y":0.15,"width":0.1,"height":0.1},"pointerTarget":{"x":0.3,"y":0.2}});
+        assert_eq!(
+            label_window_owner(&command["owningWindow"], &windows, &stack),
+            Some(0)
+        );
+        for context in [json!(false), Value::Null] {
+            command["inPopupMenu"] = context;
+            let selection = uncovered_labels(vec![command.clone()], Some(&stack), Some(&windows));
+            assert!(selection.nodes.is_empty());
+            assert_eq!((selection.hidden, selection.unknown), (1, 0));
+        }
+        command["inPopupMenu"] = json!(true);
+        for role in ["menu", "popup menu", "menu bar", "push button"] {
+            command["role"] = json!(role);
+            let selection = uncovered_labels(vec![command.clone()], Some(&stack), Some(&windows));
+            assert!(selection.nodes.is_empty());
+            assert_eq!((selection.hidden, selection.unknown), (1, 0));
+        }
     }
 
     #[test]

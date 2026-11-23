@@ -124,12 +124,12 @@ fn stack(display: &str, xauthority: &Path) -> Result<Vec<Value>, String> {
                 "_NET_FRAME_EXTENTS",
             ],
         )?;
-        let geometry = x11_command("xwininfo", display, xauthority, &["-id", id])?;
+        let geometry = x11_command_lossy("xwininfo", display, xauthority, &["-id", id])?;
         apply_stack_metadata(window, &properties, &geometry, desktop)?;
     }
-    let tree = x11_command("xwininfo", display, xauthority, &["-root", "-tree"])?;
+    let tree = x11_command_bytes("xwininfo", display, xauthority, &["-root", "-tree"])?;
     let mut windows = include_popup_occluders(windows, &tree, desktop, |id| {
-        x11_command(
+        x11_command_lossy(
             "xwininfo",
             display,
             xauthority,
@@ -185,7 +185,8 @@ fn popup_process_id(
     }
 }
 
-fn root_stacking(tree: &str, clients: &[u64]) -> Result<Vec<u64>, String> {
+fn root_stacking(tree: &[u8], clients: &[u64]) -> Result<Vec<u64>, String> {
+    let tree = String::from_utf8_lossy(tree);
     let mut groups: Vec<(u64, Vec<u64>)> = Vec::new();
     let mut root_indent = None;
     for line in tree.lines() {
@@ -230,7 +231,7 @@ fn root_stacking(tree: &str, clients: &[u64]) -> Result<Vec<u64>, String> {
 
 fn include_popup_occluders(
     mut windows: Vec<Value>,
-    tree: &str,
+    tree: &[u8],
     desktop: i64,
     mut geometry: impl FnMut(u64) -> Result<String, String>,
 ) -> Result<Vec<Value>, String> {
@@ -338,6 +339,16 @@ fn x11_command(
     xauthority: &Path,
     args: &[&str],
 ) -> Result<String, String> {
+    String::from_utf8(x11_command_bytes(program, display, xauthority, args)?)
+        .map_err(|error| error.to_string())
+}
+
+fn x11_command_bytes(
+    program: &str,
+    display: &str,
+    xauthority: &Path,
+    args: &[&str],
+) -> Result<Vec<u8>, String> {
     let mut child = Command::new(program)
         .args(args)
         .env("DISPLAY", display)
@@ -359,8 +370,8 @@ fn x11_command(
         .take()
         .ok_or("X11 command produced no output")?;
     let reader = std::thread::spawn(move || {
-        let mut stdout = String::new();
-        std::io::Read::read_to_string(&mut pipe, &mut stdout).map(|_| stdout)
+        let mut stdout = Vec::new();
+        std::io::Read::read_to_end(&mut pipe, &mut stdout).map(|_| stdout)
     });
     let status = wait_bounded(&mut child)?;
     let stdout = reader
@@ -375,6 +386,18 @@ fn x11_command(
                 .into(),
         )
     }
+}
+
+fn x11_command_lossy(
+    program: &str,
+    display: &str,
+    xauthority: &Path,
+    args: &[&str],
+) -> Result<String, String> {
+    Ok(
+        String::from_utf8_lossy(&x11_command_bytes(program, display, xauthority, args)?)
+            .into_owned(),
+    )
 }
 
 fn application_windows(
@@ -656,6 +679,45 @@ mod tests {
     }
 
     #[test]
+    fn root_tree_reader_accepts_legacy_titles_on_unrelated_windows() {
+        const DISPLAY: &str = "glass-legacy-window-tree-test";
+        const TREE: &[u8] = b"  Root window id: 0xff\n     3 children:\n     0x3 \"Caf\xe9\" unrelated popup\n     0x2 frame\n        0x20 managed client\n     0x1 managed client\nxwininfo: Window id: 0x3 \"Caf\xe9\"\nAbsolute upper-left X: 0\nAbsolute upper-left Y: 0\nWidth: 200\nHeight: 100\nOverride Redirect State: yes\nMap State: IsViewable\nClass: InputOutput\n";
+        if std::env::var("DISPLAY").as_deref() == Ok(DISPLAY) {
+            std::io::Write::write_all(&mut std::io::stdout(), TREE).unwrap();
+            return;
+        }
+        let output = x11_command_bytes(
+            std::env::current_exe().unwrap().to_str().unwrap(),
+            DISPLAY,
+            Path::new("/nonexistent-xauthority"),
+            &["--exact", "desktop::windows::tests::root_tree_reader_accepts_legacy_titles_on_unrelated_windows", "--nocapture"],
+        ).unwrap();
+        assert!(std::str::from_utf8(&output).is_err());
+        let geometry = x11_command_lossy(
+            std::env::current_exe().unwrap().to_str().unwrap(),
+            DISPLAY,
+            Path::new("/nonexistent-xauthority"),
+            &["--exact", "desktop::windows::tests::root_tree_reader_accepts_legacy_titles_on_unrelated_windows", "--nocapture"],
+        ).unwrap();
+        assert!(geometry.contains("Caf\u{fffd}"));
+        let stacked = include_popup_occluders(
+            vec![json!({"id":"0x20"}), json!({"id":"0x1"})],
+            &output,
+            0,
+            |id| {
+                assert_eq!(id, 3);
+                Ok(geometry.clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            stacked.iter().filter_map(window_number).collect::<Vec<_>>(),
+            [1, 0x20, 3]
+        );
+        assert_eq!(stacked[2]["occluderOnly"], true);
+    }
+
+    #[test]
     fn popup_process_ids_use_the_popup_or_its_client_leader() {
         assert_eq!(
             popup_process_id(3, |id| {
@@ -706,7 +768,7 @@ mod tests {
         let tree = "  Root window id: 0xff\n     5 children:\n     0x20 frame\n        0x2 client\n     0x3 popup\n     0x10 frame\n        0x11 wrapper\n           0x1 client\n     0x4 popup\n     0x5 hidden\n";
         let windows = vec![json!({"id":"0x1"}), json!({"id":"0x2"})];
         let geometry = "Absolute upper-left X: -10\nAbsolute upper-left Y: 50\nWidth: 200\nHeight: 100\nOverride Redirect State: yes\nMap State: IsViewable\nClass: InputOutput\n";
-        let stacked = include_popup_occluders(windows, tree, 0, |id| {
+        let stacked = include_popup_occluders(windows, tree.as_bytes(), 0, |id| {
             assert!([3, 4, 5].contains(&id), "managed frames are not occluders");
             Ok(if id == 5 {
                 geometry.replace("IsViewable", "IsUnMapped")
@@ -735,23 +797,27 @@ mod tests {
             geometry.replace("InputOutput", "InputOnly"),
         ] {
             assert!(
-                include_popup_occluders(vec![], tree, 0, |_| Ok(excluded.clone()))
+                include_popup_occluders(vec![], tree.as_bytes(), 0, |_| Ok(excluded.clone()))
                     .unwrap()
                     .is_empty()
             );
         }
         assert!(
-            include_popup_occluders(vec![], "", 0, |_| panic!("no windows"))
+            include_popup_occluders(vec![], b"", 0, |_| panic!("no windows"))
                 .unwrap()
                 .is_empty()
         );
-        assert!(include_popup_occluders(vec![], tree, 0, |_| Err("closed".into())).is_err());
         assert!(
-            include_popup_occluders(vec![], tree, 0, |_| Ok(geometry.replace("Width: 100", "")))
-                .is_err()
+            include_popup_occluders(vec![], tree.as_bytes(), 0, |_| Err("closed".into())).is_err()
         );
         assert!(
-            include_popup_occluders(vec![json!({"id":"0x2"})], tree, 0, |_| {
+            include_popup_occluders(vec![], tree.as_bytes(), 0, |_| Ok(
+                geometry.replace("Width: 100", "")
+            ))
+            .is_err()
+        );
+        assert!(
+            include_popup_occluders(vec![json!({"id":"0x2"})], tree.as_bytes(), 0, |_| {
                 panic!("missing client must fail closed")
             })
             .unwrap_err()

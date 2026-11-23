@@ -1979,6 +1979,52 @@ async fn handle_request_with_viewport(
     elicitation: Option<&McpElicitationClient>,
     agent_profile: bool,
 ) -> Option<JsonRpcResponse> {
+    let mut response = handle_request_with_viewport_unredacted(
+        request,
+        session,
+        native_session,
+        native_runtime,
+        persistent_native_session,
+        options,
+        policy,
+        viewport,
+        knowledge_store_path,
+        development_sessions,
+        host_backend,
+        elicitation,
+        agent_profile,
+    )
+    .await?;
+    if request.method != "tools/list"
+        && let Some(result) = response.result.as_mut()
+    {
+        super::secrets::redact_mcp_result(result);
+    }
+    if let Some(error) = response.error.as_mut() {
+        error.message = super::secrets::redact(&error.message);
+        if let Some(data) = error.data.as_mut() {
+            super::secrets::redact_value(data);
+        }
+    }
+    Some(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_with_viewport_unredacted(
+    request: &JsonRpcRequest,
+    session: &mut Option<CdpBrowserSession>,
+    native_session: &mut Option<BrowserRuntimeSession>,
+    native_runtime: bool,
+    persistent_native_session: Option<&str>,
+    options: &SessionOptions,
+    policy: &BrowserPolicy,
+    viewport: Option<(i64, i64)>,
+    knowledge_store_path: Option<&Path>,
+    development_sessions: &DevelopmentSessionStore,
+    host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
+    agent_profile: bool,
+) -> Option<JsonRpcResponse> {
     use super::agent_tools;
     if request.method == "tools/list" && agent_profile {
         let mut tools = agent_tools::agent_tools();
@@ -2019,7 +2065,16 @@ async fn handle_request_with_viewport(
             json!({"content":[{"type":"text","text":"Manual dialog decisions require Chromium. Native dialogs use form elicitation during the original operation; a later decision cannot change an already returned confirm or prompt."}],"isError":true}),
         ));
     }
-    let (tool, arguments) = match agent_tools::translate(&agent_tool, arguments) {
+    let arguments = match super::secrets::inject(&agent_tool, arguments) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            return Some(success_response(
+                request.id.response_value(),
+                json!({"content":[{"type":"text","text":message}],"isError":true}),
+            ));
+        }
+    };
+    let (tool, arguments) = match agent_tools::translate(&agent_tool, &arguments) {
         Ok(translated) => translated,
         Err(message) => {
             return Some(success_response(
@@ -2191,6 +2246,17 @@ async fn handle_request_with_viewport(
             "type": "text",
             "text": agent_tools::recovery_hint(&agent_tool, &error)
         }));
+    }
+    if let Some(content) = response
+        .result
+        .as_mut()
+        .and_then(|result| result["content"].as_array_mut())
+    {
+        for item in content {
+            if let Some(text) = item["text"].as_str() {
+                item["text"] = json!(super::secrets::redact(text));
+            }
+        }
     }
     Some(response)
 }
@@ -8316,6 +8382,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_discovery_preserves_protocol_fields_with_matching_secrets() {
+        const MARKER: &str = "GLASS_DISCOVERY_REDACTION_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::server::tests::tool_discovery_preserves_protocol_fields_with_matching_secrets", "--nocapture"])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_FIELD", "name")
+                .env("GLASS_SECRET_TOOL", "browser_snapshot")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let request: JsonRpcRequest =
+            serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let response = handle_request_with_viewport(
+            &request,
+            &mut None,
+            &mut None,
+            false,
+            None,
+            &SessionOptions::default(),
+            &policy,
+            None,
+            None,
+            &(),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let result = response.result.unwrap();
+        assert!(
+            result["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "browser_snapshot")
+        );
+        assert!(result["tools"][0]["inputSchema"].is_object());
+    }
+
+    #[tokio::test]
     async fn daemon_aliases_classify_reads_and_accept_validated_lease_metadata() {
         let manager = Arc::new(Mutex::new(MutationLeaseManager::default()));
         let lease = manager
@@ -8694,6 +8804,78 @@ mod tests {
         let rendered = format!("{metadata:?}");
         assert!(!rendered.contains("private-request-id"));
         assert!(!rendered.contains("super-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn unlisted_session_reads_redact_text_structured_results_and_errors() {
+        const MARKER: &str = "GLASS_REDACTION_TEST_CHILD";
+        const SECRET: &str = "unique-secret-value\"\\end";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mcp::server::tests::unlisted_session_reads_redact_text_structured_results_and_errors", "--nocapture"])
+                .env(MARKER, "1")
+                .env("GLASS_SECRET_TEST", SECRET)
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        struct Reads;
+        impl HostMcpToolBackend for Reads {
+            fn tools(&self) -> Vec<HostMcpTool> {
+                vec![HostMcpTool {
+                    name: "getText".into(),
+                    description: "test read".into(),
+                    input_schema: json!({}),
+                }]
+            }
+            fn call(&self, _: &str, arguments: Value) -> Result<Value, String> {
+                if arguments["fail"] == true {
+                    Err(format!("failed: {SECRET}"))
+                } else {
+                    Ok(json!({"text":SECRET,"nested":[SECRET]}))
+                }
+            }
+        }
+        for fail in [false, true] {
+            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getText","arguments":{"fail":fail}}})).unwrap();
+            let response = handle_request_with_viewport(
+                &request,
+                &mut None,
+                &mut None,
+                false,
+                None,
+                &SessionOptions::default(),
+                &BrowserPolicy::development(std::env::temp_dir()).unwrap(),
+                None,
+                None,
+                &DevelopmentSessionStore::default(),
+                Some(&Reads),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+            let result = response.result.unwrap();
+            if fail {
+                assert_eq!(result["content"][0]["text"], "failed: {{secret:TEST}}");
+            } else {
+                assert_eq!(result["structuredContent"]["text"], "{{secret:TEST}}");
+                let text: Value =
+                    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(text["nested"][0], "{{secret:TEST}}");
+            }
+        }
+        let before = crate::mcp::agent_tools::PageState {
+            text: String::new(),
+            tabs: json!([]),
+        };
+        let after = crate::mcp::agent_tools::PageState {
+            text: format!("{}{SECRET}", "x".repeat(150)),
+            tabs: json!([{"active":true,"title":format!("{}{SECRET}","x".repeat(110)),"url":format!("https://example.test/{}{SECRET}","x".repeat(170))}]),
+        };
+        let summary = crate::mcp::agent_tools::change_summary("browser_click", &before, &after);
+        assert!(!summary.contains("unique-secret"), "{summary}");
+        assert!(summary.contains("{{secret:"), "{summary}");
     }
 
     #[test]

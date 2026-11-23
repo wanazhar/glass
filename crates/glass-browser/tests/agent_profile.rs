@@ -141,6 +141,7 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         ])
         .args(["--chrome-path", chrome.to_str().unwrap(), "--incognito"])
         .args(["--port", &port.to_string()])
+        .env("GLASS_SECRET_AGENT_NAME", "Zubaidah Secret 42")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -485,6 +486,25 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     assert!(back.contains("Page after action: URL is now"), "{back}");
     mcp.ok("browser_verify", json!({"url": url})).await;
     mcp.ok("browser_history", json!({"action":"reload"})).await;
+
+    let typed = mcp
+        .ok(
+            "browser_type",
+            json!({"target":"name=Full name","text":"{{secret:AGENT_NAME}}"}),
+        )
+        .await;
+    assert!(!typed.contains("Zubaidah"), "{typed}");
+    let page = mcp.ok("browser_get_text", json!({})).await;
+    assert!(page.contains("{{secret:AGENT_NAME}}"), "{page}");
+    assert!(!page.contains("Zubaidah"), "{page}");
+    let unknown = mcp
+        .call("browser_type", json!({"text":"{{secret:BANK_PIN}}"}))
+        .await;
+    assert_eq!(unknown["isError"], true, "{unknown}");
+    assert!(
+        text(&unknown).contains("Secrets set: AGENT_NAME"),
+        "{unknown}"
+    );
 
     drop(mcp);
     let _ = child.wait().await;

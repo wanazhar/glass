@@ -94,6 +94,7 @@ mod resume_picker;
 mod rewind;
 mod runtime;
 mod sandbox;
+mod secret_placeholders;
 mod secrets;
 mod serve;
 mod session;

@@ -19,7 +19,16 @@ fn timeout_schema(default: u64, maximum: u64) -> Value {
 
 /// The agent catalog, in the order a model usually needs it.
 pub(crate) fn agent_tools() -> Vec<Value> {
-    let tool = |name: &str, description: &str, schema: Value| json!({"name": name, "description": description, "inputSchema": schema});
+    let secrets = super::secrets::description();
+    let tool = |name: &str, description: &str, schema: Value| {
+        let description = match (&secrets, name) {
+            (Some(secrets), "browser_type" | "browser_fill_form") => {
+                description.replacen(" Example: ", &format!(" {secrets} Example: "), 1)
+            }
+            _ => description.to_owned(),
+        };
+        json!({"name": name, "description": description, "inputSchema": schema})
+    };
     vec![
         tool(
             "browser_navigate",
@@ -624,6 +633,16 @@ pub(crate) struct PageState {
 /// A short report of what an action changed, so the model can check the
 /// effect without another browser_snapshot call.
 pub(crate) fn change_summary(tool: &str, before: &PageState, after: &PageState) -> String {
+    let redact = |state: &PageState| {
+        let mut tabs = state.tabs.clone();
+        super::secrets::redact_value(&mut tabs);
+        PageState {
+            text: super::secrets::redact(&state.text),
+            tabs,
+        }
+    };
+    let before = redact(before);
+    let after = redact(after);
     const MAX_LINES: usize = 6;
     let mut parts = Vec::new();
     let tabs = |value: &Value| {

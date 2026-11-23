@@ -1649,6 +1649,78 @@ fn diagnostics_redact_secrets_and_bound_retention() {
 }
 
 #[test]
+fn diagnostic_console_text_keeps_messages_and_exceptions_but_redacts_secrets() {
+    let event = |method: &str, params: serde_json::Value| CdpEventWithParams {
+        method: method.to_string(),
+        session_id: None,
+        params,
+    };
+    let mut console = Vec::new();
+    let mut network = Vec::new();
+    let mut indexes = HashMap::new();
+    let mut dropped = 0;
+    for (method, params) in [
+        (
+            "Runtime.consoleAPICalled",
+            serde_json::json!({"type":"error","args":[{"type":"string","value":"Checkout failed:"},{"type":"number","value":402},{"type":"object","description":"Object"}]}),
+        ),
+        (
+            "Runtime.consoleAPICalled",
+            serde_json::json!({"type":"log","args":[{"type":"string","value":"password=hunter2"}]}),
+        ),
+        (
+            "Runtime.exceptionThrown",
+            serde_json::json!({"exceptionDetails":{"text":"Uncaught","exception":{"description":"Error: Boom"}}}),
+        ),
+    ] {
+        collect_diagnostic_event_with(
+            &event(method, params),
+            &mut console,
+            &mut network,
+            &mut indexes,
+            &mut dropped,
+            true,
+        );
+    }
+    assert_eq!(console[0].text, "Checkout failed: 402 Object");
+    assert_eq!(console[1].text, "[redacted sensitive console entry]");
+    assert_eq!(console[2].level, "exception");
+    assert_eq!(console[2].text, "Error: Boom");
+    for method in ["Runtime.consoleAPICalled", "Runtime.exceptionThrown"] {
+        let text = format!("{} password=hidden", "x".repeat(20_000));
+        let params = if method == "Runtime.consoleAPICalled" {
+            serde_json::json!({"args":[{"value":text}]})
+        } else {
+            serde_json::json!({"exceptionDetails":{"text":text}})
+        };
+        collect_diagnostic_event_with(
+            &event(method, params),
+            &mut console,
+            &mut network,
+            &mut indexes,
+            &mut dropped,
+            true,
+        );
+        assert_eq!(
+            console.last().unwrap().text,
+            "[redacted sensitive console entry]"
+        );
+    }
+    let mut quiet = Vec::new();
+    collect_diagnostic_event(
+        &event(
+            "Runtime.exceptionThrown",
+            serde_json::json!({"exceptionDetails":{"text":"Uncaught"}}),
+        ),
+        &mut quiet,
+        &mut network,
+        &mut indexes,
+        &mut dropped,
+    );
+    assert!(quiet.is_empty());
+}
+
+#[test]
 fn visual_capture_validation_uses_effective_viewport_and_scale() {
     let viewport = visual_viewport_rect(&serde_json::json!({
         "pageX": 15.0,

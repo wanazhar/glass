@@ -2749,6 +2749,7 @@ pub(crate) fn truncate_visible_text(text: &str, max_bytes: usize) -> String {
     truncate_visible_text_with_status(text, max_bytes).0
 }
 
+#[cfg(test)]
 pub(crate) fn collect_diagnostic_event(
     event: &CdpEventWithParams,
     console: &mut Vec<ConsoleEvidence>,
@@ -2756,13 +2757,46 @@ pub(crate) fn collect_diagnostic_event(
     request_indexes: &mut HashMap<String, usize>,
     dropped: &mut u64,
 ) {
+    collect_diagnostic_event_with(event, console, network, request_indexes, dropped, false);
+}
+
+/// Like [`collect_diagnostic_event`]; with `console_text` the console
+/// arguments and uncaught exceptions are kept, after sensitive-marker redaction.
+pub(crate) fn collect_diagnostic_event_with(
+    event: &CdpEventWithParams,
+    console: &mut Vec<ConsoleEvidence>,
+    network: &mut Vec<NetworkEvidence>,
+    request_indexes: &mut HashMap<String, usize>,
+    dropped: &mut u64,
+    console_text: bool,
+) {
     match event.method.as_str() {
         "Runtime.consoleAPICalled" => {
+            let text = if console_text {
+                redact_diagnostic_text(&console_arguments_text(&event.params["args"]))
+            } else {
+                "[console arguments redacted]".to_string()
+            };
             push_bounded(
                 console,
                 ConsoleEvidence {
                     level: bounded_diagnostic_text(event.params["type"].as_str().unwrap_or("log")),
-                    text: "[console arguments redacted]".to_string(),
+                    text,
+                },
+                dropped,
+            );
+        }
+        "Runtime.exceptionThrown" if console_text => {
+            let details = &event.params["exceptionDetails"];
+            let text = details["exception"]["description"]
+                .as_str()
+                .or_else(|| details["text"].as_str())
+                .unwrap_or("Uncaught exception");
+            push_bounded(
+                console,
+                ConsoleEvidence {
+                    level: "exception".to_string(),
+                    text: redact_diagnostic_text(text),
                 },
                 dropped,
             );
@@ -2839,6 +2873,25 @@ pub(crate) fn push_bounded<T>(values: &mut Vec<T>, value: T, dropped: &mut u64) 
     }
 }
 
+fn console_arguments_text(args: &Value) -> String {
+    args.as_array()
+        .map(|args| {
+            args.iter()
+                .map(|arg| match &arg["value"] {
+                    Value::String(text) => text.clone(),
+                    Value::Null => arg["description"]
+                        .as_str()
+                        .or_else(|| arg["type"].as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    value => value.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn bounded_diagnostic_text(value: &str) -> String {
     truncate_utf8_bytes(value, MAX_DIAGNOSTIC_TEXT_BYTES)
 }
@@ -2851,6 +2904,7 @@ pub(crate) fn redact_diagnostic_text(value: &str) -> String {
     {
         return "[redacted sensitive console entry]".to_string();
     }
+    let value = crate::mcp::secrets::redact(value);
     let redacted = value
         .split_whitespace()
         .map(|part| {

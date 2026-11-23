@@ -40,6 +40,7 @@ scripts/smoke-elicitation-pty.py
 scripts/smoke-acp.py
 scripts/smoke-runtime.py
 scripts/conformance-runtime.py
+scripts/smoke-post-usage-settlement.py
 scripts/smoke-serve.py
 scripts/smoke-verify.py
 scripts/smoke-memory.py

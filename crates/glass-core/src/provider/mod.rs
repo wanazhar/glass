@@ -116,6 +116,8 @@ mod usage_tests {
 pub enum Event {
     /// Visible assistant text.
     Text(String),
+    /// An opt-in transition to another structurally identified text block.
+    TextBlockStart(String),
     /// Reasoning content, when the provider exposes it.
     Reasoning(String),
     /// Exact plaintext Chat Completions reasoning delta, separate from public
@@ -190,6 +192,14 @@ pub trait Provider {
 
     /// Stream one turn. Implementations must emit `Done` before returning.
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error>;
+
+    fn stream_text_blocks(
+        &self,
+        req: &Request<'_>,
+        _enabled: bool,
+    ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+        self.stream(req)
+    }
 
     /// Context window in tokens, used to decide when to compact.
     fn context_window(&self) -> u32;
@@ -301,6 +311,17 @@ pub fn stream_with_retry<'a>(
     req: &Request<'_>,
     attempts: u8,
     delays: &[u64],
+    on_retry: impl FnMut(u8, u64, &str),
+) -> Result<Box<dyn Iterator<Item = Event> + 'a>, Error> {
+    stream_with_retry_text_blocks(provider, req, attempts, delays, false, on_retry)
+}
+
+pub(crate) fn stream_with_retry_text_blocks<'a>(
+    provider: &'a dyn Provider,
+    req: &Request<'_>,
+    attempts: u8,
+    delays: &[u64],
+    text_blocks: bool,
     mut on_retry: impl FnMut(u8, u64, &str),
 ) -> Result<Box<dyn Iterator<Item = Event> + 'a>, Error> {
     let mut attempt = 0u8;
@@ -308,7 +329,7 @@ pub fn stream_with_retry<'a>(
         if cancellable::is_cancelled() {
             return Err(Error::Transport("provider request cancelled".into()));
         }
-        match provider.stream(req) {
+        match provider.stream_text_blocks(req, text_blocks) {
             Ok(stream) => return Ok(stream),
             Err(e) if is_transient(&e) && attempt + 1 < attempts => {
                 attempt += 1;
@@ -328,6 +349,24 @@ pub fn stream_with_retry<'a>(
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TextBlocks {
+    pub enabled: bool,
+    last: Option<String>,
+}
+
+impl TextBlocks {
+    fn start(&mut self, id: String) -> Option<Event> {
+        if !self.enabled {
+            return None;
+        }
+        let previous = self.last.replace(id.clone());
+        previous
+            .filter(|previous| previous != &id)
+            .map(|_| Event::TextBlockStart(id))
     }
 }
 

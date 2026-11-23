@@ -1662,6 +1662,11 @@
           "level": "1",
           "title": "glass-core",
           "anchor": "glass-core"
+        },
+        {
+          "level": "2",
+          "title": "Optional text-block progress",
+          "anchor": "optional-text-block-progress"
         }
       ]
     },
@@ -1799,7 +1804,7 @@
         "glass-marble"
       ],
       "dependencies": [
-        "crates/glass-runtime-client/README.md"
+        "docs/marble.md"
       ],
       "topicRoute": "docs/INDEX.md#interface-references",
       "route": "crates/glass-marble/README.md#glass-marble",
@@ -1808,6 +1813,46 @@
           "level": "1",
           "title": "glass-marble",
           "anchor": "glass-marble"
+        },
+        {
+          "level": "2",
+          "title": "What it owns",
+          "anchor": "what-it-owns"
+        },
+        {
+          "level": "2",
+          "title": "Use",
+          "anchor": "use"
+        },
+        {
+          "level": "2",
+          "title": "Updating an existing source-checkout host",
+          "anchor": "updating-an-existing-source-checkout-host"
+        },
+        {
+          "level": "2",
+          "title": "Optimistic sends",
+          "anchor": "optimistic-sends"
+        },
+        {
+          "level": "2",
+          "title": "Structural text blocks and live replies",
+          "anchor": "structural-text-blocks-and-live-replies"
+        },
+        {
+          "level": "2",
+          "title": "Everyone settlement",
+          "anchor": "everyone-settlement"
+        },
+        {
+          "level": "2",
+          "title": "History paging",
+          "anchor": "history-paging"
+        },
+        {
+          "level": "2",
+          "title": "Checks",
+          "anchor": "checks"
         }
       ]
     },
@@ -1848,7 +1893,6 @@
       "recommendationReason": "Cargo package documentation is included by package metadata and routes users to the canonical product/API guide.",
       "canonicalSuccessor": null,
       "consumers": [
-        "crates/glass-marble/README.md",
         "docs/INDEX.md",
         "glass-runtime-client",
         "products/glass-core/README.md",
@@ -2215,6 +2259,7 @@
         "README.md",
         "docs/documentation-style.md",
         "docs/maintainers/README.md",
+        "docs/marble.md",
         "docs/plan/README.md",
         "docs/plan/tasks/issue64-attention-keyboard-journey-001.md",
         "docs/plan/tasks/issue64-queue-retarget-retry-001.md",
@@ -2293,6 +2338,7 @@
         "docs/knowledge.md",
         "docs/local-platform.md",
         "docs/maintainers/README.md",
+        "docs/marble.md",
         "docs/mcp-schema-budget.md",
         "docs/mcp-tools.md",
         "docs/mcp.md",
@@ -2357,6 +2403,7 @@
         "products/glass-core/docs/development.md",
         "products/glass-core/docs/getting-started.md",
         "products/glass-core/docs/plan/README.md",
+        "products/glass-core/docs/reference/runtime.md",
         "products/glass-core/docs/reply-components.md",
         "products/glass-core/docs/terminal.md",
         "products/glass-core/docs/web-tools.md",
@@ -5428,6 +5475,7 @@
         "docs/glass-core-product.md",
         "docs/harness-architecture.md",
         "docs/installation.md",
+        "docs/marble.md",
         "docs/migration/pi-sdk-runtime.md",
         "docs/task-dag.md"
       ],
@@ -5976,6 +6024,204 @@
           "level": "2",
           "title": "Failure and recovery",
           "anchor": "failure-and-recovery"
+        }
+      ]
+    },
+    {
+      "path": "docs/marble.md",
+      "class": "current",
+      "topic": "products",
+      "audience": "glass-user",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "crates/glass-marble/README.md",
+        "docs/INDEX.md"
+      ],
+      "dependencies": [
+        "docs/INDEX.md",
+        "docs/glass-core-harness.md",
+        "products/glass-core/docs/reference/runtime.md"
+      ],
+      "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
+      "route": "docs/marble.md#glass-marble",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass Marble",
+          "anchor": "glass-marble"
+        },
+        {
+          "level": "2",
+          "title": "The shape of the assistant",
+          "anchor": "the-shape-of-the-assistant"
+        },
+        {
+          "level": "2",
+          "title": "Always on",
+          "anchor": "always-on"
+        },
+        {
+          "level": "3",
+          "title": "Supervision, one instance, and honest health",
+          "anchor": "supervision-one-instance-and-honest-health"
+        },
+        {
+          "level": "3",
+          "title": "Presence",
+          "anchor": "presence"
+        },
+        {
+          "level": "3",
+          "title": "Crash recovery",
+          "anchor": "crash-recovery"
+        },
+        {
+          "level": "3",
+          "title": "Switching surface",
+          "anchor": "switching-surface"
+        },
+        {
+          "level": "3",
+          "title": "Retention",
+          "anchor": "retention"
+        },
+        {
+          "level": "2",
+          "title": "Ownership boundary",
+          "anchor": "ownership-boundary"
+        },
+        {
+          "level": "2",
+          "title": "Prism protocol: several marbles at once",
+          "anchor": "prism-protocol-several-marbles-at-once"
+        },
+        {
+          "level": "2",
+          "title": "Tooling",
+          "anchor": "tooling"
+        },
+        {
+          "level": "3",
+          "title": "Working across Glass crates",
+          "anchor": "working-across-glass-crates"
+        },
+        {
+          "level": "2",
+          "title": "Marble's control layer",
+          "anchor": "marbles-control-layer"
+        },
+        {
+          "level": "3",
+          "title": "Posture",
+          "anchor": "posture"
+        },
+        {
+          "level": "3",
+          "title": "Denied paths",
+          "anchor": "denied-paths"
+        },
+        {
+          "level": "3",
+          "title": "Grants",
+          "anchor": "grants"
+        },
+        {
+          "level": "3",
+          "title": "Queue, pause, and stop",
+          "anchor": "queue-pause-and-stop"
+        },
+        {
+          "level": "3",
+          "title": "Several chats at once",
+          "anchor": "several-chats-at-once"
+        },
+        {
+          "level": "3",
+          "title": "Audit ledger",
+          "anchor": "audit-ledger"
+        },
+        {
+          "level": "2",
+          "title": "Memory",
+          "anchor": "memory"
+        },
+        {
+          "level": "2",
+          "title": "Correcting a running turn",
+          "anchor": "correcting-a-running-turn"
+        },
+        {
+          "level": "2",
+          "title": "Routines",
+          "anchor": "routines"
+        },
+        {
+          "level": "2",
+          "title": "Reaching you",
+          "anchor": "reaching-you"
+        },
+        {
+          "level": "3",
+          "title": "Webhook",
+          "anchor": "webhook"
+        },
+        {
+          "level": "3",
+          "title": "Apple Push",
+          "anchor": "apple-push"
+        },
+        {
+          "level": "2",
+          "title": "Voice, on device",
+          "anchor": "voice-on-device"
+        },
+        {
+          "level": "2",
+          "title": "HTTP surface",
+          "anchor": "http-surface"
+        },
+        {
+          "level": "3",
+          "title": "What a poll costs",
+          "anchor": "what-a-poll-costs"
+        },
+        {
+          "level": "2",
+          "title": "Reading history without moving it all",
+          "anchor": "reading-history-without-moving-it-all"
+        },
+        {
+          "level": "2",
+          "title": "Self-hosting over Tailscale",
+          "anchor": "self-hosting-over-tailscale"
+        },
+        {
+          "level": "2",
+          "title": "Web UI",
+          "anchor": "web-ui"
+        },
+        {
+          "level": "2",
+          "title": "iOS client",
+          "anchor": "ios-client"
+        },
+        {
+          "level": "2",
+          "title": "Build and run",
+          "anchor": "build-and-run"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
+        },
+        {
+          "level": "2",
+          "title": "Design note: when one session is not enough",
+          "anchor": "design-note-when-one-session-is-not-enough"
         }
       ]
     },
@@ -92054,6 +92300,8 @@
       "canonicalSuccessor": null,
       "consumers": [
         "crates/glass-runtime-client/README.md",
+        "docs/INDEX.md",
+        "docs/marble.md",
         "docs/plan/tasks/shared-chat-resume-001.md",
         "docs/plan/tasks/task-agent-coordination-001.md",
         "products/glass-core/README.md",

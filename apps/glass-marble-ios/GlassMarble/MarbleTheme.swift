@@ -1,0 +1,196 @@
+import SwiftUI
+
+enum MarbleTheme {
+    /// The one accent: the standard iOS system blue (the asset catalog's
+    /// AccentColor carries the same values), used for interactive tint only.
+    static let tint = Color.accentColor
+
+    /// The shared hue for a marble's avatar, name and reply.
+    static func marble(hue: Int, brightness: Double = 0.72) -> Color {
+        Color(
+            hue: Double((hue % 360 + 360) % 360) / 360,
+            saturation: 0.55, brightness: brightness
+        )
+    }
+
+    static func status(_ name: String) -> Color {
+        switch name {
+        case "completed", "done", "live", "ok": return .green
+        case "failed", "error", "offline", "blocked", "denied": return .red
+        case "running", "cancelled", "interrupted": return .orange
+        default: return .secondary
+        }
+    }
+}
+
+extension View {
+    /// Background for controls that float above the transcript.
+    /// Real glass on iOS 26, the system bar material below it, and an opaque
+    /// fill when transparency is reduced.
+    @ViewBuilder
+    func marbleFloating(in shape: some Shape = Capsule()) -> some View {
+        if #available(iOS 26.0, *) {
+            modifier(MarbleFloatingGlass(shape: shape))
+        } else {
+            modifier(MarbleFloatingBar(shape: shape))
+        }
+    }
+
+    @ViewBuilder
+    func marbleChatBar<Bar: View>(edge: VerticalEdge, @ViewBuilder content: () -> Bar) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: edge, spacing: 0, content: content)
+        } else {
+            safeAreaInset(edge: edge, spacing: 0, content: content)
+        }
+    }
+
+    @ViewBuilder
+    func marbleChatScrollEdges() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        } else {
+            self
+        }
+    }
+
+    func marbleToolbarTitle() -> some View {
+        padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .marbleFloating()
+    }
+}
+
+@available(iOS 26.0, *)
+private struct MarbleFloatingGlass<S: Shape>: ViewModifier {
+    var shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(.secondarySystemBackground), in: shape)
+        } else {
+            content.glassEffect(.regular, in: shape)
+        }
+    }
+}
+
+private struct MarbleFloatingBar<S: Shape>: ViewModifier {
+    var shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(.secondarySystemBackground), in: shape)
+        } else {
+            content.background(.bar, in: shape)
+        }
+    }
+}
+
+/// Toolbar title with a quiet connection mark: a small green dot while
+/// connected, and a word only when it is not.
+struct MarbleTitleView: View {
+    var title: String
+    @EnvironmentObject private var store: MarbleStore
+
+    private var connectionText: String? {
+        if store.connectionPaused { return "Not connected" }
+        switch store.connection {
+        case .idle: return "Not connected"
+        case .connecting: return "Connecting…"
+        case .live: return nil
+        case .offline: return "Offline"
+        }
+    }
+
+    var body: some View {
+        let connectionText = connectionText
+        VStack(spacing: 0) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                if connectionText == nil {
+                    Circle()
+                        .fill(.green)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            if let connectionText {
+                Text(connectionText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title), \(connectionText ?? "Connected")")
+    }
+}
+
+/// Toolbar status: a small colored dot plus plain text.
+struct MarbleStatusText: View {
+    var label: String
+    var tone: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(tone)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Three dots that rise and fade in turn, the way Messages shows typing.
+struct MarbleWorkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    let phase = reduceMotion ? 0.5 : (sin((time * 2 * .pi / 1.2) - Double(index) * 0.9) + 1) / 2
+                    Circle()
+                        .fill(Color.secondary)
+                        .frame(width: 7, height: 7)
+                        .opacity(0.35 + 0.65 * phase)
+                        .offset(y: -2.5 * phase)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Where the reply will appear: a small grey bubble with the dots and a
+/// quiet line saying who is working.
+struct MarbleThinkingBubble: View {
+    var name: String = "Marble"
+    var retrying = false
+
+    private var title: String { retrying ? "\(name) is retrying" : "\(name) is working" }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            MarbleWorkingDots()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .background(
+                    Color(.secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+            Text(title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+    }
+}

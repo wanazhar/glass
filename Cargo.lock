@@ -1517,10 +1517,16 @@ dependencies = [
 name = "glass-marble"
 version = "0.3.14"
 dependencies = [
+ "base64 0.22.1",
  "clap",
  "glass-runtime-client",
+ "ring",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -301,6 +301,8 @@ impl HostToolOutcome {
 type HostedExecution<'a> = (Vec<(String, String, String)>, HostExecutor<'a>);
 
 pub struct Agent<'a> {
+    on_text_block: Option<TextBlockSink<'a>>,
+    text_block_sequence: u64,
     hosted: Option<HostedExecution<'a>>,
     mixed_hosted: Option<HostedExecution<'a>>,
     host_attachments: Vec<Record>,
@@ -401,6 +403,7 @@ const VERIFY_TAIL_LINES: usize = 40;
 type HumanDecision<'a> = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'a>;
 
 pub type ProgressSink<'a> = Box<dyn Fn(Progress<'_>) + 'a>;
+type TextBlockSink<'a> = Box<dyn FnMut(&str) + 'a>;
 
 impl Drop for Agent<'_> {
     /// The turn is over however it ended: the partial-output sidecar had a
@@ -560,6 +563,8 @@ impl<'a> Agent<'a> {
             reads: readguard::ReadSet::new(),
             warmer: None,
             stream_factory: None,
+            on_text_block: None,
+            text_block_sequence: 0,
             active_trace_id: None,
             runtime_turn_hash: None,
             recovering: false,
@@ -721,6 +726,11 @@ impl<'a> Agent<'a> {
     }
     pub fn with_stream_factory(mut self, factory: crate::warmer::ProviderFactory) -> Self {
         self.stream_factory = Some(factory);
+        self
+    }
+
+    pub fn with_text_blocks(mut self, sink: impl FnMut(&str) + 'a) -> Self {
+        self.on_text_block = Some(Box::new(sink));
         self
     }
 
@@ -1140,6 +1150,7 @@ impl<'a> Agent<'a> {
             let tools = tools.clone();
             let max_tokens = self.max_tokens;
             let reasoning = req.reasoning;
+            let text_blocks = self.on_text_block.is_some();
             let stream_trace_id = trace_id;
             let stream_turn_hash = self.runtime_turn_hash.clone();
             std::thread::spawn(move || {
@@ -1174,7 +1185,7 @@ impl<'a> Agent<'a> {
                                     if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
                                         return Ok(());
                                     }
-                                    match provider.stream(&req) {
+                                    match provider.stream_text_blocks(&req, text_blocks) {
                                         Ok(stream) => break stream,
                                         Err(e)
                                             if provider::is_transient(&e)
@@ -1275,11 +1286,12 @@ impl<'a> Agent<'a> {
             None
         };
         let mut stream = if receiver.is_none() {
-            Some(provider::stream_with_retry(
+            Some(provider::stream_with_retry_text_blocks(
                 self.provider,
                 &req,
                 provider::RETRY_ATTEMPTS,
                 &provider::RETRY_DELAYS,
+                self.on_text_block.is_some(),
                 |attempt, delay, why| {
                     trace.retry();
                     // One durable line per retry: attempt number, the backoff
@@ -1418,6 +1430,12 @@ impl<'a> Agent<'a> {
             let Some(ev) = ev else { continue };
             trace.event(&ev);
             match ev {
+                Event::TextBlockStart(id) => {
+                    if let Some(sink) = &mut self.on_text_block {
+                        self.text_block_sequence += 1;
+                        sink(&format!("{}:{id}", self.text_block_sequence));
+                    }
+                }
                 Event::Text(t) => {
                     // A secret can be split across provider text events.
                     // Hold its possible prefix until a later event resolves it.
@@ -5426,6 +5444,84 @@ for line in sys.stdin:
             }
             drop(session);
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn text_block_observer_never_changes_accumulated_answers_or_session_messages() {
+        struct Blocks;
+        impl Provider for Blocks {
+            fn id(&self) -> &str {
+                "blocks"
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+            fn stream(
+                &self,
+                request: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                self.stream_text_blocks(request, false)
+            }
+            fn stream_text_blocks(
+                &self,
+                _: &Request<'_>,
+                enabled: bool,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                let mut events = vec![Event::Text("Plan.".into())];
+                if enabled {
+                    events.push(Event::TextBlockStart("part-1".into()));
+                }
+                events.extend([Event::Text("Answer.".into()), Event::Done]);
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        for asynchronous in [false, true] {
+            for enabled in [false, true] {
+                let dir = std::env::temp_dir().join(format!(
+                    "gc-text-blocks-{}-{asynchronous}-{enabled}",
+                    std::process::id()
+                ));
+                std::fs::create_dir_all(&dir).unwrap();
+                let mut session = Session::create(&dir).unwrap();
+                session.append(Record::User("question".into()));
+                let mut state = State::new();
+                let mut extensions = Registry::load(&[], &dir, "mock");
+                let boundaries = std::cell::RefCell::new(Vec::new());
+                let text = std::cell::RefCell::new(String::new());
+                let answer = {
+                    let mut agent = Agent::new(
+                        &Blocks,
+                        &mut session,
+                        &mut state,
+                        &[],
+                        &mut extensions,
+                        &dir,
+                    )
+                    .with_progress(|progress| {
+                        if let Progress::Text(delta) = progress {
+                            text.borrow_mut().push_str(delta);
+                        }
+                    });
+                    if asynchronous {
+                        agent =
+                            agent.with_stream_factory(std::sync::Arc::new(|| Ok(Box::new(Blocks))));
+                    }
+                    if enabled {
+                        agent = agent
+                            .with_text_blocks(|id| boundaries.borrow_mut().push(id.to_string()));
+                    }
+                    agent.run_turn(|_| {}).unwrap().0.text
+                };
+                assert_eq!(answer, "Plan.Answer.");
+                assert_eq!(*text.borrow(), answer);
+                assert_eq!(boundaries.borrow().len(), usize::from(enabled));
+                assert!(session.messages().iter().any(
+                    |message| matches!(message, Message::Assistant(t) if t == "Plan.Answer.")
+                ));
+                drop(session);
+                std::fs::remove_dir_all(dir).unwrap();
+            }
         }
     }
 

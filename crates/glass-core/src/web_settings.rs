@@ -282,13 +282,15 @@ pub fn update(v: &Value) -> Result<Value, String> {
                 Ok(())
             })?;
         }
-        "connection-add" | "oauth" | "callback" => {
+        "connection-add" | "oauth" | "callback" | "device" | "device-poll" => {
             let mut cfg = defaults()?;
             let mut request = v.clone();
             request["confirmed"] = json!(true);
             let mode = match action {
                 "connection-add" => "api",
                 "oauth" => "oauth",
+                "device" => "device",
+                "device-poll" => "device-poll",
                 _ => "callback",
             };
             let login = crate::web_commands::login(&mut cfg, "universal-settings", mode, &request);

@@ -10,9 +10,24 @@ use std::io::Read;
 use serde_json::{Value, json};
 
 use super::{Error, Event, Provider, Request, Usage, bounded_usage_tokens, http_agent, read_lossy};
+use crate::auth::{chatgpt_account_id, is_codex_endpoint};
 use crate::sse::SseDecoder;
 
 const DEFAULT_WINDOW: u32 = 128_000;
+
+fn responses_body(base_url: &str, model: &str, req: &Request<'_>) -> Value {
+    let mut body = json!({
+        "model": model,
+        "stream": true,
+        "instructions": req.system,
+        "input": responses_input(req.messages),
+        "store": false,
+    });
+    if !is_codex_endpoint(base_url) {
+        body["max_output_tokens"] = json!(req.max_tokens);
+    }
+    body
+}
 
 pub struct OpenAiCompat {
     pub base_url: String,
@@ -308,14 +323,7 @@ impl Provider for OpenAiCompat {
                 "messages": build_messages(req.system, req.messages),
                 "max_tokens": req.max_tokens,
             }),
-            Flavour::Responses => json!({
-                "model": self.model,
-                "stream": true,
-                "instructions": req.system,
-                "input": responses_input(req.messages),
-                "store": false,
-                "max_output_tokens": req.max_tokens,
-            }),
+            Flavour::Responses => responses_body(&self.base_url, &self.model, req),
         };
 
         if !req.tools.is_empty() {
@@ -381,6 +389,17 @@ impl Provider for OpenAiCompat {
         }
         if let Some(k) = &self.api_key {
             rb = rb.header("authorization", format!("Bearer {k}"));
+        }
+        // Device-code sign-in issues Codex OAuth tokens, which the ChatGPT
+        // backend routes by account. They are not usable on api.openai.com.
+        let chatgpt_backend = is_codex_endpoint(&self.base_url);
+        if chatgpt_backend {
+            if let Some(account) = self.api_key.as_deref().and_then(chatgpt_account_id) {
+                rb = rb.header("ChatGPT-Account-ID", account);
+            }
+            rb = rb
+                .header("originator", "glass_core")
+                .header("OpenAI-Beta", "responses=experimental");
         }
         let pacing_key = super::pacing::acquire(
             &self.base_url,
@@ -960,7 +979,19 @@ impl<R: Read> Iterator for StreamEvents<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use glass_mod_api::Message;
+
+    #[test]
+    fn codex_access_token_yields_the_account_id() {
+        let claims = json!({"https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}});
+        let token = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        assert_eq!(chatgpt_account_id(&token).as_deref(), Some("acct-1"));
+        assert_eq!(chatgpt_account_id("not-a-token"), None);
+    }
 
     #[test]
     fn wire_tool_parameters_accept_builtin_roots_without_changing_native_contracts() {
@@ -1204,6 +1235,32 @@ mod shape_tests {
         assert_eq!(arr.len(), 9);
         assert!(arr.iter().all(|t| t["function"]["name"].is_string()));
         let _ = p;
+    }
+
+    #[test]
+    fn only_codex_responses_omit_the_output_limit() {
+        let req = Request {
+            model: "chosen",
+            system: "system",
+            messages: &[],
+            tools: &[],
+            max_tokens: 123,
+            reasoning: None,
+        };
+        let codex = responses_body("https://chatgpt.com/backend-api/codex", "chosen", &req);
+        assert!(codex.get("max_output_tokens").is_none());
+        assert_eq!(codex["model"], "chosen");
+        assert_eq!(codex["stream"], true);
+        assert_eq!(codex["input"], json!([]));
+        for base in [
+            "https://api.openai.com/v1",
+            "https://chatgpt.com.evil.test/backend-api/codex",
+        ] {
+            assert_eq!(
+                responses_body(base, "chosen", &req)["max_output_tokens"],
+                123
+            );
+        }
     }
 }
 

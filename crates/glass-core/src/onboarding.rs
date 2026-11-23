@@ -130,8 +130,9 @@ pub fn parse_models(v: &Value) -> Vec<Model> {
         })
         .collect()
 }
-pub fn fetch_models(cfg: &Config, key: Option<String>) -> Result<Vec<Model>, String> {
-    let url = format!(
+fn model_catalog_request(cfg: &Config, key: Option<&str>) -> (String, Vec<(&'static str, String)>) {
+    let codex = auth::is_codex_endpoint(&cfg.base_url);
+    let mut url = format!(
         "{}/{}",
         cfg.base_url.trim_end_matches('/'),
         if cfg.provider == "anthropic" {
@@ -140,14 +141,37 @@ pub fn fetch_models(cfg: &Config, key: Option<String>) -> Result<Vec<Model>, Str
             "models"
         }
     );
-    let mut request = auth::http().get(url);
+    if codex {
+        let mut parsed = url::Url::parse(&cfg.base_url).expect("validated Codex endpoint");
+        parsed.set_path(&format!("{}/models", parsed.path().trim_end_matches('/')));
+        parsed
+            .query_pairs_mut()
+            .append_pair("client_version", env!("CARGO_PKG_VERSION"));
+        url = parsed.into();
+    }
+    let mut headers = Vec::new();
     if cfg.provider == "anthropic" {
-        request = request.header("anthropic-version", "2023-06-01");
+        headers.push(("anthropic-version", "2023-06-01".into()));
         if let Some(k) = key {
-            request = request.header("x-api-key", k);
+            headers.push(("x-api-key", k.into()));
         }
     } else if let Some(k) = key {
-        request = request.header("authorization", format!("Bearer {k}"));
+        headers.push(("authorization", format!("Bearer {k}")));
+        if codex {
+            headers.push(("originator", "glass_core".into()));
+            if let Some(account) = auth::chatgpt_account_id(k) {
+                headers.push(("ChatGPT-Account-Id", account));
+            }
+        }
+    }
+    (url, headers)
+}
+
+pub fn fetch_models(cfg: &Config, key: Option<String>) -> Result<Vec<Model>, String> {
+    let (url, headers) = model_catalog_request(cfg, key.as_deref());
+    let mut request = auth::http().get(url);
+    for (name, value) in headers {
+        request = request.header(name, value);
     }
     let mut response = request.call().map_err(|_| {
         "Could not reach the provider. Check the endpoint and your connection.".to_string()
@@ -503,6 +527,7 @@ fn setup(
                         email: String::new(),
                         id_token: String::new(),
                         scopes: Vec::new(),
+                        flow: String::new(),
                     },
                 );
             }
@@ -581,6 +606,7 @@ pub fn login(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
                                 email: String::new(),
                                 id_token: String::new(),
                                 scopes: Vec::new(),
+                                flow: String::new(),
                             },
                         );
                         c.credential = Some(id);
@@ -749,6 +775,69 @@ pub fn logout(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn codex_catalog_includes_client_version_and_account_routing() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let claims = json!({"https://api.openai.com/auth":{"chatgpt_account_id":"account-test"}});
+        let token = format!(
+            "head.{}.signature",
+            URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        let cfg = Config {
+            provider: "openai-responses".into(),
+            base_url: "https://chatgpt.com/backend-api/codex/?routing=test".into(),
+            ..Default::default()
+        };
+        let (url, headers) = model_catalog_request(&cfg, Some(&token));
+        let url = url::Url::parse(&url).unwrap();
+        assert_eq!(url.path(), "/backend-api/codex/models");
+        assert!(
+            url.query_pairs()
+                .any(|(key, value)| key == "client_version" && value == env!("CARGO_PKG_VERSION"))
+        );
+        assert!(
+            url.query_pairs()
+                .any(|(key, value)| key == "routing" && value == "test")
+        );
+        assert!(headers.contains(&("ChatGPT-Account-Id", "account-test".into())));
+        assert!(headers.contains(&("authorization", format!("Bearer {token}"))));
+        assert!(headers.contains(&("originator", "glass_core".into())));
+        let (_, headers) = model_catalog_request(&cfg, Some("not-a-token"));
+        assert!(
+            !headers
+                .iter()
+                .any(|(name, _)| *name == "ChatGPT-Account-Id")
+        );
+    }
+
+    #[test]
+    fn generic_catalog_requests_keep_their_urls_and_authentication() {
+        let mut cfg = Config {
+            provider: "openai-responses".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            model_catalog_request(&cfg, Some("key")),
+            (
+                "https://api.openai.com/v1/models".into(),
+                vec![("authorization", "Bearer key".into())]
+            )
+        );
+        assert!(model_catalog_request(&cfg, None).1.is_empty());
+        cfg.provider = "anthropic".into();
+        cfg.base_url = "https://api.anthropic.com".into();
+        assert_eq!(
+            model_catalog_request(&cfg, Some("key")),
+            (
+                "https://api.anthropic.com/v1/models".into(),
+                vec![
+                    ("anthropic-version", "2023-06-01".into()),
+                    ("x-api-key", "key".into())
+                ]
+            )
+        );
+    }
     #[test]
     fn chatgpt_catalog_keeps_server_order_and_visibility() {
         let models = parse_models(

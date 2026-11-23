@@ -47,6 +47,15 @@ pub fn cases() -> Vec<Case> {
         });
     }
     cases.push(Case {
+        name: "chat-anonymous-answer-after-thought",
+        provider: "openai",
+        frames: vec![
+            json!({"choices":[{"delta":{"content":[{"type":"text","thought":true,"text":PLAN},{"type":"text","text":"My bad — I'll keep "}]}}]}),
+            json!({"choices":[{"delta":{"content":[{"type":"text","text":"my reasoning private from now on. "}]}}]}),
+            json!({"choices":[{"delta":{"content":[{"type":"text","text":"Just the final answer."}]},"finish_reason":"stop"}]}),
+        ],
+    });
+    cases.push(Case {
         name: "chat-text-parts",
         provider: "openai",
         frames: vec![

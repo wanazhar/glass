@@ -979,7 +979,8 @@ impl<R: Read> StreamEvents<R> {
         if let Some(d) = delta {
             // Some compatible endpoints return typed text parts or refusals.
             if let Some(parts) = d["content"].as_array() {
-                for (index, part) in parts.iter().enumerate() {
+                let mut visible_index = 0;
+                for part in parts {
                     if self.blocks.enabled && private_part(part) {
                         let mut text = String::new();
                         reasoning_fragments(part, &mut text);
@@ -1001,8 +1002,9 @@ impl<R: Read> StreamEvents<R> {
                                 part["index"]
                                     .as_u64()
                                     .map(|n| n.to_string())
-                                    .unwrap_or_else(|| index.to_string())
+                                    .unwrap_or_else(|| visible_index.to_string())
                             });
+                            visible_index += 1;
                             self.outbox.extend(self.blocks.start(format!("chat:{id}")));
                         }
                         if !t.is_empty() {

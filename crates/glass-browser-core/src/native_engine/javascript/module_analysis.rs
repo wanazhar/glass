@@ -377,10 +377,10 @@ pub(super) fn rewrite_static_json_module_specifiers(
         return Ok(source.to_owned());
     }
     output.push_str(&source[copied_until..]);
-    if output.len() > MAX_NATIVE_SCRIPT_BYTES {
+    if output.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
         return Err(NativeEngineError::limit(
             "transformed JavaScript source",
-            MAX_NATIVE_SCRIPT_BYTES,
+            MAX_NATIVE_SCRIPT_SOURCE_BYTES,
             output.len(),
         ));
     }
@@ -461,10 +461,10 @@ pub(super) fn rewrite_runtime_dynamic_module_imports_with_count_and_policy(
         rewritten_import_calls = rewritten_import_calls.saturating_add(1);
     }
     output.push_str(&source[copied_until..]);
-    if output.len() > MAX_NATIVE_SCRIPT_BYTES {
+    if output.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
         return Err(NativeEngineError::limit(
             "transformed JavaScript source",
-            MAX_NATIVE_SCRIPT_BYTES,
+            MAX_NATIVE_SCRIPT_SOURCE_BYTES,
             output.len(),
         ));
     }
@@ -502,10 +502,10 @@ pub(super) fn rewrite_dynamic_imports_as_rejected_with_count(
         rewritten_import_calls = rewritten_import_calls.saturating_add(1);
     }
     output.push_str(&source[copied_until..]);
-    if output.len() > MAX_NATIVE_SCRIPT_BYTES {
+    if output.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
         return Err(NativeEngineError::limit(
             "transformed Service Worker JavaScript source",
-            MAX_NATIVE_SCRIPT_BYTES,
+            MAX_NATIVE_SCRIPT_SOURCE_BYTES,
             output.len(),
         ));
     }

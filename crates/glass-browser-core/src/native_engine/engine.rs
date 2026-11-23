@@ -32,9 +32,9 @@ use super::interaction::{
 };
 use super::javascript::{
     DocumentCommandEffects, MAX_NATIVE_COOKIE_CHANGE_BATCH, MAX_NATIVE_DIALOG_TEXT_BYTES,
-    MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES, MAX_NATIVE_MODULE_IMPORTS,
-    MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES, NativeCookieChange,
-    NativeCookieProfileEntry, NativeDialog, NativeDynamicPageScriptRequest,
+    MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES, MAX_NATIVE_MODULE_GRAPH_BYTES,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_SOURCE_BYTES, MAX_NATIVE_WORKER_MESSAGES,
+    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeDynamicPageScriptRequest,
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
     NativeHashChangeEvent, NativeHostEvent, NativeIndexedDbChange, NativeIndexedDbState,
     NativeInlinePageScriptRequest, NativeJavaScriptRuntime, NativeLocalModuleGraphRequest,
@@ -513,6 +513,7 @@ pub struct NativeEngine {
     embedding_document_url: Option<String>,
     embedding_frame_sources: Option<Vec<Vec<String>>>,
     embedding_base_url: Option<String>,
+    embedding_origin: Option<NativeOrigin>,
     revision: u64,
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
@@ -653,6 +654,7 @@ impl NativeEngine {
             embedding_document_url: None,
             embedding_frame_sources: None,
             embedding_base_url: None,
+            embedding_origin: None,
             revision: 0,
             scroll_offset: NativePoint { x: 0, y: 0 },
             nested_scroll_offsets: BTreeMap::new(),
@@ -1290,7 +1292,10 @@ impl NativeEngine {
     ) -> Result<(), NativeEngineError> {
         parent.require_running("srcdoc resource policy inheritance")?;
         self.loader
-            .inherit_document_policy_from(&parent.loader, &parent.url)
+            .inherit_document_policy_from(&parent.loader, &parent.url)?;
+        // An iframe srcdoc document shares its embedding document's origin.
+        self.embedding_origin = Some(parent.origin.clone());
+        Ok(())
     }
 
     fn install_dialogs(

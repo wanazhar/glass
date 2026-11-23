@@ -475,7 +475,7 @@
       return;
     }}
     const target = activeCommands();
-    if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
+    if (target.length >= {max_host_commands}) throw new RangeError("native host command limit exceeded");
     target.push(command);
     if (typeof globalThis.__glassRecordMutationCommand === "function") {{
       globalThis.__glassRecordMutationCommand(command);

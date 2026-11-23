@@ -263,7 +263,7 @@ impl NativeEngine {
             .load_local_file_script_with_policy(
                 &self.url,
                 &target,
-                MAX_NATIVE_SCRIPT_BYTES,
+                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 false,
                 None,
                 integrity.as_deref(),
@@ -329,8 +329,7 @@ impl NativeEngine {
                 .map(String::len)
                 .fold(0usize, usize::saturating_add),
         );
-        let maximum_module_bytes =
-            MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+        let maximum_module_bytes = MAX_NATIVE_MODULE_GRAPH_BYTES;
         if combined_bytes > maximum_module_bytes {
             return Err(NativeEngineError::limit(
                 "native page module graph bytes",
@@ -406,7 +405,7 @@ impl NativeEngine {
             let dynamic_sources = document.take_newly_attached_page_script_sources(
                 &effective_commands,
                 super::super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
-                MAX_NATIVE_SCRIPT_BYTES,
+                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
             );
             if !dynamic_sources.is_empty() {
                 let dynamic_result = execute_local_dynamic_page_script_batches(

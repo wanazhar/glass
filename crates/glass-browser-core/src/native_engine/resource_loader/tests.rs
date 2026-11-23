@@ -4,12 +4,13 @@ use super::super::javascript::{
 };
 use super::{
     JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
-    MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, NativeCookieProfileEntry,
-    NativeCorsMode, NativeCspDirectives, NativeCspPolicy, NativeEngineConfig, NativeEngineError,
-    NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchReferrerPolicy, NativeInlineCspKind,
-    NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-    NativeResourceLoader, NativeSubresourceKind, NativeTextCacheEntry, cache_control_max_age,
+    MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, MAX_NATIVE_VIDEO_DECODED_BYTES,
+    MAX_NATIVE_VIDEO_FRAME_COUNT, NativeCookieProfileEntry, NativeCorsMode, NativeCspDirectives,
+    NativeCspPolicy, NativeEngineConfig, NativeEngineError, NativeFetchCredentialsMode,
+    NativeFetchMethod, NativeFetchReferrerPolicy, NativeInlineCspKind, NativeModuleResourceType,
+    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNetworkState,
+    NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
+    NativeSubresourceKind, NativeTextCacheEntry, cache_control_max_age,
     cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
     content_security_policy, content_type_charset, cors_origin_header,
     cors_preflight_response_allowed, cors_response_allowed, csp_report_deliveries_for_declaration,
@@ -430,26 +431,69 @@ fn native_webm_vp8_decodes_bounded_real_rgba_frames() {
 }
 
 #[test]
-fn native_webm_vp8_rejects_video_over_frame_and_dimension_caps() {
-    let too_many_frames =
-        include_bytes!("../../../tests/fixtures/native-media/sixty-one-frames-vp8.webm");
+fn native_webm_vp8_rejects_video_whose_single_frame_exceeds_budgets() {
     let over_limit_dimensions =
-        include_bytes!("../../../tests/fixtures/native-media/over-limit-dimensions-vp8.webm");
-    let over_resource_byte_budget =
-        include_bytes!("../../../tests/fixtures/native-media/over-resource-byte-budget-vp8.webm");
+        include_bytes!("../../../tests/fixtures/native-media/over-limit-dimensions-1282-vp8.webm");
+    let over_frame_byte_budget =
+        include_bytes!("../../../tests/fixtures/native-media/over-frame-byte-budget-vp8.webm");
 
     for bytes in [
-        too_many_frames.as_slice(),
         over_limit_dimensions.as_slice(),
-        over_resource_byte_budget.as_slice(),
+        over_frame_byte_budget.as_slice(),
     ] {
         assert!(
             media_metadata_from_bytes(Some("video/webm"), bytes)
                 .unwrap()
                 .is_none(),
-            "over-budget video must not be admitted as playable media"
+            "a video whose frames cannot fit the decode budget must not be playable"
         );
     }
+}
+
+#[test]
+fn native_webm_vp8_retains_evenly_spaced_frames_within_the_frame_budget() {
+    let bytes = include_bytes!("../../../tests/fixtures/native-media/sixty-one-frames-vp8.webm");
+    let metadata = media_metadata_from_bytes(Some("video/webm"), bytes)
+        .unwrap()
+        .unwrap();
+    assert!(!metadata.video_frames.is_empty());
+    assert!(metadata.video_frames.len() <= MAX_NATIVE_VIDEO_FRAME_COUNT);
+    assert_eq!(metadata.video_frames.len(), 31);
+    assert_eq!(metadata.video_frames[0].timestamp_millis, 0);
+    assert!(
+        metadata
+            .video_frames
+            .windows(2)
+            .all(|pair| pair[0].timestamp_millis < pair[1].timestamp_millis)
+    );
+    let last_frame = metadata.video_frames.last().unwrap().timestamp_millis;
+    assert!(metadata.duration_millis.unwrap() > last_frame);
+}
+
+#[test]
+fn native_webm_vp8_retains_large_frames_within_the_byte_budget() {
+    let wide = include_bytes!("../../../tests/fixtures/native-media/two-hd-frames-vp8.webm");
+    let metadata = media_metadata_from_bytes(Some("video/webm"), wide)
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.video_frames.len(), 1);
+    let frame = &metadata.video_frames[0];
+    assert_eq!((frame.width, frame.height), (1280, 720));
+    assert_eq!(frame.timestamp_millis, 0);
+    assert!(frame.pixels.len() <= MAX_NATIVE_VIDEO_DECODED_BYTES);
+
+    let square =
+        include_bytes!("../../../tests/fixtures/native-media/over-resource-byte-budget-vp8.webm");
+    let metadata = media_metadata_from_bytes(Some("video/webm"), square)
+        .unwrap()
+        .unwrap();
+    let retained = metadata
+        .video_frames
+        .iter()
+        .map(|frame| frame.pixels.len())
+        .sum::<usize>();
+    assert_eq!(metadata.video_frames.len(), 2);
+    assert!(retained <= MAX_NATIVE_VIDEO_DECODED_BYTES);
 }
 
 #[test]

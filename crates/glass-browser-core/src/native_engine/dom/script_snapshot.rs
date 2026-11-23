@@ -310,6 +310,8 @@ impl NativeDocument {
                     0,
                     0,
                 ));
+                let (media_playing, media_current_time_millis, media_playback_rate) =
+                    self.media_playback_snapshot(node.id());
                 let computed_style = self.computed_style_for_layout(node.id());
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
@@ -358,6 +360,9 @@ impl NativeDocument {
                     media_video_width,
                     media_video_height,
                     media_error,
+                    media_playing,
+                    media_current_time_millis,
+                    media_playback_rate,
                     scroll_x: 0,
                     scroll_y: 0,
                     inline_style_allowed: node.inline_style_allowed(),

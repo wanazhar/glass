@@ -1275,6 +1275,16 @@
       case "setValue": element.value = String(command.value); break;
       case "setSelection": element.setSelectionRange(command.start, command.end, command.direction); break;
       case "mediaLoad": if (typeof element.load === "function") element.load(); else throw new TypeError("native media load is unsupported"); break;
+      case "mediaFrameTime":
+        if (element.localName !== "video") throw new TypeError("native media frame time requires a video element");
+        pushCurrentDocumentCommand({{
+          kind: "mediaFrameTime",
+          node_index: nodeIndex,
+          time_millis: Math.max(0, Math.trunc(Number(command.time_millis) || 0)),
+          playing: Boolean(command.playing),
+          playback_rate: Number(command.playback_rate),
+        }});
+        break;
       case "setChecked": element.checked = Boolean(command.checked); break;
       case "setIndeterminate": element.indeterminate = Boolean(command.indeterminate); break;
       case "setSelected": element.selected = Boolean(command.selected); break;

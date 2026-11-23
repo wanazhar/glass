@@ -183,8 +183,13 @@ pub(crate) fn validate_navigation_preload_header_value(
     Ok(())
 }
 
-/// Maximum source accepted by the native script evaluator.
+/// Maximum bounded text (URLs, keys, diagnostics) exchanged with native script hosts.
 pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::limits::MAX_TEXT_BYTES;
+/// Maximum source of one classic, module, or worker script. Real pages ship
+/// bundles of several hundred KiB, such as MDN's 480 KiB CodeMirror build.
+pub(crate) const MAX_NATIVE_SCRIPT_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum combined source retained for one module graph.
+pub(crate) const MAX_NATIVE_MODULE_GRAPH_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum JSON representation returned to the semantic backend.
 pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::limits::MAX_JSON_BYTES;
 /// Maximum structured-clone payload accepted by the native `postMessage`
@@ -434,7 +439,7 @@ fn execute_classic_worker_script<'js>(
     let source_len = rquickjs::qjs::size_t::try_from(source.as_bytes().len()).map_err(|_| {
         NativeEngineError::limit(
             "native Worker script source",
-            MAX_NATIVE_SCRIPT_BYTES,
+            MAX_NATIVE_SCRIPT_SOURCE_BYTES,
             source.as_bytes().len(),
         )
     })?;
@@ -1954,7 +1959,7 @@ impl Loader for NativeModuleLoader {
             let json_text = serde_json::to_string(&source)
                 .map_err(|_| Error::new_loading_message(name, "JSON module text is invalid"))?;
             let source = format!("export default globalThis.__glassParseJSONModule({json_text});");
-            if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            if source.len() > MAX_NATIVE_SCRIPT_SOURCE_BYTES {
                 return Err(Error::new_loading_message(
                     name,
                     "transformed JSON module exceeds its size limit",
@@ -2090,7 +2095,7 @@ fn enqueue_dynamic_page_scripts(
     let sources = document.take_newly_attached_page_script_sources(
         commands,
         MAX_NATIVE_INLINE_SCRIPTS,
-        MAX_NATIVE_SCRIPT_BYTES,
+        MAX_NATIVE_SCRIPT_SOURCE_BYTES,
     );
     let requires_loader = sources.iter().any(|source| {
         matches!(
@@ -3595,6 +3600,9 @@ mod native_host_event_tests;
 #[cfg(test)]
 #[path = "javascript/tests/native_large_host_view_tests.rs"]
 mod native_large_host_view_tests;
+#[cfg(test)]
+#[path = "javascript/tests/native_selection_range_tests.rs"]
+mod native_selection_range_tests;
 #[cfg(test)]
 #[path = "javascript/tests/native_selector_tests.rs"]
 mod native_selector_tests;

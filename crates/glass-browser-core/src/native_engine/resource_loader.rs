@@ -2992,9 +2992,15 @@ fn media_metadata_from_bytes(
     }))
 }
 
+/// Maximum decoded frames retained for one video; longer videos keep an evenly spaced subset.
 pub(crate) const MAX_NATIVE_VIDEO_FRAME_COUNT: usize = 60;
-pub(crate) const MAX_NATIVE_VIDEO_DIMENSION: u32 = 640;
-pub(crate) const MAX_NATIVE_VIDEO_DECODED_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_VIDEO_DIMENSION: u32 = 1280;
+/// Maximum decoded RGBA bytes retained for one video.
+pub(crate) const MAX_NATIVE_VIDEO_DECODED_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum encoded samples decoded for one video before retention stops.
+const MAX_NATIVE_VIDEO_DECODE_SAMPLES: u64 = 3_600;
+/// Maximum working memory the VP8 decoder may allocate for one frame.
+const MAX_NATIVE_VIDEO_DECODER_ALLOCATION_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_FRAMES: usize = 120;
 pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_AUDIO_DECODED_BYTES: usize = 2 * 1024 * 1024 - 44;
@@ -3153,9 +3159,9 @@ fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, Native
     let limits = Limits {
         max_width: MAX_NATIVE_VIDEO_DIMENSION,
         max_height: MAX_NATIVE_VIDEO_DIMENSION,
-        max_allocation_bytes: MAX_NATIVE_VIDEO_DECODED_BYTES as u64,
+        max_allocation_bytes: MAX_NATIVE_VIDEO_DECODER_ALLOCATION_BYTES,
         max_cached_frames: MAX_NATIVE_VIDEO_FRAME_COUNT as u32,
-        max_decode_samples_per_seek: MAX_NATIVE_VIDEO_FRAME_COUNT as u32,
+        max_decode_samples_per_seek: MAX_NATIVE_VIDEO_DECODE_SAMPLES as u32,
         ..Limits::default()
     };
     let dimensions = VideoDimensions::new(width, height, &limits)
@@ -3174,19 +3180,23 @@ fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, Native
         .create(&config, &limits)
         .map_err(|error| NativeEngineError::invalid("native VP8 decoder", error.to_string()))?;
     let mut frame = matroska_demuxer::Frame::default();
-    let mut output = Vec::new();
+    // Every sample is decoded because VP8 inter frames depend on earlier
+    // frames, but only frames whose output index is a multiple of `stride`
+    // are retained. Doubling the stride keeps an evenly spaced subset within
+    // the frame-count and byte budgets.
+    let mut output: Vec<(u64, NativeVideoFrame)> = Vec::new();
     let mut retained_bytes = 0usize;
+    let mut stride = 1u64;
+    let mut output_index = 0u64;
     let timestamp_scale = file.info().timestamp_scale().get();
     let mut index = 0u64;
-    while file
-        .next_frame(&mut frame)
-        .map_err(|error| NativeEngineError::invalid("native WebM demux", error.to_string()))?
+    while index < MAX_NATIVE_VIDEO_DECODE_SAMPLES
+        && file
+            .next_frame(&mut frame)
+            .map_err(|error| NativeEngineError::invalid("native WebM demux", error.to_string()))?
     {
         if frame.track != track_number {
             continue;
-        }
-        if output.len() >= MAX_NATIVE_VIDEO_FRAME_COUNT {
-            return Ok(Vec::new());
         }
         let decoded = match decoder.submit(
             &EncodedVideoSample {
@@ -3207,6 +3217,11 @@ fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, Native
         };
         let timestamp_millis = frame.timestamp.saturating_mul(timestamp_scale) / 1_000_000;
         for decoded_frame in decoded {
+            let frame_output_index = output_index;
+            output_index = output_index.saturating_add(1);
+            if !frame_output_index.is_multiple_of(stride) {
+                continue;
+            }
             let plane = decoded_frame.frame.planes.first().ok_or_else(|| {
                 NativeEngineError::invalid("native VP8 decode", "decoder returned no pixel plane")
             })?;
@@ -3227,20 +3242,32 @@ fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, Native
             for row in plane.data.chunks(plane.stride).take(height as usize) {
                 pixels.extend_from_slice(&row[..width as usize * 4]);
             }
-            retained_bytes = retained_bytes.saturating_add(pixels.len());
-            if retained_bytes > MAX_NATIVE_VIDEO_DECODED_BYTES {
+            if pixels.len() > MAX_NATIVE_VIDEO_DECODED_BYTES {
                 return Ok(Vec::new());
             }
-            output.push(NativeVideoFrame {
-                timestamp_millis,
-                width,
-                height,
-                pixels,
-            });
+            retained_bytes = retained_bytes.saturating_add(pixels.len());
+            output.push((
+                frame_output_index,
+                NativeVideoFrame {
+                    timestamp_millis,
+                    width,
+                    height,
+                    pixels,
+                },
+            ));
+            while retained_bytes > MAX_NATIVE_VIDEO_DECODED_BYTES
+                || output.len() > MAX_NATIVE_VIDEO_FRAME_COUNT
+            {
+                stride = stride.saturating_mul(2);
+                output.retain(|(retained_index, _)| retained_index % stride == 0);
+                retained_bytes = output.iter().fold(0usize, |total, (_, frame)| {
+                    total.saturating_add(frame.pixels.len())
+                });
+            }
         }
         index = index.saturating_add(1);
     }
-    Ok(output)
+    Ok(output.into_iter().map(|(_, frame)| frame).collect())
 }
 
 fn data_media_metadata(url: &Url) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {

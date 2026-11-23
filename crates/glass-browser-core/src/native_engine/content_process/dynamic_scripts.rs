@@ -299,7 +299,7 @@ pub(super) async fn load_module_dependencies(
                                 owner_url,
                                 &target,
                                 Some(&current_base_url),
-                                MAX_NATIVE_SCRIPT_BYTES,
+                                MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                                 true,
                                 None,
                                 integrity,
@@ -317,7 +317,7 @@ pub(super) async fn load_module_dependencies(
                             document_url: owner_url,
                             referrer_url: Some(&current_base_url),
                             href: &target,
-                            max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                            max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                             subresource_kind: NativeSubresourceKind::Script,
                             parser_inserted: true,
                             nonce: None,
@@ -350,10 +350,10 @@ pub(super) async fn load_module_dependencies(
             let source = resource.body;
             let dependency_referrer_policy = resource.response_referrer_policy.or(current_policy);
             *total_bytes = total_bytes.saturating_add(source.len());
-            if *total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+            if *total_bytes > MAX_NATIVE_MODULE_GRAPH_BYTES {
                 return Err(NativeEngineError::limit(
                     "module graph bytes",
-                    MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                    MAX_NATIVE_MODULE_GRAPH_BYTES,
                     *total_bytes,
                 ));
             }
@@ -984,7 +984,7 @@ pub(super) async fn load_dynamic_page_module(
                     document_url,
                     &target,
                     Some(module_referrer),
-                    MAX_NATIVE_SCRIPT_BYTES,
+                    MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                     false,
                     None,
                     integrity,
@@ -1002,7 +1002,7 @@ pub(super) async fn load_dynamic_page_module(
                 document_url,
                 referrer_url: Some(module_referrer),
                 href: &target,
-                max_source_bytes: MAX_NATIVE_SCRIPT_BYTES,
+                max_source_bytes: MAX_NATIVE_SCRIPT_SOURCE_BYTES,
                 subresource_kind: NativeSubresourceKind::Script,
                 parser_inserted: false,
                 nonce: None,
@@ -1030,7 +1030,7 @@ pub(super) async fn load_dynamic_page_module(
     }
     let mut total_bytes = existing_sources.values().map(String::len).sum::<usize>();
     total_bytes = total_bytes.saturating_add(source.len());
-    let maximum_module_bytes = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+    let maximum_module_bytes = MAX_NATIVE_MODULE_GRAPH_BYTES;
     if total_bytes > maximum_module_bytes {
         return Err(NativeEngineError::limit(
             "page module graph bytes",

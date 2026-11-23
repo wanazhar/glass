@@ -638,8 +638,10 @@
         const now = Number(globalThis.performance && globalThis.performance.now && globalThis.performance.now());
         return Number.isFinite(now) && now >= 0 ? now : 0;
       }};
+      const mediaProjectionActive = () => typeof state.mediaActive !== "function" || state.mediaActive();
       const publishNativeVideoTime = () => {{
         if (element.localName !== "video" || typeof state.mediaFrameTime !== "function") return;
+        if (!mediaProjectionActive()) return;
         state.mediaFrameTime(mediaCurrentTime * 1000, !mediaPaused, mediaPlaybackRate);
       }};
       const recordMediaPlayedRange = (start, end) => {{
@@ -674,7 +676,13 @@
       }};
       const startMediaTicker = () => {{
         if (mediaPlaybackTimer !== null || typeof globalThis.setInterval !== "function") return;
-        mediaPlaybackTimer = globalThis.setInterval(() => syncMediaClock(), 100);
+        mediaPlaybackTimer = globalThis.setInterval(() => {{
+          if (!mediaProjectionActive()) {{
+            stopMediaTicker();
+            return;
+          }}
+          syncMediaClock();
+        }}, 100);
       }};
       const dispatchMediaEvent = (type) => {{
         try {{ dispatchTarget(element, createEvent(type)); }} catch (_error) {{}}
@@ -719,6 +727,18 @@
         publishNativeVideoTime();
         if (typeof state.mediaReset === "function") state.mediaReset();
       }};
+      const restoredPlayback = typeof state.mediaPlayback === "function" ? state.mediaPlayback() : null;
+      if (restoredPlayback && typeof restoredPlayback === "object") {{
+        const restoredTime = Number(restoredPlayback.currentTimeMillis) / 1000;
+        const restoredRate = Number(restoredPlayback.rate);
+        if (Number.isFinite(restoredTime) && restoredTime > 0) mediaCurrentTime = restoredTime;
+        if (Number.isFinite(restoredRate) && restoredRate !== 0) mediaPlaybackRate = restoredRate;
+        if (restoredPlayback.playing && Number.isFinite(mediaDuration())) {{
+          mediaPaused = false;
+          mediaPlaybackStartedAt = mediaNow();
+          mediaPlaybackStartTime = mediaCurrentTime;
+        }}
+      }}
       const mediaTimeRanges = (kind = "buffered") => {{
         syncMediaClock();
         const duration = mediaDuration();

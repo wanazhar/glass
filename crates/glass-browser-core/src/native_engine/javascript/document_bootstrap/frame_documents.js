@@ -555,10 +555,32 @@
         configurable: false,
         value: refreshFrameInlineAttributeHandlers,
       }});
+      let frameMediaReset = false;
+      const frameMediaEntryValue = (read, fallback) => frameMediaReset ? fallback : read();
       installCommonAttributeProperties(projected, {{
         disabled: () => disabled,
         hidden: () => hidden,
         multiple: () => multiple,
+        mediaReadyState: () => frameMediaEntryValue(() => Number(entry.mediaReadyState) || 0, 0),
+        mediaNetworkState: () => frameMediaEntryValue(() => Number(entry.mediaNetworkState) || 0, 0),
+        mediaCurrentSrc: () => frameMediaEntryValue(() => String(entry.mediaCurrentSrc || ""), ""),
+        mediaDurationMillis: () => frameMediaEntryValue(() => (entry.mediaDurationMillis === null || entry.mediaDurationMillis === undefined
+          ? null
+          : Number(entry.mediaDurationMillis)), null),
+        mediaVideoWidth: () => frameMediaEntryValue(() => Number(entry.mediaVideoWidth) || 0, 0),
+        mediaVideoHeight: () => frameMediaEntryValue(() => Number(entry.mediaVideoHeight) || 0, 0),
+        mediaError: () => frameMediaEntryValue(() => (entry.mediaError === null || entry.mediaError === undefined
+          ? null
+          : Number(entry.mediaError)), null),
+        mediaReset: () => {{ frameMediaReset = true; }},
+        mediaActive: () => (frameDocumentCache.get(currentFrameId)?.document || null) === frameDocument,
+        mediaPlayback: () => frameMediaReset ? null : {{
+          playing: Boolean(entry.mediaPlaying),
+          currentTimeMillis: Number(entry.mediaCurrentTimeMillis) || 0,
+          rate: Number(entry.mediaPlaybackRate) || 1,
+        }},
+        mediaLoad: () => queueFrameCommand(currentBinding, {{ kind: "mediaLoad", node_index: entry.nodeIndex }}),
+        mediaFrameTime: (timeMillis, playing, playbackRate) => queueFrameCommand(currentBinding, {{ kind: "mediaFrameTime", node_index: entry.nodeIndex, time_millis: Math.max(0, Math.trunc(Number(timeMillis) || 0)), playing: Boolean(playing), playback_rate: Number(playbackRate) }}),
       }}, String(currentBinding.url));
       Object.defineProperty(projected, "__glassChildren", {{
         enumerable: false,
@@ -894,6 +916,7 @@
         configurable: false,
         value(nextEntry, nextExactTextForNode = frameSnapshotTextContentForNode) {{
           entry = nextEntry;
+          frameMediaReset = false;
           projected.nodeIndex = Number(nextEntry.nodeIndex);
           projected.parentIndex = nextEntry.parentIndex == null ? null : Number(nextEntry.parentIndex);
           projected.tagName = tagNameForEntry(nextEntry);

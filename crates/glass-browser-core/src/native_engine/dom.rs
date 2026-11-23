@@ -1011,6 +1011,15 @@ pub struct NativeScriptElementSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub(crate) media_error: Option<u16>,
+    #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
+    pub(crate) media_playing: bool,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
+    #[serde(default)]
+    pub(crate) media_current_time_millis: u64,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
+    #[serde(default)]
+    pub(crate) media_playback_rate: f64,
     #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) scroll_x: u32,

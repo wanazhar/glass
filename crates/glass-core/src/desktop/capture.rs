@@ -114,6 +114,103 @@ pub(super) fn zoom(rgb: &[u8], region: &serde_json::Value) -> Result<serde_json:
     }))
 }
 
+/// Most numbered boxes one labelled screenshot draws.
+pub(super) const MAX_LABELS: usize = 40;
+
+const LABEL_COLORS: [[u8; 3]; 4] = [[220, 0, 120], [0, 110, 230], [230, 110, 0], [0, 150, 70]];
+
+// 3x5 bitmaps for 0-9, one row per byte, high bit on the left.
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b001, 0b001],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+/// Draws a numbered box on the full frame for each `{x, y, width, height}`
+/// screen fraction in `labels`, numbered from 1 in order.
+pub(super) fn labelled(
+    rgb: &[u8],
+    labels: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine as _;
+    let labels = labels
+        .as_array()
+        .filter(|labels| !labels.is_empty() && labels.len() <= MAX_LABELS)
+        .ok_or_else(|| format!("labels must list 1 to {MAX_LABELS} boxes"))?;
+    let (screen_w, screen_h) = (super::WIDTH, super::HEIGHT);
+    let mut frame = image::RgbImage::from_raw(screen_w, screen_h, rgb.to_vec())
+        .ok_or("Desktop frame has an unexpected size")?;
+    for (index, label) in labels.iter().enumerate() {
+        let field = |name: &str| {
+            label[name]
+                .as_f64()
+                .filter(|value| (0.0..=1.0).contains(value))
+                .ok_or_else(|| format!("labels[{index}].{name} must be a number between 0 and 1"))
+        };
+        let (x, y, width, height) = (field("x")?, field("y")?, field("width")?, field("height")?);
+        let left = ((x * screen_w as f64) as u32).min(screen_w - 1);
+        let top = ((y * screen_h as f64) as u32).min(screen_h - 1);
+        let right = (((x + width) * screen_w as f64) as u32).clamp(left + 1, screen_w);
+        let bottom = (((y + height) * screen_h as f64) as u32).clamp(top + 1, screen_h);
+        let color = image::Rgb(LABEL_COLORS[index % LABEL_COLORS.len()]);
+        let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32, color: image::Rgb<u8>| {
+            for py in y0..y1.min(screen_h) {
+                for px in x0..x1.min(screen_w) {
+                    frame.put_pixel(px, py, color);
+                }
+            }
+        };
+        fill(left, top, right, (top + 2).min(bottom), color);
+        fill(
+            left,
+            bottom.saturating_sub(2).max(top),
+            right,
+            bottom,
+            color,
+        );
+        fill(left, top, (left + 2).min(right), bottom, color);
+        fill(right.saturating_sub(2).max(left), top, right, bottom, color);
+        let number = (index + 1).to_string();
+        let (scale, pad) = (3, 2);
+        let tag_w = number.len() as u32 * 4 * scale + pad * 2 - scale;
+        let tag_h = 5 * scale + pad * 2;
+        let tag_left = left.min(screen_w.saturating_sub(tag_w));
+        let tag_top = if top >= tag_h { top - tag_h } else { top };
+        fill(tag_left, tag_top, tag_left + tag_w, tag_top + tag_h, color);
+        for (position, digit) in number.bytes().enumerate() {
+            let glyph = DIGITS[(digit - b'0') as usize];
+            let origin_x = tag_left + pad + position as u32 * 4 * scale;
+            for (row, bits) in glyph.iter().enumerate() {
+                for column in 0..3u32 {
+                    if bits & (0b100 >> column) != 0 {
+                        let px = origin_x + column * scale;
+                        let py = tag_top + pad + row as u32 * scale;
+                        fill(px, py, px + scale, py + scale, image::Rgb([255, 255, 255]));
+                    }
+                }
+            }
+        }
+    }
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .encode(&frame, screen_w, screen_h, image::ExtendedColorType::Rgb8)
+        .map_err(|_| "Desktop image encoding failed".to_owned())?;
+    if jpeg.len() > MAX_FRAME {
+        return Err("Desktop JPEG frame exceeded size limit".into());
+    }
+    Ok(serde_json::json!({
+        "jpeg": base64::engine::general_purpose::STANDARD.encode(jpeg),
+        "labels": labels.len()
+    }))
+}
+
 pub(super) fn read_frames(mut input: impl Read, frames: Arc<Mutex<Frames>>, started: Instant) {
     // Always drain capture into one current raw frame. JPEG is lazy and cached
     // per frame; neither encoding nor a slow viewer can block this reader.
@@ -250,6 +347,60 @@ mod tests {
             error(serde_json::json!({"x":0.0,"y":0.0,"width":0.001,"height":0.5})).contains("0.02")
         );
         assert!(error(serde_json::json!({"x":0.0,"y":0.0})).contains("{x, y, width, height}"));
+    }
+
+    #[test]
+    fn labelled_draws_numbered_boxes_and_rejects_bad_labels() {
+        use base64::Engine as _;
+        let frame = vec![255u8; (super::super::WIDTH * super::super::HEIGHT * 3) as usize];
+        let labels = serde_json::json!([
+            {"x": 0.25, "y": 0.5, "width": 0.25, "height": 0.125},
+            {"x": 0.0, "y": 0.0, "width": 0.1, "height": 0.1}
+        ]);
+        let value = super::labelled(&frame, &labels).unwrap();
+        assert_eq!(value["labels"], 2);
+        let jpeg = base64::engine::general_purpose::STANDARD
+            .decode(value["jpeg"].as_str().unwrap())
+            .unwrap();
+        let image = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+        assert_eq!(
+            image.dimensions(),
+            (super::super::WIDTH, super::super::HEIGHT)
+        );
+        let magenta = |x: u32, y: u32| {
+            let pixel = image.get_pixel(x, y).0;
+            pixel[0] > 150 && pixel[1] < 90 && pixel[2] > 60
+        };
+        // The first box is magenta on its edge, its tag sits above it, and
+        // its inside is untouched.
+        assert!(magenta(400, 400));
+        assert!(magenta(321, 450));
+        assert!(magenta(321, 390));
+        assert!(
+            image
+                .get_pixel(480, 450)
+                .0
+                .iter()
+                .all(|channel| *channel > 200)
+        );
+        // The second box touches the top edge, so its tag is drawn inside.
+        let blue = image.get_pixel(1, 50).0;
+        assert!(blue[2] > 150 && blue[0] < 90, "{blue:?}");
+
+        assert!(super::labelled(&frame, &serde_json::json!([])).is_err());
+        assert!(
+            super::labelled(
+                &frame,
+                &serde_json::json!([{"x": 2, "y": 0, "width": 0.1, "height": 0.1}])
+            )
+            .unwrap_err()
+            .contains("labels[0].x")
+        );
+        let too_many = vec![
+            serde_json::json!({"x": 0, "y": 0, "width": 0.1, "height": 0.1});
+            super::MAX_LABELS + 1
+        ];
+        assert!(super::labelled(&frame, &serde_json::json!(too_many)).is_err());
     }
 
     #[test]

@@ -874,6 +874,16 @@ impl Desktop {
         query: Option<&str>,
         requested_window_id: Option<&str>,
     ) -> Result<Value, String> {
+        self.observe_accessibility_for(expected_session_id, query, requested_window_id, false)
+    }
+
+    fn observe_accessibility_for(
+        &self,
+        expected_session_id: Option<&str>,
+        query: Option<&str>,
+        requested_window_id: Option<&str>,
+        label_scan: bool,
+    ) -> Result<Value, String> {
         self.restore_reusable_session()?;
         let (session_id, session_bus_address, revision, window_root) = {
             let mut guard = self
@@ -917,6 +927,7 @@ impl Desktop {
             revision,
             query,
             window_root,
+            label_scan,
         )?;
         let mut guard = self
             .session
@@ -1584,8 +1595,12 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
                 .and_then(Value::as_str)
                 .ok_or_else(|| "sessionId is required from desktop_status".to_owned());
             session_id.and_then(|session_id| {
-                Desktop::agent_frame(session_id, &args["region"])
-                    .and_then(|value| save_agent_frame(workspace, &value))
+                if args.get("labels").is_some_and(|labels| !labels.is_null()) {
+                    labelled_screenshot(workspace, session_id, &args)
+                } else {
+                    Desktop::agent_frame(session_id, &args["region"])
+                        .and_then(|value| save_agent_frame(workspace, &value))
+                }
             })
         }
         _ => Err("unknown desktop tool".into()),
@@ -1740,6 +1755,384 @@ fn with_next_step(error: String) -> String {
         return error;
     };
     format!("{error}\nNext: {next}")
+}
+
+/// Observes the controls matching `labels.query`, draws a numbered box on
+/// each onscreen one and lists what each number is, so the image and the
+/// accessibility targets line up.
+fn labelled_screenshot(workspace: &Path, session_id: &str, args: &Value) -> Result<String, String> {
+    if !args["region"].is_null() {
+        return Err("desktop_screenshot takes either region or labels, not both; zoom with region after reading the labels".into());
+    }
+    let labels = args["labels"]
+        .as_object()
+        .ok_or("labels must be an object such as {\"query\":\"Save\"}")?;
+    if labels
+        .keys()
+        .any(|key| !matches!(key.as_str(), "query" | "windowId"))
+    {
+        return Err("labels accepts only query and windowId".into());
+    }
+    let query = labels
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|query| !query.trim().is_empty())
+        .ok_or("labels.query is required: name the app, window or controls to label, as in desktop_observe")?;
+    let mut observe = json!({"sessionId": session_id, "query": query});
+    if let Some(window_id) = labels.get("windowId") {
+        observe["windowId"] = window_id.clone();
+    }
+    let observation =
+        Desktop::agent_request(&json!({"action":"observe","value":observe,"labelScan":true}))?;
+    let matches: Vec<Value> = observation["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| node["bounds"].is_object())
+        .cloned()
+        .collect();
+    let stack = label_window_stack(
+        Desktop::agent_request(&json!({"action":"window_stack","sessionId":session_id})),
+        !matches.is_empty(),
+    )?;
+    let stack = stack["windows"].as_array().map(Vec::as_slice);
+    let LabelSelection {
+        nodes,
+        hidden,
+        unknown,
+    } = uncovered_labels(
+        matches,
+        stack,
+        observation["labelWindows"].as_array().map(Vec::as_slice),
+    );
+    if nodes.is_empty() {
+        let reason = if unknown > 0 {
+            "occlusion is unknown because window ownership or stacking could not be established; those labels were omitted"
+        } else if hidden > 0 {
+            "every match is covered or its window is not visible on this workspace"
+        } else {
+            "no onscreen control matched"
+        };
+        return Err(format!(
+            "Nothing was labelled for the query {query:?}: {reason}. Next: bring the window forward with desktop_windows, broaden the query, scope it with a windowId from desktop_observe, or call desktop_screenshot without labels."
+        ));
+    }
+    let boxes: Vec<&Value> = nodes.iter().map(|node| &node["bounds"]).collect();
+    let frame = Desktop::agent_request(
+        &json!({"action":"frame","sessionId":session_id,"region":null,"labels":boxes}),
+    )?;
+    if let Some(error) = frame["error"].as_str() {
+        return Err(error.to_owned());
+    }
+    let saved = save_agent_frame(workspace, &frame)?;
+    let legend = label_legend(&observation, &nodes, hidden, unknown);
+    Ok(format!("{saved}\n{legend}"))
+}
+
+fn label_window_stack(stack: Result<Value, String>, has_matches: bool) -> Result<Value, String> {
+    match stack {
+        Ok(stack) => Ok(stack),
+        Err(error) if has_matches => Err(format!(
+            "Cannot label controls because X11 stacking is unavailable: {error}. No number boxes were drawn; call desktop_screenshot without labels."
+        )),
+        Err(_) => Ok(Value::Null),
+    }
+}
+
+/// Whether a window from `window_stack` covers a screen-fraction point.
+fn window_covers(window: &Value, x: f64, y: f64) -> bool {
+    let (Some(left), Some(top), Some(width), Some(height)) = (
+        window["x"].as_f64(),
+        window["y"].as_f64(),
+        window["width"].as_f64(),
+        window["height"].as_f64(),
+    ) else {
+        return false;
+    };
+    x >= left && x < left + width && y >= top && y < top + height
+}
+
+/// Drops matches whose control is fully covered by windows stacked above its
+/// own window, and the pointer of a match whose click point is covered.
+/// AT-SPI reports such controls as showing, so only X11 stacking reveals it.
+fn uncovered_labels(
+    nodes: Vec<Value>,
+    stack: Option<&[Value]>,
+    windows: Option<&[Value]>,
+) -> LabelSelection {
+    let mut selection = LabelSelection {
+        nodes: Vec::new(),
+        hidden: 0,
+        unknown: 0,
+    };
+    let (Some(stack), Some(windows)) = (stack, windows) else {
+        selection.unknown = nodes.len();
+        return selection;
+    };
+    selection.nodes = nodes
+        .into_iter()
+        .filter_map(|mut node| {
+            let bounds = LabelRect::from_value(&node["bounds"])?;
+            let Some(owner) = label_window_owner(&node["owningWindow"], windows, stack) else {
+                selection.unknown += 1;
+                return None;
+            };
+            if stack[owner]["visible"] != true {
+                selection.hidden += 1;
+                return None;
+            }
+            let surface = label_popup_surface(&node, bounds, owner, stack).unwrap_or(owner);
+            let covered = |px: f64, py: f64| {
+                stack[surface + 1..]
+                    .iter()
+                    .any(|window| window["visible"] == true && window_covers(window, px, py))
+            };
+            let mut visible = vec![bounds];
+            for window in stack[surface + 1..]
+                .iter()
+                .filter(|window| window["visible"] == true)
+            {
+                let Some(occluder) = LabelRect::from_value(window) else {
+                    continue;
+                };
+                visible = visible
+                    .into_iter()
+                    .flat_map(|rect| rect.subtract(occluder))
+                    .collect();
+                if visible.is_empty() {
+                    break;
+                }
+            }
+            let visible_pixels = visible
+                .iter()
+                .map(|rect| {
+                    (rect.right - rect.left)
+                        * WIDTH as f64
+                        * (rect.bottom - rect.top)
+                        * HEIGHT as f64
+                })
+                .sum::<f64>();
+            if visible_pixels < 1.0 {
+                selection.hidden += 1;
+                return None;
+            }
+            if let (Some(px), Some(py)) = (
+                node["pointerTarget"]["x"].as_f64(),
+                node["pointerTarget"]["y"].as_f64(),
+            ) && covered(px, py)
+            {
+                node["pointerTarget"] = Value::Null;
+            }
+            Some(node)
+        })
+        .collect();
+    selection.nodes.truncate(capture::MAX_LABELS);
+    selection
+}
+
+struct LabelSelection {
+    nodes: Vec<Value>,
+    hidden: usize,
+    unknown: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LabelRect {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl LabelRect {
+    fn from_value(value: &Value) -> Option<Self> {
+        let left = value["x"].as_f64()?;
+        let top = value["y"].as_f64()?;
+        let right = left + value["width"].as_f64()?;
+        let bottom = top + value["height"].as_f64()?;
+        (left.is_finite()
+            && top.is_finite()
+            && right.is_finite()
+            && bottom.is_finite()
+            && right > left
+            && bottom > top)
+            .then_some(Self {
+                left,
+                top,
+                right,
+                bottom,
+            })
+    }
+
+    fn subtract(self, other: Self) -> Vec<Self> {
+        let left = self.left.max(other.left);
+        let top = self.top.max(other.top);
+        let right = self.right.min(other.right);
+        let bottom = self.bottom.min(other.bottom);
+        if left >= right || top >= bottom {
+            return vec![self];
+        }
+        [
+            Self {
+                bottom: top,
+                ..self
+            },
+            Self {
+                top: bottom,
+                ..self
+            },
+            Self {
+                left: self.left,
+                top,
+                right: left,
+                bottom,
+            },
+            Self {
+                left: right,
+                top,
+                right: self.right,
+                bottom,
+            },
+        ]
+        .into_iter()
+        .filter(|rect| rect.right > rect.left && rect.bottom > rect.top)
+        .collect()
+    }
+}
+
+fn rectangles_overlap(a: &Value, b: &Value) -> bool {
+    let rect = |value: &Value| {
+        Some((
+            value["x"].as_f64()?,
+            value["y"].as_f64()?,
+            value["width"].as_f64()?,
+            value["height"].as_f64()?,
+        ))
+    };
+    let (Some((ax, ay, aw, ah)), Some((bx, by, bw, bh))) = (rect(a), rect(b)) else {
+        return false;
+    };
+    aw > 0.0
+        && ah > 0.0
+        && bw > 0.0
+        && bh > 0.0
+        && ax < bx + bw
+        && bx < ax + aw
+        && ay < by + bh
+        && by < ay + ah
+}
+
+fn label_window_owner(owner: &Value, windows: &[Value], stack: &[Value]) -> Option<usize> {
+    let id = owner["windowId"].as_str()?;
+    let window = windows.iter().find(|window| window["windowId"] == id)?;
+    let pid = window["pid"].as_u64().filter(|pid| *pid > 0)?;
+    let clients = stack
+        .iter()
+        .enumerate()
+        .filter(|(_, client)| client["occluderOnly"] != true && client["pid"].as_u64() == Some(pid))
+        .collect::<Vec<_>>();
+    let peers = windows
+        .iter()
+        .filter(|window| window["pid"].as_u64() == Some(pid))
+        .collect::<Vec<_>>();
+    if clients.len() == 1 && peers.len() == 1 {
+        return Some(clients[0].0);
+    }
+    let same_window = |a: &Value, b: &Value| {
+        a["title"].as_str().is_some() && a["title"] == b["title"] && rectangles_overlap(a, b)
+    };
+    let candidates = clients
+        .into_iter()
+        .filter(|(_, client)| same_window(window, client))
+        .collect::<Vec<_>>();
+    let [(index, client)] = candidates.as_slice() else {
+        return None;
+    };
+    (peers
+        .into_iter()
+        .filter(|peer| same_window(peer, client))
+        .count()
+        == 1)
+        .then_some(*index)
+}
+
+fn label_popup_surface(
+    node: &Value,
+    bounds: LabelRect,
+    owner: usize,
+    stack: &[Value],
+) -> Option<usize> {
+    let role = node["role"].as_str()?;
+    if node["inPopupMenu"] != true
+        || !["menu item", "check menu item", "radio menu item"]
+            .iter()
+            .any(|menu_role| role.eq_ignore_ascii_case(menu_role))
+    {
+        return None;
+    }
+    let pid = stack[owner]["pid"].as_u64().filter(|pid| *pid > 0)?;
+    let mut candidates = stack
+        .iter()
+        .enumerate()
+        .skip(owner + 1)
+        .filter_map(|(index, window)| {
+            if window["occluderOnly"] != true
+                || window["visible"] != true
+                || window["pid"].as_u64() != Some(pid)
+            {
+                return None;
+            }
+            let popup = LabelRect::from_value(window)?;
+            let origin_error = 0.5 / accessibility::BOUNDS_ROUNDING_SCALE + f64::EPSILON;
+            let edge_error = 1.0 / accessibility::BOUNDS_ROUNDING_SCALE + f64::EPSILON;
+            (popup.left <= bounds.left + origin_error
+                && popup.top <= bounds.top + origin_error
+                && popup.right + edge_error >= bounds.right
+                && popup.bottom + edge_error >= bounds.bottom)
+                .then_some(index)
+        });
+    let surface = candidates.next()?;
+    candidates.next().is_none().then_some(surface)
+}
+
+fn label_legend(observation: &Value, nodes: &[Value], hidden: usize, unknown: usize) -> String {
+    let revision = &observation["revision"];
+    let actionable = observation["queryAmbiguous"] != true && observation["truncated"] != true;
+    let mut legend = format!(
+        "Numbered boxes mark {} matching control(s) from desktop_observe revision {revision}. Act on a number with desktop_act using its targetId, this revision and the sessionId; a number with only a pointer is clicked with desktop_input pointer-click at that x/y.",
+        nodes.len()
+    );
+    if !actionable {
+        legend.push_str(" The match is ambiguous or truncated, so no number can be acted on yet: refine labels.query or pass a windowId, then label again.");
+    }
+    if hidden > 0 {
+        legend.push_str(&format!(" {hidden} more match(es) are covered by other windows or not visible on this workspace and were not labelled; bring their window forward with desktop_windows to see them."));
+    }
+    if unknown > 0 {
+        legend.push_str(&format!(" Occlusion is unknown for {unknown} match(es): window ownership or stacking could not be established, so their labels were omitted."));
+    }
+    for (index, node) in nodes.iter().enumerate() {
+        let mut line = format!(
+            "\n[{}] {} {:?}",
+            index + 1,
+            node["role"].as_str().unwrap_or("control"),
+            node["name"].as_str().unwrap_or("")
+        );
+        if let Some(target_id) = node["targetId"].as_str() {
+            line.push_str(&format!(" targetId={target_id}"));
+        }
+        if let (Some(x), Some(y)) = (
+            node["pointerTarget"]["x"].as_f64(),
+            node["pointerTarget"]["y"].as_f64(),
+        ) {
+            line.push_str(&format!(" pointer x={x:.4} y={y:.4}"));
+        }
+        if node["targetId"].is_null() && node["pointerTarget"].is_null() {
+            line.push_str(" (look only)");
+        }
+        legend.push_str(&line);
+    }
+    legend
 }
 
 fn save_agent_frame(workspace: &Path, value: &Value) -> Result<String, String> {
@@ -1936,10 +2329,11 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
             None => Err("sessionId is required before stopping a desktop".into()),
         },
         Some("observe") => match request["value"]["sessionId"].as_str() {
-            Some(session_id) => desktop.observe_accessibility_scoped(
+            Some(session_id) => desktop.observe_accessibility_for(
                 Some(session_id),
                 request["value"]["query"].as_str(),
                 request["value"]["windowId"].as_str(),
+                request["labelScan"] == true,
             ),
             None => Err("sessionId is required from desktop_status".into()),
         },
@@ -1953,13 +2347,19 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         Some("files") => request["workspace"].as_str()
             .ok_or_else(|| "trusted thread workspace is required".to_owned())
             .and_then(|workspace| desktop.files(&request["value"], Path::new(workspace))),
+        Some("window_stack") => match request["sessionId"].as_str() {
+            Some(session_id) => desktop.window_stack(session_id),
+            None => Err("sessionId is required from desktop_status".into()),
+        },
         Some("record") => desktop.record(&request["value"]),
         Some("frame") => match request["sessionId"].as_str() {
             Some(session_id) => desktop
                 .frame_after_for_session(Some(session_id), 0, Duration::from_secs(2))
                 .and_then(|frame| match frame {
                     Some((session_id, workspace_root, seq, captured, frame)) => {
-                        let mut value = if request["region"].is_null() {
+                        let mut value = if !request["labels"].is_null() {
+                            capture::labelled(&frame.rgb, &request["labels"])?
+                        } else if request["region"].is_null() {
                             json!({"jpeg":base64::engine::general_purpose::STANDARD.encode(frame.jpeg()?)})
                         } else {
                             capture::zoom(&frame.rgb, &request["region"])?
@@ -2423,6 +2823,483 @@ mod tests {
             return Some("first_tab_preservation_unverified");
         }
         None
+    }
+
+    #[test]
+    fn label_stack_errors_preserve_recovery_without_drawing_boxes() {
+        let stack = json!({"windows": []});
+        assert_eq!(label_window_stack(Ok(stack.clone()), true).unwrap(), stack);
+        assert_eq!(
+            label_window_stack(Err("stack unavailable".into()), false).unwrap(),
+            Value::Null
+        );
+        let error = label_window_stack(Err("wmctrl is not installed; install wmctrl".into()), true)
+            .unwrap_err();
+        assert!(error.contains("install wmctrl"), "{error}");
+        assert!(error.contains("without labels"), "{error}");
+        assert!(!error.contains("with desktop_windows"), "{error}");
+    }
+
+    #[test]
+    fn label_legend_numbers_controls_and_says_how_to_act() {
+        let observation = json!({"revision": 7, "queryAmbiguous": false, "truncated": false});
+        let save = json!({"role":"push button","name":"Save","targetId":"t-1","pointerTarget":{"x":0.25,"y":0.5}});
+        let label = json!({"role":"label","name":"Untitled","targetId":null,"pointerTarget":null});
+        let legend = label_legend(&observation, &[save, label.clone()], 0, 0);
+        assert!(legend.contains("revision 7"));
+        assert!(legend.contains("[1] push button \"Save\" targetId=t-1 pointer x=0.2500 y=0.5000"));
+        assert!(legend.contains("[2] label \"Untitled\" (look only)"));
+        assert!(!legend.contains("ambiguous"));
+        let ambiguous = json!({"revision": 8, "queryAmbiguous": true});
+        assert!(
+            label_legend(&ambiguous, std::slice::from_ref(&label), 0, 0)
+                .contains("refine labels.query")
+        );
+        assert!(
+            label_legend(&observation, std::slice::from_ref(&label), 2, 0)
+                .contains("2 more match(es) are covered")
+        );
+        assert!(
+            label_legend(&observation, &[label], 0, 1)
+                .contains("Occlusion is unknown for 1 match(es)")
+        );
+    }
+
+    #[test]
+    fn labels_skip_controls_covered_by_a_window_stacked_above() {
+        let window = |title: &str, x: f64, y: f64| json!({"title": title, "pid": if title == "Editor" { 11 } else { 22 }, "visible": true, "x": x, "y": y, "width": 0.5, "height": 0.5});
+        let windows = [json!({"windowId": "editor", "pid": 11, "title": "Editor"})];
+        // Bottom to top: the editor, then a file manager over its right half.
+        let stack = [window("Editor", 0.0, 0.0), window("Files", 0.3, 0.0)];
+        let control = |name: &str, x: f64, pointer_x: f64| {
+            json!({
+                "name": name,
+                "owningWindow": {"windowId": "editor", "name": "Editor"},
+                "bounds": {"x": x, "y": 0.1, "width": 0.1, "height": 0.05},
+                "pointerTarget": {"x": pointer_x, "y": 0.125},
+            })
+        };
+        let open = control("Open", 0.05, 0.1);
+        let edge = control("Edge", 0.25, 0.32);
+        let save = control("Save", 0.35, 0.4);
+        let unknown = json!({"name": "Unknown", "bounds": {"x": 0.35, "y": 0.1, "width": 0.1, "height": 0.05}});
+        let kept = uncovered_labels(
+            vec![open, edge, save, unknown],
+            Some(&stack),
+            Some(&windows),
+        );
+        assert_eq!((kept.hidden, kept.unknown), (1, 1));
+        let names: Vec<&str> = kept
+            .nodes
+            .iter()
+            .filter_map(|node| node["name"].as_str())
+            .collect();
+        assert_eq!(names, ["Open", "Edge"]);
+        assert_eq!(kept.nodes[0]["pointerTarget"]["x"], 0.1);
+        assert!(
+            kept.nodes[1]["pointerTarget"].is_null(),
+            "a covered click point is withheld"
+        );
+
+        let on_top = [window("Files", 0.3, 0.0), window("Editor", 0.0, 0.0)];
+        let save = control("Save", 0.35, 0.4);
+        assert_eq!(
+            uncovered_labels(vec![save], Some(&on_top), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn labels_keep_one_to_three_pixel_strips_on_every_edge() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let rect = |x: f64, y: f64, width: f64, height: f64| json!({"x":x / WIDTH as f64,"y":y / HEIGHT as f64,"width":width / WIDTH as f64,"height":height / HEIGHT as f64});
+        let node = json!({
+            "owningWindow":{"windowId":"editor"},
+            "bounds":rect(100.0, 100.0, 100.0, 100.0),
+            "pointerTarget":{"x":150.0 / WIDTH as f64,"y":150.0 / HEIGHT as f64},
+        });
+        for pixels in 1..=3 {
+            let strip = f64::from(pixels);
+            for bounds in [
+                rect(100.0 + strip, 100.0, 100.0 - strip, 100.0),
+                rect(100.0, 100.0, 100.0 - strip, 100.0),
+                rect(100.0, 100.0 + strip, 100.0, 100.0 - strip),
+                rect(100.0, 100.0, 100.0, 100.0 - strip),
+            ] {
+                let mut occluder = bounds;
+                occluder["visible"] = json!(true);
+                let stack = [editor.clone(), occluder];
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert_eq!(
+                    (selection.hidden, selection.unknown),
+                    (0, 0),
+                    "{pixels}px strip"
+                );
+                assert_eq!(selection.nodes.len(), 1);
+                assert!(selection.nodes[0]["pointerTarget"].is_null());
+            }
+        }
+        let clear = uncovered_labels(vec![node], Some(&[editor]), Some(&windows));
+        assert_eq!(clear.nodes.len(), 1);
+        assert!(!clear.nodes[0]["pointerTarget"].is_null());
+    }
+
+    #[test]
+    fn labels_subtract_the_union_of_occluders_and_require_one_visible_pixel() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true});
+        let node = json!({"owningWindow":{"windowId":"editor"},"bounds":{"x":0.0,"y":0.0,"width":0.5,"height":0.5}});
+        let left = json!({"visible":true,"x":0.0,"y":0.0,"width":0.3,"height":0.5});
+        let right = json!({"visible":true,"x":0.2,"y":0.0,"width":0.3,"height":0.5});
+        let stack = [editor.clone(), left, right];
+        let hidden = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+        assert_eq!(
+            (hidden.nodes.len(), hidden.hidden, hidden.unknown),
+            (0, 1, 0)
+        );
+        let mut small = node;
+        small["bounds"]["width"] = json!(0.5 / WIDTH as f64);
+        small["bounds"]["height"] = json!(1.0 / HEIGHT as f64);
+        assert_eq!(
+            uncovered_labels(
+                vec![small.clone()],
+                Some(std::slice::from_ref(&editor)),
+                Some(&windows)
+            )
+            .hidden,
+            1
+        );
+        small["bounds"]["width"] = json!(1.0 / WIDTH as f64);
+        assert_eq!(
+            uncovered_labels(vec![small], Some(&[editor]), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rectangle_subtraction_preserves_disjoint_fragments_and_rejects_empty_bounds() {
+        let rect = |x: f64, y: f64, width: f64, height: f64| {
+            LabelRect::from_value(&json!({"x":x,"y":y,"width":width,"height":height})).unwrap()
+        };
+        let full = rect(0.0, 0.0, 10.0, 10.0);
+        assert!(full.subtract(full).is_empty());
+        assert_eq!(full.subtract(rect(10.0, 0.0, 5.0, 5.0)), [full]);
+        let fragments = full.subtract(rect(2.0, 3.0, 4.0, 5.0));
+        assert_eq!(
+            fragments,
+            [
+                rect(0.0, 0.0, 10.0, 3.0),
+                rect(0.0, 8.0, 10.0, 2.0),
+                rect(0.0, 3.0, 2.0, 5.0),
+                rect(6.0, 3.0, 4.0, 5.0),
+            ]
+        );
+        for bounds in [
+            json!({}),
+            json!({"x":0,"y":0,"width":0,"height":1}),
+            json!({"x":0,"y":0,"width":1,"height":-1}),
+            json!({"x":1e308,"y":0,"width":1e308,"height":1}),
+        ] {
+            assert!(LabelRect::from_value(&bounds).is_none());
+        }
+    }
+
+    #[test]
+    fn menu_labels_use_their_popup_surface_without_exposing_covered_frame_controls() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
+        let menu = json!({"role":"menu item","inPopupMenu":true,"owningWindow":{"windowId":"editor"},"bounds":{"x":0.2,"y":0.1,"width":0.3,"height":0.3},"pointerTarget":{"x":0.3,"y":0.2}});
+        let stack = [editor.clone(), popup.clone()];
+        for role in ["menu item", "check menu item", "radio menu item"] {
+            let mut item = menu.clone();
+            item["role"] = json!(role);
+            let selection = uncovered_labels(vec![item.clone()], Some(&stack), Some(&windows));
+            assert_eq!(selection.nodes, [item]);
+            assert_eq!((selection.hidden, selection.unknown), (0, 0));
+        }
+        let mut underlying = menu.clone();
+        underlying["role"] = json!("push button");
+        let selection = uncovered_labels(vec![underlying], Some(&stack), Some(&windows));
+        assert!(selection.nodes.is_empty());
+        assert_eq!(selection.hidden, 1);
+
+        for pid in [json!(22), Value::Null, json!(0)] {
+            let mut foreign = popup.clone();
+            foreign["pid"] = pid;
+            let selection = uncovered_labels(
+                vec![menu.clone()],
+                Some(&[editor.clone(), foreign]),
+                Some(&windows),
+            );
+            assert!(selection.nodes.is_empty());
+            assert_eq!(selection.hidden, 1);
+        }
+        let ambiguous = [editor.clone(), popup.clone(), popup.clone()];
+        assert!(
+            uncovered_labels(vec![menu.clone()], Some(&ambiguous), Some(&windows))
+                .nodes
+                .is_empty()
+        );
+        let mut cover = popup.clone();
+        cover["pid"] = json!(22);
+        let above = [editor.clone(), popup.clone(), cover];
+        assert!(
+            uncovered_labels(vec![menu.clone()], Some(&above), Some(&windows))
+                .nodes
+                .is_empty()
+        );
+        let mut partial = popup.clone();
+        partial["width"] = json!(0.15);
+        let partial_stack = [editor.clone(), popup.clone(), partial];
+        let selection = uncovered_labels(vec![menu.clone()], Some(&partial_stack), Some(&windows));
+        assert_eq!(selection.nodes.len(), 1);
+        assert!(selection.nodes[0]["pointerTarget"].is_null());
+        let mut hidden = popup;
+        hidden["visible"] = json!(false);
+        assert_eq!(
+            uncovered_labels(vec![menu], Some(&[editor, hidden]), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn menu_bar_items_cannot_borrow_an_unrelated_same_pid_popup_surface() {
+        let back = json!({"pid":11,"title":"Back","visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let front = json!({"pid":11,"title":"Front","visible":true,"x":0.2,"y":0.0,"width":0.3,"height":0.1});
+        let mut back_window = back.clone();
+        back_window["windowId"] = json!("back");
+        let mut front_window = front.clone();
+        front_window["windowId"] = json!("front");
+        let windows = [back_window, front_window];
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
+        let stack = [back, front, popup];
+        let mut command = json!({"role":"menu item","name":"Help","inPopupMenu":false,"owningWindow":{"windowId":"back"},"bounds":{"x":0.25,"y":0.15,"width":0.1,"height":0.1},"pointerTarget":{"x":0.3,"y":0.2}});
+        assert_eq!(
+            label_window_owner(&command["owningWindow"], &windows, &stack),
+            Some(0)
+        );
+        for context in [json!(false), Value::Null] {
+            command["inPopupMenu"] = context;
+            let selection = uncovered_labels(vec![command.clone()], Some(&stack), Some(&windows));
+            assert!(selection.nodes.is_empty());
+            assert_eq!((selection.hidden, selection.unknown), (1, 0));
+        }
+        command["inPopupMenu"] = json!(true);
+        for role in ["menu", "popup menu", "menu bar", "push button"] {
+            command["role"] = json!(role);
+            let selection = uncovered_labels(vec![command.clone()], Some(&stack), Some(&windows));
+            assert!(selection.nodes.is_empty());
+            assert_eq!((selection.hidden, selection.unknown), (1, 0));
+        }
+    }
+
+    #[test]
+    fn labels_are_occluded_by_popups_but_never_owned_by_them() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.1,"width":0.3,"height":0.3});
+        let node = json!({"owningWindow":{"windowId":"editor"},"bounds":{"x":0.25,"y":0.15,"width":0.1,"height":0.1}});
+        let stack = [editor.clone(), popup.clone()];
+        assert_eq!(
+            label_window_owner(&node["owningWindow"], &windows, &stack),
+            Some(0)
+        );
+        let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+        assert_eq!((selection.hidden, selection.unknown), (1, 0));
+        assert!(selection.nodes.is_empty());
+        let below = [popup.clone(), editor];
+        assert_eq!(
+            uncovered_labels(vec![node.clone()], Some(&below), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+        assert_eq!(
+            label_window_owner(&node["owningWindow"], &windows, &[popup]),
+            None
+        );
+    }
+
+    #[test]
+    fn labels_match_unique_pids_without_cross_pid_title_fallbacks() {
+        let owner = json!({"windowId":"editor"});
+        let windows = [json!({"windowId":"editor", "pid":11, "title":"AT-SPI title"})];
+        let stack = [
+            json!({"pid":22,"title":"AT-SPI title"}),
+            json!({"pid":11,"title":"X11 title"}),
+        ];
+        assert_eq!(label_window_owner(&owner, &windows, &stack), Some(1));
+        assert_eq!(label_window_owner(&owner, &windows, &stack[..1]), None);
+        assert_eq!(label_window_owner(&owner, &[], &stack), None);
+        assert_eq!(label_window_owner(&json!({}), &windows, &stack), None);
+        assert_eq!(
+            label_window_owner(&owner, &[json!({"windowId":"editor","pid":0})], &stack),
+            None
+        );
+    }
+
+    #[test]
+    fn labels_disambiguate_only_exact_titles_and_overlapping_rects_within_a_pid() {
+        let owner = json!({"windowId":"editor"});
+        let window = |id: &str, title: &str, x: f64| json!({"windowId":id,"pid":11,"title":title,"x":x,"y":0.0,"width":0.4,"height":0.5});
+        let windows = [
+            window("editor", "Editor", -0.1),
+            window("other", "Editor", 0.6),
+        ];
+        let stack = [window("x1", "Editor", -0.2), window("x2", "Editor", 0.6)];
+        assert_eq!(label_window_owner(&owner, &windows, &stack), Some(0));
+        assert_eq!(
+            label_window_owner(
+                &owner,
+                &windows,
+                &[window("x1", "editor", -0.2), stack[1].clone()]
+            ),
+            None
+        );
+        assert_eq!(
+            label_window_owner(
+                &owner,
+                &windows,
+                &[window("x1", "Editor", 0.3), stack[1].clone()]
+            ),
+            None
+        );
+        assert_eq!(
+            label_window_owner(&owner, &windows, &[stack[0].clone(), stack[0].clone()]),
+            None
+        );
+        assert_eq!(
+            label_window_owner(&owner, &[windows[0].clone(), windows[0].clone()], &stack),
+            None
+        );
+        let mut hidden_peer = stack[0].clone();
+        hidden_peer["visible"] = json!(false);
+        assert_eq!(
+            label_window_owner(&owner, &windows[..1], &[stack[0].clone(), hidden_peer]),
+            None
+        );
+        let mut hidden_accessible = windows[0].clone();
+        hidden_accessible["windowId"] = json!("hidden");
+        assert_eq!(
+            label_window_owner(
+                &owner,
+                &[windows[0].clone(), hidden_accessible],
+                &stack[..1]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn labels_remove_covered_controls_before_the_forty_box_limit() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let stack = [
+            json!({"pid":11,"visible":true,"x":-0.1,"y":0.0,"width":1.0,"height":1.0}),
+            json!({"pid":22,"visible":true,"x":0.3,"y":0.0,"width":0.5,"height":1.0}),
+        ];
+        let control = |x| json!({"owningWindow":{"windowId":"editor"}, "bounds":{"x":x,"y":0.1,"width":0.1,"height":0.05}});
+        let mut nodes = vec![control(0.4); capture::MAX_LABELS];
+        nodes.extend(vec![control(0.0); capture::MAX_LABELS + 1]);
+        let selected = uncovered_labels(nodes.clone(), Some(&stack), Some(&windows));
+        assert_eq!(
+            (selected.nodes.len(), selected.hidden, selected.unknown),
+            (capture::MAX_LABELS, capture::MAX_LABELS, 0)
+        );
+        assert!(selected.nodes.iter().all(|node| node["bounds"]["x"] == 0.0));
+        assert_eq!(uncovered_labels(nodes, None, Some(&windows)).unknown, 81);
+        assert!(
+            uncovered_labels(vec![], Some(&[]), Some(&[]))
+                .nodes
+                .is_empty()
+        );
+        assert_eq!(
+            uncovered_labels(vec![control(0.0)], Some(&stack), None).unknown,
+            1
+        );
+        let mut hidden_stack = stack.clone();
+        hidden_stack[1]["visible"] = json!(false);
+        assert_eq!(
+            uncovered_labels(vec![control(0.4)], Some(&hidden_stack), Some(&windows))
+                .nodes
+                .len(),
+            1
+        );
+        hidden_stack[0]["visible"] = json!(false);
+        assert_eq!(
+            uncovered_labels(vec![control(0.0)], Some(&hidden_stack), Some(&windows)).hidden,
+            1
+        );
+    }
+
+    #[test]
+    fn labelled_screenshot_rejects_bad_labels_before_observing() {
+        let workspace = Path::new("/nonexistent");
+        let both =
+            json!({"region":{"x":0,"y":0,"width":0.5,"height":0.5},"labels":{"query":"Save"}});
+        assert!(
+            labelled_screenshot(workspace, "s", &both)
+                .unwrap_err()
+                .contains("not both")
+        );
+        let extra = json!({"labels":{"query":"Save","limit":3}});
+        assert!(
+            labelled_screenshot(workspace, "s", &extra)
+                .unwrap_err()
+                .contains("only query")
+        );
+        let empty = json!({"labels":{"query":" "}});
+        assert!(
+            labelled_screenshot(workspace, "s", &empty)
+                .unwrap_err()
+                .contains("labels.query is required")
+        );
+    }
+
+    /// Labels controls on a running managed desktop (for example after
+    /// `gc desktop quick`); runs only with `GLASS_E2E=1`.
+    #[test]
+    fn labelled_screenshot_reaches_a_running_managed_desktop() {
+        if std::env::var_os("GLASS_E2E").is_none() || !service_running() {
+            return;
+        }
+        let status = Desktop::agent_status().unwrap();
+        let session_id = status["sessionId"].as_str().unwrap();
+        let workspace = Path::new(status["workspaceRoot"].as_str().unwrap());
+        let apps =
+            Desktop::agent_launch_app(&json!({"action":"list","sessionId":session_id})).unwrap();
+        let mousepad = apps.to_string().contains("org.xfce.mousepad");
+        if mousepad {
+            Desktop::agent_launch_app(&json!({"action":"launch","sessionId":session_id,"desktopEntryId":"org.xfce.mousepad"}))
+                .unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+        }
+        let query = if mousepad { "Mousepad" } else { "panel" };
+        let result =
+            labelled_screenshot(workspace, session_id, &json!({"labels":{"query":query}})).unwrap();
+        assert!(result.contains("Numbered boxes mark"), "{result}");
+        assert!(result.contains("\n[1] "), "{result}");
+        if mousepad {
+            assert!(
+                result.contains("\n[3] "),
+                "labels go past two matches: {result}"
+            );
+        }
+        let path = result
+            .split('`')
+            .nth(1)
+            .map(|path| workspace.join(path))
+            .unwrap();
+        let image = image::open(&path).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (WIDTH, HEIGHT));
+        eprintln!("{result}");
     }
 
     #[test]

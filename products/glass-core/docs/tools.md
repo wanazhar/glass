@@ -36,7 +36,11 @@ them in an agent session.
   frame. It writes a generated artifact under `.gc-artifacts/desktop` and
   returns its workspace-relative path. Use `view_image` with that path. The
   thread and desktop workspace roots must match. The tool retains at most eight
-  frames for the current session.
+  frames for the current session. With `labels: {"query": ...}` it runs the
+  same focused query as `desktop_observe` and draws up to 40 numbered boxes on
+  the matching onscreen controls. The text legend maps each number to its role,
+  name, target ID and pointer position from that observation revision. Labels
+  describe the frame; actions still need a fresh, unambiguous observation.
 - `desktop_observe` reads visible applications, the focused or active window,
   and accessible controls through the session-private accessibility bus. It
   returns a bounded tree with `sessionId`, `revision`, and target IDs where

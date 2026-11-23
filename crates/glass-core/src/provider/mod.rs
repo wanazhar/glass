@@ -557,7 +557,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/(width - 1), y=py/(height - 1) using desktop_status width and height. To read small text or check a detail, pass `region` to zoom: that part of the screen is returned at full resolution, enlarged up to 4x, and the result says how to map its pixels back to desktop_input coordinates. Example: {\"sessionId\":\"<from desktop_status>\",\"region\":{\"x\":0.5,\"y\":0,\"width\":0.5,\"height\":0.25}} zooms on the top-right quarter. For web pages use browser_screenshot.".to_string(),
+            "Capture a fresh frame from the managed session identified by the latest desktop_status.sessionId. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease. A pixel (px, py) in this image maps to desktop_input x=px/(width - 1), y=py/(height - 1) using desktop_status width and height. To read small text or check a detail, pass `region` to zoom: that part of the screen is returned at full resolution, enlarged up to 4x, and the result says how to map its pixels back to desktop_input coordinates. Example: {\"sessionId\":\"<from desktop_status>\",\"region\":{\"x\":0.5,\"y\":0,\"width\":0.5,\"height\":0.25}} zooms on the top-right quarter. To see which control is which, pass `labels` with a desktop_observe query: each matching onscreen control gets a numbered box, and the result lists each number's role, name, targetId and pointer, ready for desktop_act or desktop_input. Example: {\"sessionId\":\"<from desktop_status>\",\"labels\":{\"query\":\"Mousepad Save\"}}. For web pages use browser_screenshot.".to_string(),
             serde_json::json!({"type":"object","properties":{
                 "sessionId":{"type":"string","maxLength":64},
                 "region":{"type":"object","description":"Optional zoom area as fractions of the screen; at least 0.02 wide and tall.","properties":{
@@ -565,7 +565,11 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                     "y":{"type":"number","minimum":0,"maximum":1},
                     "width":{"type":"number","minimum":0.02,"maximum":1},
                     "height":{"type":"number","minimum":0.02,"maximum":1}
-                },"required":["x","y","width","height"],"additionalProperties":false}
+                },"required":["x","y","width","height"],"additionalProperties":false},
+                "labels":{"type":"object","description":"Optional: number the onscreen controls matching a desktop_observe query on the screenshot. Not combined with region.","properties":{
+                    "query":{"type":"string","minLength":1,"maxLength":120,"description":"Same 1-8 word search as desktop_observe.query, for example \"Mousepad Save\"."},
+                    "windowId":{"type":"string","maxLength":96,"description":"Optional windowId from the latest desktop_observe to label one window."}
+                },"required":["query"],"additionalProperties":false}
             },"required":["sessionId"],"additionalProperties":false}).to_string(),
         ),
         (

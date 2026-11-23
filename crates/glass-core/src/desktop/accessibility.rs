@@ -19,6 +19,7 @@ const MAX_WINDOW_ROOTS: usize = 64;
 const MAX_NAME_CHARS: usize = 120;
 const MAX_VALUE_CHARS: usize = 160;
 const MAX_ACTIONS: usize = 8;
+pub(super) const BOUNDS_ROUNDING_SCALE: f64 = 10_000.0;
 const DBUS_CALL_TIMEOUT: Duration = Duration::from_millis(500);
 const OBSERVATION_BUDGET: Duration = Duration::from_secs(3);
 const FOCUSED_SEARCH_BUDGET: Duration = Duration::from_secs(12);
@@ -55,13 +56,57 @@ pub(super) struct WindowRoot {
     pub identity: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuContainer {
+    Bar,
+    Popup,
+    Button,
+}
+
+impl MenuContainer {
+    fn is_popup(self) -> bool {
+        matches!(self, Self::Popup | Self::Button)
+    }
+}
+
+fn is_open_menu_control(role: &str, states: StateSet) -> bool {
+    matches!(role, "toggle button" | "menu button")
+        && states.contains(State::Visible)
+        && states.contains(State::Showing)
+        && states.contains(State::Checked)
+}
+
+fn child_menu_container(
+    role: &str,
+    inherited: Option<MenuContainer>,
+    states: StateSet,
+) -> Option<MenuContainer> {
+    match role {
+        "menu bar" => Some(MenuContainer::Bar),
+        "menu" | "popup menu" => Some(MenuContainer::Popup),
+        _ if is_window_role(role) => None,
+        _ if inherited.is_none() && is_open_menu_control(role, states) => {
+            Some(MenuContainer::Button)
+        }
+        _ if inherited == Some(MenuContainer::Button) => None,
+        _ => inherited,
+    }
+}
+
 pub(super) fn observe(
     session_bus_address: &str,
     session_id: &str,
     revision: u64,
     query: Option<&str>,
 ) -> Result<Snapshot, String> {
-    observe_scoped(session_bus_address, session_id, revision, query, None)
+    observe_scoped(
+        session_bus_address,
+        session_id,
+        revision,
+        query,
+        None,
+        false,
+    )
 }
 
 pub(super) fn observe_scoped(
@@ -70,6 +115,7 @@ pub(super) fn observe_scoped(
     revision: u64,
     query: Option<&str>,
     window_root: Option<WindowRoot>,
+    label_scan: bool,
 ) -> Result<Snapshot, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -93,6 +139,7 @@ pub(super) fn observe_scoped(
                 query,
                 None,
                 window_root,
+                label_scan,
             ),
         )
         .await
@@ -107,6 +154,7 @@ async fn observe_async(
     query: Option<&str>,
     window_root: Option<WindowRoot>,
     application_window_scope: Option<WindowRoot>,
+    label_scan: bool,
 ) -> Result<Snapshot, String> {
     let query_terms = query.map(validate_query).transpose()?;
     let window_scoped = window_root.is_some() || application_window_scope.is_some();
@@ -159,14 +207,7 @@ async fn observe_async(
         };
         let identity_source = fallback.as_deref().unwrap_or(&raw_name);
         let identity = window_name_identity(identity_source);
-        if !window_identity_matches(&window_root.role, &window_root.identity, &role, &identity)
-            || !matches!(
-                role.to_ascii_lowercase().as_str(),
-                "frame" | "window" | "dialog"
-            )
-            || !states.contains(State::Visible)
-            || !states.contains(State::Showing)
-        {
+        if !window_scope_is_current(window_root, &role, &identity, states) {
             return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
         }
     }
@@ -176,13 +217,19 @@ async fn observe_async(
         .build()
         .await
         .map_err(accessibility_error)?;
-    let mut application_roots = if window_root.is_some() && application_window_scope.is_none() {
-        Vec::new()
-    } else {
-        root.get_children().await.map_err(accessibility_error)?
-    };
+    let mut application_roots =
+        if !label_scan && window_root.is_some() && application_window_scope.is_none() {
+            Vec::new()
+        } else {
+            root.get_children().await.map_err(accessibility_error)?
+        };
     let roots_truncated = application_roots.len() > MAX_NODES;
     application_roots.truncate(MAX_NODES);
+    let label_windows = if label_scan && !roots_truncated {
+        label_window_inventory(&accessibility, &application_roots, session_id).await
+    } else {
+        None
+    };
     let mut app_scoped_query = window_scoped;
     let mut scoped_window_roots = Vec::<(ObjectRefOwned, String)>::new();
     if let Some(window_root) = window_root {
@@ -274,6 +321,7 @@ async fn observe_async(
                     Some(application_name),
                     None::<Value>,
                     None::<ObjectRefOwned>,
+                    None::<MenuContainer>,
                 ));
             }
         }
@@ -286,6 +334,7 @@ async fn observe_async(
                     None::<String>,
                     None::<Value>,
                     None::<ObjectRefOwned>,
+                    None::<MenuContainer>,
                 ));
             }
         }
@@ -295,7 +344,7 @@ async fn observe_async(
         || (!discovered.is_empty()
             && pending
                 .iter()
-                .all(|(_, depth, application, _, _)| *depth > 0 && application.is_some()));
+                .all(|(_, depth, application, _, _, _)| *depth > 0 && application.is_some()));
 
     let mut nodes = Vec::new();
     let mut applications = scoped_application_names;
@@ -337,8 +386,14 @@ async fn observe_async(
     #[cfg(test)]
     let mut test_pruned_branches = Vec::<Value>::new();
     let started = Instant::now();
-    while let Some((object, depth, parent_application, parent_window, parent_window_object)) =
-        pending.pop_front()
+    while let Some((
+        object,
+        depth,
+        parent_application,
+        parent_window,
+        parent_window_object,
+        parent_menu_container,
+    )) = pending.pop_front()
     {
         if visited >= node_budget || started.elapsed() >= traversal_budget {
             truncated = true;
@@ -378,10 +433,7 @@ async fn observe_async(
         let states = states_result.unwrap_or_else(|_| StateSet::empty());
         let role_lower = role.to_ascii_lowercase();
         let is_password = is_password_role(&role_lower);
-        let is_window = matches!(
-            role_lower.as_str(),
-            "frame" | "window" | "dialog" | "alert" | "file chooser"
-        );
+        let is_window = is_window_role(&role);
         let visible = states.contains(State::Visible) && states.contains(State::Showing);
         let tree_visible = states.contains(State::Visible);
         let can_activate_role = role_can_activate(&role_lower);
@@ -637,6 +689,7 @@ async fn observe_async(
                 "name": name,
                 "application": application.clone(),
                 "owningWindow": if query.is_some() { window.clone() } else { None },
+                "inPopupMenu": parent_menu_container.is_some_and(MenuContainer::is_popup),
                 "states": state_names(states),
                 "actions": action_names,
                 "pointerFallback": pointer_fallback_candidate,
@@ -648,14 +701,18 @@ async fn observe_async(
             let matches_query = query_terms
                 .as_ref()
                 .is_none_or(|terms| query_matches(&node, terms));
-            let screen_target_value = if matches_query
+            let screen_extents = if matches_query
                 && query.is_some()
                 && (is_actionable || pointer_fallback_candidate)
             {
-                query_screen_target(&accessible).await
+                query_screen_extents(&accessible).await
             } else {
                 None
             };
+            let screen_target_value = screen_extents.and_then(pointer_target_from_extents);
+            if visible && let Some(bounds) = screen_extents.and_then(bounds_from_extents) {
+                node["bounds"] = bounds;
+            }
             if query.is_some() && (is_actionable || pointer_fallback_candidate) {
                 // For query results this reports measured screen-rectangle
                 // intersection, not merely AT-SPI's Visible state.
@@ -731,7 +788,7 @@ async fn observe_async(
             ));
             if query.is_some() && matched_actionable_count >= 2 {
                 query_ambiguous = true;
-                if matched_visible_count > 0 {
+                if matched_visible_count > 0 && query_scan_is_done(label_scan) {
                     truncated = !pending.is_empty();
                     break;
                 }
@@ -741,9 +798,7 @@ async fn observe_async(
         // children of the panel. The reciprocal PopupFor relation is exposed
         // as ParentWindowOf on the visible owner frame, not on the menu
         // toggle itself, so follow it from visible app-scoped windows too.
-        let checked_menu_control = matches!(role_lower.as_str(), "toggle button" | "menu button")
-            && visible
-            && states.contains(State::Checked);
+        let checked_menu_control = is_open_menu_control(&role_lower, states);
         let mut embedded_document_found = false;
         if app_scoped_query && window_is_in_scope && visible && (checked_menu_control || is_window)
         {
@@ -775,6 +830,7 @@ async fn observe_async(
                             application.clone(),
                             window.clone(),
                             window_object.clone(),
+                            None,
                         );
                         // Browser content queries need the document before the
                         // browser chrome; otherwise a long page can consume
@@ -864,6 +920,7 @@ async fn observe_async(
                                 application.clone(),
                                 window.clone(),
                                 window_object.clone(),
+                                child_menu_container(&role_lower, parent_menu_container, states),
                             ));
                         }
                     }
@@ -905,7 +962,7 @@ async fn observe_async(
         return Err(super::STALE_WINDOW_SELECTOR_RECOVERY.into());
     }
 
-    let value = json!({
+    let mut value = json!({
         "sessionId": session_id,
         "revision": revision,
         "query": query,
@@ -917,6 +974,9 @@ async fn observe_async(
         "queryAmbiguous": query_ambiguous,
         "nodes": nodes,
     });
+    if label_scan {
+        value["labelWindows"] = json!(label_windows);
+    }
     #[cfg(test)]
     let value = {
         let mut value = value;
@@ -941,6 +1001,71 @@ fn query_match_counts_toward_ambiguity(matches: bool, actionable: bool) -> bool 
 
 fn query_match_is_visible(matches: bool, actionable: bool, visible: bool, onscreen: bool) -> bool {
     matches && actionable && visible && onscreen
+}
+
+/// Two matches already make an ordinary query ambiguous. A labelled
+/// screenshot keeps scanning within the traversal budgets, so covered controls
+/// can be removed before applying the box limit.
+fn query_scan_is_done(label_scan: bool) -> bool {
+    !label_scan
+}
+
+async fn label_window_inventory(
+    connection: &atspi::zbus::Connection,
+    applications: &[ObjectRefOwned],
+    session_id: &str,
+) -> Option<Vec<Value>> {
+    // AT-SPI exposes application-specific AccessibleIds, not X11 XIDs. Resolve
+    // the application's bus PID and associate it with _NET_WM_PID instead.
+    let bus = Proxy::new(
+        connection,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    )
+    .await
+    .ok()?;
+    let mut windows = Vec::new();
+    for object in applications {
+        let application = object.as_accessible_proxy(connection).await.ok()?;
+        let pid: u32 = bus
+            .call("GetConnectionUnixProcessID", &(object.name_as_str()?,))
+            .await
+            .ok()?;
+        let children = application.get_children().await.ok()?;
+        if windows.len() + children.len() > MAX_SEARCH_NODES {
+            return None;
+        }
+        for child in children {
+            let window = child.as_accessible_proxy(connection).await.ok()?;
+            let role = window.get_role_name().await.ok()?;
+            if !is_window_role(&role) {
+                continue;
+            }
+            let title = window.name().await.ok()?;
+            let identity = if title.trim().is_empty() {
+                display_accessible_name(
+                    title.clone(),
+                    Some(accessible_context_name(&window, connection).await),
+                )
+            } else {
+                title.clone()
+            };
+            let mut metadata = json!({
+                "windowId": accessibility_window_id(session_id, &child, &role, &window_name_identity(&identity)),
+                "pid": pid,
+                "title": title,
+            });
+            if let Some((x, y, width, height)) = query_screen_extents(&window).await {
+                metadata["x"] = json!(x as f64 / super::WIDTH as f64);
+                metadata["y"] = json!(y as f64 / super::HEIGHT as f64);
+                metadata["width"] = json!(width as f64 / super::WIDTH as f64);
+                metadata["height"] = json!(height as f64 / super::HEIGHT as f64);
+            }
+            windows.push(metadata);
+        }
+    }
+    Some(windows)
 }
 
 fn focused_search_result_is_actionable(
@@ -1229,6 +1354,24 @@ fn window_identity_matches(
     observed_role.eq_ignore_ascii_case(current_role) && observed_identity == current_identity
 }
 
+fn is_window_role(role: &str) -> bool {
+    ["frame", "window", "dialog", "alert", "file chooser"]
+        .iter()
+        .any(|window_role| role.eq_ignore_ascii_case(window_role))
+}
+
+fn window_scope_is_current(
+    window: &WindowRoot,
+    role: &str,
+    identity: &str,
+    states: StateSet,
+) -> bool {
+    is_window_role(role)
+        && window_identity_matches(&window.role, &window.identity, role, identity)
+        && states.contains(State::Visible)
+        && states.contains(State::Showing)
+}
+
 fn should_follow_related_object(
     is_window: bool,
     checked_menu_control: bool,
@@ -1322,11 +1465,33 @@ fn pointer_target_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
     }))
 }
 
-async fn query_screen_target(accessible: &AccessibleProxy<'_>) -> Option<Value> {
+/// The onscreen part of a control's extents as screen fractions, used to draw
+/// labelled screenshots. It is descriptive, not an action token.
+fn bounds_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
+    let (x, y, width, height) = extents;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let left = x.max(0);
+    let top = y.max(0);
+    let right = x.checked_add(width)?.min(super::WIDTH as i32);
+    let bottom = y.checked_add(height)?.min(super::HEIGHT as i32);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let round = |value: f64| (value * BOUNDS_ROUNDING_SCALE).round() / BOUNDS_ROUNDING_SCALE;
+    Some(json!({
+        "x": round(left as f64 / super::WIDTH as f64),
+        "y": round(top as f64 / super::HEIGHT as f64),
+        "width": round((right - left) as f64 / super::WIDTH as f64),
+        "height": round((bottom - top) as f64 / super::HEIGHT as f64)
+    }))
+}
+
+async fn query_screen_extents(accessible: &AccessibleProxy<'_>) -> Option<(i32, i32, i32, i32)> {
     let proxies = accessible.proxies().await.ok()?;
     let component = proxies.component().await.ok()?;
-    let extents = component.get_extents(CoordType::Screen).await.ok()?;
-    pointer_target_from_extents(extents)
+    component.get_extents(CoordType::Screen).await.ok()
 }
 
 fn unverified_click_result(action_name: &str) -> Value {
@@ -1467,7 +1632,10 @@ async fn act_async(
     }
     if target.screen_bound
         && (target.supports_click || target.supports_focus || target.supports_text)
-        && query_screen_target(&accessible).await.is_none()
+        && query_screen_extents(&accessible)
+            .await
+            .and_then(pointer_target_from_extents)
+            .is_none()
     {
         return Err(
             "Accessibility target is outside the current screen; observe and scroll again".into(),
@@ -1709,19 +1877,172 @@ mod tests {
         );
         assert!(targets.is_empty());
     }
+    use super::super::{HEIGHT, LabelRect, WIDTH, label_popup_surface, uncovered_labels};
     use super::{
-        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, UNSUPPORTED_CLICK_RECOVERY,
-        accessibility_target_id, accessibility_window_id_from_parts, bounded_accessible_name,
-        display_accessible_name, focused_query_role_is_leaf, focused_search_result_is_actionable,
-        is_password_role, is_pointer_fallback_candidate, node_is_relevant,
+        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, MenuContainer, ObjectRefOwned, RelationType,
+        State, StateSet, UNSUPPORTED_CLICK_RECOVERY, WindowRoot, accessibility_target_id,
+        accessibility_window_id, accessibility_window_id_from_parts, bounded_accessible_name,
+        bounds_from_extents, child_menu_container, display_accessible_name,
+        focused_query_role_is_leaf, focused_search_result_is_actionable, is_password_role,
+        is_pointer_fallback_candidate, is_window_role, node_is_relevant,
         owner_is_within_ancestor_limit, pointer_target_from_extents, protect_text_value,
         query_can_issue_action_tokens, query_is_focused, query_matches,
-        query_prefers_document_content, query_skips_app_menus, role_matches_hint,
-        should_follow_related_object, target_can_be_exposed, text_edit_is_supported,
-        unverified_click_result, validate_query, window_id_is_in_scope, window_identity_matches,
-        window_name_identity, window_title_terms, withhold_unverified_query_tokens,
+        query_prefers_document_content, query_scan_is_done, query_skips_app_menus,
+        role_matches_hint, should_follow_related_object, target_can_be_exposed,
+        text_edit_is_supported, unverified_click_result, validate_query, window_id_is_in_scope,
+        window_identity_matches, window_name_identity, window_scope_is_current, window_title_terms,
+        withhold_unverified_query_tokens,
     };
     use serde_json::json;
+
+    #[test]
+    fn menu_ancestry_distinguishes_popup_items_from_menu_bar_commands() {
+        let states = StateSet::empty();
+        let bar = child_menu_container("menu bar", None, states);
+        assert_eq!(bar, Some(MenuContainer::Bar));
+        assert_eq!(child_menu_container("menu item", bar, states), bar);
+        let popup = child_menu_container("menu", bar, states);
+        assert_eq!(popup, Some(MenuContainer::Popup));
+        for role in ["menu item", "check menu item", "radio menu item", "panel"] {
+            assert_eq!(child_menu_container(role, popup, states), popup);
+        }
+        assert_eq!(child_menu_container("popup menu", None, states), popup);
+        assert_eq!(child_menu_container("menu bar", popup, states), bar);
+        assert_eq!(child_menu_container("frame", popup, states), None);
+        assert_eq!(child_menu_container("dialog", popup, states), None);
+        assert_eq!(child_menu_container("menu item", None, states), None);
+    }
+
+    #[test]
+    fn flattened_gtk3_menu_button_commands_keep_their_popup_labels() {
+        let open = StateSet::new(State::Visible | State::Showing | State::Checked);
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":0.2,"y":0.2,"width":0.3,"height":0.3});
+        let command = |role, context: Option<MenuContainer>| {
+            json!({
+                "role":role,
+                "name":"Save",
+                "inPopupMenu":context.is_some_and(MenuContainer::is_popup),
+                "owningWindow":{"windowId":"editor"},
+                "bounds":{"x":0.25,"y":0.25,"width":0.1,"height":0.05},
+                "pointerTarget":{"x":0.3,"y":0.275}
+            })
+        };
+        for button_role in ["toggle button", "menu button"] {
+            let frame = child_menu_container("frame", None, open);
+            let context = child_menu_container(button_role, frame, open);
+            assert_eq!(context, Some(MenuContainer::Button));
+            for role in ["menu item", "check menu item", "radio menu item"] {
+                let node = command(role, context);
+                let stack = [editor.clone(), popup.clone()];
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert_eq!(selection.nodes, [node]);
+                assert_eq!((selection.hidden, selection.unknown), (0, 0));
+            }
+            for role in ["push button", "panel", "toggle button"] {
+                let node = command(role, context);
+                let stack = [editor.clone(), popup.clone()];
+                let selection = uncovered_labels(vec![node], Some(&stack), Some(&windows));
+                assert!(selection.nodes.is_empty());
+                assert_eq!((selection.hidden, selection.unknown), (1, 0));
+            }
+            for role in ["menu item", "panel", "frame"] {
+                assert_eq!(child_menu_container(role, context, open), None);
+            }
+            assert_eq!(
+                child_menu_container("menu", context, open),
+                Some(MenuContainer::Popup)
+            );
+            let bar = child_menu_container("menu bar", None, open);
+            let barred = child_menu_container(button_role, bar, open);
+            assert_eq!(barred, bar);
+            for context in [
+                barred,
+                None,
+                child_menu_container(button_role, None, StateSet::empty()),
+                child_menu_container(
+                    button_role,
+                    None,
+                    StateSet::new(State::Visible | State::Showing),
+                ),
+                child_menu_container(
+                    button_role,
+                    None,
+                    StateSet::new(State::Visible | State::Checked),
+                ),
+                child_menu_container(
+                    button_role,
+                    None,
+                    StateSet::new(State::Showing | State::Checked),
+                ),
+                child_menu_container("push button", None, open),
+            ] {
+                let node = command("menu item", context);
+                let stack = [editor.clone(), popup.clone()];
+                let selection = uncovered_labels(vec![node], Some(&stack), Some(&windows));
+                assert!(selection.nodes.is_empty());
+                assert_eq!((selection.hidden, selection.unknown), (1, 0));
+            }
+            let node = command("menu item", context);
+            let mut foreign = popup.clone();
+            foreign["pid"] = json!(22);
+            for stack in [
+                vec![editor.clone(), foreign],
+                vec![editor.clone(), popup.clone(), popup.clone()],
+            ] {
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert!(selection.nodes.is_empty());
+                assert_eq!((selection.hidden, selection.unknown), (1, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn popup_association_accepts_pixel_derived_edge_aligned_menu_rows() {
+        let windows = [json!({"windowId":"editor","pid":11})];
+        let editor = json!({"pid":11,"visible":true,"x":0.0,"y":0.0,"width":1.0,"height":1.0});
+        for (x, y) in [(0, 0), (1, 1), (37, 53), (127, 79)] {
+            for (width, height) in [(102, 100), (200, 25), (102, 25)] {
+                let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":x as f64 / WIDTH as f64,"y":y as f64 / HEIGHT as f64,"width":width as f64 / WIDTH as f64,"height":height as f64 / HEIGHT as f64});
+                let bounds = bounds_from_extents((x, y, 102, 25)).unwrap();
+                let node = json!({"role":"menu item","inPopupMenu":true,"owningWindow":{"windowId":"editor"},"bounds":bounds,"pointerTarget":{"x":(x + 51) as f64 / WIDTH as f64,"y":(y + 12) as f64 / HEIGHT as f64}});
+                let stack = [editor.clone(), popup];
+                assert_eq!(
+                    label_popup_surface(
+                        &node,
+                        LabelRect::from_value(&node["bounds"]).unwrap(),
+                        0,
+                        &stack
+                    ),
+                    Some(1)
+                );
+                let selection = uncovered_labels(vec![node.clone()], Some(&stack), Some(&windows));
+                assert_eq!(selection.nodes, [node]);
+                assert_eq!((selection.hidden, selection.unknown), (0, 0));
+            }
+        }
+        let popup = json!({"pid":11,"occluderOnly":true,"visible":true,"x":37.0 / WIDTH as f64,"y":53.0 / HEIGHT as f64,"width":102.0 / WIDTH as f64,"height":25.0 / HEIGHT as f64});
+        let stack = [editor, popup];
+        for extents in [
+            (36, 53, 102, 25),
+            (37, 52, 102, 25),
+            (37, 53, 103, 25),
+            (37, 53, 102, 26),
+        ] {
+            let bounds = bounds_from_extents(extents).unwrap();
+            let node = json!({"role":"menu item","inPopupMenu":true,"bounds":bounds});
+            assert_eq!(
+                label_popup_surface(
+                    &node,
+                    LabelRect::from_value(&node["bounds"]).unwrap(),
+                    0,
+                    &stack
+                ),
+                None
+            );
+        }
+    }
 
     #[test]
     fn unsupported_accessibility_click_error_has_grounded_pointer_recovery() {
@@ -1904,6 +2225,26 @@ mod tests {
             display_accessible_name("Raw title".into(), Some("Child label".into())),
             "Raw title"
         );
+    }
+
+    #[test]
+    fn bounds_keep_only_the_onscreen_part_of_a_control() {
+        assert_eq!(
+            bounds_from_extents((128, 200, 64, 40)),
+            Some(json!({"x":0.1,"y":0.25,"width":0.05,"height":0.05}))
+        );
+        assert_eq!(
+            bounds_from_extents((-64, 0, 128, 80)),
+            Some(json!({"x":0.0,"y":0.0,"width":0.05,"height":0.1}))
+        );
+        assert!(bounds_from_extents((1300, 10, 20, 20)).is_none());
+        assert!(bounds_from_extents((10, 10, 0, 20)).is_none());
+    }
+
+    #[test]
+    fn only_a_labelled_screenshot_keeps_scanning_past_an_ambiguous_match() {
+        assert!(query_scan_is_done(false));
+        assert!(!query_scan_is_done(true));
     }
 
     #[test]
@@ -2143,6 +2484,81 @@ mod tests {
                 "Downloads",
             )
         );
+    }
+
+    #[test]
+    fn issued_window_selectors_accept_visible_file_choosers_and_alerts() {
+        let visible = StateSet::new(State::Visible | State::Showing);
+        for role in ["frame", "window", "dialog", "file chooser", "alert"] {
+            assert!(is_window_role(role));
+            let window = WindowRoot {
+                object: ObjectRefOwned::from_static_str_unchecked(":1.8", "/window/3"),
+                application: "Editor".into(),
+                role: role.into(),
+                identity: window_name_identity("Choose a file"),
+            };
+            let id = accessibility_window_id(
+                "session-a",
+                &window.object,
+                &window.role,
+                &window.identity,
+            );
+            let windows = std::collections::HashMap::from([(id.clone(), window)]);
+            let cached = windows.get(&id).unwrap();
+            assert!(
+                window_scope_is_current(cached, role, &cached.identity, visible),
+                "{role}"
+            );
+            assert!(window_scope_is_current(
+                cached,
+                &role.to_ascii_uppercase(),
+                &cached.identity,
+                visible
+            ));
+            assert!(!window_scope_is_current(
+                cached,
+                role,
+                &window_name_identity("Another window"),
+                visible
+            ));
+            assert!(!window_scope_is_current(
+                cached,
+                "push button",
+                &cached.identity,
+                visible
+            ));
+            for states in [
+                StateSet::empty(),
+                StateSet::new(State::Visible),
+                StateSet::new(State::Showing),
+            ] {
+                assert!(!window_scope_is_current(
+                    cached,
+                    role,
+                    &cached.identity,
+                    states
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn window_scopes_reject_empty_and_nonwindow_roles_even_with_matching_identity() {
+        for role in ["", "application", "push button", "unknown"] {
+            assert!(!is_window_role(role));
+            let window = WindowRoot {
+                object: ObjectRefOwned::from_static_str_unchecked(":1.8", "/window/3"),
+                application: "Editor".into(),
+                role: role.into(),
+                identity: window_name_identity("Choose a file"),
+            };
+            assert!(!window_scope_is_current(
+                &window,
+                role,
+                &window.identity,
+                StateSet::new(State::Visible | State::Showing)
+            ));
+        }
     }
 
     #[test]

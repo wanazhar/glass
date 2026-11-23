@@ -1973,6 +1973,234 @@
       ]
     },
     {
+      "path": "docs/GLASS-IOS-FULL-PLAN.md",
+      "class": "current",
+      "topic": "reference",
+      "audience": "glass-user",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#glass-documentation",
+      "route": "docs/GLASS-IOS-FULL-PLAN.md#glass-ios-full-parity-plan",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass iOS: full-parity plan",
+          "anchor": "glass-ios-full-parity-plan"
+        },
+        {
+          "level": "2",
+          "title": "Contents",
+          "anchor": "contents"
+        },
+        {
+          "level": "2",
+          "title": "1. Sources read",
+          "anchor": "1-sources-read"
+        },
+        {
+          "level": "2",
+          "title": "2. Toolchain check on this Mac",
+          "anchor": "2-toolchain-check-on-this-mac"
+        },
+        {
+          "level": "2",
+          "title": "3. Gateway contract the app must speak",
+          "anchor": "3-gateway-contract-the-app-must-speak"
+        },
+        {
+          "level": "3",
+          "title": "3.1 Two connection modes",
+          "anchor": "31-two-connection-modes"
+        },
+        {
+          "level": "3",
+          "title": "3.2 Remote request checks (`connect.rs`: `proxy_authorized`, `authorized`)",
+          "anchor": "32-remote-request-checks-connectrs-proxyauthorized-authorized"
+        },
+        {
+          "level": "3",
+          "title": "3.3 Pairing (`POST /api/local`)",
+          "anchor": "33-pairing-post-apilocal"
+        },
+        {
+          "level": "3",
+          "title": "3.4 Secret capability",
+          "anchor": "34-secret-capability"
+        },
+        {
+          "level": "3",
+          "title": "3.5 Events stream (`GET /api/events`)",
+          "anchor": "35-events-stream-get-apievents"
+        },
+        {
+          "level": "3",
+          "title": "3.6 Limits the client must enforce first",
+          "anchor": "36-limits-the-client-must-enforce-first"
+        },
+        {
+          "level": "3",
+          "title": "3.7 Desktop transport",
+          "anchor": "37-desktop-transport"
+        },
+        {
+          "level": "2",
+          "title": "4. Parity matrix",
+          "anchor": "4-parity-matrix"
+        },
+        {
+          "level": "3",
+          "title": "4.1 Launch, shell and platform",
+          "anchor": "41-launch-shell-and-platform"
+        },
+        {
+          "level": "3",
+          "title": "4.2 Auth and pairing",
+          "anchor": "42-auth-and-pairing"
+        },
+        {
+          "level": "3",
+          "title": "4.3 Threads and sidebar",
+          "anchor": "43-threads-and-sidebar"
+        },
+        {
+          "level": "3",
+          "title": "4.4 Conversation, history and events",
+          "anchor": "44-conversation-history-and-events"
+        },
+        {
+          "level": "3",
+          "title": "4.5 Composer and send",
+          "anchor": "45-composer-and-send"
+        },
+        {
+          "level": "3",
+          "title": "4.6 Status, control and interaction",
+          "anchor": "46-status-control-and-interaction"
+        },
+        {
+          "level": "3",
+          "title": "4.7 Commands",
+          "anchor": "47-commands"
+        },
+        {
+          "level": "3",
+          "title": "4.8 Settings and preferences",
+          "anchor": "48-settings-and-preferences"
+        },
+        {
+          "level": "3",
+          "title": "4.9 Details panel (Activity, Reasoning, Context, Files) and teammates",
+          "anchor": "49-details-panel-activity-reasoning-context-files-and-teammates"
+        },
+        {
+          "level": "3",
+          "title": "4.10 Previews, attachments and artifacts",
+          "anchor": "410-previews-attachments-and-artifacts"
+        },
+        {
+          "level": "3",
+          "title": "4.11 Shared desktop",
+          "anchor": "411-shared-desktop"
+        },
+        {
+          "level": "3",
+          "title": "4.12 Keyboard shortcuts",
+          "anchor": "412-keyboard-shortcuts"
+        },
+        {
+          "level": "3",
+          "title": "4.13 Every API call, by route",
+          "anchor": "413-every-api-call-by-route"
+        },
+        {
+          "level": "3",
+          "title": "4.14 Summary",
+          "anchor": "414-summary"
+        },
+        {
+          "level": "2",
+          "title": "5. GlassClientKit shared package",
+          "anchor": "5-glassclientkit-shared-package"
+        },
+        {
+          "level": "2",
+          "title": "6. App architecture",
+          "anchor": "6-app-architecture"
+        },
+        {
+          "level": "2",
+          "title": "7. Build and unsigned IPA pipeline",
+          "anchor": "7-build-and-unsigned-ipa-pipeline"
+        },
+        {
+          "level": "2",
+          "title": "8. Phased milestones and test gates",
+          "anchor": "8-phased-milestones-and-test-gates"
+        },
+        {
+          "level": "3",
+          "title": "M0: scaffolding and pipeline",
+          "anchor": "m0-scaffolding-and-pipeline"
+        },
+        {
+          "level": "3",
+          "title": "M1: pairing, auth, status, diagnostics",
+          "anchor": "m1-pairing-auth-status-diagnostics"
+        },
+        {
+          "level": "3",
+          "title": "M2: threads, history, live events",
+          "anchor": "m2-threads-history-live-events"
+        },
+        {
+          "level": "3",
+          "title": "M3: composer, send, control, interactions, uploads",
+          "anchor": "m3-composer-send-control-interactions-uploads"
+        },
+        {
+          "level": "3",
+          "title": "M4: commands, settings, appearance",
+          "anchor": "m4-commands-settings-appearance"
+        },
+        {
+          "level": "3",
+          "title": "M5: details, files, teammates, previews, artifacts, rich rendering",
+          "anchor": "m5-details-files-teammates-previews-artifacts-rich-rendering"
+        },
+        {
+          "level": "3",
+          "title": "M6: shared desktop",
+          "anchor": "m6-shared-desktop"
+        },
+        {
+          "level": "3",
+          "title": "M7: notifications, iPad polish, accessibility, Marble adoption, sign-off",
+          "anchor": "m7-notifications-ipad-polish-accessibility-marble-adoption-sign-off"
+        },
+        {
+          "level": "2",
+          "title": "9. Required and recommended gateway changes",
+          "anchor": "9-required-and-recommended-gateway-changes"
+        },
+        {
+          "level": "2",
+          "title": "10. Risks",
+          "anchor": "10-risks"
+        },
+        {
+          "level": "2",
+          "title": "11. Open questions for the owner",
+          "anchor": "11-open-questions-for-the-owner"
+        }
+      ]
+    },
+    {
       "path": "docs/INDEX.md",
       "class": "current",
       "topic": "reference",
@@ -2012,6 +2240,7 @@
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
         "docs/BROWSER-CU-AUDIT.md",
+        "docs/GLASS-IOS-FULL-PLAN.md",
         "docs/action-contract.md",
         "docs/actions.md",
         "docs/architecture/README.md",

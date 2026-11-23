@@ -48,6 +48,7 @@ collaborator.
 - `GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture` runs the local-Chrome end-to-end smoke test.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.
 - `cargo build --release` builds the performance-oriented Glass release; `cargo build --profile release-size` builds the stripped Glass size-oriented profile.
+- `scripts/ci-local.sh` runs the Linux fmt, clippy, nextest, deny/audit, and Glass Core smoke gates locally, using mold and sccache when they are available.
 - `GLASS_BENCH_ITERATIONS=50 cargo run --release --example benchmark` measures warm-session operations; see benchmarks/README.md for Playwright comparison.
 
 ## Coding Style & Naming Conventions

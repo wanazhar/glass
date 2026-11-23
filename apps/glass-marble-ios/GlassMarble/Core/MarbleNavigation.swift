@@ -108,8 +108,20 @@ public struct MarbleNavigation: Sendable, Equatable {
     /// The toolbar's compose button pushes a draft chat.
     public mutating func newChat() {
         tab = .marbles
-        if case .draft = chatPath.last { return }
-        chatPath.append(.draft)
+        openNewChat(nil)
+    }
+
+    /// Compose from the current inbox and return there on Back.
+    mutating func openNewChat(_ id: String?) {
+        let route = id.map(ChatRoute.conversation) ?? .draft
+        switch tab {
+        case .everyone:
+            if everyonePath.last != route { everyonePath.append(route) }
+        case .marbles:
+            if chatPath.last != route { chatPath.append(route) }
+        case .settings:
+            break
+        }
     }
 
     /// A roster row: the default assistant opens its chats list, a named
@@ -131,6 +143,10 @@ public struct MarbleNavigation: Sendable, Equatable {
 
     /// The first send resolved the draft into a real conversation.
     public mutating func draftResolved(_ id: String) {
+        if tab == .everyone, case .draft = everyonePath.last {
+            everyonePath[everyonePath.count - 1] = .conversation(id)
+            return
+        }
         guard case .draft = chatPath.last else { return }
         chatPath[chatPath.count - 1] = .conversation(id)
     }

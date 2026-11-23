@@ -19,7 +19,7 @@ final class MarbleNavigationModel: ObservableObject {
         state.openMarbleInfo(id, fromEveryone: fromEveryone)
     }
     func setEveryonePath(_ path: [ChatRoute]) { state.everyonePath = path }
-    func newChat() { state.newChat() }
+    func openNewChat(_ id: String?) { state.openNewChat(id) }
     func draftResolved(_ id: String) { state.draftResolved(id) }
     func deleted(_ id: String) { state.deleted(id) }
     func notificationTapped(_ id: String) { state.notificationTapped(id) }
@@ -132,6 +132,9 @@ struct EveryoneTabView: View {
             .listStyle(.sidebar)
             .navigationTitle("Chats")
             .searchable(text: $query, prompt: "Search all chats")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
+            }
             .navigationDestination(for: ChatRoute.self) { route in
                 switch route {
                 case .marbleInfo(let id):
@@ -139,6 +142,8 @@ struct EveryoneTabView: View {
                         .toolbarVisibility(.hidden, for: .tabBar)
                 case .everyoneChat:
                     EveryoneView()
+                case .conversation, .draft:
+                    MarbleChatView(route: route)
                 default:
                     MarbleThreadDestination(route: route)
                 }
@@ -147,41 +152,25 @@ struct EveryoneTabView: View {
     }
 
     private var everyoneLink: some View {
-        Button {
-            // Commit the chat and hidden tab bar together so the first
-            // scroll layout uses the final viewport.
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                navigation.setEveryonePath(navigation.state.everyonePath + [.everyoneChat])
-            }
-        } label: {
-            HStack {
-                Label {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Everyone")
-                        if let last = store.everyoneEntries.last(where: {
-                            ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
-                        }) {
-                            Text(last.text)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+        NavigationLink(value: ChatRoute.everyoneChat) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Everyone")
+                    if let last = store.everyoneEntries.last(where: {
+                        ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
+                    }) {
+                        Text(last.text)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                } icon: {
-                    Image(systemName: "bubble.left.and.text.bubble.right")
-                        .foregroundStyle(.tint)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
+            } icon: {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .foregroundStyle(.tint)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .accessibilityIdentifier("chat.everyone")
     }
 
     private var everyonePath: Binding<[ChatRoute]> {
@@ -256,7 +245,7 @@ struct MarbleChatView: View {
 
     var body: some View {
         TranscriptView(conversationId: conversationId)
-        .safeAreaInset(edge: .top) {
+        .marbleChatBar(edge: .top) {
             approvalRail
         }
         .marbleComposerInset {
@@ -269,7 +258,6 @@ struct MarbleChatView: View {
                 onStop: { Task { await store.cancelActiveTask() } },
                 onDictate: { dictation.toggle() }
             )
-            .marbleComposerBackground()
         }
         .toolbarVisibility(.hidden, for: .tabBar)
         .onAppear { store.selectedConversationId = conversationId }
@@ -285,7 +273,8 @@ struct MarbleChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.title ?? "Marble")
+                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New Chat")
+                    .marbleToolbarTitle()
             }
             if conversationId != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -378,7 +367,6 @@ struct MarbleChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             }
-            .background(.bar)
         }
     }
 

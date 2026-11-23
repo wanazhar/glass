@@ -729,7 +729,6 @@ impl Conversation {
         request_id: &str,
         input: &TurnInput,
     ) -> Result<String, MarbleError> {
-        self.set_active(conversation_id, "");
         let record = self.product.as_ref().and_then(|p| {
             p.lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -738,11 +737,24 @@ impl Conversation {
                 .find(|c| c.id == conversation_id)
                 .cloned()
         });
-        let mut engine_id = record
-            .as_ref()
-            .filter(|c| !c.engine_conversation_id.is_empty())
-            .map(|c| c.engine_conversation_id.clone())
-            .unwrap_or_else(|| conversation_id.to_string());
+        let mut engine_id = match &record {
+            Some(record) if record.needs_engine_session => {
+                let engine_id = self.create()?;
+                if let Some(product) = &self.product {
+                    let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+                    let record = state.conversation_mut(conversation_id);
+                    record.engine_conversation_id.clone_from(&engine_id);
+                    record.needs_engine_session = false;
+                    crate::store::persist_optional(self.store.as_ref(), &state);
+                }
+                engine_id
+            }
+            Some(record) if !record.engine_conversation_id.is_empty() => {
+                record.engine_conversation_id.clone()
+            }
+            _ => conversation_id.to_string(),
+        };
+        self.set_active(conversation_id, "");
         let mut input = input.clone();
         let retrying = record.as_ref().is_some_and(|record| {
             self.product.as_ref().is_some_and(|p| {

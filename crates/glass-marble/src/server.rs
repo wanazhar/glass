@@ -699,6 +699,9 @@ impl MarbleServer {
         if head.method == "GET" && path == "/api/transcript" {
             return self.transcript_response(head);
         }
+        if head.method == "POST" && path == "/api/conversations" {
+            return self.create_conversation();
+        }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/conversations/")
         {
@@ -1909,6 +1912,24 @@ impl MarbleServer {
             })
             .collect();
         Response::json(200, json!({"query": query, "hits": hits}))
+    }
+
+    fn create_conversation(&self) -> Response {
+        let id = format!("chat-{}", crate::next_request_id());
+        let conversation = {
+            let mut state = self.lock_state();
+            let record = state.conversation_mut(&id);
+            record.updated_at = now_millis();
+            record.lane = crate::state::ConversationRecord::UNASSIGNED_LANE;
+            record.needs_engine_session = true;
+            let conversation = record.clone();
+            state.bump();
+            conversation
+        };
+        self.save_state();
+        self.events
+            .publish(&id, "", "conversation", json!({"created": id}));
+        Response::json(201, json!({"conversation": conversation}))
     }
 
     fn rename_conversation(&self, id: &str, body: &str) -> Response {

@@ -27,7 +27,7 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testColdOpenShowsLatestEveryoneAndThreadHistoryWithoutScrolling() {
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Everyone,'")).firstMatch.tap()
+        app.buttons["chat.everyone"].tap()
         assertHittable("Everyone history row 59")
         for count in [60, 2] {
             app.buttons["Threads"].tap()
@@ -43,7 +43,7 @@ final class GlassMarbleUITests: XCTestCase {
         app.launchArguments.append("-MarbleUITestDelayedEveryone")
         app.launch()
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons.matching(NSPredicate(format: "label == 'Everyone' AND identifier != 'tab.everyone'")).firstMatch.tap()
+        app.buttons["chat.everyone"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["Loading messages"].firstMatch.waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["No one has spoken yet"].exists)
         // Allow an accessibility poll after the fixture's five-second delay.
@@ -52,7 +52,7 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testEveryoneSavedMessageCanBeCopied() {
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Everyone,'")).firstMatch.tap()
+        app.buttons["chat.everyone"].tap()
         let text = "Everyone history row 59"
         assertHittable(text)
 
@@ -74,7 +74,7 @@ final class GlassMarbleUITests: XCTestCase {
         app.launchArguments.append("-MarbleUITestEveryoneSend")
         app.launch()
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Everyone,'")).firstMatch.tap()
+        app.buttons["chat.everyone"].tap()
         assertHittable("Everyone history row 59")
 
         let message = "@everyone whats the system time?"
@@ -176,6 +176,36 @@ final class GlassMarbleUITests: XCTestCase {
         assertHittable("Fixture message 2")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.staticTexts["Fixture conversation 3"].waitForExistence(timeout: 5))
+    }
+
+    func testComposeOpensASavedChatThatCanBeReopened() {
+        app.tabBars.buttons["Everyone"].tap()
+        app.buttons["chat.compose"].tap()
+        XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No messages yet"].exists)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["chat.compose"].isHittable)
+
+        openDefaultChats()
+        app.staticTexts["New Chat"].tap()
+        XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No messages yet"].exists)
+    }
+
+    func testEveryonePushSupportsNativeBackSwipe() {
+        app.tabBars.buttons["Everyone"].tap()
+        let everyone = app.buttons["chat.everyone"]
+        everyone.tap()
+        assertHittable("Everyone history row 59")
+        XCTAssertTrue(app.buttons["Threads"].isHittable)
+        XCTAssertFalse(app.tabBars.buttons["Everyone"].isHittable)
+
+        let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.002, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        edge.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(everyone.waitForExistence(timeout: 5))
+        XCTAssertTrue(everyone.isHittable)
+        XCTAssertTrue(app.tabBars.buttons["Everyone"].isHittable)
     }
 
     func testConversationListSearchOpensMatchingChat() {

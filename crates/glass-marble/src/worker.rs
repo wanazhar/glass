@@ -18,7 +18,7 @@ use crate::events::EventBus;
 use crate::live::LiveStore;
 use crate::memory;
 use crate::notify::{self, Notification};
-use crate::state::{ProductState, TaskRecord, TranscriptEntry};
+use crate::state::{ConversationRecord, ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::{
     MarbleError, MarbleTurn, TurnOptions, conversation::Conversation, conversation::SteerRequest,
@@ -860,17 +860,17 @@ fn choose_lane(
     if runtimes.is_empty() {
         return 0;
     }
-    if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
-        let bound = state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+    let mut state = lock(state);
+    let record = conversation_id.and_then(|id| {
+        state
             .conversations
-            .iter()
+            .iter_mut()
             .find(|record| record.id == id)
-            .map(|record| usize::from(record.lane));
-        if let Some(lane) = bound {
-            return lane.min(runtimes.len() - 1);
-        }
+    });
+    if let Some(record) = &record
+        && record.lane != ConversationRecord::UNASSIGNED_LANE
+    {
+        return usize::from(record.lane).min(runtimes.len() - 1);
     }
     let mut best = *next % runtimes.len();
     let mut best_load = usize::MAX;
@@ -886,6 +886,10 @@ fn choose_lane(
         }
     }
     *next = (best + 1) % runtimes.len();
+    if let Some(record) = record {
+        // Reserve the lane before dispatch so queued first sends share it.
+        record.lane = best as u8;
+    }
     best
 }
 
@@ -1436,6 +1440,7 @@ mod tests {
         {
             let mut guard = state.lock().unwrap();
             guard.conversation_mut("c-2").lane = 2;
+            guard.conversation_mut("empty").lane = ConversationRecord::UNASSIGNED_LANE;
             guard.bump();
         }
         let runtimes = vec![lane_with(0), lane_with(0), lane_with(0)];
@@ -1453,6 +1458,9 @@ mod tests {
         // real lane instead of failing the admission.
         let mut next = 0;
         assert_eq!(choose_lane(&state, Some("unknown"), &busy, &mut next), 1);
+        next = 0;
+        assert_eq!(choose_lane(&state, Some("empty"), &busy, &mut next), 1);
+        assert_eq!(choose_lane(&state, Some("empty"), &busy, &mut next), 1);
     }
 
     #[test]

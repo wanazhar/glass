@@ -45,14 +45,7 @@ struct ConversationListView: View {
             Text("Its transcript is removed from the host. A conversation with a running turn cannot be deleted.")
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    navigation.newChat()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .accessibilityLabel("New conversation")
-            }
+            ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
         }
         // The navigation title already says which app this is; the strip below
         // only has to say which host is answering and what it is doing.
@@ -110,7 +103,6 @@ struct ConversationListView: View {
                     Text("Start one with the compose button.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Button("New chat") { navigation.newChat() }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 24)
@@ -164,13 +156,63 @@ struct ConversationListView: View {
 
 }
 
+struct MarbleNewChatButton: View {
+    @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var creating = false
+    @State private var failure: String?
+
+    var body: some View {
+        Button(action: create) {
+            Label("New Chat", systemImage: "square.and.pencil")
+                .labelStyle(.iconOnly)
+        }
+        .accessibilityIdentifier("chat.compose")
+        .disabled(creating)
+        .alert("Couldn’t create chat", isPresented: Binding(
+            get: { failure != nil },
+            set: { if !$0 { failure = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(failure ?? "")
+        }
+    }
+
+    private func create() {
+        let origin = navigation.state
+        creating = true
+        Task {
+            defer { creating = false }
+            do {
+                let conversation = try await store.createConversation()
+                open(conversation.id, from: origin)
+            } catch MarbleClientError.notFound {
+                // Older hosts create a chat when its first message is sent.
+                open(nil, from: origin)
+            } catch is CancellationError {
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+    }
+
+    private func open(_ id: String?, from origin: MarbleNavigation) {
+        let current = navigation.state
+        guard current.tab == origin.tab,
+              current.everyonePath == origin.everyonePath,
+              current.chatPath == origin.chatPath else { return }
+        navigation.openNewChat(id)
+    }
+}
+
 private struct ConversationRow: View {
     var conversation: MarbleConversation
     var line: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(conversation.title.isEmpty ? conversation.id : conversation.title)
+            Text(conversation.displayTitle)
                 .font(.callout)
                 .lineLimit(1)
             if let line {

@@ -57,6 +57,8 @@ struct MarbleConversation: Decodable, Identifiable, Equatable {
     var title: String
     var taskIds: [String]
     var updatedAt: UInt64
+
+    var displayTitle: String { title.isEmpty ? "New Chat" : title }
 }
 
 struct MarbleTask: Decodable, Identifiable, Equatable {

@@ -95,10 +95,17 @@ pub struct ConversationRecord {
     pub lane: u8,
     #[serde(default)]
     pub engine_conversation_id: String,
+    /// Explicitly created chats acquire their engine session on first send.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_engine_session: bool,
     #[serde(default)]
     pub checkpoints: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     pub retry_task_id: String,
+}
+
+impl ConversationRecord {
+    pub(crate) const UNASSIGNED_LANE: u8 = u8::MAX;
 }
 
 /// One durable generation task admitted for a conversation.

@@ -177,6 +177,12 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
+    func createConversation() async throws -> MarbleConversation {
+        struct Reply: Decodable { let conversation: MarbleConversation }
+        let reply: Reply = try await postJSON("/api/conversations", body: nil)
+        return reply.conversation
+    }
+
     func renameConversation(id: String, title: String) async throws {
         struct Body: Encodable { var title: String }
         try await post("/api/conversations/\(encoded(id))/rename", body: Body(title: title))

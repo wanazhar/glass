@@ -33,6 +33,7 @@ fn real_core_provider_reasoning_is_private_in_named_and_everyone_transcripts() {
                     assert!(Instant::now() < deadline, "provider not called");
                     std::thread::sleep(Duration::from_millis(10));
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();

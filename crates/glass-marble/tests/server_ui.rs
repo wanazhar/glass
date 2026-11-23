@@ -4851,6 +4851,47 @@ fn cancelling_a_queued_everyone_lead_releases_buffered_replies() {
 }
 
 #[test]
+fn a_created_chat_survives_reload_and_accepts_its_first_message() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::with_persistence("create-empty-chat", Vec::new(), true);
+    fixture.install_default_worker_with_args(vec!["--strict-conversations".into()]);
+    let (status, reply) = fixture.post("/api/conversations", json!({}));
+    assert_eq!(status, 201, "{reply}");
+    let id = reply["conversation"]["id"].as_str().unwrap();
+    assert_eq!(reply["conversation"]["taskIds"], json!([]));
+    let store = fixture.store.as_ref().unwrap();
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.conversations[0].id, id);
+    assert!(loaded.tasks.is_empty());
+    assert!(loaded.transcript_for(id).is_empty());
+    *fixture.state.lock().unwrap() = loaded;
+
+    let prompt = "First message in the new chat";
+    let (status, reply) = fixture.post("/api/turns", json!({"conversationId": id, "text": prompt}));
+    assert_eq!(status, 202, "{reply}");
+    let task = fixture.settled(prompt);
+    assert_eq!(task.status, "completed");
+    assert_eq!(task.conversation_id, id);
+    let state = fixture.state.lock().unwrap();
+    let chat = state
+        .conversations
+        .iter()
+        .find(|chat| chat.id == id)
+        .unwrap();
+    assert!(!chat.needs_engine_session);
+    assert!(!chat.engine_conversation_id.is_empty());
+    assert_eq!(chat.title, prompt);
+    assert!(
+        state
+            .transcript_for(id)
+            .iter()
+            .any(|entry| entry.kind == "assistant")
+    );
+}
+
+#[test]
 fn everyone_default_recovers_after_first_admission_fails() {
     if !python3_available() {
         return;
@@ -5531,7 +5572,22 @@ fn named_core_admission_failures_settle_private_and_everyone_entries_with_retry(
             assert_eq!(status, 202, "{response}");
             let failed = fixture.settled(prompt);
             assert_eq!(failed.status, "failed");
-            let state = fixture.store.as_ref().unwrap().load().unwrap();
+            // The in-memory task can settle before the separate durable
+            // write that includes the failure row and its Everyone mirror.
+            let store = fixture.store.as_ref().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let state = loop {
+                let state = store.load().unwrap();
+                if state.transcript.iter().any(|entry| {
+                    entry.task_id == failed.id
+                        && entry.kind == "failure"
+                        && (!everyone || entry.conversation_id == "everyone")
+                }) {
+                    break state;
+                }
+                assert!(Instant::now() < deadline, "failure row was not persisted");
+                std::thread::sleep(Duration::from_millis(10));
+            };
             assert!(state.control.queue.is_empty());
             assert!(state.everyone_pending.is_empty());
             assert!(!state.transcript.iter().any(|e| e.kind == "pending"));

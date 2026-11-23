@@ -24,7 +24,7 @@ enum MarbleTheme {
 }
 
 extension View {
-    /// Background for controls that float above content — the composer bar.
+    /// Background for controls that float above the transcript.
     /// Real glass on iOS 26, the system bar material below it, and an opaque
     /// fill when transparency is reduced.
     @ViewBuilder
@@ -34,6 +34,30 @@ extension View {
         } else {
             modifier(MarbleFloatingBar(shape: shape))
         }
+    }
+
+    @ViewBuilder
+    func marbleChatBar<Bar: View>(edge: VerticalEdge, @ViewBuilder content: () -> Bar) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: edge, spacing: 0, content: content)
+        } else {
+            safeAreaInset(edge: edge, spacing: 0, content: content)
+        }
+    }
+
+    @ViewBuilder
+    func marbleChatScrollEdges() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        } else {
+            self
+        }
+    }
+
+    func marbleToolbarTitle() -> some View {
+        padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .marbleFloating()
     }
 }
 

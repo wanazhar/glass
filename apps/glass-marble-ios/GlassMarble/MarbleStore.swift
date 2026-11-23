@@ -1613,6 +1613,26 @@ final class MarbleStore: ObservableObject {
         memory.facts.filter { $0.owner.isEmpty || $0.owner == marbleId }
     }
 
+    func createConversation() async throws -> MarbleConversation {
+        let conversation: MarbleConversation
+        #if DEBUG
+        if fixtureThreads != nil {
+            conversation = MarbleConversation(
+                id: UUID().uuidString, title: "", taskIds: [],
+                updatedAt: UInt64(Date().timeIntervalSince1970 * 1000)
+            )
+            state.conversations.append(conversation)
+            return conversation
+        }
+        #endif
+        conversation = try await withChatClient { try await $0.createConversation() }
+        if state.conversation(conversation.id) == nil {
+            state.conversations.append(conversation)
+        }
+        scheduleEventRefresh()
+        return conversation
+    }
+
     func rename(_ conversation: MarbleConversation, title: String) async {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !trimmed.isEmpty else { return }

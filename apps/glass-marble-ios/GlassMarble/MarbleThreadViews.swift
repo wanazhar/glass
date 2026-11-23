@@ -142,7 +142,6 @@ private struct MarbleThreadView: View {
             if page != nil && !searching {
                 ComposerBar(draft: $draft, isWorking: false, placeholder: "Reply in thread",
                             onSend: send, onStop: {})
-                .marbleComposerBackground()
             }
         }
         .task(id: [store.threadEventSequences[id], store.threadHostRevision]) {

@@ -817,7 +817,7 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                         .await
                         {
                             Ok(response) => response,
-                            Err(error) => json!({"ok": false, "error": error.to_string()}),
+                            Err(error) => persistent_error_response(error.as_ref()),
                         }
                     }
                     _ => json!({"ok": false, "error": "unknown session operation"}),
@@ -1605,6 +1605,17 @@ fn with_owner_profile(mut argv: Vec<String>, owner_profile: &str) -> Vec<String>
     argv
 }
 
+#[cfg(feature = "native-engine")]
+fn persistent_error_response(error: &(dyn std::error::Error + 'static)) -> serde_json::Value {
+    if let Some(crate::browser_backend::BrowserBackendError::Connection { reason, .. }) =
+        error.downcast_ref::<crate::browser_backend::BrowserBackendError>()
+        && reason.starts_with("SandboxUnavailable:")
+    {
+        return json!({"ok":false, "error":error.to_string(), "errorKind":"sandboxUnavailable", "reason":reason});
+    }
+    json!({"ok":false, "error":error.to_string()})
+}
+
 async fn send_request_payload(
     socket: &Path,
     request: &SessionRequest,
@@ -1630,6 +1641,16 @@ async fn send_request_payload(
         reader.read_line(&mut line).await?;
         let value: serde_json::Value = serde_json::from_str(line.trim())?;
         if value.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            if value["errorKind"] == "sandboxUnavailable"
+                && let Some(reason) = value["reason"].as_str()
+                && reason.starts_with("SandboxUnavailable:")
+            {
+                return Err(crate::browser_backend::BrowserBackendError::Connection {
+                    operation: "content sandbox".to_owned(),
+                    reason: reason.to_owned(),
+                }
+                .into());
+            }
             return Err(value
                 .get("error")
                 .and_then(serde_json::Value::as_str)
@@ -1732,6 +1753,37 @@ fn process_is_alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(unix, feature = "native-engine"))]
+    #[tokio::test]
+    async fn named_socket_preserves_sandbox_error_category() {
+        use tokio::net::UnixListener;
+        let root =
+            std::env::temp_dir().join(format!("glass-sandbox-socket-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let socket = root.join("owner.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let owner = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(reader).read_line(&mut line).await.unwrap();
+            let error = crate::browser_backend::BrowserBackendError::Connection {
+                operation: "content sandbox".to_owned(),
+                reason: "SandboxUnavailable: upgrade bubblewrap or use Chromium".to_owned(),
+            };
+            let mut payload = serde_json::to_vec(&persistent_error_response(&error)).unwrap();
+            payload.push(b'\n');
+            writer.write_all(&payload).await.unwrap();
+        });
+        let request = serde_json::from_value(json!({"op":"mcp", "mcp":{"name":"navigate", "arguments":{"url":"https://example.com"}}})).unwrap();
+        let error = send_request_payload(&socket, &request).await.unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<crate::browser_backend::BrowserBackendError>(), Some(crate::browser_backend::BrowserBackendError::Connection { reason, .. }) if reason.starts_with("SandboxUnavailable:"))
+        );
+        owner.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(feature = "native-engine")]
     use crate::browser::session::{WorkflowRunStatus, WorkflowStepState};

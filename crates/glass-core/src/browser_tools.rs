@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -69,13 +69,14 @@ fn command(workspace: Option<&Path>) -> Option<Command> {
 }
 
 fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
+    let runtime = runtime(&binary);
     let mut command = Command::new(binary);
-    if let Ok(runtime) = std::env::var("GC_BROWSER_RUNTIME")
-        && !runtime.is_empty()
-    {
-        command.args(["--browser-runtime", &runtime]);
+    if let Some(runtime) = &runtime {
+        command.args(["--browser-runtime", runtime]);
     }
-    if let Some(port) = free_port() {
+    if runtime.as_deref() == Some("chromium")
+        && let Some(port) = free_port()
+    {
         command.args(["--port", &port.to_string()]);
     }
     command
@@ -87,6 +88,111 @@ fn command_for_binary(binary: PathBuf, workspace: Option<&Path>) -> Command {
         command.current_dir(workspace);
     }
     command
+}
+
+/// `GC_BROWSER_RUNTIME` wins. Otherwise Linux hosts whose bubblewrap cannot
+/// lock user namespaces (Ubuntu 22.04 ships 0.6) use Chromium, because the
+/// native runtime would refuse network pages there. Local pages still work
+/// without bubblewrap, so do not select an unavailable Chromium runtime.
+fn runtime(binary: &Path) -> Option<String> {
+    match std::env::var("GC_BROWSER_RUNTIME") {
+        Ok(runtime) if !runtime.is_empty() => Some(runtime),
+        _ => {
+            if native_sandbox_available() {
+                return doctor_report(binary, true)
+                    .or_else(|| doctor_report(binary, false))
+                    .and_then(|report| {
+                        report["browser"]["defaultRuntime"]
+                            .as_str()
+                            .filter(|runtime| matches!(*runtime, "native" | "chromium"))
+                            .map(str::to_owned)
+                    });
+            }
+            let report = doctor_report(binary, true).or_else(|| doctor_report(binary, false));
+            fallback_runtime(false, report.as_ref())
+        }
+    }
+}
+
+fn doctor_report(binary: &Path, discovery_only: bool) -> Option<Value> {
+    let mut command = Command::new(binary);
+    command.args(["doctor", "--json"]);
+    if discovery_only {
+        command.arg("--browser-discovery-only");
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (sender, receiver) = channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.take(1024 * 1024).read_to_end(&mut bytes);
+        let _ = sender.send(result.ok().map(|_| bytes));
+    });
+    let expires = std::time::Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let bytes = receiver
+                    .recv_timeout(expires.saturating_duration_since(std::time::Instant::now()))
+                    .ok()??;
+                return serde_json::from_slice(&bytes).ok();
+            }
+            Ok(None) if std::time::Instant::now() < expires => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+fn fallback_runtime(native_available: bool, report: Option<&Value>) -> Option<String> {
+    (!native_available && report.is_some_and(|report| report["browser"]["chromeAvailable"] == true))
+        .then(|| "chromium".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn native_sandbox_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let Some(bwrap) = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("bwrap"))
+                .find(|candidate| candidate.is_file())
+        }) else {
+            return false;
+        };
+        Command::new(bwrap)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|output| {
+                bwrap_help_supports_native(&String::from_utf8_lossy(
+                    &[output.stdout, output.stderr].concat(),
+                ))
+            })
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn native_sandbox_available() -> bool {
+    true
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn bwrap_help_supports_native(help: &str) -> bool {
+    help.contains("--disable-userns") && help.contains("--assert-userns-disabled")
 }
 
 /// A per-process CDP port, so a Chrome the user already runs on 9222 never
@@ -401,6 +507,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn implicit_chromium_default_receives_an_ephemeral_port() {
+        const MARKER: &str = "GLASS_IMPLICIT_CHROMIUM_TEST";
+        if let Some(root) = std::env::var_os(MARKER) {
+            let command = command_for_binary(PathBuf::from(root).join("browser"), None);
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--browser-runtime", "chromium"])
+            );
+            assert!(args.iter().any(|arg| arg == "--port"));
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("gc-default-runtime-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, script) in [
+            (
+                "bwrap",
+                "#!/bin/sh\nprintf '%s' '--disable-userns --assert-userns-disabled'\n",
+            ),
+            (
+                "browser",
+                "#!/bin/sh\nprintf '%s' '{\"browser\":{\"chromeAvailable\":true,\"defaultRuntime\":\"chromium\"}}'\n",
+            ),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "browser_tools::tests::implicit_chromium_default_receives_an_ephemeral_port",
+            ])
+            .env(MARKER, &root)
+            .env("PATH", &root)
+            .env_remove("GC_BROWSER_RUNTIME")
+            .status()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
     fn bare_browser_override_uses_path_not_workspace() {
         const MARKER: &str = "GLASS_BROWSER_PATH_TEST";
         if let Some(root) = std::env::var_os(MARKER) {
@@ -561,6 +714,73 @@ for line in sys.stdin:
                 .count(),
             2
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_bubblewrap_selects_the_chromium_runtime() {
+        assert_eq!(fallback_runtime(false, None), None);
+        assert_eq!(
+            fallback_runtime(false, Some(&json!({"browser":{"chromeAvailable":false}}))),
+            None
+        );
+        assert_eq!(
+            fallback_runtime(false, Some(&json!({"browser":{"chromeAvailable":true}}))),
+            Some("chromium".to_owned())
+        );
+        assert_eq!(
+            fallback_runtime(true, Some(&json!({"browser":{"chromeAvailable":true}}))),
+            None
+        );
+        assert!(!bwrap_help_supports_native(
+            "usage: bwrap [OPTIONS...] [--] COMMAND [ARGS...]\n    --unshare-user"
+        ));
+        assert!(bwrap_help_supports_native(
+            "    --disable-userns\n    --assert-userns-disabled"
+        ));
+    }
+
+    #[test]
+    fn mixed_version_discovery_and_native_ports() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("gc-browser-version-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let binary = root.join("browser");
+        std::fs::write(&binary, "#!/bin/sh\ncase \"$*\" in *--browser-discovery-only*) exit 2;; esac\nprintf '%s' '{\"browser\":{\"chromeAvailable\":true}}'\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(doctor_report(&binary, true).is_none());
+        assert_eq!(
+            fallback_runtime(false, doctor_report(&binary, false).as_ref()),
+            Some("chromium".into())
+        );
+        let marker = "GLASS_TEST_BROWSER_PORT";
+        if let Ok(runtime) = std::env::var(marker) {
+            let command = command_for_binary(binary, None);
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                args.iter().any(|arg| arg == "--port"),
+                runtime == "chromium"
+            );
+            assert!(args.iter().any(|arg| arg == "--incognito"));
+            return;
+        }
+        for runtime in ["native", "chromium"] {
+            assert!(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "browser_tools::tests::mixed_version_discovery_and_native_ports"
+                    ])
+                    .env(marker, runtime)
+                    .env("GC_BROWSER_RUNTIME", runtime)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

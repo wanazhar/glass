@@ -245,7 +245,7 @@ pub async fn dispatch_browser(cli: Cli) -> BrowserResult<()> {
 }
 
 async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserResult<()> {
-    if let Some(Commands::Doctor { json }) = &mut cli.command {
+    if let Some(Commands::Doctor { json, .. }) = &mut cli.command {
         *json |= json_output_requested();
     }
     if let Some(Commands::Logs { json, .. }) = &mut cli.command {
@@ -311,7 +311,17 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             dispatch_daemon(&cli, action).await?;
             return Ok(());
         }
-        Some(Commands::Doctor { json }) => {
+        Some(Commands::Doctor {
+            json,
+            browser_discovery_only,
+        }) => {
+            if *browser_discovery_only {
+                let path = crate::browser::chrome::resolve_chrome_path(cli.chrome_path.clone());
+                print_json(
+                    &serde_json::json!({"browser":{"chromeAvailable":path.is_some(),"chromePath":path,"defaultRuntime":cli.browser_runtime.browser_family()}}),
+                )?;
+                return Ok(());
+            }
             dispatch_doctor(&cli, &policy, *json).await?;
             return Ok(());
         }
@@ -2701,6 +2711,7 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         "platform": manifest.constraints.platform,
         "executable": executable,
         "browser": {
+            "defaultRuntime": cli.browser_runtime.browser_family(),
             "family": manifest.constraints.browser_family,
             "version": browser_version,
             "chromeAvailable": browser_available,

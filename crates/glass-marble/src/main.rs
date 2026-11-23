@@ -23,7 +23,7 @@ const CHAT_LANES: usize = 3;
 #[command(
     name = "glass-marble",
     about = "Always-on, self-hosted personal assistant built on Glass Core",
-    version
+    version = glass_marble::build_info::CLI_VERSION
 )]
 struct Cli {
     /// One-shot message. Omit when using a subcommand.
@@ -502,6 +502,7 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     .with_steer_sink(pool.steer)
     .with_prism(Arc::clone(&prism))
     .with_crates(crate_map);
+    prism.resume_held();
     let server = match (tls_cert, tls_key) {
         (Some(cert), Some(key)) => {
             let identity =

@@ -16,7 +16,7 @@ struct ActivityView: View {
                 }
                 ForEach(store.state.approvals) { approval in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(approval.tool)
+                        Text(MarbleDecisionWords.action(tool: approval.tool))
                             .font(.callout.weight(.semibold))
                         Text(approval.argumentsSummary)
                             .font(.caption.monospaced())
@@ -64,6 +64,14 @@ struct ActivityView: View {
             }
 
             Section(header: Text("Running now")) {
+                if !runningTasks.isEmpty {
+                    Button(role: .destructive) {
+                        confirmStop = true
+                    } label: {
+                        Label("Stop everything", systemImage: "stop.circle")
+                            .foregroundStyle(.red)
+                    }
+                }
                 if runningTasks.isEmpty {
                     Text("Nothing is running.")
                         .font(.footnote)
@@ -103,25 +111,15 @@ struct ActivityView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.control.ledger.suffix(20).reversed()) { entry in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(entry.tool + (entry.path.isEmpty ? "" : " · " + entry.path))
-                            .font(.callout)
-                            .lineLimit(1)
-                        Text(entry.decision + (entry.reason.isEmpty ? "" : " · " + entry.reason))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    NavigationLink {
+                        DecisionDetailView(entry: entry, chat: entry.conversationId.isEmpty ? nil : chatTitle(entry.conversationId))
+                    } label: {
+                        DecisionRow(entry: entry)
                     }
                 }
             }
         }
         .navigationTitle("Activity")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Stop everything", role: .destructive) {
-                    confirmStop = true
-                }
-            }
-        }
         .confirmationDialog(
             "Stop everything?",
             isPresented: $confirmStop,
@@ -149,4 +147,73 @@ struct ActivityView: View {
             set: { paused in Task { await store.setPaused(paused) } }
         )
     }
+}
+
+/// One recent decision in plain words: what Marble wanted, how it was settled.
+private struct DecisionRow: View {
+    var entry: MarbleControlEntry
+
+    private var wentAhead: Bool { MarbleDecisionWords.wentAhead(decision: entry.decision) }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: wentAhead ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(wentAhead ? Color.green : Color.secondary)
+                .imageScale(.large)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(MarbleDecisionWords.action(tool: entry.tool))
+                    .font(.callout)
+                    .lineLimit(1)
+                Text(MarbleDecisionWords.outcome(decision: entry.decision, reason: entry.reason)
+                     + " · " + decisionDate(entry.at).formatted(.relative(presentation: .named)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The full record behind a decision row, with the host's own words.
+private struct DecisionDetailView: View {
+    var entry: MarbleControlEntry
+    var chat: String?
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("What", value: MarbleDecisionWords.action(tool: entry.tool))
+                LabeledContent("Outcome", value: MarbleDecisionWords.outcome(decision: entry.decision, reason: entry.reason))
+                LabeledContent("When", value: decisionDate(entry.at).formatted(date: .abbreviated, time: .shortened))
+                if let chat { LabeledContent("Chat", value: chat) }
+                if !entry.path.isEmpty { LabeledContent("Path", value: entry.path) }
+            }
+            Section {
+                if !entry.reason.isEmpty { detail("Host's reason", entry.reason) }
+                detail("Tool", entry.tool)
+                detail("Decision", entry.decision)
+                if !entry.taskId.isEmpty { detail("Task", entry.taskId) }
+            } header: {
+                Text("Details")
+            }
+        }
+        .navigationTitle("Decision")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func detail(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private func decisionDate(_ at: UInt64) -> Date {
+    Date(timeIntervalSince1970: Double(at) / 1000)
 }

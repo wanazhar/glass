@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -40,6 +41,14 @@ CONVERSATION_SEQ = 0
 TASK_SEQ = {}
 SUBMISSIONS = {}
 TASK_COUNTER = [0]
+HISTORY = {"sequence": 0, "conversations": {}}
+KNOWN_CONVERSATIONS = set()
+
+
+def save_history():
+    if STORAGE_DIR:
+        with open(os.path.join(STORAGE_DIR, "fixture-history.json"), "w", encoding="utf-8") as handle:
+            json.dump(HISTORY, handle)
 
 
 def send(message):
@@ -94,7 +103,8 @@ def load_submissions():
         path = os.path.join(STORAGE_DIR, SUBMISSIONS_FILE)
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as handle:
-                SUBMISSIONS = {(k[0], k[1]): v for k, v in json.load(handle).items()}
+                SUBMISSIONS = {tuple(k.split("|", 1)): v for k, v in json.load(handle).items()}
+                TASK_COUNTER[0] = max([int(v.rsplit("-", 1)[-1]) for v in SUBMISSIONS.values()] or [0])
 
 
 def save_submissions():
@@ -106,8 +116,96 @@ def save_submissions():
 
 
 def run_turn(identifier, task, text, conversation, request):
+    HISTORY["sequence"] += 1
+    HISTORY["conversations"].setdefault(conversation, []).append({"sequence": HISTORY["sequence"], "text": str(text)})
+    save_history()
+    if "--transient-error-always" in sys.argv or "--permanent-error" in sys.argv:
+        message = "HTTP 400 provider_rejected secret-token" if "--permanent-error" in sys.argv else "connection reset secret-token"
+        send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": message}})
+        return
+    if "--empty-reply" in sys.argv:
+        reply(identifier, {"settled": True})
+        return
+    failed = os.path.join(STORAGE_DIR, "fixture-failed-once") if STORAGE_DIR else None
+    if "--fail-once" in sys.argv and "FAIL" in text and failed and not os.path.exists(failed):
+        with open(failed, "w", encoding="utf-8") as handle:
+            handle.write("failed")
+        if "--error-once" in sys.argv and "--generation-failure-once" not in sys.argv:
+            send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "connection reset secret-token"}})
+            return
+        event("turn-1", "text", {"text": "[Generation failed] Reason: provider's requirements secret-token"})
+        reply(identifier, {"settled": True})
+        return
+    text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if "--everyone-reasoning" in sys.argv:
+        with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
+            name = json.load(handle)["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]
+        event(turn, "reasoning", {"text":"Channel for " + name + "."})
+        event(turn, "tool_start", {"callId":"reasoning-tool","name":"bash"})
+        event(turn, "tool_end", {"callId":"reasoning-tool","text":"done","isError":False})
+        if name != "Ada":
+            event(turn, "text", {"text":"Planning for " + name + "."})
+            event(turn, "text_block_start", {"blockId":"answer"})
+        event(turn, "text", {"text":"Public answer."})
+        event(turn, "settled", {"reason":"completed"})
+        reply(identifier, {"settled":True})
+        return
+    if "--text-blocks" in sys.argv:
+        if "--text-blocks-open-tag" in sys.argv:
+            event(turn, "text", {"text":"<thinking>"})
+        for delta in ["Planning ", "secret."]:
+            event(turn, "text", {"text": delta})
+        if "--text-blocks-tool-empty" in sys.argv:
+            event(turn, "tool_start", {"callId":"planning-tool","name":"bash"})
+            event(turn, "tool_end", {"callId":"planning-tool","text":"done","isError":False})
+            event(turn, "settled", {"reason":"completed"})
+            reply(identifier, {"settled":True})
+            return
+        event(turn, "text_block_start", {"blockId":"block-1"})
+        event(turn, "text", {"text":"More planning."})
+        event(turn, "text_block_start", {"blockId":"block-2"})
+        if "--text-blocks-error" in sys.argv:
+            send({"jsonrpc":"2.0","id":identifier,"error":{"code":-32000,"message":"HTTP 400 provider_rejected"}})
+            return
+        for delta in ([] if "--text-blocks-empty" in sys.argv else ["Public ", "answer."]):
+            event(turn, "text", {"text": delta})
+        event(turn, "settled", {"reason":"completed"})
+        reply(identifier, {"settled":True})
+        return
+    if "--reasoning-channels" in sys.argv:
+        event(turn, "reasoning", {"text": "Channel secret."})
+        for tag in ["think", "thinking", "thought", "reasoning"]:
+            for chunk in ["<" + tag[:2], tag[2:] + ">", "Tagged secret.", "</" + tag[:2], tag[2:] + ">"]:
+                event(turn, "text", {"text": chunk})
+        event(turn, "text", {"text": "Public answer."})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
+    if argument("--pre-tool-text"):
+        event(turn, "text", {"text": argument("--pre-tool-text")})
+    if "--native-date" in sys.argv:
+        with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
+            options = json.load(handle)
+        name = options["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]
+        executions = []
+        for index in range(2):
+            if index:
+                event(turn, "text", {"text": "Plan two."})
+            call = "date-" + str(index)
+            event(turn, "tool_start", {"callId": call, "name": "bash", "title": "date -u -Iseconds"})
+            result = subprocess.run(["date", "-u", "-Iseconds"], capture_output=True, text=True, check=True)
+            executions.append({"task": task, "callId": call, "output": result.stdout.strip()})
+            event(turn, "tool_end", {"callId": call, "text": result.stdout, "isError": False})
+        with open(os.path.join(STORAGE_DIR, "fixture-date-executions.jsonl"), "a", encoding="utf-8") as handle:
+            for execution in executions:
+                handle.write(json.dumps(execution) + "\n")
+        for chunk in ["@" + name + " The system time is ", result.stdout.strip(), "."]:
+            event(turn, "text", {"text": chunk})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
     if DELAY_MS > 0:
         time.sleep(DELAY_MS / 1000)
     # A prompt of "ASK <name>: <instruction>" makes this engine ask another
@@ -122,6 +220,8 @@ def run_turn(identifier, task, text, conversation, request):
         tool_name = "glass.marble.ask"
         tool_args = {"to": target.strip(), "instruction": instruction.strip() or "help"}
     frame_id = "host:" + SESSION_ID + ":" + task + ":call-1"
+    if "--core-tool-progress" in sys.argv:
+        event(turn, "tool_start", {"callId": "call-1", "name": tool_name})
     send(
         {
             "jsonrpc": "2.0",
@@ -158,14 +258,18 @@ def run_turn(identifier, task, text, conversation, request):
         except OSError:
             pass
     event(turn, "tool_end", {"callId": "call-1", "isError": bool(result.get("isError")), "text": str(result.get("text") or "")})
-    event(turn, "text", {"text": "handled " + str(text).strip()})
+    chunks = argument("--text-chunks")
+    for chunk in json.loads(chunks) if chunks else ["handled " + str(text).strip()]:
+        event(turn, "text", {"text": chunk})
+        if chunks:
+            time.sleep(0.3)
     event(turn, "usage", {"input": 1, "output": 1})
     event(turn, "settled", {"reason": "completed"})
     reply(identifier, {"sessionId": SESSION_ID, "settled": True})
 
 
 def main():
-    global STORAGE_DIR
+    global STORAGE_DIR, HISTORY
     while True:
         line = sys.stdin.readline()
         if not line:
@@ -182,6 +286,11 @@ def main():
             if STORAGE_DIR:
                 os.makedirs(STORAGE_DIR, exist_ok=True)
             load_submissions()
+            history_file = os.path.join(STORAGE_DIR, "fixture-history.json") if STORAGE_DIR else None
+            if history_file and os.path.exists(history_file):
+                with open(history_file, "r", encoding="utf-8") as handle:
+                    HISTORY = json.load(handle)
+            KNOWN_CONVERSATIONS.update(HISTORY["conversations"])
             protocol = params.get("protocolVersion")
             required = params.get("requiredCapabilities") or []
             if protocol == 2 and "mixedTools" not in required:
@@ -199,6 +308,7 @@ def main():
                     "protocolVersion": protocol or 1,
                     "runtime": {"name": "glass-core", "version": "0.3.14"},
                     "capabilities": {
+                        "textBlockBoundaries": any(flag in sys.argv for flag in ["--text-blocks", "--everyone-reasoning"]) and "textBlockBoundaries" in params.get("optionalCapabilities", []),
                         "hostTools": True,
                         "localTools": True,
                         "mixedTools": True,
@@ -212,8 +322,20 @@ def main():
                     "storageDir": params.get("storageDir"),
                 },
             )
+            if "--exit-after-initialize" in sys.argv:
+                return
         elif method == "durable/create":
             global CONVERSATION_SEQ
+            marker = os.path.join(STORAGE_DIR, "fixture-create-rejected")
+            if "--reject-create-once" in sys.argv and not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write("rejected")
+                message = "connection reset during admission" if "--transient-create-error" in sys.argv else "fixture refuses first admission"
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": message}})
+                continue
+            if STORAGE_DIR:
+                with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "w", encoding="utf-8") as handle:
+                    json.dump(params, handle)
             if params.get("toolMode") != "mixed":
                 send(
                     {
@@ -236,9 +358,29 @@ def main():
             else:
                 CONVERSATION_SEQ += 1
                 conversation_id = ID_PREFIX + "durable-fixture-" + str(CONVERSATION_SEQ)
+                KNOWN_CONVERSATIONS.add(conversation_id)
                 reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
+        elif method == "durable/inspect":
+            reply(identifier, {"sequence": HISTORY["sequence"], "items": [], "hasMore": False})
+        elif method == "durable/fork":
+            HISTORY["sequence"] += 1
+            conversation_id = ID_PREFIX + "fork-" + str(HISTORY["sequence"])
+            KNOWN_CONVERSATIONS.add(conversation_id)
+            HISTORY["conversations"][conversation_id] = [entry for entry in HISTORY["conversations"].get(params["conversationId"], []) if entry["sequence"] <= params["asOf"]]
+            save_history()
+            reply(identifier, {"conversationId": conversation_id})
         elif method == "durable/submit":
+            marker = os.path.join(STORAGE_DIR, "fixture-submit-rejected")
+            reject = "--reject-submit-once" in sys.argv or ("--reject-retry-submit-once" in sys.argv and os.path.exists(os.path.join(STORAGE_DIR, "fixture-failed-once")))
+            if reject and not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write("rejected")
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "fixture refuses first submission"}})
+                continue
             conversation_id = params.get("conversationId")
+            if "--strict-conversations" in sys.argv and conversation_id not in KNOWN_CONVERSATIONS:
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown conversation"}})
+                continue
             request_id = params.get("requestId")
             key = (conversation_id, request_id)
             task_id = SUBMISSIONS.get(key)
@@ -249,6 +391,10 @@ def main():
                 save_submissions()
             if isinstance(params.get("input"), dict):
                 INPUT_TEXT["value"] = str(params["input"].get("text") or "")
+                INPUT_TEXT["conversation"] = conversation_id
+                if STORAGE_DIR:
+                    with open(os.path.join(STORAGE_DIR, "fixture-input.json"), "w", encoding="utf-8") as handle:
+                        json.dump(params, handle)
             reply(
                 identifier,
                 {"submission": {"id": task_id, "status": "pending"}, "duplicate": duplicate},
@@ -263,7 +409,7 @@ def main():
                 PARKED_RUN["id"] = identifier
                 continue
             task_id = params.get("taskId") or task_id_for(params.get("conversationId"), params.get("requestId"))
-            run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), params.get("conversationId") or SESSION_ID, params.get("requestId") or "")
+            run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), INPUT_TEXT.get("conversation") or SESSION_ID, params.get("requestId") or "")
         elif method == "durable/abort":
             if PARKED_RUN.get("id"):
                 reply(PARKED_RUN.pop("id"), {"sessionId": SESSION_ID, "settled": True})

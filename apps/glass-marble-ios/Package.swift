@@ -3,13 +3,14 @@ import PackageDescription
 
 // MARBLE_HOST_TESTS=1 switches the manifest to a host-side MarbleCore library
 // plus XCTest target so the transport/SSE/compatibility code is testable on
-// Linux; otherwise it builds the single-app module exactly like Xcode.
+// macOS and Linux; otherwise it builds the single-app module exactly like Xcode.
 let hostTests = Context.environment["MARBLE_HOST_TESTS"] == "1"
 
 let package: Package
 if hostTests {
     package = Package(
         name: "MarbleCore",
+        platforms: [.macOS(.v12)],
         targets: [
             .target(
                 name: "MarbleCore",

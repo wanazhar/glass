@@ -6,15 +6,36 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A1B2C3D40000000000000030 /* MarbleLiveActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000031 /* MarbleLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A1B2C3D40000000000000032 /* MarbleConnectionActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000033 /* MarbleConnectionActivityAttributes.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1B2C3D40000000000000034 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (A1B2C3D40000000000000030 /* MarbleLiveActivity.appex in Embed App Extensions */, );
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		A1B2C3D40000000000000001 /* Glass Marble.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Glass Marble.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D40000000000000020 /* GlassMarbleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GlassMarbleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D40000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Info.plist; sourceTree = "<group>"; };
+		A1B2C3D40000000000000031 /* MarbleLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MarbleLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D40000000000000033 /* MarbleConnectionActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassMarble/MarbleConnectionActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D40000000000000035 /* LiveActivity-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/LiveActivity-Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A1B2C3D40000000000000002 /* GlassMarble */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = GlassMarble; sourceTree = "<group>"; };
 		A1B2C3D40000000000000021 /* GlassMarbleUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = GlassMarbleUITests; sourceTree = "<group>"; };
+		A1B2C3D40000000000000036 /* MarbleLiveActivity */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MarbleLiveActivity; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -33,7 +54,10 @@
 			children = (
 				A1B2C3D40000000000000002 /* GlassMarble */,
 				A1B2C3D40000000000000021 /* GlassMarbleUITests */,
+				A1B2C3D40000000000000036 /* MarbleLiveActivity */,
+				A1B2C3D40000000000000033 /* MarbleConnectionActivityAttributes.swift */,
 				A1B2C3D40000000000000010 /* Info.plist */,
+				A1B2C3D40000000000000035 /* LiveActivity-Info.plist */,
 				A1B2C3D40000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +67,7 @@
 			children = (
 				A1B2C3D40000000000000001 /* Glass Marble.app */,
 				A1B2C3D40000000000000020 /* GlassMarbleUITests.xctest */,
+				A1B2C3D40000000000000031 /* MarbleLiveActivity.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -57,6 +82,13 @@
 			remoteGlobalIDString = A1B2C3D40000000000000006;
 			remoteInfo = "Glass Marble";
 		};
+		A1B2C3D40000000000000037 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D40000000000000007 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D40000000000000039;
+			remoteInfo = MarbleLiveActivity;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXTargetDependency section */
@@ -64,6 +96,11 @@
 			isa = PBXTargetDependency;
 			target = A1B2C3D40000000000000006 /* Glass Marble */;
 			targetProxy = A1B2C3D40000000000000024 /* PBXContainerItemProxy */;
+		};
+		A1B2C3D40000000000000038 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D40000000000000039 /* MarbleLiveActivity */;
+			targetProxy = A1B2C3D40000000000000037 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -75,10 +112,12 @@
 				A1B2C3D40000000000000009 /* Sources */,
 				A1B2C3D40000000000000003 /* Frameworks */,
 				A1B2C3D40000000000000008 /* Resources */,
+				A1B2C3D40000000000000034 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A1B2C3D40000000000000038 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A1B2C3D40000000000000002 /* GlassMarble */,
@@ -112,6 +151,19 @@
 			productName = GlassMarbleUITests;
 			productReference = A1B2C3D40000000000000020 /* GlassMarbleUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		A1B2C3D40000000000000039 /* MarbleLiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D4000000000000003A /* Build configuration list for PBXNativeTarget "MarbleLiveActivity" */;
+			buildPhases = (A1B2C3D4000000000000003B /* Sources */, );
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (A1B2C3D40000000000000036 /* MarbleLiveActivity */, );
+			name = MarbleLiveActivity;
+			packageProductDependencies = ();
+			productName = MarbleLiveActivity;
+			productReference = A1B2C3D40000000000000031 /* MarbleLiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -148,6 +200,7 @@
 			targets = (
 				A1B2C3D40000000000000006 /* Glass Marble */,
 				A1B2C3D40000000000000022 /* GlassMarbleUITests */,
+				A1B2C3D40000000000000039 /* MarbleLiveActivity */,
 			);
 		};
 /* End PBXProject section */
@@ -189,6 +242,12 @@
 			buildActionMask = 2147483647;
 			files = (
 			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3D4000000000000003B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A1B2C3D40000000000000032 /* MarbleConnectionActivityAttributes.swift in Sources */, );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
@@ -273,7 +332,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -299,7 +358,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -357,6 +416,44 @@
 			};
 			name = Release;
 		};
+		A1B2C3D4000000000000003C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/LiveActivity-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../../Frameworks", );
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wanazhar.glassmarble.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MARBLE_WIDGET_EXTENSION";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A1B2C3D4000000000000003D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/LiveActivity-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../../Frameworks", );
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wanazhar.glassmarble.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MARBLE_WIDGET_EXTENSION";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -384,6 +481,12 @@
 				A1B2C3D40000000000000029 /* Debug */,
 				A1B2C3D4000000000000002A /* Release */,
 			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3D4000000000000003A /* Build configuration list for PBXNativeTarget "MarbleLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (A1B2C3D4000000000000003C /* Debug */, A1B2C3D4000000000000003D /* Release */, );
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};

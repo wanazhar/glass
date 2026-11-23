@@ -8,12 +8,12 @@ use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
 };
 use serde_json::{Value, json as value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver},
 };
 use std::time::{Duration, Instant};
@@ -32,18 +32,29 @@ const MAX_OUTSTANDING_RESPONSES: usize = 64;
 const CANCELLED_APPROVAL: &str = "cancelled before this tool call ran";
 
 /// Product instructions for a marble conversation.
-pub const SESSION_INSTRUCTIONS: &str = "You are Glass Marble, a durable collaborator working inside the \
+pub const SESSION_INSTRUCTIONS: &str = "You are a durable collaborator working inside the \
      user's workspace. Core executes your file and shell tools; the `glass.workspace.*` tools are \
      governed integrations that Marble's own control layer classifies before they run, and the human \
      answers anything that layer leaves open. A refusal names the rule behind it, so adapt instead of \
      retrying the same call. Keep changes legible and reversible, say what you changed, and surface \
      attribution when you act on the human's behalf.";
 
+const TOOL_GUIDANCE: &str = "Use your tools (web_search/web_fetch) whenever the user asks for current or factual information you cannot be sure of. Never say you searched or checked without actually calling the tool.";
+const CONVERSATIONAL_GUIDANCE: &str = "Match the length of the message: greetings and small talk get one or two sentences, with no unsolicited speeches or monologues. Expand only when asked or when the task needs it.";
+pub(crate) const REPLY_PRIVACY_GUIDANCE: &str =
+    "Keep reasoning and planning private; put only the final answer in your reply.";
+
 /// Session instructions for one conversation: the product posture, plus what the
 /// workspace is made of so the marble does not infer crate ownership from a file
 /// path.
 fn session_instructions(cwd: &Path) -> String {
     let mut instructions = SESSION_INSTRUCTIONS.to_string();
+    instructions.push('\n');
+    instructions.push_str(TOOL_GUIDANCE);
+    instructions.push('\n');
+    instructions.push_str(CONVERSATIONAL_GUIDANCE);
+    instructions.push('\n');
+    instructions.push_str(REPLY_PRIVACY_GUIDANCE);
     if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
         instructions.push('\n');
         instructions.push_str(&briefing);
@@ -55,11 +66,8 @@ fn session_instructions(cwd: &Path) -> String {
 /// the person gave it one, else the plain product posture.
 pub fn default_assistant_instructions(persona: &str, cwd: &Path) -> String {
     let persona = persona.trim();
-    if persona.is_empty() {
-        return session_instructions(cwd);
-    }
     format!(
-        "You are Marble, the default assistant — a personal companion built on Glass. Personality: {persona}.
+        "You are Marble. Speak only as Marble. Never @mention yourself or call yourself 'a Marble'. Personality: {persona}.
 {}",
         session_instructions(cwd)
     )
@@ -90,12 +98,116 @@ pub fn marble_session_instructions(
         others.join("; ")
     };
     let mut instructions = format!(
-        "You are {}, one of the user's Marbles — personal companions built on Glass. Personality: {}. Other Marbles you can ask for help: {}.",
-        marble.name, persona, others
+        "You are {name}, one of the user's Marbles. Speak only as {name}. Never @mention yourself or call yourself 'a Marble'. Personality: {persona}. Other Marbles you can ask for help: {others}.",
+        name = marble.name
     );
     instructions.push('\n');
     instructions.push_str(&session_instructions(cwd));
     instructions
+}
+
+fn strip_self_mention<'a>(text: &'a str, name: &str) -> &'a str {
+    let Some(rest) = text.trim_start().strip_prefix('@') else {
+        return text;
+    };
+    let Some(prefix) = rest.get(..name.len()) else {
+        return text;
+    };
+    if name.is_empty() || prefix.to_lowercase() != name.to_lowercase() {
+        return text;
+    }
+    let tail = &rest[name.len()..];
+    if tail
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !matches!(c, ',' | ':' | '.' | '!' | '?' | '—'))
+    {
+        return text;
+    }
+    tail.trim_start_matches(|c: char| {
+        c.is_whitespace() || matches!(c, ',' | ':' | '.' | '!' | '?' | '—')
+    })
+}
+
+#[derive(Default)]
+struct ToolRows {
+    rows: Vec<(String, String, String)>,
+}
+
+impl ToolRows {
+    fn normalize(&self, event: &mut RuntimeEvent) {
+        if !matches!(event.kind.as_str(), "tool_start" | "tool_end") {
+            return;
+        }
+        let name = event.data["tool"]
+            .as_str()
+            .or_else(|| event.data["name"].as_str())
+            .or_else(|| {
+                let call = event.data["callId"].as_str()?;
+                self.rows
+                    .iter()
+                    .find(|row| row.0 == call)
+                    .map(|row| row.2.split(" · ").next().unwrap_or("tool"))
+            })
+            .unwrap_or("tool")
+            .to_string();
+        event.data["tool"] = value!(name);
+    }
+
+    fn observe(&mut self, event: &RuntimeEvent) -> bool {
+        if !matches!(event.kind.as_str(), "tool_start" | "tool_end") {
+            return false;
+        }
+        let data = &event.data;
+        let id = data["callId"].as_str().unwrap_or_default();
+        if id.is_empty() {
+            return false;
+        }
+        let existing = self.rows.iter().position(|row| row.0 == id);
+        let status = if event.kind == "tool_start" {
+            "running"
+        } else if data["isError"].as_bool().unwrap_or(false) {
+            "failed"
+        } else {
+            "ok"
+        };
+        let name = data["name"]
+            .as_str()
+            .or_else(|| data["tool"].as_str())
+            .unwrap_or("tool");
+        let summary = ["query", "url", "path", "command"]
+            .iter()
+            .find_map(|key| data["arguments"][*key].as_str())
+            .or_else(|| data["title"].as_str())
+            .unwrap_or_default();
+        let summary: String = summary
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(120)
+            .collect();
+        let label = if summary.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} · {summary}")
+        };
+        if let Some(index) = existing {
+            if event.kind == "tool_start" && summary.is_empty() {
+                return true;
+            }
+            let label = if event.kind == "tool_end" {
+                self.rows[index].2.clone()
+            } else {
+                label
+            };
+            self.rows[index] = (id.into(), format!("{label} · {status}"), label);
+        } else {
+            self.rows
+                .push((id.into(), format!("{label} · {status}"), label));
+        }
+        true
+    }
 }
 
 /// Cancel intent for one running durable task.
@@ -241,6 +353,9 @@ fn call_path(call: &ToolRequest) -> String {
 
 /// Durable conversation handle over the local runtime.
 pub struct Conversation {
+    text_block_boundaries: bool,
+    speaker: String,
+    engine_id: u64,
     client: RuntimeClient,
     cwd: PathBuf,
     host: HostPolicy,
@@ -253,6 +368,7 @@ pub struct Conversation {
     active_task: String,
     /// Durable product document whose control layer classifies every call.
     product: Option<Arc<Mutex<ProductState>>>,
+    store: Option<crate::store::StateStore>,
     /// Corrections arriving while a turn runs, drained between runtime frames.
     steering: Option<mpsc::Receiver<SteerRequest>>,
     /// How to start a fresh engine after the transport dies. `None` means this
@@ -262,6 +378,7 @@ pub struct Conversation {
     storage_dir: PathBuf,
     /// Set when the engine stopped answering; the next turn restarts it first.
     transport_failed: bool,
+    stopped: bool,
     restarts: u64,
     /// Request ids this conversation issued and has not consumed yet.
     ///
@@ -271,12 +388,19 @@ pub struct Conversation {
     /// the turn that asked for them, so the next turn drops them instead of
     /// failing on a response id it never used.
     outstanding: Vec<String>,
+    buffered: VecDeque<Incoming>,
     /// Instructions a durable conversation opens with; `None` uses the default
     /// product posture. Set for a named marble's engine.
     instructions: Option<String>,
     /// Instructions computed per conversation, so an edited persona reaches
     /// the next conversation on a shared lane.
     instructions_fn: Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>,
+}
+
+impl Drop for Conversation {
+    fn drop(&mut self) {
+        self.clear_runtime_failure();
+    }
 }
 
 impl Conversation {
@@ -331,11 +455,13 @@ impl Conversation {
         command.current_dir(cwd);
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
-            .initialize_mixed(storage_dir)
+            .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":storage_dir}))
             .map_err(MarbleError::Io)?;
         let init = Self::wait_response(&mut client, &router, &events, &init_id)?;
         Self::require_capabilities(&init)?;
         Ok(Self {
+            text_block_boundaries: init["capabilities"]["textBlockBoundaries"] == true,
+            speaker: "Marble".into(),
             client,
             cwd: cwd.to_path_buf(),
             host,
@@ -347,14 +473,21 @@ impl Conversation {
             active_conversation: String::new(),
             active_task: String::new(),
             product: None,
+            store: None,
             steering: None,
             respawn: None,
             storage_dir: storage_dir.to_path_buf(),
             transport_failed: false,
+            stopped: false,
             restarts: 0,
             instructions: None,
             instructions_fn: None,
             outstanding: Vec::new(),
+            buffered: VecDeque::new(),
+            engine_id: {
+                static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
+                NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed)
+            },
         })
     }
 
@@ -388,6 +521,14 @@ impl Conversation {
     pub fn with_product(mut self, product: Arc<Mutex<ProductState>>) -> Self {
         self.product = Some(product);
         self
+    }
+
+    pub(crate) fn product_state(&self) -> Option<Arc<Mutex<ProductState>>> {
+        self.product.clone()
+    }
+
+    pub(crate) fn set_store(&mut self, store: Option<&crate::store::StateStore>) {
+        self.store = store.cloned();
     }
 
     /// Supply the channel the HTTP surface uses to correct a running turn.
@@ -431,6 +572,10 @@ impl Conversation {
         Ok(true)
     }
 
+    pub fn streams_text_blocks(&self) -> bool {
+        self.text_block_boundaries
+    }
+
     /// Spawn a fresh engine, negotiate capabilities, and adopt it.
     pub fn restart(&mut self) -> Result<(), MarbleError> {
         let Some(factory) = self.respawn.as_ref() else {
@@ -442,16 +587,20 @@ impl Conversation {
         command.current_dir(&self.cwd);
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
-            .initialize_mixed(&self.storage_dir)
+            .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":self.storage_dir}))
             .map_err(MarbleError::Io)?;
         let init = Self::wait_response(&mut client, &self.router, &self.events, &init_id)?;
         Self::require_capabilities(&init)?;
+        self.text_block_boundaries = init["capabilities"]["textBlockBoundaries"] == true;
         let previous = std::mem::replace(&mut self.client, client);
         drop(previous);
         self.set_active("", "");
         self.transport_failed = false;
+        self.stopped = false;
+        self.clear_runtime_failure();
         // The ids belonged to the engine that just went away.
         self.outstanding.clear();
+        self.buffered.clear();
         self.restarts = self.restarts.saturating_add(1);
         tracing::warn!(
             restarts = self.restarts,
@@ -521,6 +670,15 @@ impl Conversation {
         self
     }
 
+    pub fn with_speaker(mut self, name: &str) -> Self {
+        self.speaker = name.to_string();
+        self
+    }
+
+    pub(crate) fn clean_reply(&self, text: &str) -> String {
+        strip_self_mention(text, &self.speaker).to_string()
+    }
+
     /// Ask for the instructions each time a conversation is created, so an
     /// edited persona reaches the next conversation without dropping the lane.
     pub fn with_instructions_fn(
@@ -545,7 +703,7 @@ impl Conversation {
                 .as_ref()
                 .map(|instructions| instructions())
                 .or_else(|| self.instructions.clone())
-                .unwrap_or_else(|| session_instructions(&self.cwd)),
+                .unwrap_or_else(|| default_assistant_instructions("", &self.cwd)),
         );
         options.model = self.model.clone();
         let created = self.client.durable_create(&options);
@@ -571,10 +729,100 @@ impl Conversation {
         request_id: &str,
         input: &TurnInput,
     ) -> Result<String, MarbleError> {
+        let record = self.product.as_ref().and_then(|p| {
+            p.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .conversations
+                .iter()
+                .find(|c| c.id == conversation_id)
+                .cloned()
+        });
+        let mut engine_id = match &record {
+            Some(record) if record.needs_engine_session => {
+                let engine_id = self.create()?;
+                if let Some(product) = &self.product {
+                    let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+                    let record = state.conversation_mut(conversation_id);
+                    record.engine_conversation_id.clone_from(&engine_id);
+                    record.needs_engine_session = false;
+                    crate::store::persist_optional(self.store.as_ref(), &state);
+                }
+                engine_id
+            }
+            Some(record) if !record.engine_conversation_id.is_empty() => {
+                record.engine_conversation_id.clone()
+            }
+            _ => conversation_id.to_string(),
+        };
         self.set_active(conversation_id, "");
-        let submitted = self
-            .client
-            .durable_submit(conversation_id, request_id, input);
+        let mut input = input.clone();
+        let retrying = record.as_ref().is_some_and(|record| {
+            self.product.as_ref().is_some_and(|p| {
+                p.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == record.retry_task_id)
+                    .is_some_and(|t| {
+                        input
+                            .text
+                            .ends_with(&format!("[User message]\n{}", t.prompt))
+                    })
+            })
+        });
+        if let Some(record) = &record
+            && retrying
+        {
+            let latest = self.product.as_ref().is_some_and(|p| {
+                p.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tasks
+                    .iter()
+                    .rev()
+                    .find(|t| {
+                        t.conversation_id == conversation_id
+                            && t.status != "queued"
+                            && !t.id.starts_with("queued-")
+                    })
+                    .is_some_and(|t| t.id == record.retry_task_id)
+            });
+            if let Some(sequence) = record
+                .checkpoints
+                .get(&record.retry_task_id)
+                .filter(|_| latest)
+            {
+                let request = self.client.request(
+                    "durable/fork",
+                    value!({"conversationId":engine_id,"asOf":sequence}),
+                );
+                let id = self.issue(request)?;
+                let result = self.pump(&id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
+                engine_id = result["conversationId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        MarbleError::Protocol("durable/fork returned no conversation id".into())
+                    })?
+                    .to_string();
+            } else {
+                input.text = input.text.replacen("[Marble host context]\n", "[Marble host context]\nThis is a retry of an earlier failed message; later turns remain in the conversation history.\n", 1);
+            }
+        }
+        let inspect = self.client.request(
+            "durable/inspect",
+            value!({"conversationId":engine_id,"limit":1}),
+        );
+        let inspect_id = self.issue(inspect)?;
+        let snapshot = self.pump(
+            &inspect_id,
+            Instant::now() + TURN_TIMEOUT,
+            None,
+            &mut |_| {},
+        )?;
+        let checkpoint = snapshot["sequence"]
+            .as_u64()
+            .ok_or_else(|| MarbleError::Protocol("durable/inspect returned no sequence".into()))?;
+        let submitted = self.client.durable_submit(&engine_id, request_id, &input);
         let submit_id = self.issue(submitted)?;
         let result = self.pump(&submit_id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
         let task_id = result["submission"]["id"]
@@ -585,6 +833,15 @@ impl Conversation {
             return Err(MarbleError::Protocol(
                 "durable/submit returned no task id".into(),
             ));
+        }
+        if let Some(product) = &self.product {
+            let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+            let record = state.conversation_mut(conversation_id);
+            record.engine_conversation_id = engine_id;
+            record.checkpoints.insert(task_id.clone(), checkpoint);
+            if retrying {
+                record.retry_task_id.clear();
+            }
         }
         self.set_active(conversation_id, &task_id);
         Ok(task_id)
@@ -625,9 +882,45 @@ impl Conversation {
     }
 
     /// Publish one product event for the active conversation and task.
-    pub fn publish(&self, kind: &str, data: Value) {
+    pub fn publish(&self, kind: &str, mut data: Value) {
+        if kind == "error" {
+            let failure =
+                crate::failure::FailureInfo::of(data["message"].as_str().unwrap_or_default());
+            data["message"] = value!(crate::failure::MESSAGE);
+            data["failure"] = value!(failure);
+        }
+        let mut everyone = None;
+        if matches!(kind, "tool_start" | "tool_end")
+            && let Some(product) = &self.product
+        {
+            let state = product.lock().unwrap_or_else(|error| error.into_inner());
+            let call = data["callId"].as_str().unwrap_or_default();
+            let id = format!("entry-tool-{}-{call}", self.active_task);
+            if let Some(row) = state.transcript.iter().find(|e| e.id == id) {
+                data["entry_id"] = value!(row.id);
+                data["sender"] = value!(row.speaker_name);
+            }
+            if let Some(row) = state
+                .transcript
+                .iter()
+                .find(|e| e.id == format!("{id}-everyone"))
+            {
+                let mut mirrored = data.clone();
+                mirrored["entry_id"] = value!(row.id);
+                mirrored["sender"] = value!(row.speaker_name);
+                everyone = Some(mirrored);
+            }
+        }
         self.events
             .publish(&self.active_conversation, &self.active_task, kind, data);
+        if let Some(data) = everyone {
+            self.events.publish(
+                crate::everyone::EVERYONE_CONVERSATION,
+                &self.active_task,
+                kind,
+                data,
+            );
+        }
     }
 
     pub fn set_active(&mut self, conversation_id: &str, task_id: &str) {
@@ -639,9 +932,40 @@ impl Conversation {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<Incoming>, MarbleError> {
+        if let Some(incoming) = self.buffered.pop_front() {
+            return Ok(Some(incoming));
+        }
         self.client
             .recv_typed_timeout(timeout)
             .map_err(MarbleError::Io)
+    }
+
+    pub(crate) fn check_idle_transport(&mut self, state: &Mutex<ProductState>) {
+        if self.stopped || self.transport_failed || self.buffered.len() >= MAX_OUTSTANDING_RESPONSES
+        {
+            return;
+        }
+        match self.client.recv_typed_timeout(Duration::ZERO) {
+            Ok(Some(incoming)) => self.buffered.push_back(incoming),
+            Ok(None) => {}
+            Err(error) => {
+                let error = self.transport_error(MarbleError::Io(error));
+                let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+                guard
+                    .presence
+                    .runtime
+                    .note_engine_failure(self.engine_id, error.to_string());
+                guard.bump();
+                self.publish(
+                    "runtime",
+                    value!({"error": error.to_string(), "revision": guard.revision}),
+                );
+            }
+        }
+    }
+
+    pub(crate) fn engine_id(&self) -> u64 {
+        self.engine_id
     }
 
     /// Start one durable task; returns the runtime response id to await.
@@ -666,6 +990,7 @@ impl Conversation {
     ) -> Result<Value, MarbleError> {
         let mut auxiliary: Vec<String> = Vec::new();
         let mut cancelled = false;
+        let mut tools = ToolRows::default();
         loop {
             self.drain_steering(&mut auxiliary);
             if let Some(token) = cancel
@@ -732,17 +1057,129 @@ impl Conversation {
                         "unexpected runtime response id {id:?}"
                     )));
                 }
-                Incoming::Event(event) => {
+                Incoming::Event(mut event) => {
+                    tools.normalize(&mut event);
+                    if matches!(event.kind.as_str(), "tool_start" | "tool_end")
+                        && ToolRouter::catalog()
+                            .iter()
+                            .any(|tool| event.data["tool"] == tool.name)
+                    {
+                        continue;
+                    }
+                    if tools.observe(&event) {
+                        self.record_tool_rows(&tools);
+                    }
                     self.note_engine_tool(&event);
-                    self.publish(&event.kind, event.data.clone());
+                    if !matches!(
+                        event.kind.as_str(),
+                        "text" | "reasoning" | "text_block_start"
+                    ) {
+                        self.publish(&event.kind, event.data.clone());
+                    }
                     sink(&event);
                 }
                 Incoming::Tool { request_id, call } => {
-                    self.handle_tool(request_id, &call, cancel)?;
+                    let start = RuntimeEvent {
+                        session_id: call.session_id.clone(),
+                        turn_id: call.turn_id.clone(),
+                        kind: "tool_start".into(),
+                        data: value!({"requestId":request_id.as_str().map(str::to_owned).unwrap_or_else(|| request_id.to_string()), "callId": call.call_id, "tool": call.name, "arguments": call.arguments}),
+                    };
+                    tools.observe(&start);
+                    self.record_tool_rows(&tools);
+                    self.publish(&start.kind, start.data.clone());
+                    sink(&start);
+                    let data = self.handle_tool(request_id, &call, cancel)?;
+                    let end = RuntimeEvent {
+                        kind: "tool_end".into(),
+                        data,
+                        ..start
+                    };
+                    tools.observe(&end);
+                    self.record_tool_rows(&tools);
+                    self.publish(&end.kind, end.data.clone());
+                    sink(&end);
                 }
                 Incoming::Unknown(_) => {}
             }
         }
+    }
+
+    fn record_tool_rows(&self, tools: &ToolRows) {
+        let Some(product) = &self.product else { return };
+        if self.active_task.is_empty() {
+            return;
+        }
+        let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        let shared = state
+            .everyone_pending
+            .contains_key(&format!("task:{}", self.active_task));
+        let existing: Vec<_> = state
+            .transcript
+            .iter()
+            .filter(|entry| {
+                (entry.conversation_id == self.active_conversation
+                    || (shared && entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION))
+                    && entry.task_id == self.active_task
+                    && entry.kind == "tool"
+            })
+            .cloned()
+            .collect();
+        state
+            .transcript
+            .retain(|entry| !existing.iter().any(|previous| previous.id == entry.id));
+        for (call, text, _) in &tools.rows {
+            let id = format!("entry-tool-{}-{call}", self.active_task);
+            let previous = existing
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .unwrap_or_default();
+            state.push_transcript(crate::TranscriptEntry {
+                id,
+                conversation_id: self.active_conversation.clone(),
+                task_id: self.active_task.clone(),
+                kind: "tool".into(),
+                text: text.clone(),
+                at: if previous.at == 0 {
+                    crate::worker::now_millis()
+                } else {
+                    previous.at
+                },
+                ..previous
+            });
+            if shared {
+                let mirror_id = format!("entry-tool-{}-{call}-everyone", self.active_task);
+                let previous = existing
+                    .iter()
+                    .find(|e| e.id == mirror_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let speaker = state
+                    .everyone_pending
+                    .get(&format!("task:{}", self.active_task))
+                    .cloned()
+                    .unwrap_or_default();
+                state.push_transcript(crate::TranscriptEntry {
+                    id: mirror_id,
+                    conversation_id: crate::everyone::EVERYONE_CONVERSATION.into(),
+                    task_id: self.active_task.clone(),
+                    kind: "tool".into(),
+                    text: text.clone(),
+                    at: if previous.at == 0 {
+                        crate::worker::now_millis()
+                    } else {
+                        previous.at
+                    },
+                    speaker,
+                    ..previous
+                });
+            }
+        }
+        state.bump();
+        let snapshot = state.clone();
+        drop(state);
+        crate::store::persist_optional(self.store.as_ref(), &snapshot);
     }
 
     /// Apply every queued correction to the turn that is running now. A request
@@ -771,7 +1208,21 @@ impl Conversation {
                 continue;
             }
             let input = crate::to_turn_input(&crate::InboundMessage::new(&request.text));
-            match self.client.steer(&self.active_conversation, &input) {
+            let engine_id = self
+                .product
+                .as_ref()
+                .and_then(|product| {
+                    product
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .conversations
+                        .iter()
+                        .find(|record| record.id == self.active_conversation)
+                        .map(|record| record.engine_conversation_id.clone())
+                        .filter(|id| !id.is_empty())
+                })
+                .unwrap_or_else(|| self.active_conversation.clone());
+            match self.client.steer(&engine_id, &input) {
                 Ok(id) => {
                     self.note_issued(id.clone());
                     if auxiliary.len() < MAX_AUXILIARY_RESPONSES {
@@ -799,20 +1250,11 @@ impl Conversation {
         request_id: Value,
         call: &ToolRequest,
         cancel: Option<CancelToken<'_>>,
-    ) -> Result<(), MarbleError> {
+    ) -> Result<Value, MarbleError> {
         let key = request_id
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| request_id.to_string());
-        self.publish(
-            "tool_start",
-            value!({
-                "requestId": key,
-                "callId": call.call_id,
-                "tool": call.name,
-                "arguments": call.arguments,
-            }),
-        );
         let scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
         let (approval, reason) = self.decide(&key, call, &scope, cancel);
         let answer = crate::host::answer_tool(
@@ -839,18 +1281,15 @@ impl Conversation {
                 (false, outcome)
             }
         };
-        self.publish(
-            "tool_end",
-            value!({
-                "requestId": key,
-                "callId": call.call_id,
-                "tool": call.name,
-                "approved": approved,
-                "isError": outcome.is_error,
-                "text": outcome.text,
-            }),
-        );
-        Ok(())
+        let data = value!({
+            "requestId": key,
+            "callId": call.call_id,
+            "tool": call.name,
+            "approved": approved,
+            "isError": outcome.is_error,
+            "text": outcome.text,
+        });
+        Ok(data)
     }
 
     /// Classify one governed call through marble's control layer, falling back
@@ -986,12 +1425,24 @@ impl Conversation {
     }
 
     pub fn shutdown(&mut self) -> Result<(), MarbleError> {
+        self.stopped = true;
+        self.clear_runtime_failure();
         let shutdown_id = self
             .client
             .request("shutdown", json!({}))
             .map_err(MarbleError::Io)?;
         let _ = Self::wait_response_on(&mut self.client, &self.router, &self.events, &shutdown_id);
         Ok(())
+    }
+
+    fn clear_runtime_failure(&self) {
+        if let Some(state) = &self.product {
+            let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+            if guard.presence.runtime.forget_engine(self.engine_id) {
+                guard.bump();
+                self.publish("runtime", value!({"revision": guard.revision, "health": guard.presence.runtime.document()}));
+            }
+        }
     }
 
     pub fn host(&self) -> &HostPolicy {
@@ -1093,6 +1544,105 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_tool_ends_keep_the_start_name_and_failure_status() {
+        let mut tools = ToolRows::default();
+        let mut event = RuntimeEvent {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            kind: "tool_start".into(),
+            data: value!({"callId":"date", "name":"bash", "title":"date"}),
+        };
+        tools.normalize(&mut event);
+        assert!(tools.observe(&event));
+        event.kind = "tool_end".into();
+        event.data = value!({"callId":"date", "isError":true, "text":"error: refused"});
+        tools.normalize(&mut event);
+        assert_eq!(event.data["tool"], "bash");
+        assert!(tools.observe(&event));
+        assert_eq!(tools.rows.len(), 1);
+        assert_eq!(tools.rows[0].1, "bash · date · failed");
+        event.data = value!({"callId":"unknown", "isError":false});
+        tools.normalize(&mut event);
+        assert_eq!(event.data["tool"], "tool");
+        event.data = value!({});
+        tools.normalize(&mut event);
+        assert!(!tools.observe(&event));
+        assert_eq!(tools.rows.len(), 1);
+    }
+
+    #[test]
+    fn identity_and_brevity_are_shared_without_conflicting_names() {
+        for persona in ["", "warm and witty"] {
+            let prompt = default_assistant_instructions(persona, Path::new("."));
+            assert!(prompt.starts_with("You are Marble."));
+            assert!(prompt.contains("Keep reasoning and planning private"));
+            assert!(prompt.contains(CONVERSATIONAL_GUIDANCE));
+            assert!(prompt.contains(REPLY_PRIVACY_GUIDANCE));
+            assert!(!prompt.contains("You are Glass Marble"));
+        }
+        let mut roster = crate::PrismState::default();
+        let ada = roster
+            .add("Ada", "writer", "star", 35, "", "brief")
+            .unwrap()
+            .clone();
+        let prompt = marble_session_instructions(&ada, &roster.marbles, Path::new("."));
+        assert!(prompt.starts_with("You are Ada, one of the user's Marbles. Speak only as Ada."));
+        assert!(prompt.contains("Never @mention yourself"));
+        assert!(prompt.contains(CONVERSATIONAL_GUIDANCE));
+        assert!(!prompt.contains("You are Glass Marble"));
+        assert!(!prompt.contains("You are Marble"));
+    }
+
+    #[test]
+    fn reply_cleanup_only_removes_a_leading_own_name() {
+        for (text, expected) in [
+            ("@Ada I'll take the lead", "I'll take the lead"),
+            ("  @ada: Hello", "Hello"),
+            ("@Ada", ""),
+            ("", ""),
+            ("@Ben hello", "@Ben hello"),
+            ("Ask @Ada", "Ask @Ada"),
+            ("@Adaline hello", "@Adaline hello"),
+            ("@Ada-team hello", "@Ada-team hello"),
+            ("  Normal reply", "  Normal reply"),
+        ] {
+            assert_eq!(strip_self_mention(text, "Ada"), expected);
+        }
+        assert_eq!(strip_self_mention("@Éva Hello", "Éva"), "Hello");
+    }
+
+    #[test]
+    fn tool_rows_keep_bounded_inputs_and_native_or_host_outcomes() {
+        let mut tools = ToolRows::default();
+        let mut event = RuntimeEvent {
+            session_id: "s".into(),
+            turn_id: value!("t"),
+            kind: "text".into(),
+            data: value!({}),
+        };
+        assert!(!tools.observe(&event));
+        event.kind = "tool_start".into();
+        assert!(!tools.observe(&event));
+        event.data =
+            value!({"callId":"search", "name":"web_search", "arguments":{"query":"latest\n news"}});
+        assert!(tools.observe(&event));
+        assert_eq!(tools.rows[0].1, "web_search · latest news · running");
+        event.kind = "tool_end".into();
+        event.data = value!({"callId":"search", "isError":false});
+        tools.observe(&event);
+        assert_eq!(tools.rows[0].1, "web_search · latest news · ok");
+        event.kind = "tool_start".into();
+        event.data = value!({"callId":"read", "tool":"glass.workspace.read", "arguments":{"path":"é".repeat(200)}});
+        tools.observe(&event);
+        assert!(tools.rows[1].1.chars().count() < 160);
+        event.kind = "tool_end".into();
+        event.data = value!({"callId":"read", "isError":true});
+        tools.observe(&event);
+        assert!(tools.rows[1].1.ends_with(" · failed"));
+        assert!(default_assistant_instructions("", Path::new(".")).contains(TOOL_GUIDANCE));
+    }
 
     fn capabilities(durable: bool, resume: bool, mixed: bool) -> serde_json::Value {
         serde_json::json!({

@@ -89,6 +89,108 @@ fn run_one(
     reply
 }
 
+#[test]
+fn pre_tool_text_is_not_a_visible_delta_and_is_the_empty_answer_fallback() {
+    if !python3_available() {
+        return;
+    }
+    for answer in ["The answer.", ""] {
+        let root = workspace(if answer.is_empty() {
+            "step-empty"
+        } else {
+            "step-final"
+        });
+        let script = write_fake_runtime(&root);
+        let events = EventBus::default();
+        let mut command = Command::new("python3");
+        command
+            .arg(script)
+            .arg("runtime")
+            .arg("--pre-tool-text")
+            .arg("Research info.")
+            .arg("--text-chunks")
+            .arg(serde_json::json!([answer]).to_string());
+        let mut conversation = Conversation::spawn_with_router(
+            command,
+            &root,
+            &root.join("sessions"),
+            HostPolicy::approving(),
+            ApprovalInbox::default(),
+            ToolRouter::new(&root).unwrap(),
+            events.clone(),
+        )
+        .unwrap();
+        let reply = run_turn(
+            &turn("research", None),
+            &mut conversation,
+            TurnOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(reply.reasoning, "Research info.");
+        assert_eq!(
+            reply.text,
+            if answer.is_empty() {
+                "Research info."
+            } else {
+                answer
+            }
+        );
+        let frames = events.since(0);
+        let visible: String = frames
+            .iter()
+            .filter(|e| e.kind == "text")
+            .map(|e| e.data["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(visible, reply.text);
+        conversation.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// How one lane's fake engine is built for a test.
+#[test]
+fn default_tool_rows_survive_success_and_refusal_reload() {
+    if !python3_available() {
+        return;
+    }
+    for (host, status) in [
+        (HostPolicy::approving(), "ok"),
+        (HostPolicy::denying(), "failed"),
+    ] {
+        let root = workspace(&format!("tool-row-{status}"));
+        let script = write_fake_runtime(&root);
+        let product = Arc::new(Mutex::new(ProductState::default()));
+        let mut conversation = spawn_conversation(
+            &root,
+            &script,
+            &root.join("sessions"),
+            host,
+            ApprovalInbox::default(),
+        )
+        .with_product(product.clone());
+        let reply = run_turn(
+            &turn("inspect", None),
+            &mut conversation,
+            TurnOptions::default(),
+        )
+        .unwrap();
+        let store = StateStore::in_data_dir(&root);
+        store.save(&product.lock().unwrap()).unwrap();
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .transcript
+                .iter()
+                .any(|entry| entry.task_id == reply.task_id
+                    && entry.kind == "tool"
+                    && entry.text == format!("glass.workspace.list · {status}"))
+        );
+        conversation.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 /// How one lane's fake engine is built for a test.
 #[derive(Clone)]
 struct LaneSpec {
@@ -383,6 +485,150 @@ fn two_chats_run_at_the_same_time_on_separate_lanes() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn everyone_waiting_for_its_first_conversation_stays_on_one_engine() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("everyone-first-lane");
+    let script = write_fake_runtime(&root);
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let (release, waiting) = mpsc::channel();
+    let gate = Arc::new(Mutex::new(Some(waiting)));
+    let begun = Arc::new(AtomicBool::new(false));
+    let factory: LaneFactory = {
+        let root = root.clone();
+        let state = state.clone();
+        let begun = begun.clone();
+        Arc::new(move |lane| {
+            if lane == 1 {
+                begun.store(true, Ordering::SeqCst);
+                if let Some(waiting) = gate.lock().unwrap().take() {
+                    waiting.recv_timeout(Duration::from_secs(30)).unwrap();
+                }
+            }
+            let mut command = Command::new("python3");
+            command
+                .arg(&script)
+                .arg("runtime")
+                .arg("--strict-conversations")
+                .arg("--id-prefix")
+                .arg(format!("lane-{lane}-"));
+            Conversation::spawn_with_router(
+                command,
+                &root,
+                &root.join(format!("sessions-{lane}")),
+                HostPolicy::approving(),
+                ApprovalInbox::default(),
+                ToolRouter::new(&root)?,
+                EventBus::default(),
+            )
+            .map(|conversation| conversation.with_product(state.clone()))
+        })
+    };
+    let pool = spawn_turn_pool(
+        2,
+        factory,
+        state.clone(),
+        None,
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .unwrap();
+    let send = |text: &str| {
+        let request = TurnRequest::new(None, text);
+        state
+            .lock()
+            .unwrap()
+            .everyone_pending
+            .insert(format!("queued-{}", request.request_id), "marble".into());
+        let (accepted, answer) = mpsc::channel();
+        pool.sender.send(TurnCommand { request, accepted }).unwrap();
+        answer
+    };
+    let first = send("first Everyone turn");
+    wait_until("Everyone engine startup", || begun.load(Ordering::SeqCst));
+    let second = send("second Everyone turn");
+    release.send(()).unwrap();
+    let first = first
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    let second = second
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.conversation_id, second.conversation_id);
+    wait_for_settled(&state, &first.task_id);
+    wait_for_settled(&state, &second.task_id);
+    assert_eq!(state.lock().unwrap().tasks.len(), 2);
+    drop(pool);
+}
+
+#[test]
+fn everyone_rebinds_to_a_surviving_chats_engine_after_deletion() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("everyone-rebind-lane");
+    let script = write_fake_runtime(&root);
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    let pool = lanes(
+        &root,
+        &script,
+        vec![LaneSpec::default(); 2],
+        ApprovalInbox::default(),
+        &state,
+        &Arc::default(),
+        CancelRegistry::default(),
+    );
+    let everyone = |text: &str, conversation_id: Option<String>| {
+        let request = TurnRequest::new(conversation_id, text);
+        state
+            .lock()
+            .unwrap()
+            .everyone_pending
+            .insert(format!("queued-{}", request.request_id), "marble".into());
+        let (accepted, answer) = mpsc::channel();
+        pool.sender.send(TurnCommand { request, accepted }).unwrap();
+        let accepted = answer
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        wait_for_settled(&state, &accepted.task_id);
+        accepted
+    };
+    let original = everyone("Everyone original", None);
+    let survivor = submit(&pool, "private history that must survive", None);
+    wait_for_settled(&state, &survivor.task_id);
+    assert_ne!(
+        lane_of(&state, &original.conversation_id),
+        lane_of(&state, &survivor.conversation_id)
+    );
+    {
+        let mut state = state.lock().unwrap();
+        state
+            .conversations
+            .retain(|c| c.id != original.conversation_id);
+        state
+            .tasks
+            .retain(|t| t.conversation_id != original.conversation_id);
+        state.transcript.retain(|e| {
+            e.conversation_id != original.conversation_id && e.task_id != original.task_id
+        });
+    }
+    let resumed = everyone(
+        "Everyone resumes survivor",
+        Some(survivor.conversation_id.clone()),
+    );
+    assert_eq!(resumed.conversation_id, survivor.conversation_id);
+    let followup = everyone("Everyone deferred followup", None);
+    assert_eq!(followup.conversation_id, survivor.conversation_id);
+    drop(pool);
+}
+
 /// The lane a conversation was admitted on is durable, so a restarted process
 /// rebuilds that lane instead of opening the chat somewhere else.
 #[test]
@@ -526,15 +772,28 @@ fn a_lane_that_cannot_start_does_not_disturb_another_chat() {
         started_lanes(&started).contains(&1),
         "the failing lane was tried before it refused"
     );
-    assert_eq!(
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .conversations
-            .len(),
-        1,
-        "the refused chat left no conversation behind"
-    );
+    {
+        let state = state.lock().unwrap();
+        let failed = state
+            .tasks
+            .iter()
+            .find(|t| t.prompt == "doomed chat")
+            .unwrap();
+        assert_eq!(failed.status, "failed");
+        assert!(
+            state
+                .conversations
+                .iter()
+                .any(|c| c.id == failed.conversation_id)
+        );
+        let entry = state
+            .transcript
+            .iter()
+            .find(|e| e.task_id == failed.id && e.kind == "failure")
+            .unwrap();
+        assert_eq!(entry.text, glass_marble::failure::MESSAGE);
+        assert!(entry.failure.as_ref().unwrap().retryable);
+    }
 
     drop(pool);
     let _ = std::fs::remove_dir_all(&root);
@@ -674,6 +933,7 @@ fn work_on_a_lane_that_never_started_fails_instead_of_staying_queued() {
     {
         let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
         guard.upsert_task(TaskRecord {
+            marble_id: String::new(),
             id: queued_id.clone(),
             conversation_id: String::new(),
             status: "queued".into(),
@@ -815,6 +1075,70 @@ fn a_stop_in_one_chat_does_not_disturb_another_chat() {
     wait_for_settled(&state, &healthy.task_id);
     assert_eq!(lane_of(&state, &healthy.conversation_id), 1);
 
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_created_chat_steers_its_engine_session_not_its_product_id() {
+    if !python3_available() {
+        return;
+    }
+    let root = workspace("created-chat-steer");
+    let script = write_fake_runtime(&root);
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(ProductState::default()));
+    state
+        .lock()
+        .unwrap()
+        .conversation_mut("chat-created")
+        .needs_engine_session = true;
+    let factory = lane_factory(
+        &root,
+        &script,
+        vec![LaneSpec {
+            delay_ms: 500,
+            ..LaneSpec::default()
+        }],
+        ApprovalInbox::default(),
+        started,
+    );
+    let product = state.clone();
+    let pool = spawn_turn_pool(
+        1,
+        Arc::new(move |lane| {
+            factory(lane).map(|conversation| conversation.with_product(product.clone()))
+        }),
+        state.clone(),
+        None,
+        LiveStore::in_data_dir(&root),
+        EventBus::default(),
+        Duration::from_secs(30),
+        CancelRegistry::default(),
+    )
+    .unwrap();
+    let accepted = submit(&pool, "first message", Some("chat-created".into()));
+    assert_eq!(accepted.conversation_id, "chat-created");
+    let engine_id = state.lock().unwrap().conversations[0]
+        .engine_conversation_id
+        .clone();
+    assert_ne!(engine_id, "chat-created");
+    assert!(!engine_id.is_empty());
+    assert!(pool.steer.send(
+        0,
+        SteerRequest {
+            conversation_id: accepted.conversation_id.clone(),
+            task_id: accepted.task_id.clone(),
+            text: "use the other file".into(),
+        }
+    ));
+    wait_for_settled(&state, &accepted.task_id);
+    let path = root.join("sessions/lane-0/fixture-steer.json");
+    wait_until("the correction to reach Core", || path.exists());
+    let recorded: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(recorded["sessionId"], engine_id);
+    assert_eq!(recorded["text"], "use the other file");
     drop(pool);
     let _ = std::fs::remove_dir_all(&root);
 }

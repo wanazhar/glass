@@ -422,7 +422,181 @@ pub(crate) fn normalize_key(key: &str) -> String {
 }
 
 /// Add the next step a model should take after an agent tool failed.
-pub(crate) fn recovery_hint(tool: &str, error: &str) -> &'static str {
+pub(crate) fn recovery_hint(tool: &str, error: &str) -> String {
+    diagnostic_hint(error).unwrap_or_else(|| generic_hint(tool, error).to_owned())
+}
+
+/// Hints built from the structured `not_actionable` diagnostics, which say
+/// exactly why the element could not be used.
+fn diagnostic_hint(error: &str) -> Option<String> {
+    let failure: Value = serde_json::from_str(error).ok()?;
+    let diagnostics = &failure["diagnostics"];
+    let reason = failure["reason"].as_str().unwrap_or_default();
+    if reason == "geometry_changed" {
+        return Some("Next: the element moved while it was being clicked because the page was still updating; retry the same call once, or browser_wait_for the content you expect first.".to_owned());
+    }
+    if reason == "disabled" {
+        return Some("Next: the target is disabled; complete its required fields or wait for it to become enabled before retrying.".to_owned());
+    }
+    if reason == "unstable_geometry" {
+        return Some("Next: the target is moving; browser_wait_for the page to settle, then retry with a fresh ref from browser_snapshot.".to_owned());
+    }
+    if reason == "hit_test_blocked" {
+        let owner = &diagnostics["hitTestOwner"];
+        let label = owner["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("\"{}\"", clip(name, 60)))
+            .unwrap_or_else(|| "another element".to_owned());
+        let tag = owner["tag"].as_str().unwrap_or("element");
+        return Some(if matches!(tag, "button" | "a") {
+            format!(
+                "Next: an overlay is covering the target and its {label} {tag} is on top. Click {label} to close the overlay (or browser_press_key \"Escape\"), then retry."
+            )
+        } else {
+            format!(
+                "Next: {label} ({tag}) is covering the target. Close it first: click its close, accept or dismiss button (find it with browser_snapshot), or browser_press_key \"Escape\"; then retry."
+            )
+        });
+    }
+    if diagnostics["outsideViewport"] == true
+        || diagnostics["recommendation"] == "scrollAndReobserve"
+    {
+        return Some("Next: the target is outside the visible area; call browser_scroll toward it (or browser_snapshot to get a fresh ref), then retry.".to_owned());
+    }
+    if diagnostics["hidden"] == true {
+        return Some("Next: the target exists but is hidden; open whatever reveals it (a menu, tab, accordion or \"More\" button), then retry.".to_owned());
+    }
+    match diagnostics["matchedCount"].as_u64() {
+        Some(count) if count > 1 => Some(format!(
+            "Next: {count} elements match this target; pass the exact ref from browser_snapshot, or narrow it with \"role=<role>;name=<exact name>\"."
+        )),
+        _ => None,
+    }
+}
+
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
+    }
+}
+
+/// Wait condition that (re)starts the DOM quiet clock and records later
+/// mutations.
+pub(crate) const WATCH_MUTATIONS: &str = "js=(()=>{const w=window;if(!w.__glassSettle){w.__glassSettle={};new MutationObserver(()=>{w.__glassSettle.t=Date.now()}).observe(document,{subtree:true,childList:true,characterData:true,attributes:true})}w.__glassSettle.t=Date.now();return true})()";
+
+/// Wait condition that holds once the DOM has been quiet for 300 ms.
+pub(crate) const DOM_QUIET: &str =
+    "js=(()=>{const s=window.__glassSettle;return !s||Date.now()-s.t>=300})()";
+
+/// Reported instead of a change summary when the action opened a dialog,
+/// because the page cannot be read until the dialog is handled.
+pub(crate) const DIALOG_OPENED: &str = "Page after action: a JavaScript dialog opened and blocks the page; call browser_handle_dialog next.";
+
+/// Agent tools that can change the page, so their result reports what changed.
+pub(crate) fn mutates_page(tool: &str) -> bool {
+    matches!(
+        tool,
+        "browser_click"
+            | "browser_click_at"
+            | "browser_type"
+            | "browser_fill_form"
+            | "browser_select_option"
+            | "browser_check"
+            | "browser_press_key"
+    )
+}
+
+/// Page state captured around an action: visible text and the tab list.
+pub(crate) struct PageState {
+    pub text: String,
+    pub tabs: Value,
+}
+
+/// A short report of what an action changed, so the model can check the
+/// effect without another browser_snapshot call.
+pub(crate) fn change_summary(tool: &str, before: &PageState, after: &PageState) -> String {
+    const MAX_LINES: usize = 6;
+    let mut parts = Vec::new();
+    let tabs = |value: &Value| {
+        value
+            .as_array()
+            .cloned()
+            .or_else(|| value["result"].as_array().cloned())
+            .unwrap_or_default()
+    };
+    let before_tabs = tabs(&before.tabs);
+    let after_tabs = tabs(&after.tabs);
+    let active = |tabs: &Value| {
+        tabs.as_array()
+            .and_then(|tabs| tabs.iter().find(|tab| tab["active"] == true).cloned())
+            .unwrap_or(Value::Null)
+    };
+    let (was, now) = (active(&json!(before_tabs)), active(&json!(after_tabs)));
+    if was["url"] != now["url"]
+        && let Some(url) = now["url"].as_str()
+    {
+        parts.push(format!("URL is now {}", clip(url, 200)));
+    }
+    if was["title"] != now["title"]
+        && let Some(title) = now["title"].as_str()
+    {
+        parts.push(format!("title is now \"{}\"", clip(title, 120)));
+    }
+    let opened = after_tabs.len().saturating_sub(before_tabs.len());
+    if opened > 0 {
+        parts.push(format!(
+            "{opened} new tab(s) opened; switch with browser_tabs {{\"action\":\"list\"}} then select"
+        ));
+    }
+    let lines = |text: &str| {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let (old, new) = (lines(&before.text), lines(&after.text));
+    let old_set = old.iter().collect::<std::collections::HashSet<_>>();
+    let new_set = new.iter().collect::<std::collections::HashSet<_>>();
+    let added = new
+        .iter()
+        .filter(|line| !old_set.contains(line))
+        .collect::<Vec<_>>();
+    let removed = old.iter().filter(|line| !new_set.contains(line)).count();
+    if !added.is_empty() {
+        let shown = added
+            .iter()
+            .take(MAX_LINES)
+            .map(|line| format!("\"{}\"", clip(line, 160)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = added.len().saturating_sub(MAX_LINES);
+        parts.push(if more > 0 {
+            format!("new text: {shown} and {more} more line(s)")
+        } else {
+            format!("new text: {shown}")
+        });
+    }
+    if removed > 0 {
+        parts.push(format!("{removed} line(s) of text disappeared"));
+    }
+    let sets_value = matches!(
+        tool,
+        "browser_type" | "browser_fill_form" | "browser_select_option" | "browser_check"
+    );
+    if parts.is_empty() && sets_value {
+        "Page after action: no other visible change (field values are not part of page text)."
+            .to_owned()
+    } else if parts.is_empty() {
+        "Page after action: no visible change. If you expected one, call browser_wait_for or browser_snapshot before acting again.".to_owned()
+    } else {
+        format!("Page after action: {}.", parts.join("; "))
+    }
+}
+
+fn generic_hint(tool: &str, error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase().replace(['_', '-'], " ");
     if error.starts_with("connection failure during content sandbox: SandboxUnavailable:") {
         "Next: the browser runtime cannot start on this host, so retrying will not help; tell the user to restart glass-browser with --browser-runtime chromium (GC_BROWSER_RUNTIME=chromium for Glass Core) or upgrade bubblewrap."
@@ -535,6 +709,90 @@ mod tests {
         assert!(error.contains("target"), "{error}");
         let error = translate("browser_open", &json!({})).unwrap_err();
         assert!(error.contains("browser_navigate"), "{error}");
+    }
+
+    #[test]
+    fn diagnostic_hints_prefer_actionability_reason_to_overlay_recommendation() {
+        for (reason, expected) in [
+            ("disabled", "target is disabled"),
+            ("unstable_geometry", "target is moving"),
+        ] {
+            let error = json!({"reason":reason,"diagnostics":{"recommendation":"inspectOverlay","hitTestOwner":{"tag":"button","name":"Save"}}}).to_string();
+            let hint = recovery_hint("browser_click", &error);
+            assert!(hint.contains(expected), "{hint}");
+            assert!(!hint.contains("overlay"), "{hint}");
+        }
+        for error in [
+            "{}",
+            "not JSON",
+            r#"{"diagnostics":{"recommendation":"inspectOverlay"}}"#,
+        ] {
+            assert!(!recovery_hint("browser_click", error).contains("overlay"));
+        }
+    }
+
+    #[test]
+    fn diagnostic_hints_say_why_the_target_failed() {
+        let blocked = r#"{"kind":"not_actionable","reason":"hit_test_blocked","diagnostics":{"matchedCount":1,"hitTestOwner":{"tag":"div","name":"Accept cookies"},"recommendation":"inspectOverlay"}}"#;
+        let hint = recovery_hint("browser_click", blocked);
+        assert!(
+            hint.contains("\"Accept cookies\" (div) is covering"),
+            "{hint}"
+        );
+        let offscreen = r#"{"kind":"not_actionable","diagnostics":{"outsideViewport":true}}"#;
+        assert!(recovery_hint("browser_click", offscreen).contains("browser_scroll"));
+        let moved = r#"{"kind":"not_actionable","reason":"geometry_changed"}"#;
+        assert!(recovery_hint("browser_click", moved).contains("retry the same call once"));
+        let many = r#"{"kind":"ambiguous","diagnostics":{"matchedCount":3}}"#;
+        assert!(recovery_hint("browser_click", many).starts_with("Next: 3 elements match"));
+    }
+
+    #[test]
+    fn change_summary_handles_native_projected_tabs() {
+        let before = PageState {
+            text: "unchanged".into(),
+            tabs: json!({"result":[{"url":"https://a.test/", "title":"A", "active":true}]}),
+        };
+        let after = PageState {
+            text: before.text.clone(),
+            tabs: json!({"result":[{"url":"https://a.test/done", "title":"Done", "active":true}, {"url":"https://b.test/", "active":false}]}),
+        };
+        let summary = change_summary("browser_click", &before, &after);
+        assert!(
+            summary.contains("URL is now https://a.test/done"),
+            "{summary}"
+        );
+        assert!(summary.contains("title is now \"Done\""), "{summary}");
+        assert!(summary.contains("1 new tab(s) opened"), "{summary}");
+        assert!(change_summary("browser_click", &before, &before).contains("no visible change"));
+        let empty = PageState {
+            text: String::new(),
+            tabs: Value::Null,
+        };
+        assert!(change_summary("browser_click", &empty, &empty).contains("no visible change"));
+    }
+
+    #[test]
+    fn change_summary_reports_new_text_tabs_and_navigation() {
+        let tab = |url: &str, title: &str| json!({"url":url,"title":title,"active":true});
+        let before = PageState {
+            text: "Save\nName".into(),
+            tabs: json!([tab("https://a.test/", "A")]),
+        };
+        let after = PageState {
+            text: "Save\nName\nSaved!".into(),
+            tabs: json!([tab("https://a.test/done", "Done"), {"url":"https://b.test/","active":false}]),
+        };
+        let summary = change_summary("browser_click", &before, &after);
+        assert!(
+            summary.contains("URL is now https://a.test/done"),
+            "{summary}"
+        );
+        assert!(summary.contains("title is now \"Done\""), "{summary}");
+        assert!(summary.contains("1 new tab(s) opened"), "{summary}");
+        assert!(summary.contains("new text: \"Saved!\""), "{summary}");
+        let same = change_summary("browser_click", &before, &before);
+        assert!(same.contains("no visible change"), "{same}");
     }
 
     #[test]

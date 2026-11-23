@@ -28,6 +28,9 @@ const FIXTURE: &str = r#"<!doctype html><title>Agent fixture</title>
 <label><input type="checkbox" id="t" onchange="state.terms=this.checked;show()"> I agree to the terms</label>
 <button id="load" onclick="setTimeout(()=>{document.getElementById('out').textContent='Net revenue: RM 48,213'},800)">Load report</button>
 <p id="out"></p>
+<button onclick="setTimeout(()=>{document.getElementById('saved').textContent='Draft saved at 10:42'},150)">Save draft</button>
+<p id="saved"></p>
+<button onclick="window.open('about:blank')">Open preview</button>
 <button onclick="state.deleted=confirm('Delete the draft?');show()">Delete draft</button>
 <input aria-label="Shortcut box" onkeydown="state.key=event.key;show()">
 <p id="state"></p>
@@ -324,6 +327,21 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
     )
     .await;
 
+    let saved = mcp
+        .ok("browser_click", json!({"target":"text=Save draft"}))
+        .await;
+    assert!(
+        saved.contains("Page after action: new text: \"Draft saved at 10:42\""),
+        "{saved}"
+    );
+    let popup = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        mcp.ok("browser_click", json!({"target":"text=Open preview"})),
+    )
+    .await
+    .expect("a click that opens a popup must not hang");
+    assert!(popup.contains("1 new tab(s) opened"), "{popup}");
+
     mcp.ok(
         "browser_click",
         json!({"target":"role=button;name=Load report"}),
@@ -339,8 +357,13 @@ async fn agent_profile_completes_a_form_wait_keyboard_and_dialog_flow_in_chromiu
         .await;
     mcp.ok("browser_press_key", json!({"key":"esc"})).await;
 
-    mcp.ok("browser_click", json!({"target":"text=Delete draft"}))
+    let confirm = mcp
+        .ok("browser_click", json!({"target":"text=Delete draft"}))
         .await;
+    assert!(
+        confirm.contains("call browser_handle_dialog next"),
+        "{confirm}"
+    );
     mcp.ok("browser_handle_dialog", json!({"accept":true}))
         .await;
 

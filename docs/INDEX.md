@@ -12,6 +12,9 @@ The [development runtime guide](development-runtime.md) explains process complet
 the shared `glass-ui` schema, per-turn client render capabilities, and the
 Markdown fallback that keeps component replies readable in the terminal.
 
+The [native iOS parity plan](GLASS-IOS-FULL-PLAN.md) records gateway contracts,
+shared-client design, milestone acceptance checks, and verification limits.
+
 The [Core terminal guide](../products/glass-core/docs/terminal.md#desktop-management)
 describes the shared desktop picker and quick, reusable, status, and stop commands.
 

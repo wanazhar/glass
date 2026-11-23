@@ -3,6 +3,7 @@ use super::*;
 use crate::browser::cdp::CdpEventWithParams;
 use crate::browser::dom::AxNode;
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
@@ -1798,6 +1799,133 @@ async fn diagnostics_snapshot_includes_session_readiness_metadata() {
     assert!(!serialized.to_string().contains("password"));
     assert!(!serialized.to_string().contains("cookie"));
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn action_network_tracking_includes_requests_started_before_the_wait() {
+    for (request, completes, finish_ms, quiet_ms, deadline_ms) in [
+        (true, true, 900, 250, 1500),
+        (false, true, 900, 250, 1500),
+        (true, false, 900, 250, 50),
+        (true, true, 20, 110, 175),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, mut reader) = accept_async(stream).await.unwrap().split();
+            let writer = Arc::new(Mutex::new(writer));
+            while let Some(Ok(Message::Text(text))) = reader.next().await {
+                let command: Value = serde_json::from_str(&text).unwrap();
+                if command["method"] == "Runtime.evaluate" && request {
+                    writer.lock().await.send(Message::Text(json!({"method":"Network.requestWillBeSent","params":{"requestId":"save","type":"Fetch"}}).to_string().into())).await.unwrap();
+                    for _ in 0..300 {
+                        writer
+                            .lock()
+                            .await
+                            .send(Message::Text(
+                                json!({"method":"Runtime.consoleAPICalled","params":{}})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    if completes {
+                        let writer = Arc::clone(&writer);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(finish_ms)).await;
+                            let _ = writer.lock().await.send(Message::Text(json!({"method":"Network.loadingFinished","params":{"requestId":"save"}}).to_string().into())).await;
+                        });
+                    }
+                }
+                writer
+                    .lock()
+                    .await
+                    .send(Message::Text(
+                        json!({"id":command["id"],"result":{}}).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                if command["method"] == "Network.disable" {
+                    break;
+                }
+            }
+        });
+        let cdp = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let session = test_session(cdp.clone());
+        let tracker = session.start_network_quiet_tracking().await.unwrap();
+        cdp.send("Runtime.evaluate", Some(json!({"expression":"save()"})))
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let deadline = Duration::from_millis(deadline_ms);
+        let result = tokio::time::timeout(
+            deadline,
+            session.wait_for_tracked_network_quiet(
+                tracker,
+                Duration::from_millis(quiet_ms),
+                deadline,
+            ),
+        )
+        .await;
+        assert_eq!(matches!(result, Ok(Ok(_))), completes, "{result:?}");
+        if request && completes {
+            assert!(started.elapsed() >= Duration::from_millis(finish_ms));
+        }
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn network_quiet_reports_route_loss_without_network_events() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        while let Some(Ok(Message::Text(text))) = websocket.next().await {
+            let request: Value = serde_json::from_str(&text).unwrap();
+            websocket
+                .send(Message::Text(
+                    json!({"id":request["id"],"result":{}}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+        }
+    });
+    let cdp = CdpClient::connect(&format!("ws://{address}"))
+        .await
+        .unwrap();
+    let session = Arc::new(test_session(cdp.clone()));
+    let tracker = session.start_network_quiet_tracking().await.unwrap();
+    let closed = Arc::clone(&session);
+    let closer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut topology = closed.topology.lock().await;
+        topology.active_target_id = None;
+        topology.active_frame_id = None;
+        topology.active_session_id = None;
+        closed.cdp.set_active_target_route(None, None, None, None);
+    });
+    let result = tokio::time::timeout(
+        Duration::from_millis(750),
+        session.wait_for_tracked_network_quiet(
+            tracker,
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+        ),
+    )
+    .await;
+    assert!(matches!(result, Ok(Err(_))), "{result:?}");
+    closer.await.unwrap();
+    cdp.close().await;
+    server.abort();
 }
 
 #[tokio::test]

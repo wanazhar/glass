@@ -33,6 +33,15 @@ path = "src/lib.rs"
 [package.metadata.docs.rs]
 all-features = true
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/glass-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/glass-{ target }.zip"
+pkg-fmt = "zip"
+
 [features]
 default = ["native-engine"]
 visual-compare = []
@@ -63,10 +72,7 @@ harfrust = { version = "0.13.3", optional = true, default-features = false, feat
 html5ever = { version = "0.40.0", optional = true }
 aes = "0.8"
 aes-gcm = "0.10"
-tokio = {
-    version = "1",
-    features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"],
-}
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -51,6 +51,13 @@ fn run() -> MainResult {
 }
 
 fn configured_cli() -> glass_browser::cli::args::Cli {
+    let (arguments, json_output) =
+        glass_browser::cli::runner::take_json_flag(std::env::args_os().collect::<Vec<_>>());
+    glass_browser::cli::runner::configure_json_output(json_output);
+    parse_cli(arguments)
+}
+
+fn parse_cli(arguments: Vec<std::ffi::OsString>) -> glass_browser::cli::args::Cli {
     let mut command = glass_browser::cli::args::Cli::command();
     command = command
         .name("glass-browser")
@@ -63,6 +70,29 @@ fn configured_cli() -> glass_browser::cli::args::Cli {
                 subcommand
             }
         });
-    glass_browser::cli::args::Cli::from_arg_matches(&command.get_matches())
+    glass_browser::cli::args::Cli::from_arg_matches(&command.get_matches_from(arguments))
         .unwrap_or_else(|error| error.exit())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn global_json_flag_is_accepted_before_and_after_doctor() {
+        for args in [
+            vec!["glass-browser", "--json", "doctor"],
+            vec!["glass-browser", "doctor", "--json"],
+            vec!["glass-browser", "doctor"],
+        ] {
+            let expected_json = args.contains(&"--json");
+            let (args, json) = glass_browser::cli::runner::take_json_flag(
+                args.into_iter().map(std::ffi::OsString::from).collect(),
+            );
+            assert_eq!(json, expected_json);
+            let cli = super::parse_cli(args);
+            assert!(matches!(
+                cli.command,
+                Some(glass_browser::cli::args::Commands::Doctor { .. })
+            ));
+        }
+    }
 }

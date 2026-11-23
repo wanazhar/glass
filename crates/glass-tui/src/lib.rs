@@ -6,6 +6,7 @@
 //! readers share anchors, search, paging, and follow state without a scrollbar.
 
 pub mod cli;
+pub mod components;
 pub mod conversation;
 pub mod editor;
 pub mod layout;

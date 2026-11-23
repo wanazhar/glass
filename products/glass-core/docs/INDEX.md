@@ -21,6 +21,7 @@ through `gc help` and `gc COMMAND --help`.
 | [Optional integrations](integrations.md) | MCP, plugins, verification, language services |
 | [Extending](extending.md) | Instructions, skills, subprocesses, compiled mods |
 | [Remote workspace](connect.md) | Tailscale, shared threads, universal Settings, same-host desktop, rich previews |
+| [Reply components](reply-components.md) | Per-turn client capabilities, component schema, fallbacks across clients |
 | [Automation](automation.md) | Headless results, SSH, ACP, served sessions, schedules |
 
 The [Shared desktop section](connect.md#shared-desktop) includes [available desktop choices](connect.md#available-desktop-choices), [viewing and control](connect.md#viewing-and-control), [authorization, HTTP endpoints, and HTTPS-only secret entry](connect.md#authorization-and-http), and [accessibility and agent tools](connect.md#accessibility-and-agent-tools).

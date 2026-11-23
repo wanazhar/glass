@@ -327,6 +327,8 @@ pub struct Agent<'a> {
     base_prompt: String,
     /// Skill catalogue, appended after the prompt.
     catalogue: Option<String>,
+    /// Who sent this turn and what it renders; never checkpointed.
+    client_context: String,
     /// Project instructions from AGENTS.md / CLAUDE.md.
     project_instructions: Option<String>,
     /// Called as the loop makes progress. `None` disables reporting entirely.
@@ -545,6 +547,7 @@ impl<'a> Agent<'a> {
             max_tool_rounds: usize::MAX,
             base_prompt: String::new(),
             catalogue: None,
+            client_context: String::new(),
             project_instructions: None,
             on_progress: None,
             input_keys: None,
@@ -958,6 +961,13 @@ impl<'a> Agent<'a> {
         self.base_prompt = base;
         self.catalogue = catalogue;
         self.project_instructions = project_instructions;
+        self
+    }
+
+    /// Per-turn client capabilities: names the client and, when it renders
+    /// components, adds their catalog to this turn's system prompt only.
+    pub fn with_client_render(mut self, render: Option<&crate::components::ClientRender>) -> Self {
+        self.client_context = crate::components::prompt_context(render);
         self
     }
 
@@ -1398,7 +1408,9 @@ impl<'a> Agent<'a> {
                             &[],
                         ));
                     }
-                    self.session.append(Record::Assistant(out.text.clone()));
+                    self.session.append(Record::Assistant(
+                        crate::components::normalize(&out.text).into_owned(),
+                    ));
                 }
                 self.session.append(Record::Meta("Response cancelled; streamed output was preserved and pending tools were not executed.".into()));
                 return Ok(out);
@@ -1486,7 +1498,9 @@ impl<'a> Agent<'a> {
                                 &[],
                             ));
                         }
-                        self.session.append(Record::Assistant(out.text.clone()));
+                        self.session.append(Record::Assistant(
+                            crate::components::normalize(&out.text).into_owned(),
+                        ));
                     }
                     if !out.text.trim().is_empty() || !out.tool_calls.is_empty() {
                         // A Meta record is only honest when something survived;
@@ -1786,7 +1800,9 @@ impl<'a> Agent<'a> {
                 ));
             }
             if !out.text.trim().is_empty() {
-                self.session.append(Record::Assistant(out.text.clone()));
+                self.session.append(Record::Assistant(
+                    crate::components::normalize(&out.text).into_owned(),
+                ));
             }
 
             // Give mods a look at the finished turn.
@@ -3748,7 +3764,9 @@ impl<'a> Agent<'a> {
                 self.input_keys.is_some() || self.human.is_some(),
             )
         };
-        self.refresh_desktop_context(system)
+        let mut system = self.refresh_desktop_context(system);
+        system.push_str(&self.client_context);
+        system
     }
 
     /// Desktop availability is owned by Connect and can change while a Core
@@ -3757,6 +3775,9 @@ impl<'a> Agent<'a> {
     fn refresh_desktop_context(&self, system: String) -> String {
         let base = system
             .split(DESKTOP_CONTEXT_MARKER)
+            .next()
+            .unwrap_or(&system)
+            .split(crate::components::CONTEXT_MARKER)
             .next()
             .unwrap_or(&system)
             .to_owned();

@@ -559,7 +559,7 @@ pub(super) fn start_capture(
             "-f",
             "x11grab",
             "-framerate",
-            "15",
+            "30",
             "-video_size",
             "1280x800",
             "-i",

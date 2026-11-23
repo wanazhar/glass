@@ -1,0 +1,1224 @@
+import XCTest
+
+/// Drives a real glass-core gateway behind a simulated Tailscale Serve front end.
+/// Run through scripts/e2e/run-e2e.sh, which sets GLASS_E2E_CONTROL; skipped otherwise.
+final class LiveHostE2ETests: XCTestCase {
+    private var control: URL!
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        let value = ProcessInfo.processInfo.environment["GLASS_E2E_CONTROL"]
+        try XCTSkipIf(value == nil, "Live-host E2E runs via scripts/e2e/run-e2e.sh")
+        control = URL(string: value!)
+    }
+
+    override func tearDownWithError() throws {
+        // A failed network test must not leave the simulated tailnet down for the next one.
+        if control != nil { _ = try? call("net/restore", method: "POST") }
+    }
+
+    private func call(_ path: String, method: String = "GET") throws -> String {
+        var request = URLRequest(url: URL(string: path, relativeTo: control)!.absoluteURL)
+        request.httpMethod = method
+        request.timeoutInterval = 60
+        let done = expectation(description: path)
+        nonisolated(unsafe) var result: Result<String, Error> = .failure(URLError(.unknown))
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error { result = .failure(error) }
+            else if (response as? HTTPURLResponse)?.statusCode == 200, let data { result = .success(String(decoding: data, as: UTF8.self)) }
+            else { result = .failure(URLError(.badServerResponse)) }
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 90)
+        return try result.get().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @MainActor
+    private func pair(_ app: XCUIApplication, link: String) {
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        }
+        field.typeText(link)
+        app.buttons["pair.connect"].tap()
+    }
+
+    /// Pairing lands on Conversations; host status lives under Settings › Host.
+    @MainActor
+    private func waitForHost(_ app: XCUIApplication) -> Bool {
+        guard app.tabBars.buttons["Settings"].waitForExistence(timeout: 20) else { return false }
+        app.openSettings("host")
+        return app.descendants(matching: .any)["host.connected"].waitForExistence(timeout: 20)
+    }
+
+    @MainActor
+    func testTailnetPairingStatusDiagnosticsRevocationAndSecretEntry() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+
+        let ownerLink = try call("link/owner")
+        XCTAssertTrue(ownerLink.contains("#owner="), ownerLink)
+        pair(app, link: ownerLink)
+        XCTAssertTrue(waitForHost(app))
+        XCTAssertTrue(text(app, containing: "Workspace, ws").exists)
+        XCTAssertTrue(text(app, containing: "Tailscale HTTPS").exists)
+        XCTAssertTrue(app.descendants(matching: .any)["host.protocol"].label.contains("Up to date"))
+        attach(app, "e2e-connected")
+
+        app.openSettings("diagnostics")
+        XCTAssertTrue(app.staticTexts["diag.core"].firstMatch.waitForExistence(timeout: 20), "host diagnostics report should load")
+        let hostSection = app.staticTexts["Host machine"]
+        for _ in 0..<6 where !hostSection.exists { app.swipeUp() }
+        XCTAssertTrue(hostSection.exists)
+        attach(app, "e2e-diagnostics")
+
+        _ = try call("revoke", method: "POST")
+        app.openSettings("host")
+        app.buttons["host.refresh"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["pair.repair"].waitForExistence(timeout: 20))
+        attach(app, "e2e-revoked")
+
+        pair(app, link: try call("link/secret"))
+        XCTAssertTrue(waitForHost(app))
+        XCTAssertTrue(text(app, containing: "Unlocked").exists, "secret link should unlock secret entry")
+
+        app.openSettings("host")
+        let forget = app.buttons["settings.forget"].firstMatch
+        for _ in 0..<6 where !(forget.exists && forget.isHittable) { app.swipeUp() }
+        forget.tap()
+        app.buttons["settings.forget.confirm"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testLocalModePairsWithBearerToken() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        pair(app, link: try call("link/local"))
+        XCTAssertTrue(waitForHost(app))
+        XCTAssertTrue(text(app, containing: "Transport, Local").exists)
+        attach(app, "e2e-local")
+    }
+
+    @MainActor
+    private func pairedApp(link: String = "link/owner", arguments: [String] = []) throws -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"] + arguments
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        pair(app, link: try call(link))
+        XCTAssertTrue(app.waitForThreadList(timeout: 20), "conversations load after pairing")
+        return app
+    }
+
+    @MainActor
+    private func text(_ app: XCUIApplication, containing value: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", value)).firstMatch
+    }
+
+    @MainActor
+    private func waitForConnection(_ app: XCUIApplication, _ fragment: String, timeout: TimeInterval = 30) -> Bool {
+        let pill = app.descendants(matching: .any)["conversation.connection"]
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if pill.exists, (pill.value as? String)?.contains(fragment) == true { return true }
+            usleep(250_000)
+        }
+        return false
+    }
+
+    @MainActor
+    private func connectionValue(_ app: XCUIApplication) -> String {
+        app.descendants(matching: .any)["conversation.connection"].firstMatch.value as? String ?? "missing"
+    }
+
+    @MainActor
+    private func open(_ app: XCUIApplication, thread id: String) {
+        let row = app.descendants(matching: .any)["thread.\(id)"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "thread \(id) listed")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 20))
+    }
+
+    @MainActor
+    func testThreadListSearchOlderHistoryAndNewThread() throws {
+        let seeded = try call("thread/new?title=Seeded%20history", method: "POST")
+        _ = try call("thread/seed?id=\(seeded)&pairs=40&size=20000", method: "POST")
+        let other = try call("thread/new?title=Grocery%20notes", method: "POST")
+        let app = try pairedApp()
+        XCTAssertTrue(app.descendants(matching: .any)["thread.\(seeded)"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.descendants(matching: .any)["thread.\(other)"].exists)
+        attach(app, "e2e-threads")
+
+        let search = app.searchFields.firstMatch
+        if !search.exists { app.swipeDown() }
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("Grocery")
+        XCTAssertTrue(app.descendants(matching: .any)["thread.\(other)"].waitForExistence(timeout: 10))
+        let hidden = NSPredicate(format: "exists == false")
+        expectation(for: hidden, evaluatedWith: app.descendants(matching: .any)["thread.\(seeded)"])
+        waitForExpectations(timeout: 10)
+        attach(app, "e2e-threads-search")
+        let dismiss = app.buttons["Close"].exists ? app.buttons["Close"] : app.buttons["Cancel"]
+        dismiss.firstMatch.tap()
+
+        open(app, thread: seeded)
+        let older = app.buttons["conversation.older"]
+        XCTAssertTrue(text(app, containing: "Seeded answer 40").waitForExistence(timeout: 20), "latest window shows the newest answer")
+        XCTAssertFalse(text(app, containing: "Ready when you are.").exists, "first record is outside the latest window")
+        let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+        let statusBar = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.005))
+        for _ in 0..<12 {
+            guard let value = conversation.value as? String, value.contains("earlier") else { break }
+            // Tapping the status bar scrolls to the top, where the older-history control lives.
+            for _ in 0..<5 where !older.isHittable { statusBar.tap(); sleep(1) }
+            guard older.isHittable else { break }
+            older.tap()
+            let loaded = NSPredicate(format: "value != %@", value)
+            expectation(for: loaded, evaluatedWith: conversation)
+            waitForExpectations(timeout: 20)
+        }
+        XCTAssertEqual(conversation.value as? String, "82 entries", "paging with before loads every record exactly once")
+        attach(app, "e2e-older-history")
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["threads.new"].waitForExistence(timeout: 10))
+        app.buttons["threads.new"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.descendants(matching: .any)["conversation.empty"].waitForExistence(timeout: 20))
+        attach(app, "e2e-new-thread")
+        app.buttons["conversation.menu"].tap()
+        app.buttons["conversation.close"].tap()
+        XCTAssertTrue(app.staticTexts["threads.count"].waitForExistence(timeout: 20))
+    }
+
+    @MainActor
+    private func composerField(_ app: XCUIApplication) -> XCUIElement {
+        let field = app.textViews["composer.field"].exists ? app.textViews["composer.field"] : app.textFields["composer.field"]
+        return field.firstMatch
+    }
+
+    @MainActor
+    private func liveActivity(_ springboard: XCUIApplication) -> XCUIElement {
+        springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS 'element-identifier:activity:'")).firstMatch
+    }
+
+    @MainActor
+    private func waitUntil(_ timeout: TimeInterval = 30, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            usleep(250_000)
+        }
+        return false
+    }
+
+    @MainActor
+    private func typeAndSend(_ app: XCUIApplication, _ message: String) {
+        let field = composerField(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(10) { field.isEnabled }, "the composer accepts input")
+        field.tap()
+        field.typeText(message)
+        app.buttons["composer.send"].tap()
+    }
+
+    @MainActor
+    func testComposerSendsStopsQueuesAndKeepsDrafts() throws {
+        let thread = try call("thread/new?title=Composer", method: "POST")
+        var app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(app.buttons["composer.send"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["composer.send"].isEnabled, "send is disabled while the draft is empty")
+
+        typeAndSend(app, "hello from the phone")
+        XCTAssertTrue(text(app, containing: "Echo from the host: hello from the phone").waitForExistence(timeout: 30), "native prompt runs a turn")
+        attach(app, "e2e-composer-sent")
+
+        // Hardware keyboard: Shift-Return breaks the line, Return sends.
+        let field = composerField(app)
+        field.tap()
+        // The first hardware key event switches the simulator to its hardware keyboard and is not delivered.
+        field.typeKey(XCUIKeyboardKey.shift, modifierFlags: [])
+        field.typeText("line one")
+        field.typeKey("\n", modifierFlags: .shift)
+        field.typeText("line two")
+        XCTAssertTrue((field.value as? String)?.contains("line one\nline two") == true, "Shift-Return inserts a line break")
+        field.typeKey("\n", modifierFlags: [])
+        XCTAssertTrue(text(app, containing: "Echo from the host: line one line two").waitForExistence(timeout: 30), "Return sends")
+
+        typeAndSend(app, "slow 240")
+        let stop = app.buttons["composer.stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 20), "stop appears while a turn runs")
+        let field2 = composerField(app)
+        field2.tap()
+        field2.typeText("queued after stop")
+        let mode = app.buttons["composer.mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5), "steer or queue is offered while working")
+        XCTAssertTrue(waitUntil(10) {
+            if (mode.value as? String)?.hasPrefix("Queue") == true { return true }
+            mode.tap()
+            return (mode.value as? String)?.hasPrefix("Queue") == true
+        }, "queue mode is selected: \(mode.value ?? "")")
+        app.buttons["composer.send"].tap()
+        attach(app, "e2e-composer-queue")
+        XCTAssertTrue(stop.waitForExistence(timeout: 10))
+        stop.tap()
+        XCTAssertTrue(text(app, containing: "Echo from the host: queued after stop").waitForExistence(timeout: 60), "queued prompt runs after the stopped turn")
+
+        let draft = composerField(app)
+        draft.tap()
+        draft.typeText("unsent draft")
+        // Drafts are written 300 ms after the last keystroke; leave room for a busy main thread.
+        sleep(2)
+        app.terminate()
+        app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: thread)
+        XCTAssertTrue(waitUntil(10) { (composerField(app).value as? String) == "unsent draft" }, "draft survives app termination")
+
+        // Dictation asks for Speech Recognition; declining explains how to enable it.
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let clear = composerField(app)
+        clear.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        let delete = app.keys["delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        for _ in 0..<"unsent draft".count { delete.tap() }
+        XCTAssertTrue(app.buttons["composer.dictate"].waitForExistence(timeout: 5), "the draft clears")
+        app.buttons["composer.dictate"].tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let alert = springboard.alerts.firstMatch
+        if alert.waitForExistence(timeout: 10) {
+            attach(app, "e2e-dictation-permission")
+            let deny = alert.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Don'")).firstMatch
+            (deny.exists ? deny : alert.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(app.descendants(matching: .any)["composer.dictation.message"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testControlHandoffMakesTheAppReadOnly() throws {
+        let thread = try call("thread/new?title=Handoff", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(app.buttons["composer.send"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists }, "the opening client holds control")
+
+        app.buttons["conversation.menu"].tap()
+        app.buttons["conversation.releaseControl"].tap()
+        let readOnly = app.descendants(matching: .any)["composer.readOnly"]
+        XCTAssertTrue(readOnly.waitForExistence(timeout: 15), "releasing control makes the composer read-only")
+        XCTAssertTrue(try call("control/claim?id=\(thread)", method: "POST").contains("true"), "another client takes control")
+
+        app.buttons["composer.takeControl"].tap()
+        sleep(2)
+        XCTAssertTrue(readOnly.exists, "control stays with the other client")
+        XCTAssertFalse(composerField(app).isEnabled)
+        attach(app, "e2e-read-only")
+
+        _ = try call("control/release?id=\(thread)", method: "POST")
+        app.buttons["composer.takeControl"].tap()
+        XCTAssertTrue(waitUntil(15) { !readOnly.exists }, "taking control after release restores the composer")
+        typeAndSend(app, "back in control")
+        XCTAssertTrue(text(app, containing: "Echo from the host: back in control").waitForExistence(timeout: 30))
+    }
+
+    @MainActor
+    func testOpeningAShortChatShowsNoControlPromptOrEarlierMessages() throws {
+        let thread = try call("thread/new?title=Short%20chat", method: "POST")
+        _ = try call("thread/seed?id=\(thread)&pairs=1&size=40", method: "POST")
+        let app = try pairedApp()
+        let readOnly = app.descendants(matching: .any)["composer.readOnly"]
+        let older = app.buttons["conversation.older"]
+        for attempt in 0..<3 {
+            open(app, thread: thread)
+            var flashed = false
+            var earlier = false
+            let deadline = Date().addingTimeInterval(4)
+            while Date() < deadline {
+                if readOnly.exists { flashed = true }
+                if older.exists { earlier = true }
+                usleep(100_000)
+            }
+            XCTAssertFalse(flashed, "opening (attempt \(attempt)) never shows Take Control while this iPhone gets control")
+            XCTAssertFalse(earlier, "a two-message chat has no earlier messages")
+            XCTAssertTrue(waitForConnection(app, "Live"))
+            XCTAssertTrue(text(app, containing: "Seeded answer 1").exists)
+            if attempt == 0 { attach(app, "e2e-short-chat") }
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(app.waitForThreadList(timeout: 10))
+        }
+    }
+
+    @MainActor
+    func testQuestionAndSecretInteractionsOverHTTPS() throws {
+        let thread = try call("thread/new?title=Interactions", method: "POST")
+        let app = try pairedApp(link: "link/secret")
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        typeAndSend(app, "ask question")
+        let interaction = app.descendants(matching: .any)["interaction"]
+        XCTAssertTrue(interaction.waitForExistence(timeout: 30), "question interaction appears")
+        app.buttons.matching(identifier: "interaction.option").matching(NSPredicate(format: "label CONTAINS 'Blue'")).firstMatch.tap()
+        attach(app, "e2e-question")
+        app.buttons["interaction.submit"].tap()
+        XCTAssertTrue(text(app, containing: "Tool said").waitForExistence(timeout: 30))
+        XCTAssertTrue(text(app, containing: "Blue").exists, "the chosen answer reaches the agent")
+        XCTAssertTrue(waitUntil(10) { !interaction.exists })
+
+        typeAndSend(app, "need secret")
+        let field = app.secureTextFields["interaction.secret.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 30), "secret prompt appears over HTTPS with secret entry unlocked")
+        field.tap()
+        field.typeText("hunter2-e2e")
+        attach(app, "e2e-secret")
+        app.buttons["interaction.submit"].tap()
+        XCTAssertTrue(text(app, containing: "provided").waitForExistence(timeout: 30), "the agent receives a secret handle")
+        XCTAssertFalse(text(app, containing: "hunter2-e2e").exists, "the secret value never appears in the transcript")
+    }
+
+    @MainActor
+    func testAttachPhotoUploadsAndRunsATurn() throws {
+        let thread = try call("thread/new?title=Attachments", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(app.buttons["composer.attach"].waitForExistence(timeout: 10))
+        app.buttons["composer.attach"].tap()
+        app.buttons["composer.attach.photos"].tap()
+        let photo = app.images.matching(NSPredicate(format: "label CONTAINS[c] 'photo' OR identifier BEGINSWITH 'PXGGridLayout'")).firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 20), "photo picker shows the library")
+        photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let add = app.buttons.matching(NSPredicate(format: "label == 'Add' OR label == 'Done'")).firstMatch
+        XCTAssertTrue(waitUntil(10) { add.exists && add.isEnabled }, "picking a photo enables Add")
+        add.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer.context"].firstMatch.waitForExistence(timeout: 30), "uploaded photo appears as a context chip")
+        XCTAssertTrue(try call("thread/context?id=\(thread)").contains("Uploaded Photo 1"), "the host lists the attachment")
+        attach(app, "e2e-attachment")
+        typeAndSend(app, "what is in the photo")
+        XCTAssertTrue(text(app, containing: "Echo from the host: what is in the photo").waitForExistence(timeout: 30))
+    }
+
+    @MainActor
+    func testLiveEventsResumeAfterDropBackgroundAndResetAfterOverflow() throws {
+        let thread = try call("thread/new?title=Live%20thread", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"), "event stream connects")
+
+        _ = try call("thread/send?id=\(thread)&text=hello%20from%20the%20web&wait=1", method: "POST")
+        XCTAssertTrue(text(app, containing: "Echo from the host").waitForExistence(timeout: 20), "web-originated turn streams in live")
+        XCTAssertTrue(app.descendants(matching: .any)["timeline.code"].firstMatch.exists, "fenced code renders as a code block")
+        attach(app, "e2e-live")
+
+        _ = try call("net/drop", method: "POST")
+        XCTAssertTrue(waitForConnection(app, "Reconnecting"), "dropped stream shows reconnecting")
+        attach(app, "e2e-reconnecting")
+        _ = try call("thread/send?id=\(thread)&text=sent%20while%20offline&wait=1", method: "POST")
+        _ = try call("net/restore", method: "POST")
+        XCTAssertTrue(text(app, containing: "sent while offline").waitForExistence(timeout: 40), "resume replays missed events")
+        XCTAssertTrue(waitForConnection(app, "Live, 0 resets"), "small gap resumes without a reset: \(connectionValue(app))")
+        let resumes = try JSONDecoder().decode([String].self, from: Data(try call("net/events").utf8))
+        XCTAssertTrue(resumes.dropFirst().contains { !$0.isEmpty }, "reconnect sends Last-Event-ID: \(resumes)")
+
+        XCUIDevice.shared.press(.home)
+        _ = try call("thread/send?id=\(thread)&text=sent%20while%20backgrounded&wait=1", method: "POST")
+        app.activate()
+        XCTAssertTrue(text(app, containing: "sent while backgrounded").waitForExistence(timeout: 40), "foregrounding resumes the stream")
+
+        _ = try call("net/drop", method: "POST")
+        XCTAssertTrue(waitForConnection(app, "Reconnecting"))
+        _ = try call("thread/send?id=\(thread)&text=flood%203000&wait=1", method: "POST")
+        _ = try call("net/restore", method: "POST")
+        XCTAssertTrue(waitForConnection(app, "1 resets", timeout: 60), "cursor older than retention triggers a reset snapshot: \(connectionValue(app))")
+        XCTAssertTrue(text(app, containing: "xxxxxxxxxx").waitForExistence(timeout: 20), "reset reloads history with the missed turn")
+        attach(app, "e2e-reset")
+    }
+
+    // MARK: Commands and settings (M4)
+
+    @MainActor
+    private func search(_ app: XCUIApplication, _ query: String) {
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        if let clear = field.buttons.firstMatch as XCUIElement?, clear.exists { clear.tap() }
+        field.typeText(query)
+    }
+
+    @MainActor
+    private func runFromPalette(_ app: XCUIApplication, _ query: String, _ name: String) -> XCUIElement {
+        search(app, query)
+        let row = app.buttons["palette.\(name)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "/\(name) is in the catalogue")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["command.\(name)"].firstMatch.waitForExistence(timeout: 10))
+        return app.descendants(matching: .any)["command.result"].firstMatch
+    }
+
+    @MainActor
+    private func back(_ app: XCUIApplication) {
+        app.navigationBars.buttons["Commands"].firstMatch.tap()
+    }
+
+    @MainActor
+    func testCommandPaletteRunsStatusUsageTodoAndName() throws {
+        let thread = try call("thread/new?title=Commands", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists })
+
+        app.buttons["conversation.commands"].tap()
+        let palette = app.buttons["palette.done"].firstMatch
+        XCTAssertTrue(palette.waitForExistence(timeout: 10), "the toolbar opens the command palette")
+        XCTAssertTrue(app.buttons["palette.conversations"].firstMatch.waitForExistence(timeout: 15), "the catalogue loads")
+        attach(app, "e2e-palette")
+        app.buttons["palette.done"].tap()
+        XCTAssertTrue(waitUntil(10) { !palette.exists }, "Done closes the palette")
+
+        app.buttons["conversation.commands"].tap()
+        XCTAssertTrue(runFromPalette(app, "usage", "usage").waitForExistence(timeout: 20), "read-only /usage returns a result")
+        attach(app, "e2e-command-usage")
+        back(app)
+
+        XCTAssertTrue(runFromPalette(app, "/status", "status").waitForExistence(timeout: 20), "/status inspects on open")
+        attach(app, "e2e-command-status")
+        back(app)
+
+        _ = runFromPalette(app, "todo", "todo")
+        let args = app.textFields["command.field.args"].firstMatch
+        XCTAssertTrue(args.waitForExistence(timeout: 10), "the todo form shows the add field")
+        args.tap()
+        args.typeText("Ship the M4 build")
+        app.buttons["command.run"].tap()
+        XCTAssertTrue(text(app, containing: "Ship the M4 build").waitForExistence(timeout: 30), "/todo add runs over the control channel")
+        attach(app, "e2e-command-todo")
+        back(app)
+
+        _ = runFromPalette(app, "name", "name")
+        let title = app.textFields["command.field.args"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        title.typeText("Renamed from Glass")
+        app.buttons["command.run"].tap()
+        XCTAssertTrue(text(app, containing: "Renamed from Glass").waitForExistence(timeout: 30), "/name returns the new title")
+        attach(app, "e2e-command-name")
+    }
+
+    @MainActor
+    func testSettingsSaveKeepsEditsThroughAConflict() throws {
+        let app = try pairedApp()
+        app.openSettings("defaults")
+        let general = app.buttons["settings.section.general"].firstMatch
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        attach(app, "e2e-settings")
+        general.tap()
+
+        let imageInput = app.switches["settings.image_input"].firstMatch
+        XCTAssertTrue(imageInput.waitForExistence(timeout: 20), "host settings load")
+        let before = try call("settings/get?key=image_input", method: "POST")
+        imageInput.switches.firstMatch.exists ? imageInput.switches.firstMatch.tap() : imageInput.tap()
+        XCTAssertTrue(waitUntil(15) { (try? self.call("settings/get?key=image_input", method: "POST")) != before }, "the toggle saves on the host")
+
+        let field = app.textFields["settings.field.max_tokens"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(15) { field.isEnabled }, "the toggle save finishes")
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.8)).tap()
+        let current = field.value as? String ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + "4321")
+        _ = try call("settings/set?key=cost_limit&value=7", method: "POST")
+        app.buttons["settings.save.max_tokens"].tap()
+        let feedback = app.descendants(matching: .any)["settings.feedback"].firstMatch
+        XCTAssertTrue(feedback.waitForExistence(timeout: 15), "a stale revision reports a conflict")
+        XCTAssertEqual(field.value as? String, "4321", "the unsaved edit survives the conflict")
+        attach(app, "e2e-settings-conflict")
+
+        app.buttons["settings.refresh"].tap()
+        XCTAssertTrue(waitUntil(15) { !feedback.exists }, "refresh clears the conflict")
+        XCTAssertEqual(field.value as? String, "4321", "the edit survives the refresh")
+        app.buttons["settings.save.max_tokens"].tap()
+        XCTAssertTrue(waitUntil(15) { (try? self.call("settings/get?key=max_tokens", method: "POST")) == "4321" }, "the retried save lands")
+
+        app.openSettings("appearance")
+        let theme = app.buttons["settings.theme"].firstMatch
+        XCTAssertTrue(theme.waitForExistence(timeout: 10))
+        theme.tap()
+        app.buttons["Dark"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(5) { (theme.value as? String)?.contains("Dark") == true || theme.label.contains("Dark") })
+        attach(app, "e2e-settings-dark")
+    }
+
+    @MainActor
+    private func openDetails(_ app: XCUIApplication) {
+        app.buttons["conversation.menu"].firstMatch.tap()
+        app.buttons["conversation.details"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["details.done"].firstMatch.waitForExistence(timeout: 10), "Details opens")
+    }
+
+    @MainActor
+    func testDetailsShowChangesFilesExportAndRichReplies() throws {
+        let thread = try call("thread/new?title=Details", method: "POST")
+        _ = try call("thread/rich?id=\(thread)", method: "POST")
+        _ = try call("workspace/change", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists })
+
+        let math = app.descendants(matching: .any)["timeline.rich.math"].firstMatch
+        XCTAssertTrue(math.waitForExistence(timeout: 20), "the formula renders offline")
+        XCTAssertTrue(app.descendants(matching: .any)["timeline.rich.mermaid"].firstMatch.waitForExistence(timeout: 20),
+                      "the diagram renders offline")
+        attach(app, "e2e-rich-reply")
+
+        openDetails(app)
+        attach(app, "e2e-details")
+        app.buttons["details.changes"].firstMatch.tap()
+        let file = app.buttons["changes.file"].firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 20), "Changes lists the edited file")
+        file.tap()
+        XCTAssertTrue(text(app, containing: "added from the harness").waitForExistence(timeout: 10), "the diff shows the new line")
+        attach(app, "e2e-changes-diff")
+        app.buttons["changes.stageFile"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(20) { (try? self.call("workspace/status", method: "POST"))?.hasPrefix("M ") == true },
+                      "Stage runs git on the host")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["details.files"].firstMatch.tap()
+        let notes = app.buttons.containing(NSPredicate(format: "label CONTAINS 'notes.md'")).firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 20), "Files lists the workspace")
+        notes.tap()
+        XCTAssertTrue(text(app, containing: "first line").waitForExistence(timeout: 15), "the file opens")
+        attach(app, "e2e-file")
+        app.buttons["file.edit"].firstMatch.tap()
+        let editor = app.textViews["editor.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitUntil(15) { (editor.value as? String)?.contains("first line") == true }, "the editor loads the file")
+        XCTAssertTrue(waitUntil(10) { (editor.value(forKey: "hasKeyboardFocus") as? Bool) == true }, "the editor opens ready to type")
+        editor.typeText("saved from iPhone ")
+        app.buttons["editor.save"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(20) { (try? self.call("workspace/read?path=notes.md", method: "POST"))?.contains("saved from iPhone") == true },
+                      "Save writes the file on the host: \(app.descendants(matching: .any)["editor.error"].firstMatch.label)")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["details.export"].firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["details.share"].firstMatch.waitForExistence(timeout: 30), "export downloads Markdown")
+        app.buttons["details.done"].firstMatch.tap()
+
+        let reply = app.descendants(matching: .any)["timeline.assistant"].firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        reply.press(forDuration: 1.2)
+        let quote = app.buttons["Quote"].firstMatch
+        XCTAssertTrue(quote.waitForExistence(timeout: 10), "saved replies offer Quote")
+        quote.tap()
+        XCTAssertTrue(text(app, containing: "Quoted").waitForExistence(timeout: 20), "the host attaches the quote")
+        attach(app, "e2e-quote")
+    }
+
+    @MainActor
+    func testReplyComponentsDrawNativelyAndUnknownTypesShowTheirFallback() throws {
+        let thread = try call("thread/new?title=Components", method: "POST")
+        _ = try call("thread/components?id=\(thread)", method: "POST")
+        let saved = try call("thread/count?id=\(thread)", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["component.table"].firstMatch.waitForExistence(timeout: 20), "the table draws natively")
+        for _ in 0..<6 where !any["component.table"].firstMatch.isHittable { app.swipeDown() }
+        XCTAssertTrue(text(app, containing: "Services").exists)
+        XCTAssertFalse(text(app, containing: "\"type\"").exists, "no component JSON is shown")
+        attach(app, "e2e-components-table")
+        for kind in ["chart", "form", "writing", "weather"] {
+            let view = any["component.\(kind)"].firstMatch
+            for _ in 0..<6 where !view.isHittable { app.swipeUp() }
+            XCTAssertTrue(view.waitForExistence(timeout: 10), "the \(kind) component draws natively")
+            attach(app, "e2e-components-\(kind)")
+        }
+        XCTAssertTrue(text(app, containing: "Example data").exists, "made-up data is labelled")
+        for _ in 0..<4 { app.swipeUp() }
+        XCTAssertTrue(text(app, containing: "Fallback for a type this app does not know").waitForExistence(timeout: 10),
+                      "an unknown type shows its fallback")
+
+        for _ in 0..<6 where !any["component.form"].firstMatch.isHittable { app.swipeDown() }
+        let notes = app.textFields["Notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 10))
+        notes.tap()
+        notes.typeText("Ship it")
+        app.buttons["Add Answers"].firstMatch.tap()
+        let composer = app.textViews["composer.field"]
+        XCTAssertTrue(waitUntil(10) { (composer.value as? String)?.contains("Notes: Ship it") == true },
+                      "form answers go into the message box")
+        XCTAssertEqual(try call("thread/count?id=\(thread)", method: "POST"), saved, "nothing is sent until the owner sends it")
+        attach(app, "e2e-components-form-answer")
+    }
+
+    // MARK: M10
+
+    @MainActor
+    func testIOSTurnsTellTheModelWhichComponentsItCanDraw() throws {
+        let thread = try call("thread/new?title=Capabilities", method: "POST")
+        _ = try call("thread/send?id=\(thread)&text=from%20a%20client%20that%20says%20nothing&wait=1", method: "POST")
+        XCTAssertFalse(try call("provider/system").contains("[Glass client]"), "a turn without client details gets no component guidance")
+
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        typeAndSend(app, "which components can you draw")
+        XCTAssertTrue(text(app, containing: "Echo from the host: which components").waitForExistence(timeout: 30))
+        let system = try call("provider/system")
+        XCTAssertTrue(system.contains("For this turn the user is on the Glass iOS app"), "the model is told it is answering the iOS app")
+        XCTAssertTrue(system.contains("glass-ui"), "the model gets the component format")
+        for kind in ["table", "chart", "form", "weather", "writing"] {
+            XCTAssertTrue(system.contains("- \(kind):"), "the catalog lists \(kind)")
+        }
+    }
+
+    @MainActor
+    func testEverydayMarkdownDrawsNatively() throws {
+        let thread = try call("thread/new?title=Markdown", method: "POST")
+        _ = try call("thread/markdown?id=\(thread)", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["markdown.table"].firstMatch.waitForExistence(timeout: 20), "a Markdown table draws as a table")
+        for _ in 0..<6 where !any["markdown.table"].firstMatch.isHittable { app.swipeDown() }
+        XCTAssertTrue(text(app, containing: "Alice").exists)
+        XCTAssertFalse(text(app, containing: "|------").exists, "no raw table syntax")
+        attach(app, "e2e-markdown-table")
+        XCTAssertFalse(text(app, containing: "<details>").exists, "no raw details tag")
+        let details = any["markdown.details"].firstMatch
+        XCTAssertTrue(details.waitForExistence(timeout: 10))
+        XCTAssertFalse(text(app, containing: "Hidden details inside").exists, "details start collapsed")
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Full report")).firstMatch.tap()
+        XCTAssertTrue(text(app, containing: "Hidden").waitForExistence(timeout: 5), "details expand")
+        XCTAssertTrue(text(app, containing: "∑").exists, "inline math is drawn, not shown as LaTeX")
+        XCTAssertFalse(text(app, containing: "\\frac").exists)
+        XCTAssertTrue(text(app, containing: "costs $5 and $10").exists, "money is not mistaken for math")
+        attach(app, "e2e-markdown-details-math")
+        for _ in 0..<3 { app.swipeUp() }
+        XCTAssertEqual(any.matching(identifier: "markdown.task").count, 2, "task list items draw with checkboxes")
+        XCTAssertFalse(text(app, containing: "[x]").exists, "no raw task syntax")
+        XCTAssertTrue(any["markdown.quote"].firstMatch.exists, "quotes draw with a bar")
+        XCTAssertFalse(any.matching(NSPredicate(format: "label == %@", "Image")).firstMatch.exists, "no stray image label")
+        attach(app, "e2e-markdown-lists-quotes")
+    }
+
+    @MainActor
+    func testWorkingBubbleSteerMenuAndKeyboardHiding() throws {
+        let thread = try call("thread/new?title=Working", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        typeAndSend(app, "pause 6 then reply")
+        let bubble = app.descendants(matching: .any)["conversation.activity"].firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "a working bubble sits where the reply will appear")
+        XCTAssertEqual(bubble.label, "Glass is working")
+        XCTAssertFalse(text(app, containing: "Waiting for provider").exists)
+        let field = composerField(app)
+        field.tap()
+        field.typeText("also check logs")
+        XCTAssertTrue(app.descendants(matching: .any)["composer.mode"].firstMatch.waitForExistence(timeout: 5),
+                      "while working, a typed message shows whether it steers or queues")
+        attach(app, "e2e-working-bubble")
+        let hide = app.buttons["conversation.hideKeyboard"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5), "an obvious control hides the keyboard")
+        hide.tap()
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "the keyboard goes away")
+        field.tap()
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count > 0 })
+        // Drag the conversation down into the keyboard, as in Messages.
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "scrolling the chat dismisses the keyboard")
+        XCTAssertTrue(text(app, containing: "Echo from the host").waitForExistence(timeout: 30))
+        XCTAssertTrue(waitUntil(10) { !bubble.exists }, "the bubble goes once the reply arrives")
+    }
+
+    @MainActor
+    func testMessageBoxGrowsThenScrolls() throws {
+        let thread = try call("thread/new?title=Growing", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let field = composerField(app)
+        XCTAssertTrue(waitUntil(10) { field.isEnabled })
+        field.tap()
+        let one = field.frame.height
+        field.typeText("line 1\nline 2\nline 3")
+        let three = field.frame.height
+        XCTAssertGreaterThan(three, one * 2, "the box grows with the text")
+        field.typeText("\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9")
+        let many = field.frame.height
+        XCTAssertLessThan(many, one * 7.5, "it stops growing at about six lines")
+        XCTAssertGreaterThan(many, three)
+        attach(app, "e2e-composer-grown")
+    }
+
+    /// The phone sleeps with the stream open: its socket stops carrying bytes without closing.
+    /// Measures how long the app takes after it is active again to show a reply sent meanwhile.
+    @MainActor
+    func testReturningToTheAppShowsMissedRepliesQuickly() throws {
+        let thread = try call("thread/new?title=Return", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        var timings: [Double] = []
+        for round in 1...3 {
+            XCUIDevice.shared.press(.home)
+            _ = try call("net/stall", method: "POST")
+            _ = try call("thread/send?id=\(thread)&text=missed%20reply%20\(round)&wait=1", method: "POST")
+            let start = Date()
+            app.activate()
+            XCTAssertTrue(text(app, containing: "missed reply \(round)").waitForExistence(timeout: 120), "round \(round) shows the missed reply")
+            timings.append(Date().timeIntervalSince(start))
+            XCTAssertTrue(waitForConnection(app, "Live"))
+        }
+        let report = "RECONNECT_SECONDS " + timings.map { String(format: "%.2f", $0) }.joined(separator: " ") + " | \(connectionValue(app))"
+        print(report)
+        let attachment = XCTAttachment(string: report)
+        attachment.name = "reconnect-timings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if ProcessInfo.processInfo.environment["GLASS_E2E_MEASURE_ONLY", default: ""].isEmpty {
+            XCTAssertLessThan(timings.max() ?? 99, 5, report)
+        }
+    }
+
+    @MainActor
+    func testRepliesAlertOnlyOutsideTheirConversationAndNeverReplay() throws {
+        let away = try call("thread/new?title=Alert%20away", method: "POST")
+        let here = try call("thread/new?title=Alert%20here", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("notifications")
+        let toggle = app.switches["settings.notifications"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 10) { permission.buttons["Allow"].tap() }
+        attach(app, "e2e-alerts-on")
+        XCTAssertTrue(waitUntil(10) { (app.switches["settings.notifications"].firstMatch.value as? String) == "1" }, "alerts turn on")
+
+        app.tabBars.buttons["Conversations"].tap()
+        open(app, thread: away)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open(app, thread: here)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let banner = { (title: String) in
+            springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Reply ready' AND label CONTAINS %@", title)).firstMatch
+        }
+
+        _ = try call("thread/send?id=\(away)&text=reply%20elsewhere&wait=1", method: "POST")
+        XCTAssertTrue(banner("Alert away").waitForExistence(timeout: 20), "a reply in another conversation alerts")
+        attach(app, "e2e-alert-banner")
+        XCTAssertTrue(waitUntil(15) { !banner("Alert away").exists }, "the banner goes away")
+
+        _ = try call("thread/send?id=\(here)&text=reply%20here&wait=1", method: "POST")
+        XCTAssertTrue(text(app, containing: "reply here").waitForExistence(timeout: 20))
+        XCTAssertFalse(banner("Alert here").waitForExistence(timeout: 5), "the conversation on screen doesn't alert")
+
+        // Replies that finished while iOS had Glass suspended are past: coming back never replays them.
+        XCUIDevice.shared.press(.home)
+        sleep(3)
+        _ = try call("net/stall", method: "POST")
+        _ = try call("thread/send?id=\(away)&text=finished%20while%20away&wait=1", method: "POST")
+        app.activate()
+        XCTAssertTrue(waitForConnection(app, "Live", timeout: 60))
+        XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 8), "catch-up after returning doesn't alert")
+        _ = try call("net/restore", method: "POST")
+
+        // Relaunching never replays either.
+        app.terminate()
+        app.launchArguments = []
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: away)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 5), "launch doesn't alert for old replies")
+    }
+
+    @MainActor
+    func testStreamingReplyIsFollowedUntilYouScrollThenResumes() throws {
+        let thread = try call("thread/new?title=Follow", method: "POST")
+        // UI queries over a fast stream are slow, so give the test room to measure while paused.
+        let app = try pairedApp(arguments: ["-GlassFollowResumeSeconds", "6"])
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        _ = try call("thread/send?id=\(thread)&text=lines%20400", method: "POST")
+        let latest = app.buttons["conversation.latest"]
+        let window = app.windows.firstMatch.frame
+        // One snapshot of the whole screen: querying each of hundreds of lines on its own takes longer
+        // than the waits below.
+        func newestLine() -> Int {
+            guard let root = try? app.snapshot() else { return 0 }
+            var newest = 0
+            var pending = [root]
+            while let node = pending.popLast() {
+                pending.append(contentsOf: node.children)
+                guard node.elementType == .staticText, node.frame.intersects(window),
+                      node.label.contains("of a long streamed reply") else { continue }
+                for match in node.label.matches(of: /Line (\d+) of/) { newest = max(newest, Int(match.1) ?? 0) }
+            }
+            return newest
+        }
+        XCTAssertTrue(waitUntil(30) { newestLine() >= 30 }, "the reply streams in")
+        let followed = newestLine()
+        XCTAssertTrue(waitUntil(5) { newestLine() > followed + 5 }, "the newest text stays in view while following")
+        XCTAssertFalse(latest.exists, "no Latest button while following")
+        attach(app, "e2e-follow-streaming")
+
+        // Reading back stops following, and the stream never moves you.
+        let screen = app.descendants(matching: .any)["conversation"].firstMatch
+        readBack(screen)
+        let paused = latest.waitForExistence(timeout: 3)
+        if !paused { attach(app, "e2e-follow-not-paused") }
+        XCTAssertTrue(paused, "Latest appears once you scroll back")
+        attach(app, "e2e-follow-paused-start")
+        // Where the reply starts on screen must not move while it keeps growing below.
+        let reply = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'of a long streamed reply'")).firstMatch
+        let before = reply.frame.minY
+        usleep(600_000)
+        let after = reply.frame.minY
+        XCTAssertTrue(latest.exists, "still paused while measuring")
+        attach(app, "e2e-follow-paused")
+        XCTAssertEqual(before, after, accuracy: 1, "your position holds while the reply keeps streaming")
+
+        // Left alone for a few seconds, the chat picks the stream up again.
+        XCTAssertTrue(waitUntil(12) { !latest.exists }, "following resumes after a few idle seconds")
+        let resumed = newestLine()
+        XCTAssertTrue(waitUntil(5) { newestLine() > resumed }, "and moves with the stream again")
+
+        // Latest resumes at once.
+        readBack(screen)
+        XCTAssertTrue(latest.waitForExistence(timeout: 3))
+        latest.tap()
+        XCTAssertTrue(waitUntil(2) { !latest.exists }, "Latest picks the stream up right away")
+        attach(app, "e2e-follow-latest")
+    }
+
+    /// Drags the chat back by about a screen and lets go without a fling.
+    @MainActor
+    private func readBack(_ screen: XCUIElement) {
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).press(
+            forDuration: 0.01,
+            thenDragTo: screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)),
+            withVelocity: .slow,
+            thenHoldForDuration: 0.3
+        )
+    }
+
+    @MainActor
+    func testDesktopTabShowsTheHostsDesktopChoices() throws {
+        let app = try pairedApp()
+        app.tabBars.buttons["Desktop"].tap()
+        let reusable = app.buttons["desktop.start.reusable"].firstMatch
+        let quick = app.buttons["desktop.start.disposable"].firstMatch
+        XCTAssertTrue(reusable.waitForExistence(timeout: 20), "the host lists its desktops")
+        XCTAssertTrue(quick.exists)
+        // The macOS test host has no Linux desktop, so each choice explains why it can't start.
+        XCTAssertFalse(quick.isEnabled, "desktops the host can't run are disabled")
+        attach(app, "e2e-desktop")
+    }
+
+    /// Times the desktop path against the harness's stand-in desktop host: steady frame rate, frame size,
+    /// decode and input round trip, then how long the picture takes to come back after leaving the app
+    /// while iOS froze the stream's socket. `GLASS_E2E_DESKTOP_KBPS` caps the stream's bandwidth.
+    @MainActor
+    func testDesktopTimingsAgainstTheStandInHost() throws {
+        let env = ProcessInfo.processInfo.environment
+        let kbps = env["GLASS_E2E_DESKTOP_KBPS"] ?? "0"
+        let rtt = env["GLASS_E2E_DESKTOP_RTT"] ?? "0"
+        let sizes = try call("desktop/fake?on=1&kbps=\(kbps)&rtt=\(rtt)", method: "POST")
+        defer { _ = try? call("desktop/fake?on=0", method: "POST") }
+        let app = try pairedApp()
+        app.tabBars.buttons["Desktop"].tap()
+        let screen = app.descendants(matching: .any)["desktop.screen"].firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 20), "the stand-in desktop shows")
+        let state = app.descendants(matching: .any)["desktop.state"].firstMatch
+        for _ in 0..<3 where !state.label.contains("fps") {
+            app.buttons["desktop.more"].firstMatch.tap()
+            let toggle = app.descendants(matching: .any)["desktop.stats.toggle"].firstMatch
+            if toggle.waitForExistence(timeout: 5) { toggle.tap() }
+            _ = waitUntil(3) { state.label.contains("fps") }
+        }
+        XCTAssertTrue(state.label.contains("fps"), "connection details show")
+        app.buttons["desktop.takeControl"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["desktop.giveBack"].waitForExistence(timeout: 10))
+        for i in 0..<12 {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: 0.3 + Double(i % 4) * 0.1, dy: 0.4)).tap()
+            usleep(250_000)
+        }
+        sleep(8)
+        let steady = state.label
+        attach(app, "e2e-desktop-steady")
+
+        XCUIDevice.shared.press(.home)
+        sleep(3)
+        _ = try call("net/stall", method: "POST")
+        sleep(5)
+        _ = try call("desktop/mark", method: "POST")
+        app.activate()
+        var report = ""
+        XCTAssertTrue(waitUntil(90) {
+            report = (try? self.call("desktop/report")) ?? ""
+            return !report.contains("\"resumedMs\": null")
+        }, "the picture comes back")
+        sleep(2)
+        attach(app, "e2e-desktop-back")
+        let back = app.descendants(matching: .any)["desktop.state"].firstMatch.label
+        let note = XCTAttachment(string: "kbps \(kbps) rtt \(rtt)\nframe sizes \(sizes)\nsteady: \(steady)\nback: \(back)\nhost: \(report)")
+        note.name = "desktop-timings"
+        note.lifetime = .keepAlways
+        add(note)
+
+        // Gestures: a touch held still right-clicks and a tap left-clicks. (XCUITest on the Simulator can't
+        // synthesize the two-finger tap here.) The desktop holds still so the touches land where aimed.
+        _ = try call("desktop/pause", method: "POST")
+        sleep(2)
+        _ = try call("desktop/mark", method: "POST")
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.8)
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)).tap()
+        sleep(2)
+        let actions = try call("desktop/report")
+        XCTAssertEqual(actions.components(separatedBy: "click:right").count - 1, 1, "one right click: \(actions)")
+        XCTAssertTrue(actions.contains("click:left"), "a tap is a left click: \(actions)")
+    }
+
+    /// With keep-alive on, the open conversation's stream survives a long stretch in the background: a reply
+    /// that arrives near the end alerts while Glass is away and is already on screen when you come back.
+    /// The same round with keep-alive off is the baseline. `GLASS_E2E_BACKGROUND_MINUTES` sets the stretch.
+    @MainActor
+    func testKeepAliveHoldsTheConnectionThroughTheBackground() throws {
+        let minutes = Double(ProcessInfo.processInfo.environment["GLASS_E2E_BACKGROUND_MINUTES"] ?? "") ?? 10
+        let thread = try call("thread/new?title=Kept%20alive", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("notifications")
+        let alerts = app.switches["settings.notifications"].firstMatch
+        XCTAssertTrue(alerts.waitForExistence(timeout: 10))
+        for _ in 0..<2 where (alerts.value as? String) != "1" {
+            alerts.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+            if springboard.alerts.firstMatch.waitForExistence(timeout: 5) { springboard.alerts.firstMatch.buttons["Allow"].tap() }
+            _ = waitUntil(5) { (alerts.value as? String) == "1" }
+        }
+        XCTAssertEqual(alerts.value as? String, "1", "alerts turn on")
+
+        let banner = springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS 'Reply ready' AND label CONTAINS 'Kept alive'")).firstMatch
+        func eventRequests() throws -> Int {
+            (try JSONSerialization.jsonObject(with: Data(call("net/events").utf8)) as? [Any])?.count ?? 0
+        }
+        func away(_ label: String) throws -> String {
+            app.tabBars.buttons["Conversations"].tap()
+            if !app.descendants(matching: .any)["conversation"].exists { open(app, thread: thread) }
+            XCTAssertTrue(waitForConnection(app, "Live"))
+            let streams = try eventRequests()
+            XCUIDevice.shared.press(.home)
+            sleep(UInt32(max(minutes * 60 - 20, 5)))
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "e2e-keepalive-\(label)-away"
+            shot.lifetime = .keepAlways
+            add(shot)
+            _ = try call("thread/send?id=\(thread)&text=\(label)%20while%20away&wait=1", method: "POST")
+            let alerted = banner.waitForExistence(timeout: 20)
+            let started = Date()
+            app.activate()
+            XCTAssertTrue(text(app, containing: "\(label) while away").waitForExistence(timeout: 90))
+            let backMs = Int(Date().timeIntervalSince(started) * 1000)
+            XCTAssertTrue(waitForConnection(app, "Live", timeout: 60))
+            let reopened = try eventRequests() - streams
+            return "\(label): \(Int(minutes)) min away, alerted while away \(alerted), reply on screen \(backMs) ms after return, "
+                + "new event streams \(reopened)"
+        }
+
+        let baseline = try away("off")
+        let first = XCTAttachment(string: baseline)
+        first.name = "keepalive-baseline"
+        first.lifetime = .keepAlways
+        add(first)
+        XCTAssertTrue(waitUntil(20) { !banner.exists })
+
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 10) {
+            let allow = permission.buttons["Allow While Using App"]
+            (allow.exists ? allow : permission.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(waitUntil(10) { (keep.value as? String) == "1" }, "keep-alive turns on")
+        attach(app, "e2e-keepalive-setting")
+
+        let kept = try away("on")
+        let note = XCTAttachment(string: baseline + "\n" + kept)
+        note.name = "keepalive-timings"
+        note.lifetime = .keepAlways
+        add(note)
+        XCTAssertTrue(kept.contains("alerted while away true"), "a reply arriving after a long time away still alerts")
+        XCTAssertTrue(kept.hasSuffix("new event streams 0"), "the same stream carried on, with no reconnect")
+
+        // The desktop picture joins the held connection, so Disconnect has to close it too.
+        _ = try call("desktop/fake?on=1&kbps=0&rtt=0", method: "POST")
+        defer { _ = try? call("desktop/fake?on=0", method: "POST") }
+        app.tabBars.buttons["Desktop"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["desktop.screen"].firstMatch.waitForExistence(timeout: 20))
+        func desktopReport(_ key: String) throws -> Int {
+            let report = try JSONSerialization.jsonObject(with: Data(call("desktop/report").utf8)) as? [String: Any]
+            return report?[key] as? Int ?? -1
+        }
+        func desktopStreams() throws -> Int { try desktopReport("streamsAfterMark") }
+        let takeControl = app.buttons["desktop.takeControl"].firstMatch
+        XCTAssertTrue(takeControl.waitForExistence(timeout: 20), "Desktop offers Take control")
+        takeControl.tap()
+        XCTAssertTrue(app.buttons["desktop.giveBack"].waitForExistence(timeout: 10))
+
+        // The Live Activity's Disconnect closes the connection from the Dynamic Island.
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        let disconnect = springboard.buttons["Disconnect"].firstMatch
+        // The background location pill can share the Dynamic Island, so hold the activity's own part of it.
+        let island = liveActivity(springboard)
+        XCTAssertTrue(island.waitForExistence(timeout: 10), "the Live Activity is up")
+        for _ in 0..<3 where !disconnect.exists {
+            island.press(forDuration: 1.2)
+            _ = disconnect.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(disconnect.exists, "the Live Activity offers Disconnect")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "e2e-keepalive-live-activity"
+        shot.lifetime = .keepAlways
+        add(shot)
+        disconnect.tap()
+        XCTAssertTrue(waitUntil(10) { !springboard.buttons["Disconnect"].exists }, "the Live Activity ends")
+
+        // Back in Glass with Desktop still showing, the status poll must not quietly reopen the picture.
+        _ = try call("desktop/mark", method: "POST")
+        app.activate()
+        let reconnect = app.buttons["desktop.disconnected"].firstMatch
+        XCTAssertTrue(reconnect.waitForExistence(timeout: 10), "Desktop shows it was disconnected")
+        sleep(8)
+        attach(app, "e2e-keepalive-desktop-disconnected")
+        XCTAssertEqual(try desktopStreams(), 0, "no new desktop stream after Disconnect")
+        // The frozen picture may not match the desktop any more, so touches on it go nowhere.
+        let inputsBefore = try desktopReport("inputs")
+        let screen = app.descendants(matching: .any)["desktop.screen"].firstMatch
+        XCTAssertTrue(screen.exists, "the picture and Reconnect are separate accessibility elements")
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.8)).tap()
+        sleep(2)
+        XCTAssertEqual(try desktopReport("inputs"), inputsBefore, "no input reaches the host after Disconnect")
+        let keys = app.buttons["desktop.keys"].firstMatch
+        XCTAssertTrue(keys.exists && !keys.isEnabled, "Keys is off while disconnected")
+        reconnect.tap()
+        XCTAssertTrue(waitUntil(10) { keys.isEnabled }, "Keys comes back after Reconnect")
+        XCTAssertTrue(waitUntil(15) { ((try? desktopStreams()) ?? 0) > 0 }, "Reconnect opens the picture again")
+        XCTAssertTrue(waitUntil(10) { !reconnect.exists })
+    }
+
+    @MainActor
+    func testClosingGlassEndsItsLiveActivity() throws {
+        let thread = try call("thread/new?title=Closing%20Glass", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 5) {
+            let allow = permission.buttons["Allow While Using App"]
+            (allow.exists ? allow : permission.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(waitUntil(10) { (keep.value as? String) == "1" }, "keep-alive turns on")
+        app.tabBars.buttons["Conversations"].tap()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        // Swiped away in the app switcher: the activity ends with Glass, without reopening it.
+        XCUIDevice.shared.press(.home)
+        let activity = liveActivity(springboard)
+        XCTAssertTrue(activity.waitForExistence(timeout: 10), "the Live Activity starts in the background")
+        let bottom = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.998))
+        bottom.press(forDuration: 0.05, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)),
+                     withVelocity: .slow, thenHoldForDuration: 1.0)
+        sleep(1)
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "e2e-close-switcher"
+        shot.lifetime = .keepAlways
+        add(shot)
+        let card = springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == 'Glass' AND identifier != 'Glass'")).firstMatch
+        let target = card.exists ? card : springboard.descendants(matching: .any)["Glass"].firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 5), "Glass shows in the app switcher")
+        let middle = target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        middle.press(forDuration: 0.05, thenDragTo: middle.withOffset(CGVector(dx: 0, dy: -600)))
+        XCTAssertTrue(waitUntil(15) { app.state == .notRunning }, "Glass closed")
+        XCTAssertTrue(waitUntil(10) { !activity.exists }, "closing Glass ends its Live Activity")
+
+        // Stopped without notice: the next launch clears whatever was left behind.
+        app.launchArguments = []
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(activity.waitForExistence(timeout: 10), "the Live Activity starts again")
+        app.terminate()
+        let left = activity.exists
+        app.launch()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        let after = XCTAttachment(string: "activity left after a kill: \(left); after relaunch: \(activity.exists)")
+        after.name = "close-report"
+        after.lifetime = .keepAlways
+        add(after)
+        XCTAssertFalse(activity.exists, "relaunching ends an activity left by a kill")
+    }
+
+    @MainActor
+    func testEveryScreenPassesTheAccessibilityAudit() throws {
+        let thread = try call("thread/new?title=Audit", method: "POST")
+        _ = try call("thread/rich?id=\(thread)", method: "POST")
+        let app = try pairedApp()
+        var issues = auditIssues(app, "conversations")
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        issues += auditIssues(app, "conversation")
+        openDetails(app)
+        sleep(2)
+        attach(app, "audit-details")
+        issues += auditIssues(app, "details")
+        app.buttons["details.done"].firstMatch.tap()
+        app.tabBars.buttons["Desktop"].tap()
+        XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 10))
+        sleep(2)
+        issues += auditIssues(app, "Desktop")
+        app.openSettings(nil)
+        sleep(1)
+        issues += auditIssues(app, "Settings")
+        for route in ["host", "diagnostics", "appearance", "notifications", "voice", "about"] {
+            app.openSettings(route)
+            sleep(2)
+            issues += auditIssues(app, route)
+        }
+        XCTAssertTrue(issues.isEmpty, issues.joined(separator: "\n"))
+    }
+}

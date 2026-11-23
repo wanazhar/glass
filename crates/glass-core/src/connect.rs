@@ -430,8 +430,62 @@ fn https_url(settings: &Settings) -> String {
 }
 fn ready_output(product: &str, url: &str, command: &str) -> String {
     format!(
-        "{product} · ready\n{url}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{command} status · {command} stop"
+        "{product} · ready\n{url}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{command} status · {command} qr · {command} stop"
     )
+}
+
+/// Native clients read these from `/api/status` to detect an incompatible gateway.
+/// Bump the version only for breaking changes; add a capability for each new feature.
+const CONNECT_PROTOCOL_VERSION: u32 = 1;
+const CONNECT_CAPABILITIES: &[&str] = &[
+    "owner-capability",
+    "events-resume",
+    "agent-events",
+    "secret-submission",
+    "uploads",
+    "artifacts",
+    "commands",
+    "settings",
+    "files",
+    "export",
+    "desktop",
+    "reply-components",
+];
+
+/// Renders `text` as a QR code of half-block characters, two modules per line.
+/// With `ansi`, colors are forced to dark-on-light so the code scans on any terminal theme.
+fn terminal_qr(text: &str, ansi: bool) -> Result<String, String> {
+    let code = qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)
+        .map_err(|_| "The link is too long for a QR code")?;
+    let width = code.width();
+    let quiet = 2;
+    let size = width + quiet * 2;
+    let dark = |x: usize, y: usize| {
+        x >= quiet
+            && y >= quiet
+            && x < width + quiet
+            && y < width + quiet
+            && code[(x - quiet, y - quiet)] == qrcode::Color::Dark
+    };
+    let mut out = String::new();
+    for y in (0..size).step_by(2) {
+        if ansi {
+            out.push_str("\x1b[30;107m");
+        }
+        for x in 0..size {
+            out.push(match (dark(x, y), dark(x, y + 1)) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => ' ',
+            });
+        }
+        if ansi {
+            out.push_str("\x1b[0m");
+        }
+        out.push('\n');
+    }
+    Ok(out)
 }
 fn assets() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
@@ -485,6 +539,21 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     };
     match args.first().map(String::as_str) {
         Some("_serve") => return gateway(cfg, load()?),
+        Some("qr") => {
+            let settings = load()?;
+            if !alive(&settings) {
+                return Err("Connect is not running".into());
+            }
+            let link = zeroize::Zeroizing::new(access_link(&settings));
+            let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && std::env::var_os("NO_COLOR").is_none();
+            crate::cli_println!(
+                "{}Scan with Glass on iPhone, or paste the link:\n{}",
+                terminal_qr(&link, ansi)?,
+                link.as_str()
+            );
+            return Ok(());
+        }
         Some("secret-link") => {
             let settings = load()?;
             if !alive(&settings) {
@@ -541,7 +610,8 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         None | Some("--local" | "--http") => {}
         _ => {
             return Err(format!(
-                "usage: {} [--local | --http] | {} status | {} stop | secret-link",
+                "usage: {} [--local | --http] | {} status | {} qr | {} stop | secret-link",
+                crate::cli::connect_command(),
                 crate::cli::connect_command(),
                 crate::cli::connect_command(),
                 crate::cli::connect_command()
@@ -2395,10 +2465,7 @@ fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Val
         .take(120)
         .collect();
     let token = crate::workspace::hash(&[name.as_bytes(), b"\0", body].concat());
-    let thread_key = crate::workspace::hash(session_path.as_os_str().as_encoded_bytes());
-    let dir = crate::config::data_dir()
-        .join("web-uploads")
-        .join(&thread_key);
+    let dir = crate::web_commands::upload_dir(&session_path);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -3016,7 +3083,7 @@ fn handle_with_transport(
     }
     let result: Result<Value, String> = (|| match (r.method.as_str(), path) {
         ("GET", "/api/status") => Ok(
-            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
+            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","protocolVersion":CONNECT_PROTOCOL_VERSION,"capabilities":CONNECT_CAPABILITIES,"web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
         ("GET", "/api/diagnostics") => {
             let selected = query
@@ -3568,7 +3635,7 @@ fn desktop_stream(
             )
             .map_err(|e| e.to_string());
         }
-        match stream_frame_after(desktop, &mut watermark, remaining) {
+        match stream_frame_after(desktop, &mut watermark, remaining, None) {
             Ok(Some(frame)) => break frame,
             Ok(None) => continue,
             Err(error) => {
@@ -3578,8 +3645,8 @@ fn desktop_stream(
         }
     };
     write_desktop_stream_headers(stream)?;
-    write_desktop_stream_frames(stream, first, width, |after, timeout| {
-        stream_frame_after(desktop, after, timeout)
+    write_desktop_stream_frames(stream, first, width, |after, timeout, unchanged| {
+        stream_frame_after(desktop, after, timeout, unchanged)
     })
 }
 
@@ -3596,8 +3663,9 @@ fn stream_frame_after(
     desktop: &crate::desktop::Desktop,
     after: &mut u64,
     timeout: Duration,
-) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
-    match desktop.frame_after(*after, timeout) {
+    unchanged: Option<u64>,
+) -> Result<Option<crate::desktop::TimedFrame>, String> {
+    match desktop.timed_frame_after_unless(*after, timeout, unchanged) {
         Err(error) if error == "Desktop frame source is stale" => {
             if let Some(current) = desktop.status()["frameSeq"].as_u64() {
                 *after = (*after).max(current);
@@ -3610,21 +3678,35 @@ fn stream_frame_after(
 
 fn write_desktop_stream_frames<W, F>(
     stream: &mut W,
-    first: (u64, u64, Vec<u8>),
+    first: crate::desktop::TimedFrame,
     width: u32,
     mut frame_after: F,
 ) -> Result<(), String>
 where
     W: Write,
-    F: FnMut(&mut u64, Duration) -> Result<Option<(u64, u64, Vec<u8>)>, String>,
+    F: FnMut(&mut u64, Duration, Option<u64>) -> Result<Option<crate::desktop::TimedFrame>, String>,
 {
+    const HEARTBEAT: &[u8] =
+        b"--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n";
     let mut next = Some(first);
     let mut sequence = 0;
-    let mut after = next.as_ref().map_or(0, |frame| frame.0);
+    let mut after = next.as_ref().map_or(0, |frame| frame.seq);
+    // The picture last sent, when it was sent, and how long writing it took: a slow write means the
+    // network is the bottleneck, which the viewer uses to pick a smaller stream.
+    let mut last_content = None;
+    let mut last_write = Instant::now();
+    let mut send_ms = 0;
     loop {
-        let (seq, time_ms, jpeg) = match next.take() {
+        let crate::desktop::TimedFrame {
+            seq,
+            time_ms,
+            jpeg,
+            mut encode_ms,
+            age_ms,
+            content,
+        } = match next.take() {
             Some(frame) => frame,
-            None => match frame_after(&mut after, Duration::from_secs(2)) {
+            None => match frame_after(&mut after, Duration::from_secs(2), last_content) {
                 Ok(Some(frame)) => frame,
                 // Capture can pause while a desktop is idle or the remote
                 // transport is delayed. Keep the response open and wait for
@@ -3634,12 +3716,9 @@ where
                     // Use a valid, explicitly marked empty multipart part so
                     // proxies keep the response alive without making the
                     // viewer treat a heartbeat as an image frame.
-                    stream
-                        .write_all(
-                            b"--glassframe\r\nX-Glass-Heartbeat: 1\r\nContent-Length: 0\r\n\r\n\r\n",
-                        )
-                        .map_err(|e| e.to_string())?;
+                    stream.write_all(HEARTBEAT).map_err(|e| e.to_string())?;
                     stream.flush().map_err(|e| e.to_string())?;
+                    last_write = Instant::now();
                     continue;
                 }
                 Err(_) => return Ok(()),
@@ -3648,20 +3727,39 @@ where
         if seq <= sequence {
             return Ok(());
         }
+        // An idle desktop repeats the same picture 30 times a second; send it once.
+        if last_content == Some(content) {
+            sequence = seq;
+            after = seq;
+            if last_write.elapsed() >= Duration::from_secs(2) {
+                stream.write_all(HEARTBEAT).map_err(|e| e.to_string())?;
+                stream.flush().map_err(|e| e.to_string())?;
+                last_write = Instant::now();
+            }
+            continue;
+        }
+        let resizing = Instant::now();
         let jpeg = if width == 1280 {
             jpeg
         } else {
-            resize_stream_frame(&jpeg, width)?
+            let resized = resize_stream_frame(&jpeg, width)?;
+            encode_ms += resizing.elapsed().as_millis() as u64;
+            resized
         };
+        let age_ms = age_ms + resizing.elapsed().as_millis() as u64;
+        let writing = Instant::now();
         write!(
             stream,
-            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\n\r\n",
-            jpeg.len(), seq, time_ms
+            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\nX-Frame-Age-Ms: {}\r\nX-Frame-Encode-Ms: {}\r\nX-Frame-Send-Ms: {}\r\n\r\n",
+            jpeg.len(), seq, time_ms, age_ms, encode_ms, send_ms
         )
         .map_err(|e| e.to_string())?;
         stream.write_all(&jpeg).map_err(|e| e.to_string())?;
         stream.write_all(b"\r\n").map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
+        send_ms = writing.elapsed().as_millis() as u64;
+        last_write = Instant::now();
+        last_content = Some(content);
         sequence = seq;
         after = seq;
     }
@@ -3723,6 +3821,9 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.to_string()),
             };
+            // BSD sockets inherit O_NONBLOCK from the listener; handlers rely
+            // on blocking reads bounded by their read timeouts.
+            stream.set_nonblocking(false).map_err(|e| e.to_string())?;
             // Input acknowledgements and region headers must not wait for
             // Nagle batching behind a small preceding response write.
             stream.set_nodelay(true).map_err(|e| e.to_string())?;
@@ -3865,20 +3966,25 @@ mod tests {
     fn desktop_stream_stays_open_across_a_temporary_frame_gap() {
         let mut polls = 0;
         let mut body = Vec::new();
-        write_desktop_stream_frames(&mut body, (1, 100, b"first".to_vec()), 1280, |after, _| {
-            polls += 1;
-            match polls {
-                1 => {
-                    *after = 1;
-                    Ok(None)
+        write_desktop_stream_frames(
+            &mut body,
+            (1, 100, b"first".to_vec()).into(),
+            1280,
+            |after, _, _| {
+                polls += 1;
+                match polls {
+                    1 => {
+                        *after = 1;
+                        Ok(None)
+                    }
+                    2 => {
+                        assert_eq!(*after, 1, "the stale frame watermark must be skipped");
+                        Ok(Some((2, 3_000, b"after-gap".to_vec()).into()))
+                    }
+                    _ => Err("test stream closed".into()),
                 }
-                2 => {
-                    assert_eq!(*after, 1, "the stale frame watermark must be skipped");
-                    Ok(Some((2, 3_000, b"after-gap".to_vec())))
-                }
-                _ => Err("test stream closed".into()),
-            }
-        })
+            },
+        )
         .unwrap();
 
         let body = String::from_utf8(body).unwrap();
@@ -3892,12 +3998,73 @@ mod tests {
     }
 
     #[test]
+    fn desktop_stream_sends_a_repeated_picture_once_and_reports_send_time() {
+        let mut polls = 0;
+        let mut body = Vec::new();
+        let frame = |seq, jpeg: &[u8], content| crate::desktop::TimedFrame {
+            seq,
+            time_ms: seq * 33,
+            jpeg: jpeg.to_vec(),
+            encode_ms: 0,
+            age_ms: 0,
+            content,
+        };
+        write_desktop_stream_frames(&mut body, frame(1, b"first", 1), 1280, |_, _, unchanged| {
+            polls += 1;
+            match polls {
+                1 => {
+                    assert_eq!(
+                        unchanged,
+                        Some(1),
+                        "the host is told which picture the viewer has"
+                    );
+                    Ok(Some(frame(2, b"", 1)))
+                }
+                2 => Ok(Some(frame(3, b"changed", 2))),
+                _ => Err("test stream closed".into()),
+            }
+        })
+        .unwrap();
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("X-Frame-Seq: 1\r\n"));
+        assert!(
+            !body.contains("X-Frame-Seq: 2\r\n"),
+            "an unchanged picture is not resent"
+        );
+        assert!(body.contains("X-Frame-Seq: 3\r\n"));
+        assert!(body.contains("X-Frame-Send-Ms: "));
+    }
+
+    #[test]
+    fn desktop_stream_frames_report_host_age_and_encode_time() {
+        let mut body = Vec::new();
+        let first = crate::desktop::TimedFrame {
+            seq: 1,
+            time_ms: 100,
+            jpeg: b"jpeg".to_vec(),
+            encode_ms: 7,
+            age_ms: 12,
+            content: 1,
+        };
+        write_desktop_stream_frames(&mut body, first, 1280, |_, _, _| {
+            Err("test stream closed".into())
+        })
+        .unwrap();
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("X-Frame-Encode-Ms: 7\r\n"));
+        assert!(body.contains("X-Frame-Age-Ms: 12\r\n"));
+    }
+
+    #[test]
     fn desktop_stream_wire_headers_use_opaque_fetch_type_and_keep_custom_frame_protocol() {
         let mut wire = Vec::new();
         write_desktop_stream_headers(&mut wire).unwrap();
-        write_desktop_stream_frames(&mut wire, (1, 100, b"jpeg".to_vec()), 1280, |_, _| {
-            Err("test stream closed".into())
-        })
+        write_desktop_stream_frames(
+            &mut wire,
+            (1, 100, b"jpeg".to_vec()).into(),
+            1280,
+            |_, _, _| Err("test stream closed".into()),
+        )
         .unwrap();
 
         let header_end = wire
@@ -4536,7 +4703,7 @@ mod tests {
     fn ready_output_keeps_the_action_hints_for_existing_sessions() {
         assert_eq!(
             ready_output("Glass Connect", "http://127.0.0.1:8083", "glass connect"),
-            "Glass Connect · ready\nhttp://127.0.0.1:8083\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\nglass connect status · glass connect stop"
+            "Glass Connect · ready\nhttp://127.0.0.1:8083\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\nglass connect status · glass connect qr · glass connect stop"
         );
         assert!(
             ready_output(
@@ -4544,12 +4711,42 @@ mod tests {
                 "http://localhost",
                 "glass core connect"
             )
-            .ends_with("glass core connect status · glass core connect stop")
+            .ends_with(
+                "glass core connect status · glass core connect qr · glass core connect stop"
+            )
         );
         assert!(
             ready_output("GC Connect", "http://localhost", "gc connect")
-                .ends_with("gc connect status · gc connect stop")
+                .ends_with("gc connect status · gc connect qr · gc connect stop")
         );
+    }
+    #[test]
+    fn terminal_qr_encodes_owner_links_as_square_half_blocks() {
+        let link = format!("https://host.tail.ts.net:8443#owner={}", "A".repeat(22));
+        let plain = terminal_qr(&link, false).unwrap();
+        let rows: Vec<&str> = plain.lines().collect();
+        let width = rows[0].chars().count();
+        assert!(
+            (25..=45).contains(&width),
+            "QR width {width} must fit a phone terminal"
+        );
+        assert_eq!(rows.len(), width.div_ceil(2));
+        assert!(rows.iter().all(|row| row.chars().count() == width));
+        assert!(rows[0].trim().is_empty(), "quiet zone");
+        assert!(!plain.contains('\x1b'));
+        let colored = terminal_qr(&link, true).unwrap();
+        assert!(
+            colored
+                .lines()
+                .all(|row| row.starts_with("\x1b[30;107m") && row.ends_with("\x1b[0m"))
+        );
+    }
+    #[test]
+    fn status_advertises_protocol_version_and_capabilities() {
+        assert_eq!(CONNECT_PROTOCOL_VERSION, 1);
+        assert!(CONNECT_CAPABILITIES.contains(&"events-resume"));
+        let unique: std::collections::HashSet<_> = CONNECT_CAPABILITIES.iter().collect();
+        assert_eq!(unique.len(), CONNECT_CAPABILITIES.len());
     }
     #[test]
     fn malformed_connect_status_state_remains_an_error() {

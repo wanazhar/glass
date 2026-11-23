@@ -689,7 +689,7 @@ fn diagram_open(line: &str) -> Option<(char, usize)> {
     (count >= 3
         && matches!(
             line[count..].trim().to_ascii_lowercase().as_str(),
-            "mermaid" | "math" | "latex" | "tex"
+            "mermaid" | "math" | "latex" | "tex" | "glass-ui"
         ))
     .then_some((marker, count))
 }
@@ -854,6 +854,11 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
         return Some(math_block(&body, text, width));
     }
     for (language, body) in code_blocks(text) {
+        // A reply component renders as its Markdown fallback; unparsable blocks stay source.
+        if crate::components::is_fence(&language) {
+            let component = crate::components::parse(&body)?;
+            return Some(lines(&crate::components::fallback(&component), width));
+        }
         if matches!(
             language.trim().to_ascii_lowercase().as_str(),
             "math" | "latex" | "tex"
@@ -990,7 +995,20 @@ impl Stream {
                 self.presentation.continuation = None;
             } else {
                 self.pending.push(c);
-                if (self.pending.len() >= 4096 && c.is_whitespace()) || self.pending.len() >= 8192 {
+                // Component JSON is often one long line; keep collecting it whole up to the block cap.
+                let component = self.diagram.as_ref().is_some_and(|d| {
+                    crate::components::is_fence(
+                        d.source
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim_start_matches(['`', '~']),
+                    ) && d.source.len() + self.pending.len() < DIAGRAM_BYTES
+                });
+                if !component
+                    && ((self.pending.len() >= 4096 && c.is_whitespace())
+                        || self.pending.len() >= 8192)
+                {
                     if let Some(diagram) = self.diagram.take() {
                         let margin = if width >= 24 {
                             2
@@ -1372,6 +1390,71 @@ pub fn write_ansi(io: &mut impl std::io::Write, line: &Line<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn rendered(text: &str) -> String {
+        lines(text, 80)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn component_blocks_render_their_fallback_not_json() {
+        let text = "Here are the results.\n```glass-ui\n{\"type\":\"table\",\"v\":1,\"fallback\":\"- api: up\\n- web: down\",\"data\":{\"rows\":[]}}\n```\nAnything else?";
+        let out = rendered(text);
+        assert!(out.contains("Here are the results."), "{out}");
+        assert!(
+            out.contains("api: up") && out.contains("web: down"),
+            "{out}"
+        );
+        assert!(out.contains("Anything else?"), "{out}");
+        assert!(
+            !out.contains("\"type\"") && !out.contains("glass-ui"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn component_without_fallback_uses_a_derived_one_and_bad_json_stays_source() {
+        let derived = rendered(
+            "```glass-ui\n{\"type\":\"news\",\"data\":{\"items\":[{\"title\":\"Launch\",\"source\":\"Wire\"}]}}\n```",
+        );
+        assert!(derived.contains("Launch — Wire"), "{derived}");
+        let broken = rendered("```glass-ui\n{not json\n```");
+        assert!(
+            broken.contains("{not json"),
+            "unparsable blocks stay visible as source: {broken}"
+        );
+    }
+
+    #[test]
+    fn streamed_component_with_a_long_line_renders_its_fallback() {
+        let filler = "x".repeat(12_000);
+        let source = format!(
+            "Intro\n```glass-ui\n{{\"type\":\"copy\",\"fallback\":\"Copy this code\",\"data\":{{\"text\":\"{filler}\"}}}}\n```\nAfter\n"
+        );
+        let mut stream = Stream::default();
+        let mut output = Vec::new();
+        for chunk in source.as_bytes().chunks(700) {
+            stream.write(&mut output, std::str::from_utf8(chunk).unwrap(), 80);
+        }
+        stream.flush(&mut output, 80);
+        let text = project(&output).join("\n");
+        assert!(
+            text.contains("Intro") && text.contains("Copy this code") && text.contains("After"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("xxxxxxxxxx"),
+            "component data is not dumped into the terminal"
+        );
+    }
+
     #[test]
     fn sanitizer_removes_complete_and_truncated_terminal_sequences() {
         assert_eq!(

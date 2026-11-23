@@ -588,13 +588,7 @@ fn shell_inner(command: &str) -> Command {
         && state.policy != Policy::Off
         && let Some(profile) = &state.profile
     {
-        let mut cmd = Command::new("/usr/bin/sandbox-exec");
-        cmd.arg("-p")
-            .arg(profile)
-            .arg("/bin/bash")
-            .arg("-c")
-            .arg(command);
-        return cmd;
+        return mac::shell(profile, command);
     }
     let mut cmd = Command::new("/bin/bash");
     cmd.arg("-c").arg(command);
@@ -1788,9 +1782,47 @@ mod mac {
     //! usual) and, for `strict`, narrows reads to the same allowlist.
 
     use super::*;
+    use std::path::Path;
+
+    pub(super) fn shell(profile: &str, command: &str) -> Command {
+        let mut cmd = Command::new("/usr/bin/sandbox-exec");
+        cmd.args(["-p", profile, "/bin/bash", "-c", command]);
+        cmd
+    }
+
+    fn canonical_path(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn quote_path(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    }
+
+    fn allow_subpath(profile: &mut String, access: &str, path: &Path) {
+        let resolved = quote_path(&canonical_path(path));
+        profile.push_str(&format!("(allow {access} (subpath \"{resolved}\"))\n"));
+    }
+
+    fn allow_read_subpath(profile: &mut String, path: &Path) {
+        allow_subpath(profile, "file-read*", path);
+        for ancestor in path.ancestors() {
+            if ancestor
+                .symlink_metadata()
+                .is_ok_and(|meta| meta.is_symlink())
+                && let Some((parent, name)) = ancestor.parent().zip(ancestor.file_name())
+            {
+                let link = quote_path(&canonical_path(parent).join(name));
+                profile.push_str(&format!(
+                    "(allow file-read-metadata (literal \"{link}\"))\n"
+                ));
+            }
+        }
+    }
 
     pub fn profile(
-        workspace: &std::path::Path,
+        workspace: &Path,
         writable: &[PathBuf],
         readable: &[PathBuf],
         strict: bool,
@@ -1798,29 +1830,19 @@ mod mac {
     ) -> String {
         let mut p = String::from("(version 1)\n(allow default)\n(deny file-write*)\n");
         if !read_only {
-            p.push_str(&format!(
-                "(allow file-write* (subpath \"{}\"))\n",
-                workspace.display()
-            ));
+            allow_subpath(&mut p, "file-write*", workspace);
         }
         for dir in writable {
-            p.push_str(&format!(
-                "(allow file-write* (subpath \"{}\"))\n",
-                dir.display()
-            ));
+            allow_subpath(&mut p, "file-write*", dir);
         }
         p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
         if strict {
             p.push_str("(deny file-read*)\n");
-            p.push_str(&format!(
-                "(allow file-read* (subpath \"{}\"))\n",
-                workspace.display()
-            ));
+            // dyld probes the root directory before the child starts.
+            p.push_str("(allow file-read* (literal \"/\"))\n");
+            allow_read_subpath(&mut p, workspace);
             for dir in readable {
-                p.push_str(&format!(
-                    "(allow file-read* (subpath \"{}\"))\n",
-                    dir.display()
-                ));
+                allow_read_subpath(&mut p, dir);
             }
         }
         p
@@ -1914,6 +1936,173 @@ mod tests {
             ApprovalDecision::NeedsInteractiveApproval
         );
         assert!(!SessionApprovals::default().permits_exact("printf ok > /tmp/x"));
+    }
+
+    #[cfg(target_os = "macos")]
+    struct SeatbeltFixture(PathBuf);
+
+    #[cfg(target_os = "macos")]
+    impl SeatbeltFixture {
+        fn new(label: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("gc-seatbelt-{label}-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn workspace(&self, name: &str) -> PathBuf {
+            let workspace = self.0.join(name);
+            std::fs::create_dir(&workspace).unwrap();
+            workspace
+        }
+
+        fn run(
+            &self,
+            workspace: &std::path::Path,
+            profile: &str,
+            script: &str,
+            argument: &std::path::Path,
+        ) -> String {
+            let output = mac::shell(profile, script)
+                .arg("glass-seatbelt-test")
+                .arg(self.0.join("outside"))
+                .arg(argument)
+                .current_dir(workspace)
+                .env_clear()
+                .env("HOME", workspace)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Seatbelt shell failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for SeatbeltFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_only_seatbelt_sandbox_denies_writes_and_runs_git_status() {
+        let fixture = SeatbeltFixture::new("read-only");
+        let workspace = fixture.workspace("workspace");
+        let git = Command::new("/usr/bin/xcrun")
+            .args(["--find", "git"])
+            .output()
+            .unwrap();
+        assert!(git.status.success(), "xcrun must locate the Git executable");
+        let git = PathBuf::from(String::from_utf8(git.stdout).unwrap().trim());
+        assert!(
+            Command::new(&git)
+                .args(["init", "--quiet"])
+                .current_dir(&workspace)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(workspace.join("inside"), "original").unwrap();
+        let cfg = config::Config {
+            workspace: workspace.clone(),
+            permission_profile: PermissionProfile::ReadOnly,
+            ..Default::default()
+        };
+        let state = build_state(&cfg, Policy::Strict, &mut Vec::new());
+        let stdout = fixture.run(
+            &workspace,
+            state
+                .profile
+                .as_deref()
+                .expect("read-only Seatbelt profile"),
+            r#"printf ok > /dev/null || exit 91
+                "$2" --no-optional-locks status --porcelain || exit 92
+                if printf no > inside; then exit 93; fi
+                if printf no > "$1"; then exit 94; fi"#,
+            &git,
+        );
+        assert_eq!(stdout, "?? inside\n");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("inside")).unwrap(),
+            "original"
+        );
+        assert!(!fixture.0.join("outside").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_seatbelt_sandbox_allows_only_allowlisted_writes() {
+        let fixture = SeatbeltFixture::new("workspace");
+        let workspace = fixture.workspace("workspace");
+        let alias = fixture.0.join("alias");
+        std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+        let extra = fixture.workspace("extra");
+        let profile = mac::profile(&alias, std::slice::from_ref(&extra), &[], false, false);
+        fixture.run(
+            &alias,
+            &profile,
+            r#"printf ok > inside || exit 91
+                printf ok > "$2/output" || exit 92
+                if printf no > "$1"; then exit 93; fi"#,
+            &extra,
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("inside")).unwrap(),
+            "ok"
+        );
+        assert_eq!(std::fs::read_to_string(extra.join("output")).unwrap(), "ok");
+        assert!(!fixture.0.join("outside").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_seatbelt_sandbox_denies_reads_outside_allowlist() {
+        let fixture = SeatbeltFixture::new("strict");
+        let workspace = fixture.workspace("workspace");
+        let extra = fixture.workspace("extra");
+        let alias = fixture.0.join("alias");
+        std::os::unix::fs::symlink(&extra, &alias).unwrap();
+        std::fs::write(workspace.join("inside"), "inside\n").unwrap();
+        std::fs::write(extra.join("allowed"), "allowed\n").unwrap();
+        std::fs::write(fixture.0.join("outside"), "outside\n").unwrap();
+        let readable = [PathBuf::from("/bin"), alias.clone()];
+        let profile = mac::profile(&workspace, &[], &readable, true, false);
+        let stdout = fixture.run(
+            &workspace,
+            &profile,
+            r#"read -r inside < inside || exit 91
+                read -r allowed < "$2/allowed" || exit 92
+                if read -r outside < "$1"; then exit 93; fi
+                printf '%s %s\n' "$inside" "$allowed""#,
+            &alias,
+        );
+        assert_eq!(stdout, "inside allowed\n");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_sandbox_escapes_quotes_and_backslashes_in_paths() {
+        let fixture = SeatbeltFixture::new("escaped-path");
+        let workspace = fixture.workspace("workspace\"quoted");
+        let extra = fixture.workspace("extra\\backslash");
+        let profile = mac::profile(&workspace, std::slice::from_ref(&extra), &[], false, false);
+        fixture.run(
+            &workspace,
+            &profile,
+            r#"printf ok > inside || exit 91
+                printf ok > "$2/output" || exit 92"#,
+            &extra,
+        );
+        assert!(workspace.join("inside").is_file());
+        assert!(extra.join("output").is_file());
     }
 
     #[cfg(target_os = "linux")]

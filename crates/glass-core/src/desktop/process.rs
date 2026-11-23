@@ -425,7 +425,7 @@ pub(super) fn environment_dependency_error(environment: Environment) -> Option<S
     #[cfg(not(target_os = "linux"))]
     {
         let _ = environment;
-        return Some("Managed desktop sessions are supported on Linux only".into());
+        Some("Managed desktop sessions are supported on Linux only".into())
     }
     #[cfg(target_os = "linux")]
     {
@@ -872,6 +872,7 @@ fn write_private_file_if_missing(path: &Path, contents: &str) -> Result<(), Stri
     }
 }
 
+#[cfg(target_os = "linux")]
 fn command_exists(program: &str) -> bool {
     std::env::split_paths(MANAGED_CHILD_PATH).any(|directory| directory.join(program).is_file())
 }

@@ -322,7 +322,7 @@ mod tests {
             }
             return;
         }
-        let mask = u32::from_str_radix(&std::env::var(MARKER).unwrap(), 8).unwrap();
+        let mask = libc::mode_t::from_str_radix(&std::env::var(MARKER).unwrap(), 8).unwrap();
         // SAFETY: this subprocess runs only this test, without other filesystem callers.
         unsafe {
             libc::umask(mask);

@@ -66,11 +66,29 @@ public actor GlassClient {
 
     // MARK: Threads and history
 
-    public func threads(offset: Int = 0, query: String = "", project: String = "") async throws(GlassError) -> ThreadPage {
+    public func threads(offset: Int = 0, query: String = "", project: String = "", archived: Bool? = nil) async throws(GlassError) -> ThreadPage {
         var items = [URLQueryItem(name: "offset", value: String(offset))]
         if !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
         if !project.isEmpty { items.append(URLQueryItem(name: "project", value: project)) }
+        if let archived { items.append(URLQueryItem(name: "archived", value: String(archived))) }
         return try await decode(ThreadPage.self, from: .get("/api/threads", query: items))
+    }
+
+    public enum ThreadChange: Sendable {
+        case pin(Bool), archive(Bool), rename(String), delete
+    }
+
+    public func updateThread(_ thread: ThreadSummary, _ change: ThreadChange) async throws(GlassError) {
+        let (action, value): (String, JSONValue) = switch change {
+        case .pin(let value): ("pin", .bool(value))
+        case .archive(let value): ("archive", .bool(value))
+        case .rename(let value): ("rename", .string(value))
+        case .delete: ("delete", .null)
+        }
+        var body = Self.threadBody(thread.id, thread.sourceRef)
+        body["action"] = .string(action)
+        body["value"] = value
+        _ = try await data(for: try Self.post("/api/thread-preferences", body))
     }
 
     public func newThread(workspace: String = "") async throws(GlassError) -> NewThread {
@@ -85,11 +103,13 @@ public actor GlassClient {
         try await decode(ThreadConnection.self, from: try Self.post("/api/close", Self.threadBody(id, sourceRef)))
     }
 
-    /// One 512 KiB history window ending at `before` (nil = newest).
+    /// One transcript page ending at the byte cursor (nil = newest).
     public func history(_ id: String, sourceRef: String? = nil, before: Int? = nil, compact: Bool = true) async throws(GlassError) -> HistoryPage {
         var items = Self.threadQuery(id, sourceRef)
         if let before { items.append(URLQueryItem(name: "before", value: String(before))) }
-        if compact { items.append(URLQueryItem(name: "compact", value: "1")) }
+        if compact {
+            items += [URLQueryItem(name: "compact", value: "1"), URLQueryItem(name: "view", value: "chat")]
+        }
         return try await decode(HistoryPage.self, from: .get("/api/history", query: items))
     }
 

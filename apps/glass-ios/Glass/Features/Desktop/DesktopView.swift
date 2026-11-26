@@ -245,7 +245,7 @@ struct DesktopView: View {
                 if status.youHaveControl { controlRow }
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Design.padding)
         .padding(.bottom, 6)
         .frame(maxWidth: 760)
     }
@@ -275,9 +275,9 @@ struct DesktopView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Design.padding)
         .padding(.vertical, 10)
-        .glassPanel(cornerRadius: 22)
+        .glassPanel()
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("desktop.state")
     }

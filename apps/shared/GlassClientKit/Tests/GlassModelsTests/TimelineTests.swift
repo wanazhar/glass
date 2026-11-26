@@ -61,6 +61,41 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         return try decode(HistoryPage.self, #"{"records":[\#(items)],"before":\#(before),"totalBytes":999}"#)
     }
 
+    @Test func reloadingAndPrependingPreservesTheLiveSegmentOrder() throws {
+        var live = Timeline()
+        live.apply(.turnStart(requestID: nil, text: "Check", alreadyRecorded: false))
+        live.apply(.reasoning(delta: "Check first"))
+        live.apply(.text(delta: "I’ll run a check."))
+        live.apply(.reasoning(delta: "Use a small command"))
+        live.apply(.tool(callID: "c1", name: "bash", command: "printf checked"))
+        live.apply(.toolEnd(callID: "c1", output: "checked", summary: "ok", truncated: false))
+        live.apply(.text(delta: "Final answer"))
+        live.apply(.done)
+
+        var reload = Timeline()
+        reload.replaceHistory(try Self.page([
+            (50, #"{"k":"tool","id":"c1","name":"bash","t":"checked","err":false}"#),
+            (60, #"{"k":"assistant","t":"Final answer"}"#),
+        ], before: 50))
+        reload.prependOlder(try Self.page([
+            (10, #"{"k":"user","t":"Check"}"#),
+            (12, #"{"k":"reasoning","t":"Check first"}"#),
+            (20, #"{"k":"assistant","t":"I’ll run a check.","streamSegment":true}"#),
+            (30, #"{"k":"reasoning","t":"Use a small command"}"#),
+            (40, #"{"k":"call","id":"c1","name":"bash","args":"{\"command\":\"printf checked\"}"}"#),
+        ], before: 0))
+
+        func withoutOffset(_ entry: TimelineEntry) -> TimelineEntry {
+            switch entry {
+            case .user(_, let text): .user(id: "", text: text)
+            case .reasoning(_, let text): .reasoning(id: "", text: text)
+            case .assistant(_, let text, let streaming): .assistant(id: "", text: text, streaming: streaming)
+            default: entry
+            }
+        }
+        #expect(reload.entries.map(withoutOffset) == live.entries.map(withoutOffset))
+    }
+
     @Test func historyRecordsMapToEntriesAndToolResultsMerge() throws {
         var timeline = Timeline()
         timeline.replaceHistory(try Self.page([

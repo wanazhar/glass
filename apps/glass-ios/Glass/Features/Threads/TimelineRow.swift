@@ -14,11 +14,7 @@ extension EnvironmentValues {
 
 struct TimelineRow: View {
     var entry: TimelineEntry
-    var liveReasoning = false
-    var reasoningExpansion: (Bool) -> Void = { _ in }
-    @Environment(\.openSavedActivity) private var openSavedActivity
     @Environment(\.messageAction) private var messageAction
-    @State private var reasoningExpanded = false
 
     @ViewBuilder
     private func actions(for kinds: [MessageAction]) -> some View {
@@ -39,9 +35,9 @@ struct TimelineRow: View {
                 Spacer(minLength: 48)
                 Text(text)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 18, style: .continuous))
+                    .padding(.horizontal, Design.corner)
+                    .padding(.vertical, Design.gap)
+                    .background(Design.surface, in: .rect(cornerRadius: Design.panel))
                     .contextMenu {
                         CopyButton(text: text)
                         actions(for: [.editInBranch, .branch, .quote])
@@ -49,69 +45,18 @@ struct TimelineRow: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("timeline.user")
-        case .assistant(_, let text, let streaming):
-            VStack(alignment: .leading, spacing: 6) {
-                MarkdownView(text: text)
-                if streaming {
-                    ProgressView().controlSize(.small)
+        case .assistant(_, let text, _):
+            MarkdownView(text: text)
+                .equatable()
+                .contextMenu {
+                    CopyButton(text: text)
+                    actions(for: [.quote, .branch])
                 }
-            }
-            .contextMenu {
-                CopyButton(text: text)
-                actions(for: [.quote, .branch])
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("timeline.assistant")
-        case .reasoning(_, let text):
-            DisclosureGroup(isExpanded: Binding(get: { reasoningExpanded }, set: { expanded in
-                reasoningExpansion(expanded)
-                reasoningExpanded = expanded
-            })) {
-                Text(text)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("timeline.reasoning.full")
-            } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Label("Reasoning", systemImage: "text.alignleft")
-                        .font(.footnote.weight(.medium))
-                    if liveReasoning && !reasoningExpanded {
-                        let preview = text.prefix(160)
-                        Text(verbatim: String(preview) + (preview.endIndex == text.endIndex ? "" : "…"))
-                            .font(.caption)
-                            .lineLimit(2)
-                            .accessibilityIdentifier("timeline.reasoning.preview")
-                    }
-                }
-                .foregroundStyle(Color(.secondaryLabel))
-            }
-            .tint(Color(.secondaryLabel))
-            .accessibilityIdentifier("timeline.reasoning")
-        case .tool(_, let name, let summary, let output, let failed):
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("timeline.assistant")
+        case .tool(_, let name, _, let output, let failed):
             if failed != true, let shared = SharedImage(name: name, output: output) {
                 SharedImageView(image: shared)
-            } else {
-                ToolCard(name: name, summary: summary, output: output, failed: failed)
-            }
-        case .notice(_, let text, let isError):
-            Label(text, systemImage: isError ? "exclamationmark.triangle.fill" : "info.circle")
-                .font(.footnote)
-                .foregroundStyle(isError ? .red : .secondary)
-        case .checklist(_, let tasks):
-            if !tasks.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("Checklist", systemImage: "checklist").font(.footnote.weight(.semibold))
-                    ForEach(Array(tasks.enumerated()), id: \.offset) { _, task in
-                        // Recorded snapshot; the live board is in the toolbar checklist.
-                        Label(task, systemImage: "circle").font(.footnote)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 12, style: .continuous))
             }
         case .image(_, _, let base64):
             if let data = Data(base64Encoded: base64), let image = UIImage(data: data) {
@@ -122,67 +67,8 @@ struct TimelineRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .accessibilityLabel("Thread attachment")
             }
-        case .largeRecord(_, let offset, let bytes):
-            Button {
-                openSavedActivity(offset)
-            } label: {
-                Label("Large activity · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)). Tap to read.",
-                      systemImage: "doc.text.magnifyingglass")
-                    .font(.footnote)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .accessibilityIdentifier("timeline.largeRecord")
-        }
-    }
-}
-
-private struct ToolCard: View {
-    var name: String
-    var summary: String
-    var output: String
-    var failed: Bool?
-    @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
-    @State private var expanded: Bool?
-
-    var body: some View {
-        DisclosureGroup(isExpanded: Binding { expanded ?? (density == .expanded) } set: { expanded = $0 }) {
-            if !output.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(output)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(.vertical, 6)
-                }
-                .frame(maxHeight: 280)
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .foregroundStyle(failed == true ? .red : failed == false ? .green : .secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(CommandLabel.title(name)).font(.footnote.weight(.semibold)).foregroundStyle(.primary)
-                    if !summary.isEmpty {
-                        Text(summary)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 12, style: .continuous))
-        .tint(.secondary)
-        .accessibilityIdentifier("timeline.tool")
-    }
-
-    private var symbol: String {
-        switch failed {
-        case .some(true): "xmark.octagon.fill"
-        case .some(false): "checkmark.circle.fill"
-        case .none: name == "bash" ? "terminal" : "wrench.and.screwdriver"
+        default:
+            EmptyView()
         }
     }
 }

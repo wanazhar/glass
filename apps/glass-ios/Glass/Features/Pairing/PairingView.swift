@@ -11,6 +11,9 @@ struct PairingView: View {
         @Bindable var model = model
         NavigationStack {
             Form {
+                GlassLogo(launchRipple: true)
+                    .padding(.leading, -Design.padding)
+                    .listRowBackground(Color.clear)
                 if let reason = model.repairReason {
                     Section {
                         Label {

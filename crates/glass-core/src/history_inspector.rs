@@ -106,7 +106,7 @@ pub fn handoff(session: &Session) -> Value {
                 failure = None;
             }
             Record::Meta(text) if text.starts_with("error:") => failure = Some(excerpt(text, 2048)),
-            Record::Assistant(text) => {
+            Record::Assistant(text) | Record::AssistantTail { text, .. } => {
                 answer = Some(excerpt(text, 8192));
                 failure = None;
             }

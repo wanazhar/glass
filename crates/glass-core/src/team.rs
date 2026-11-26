@@ -1334,7 +1334,8 @@ impl Hub {
                     .iter()
                     .rev()
                     .find_map(|record| {
-                        if let Record::Assistant(text) = record {
+                        if let Record::Assistant(text) | Record::AssistantTail { text, .. } = record
+                        {
                             Some(text.as_str())
                         } else {
                             None
@@ -1373,7 +1374,7 @@ impl Hub {
                 .iter()
                 .rev()
                 .find_map(|r| {
-                    if let Record::Assistant(s) = r {
+                    if let Record::Assistant(s) | Record::AssistantTail { text: s, .. } = r {
                         Some(s.clone())
                     } else {
                         None

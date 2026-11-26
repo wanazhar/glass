@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Renders assistant Markdown natively: prose, headings, nested and task lists, quotes, tables,
 /// `<details>` sections, inline and display math, images, and fenced code.
-struct MarkdownView: View {
+struct MarkdownView: View, Equatable {
     var text: String
 
     enum ListMarker: Hashable {
@@ -27,9 +27,43 @@ struct MarkdownView: View {
         case image(alt: String, url: String)
     }
 
+    private final class ParsedBlocks {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+
+    private final class InlineText {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    private static let inlineCache: NSCache<NSString, InlineText> = {
+        let cache = NSCache<NSString, InlineText>()
+        cache.totalCostLimit = 2 * 1024 * 1024
+        cache.countLimit = 1024
+        return cache
+    }()
+
+    private static let blockCache: NSCache<NSString, ParsedBlocks> = {
+        let cache = NSCache<NSString, ParsedBlocks>()
+        cache.totalCostLimit = 4 * 1024 * 1024
+        cache.countLimit = 256
+        return cache
+    }()
+
+    nonisolated static func == (left: Self, right: Self) -> Bool { left.text == right.text }
+
+    private var parsedBlocks: [Block] {
+        let key = text as NSString
+        if let cached = Self.blockCache.object(forKey: key) { return cached.blocks }
+        let blocks = Self.blocks(text)
+        Self.blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
+        return blocks
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
+        VStack(alignment: .leading, spacing: Design.gap) {
+            ForEach(Array(parsedBlocks.enumerated()), id: \.offset) { _, block in
                 BlockView(block: block)
             }
         }
@@ -41,6 +75,8 @@ struct MarkdownView: View {
     /// Inline Markdown with `$…$` and `\(…\)` math drawn as Unicode, and inline images removed
     /// (generated images are shown by the tool that made them).
     static func inline(_ value: String) -> AttributedString {
+        let key = value as NSString
+        if let cached = inlineCache.object(forKey: key) { return cached.value }
         var result = AttributedString()
         for segment in InlineMath.split(stripImages(value)) {
             switch segment {
@@ -52,6 +88,7 @@ struct MarkdownView: View {
                 result += math
             }
         }
+        inlineCache.setObject(InlineText(result), forKey: key, cost: value.utf8.count * 3)
         return result
     }
 
@@ -343,6 +380,7 @@ private struct BlockView: View {
         case .table(let header, let alignments, let rows):
             DataTable(header: header.map { MarkdownView.inline($0) }, alignments: alignments,
                       rows: rows.map { $0.map { MarkdownView.inline($0) } })
+                .equatable()
                 .accessibilityIdentifier("markdown.table")
         case .details(let summary, let body):
             DetailsBlock(summary: summary, content: body)
@@ -415,13 +453,17 @@ private struct DetailsBlock: View {
     }
 }
 
-struct DataTable: View {
+struct DataTable: View, Equatable {
     var header: [AttributedString]
     var alignments: [MarkdownView.ColumnAlignment] = []
     var rows: [[AttributedString]]
     @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 148.0
     @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
     @State private var viewportWidth = 0.0
+
+    nonisolated static func == (left: Self, right: Self) -> Bool {
+        left.header == right.header && left.alignments == right.alignments && left.rows == right.rows
+    }
 
     private var columnWidth: CGFloat {
         min(maximumColumnWidth, max(minimumColumnWidth, viewportWidth / CGFloat(max(1, header.count))))
@@ -712,13 +754,14 @@ struct CodeBlock: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
                     .font(.system(.footnote, design: .monospaced))
+                    .fixedSize(horizontal: true, vertical: false)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, Design.corner)
                     .padding(.bottom, 12)
                     .padding(.top, 4)
             }
         }
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Design.surface, in: .rect(cornerRadius: Design.corner))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("timeline.code")
     }

@@ -5,6 +5,63 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ThreadPreferences {
+    pub title: Option<String>,
+    pub pinned: bool,
+    pub archived: bool,
+    pub deleted: bool,
+}
+
+pub(crate) fn thread_preferences(path: &Path) -> ThreadPreferences {
+    crate::requests::bounded(&path.with_extension("thread.json"), 4096)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn update_thread(path: &Path, change: &Value) -> Result<Value, String> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _lock = LOCK
+        .lock()
+        .map_err(|_| "Conversation metadata is unavailable")?;
+    let mut preferences = thread_preferences(path);
+    if preferences.deleted {
+        return Err("Conversation was deleted".into());
+    }
+    let _writer = if change["action"] == "delete" {
+        Some(
+            crate::session::acquire_writer_lock(path)
+                .map_err(|_| "Close the conversation on the host before deleting it")?,
+        )
+    } else {
+        None
+    };
+    match change["action"].as_str() {
+        Some("pin") => preferences.pinned = change["value"].as_bool().ok_or("Missing pin state")?,
+        Some("archive") => {
+            preferences.archived = change["value"].as_bool().ok_or("Missing archive state")?
+        }
+        Some("rename") => {
+            let title = change["value"].as_str().ok_or("Missing title")?.trim();
+            if title.is_empty() || title.len() > 256 || title.chars().any(char::is_control) {
+                return Err("Enter a title between 1 and 256 bytes on one line".into());
+            }
+            preferences.title = Some(title.into());
+        }
+        Some("delete") => {
+            preferences.deleted = true;
+        }
+        _ => return Err("Unknown conversation action".into()),
+    }
+    crate::auth::secure_write(
+        &path.with_extension("thread.json"),
+        &serde_json::to_vec(&preferences).map_err(|e| e.to_string())?,
+    )?;
+    Ok(json!({"updated":true}))
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Receipt {
@@ -128,18 +185,22 @@ pub fn record(
     save(session, &r)
 }
 pub fn inspect(workspace: &Path) -> Value {
-    inspect_page(workspace, 0, false, "", "", "", "")
+    inspect_page(workspace, 0, false, "", "", "", "", None)
 }
-pub fn inspect_web(
+pub(crate) fn inspect_web(
     workspace: &Path,
     offset: usize,
     query: &str,
     project: &str,
     id: &str,
     source_ref: &str,
+    archived: Option<bool>,
 ) -> Value {
-    inspect_page(workspace, offset, true, query, project, id, source_ref)
+    inspect_page(
+        workspace, offset, true, query, project, id, source_ref, archived,
+    )
 }
+#[allow(clippy::too_many_arguments)]
 fn inspect_page(
     workspace: &Path,
     offset: usize,
@@ -148,6 +209,7 @@ fn inspect_page(
     project: &str,
     id: &str,
     source_ref: &str,
+    archived: Option<bool>,
 ) -> Value {
     let indexed = if unassigned {
         crate::resume_picker::all_for_web(&config::data_dir(), workspace)
@@ -162,10 +224,11 @@ fn inspect_page(
             .or_default() += 1;
     }
     let query = query.to_lowercase();
-    let indexed = indexed
+    let mut indexed = indexed
         .into_iter()
         .filter(|thread| {
-            (id.is_empty() || thread.id == id)
+            archived.is_none_or(|archived| thread.preferences.archived == archived)
+                && (id.is_empty() || thread.id == id)
                 && (source_ref.is_empty() || thread.path.to_string_lossy() == source_ref)
                 && (project.is_empty()
                     || (project == "@unassigned" && thread.workspace.as_os_str().is_empty())
@@ -182,10 +245,14 @@ fn inspect_page(
                 })
         })
         .collect::<Vec<_>>();
+    if archived.is_some() {
+        indexed.sort_by_key(|thread| !thread.preferences.pinned);
+    }
     let total = indexed.len();
     let offset = offset.min(total);
-    let omitted = total.saturating_sub(offset + 512);
-    let rows = indexed.into_iter().skip(offset).take(512).map(|thread| {
+    let limit = if archived.is_some() { 48 } else { 512 };
+    let omitted = total.saturating_sub(offset + limit);
+    let rows = indexed.into_iter().skip(offset).take(limit).map(|thread| {
         let r = load(&thread.id);
         use std::os::unix::fs::FileTypeExt;
         let live = std::fs::symlink_metadata(config::data_dir().join(format!("serve-{}.sock",thread.id)))
@@ -203,7 +270,10 @@ fn inspect_page(
             Some("gc") => "Created in GC",
             _ => "Unknown origin",
         };
+        let modified_epoch = thread.stamp.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|time| time.as_secs_f64());
+        let snippet = archived.and_then(|_| crate::connect::last_message(&thread.path));
         json!({"session":thread.id,"title":thread.title,"workspace":thread.workspace,
+            "pinned":thread.preferences.pinned,"archived":thread.preferences.archived,"snippet":snippet,"modified_epoch":modified_epoch,
             "sourceRef":thread.path,"origin":origin,"originLabel":origin_label,
             "writerActive":session_writer_active(&thread.path),
             "modified":thread.modified,"model":r.model,"branch":r.branch,"last_status":status,
@@ -214,7 +284,7 @@ fn inspect_page(
             "teammates_in_this_process":team,"parent":r.parent,"fork_turn":r.fork_turn,
             "current_workspace":thread.workspace==workspace,"workspace_assigned":!thread.workspace.as_os_str().is_empty(),"workspace_available":thread.workspace.is_dir()})
     }).collect::<Vec<_>>();
-    json!({"threads":rows,"limit":512,"offset":offset,"total_threads":total,"machine_total":machine_total,"projects":projects.into_iter().map(|(workspace,count)|json!({"workspace":workspace,"count":count})).collect::<Vec<_>>(),"next_offset":if omitted>0 {Some(offset+512)}else{None},"omitted_threads":omitted,"branch_families_complete":offset==0&&omitted==0,"history_loaded":false})
+    json!({"threads":rows,"limit":limit,"offset":offset,"total_threads":total,"machine_total":machine_total,"projects":projects.into_iter().map(|(workspace,count)|json!({"workspace":workspace,"count":count})).collect::<Vec<_>>(),"next_offset":if omitted>0 {Some(offset+limit)}else{None},"omitted_threads":omitted,"branch_families_complete":offset==0&&omitted==0,"history_loaded":false})
 }
 fn family(all: &[Value], session: &str) -> BTreeSet<String> {
     let mut edges: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();

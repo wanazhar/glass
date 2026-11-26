@@ -25,7 +25,9 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
     for record in records {
         match record {
             Record::User(text) => section(&mut out, "User", text),
-            Record::Assistant(text) => section(&mut out, "Assistant", text),
+            Record::Assistant(text) | Record::AssistantTail { text, .. } => {
+                section(&mut out, "Assistant", text)
+            }
             Record::Reasoning(text) => {
                 if thinking {
                     out.push_str("<details><summary>reasoning</summary>\n\n");

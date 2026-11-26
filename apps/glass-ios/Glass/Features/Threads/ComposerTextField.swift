@@ -113,8 +113,7 @@ final class ComposerTextView: UITextView {
         ])
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    required init?(coder: NSCoder) { return nil }
 
     override var keyCommands: [UIKeyCommand]? {
         guard onCommands != nil else { return super.keyCommands }

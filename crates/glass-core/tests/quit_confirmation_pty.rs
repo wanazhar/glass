@@ -169,7 +169,20 @@ impl PtySession {
                 Instant::now() < deadline,
                 "glass-core did not exit after confirmation"
             );
-            std::thread::sleep(Duration::from_millis(25));
+            // Keep draining the terminal while the child restores it and renders
+            // its final frame. Otherwise small PTY buffers can block the exit.
+            let mut fd = libc::pollfd {
+                fd: self.master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: fd points to one valid pollfd for the duration of poll.
+            if unsafe { libc::poll(&mut fd, 1, 25) } > 0 && fd.revents & libc::POLLIN != 0 {
+                let mut bytes = [0u8; 4096];
+                if let Ok(count) = self.master.read(&mut bytes) {
+                    self.output.extend_from_slice(&bytes[..count]);
+                }
+            }
         }
     }
 }

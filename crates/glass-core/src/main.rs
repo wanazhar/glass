@@ -1712,7 +1712,7 @@ fn headless(
             let partial = session.records[start..]
                 .iter()
                 .filter_map(|r| {
-                    if let Record::Assistant(t) = r {
+                    if let Record::Assistant(t) | Record::AssistantTail { text: t, .. } = r {
                         Some(t.as_str())
                     } else {
                         None

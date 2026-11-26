@@ -1238,6 +1238,9 @@ fn thread_path(id: &str) -> Result<PathBuf, String> {
     if path.parent() != Some(root.as_path()) {
         return Err("Thread path escapes storage".into());
     }
+    if crate::navigation::thread_preferences(&path).deleted {
+        return Err("Conversation was deleted".into());
+    }
     Ok(path)
 }
 fn shared_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, String> {
@@ -1306,6 +1309,9 @@ fn shared_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, 
     }
     if metadata.workspace.as_os_str().is_empty() {
         return Err("Shared session belongs to another project".into());
+    }
+    if crate::navigation::thread_preferences(&path).deleted {
+        return Err("Conversation was deleted".into());
     }
     Ok(path)
 }
@@ -1776,6 +1782,201 @@ fn secret_submission_allowed(
         && owner_capability_enabled
         && same_origin_https_mutation(settings, r)
 }
+/// The mobile transcript walks complete lines from the cursor backwards. A
+/// short page should not deserialize or serialize an entire byte window.
+pub(crate) fn chat_history(path: &Path, before: usize) -> Result<Value, String> {
+    const CHUNK: usize = 16 * 1024;
+    const INLINE_LINE: usize = 512 * 1024;
+    const PAGE_BYTES: usize = 96 * 1024;
+    const PAGE_RECORDS: usize = 40;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let length =
+        usize::try_from(file.metadata().map_err(|e| e.to_string())?.len()).unwrap_or(usize::MAX);
+    let end = length.min(before);
+    let floor = end.saturating_sub(17 * 1024 * 1024);
+    let mut chunk_end = end;
+    let mut line_end = end;
+    let mut reversed = Vec::new();
+    let mut terminated = false;
+    let mut records = VecDeque::new();
+    let mut omitted = VecDeque::new();
+    let mut bytes = 0;
+    let mut cursor = end;
+
+    let mut visit = |start: usize, end: usize, line: &mut Vec<u8>| -> Result<bool, String> {
+        let len = end - start;
+        if len > INLINE_LINE {
+            if crate::reasoning::private_at(path, start as u64)? {
+                return Ok(true);
+            }
+            if records.len() + omitted.len() >= PAGE_RECORDS {
+                return Ok(false);
+            }
+            omitted
+                .push_front(json!({"recordOffset":start,"bytes":len,"readable":len<=8*1024*1024}));
+        } else {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                return Ok(true);
+            }
+            line.reverse();
+            let record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
+            let Some(item) = chat_history_item(start, record) else {
+                return Ok(true);
+            };
+            // Short lines use their on-disk size. Large tool previews have
+            // already been reduced, so their raw byte count would dominate.
+            let size = if len <= 2048 {
+                len
+            } else {
+                serde_json::to_vec(&item).map_err(|e| e.to_string())?.len()
+            };
+            if records.len() + omitted.len() >= PAGE_RECORDS
+                || (!records.is_empty() && bytes + size > PAGE_BYTES)
+            {
+                return Ok(false);
+            }
+            bytes += size;
+            records.push_front(item);
+        }
+        Ok(true)
+    };
+
+    let mut chunk = [0; CHUNK];
+    'scan: while chunk_end > floor {
+        let start = chunk_end.saturating_sub(CHUNK).max(floor);
+        let chunk = &mut chunk[..chunk_end - start];
+        file.seek(SeekFrom::Start(start as u64))
+            .map_err(|e| e.to_string())?;
+        file.read_exact(chunk).map_err(|e| e.to_string())?;
+        for (index, byte) in chunk.iter().enumerate().rev() {
+            if *byte == b'\n' {
+                let boundary = start + index + 1;
+                if terminated {
+                    if !visit(boundary, line_end, &mut reversed)? {
+                        break 'scan;
+                    }
+                    cursor = boundary;
+                }
+                line_end = boundary;
+                terminated = true;
+                reversed.clear();
+            } else if terminated && reversed.len() < INLINE_LINE {
+                reversed.push(*byte);
+            }
+        }
+        chunk_end = start;
+        if start == 0 {
+            if !terminated || visit(0, line_end, &mut reversed)? {
+                cursor = 0;
+            }
+        } else if start == floor {
+            cursor = line_end;
+        }
+    }
+    if cursor == end && end > 0 {
+        // A malformed oversized/incomplete line must still allow a caller
+        // to move backwards. The legacy bounded reader handles this case.
+        return history_path(path, end, true);
+    }
+    Ok(json!({"records":records,"omitted":omitted,"before":cursor,"totalBytes":length}))
+}
+
+pub(crate) fn last_message(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let end = file.metadata().ok()?.len();
+    let start = end.saturating_sub(32 * 1024);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(end - start).read_to_end(&mut bytes).ok()?;
+    let mut lines = bytes.split(|byte| *byte == b'\n').peekable();
+    if start > 0 {
+        lines.next();
+    }
+    let complete = bytes.last() == Some(&b'\n');
+    let mut message = None;
+    while let Some(line) = lines.next() {
+        if !complete && lines.peek().is_none() {
+            break;
+        }
+        if let Some(record) = serde_json::from_slice::<Value>(line).ok()
+            && matches!(record["k"].as_str(), Some("user" | "assistant"))
+            && let Some(text) = record["t"].as_str()
+        {
+            let snippet = glass_tui::markdown::sanitize(text)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !snippet.is_empty() {
+                message = Some(snippet.chars().take(160).collect());
+            }
+        }
+    }
+    message
+}
+
+fn chat_history_item(index: usize, mut record: Value) -> Option<Value> {
+    let output = match record["k"].as_str()? {
+        "custom" if record["c"] == "display/assistant" => {
+            record = json!({"k":"assistant","t":record["d"].as_str()?,"streamSegment":true});
+            None
+        }
+        "custom"
+            if matches!(
+                record["c"].as_str(),
+                Some("state/todo" | "team/delivery" | "display/turn-seconds")
+            ) =>
+        {
+            None
+        }
+        "assistant" => {
+            if let Some(from) = record["displayFrom"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+            {
+                let tail = record["t"].as_str()?.get(from..)?;
+                if tail.is_empty() {
+                    return None;
+                }
+                record = json!({"k":"assistant","t":tail,"streamSegment":true});
+            }
+            None
+        }
+        "meta"
+            if record["t"].as_str().is_some_and(|text| {
+                ["error:", "failed:", "stopped:"]
+                    .iter()
+                    .any(|marker| text.contains(marker))
+            }) =>
+        {
+            None
+        }
+        "user" | "reasoning" | "call" | "tool_call" | "image" => None,
+        "tool" if record["name"] != "display_image" => Some("t"),
+        "tool" => None,
+        "bash" => Some("out"),
+        _ => return None,
+    };
+    let mut output_bytes = None;
+    if let Some(field) = output
+        && let Some(text) = record[field].as_str()
+        && text.len() > 1024
+    {
+        let size = text.len();
+        let mut limit = 1024;
+        while !text.is_char_boundary(limit) {
+            limit -= 1;
+        }
+        record[field] = json!(&text[..limit]);
+        output_bytes = Some(size);
+    }
+    let mut item = json!({"index":index,"record":record});
+    if let Some(size) = output_bytes {
+        item["previewTruncated"] = json!(true);
+        item["outputBytes"] = json!(size);
+    }
+    Some(item)
+}
+
 fn history_path(path: &std::path::Path, before: usize, compact: bool) -> Result<Value, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let length = file
@@ -1821,6 +2022,14 @@ fn history_path(path: &std::path::Path, before: usize, compact: bool) -> Result<
         let mut record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
         if crate::reasoning::private_value(&record) {
             continue;
+        }
+        if record["k"] == "custom" && record["c"] == "display/assistant"
+            || record["k"] == "assistant" && record.get("displayFrom").is_some()
+        {
+            let Some(item) = chat_history_item(index, record) else {
+                continue;
+            };
+            record = item["record"].clone();
         }
         if compact
             && !matches!(
@@ -1974,7 +2183,7 @@ fn activity_location(path: &Path, requested: usize) -> Result<Value, String> {
             if offset == requested {
                 return Ok(
                     json!({"recordOffset":offset,"record":ordinal,"turn":turn,"revision":match &record {
-                crate::session::Record::User(t)|crate::session::Record::Assistant(t)=>Some(crate::workspace::hash(t.as_bytes())),
+                crate::session::Record::User(t)|crate::session::Record::Assistant(t) | crate::session::Record::AssistantTail { text: t, .. }=>Some(crate::workspace::hash(t.as_bytes())),
                 crate::session::Record::ToolResult{body:t,..}|crate::session::Record::Bash{output:t,..}=>Some(crate::workspace::hash(t.as_bytes())),
                 _=>None}}),
                 );
@@ -2767,7 +2976,8 @@ fn handle_with_transport(
         )
         .map_err(|e| e.to_string());
     }
-    if (path.starts_with("/api/desktop/") || path == "/api/settings")
+    if (path.starts_with("/api/desktop/")
+        || matches!(path, "/api/settings" | "/api/thread-preferences"))
         && !same_origin_desktop_mutation(&app.settings, &r)
     {
         if path == "/api/settings" {
@@ -2776,7 +2986,11 @@ fn handle_with_transport(
         return json_response(
             &mut stream,
             403,
-            json!({"error":if path == "/api/settings" {"Settings changes require the same authenticated origin"}else{"Desktop actions require the same authenticated origin"}}),
+            json!({"error":match path {
+                "/api/settings" => "Settings changes require the same authenticated origin",
+                "/api/thread-preferences" => "Conversation changes require the same authenticated origin",
+                _ => "Desktop actions require the same authenticated origin",
+            }}),
         )
         .map_err(|e| e.to_string());
     }
@@ -3257,7 +3471,14 @@ fn handle_with_transport(
             query.get("project").map(String::as_str).unwrap_or(""),
             query.get("id").map(String::as_str).unwrap_or(""),
             query.get("sourceRef").map(String::as_str).unwrap_or(""),
+            query.get("archived").and_then(|value| value.parse().ok()),
         )),
+        ("POST", "/api/thread-preferences") => {
+            let request: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let id = request["id"].as_str().ok_or("Missing thread")?;
+            let path = readable_thread_path(&app, id, request["sourceRef"].as_str().unwrap_or(""))?;
+            crate::navigation::update_thread(&path, &request)
+        }
         ("GET", "/api/agents") => {
             let id = query.get("id").ok_or("Missing thread")?;
             let source_path = shared_thread_path(
@@ -3335,18 +3556,26 @@ fn handle_with_transport(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
         ),
-        ("GET", "/api/history") => history_path(
-            &readable_thread_path(
+        ("GET", "/api/history") => {
+            let path = readable_thread_path(
                 &app,
                 query.get("id").ok_or("Missing thread")?,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
-            )?,
-            query
+            )?;
+            let before = query
                 .get("before")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(usize::MAX),
-            query.get("compact").is_some_and(|value| value == "1"),
-        ),
+                .unwrap_or(usize::MAX);
+            if query.get("view").is_some_and(|view| view == "chat") {
+                chat_history(&path, before)
+            } else {
+                history_path(
+                    &path,
+                    before,
+                    query.get("compact").is_some_and(|value| value == "1"),
+                )
+            }
+        }
         ("GET", "/api/events") => {
             let id = query.get("id").ok_or("Missing thread")?;
             let source_ref = query.get("sourceRef").map(String::as_str).unwrap_or("");
@@ -4898,6 +5127,48 @@ mod regression {
             before = next;
         }
         assert_eq!(seen.len(), 1000);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn chat_history_pages_complete_records_and_keeps_full_tool_outputs_addressable() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-chat-pages-{}.jsonl",
+            crate::auth::random(8).unwrap()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        for i in 0..125 {
+            writeln!(file, "{}", json!({"k":"user","t":format!("message-{i}")})).unwrap();
+            writeln!(
+                file,
+                "{}",
+                json!({"k":"tool","name":"bash","id":format!("tool-{i}"),"t":"é".repeat(12000)})
+            )
+            .unwrap();
+        }
+        write!(file, "{{\"k\":\"user\",\"t\":\"incomplete").unwrap();
+        drop(file);
+        let mut before = usize::MAX;
+        let mut offset_set = std::collections::HashSet::new();
+        loop {
+            let page = chat_history(&path, before).unwrap();
+            let records = page["records"].as_array().unwrap();
+            assert!(records.len() <= 40);
+            for item in records {
+                assert!(offset_set.insert(item["index"].as_u64().unwrap()));
+                if item["record"]["k"] == "tool" {
+                    assert_eq!(item["outputBytes"], 24_000);
+                    assert_eq!(item["previewTruncated"], true);
+                    assert_eq!(item["record"]["t"].as_str().unwrap().len(), 1024);
+                }
+            }
+            let next = page["before"].as_u64().unwrap() as usize;
+            if next == 0 {
+                break;
+            }
+            assert!(next < before);
+            before = next;
+        }
+        assert_eq!(offset_set.len(), 250);
         std::fs::remove_file(path).unwrap();
     }
     #[test]

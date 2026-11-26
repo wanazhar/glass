@@ -6,20 +6,11 @@ struct ConversationView: View {
     var threads: ThreadsModel
     var goBack: () -> Void
     @Environment(\.scenePhase) private var scenePhase
-    /// The chat moves with a streaming reply until you touch it, and picks it up again after you've
-    /// left it alone for a few seconds or tap Latest.
     @State private var following = true
     @State private var atBottom = true
-    @State private var touching = false
-    @State private var lastTouch = ContinuousClock.now
-    @State private var resumeFollowing: Task<Void, Never>?
-    @State private var inspectingReasoning: String?
-    @State private var revealingReasoning: String?
-    @State private var expandedReasoning: Set<String> = []
-    @State private var firstReasoningBounds: HistoryBounds?
-    @State private var restoreHistoryBounds: HistoryBounds?
-    @State private var historyScroll = ScrollPosition()
-    @State private var historyTopInset: CGFloat = 0
+    @State private var historyScroll = ScrollPosition(idType: String.self)
+    @State private var showingInfo = false
+    @State private var activityDetail: ActivityDetail?
     @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
@@ -37,33 +28,13 @@ struct ConversationView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: Design.padding) {
                     if conversation.hasEarlier {
                         Button {
-                            revealingReasoning = nil
-                            Task {
-                                let first = conversation.timeline.entries.first
-                                let previous = firstReasoningBounds.flatMap { bounds in
-                                    bounds.entry == first && expandedReasoning.contains(bounds.entry.id) ? bounds : nil
-                                }
-                                restoreHistoryBounds = previous
-                                await conversation.loadOlder()
-                                guard let first else { return }
-                                let extended = previous != nil
-                                    && conversation.timeline.entries.contains { $0.id == first.id && $0 != first }
-                                if !extended {
-                                    restoreHistoryBounds = nil
-                                    proxy.scrollTo(first.id, anchor: .top)
-                                } else if restoreHistoryBounds != nil {
-                                    if let bounds = firstReasoningBounds, bounds.entry.id == first.id, bounds.entry != first {
-                                        restoreReasoningPosition(bounds)
-                                    } else {
-                                        proxy.scrollTo(first.id, anchor: .top)
-                                    }
-                                }
-                            }
+                            Task { await conversation.loadOlder() }
                         } label: {
-                            if conversation.loadingOlder { ProgressView() } else { Label("Earlier messages", systemImage: "arrow.up.circle") }
+                            if conversation.loadingOlder { ProgressView() }
+                            else { Label("Earlier messages", systemImage: "arrow.up") }
                         }
                         .glassButtonStyle()
                         .frame(maxWidth: .infinity)
@@ -72,64 +43,29 @@ struct ConversationView: View {
                     if conversation.loadedHistory, conversation.timeline.isEmpty {
                         emptyState
                     }
-                    ForEach(conversation.timeline.entries) { entry in
-                        TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID) { expanded in
-                            if expanded { expandedReasoning.insert(entry.id) } else { expandedReasoning.remove(entry.id) }
-                            if expanded {
-                                resumeFollowing?.cancel()
-                                inspectingReasoning = entry.id
-                                following = false
-                                revealingReasoning = entry.id
-                            } else if inspectingReasoning == entry.id {
-                                inspectingReasoning = nil
-                                revealingReasoning = nil
-                                lastTouch = .now
-                                if atBottom { following = true } else { scheduleResume(proxy) }
+                    ForEach(rows) { row in
+                        switch row {
+                        case .message(let entry): TimelineRow(entry: entry)
+                        case .work(let group):
+                            WorkRow(group: group) { detail in
+                                activityDetail = detail
                             }
                         }
-                        .background {
-                            if revealingReasoning == entry.id {
-                                Color.clear.onGeometryChange(for: ReasoningPosition.self) {
-                                    ReasoningPosition(
-                                        contentTop: $0.frame(in: .named(Self.historyContent)).minY,
-                                        viewportTop: $0.frame(in: .scrollView(axis: .vertical)).minY
-                                    )
-                                } action: { position in
-                                    guard revealingReasoning == entry.id,
-                                          abs(position.viewportTop - historyTopInset) > 2 else { return }
-                                    historyScroll.scrollTo(y: position.contentTop)
-                                }
-                            }
-                            if case .reasoning = entry, entry.id == conversation.timeline.entries.first?.id
-                                || entry.id == restoreHistoryBounds?.entry.id {
-                                Color.clear.onGeometryChange(for: HistoryBounds.self) { geometry in
-                                    HistoryBounds(entry: entry, viewportBottom: geometry.frame(in: .scrollView(axis: .vertical)).maxY,
-                                                  contentBottom: geometry.frame(in: .named(Self.historyContent)).maxY)
-                                } action: { bounds in
-                                    firstReasoningBounds = bounds
-                                    restoreReasoningPosition(bounds)
-                                }
-                            }
+                    }
+                    Color.clear.frame(height: 1)
+                        .id(Self.bottom)
+                        .onScrollVisibilityChange(threshold: 0.01) { bottom in
+                            atBottom = bottom
+                            if bottom { following = true }
                         }
-                        .id(entry.id)
-                    }
-                    if let working = workingLabel {
-                        WorkingBubble(label: working).id("timeline.working")
-                    }
-                    Color.clear.frame(height: 1).id(Self.bottom)
-                    // A lazy stack's content size is only an estimate, so "at the bottom" means this
-                    // strip covering the last 80 points is on screen.
-                    Color.clear.frame(height: 80).padding(.top, -96)
-                        .onScrollVisibilityChange(threshold: 0.01) { reachedBottom($0) }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(maxWidth: 760)
+                .scrollTargetLayout()
+                .padding(.horizontal, Design.padding)
+                .padding(.vertical, Design.gap)
+                .frame(maxWidth: Design.readingWidth)
                 .frame(maxWidth: .infinity)
-                .coordinateSpace(name: Self.historyContent)
             }
             .scrollPosition($historyScroll)
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, inset in historyTopInset = inset }
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             .softTopScrollEdge()
@@ -137,66 +73,38 @@ struct ConversationView: View {
             .onScrollPhaseChange { _, phase in
                 dragging = phase == .interacting
                 if !dragging { dragStartOffset = nil }
-                switch phase {
-                case .tracking, .interacting:
-                    touching = true
-                    following = false
-                    revealingReasoning = nil
-                    resumeFollowing?.cancel()
-                case .idle where touching:
-                    touching = false
-                    lastTouch = .now
-                    if atBottom {
-                        inspectingReasoning = nil
-                        following = true
-                    } else {
-                        scheduleResume(proxy)
-                    }
-                default: break
-                }
+                if phase == .interacting { following = false }
+                if phase == .idle, atBottom { following = true }
             }
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
-                // Pulling the chat down to read back puts the keyboard away, as in Messages.
                 guard dragging, keyboardShown else { return }
                 let start = dragStartOffset ?? offset
                 dragStartOffset = start
                 if start - offset > 16 { hideKeyboard() }
             }
             .onChange(of: conversation.timeline.interaction?.id) { _, id in
-                guard id != nil else { return }
-                inspectingReasoning = nil
-                revealingReasoning = nil
-                following = true
-                Task {
-                    try? await Task.sleep(for: .milliseconds(400))
-                    proxy.scrollTo(Self.bottom, anchor: .bottom)
-                }
+                if id != nil { resume(proxy) }
             }
-            .onChange(of: conversation.timeline.entries) { old, new in
-                if following {
-                    // Text growing in place stays pinned by the bottom size-change anchor; jumping on
-                    // every delta would fight a finger that is just landing on the chat.
-                    if new.count != old.count { pinToBottom(proxy) } else if !touching, !atBottom { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-                } else if inspectingReasoning == nil, !touching, conversation.timeline.isActive,
-                          ContinuousClock.now - lastTouch >= Self.resumeAfter {
-                    resume(proxy)
-                }
+            .onChange(of: rows.last?.id) { _, _ in
+                if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
             .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
             .floatingBar(edge: .top) { header }
-            .floatingBar {
-                bottomBar(proxy)
-                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { _, _ in
-                        guard following else { return }
-                        proxy.scrollTo(Self.bottom, anchor: .bottom)
-                    }
-            }
+            .floatingBar { bottomBar(proxy) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation")
         .accessibilityValue("\(conversation.timeline.entries.count) entries\(conversation.hasEarlier ? ", earlier available" : "")")
         .toolbarVisibility(.hidden, for: .navigationBar)
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
+        .sheet(isPresented: $showingInfo) { threadInfo }
+        .sheet(item: $activityDetail) { detail in
+            if let offset = conversation.timeline.savedOutputs[detail.id] {
+                SavedActivityView(conversation: conversation, record: offset, title: detail.title)
+            } else {
+                ActivityDetailView(detail: detail)
+            }
+        }
         .sheet(isPresented: $showingDetails) { DetailsView(conversation: conversation) }
         .sheet(item: $savedRecord) { SavedActivityView(conversation: conversation, record: $0.id) }
         .environment(\.openSavedActivity) { savedRecord = SavedRecord(id: $0) }
@@ -266,12 +174,10 @@ struct ConversationView: View {
     private static let bottom = "timeline.bottom"
 
     private var emptyState: some View {
-        Text("No messages yet. Messages sent from the web UI or the host appear here as they arrive.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 24)
-            .accessibilityIdentifier("conversation.empty")
+        NewChatView { suggestion in
+            conversation.composer.text = suggestion
+        }
+        .accessibilityIdentifier("conversation.empty")
     }
 
     @ViewBuilder
@@ -310,7 +216,19 @@ struct ConversationView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("conversation.notice")
             }
-            ComposerView(conversation: conversation)
+            if conversation.timeline.isActive {
+                HStack {
+                    Text("Working…").font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Stop", systemImage: "stop.fill") { Task { await conversation.composer.stop() } }
+                        .font(.footnote)
+                        .keyCommand(.stop)
+                        .disabled(!conversation.canWrite)
+                        .accessibilityIdentifier("composer.stop")
+                }
+                .padding(.horizontal, Design.gap)
+            }
+            ComposerView(conversation: conversation) { picker = .model }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
@@ -327,7 +245,7 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.checklist")
             }
             if !following, !atBottom {
-                Button("Latest", systemImage: "arrow.down") { resume(proxy) }
+                Button("Jump to latest", systemImage: "arrow.down") { resume(proxy) }
                     .glassButtonStyle()
                     .accessibilityIdentifier("conversation.latest")
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
@@ -344,68 +262,9 @@ struct ConversationView: View {
         .animation(.easeOut(duration: 0.2), value: following || atBottom)
     }
 
-    private static var resumeAfter: Duration {
-        let seconds = UserDefaults.standard.double(forKey: "GlassFollowResumeSeconds")
-        return .seconds(seconds > 0 ? seconds : 3)
-    }
-
-    private static let historyContent = "conversation.historyContent"
-
-    private struct ReasoningPosition: Equatable {
-        let contentTop: CGFloat
-        let viewportTop: CGFloat
-    }
-
-    private struct HistoryBounds: Equatable {
-        let entry: TimelineEntry
-        let viewportBottom: CGFloat
-        let contentBottom: CGFloat
-    }
-
-    private func restoreReasoningPosition(_ bounds: HistoryBounds) {
-        guard let previous = restoreHistoryBounds, previous.entry.id == bounds.entry.id,
-              previous.entry != bounds.entry else { return }
-        restoreHistoryBounds = nil
-        // A page can add text inside this row, so pin its unchanged trailing edge rather than its top.
-        historyScroll.scrollTo(y: bounds.contentBottom - previous.viewportBottom + historyTopInset)
-    }
-
-    private func scheduleResume(_ proxy: ScrollViewProxy) {
-        resumeFollowing?.cancel()
-        resumeFollowing = Task {
-            try? await Task.sleep(for: Self.resumeAfter)
-            guard !Task.isCancelled, inspectingReasoning == nil, !touching, conversation.timeline.isActive else { return }
-            resume(proxy)
-        }
-    }
-
-    /// Lazy rows below the fold only get their real height once laid out, so one jump can land short of
-    /// the end. Jump again as they settle, unless you've touched the chat since.
-    private func pinToBottom(_ proxy: ScrollViewProxy) {
-        guard !touching else { return }
-        proxy.scrollTo(Self.bottom, anchor: .bottom)
-        Task {
-            for delay in [100, 400] {
-                try? await Task.sleep(for: .milliseconds(delay))
-                guard following, !touching, !atBottom else { return }
-                proxy.scrollTo(Self.bottom, anchor: .bottom)
-            }
-        }
-    }
-
-    private func reachedBottom(_ bottom: Bool) {
-        atBottom = bottom
-        if bottom {
-            if inspectingReasoning == nil, !touching { following = true }
-        }
-    }
-
     private func resume(_ proxy: ScrollViewProxy) {
-        resumeFollowing?.cancel()
-        inspectingReasoning = nil
-        revealingReasoning = nil
         following = true
-        withAnimation(.smooth(duration: 0.35)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+        withAnimation(.smooth(duration: 0.3)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
     }
 
     private var secretsBlocked: String? {
@@ -419,147 +278,51 @@ struct ConversationView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Button(action: goBack) {
-                headerIcon("chevron.backward")
-            }
-            .accessibilityLabel("Back to conversations")
-            .accessibilityIdentifier("conversation.back")
-            .floatingGlass()
-
-            titleView
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .floatingGlass()
-                .layoutPriority(1)
-
-            HStack(spacing: 0) {
-                Button {
-                    conversation.composer.showingCommands = true
-                } label: {
-                    headerIcon("command")
+        GlassGroup {
+            HStack(spacing: Design.gap) {
+                Button("Conversations", systemImage: "sidebar.left", action: goBack)
+                    .labelStyle(.iconOnly)
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.back")
+                Button { showingInfo = true } label: {
+                    Text(threads.thread(conversation.thread.id)?.displayTitle ?? conversation.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: Design.control)
                 }
-                .accessibilityLabel("Commands")
-                .accessibilityIdentifier("conversation.commands")
-                headerMenu
+                .buttonStyle(.plain)
+                .floatingGlass()
+                .accessibilityIdentifier("conversation.connection")
+                Button("New Chat", systemImage: "square.and.pencil") {
+                    Task { await threads.newThread() }
+                }
+                .labelStyle(.iconOnly)
+                .glassButtonStyle()
+                .accessibilityIdentifier("conversation.new")
             }
-            .floatingGlass()
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
-        .frame(maxWidth: 760)
+        .padding(.horizontal, Design.padding)
+        .padding(.vertical, Design.small)
+        .frame(maxWidth: Design.readingWidth)
         .frame(maxWidth: .infinity)
     }
 
-    private func headerIcon(_ icon: String) -> some View {
-        Image(systemName: icon)
-            .font(.body.weight(.semibold))
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-    }
-
-    private var headerMenu: some View {
-        Menu {
-            if let workspace = conversation.thread.workspace, !workspace.isEmpty {
-                Section(workspace) {}
-            }
-            Button("Details", systemImage: "info.circle") { showingDetails = true }
-                .accessibilityIdentifier("conversation.details")
-            Button("Model…", systemImage: "cpu") { picker = .model }
-                .disabled(!conversation.canWrite)
-                .accessibilityIdentifier("conversation.model")
-            Button("Permissions…", systemImage: "slider.horizontal.3") { picker = .profiles }
-                .disabled(!conversation.canWrite)
-                .accessibilityIdentifier("conversation.profile")
-            if !conversation.composer.checklist.isEmpty {
-                Button("Checklist", systemImage: "checklist") { showingChecklist = true }
-            }
-            if conversation.canWrite {
-                Button("Release control", systemImage: "hand.raised") { Task { await conversation.composer.releaseControl() } }
-                    .accessibilityIdentifier("conversation.releaseControl")
-            }
-            Button("Close conversation", systemImage: "xmark.circle") {
-                Task { await threads.close(conversation.thread.id) }
-            }
-            .accessibilityIdentifier("conversation.close")
-        } label: {
-            headerIcon("ellipsis")
-        }
-        .accessibilityLabel("More")
-        .accessibilityIdentifier("conversation.menu")
-    }
-
-    private var titleView: some View {
-        let (title, tint): (String, Color) = switch conversation.connection {
-        case .live: ("Live", .green)
-        case .connecting, .idle: ("Connecting", .secondary)
-        case .reconnecting: ("Reconnecting", .orange)
-        case .readOnly: ("Read-only", .secondary)
-        }
-        let subtitle = conversation.connection == .live
-            ? conversation.composer.model ?? app.endpoint?.host
-            : title
-        return VStack(spacing: 1) {
-            HStack(spacing: 6) {
-                Circle().fill(tint).frame(width: 7, height: 7)
-                    .accessibilityHidden(true)
-                Text(conversation.title).font(.headline).lineLimit(1)
-            }
-            if let subtitle, !subtitle.isEmpty {
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel([conversation.title, conversation.connection == .live ? subtitle : nil].compactMap { $0 }.joined(separator: ", "))
-        .accessibilityValue("\(title), \(conversation.resets) resets\(conversation.lastReconnect.map { ", reconnect \($0) ms" } ?? "")")
-        .accessibilityIdentifier("conversation.connection")
-    }
-
-    /// Plain words for what Glass is doing, shown in the chat where the reply will appear.
-    private var workingLabel: String? {
-        let timeline = conversation.timeline
-        guard timeline.isActive, timeline.interaction == nil else { return nil }
-        if case .assistant(_, _, true)? = timeline.entries.last { return nil }
-        switch timeline.activity {
-        case "Reasoning": return "Glass is thinking"
-        case "Running command": return "Glass is running a command"
-        case let activity? where activity.hasPrefix("Using "): return "Glass is using " + activity.dropFirst(6)
-        default: return "Glass is working"
-        }
-    }
-}
-
-/// A small grey bubble with three softly pulsing dots, like someone typing in Messages.
-struct WorkingBubble: View {
-    var label: String
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        HStack(spacing: 10) {
-            TimelineView(.animation(minimumInterval: 0.05, paused: reduceMotion)) { context in
-                let phase = context.date.timeIntervalSinceReferenceDate
-                HStack(spacing: 5) {
-                    ForEach(0..<3) { dot in
-                        Circle()
-                            .fill(Color(.secondaryLabel))
-                            .frame(width: 7, height: 7)
-                            .opacity(reduceMotion ? 0.6 : 0.35 + 0.65 * max(0, sin((phase * 2.4 - Double(dot) * 0.5) * .pi)))
-                    }
+    private var threadInfo: some View {
+        ThreadInfoView(conversation: conversation, title: threads.thread(conversation.thread.id)?.displayTitle ?? conversation.title) { action in
+            showingInfo = false
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                switch action {
+                case .details: showingDetails = true
+                case .commands: conversation.composer.showingCommands = true
+                case .permissions: picker = .profiles
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(Color(.secondarySystemBackground), in: Capsule())
-            Text(label)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
-        .padding(.top, 2)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier("conversation.activity")
+    }
+
+    private var rows: [ChatRow] {
+        ChatRow.make(from: conversation.timeline)
     }
 }
 

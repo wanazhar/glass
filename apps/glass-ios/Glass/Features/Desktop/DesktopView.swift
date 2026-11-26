@@ -186,8 +186,10 @@ struct DesktopView: View {
                     if model.disconnected {
                         Button("Reconnect", systemImage: "arrow.clockwise") { model.reconnect() }
                             .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, Design.padding)
+                            .padding(.vertical, Design.gap)
+                            .frame(minWidth: Design.control, minHeight: Design.control)
+                            .contentShape(Rectangle())
                             .floatingGlass()
                             .accessibilityIdentifier("desktop.disconnected")
                     }
@@ -252,7 +254,7 @@ struct DesktopView: View {
         }
         .padding(.horizontal, Design.padding)
         .padding(.bottom, 6)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: Design.readingWidth)
     }
 
     private func statusPanel(_ status: DesktopStatus) -> some View {

@@ -14,16 +14,17 @@ actor DemoTransport: GlassHTTPTransport {
         var sequence: UInt64 = 1
     }
 
-    init() {
+    init(threadCount: Int = 336) {
         let subjects = ["Improve incremental sync", "Audit cache eviction", "Review deployment notes",
                         "Make search keyboard-friendly", "Clean up the release checklist", "Specify cursor behavior",
                         "Track intermittent test failures", "Measure export latency", "Update onboarding copy"]
         let scopes = ["Sync engine", "Project browser", "Settings", "Build tools", "Release", "Desktop"]
         let now = Date.now
-        threads = (0..<336).map { index in
+        threads = (0..<threadCount).map { index in
             let title = switch index {
             case 0: "Repair incremental sync"
             case 1: "Investigate the staging timeout"
+            case 3: "Review sync measurements"
             default: subjects[index % subjects.count] + " · " + scopes[(index / subjects.count) % scopes.count]
             }
             var row = ThreadSummary(session: "harbor-\(index)", title: title, workspace: "/Users/robin/Projects/Harbor",
@@ -64,6 +65,7 @@ actor DemoTransport: GlassHTTPTransport {
             case "harbor-0": Self.history
             case "harbor-1": [["k": "user", "t": "Check why staging stops responding after deployment."]]
             case "harbor-2": [["k": "assistant", "t": "[Deployment notes](docs/deployment.md)"]]
+            case "harbor-3": Self.measurements
             default: []
             }
             return try response(url, ["before": 0, "records": records.enumerated().map { ["index": $0.offset + 1, "record": $0.element] }])
@@ -177,6 +179,23 @@ actor DemoTransport: GlassHTTPTransport {
         (try JSONSerialization.data(withJSONObject: body),
          HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
     }
+
+    private static let measurements: [[String: any Sendable]] = [
+        ["k": "assistant", "t": #"""
+        ## Sync measurements
+
+        The expected cost is $\frac{c}{1-p}$ when each retry fails independently with probability $p$.
+
+        $$
+        \mathbb{E}[T] = \sum_{k=1}^{\infty} kc(1-p)p^{k-1} = \frac{c}{1-p}
+        $$
+        """#],
+        ["k": "assistant", "t": """
+        ```glass-ui
+        {"type":"chart","data":{"title":"Retries per run","kind":"pie","series":[{"points":[{"x":"Network","y":12.75},{"x":"Local cache","y":7.25}]}]}}
+        ```
+        """]
+    ]
 
     private static let history: [[String: any Sendable]] = [
         ["k": "user", "t": "Sync stalls when I reopen a project after the network drops. Can you find where we lose the cursor?"],

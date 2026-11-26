@@ -70,7 +70,7 @@ struct InteractionView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(Design.padding)
         .glassPanel(cornerRadius: 24)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("interaction")
@@ -97,7 +97,7 @@ struct InteractionView: View {
                             if let detail = option.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)

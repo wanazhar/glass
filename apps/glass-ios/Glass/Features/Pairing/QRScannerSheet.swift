@@ -15,7 +15,7 @@ struct QRScannerSheet: View {
                         .overlay(alignment: .bottom) {
                             Text("Point at the QR code from gc connect qr")
                                 .font(.subheadline)
-                                .padding(.horizontal, 16)
+                                .padding(.horizontal, Design.padding)
                                 .padding(.vertical, 10)
                                 .floatingGlass()
                                 .padding(.bottom, 32)

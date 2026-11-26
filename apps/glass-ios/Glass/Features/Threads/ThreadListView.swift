@@ -382,7 +382,7 @@ private struct ThreadRow: View {
                     Circle().fill(Design.accent).frame(width: 6, height: 6)
                         .accessibilityLabel("Running now")
                 }
-                Text(thread.displayTitle).font(.body).lineLimit(1)
+                Text(thread.displayTitle).font(Design.body).lineLimit(1)
                 Spacer(minLength: Design.gap)
                 if let date = thread.modifiedDate {
                     Text(date, format: .relative(presentation: .numeric, unitsStyle: .abbreviated))
@@ -393,5 +393,6 @@ private struct ThreadRow: View {
         }
         .accessibilityElement(children: .combine)
         .padding(.vertical, Design.small)
+        .frame(minHeight: Design.control)
     }
 }

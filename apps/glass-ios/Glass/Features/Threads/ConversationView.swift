@@ -194,7 +194,7 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func bottomBar(onFieldFocus: @escaping () -> Void) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Design.gap) {
             if let interaction = conversation.timeline.interaction {
                 // The decision is docked above the composer so it stays in view,
                 // scrolling on its own when it is taller than the space allows.
@@ -205,7 +205,7 @@ struct ConversationView: View {
                         .onGeometryChange(for: CGFloat.self, of: \.size.height) { interactionHeight = $1 }
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                .frame(height: min(max(interactionHeight, 44), 340))
+                .frame(height: min(max(interactionHeight, Design.control), 340))
             }
             if let notice = conversation.timeline.notice
                 ?? (conversation.error ?? conversation.composer.error).map({ Timeline.Notice(text: $0, isError: true) })
@@ -221,7 +221,9 @@ struct ConversationView: View {
                         conversation.composer.confirmation = nil
                     }
                     .labelStyle(.iconOnly)
-                    .font(.footnote)
+                    .font(Design.footnote)
+                    .frame(minWidth: Design.control, minHeight: Design.control)
+                    .contentShape(Rectangle())
                 }
                 .padding(12)
                 .glassPanel(cornerRadius: 18)
@@ -247,14 +249,14 @@ struct ConversationView: View {
             }
             ComposerView(conversation: conversation, onFieldFocus: onFieldFocus) { picker = .model }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Design.padding)
         .padding(.bottom, 6)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: Design.readingWidth)
     }
 
     /// Floats on its own over the chat, just above the composer, with no panel behind it.
     private func floatingControls(_ proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Design.gap) {
             if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
                 Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
                     .font(.caption)
@@ -268,8 +270,8 @@ struct ConversationView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .padding(.horizontal, Design.padding)
+        .padding(.bottom, Design.gap)
         .animation(.easeOut(duration: 0.2), value: following || atBottom)
     }
 

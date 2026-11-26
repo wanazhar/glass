@@ -109,6 +109,8 @@ final class RoundThreeUITests: XCTestCase {
     @MainActor
     func testStreamingAndComposerStates() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
+        continueAfterFailure = false
+        let prompt = "Verify sync after a restart."
         for appearance in ["light", "dark"] {
             let app = launch(appearance)
             app.buttons["conversation.back"].tap()
@@ -117,20 +119,102 @@ final class RoundThreeUITests: XCTestCase {
             XCTAssertTrue(field.waitForExistence(timeout: 8))
             field.tap()
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-            if let draft = field.value as? String, !draft.isEmpty, draft != "Message Glass" {
-                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.utf16.count))
-            }
             capture(appearance, "keyboard")
-            field.typeText("Verify sync after a restart.")
+            field.typeText(prompt)
+            XCTAssertEqual(field.value as? String, prompt)
             capture(appearance, "composer-typing")
             app.buttons["composer.send"].tap()
-            XCTAssertTrue(app.buttons["composer.stop"].exists)
+            XCTAssertTrue(app.buttons["composer.stop"].waitForExistence(timeout: 5))
             capture(appearance, "composer-working")
-            let stream = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "The sync loop now")).firstMatch
-            XCTAssertTrue(stream.waitForExistence(timeout: 5))
-            XCTAssertTrue(stream.isHittable)
-            XCTAssertTrue(app.buttons["composer.stop"].exists)
+            let stream = app.descendants(matching: .any)["timeline.streaming"].firstMatch
+            XCTAssertTrue(stream.waitForExistence(timeout: 8))
             capture(appearance, "streaming")
+            let sent = app.descendants(matching: .any).matching(identifier: "timeline.user")
+                .matching(NSPredicate(format: "label CONTAINS %@", prompt))
+            XCTAssertEqual(sent.allElementsBoundByIndex.map(\.label), [prompt])
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testNativeMathAndPieScrubbing() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
+        continueAfterFailure = false
+        for appearance in ["light", "dark"] {
+            let app = launch(appearance)
+            app.buttons["conversation.back"].tap()
+            app.descendants(matching: .any)["thread.harbor-3"].firstMatch.tap()
+            let equation = app.descendants(matching: .any)["timeline.rich.math"].firstMatch
+            XCTAssertTrue(equation.waitForExistence(timeout: 8))
+            let chart = app.descendants(matching: .any)["component.chart.plot"].firstMatch
+            XCTAssertTrue(chart.waitForExistence(timeout: 8))
+            chart.coordinate(withNormalizedOffset: CGVector(dx: 0.64, dy: 0.42)).tap()
+            let selected = app.descendants(matching: .any)["component.chart.value"].firstMatch
+            XCTAssertTrue(selected.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["12.75"].exists || app.staticTexts["7.25"].exists)
+            capture(appearance, "math-chart")
+        }
+    }
+
+    @MainActor
+    func testThousandThreadDrawerScrollPerformance() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
+        continueAfterFailure = false
+        let app = launch("light", options: ["-GlassDrawerPerformance"])
+        app.buttons["conversation.back"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 10))
+        let list = app.collectionViews.firstMatch
+        measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric]) {
+            list.swipeUp(velocity: .fast)
+            list.swipeDown(velocity: .fast)
+        }
+        let finalThread = app.descendants(matching: .any)["thread.harbor-999"].firstMatch
+        for _ in 0..<60 {
+            if finalThread.isHittable { break }
+            list.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(finalThread.isHittable)
+        XCTAssertTrue(app.buttons["tab.settings"].isHittable)
+    }
+
+    @MainActor
+    func testSecondaryScreensAtDynamicTypeXL() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
+        continueAfterFailure = false
+        let options = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXL"]
+        let pairing = XCUIApplication()
+        pairing.launchArguments = ["-GlassResetState"] + options
+        pairing.launch()
+        XCTAssertTrue(pairing.staticTexts["pair.title"].waitForExistence(timeout: 8))
+        XCTAssertTrue(pairing.buttons["pair.scan"].isHittable)
+        capture("light", "pairing-xl")
+
+        let app = launch("light", options: options)
+        app.buttons["conversation.back"].tap()
+        app.buttons["tab.desktop"].tap()
+        XCTAssertTrue(app.navigationBars["Desktop"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["Start desktop"].waitForExistence(timeout: 8))
+        capture("light", "desktop-xl")
+        app.buttons["Done"].tap()
+        app.buttons["tab.settings"].tap()
+        let settings = app.navigationBars["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        capture("light", "settings-xl")
+        for (route, title) in [("host", "Host"), ("defaults", "Defaults"), ("diagnostics", "Diagnostics"),
+                               ("appearance", "Appearance"), ("notifications", "Notifications"),
+                               ("connection", "Background connection"), ("voice", "Voice"), ("about", "About")] {
+            let link = app.descendants(matching: .any)["settings.\(route)"].firstMatch
+            for _ in 0..<4 {
+                if link.isHittable { break }
+                app.collectionViews.firstMatch.swipeUp()
+            }
+            XCTAssertTrue(link.isHittable, title)
+            link.tap()
+            let screen = app.navigationBars[title]
+            XCTAssertTrue(screen.waitForExistence(timeout: 8), title)
+            capture("light", "\(route)-xl")
+            screen.buttons.firstMatch.tap()
+            XCTAssertTrue(settings.waitForExistence(timeout: 8))
         }
     }
 

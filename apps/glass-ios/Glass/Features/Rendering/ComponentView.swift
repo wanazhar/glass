@@ -552,7 +552,7 @@ struct ChartView: View {
         }
         .chartLegend(Set(points.map(\.series)).count > 1 || kind == "pie" ? .visible : .hidden)
         .accessibilityLabel(data["title"]?.text ?? "Chart")
-        .accessibilityIdentifier("component.chart")
+        .accessibilityIdentifier("component.chart.plot")
         VStack(alignment: .leading, spacing: Design.small) {
             Group {
                 if kind == "pie" { chart.chartAngleSelection(value: $angle) }

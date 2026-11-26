@@ -88,13 +88,13 @@ final class AppModel {
 
     var status: GatewayStatus? { if case .connected(let status) = phase { status } else { nil } }
 
-    static func demo() -> AppModel {
+    static func demo(threadCount: Int = 336) -> AppModel {
         let defaults = UserDefaults(suiteName: "com.wanazhar.glass.demo")!
         let endpoint = try! GlassEndpoint(origin: "https://studio-mac.example", mode: .remote)
         let store = InMemoryCapabilityStore()
         try? store.save(.ownerCapability(String(repeating: "d", count: 64)), for: endpoint)
         defaults.set(try? JSONEncoder().encode(endpoint), forKey: Keys.endpoint)
-        return AppModel(defaults: defaults, store: store, transport: DemoTransport(), drafts: Drafts(url: nil))
+        return AppModel(defaults: defaults, store: store, transport: DemoTransport(threadCount: threadCount), drafts: Drafts(url: nil))
     }
 
     func pair(with text: String) async {

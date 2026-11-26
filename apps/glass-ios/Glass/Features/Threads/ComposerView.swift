@@ -227,7 +227,13 @@ struct ComposerView: View {
                         Text(upload.name).font(.footnote).lineLimit(1)
                         if upload.failure != nil {
                             Spacer()
-                            Button("Dismiss", systemImage: "xmark") { composer.dismissUpload(upload) }.labelStyle(.iconOnly).font(.footnote)
+                            Button { composer.dismissUpload(upload) } label: {
+                                Image(systemName: "xmark")
+                                    .font(Design.footnote)
+                                    .frame(width: Design.control, height: Design.control)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityLabel("Dismiss upload")
                         } else {
                             ProgressView(value: upload.fraction).frame(maxWidth: .infinity)
                         }
@@ -259,13 +265,17 @@ struct ComposerView: View {
                     HStack(spacing: 4) {
                         Image(systemName: attachment.isImage ? "photo" : "doc.text").accessibilityHidden(true)
                         Text(attachment.label).lineLimit(1)
-                        Button("Remove \(attachment.label)", systemImage: "xmark") { Task { await composer.remove(attachment) } }
-                            .labelStyle(.iconOnly)
-                            .disabled(!canWrite)
+                        Button { Task { await composer.remove(attachment) } } label: {
+                            Image(systemName: "xmark")
+                                .frame(width: Design.control, height: Design.control)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Remove \(attachment.label)")
+                        .disabled(!canWrite)
                     }
                     .font(.caption)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, Design.small)
                     .floatingGlass()
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("composer.context")

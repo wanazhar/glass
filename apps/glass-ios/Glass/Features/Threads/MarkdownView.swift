@@ -100,6 +100,7 @@ struct MarkdownView: View, Equatable {
             case .math(let source):
                 if let image = NativeMath.image(source, size: mathSize, display: false) {
                     next = Text(Image(uiImage: image).renderingMode(.template))
+                        .accessibilityLabel(Text(InlineMath.render(source)))
                 } else {
                     next = Text(InlineMath.render(source)).italic()
                 }

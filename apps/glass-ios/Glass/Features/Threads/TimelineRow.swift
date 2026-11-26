@@ -64,6 +64,7 @@ struct TimelineRow: View {
                         .glassButtonStyle()
                 }
             }
+                .accessibilityIdentifier(streaming ? "timeline.streaming" : "timeline.answer")
                 .sheet(isPresented: $showingFullAnswer) {
                     NavigationStack {
                         ScrollView { MarkdownView(text: text).padding(Design.padding) }

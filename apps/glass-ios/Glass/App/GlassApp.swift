@@ -3,7 +3,10 @@ import SwiftUI
 @main
 struct GlassApp: App {
     @State private var model: AppModel = {
-        if ProcessInfo.processInfo.arguments.contains("-GlassDemo") { return .demo() }
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-GlassDemo") {
+            return .demo(threadCount: arguments.contains("-GlassDrawerPerformance") ? 1_000 : 336)
+        }
         let model = AppModel()
         if ProcessInfo.processInfo.arguments.contains("-GlassResetState") { model.resetForTesting() }
         return model

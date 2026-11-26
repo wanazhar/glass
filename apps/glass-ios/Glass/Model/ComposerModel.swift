@@ -223,17 +223,19 @@ final class ComposerModel {
     // MARK: Attachments
 
     /// Uploads up to 8 files in order, attaching each to future requests.
-    func attach(_ files: [(name: String, data: Data)], canWrite: Bool) {
+    func attach(_ files: [AttachmentInput], canWrite: Bool) {
         guard canWrite else { error = "Take control before attaching files."; return }
         guard uploadTask == nil else { return }
         let batch = Array(files.prefix(UploadPolicy.filesPerBatch))
         if files.count > batch.count { error = "Attach up to \(UploadPolicy.filesPerBatch) files at a time." }
-        uploads = batch.map { Upload(name: $0.name) }
+        let rows = batch.map { Upload(name: $0.name) }
+        uploads = rows
         uploadTask = Task {
-            for (index, file) in batch.enumerated() {
-                guard !Task.isCancelled else { break }
-                await upload(file, at: index)
+            for (file, row) in zip(batch, rows) {
+                guard !Task.isCancelled else { return }
+                await upload(file, id: row.id)
             }
+            guard !Task.isCancelled else { return }
             uploadTask = nil
             uploads.removeAll { $0.failure == nil }
             await refreshContext()
@@ -248,21 +250,24 @@ final class ComposerModel {
 
     func dismissUpload(_ upload: Upload) { uploads.removeAll { $0.id == upload.id } }
 
-    private func upload(_ file: (name: String, data: Data), at index: Int) async {
+    private func upload(_ input: AttachmentInput, id: UUID) async {
         guard let api = app.api else { return }
         do {
-            _ = try UploadPolicy.check(file.data, name: file.name)
+            let file = try await Task.detached(priority: .userInitiated) { try input.prepared() }.value
+            guard !Task.isCancelled, let index = uploads.firstIndex(where: { $0.id == id }) else { return }
+            uploads[index].name = file.name
             let receipt = try await api.upload(file.data, name: file.name, thread: thread.id, sourceRef: thread.sourceRef) { sent, total in
                 Task { @MainActor [weak self] in
-                    guard let self, self.uploads.indices.contains(index), total > 0 else { return }
+                    guard let self, let index = self.uploads.firstIndex(where: { $0.id == id }), total > 0 else { return }
                     self.uploads[index].fraction = min(Double(sent) / Double(total), 1)
                 }
             }
-            if uploads.indices.contains(index) { uploads[index].fraction = 1 }
+            guard !Task.isCancelled, let index = uploads.firstIndex(where: { $0.id == id }) else { return }
+            uploads[index].fraction = 1
             _ = try await command("attach", ["upload": .string(receipt.token), "upload_name": .string(file.name), "args": ""])
             confirmation = "Attached \(file.name) to future requests."
         } catch {
-            if uploads.indices.contains(index) { uploads[index].failure = error.localizedDescription }
+            if let index = uploads.firstIndex(where: { $0.id == id }) { uploads[index].failure = error.localizedDescription }
         }
     }
 

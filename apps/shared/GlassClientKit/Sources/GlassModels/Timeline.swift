@@ -86,7 +86,7 @@ public struct Timeline: Sendable, Hashable {
     /// Applies a snapshot frame's control state over the history already shown.
     public mutating func applySnapshot(_ frame: EventFrame) {
         canWrite = frame.canWrite
-        controlKnown = frame.control != nil
+        controlKnown = frame.control?["can_write"]?.boolValue != nil
         isActive = frame.active
         disconnected = false
         notice = nil

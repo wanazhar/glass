@@ -499,6 +499,7 @@ private struct TableView: View {
 
 private struct ChartView: View {
     var data: JSONValue
+    @State private var selected: [Point] = []
 
     struct Point: Identifiable {
         var id: Int
@@ -541,12 +542,37 @@ private struct ChartView: View {
                 }
             }
             .chartLegend(Set(points.map(\.series)).count > 1 || kind == "pie" ? .visible : .hidden)
+            .chartOverlay { proxy in
+                if kind != "pie" {
+                    GeometryReader { geometry in
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                                guard let plot = proxy.plotFrame else { return }
+                                let x = drag.location.x - geometry[plot].minX
+                                if numeric, let value = proxy.value(atX: x, as: Double.self),
+                                   let closest = points.min(by: {
+                                       abs(($0.xValue ?? 0) - value) < abs(($1.xValue ?? 0) - value)
+                                   }) {
+                                    selected = points.filter { $0.xValue == closest.xValue }
+                                } else if let label = proxy.value(atX: x, as: String.self) {
+                                    selected = points.filter { $0.x == label }
+                                }
+                            })
+                    }
+                }
+            }
             .frame(height: kind == "pie" ? 220 : 200)
+            ForEach(selected) { point in
+                LabeledContent(point.series.isEmpty ? point.x : "\(point.x) · \(point.series)",
+                               value: point.y.formatted())
+                    .font(.caption.monospacedDigit())
+            }
             if let caption = joined(data["x_label"]?.text, data["y_label"]?.text) {
                 Text(caption).font(.caption).foregroundStyle(.secondary)
             }
         }
         .accessibilityLabel(data["title"]?.text ?? "Chart")
+        .onChange(of: data) { _, _ in selected = [] }
     }
 }
 

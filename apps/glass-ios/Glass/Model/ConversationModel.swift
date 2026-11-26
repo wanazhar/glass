@@ -13,7 +13,7 @@ final class ConversationModel {
         case connecting
         case live
         case reconnecting(String)
-        case readOnly
+        case disconnected(String)
     }
 
     let thread: ThreadSummary
@@ -42,6 +42,8 @@ final class ConversationModel {
     private let app: AppModel
     private var liveTask: Task<Void, Never>?
     private var starting: Task<Void, Never>?
+    private var attempt = UUID()
+    private var shouldStopWhenIdle = false
     /// Incremental frames waiting to be drawn. A fast stream sends far more frames than the timeline can
     /// re-render, so they are applied together at most every `frameInterval`.
     private var pendingFrames: [EventFrame] = []
@@ -70,25 +72,36 @@ final class ConversationModel {
     /// Ask to take control only once the host has said another client holds it, never while that is still unknown.
     var needsControl: Bool { connection == .live && timeline.controlKnown && !timeline.canWrite }
 
+    var connectionMessage: String? {
+        switch connection {
+        case .disconnected(let reason): reason
+        case .reconnecting: "The connection to your host was interrupted."
+        case .idle, .connecting, .live: nil
+        }
+    }
+
     var hasEarlier: Bool { timeline.hasOlder }
 
     /// Loads history, attaches the host connection, and follows live events until stopped.
     func start() async {
         if let starting { return await starting.value }
+        let id = attempt
         // Owned by the model so a view rebuild cancelling `.task` cannot abort the first load.
         let task = Task { await attach() }
         starting = task
         await task.value
-        starting = nil
+        if attempt == id { starting = nil }
     }
 
     private func attach() async {
-        guard liveTask == nil, let api = app.api else { return }
+        guard !Task.isCancelled, liveTask == nil, let api = app.api else { return }
         connection = .connecting
         if !loadedHistory {
             do {
                 let page = try await api.history(thread.id, sourceRef: thread.sourceRef)
-                timeline = await Self.initialTimeline(page)
+                let initial = await Self.initialTimeline(page)
+                guard !Task.isCancelled else { return }
+                timeline = initial
                 loadedHistory = true
             } catch {
                 return fail(error)
@@ -96,13 +109,10 @@ final class ConversationModel {
         }
         do {
             let opened = try await api.open(thread.id, sourceRef: thread.sourceRef)
+            guard !Task.isCancelled else { return }
             originLabel = opened.originLabel ?? originLabel
         } catch {
-            if error.isUnauthorized || error == .cancelled { return fail(error) }
-            // Archived or foreign threads still show their history.
-            connection = .readOnly
-            self.error = error.localizedDescription
-            return
+            return fail(error)
         }
         Task {
             await composer.refreshContext()
@@ -112,7 +122,7 @@ final class ConversationModel {
         let resume = cursor
         liveTask = Task { [weak self] in
             for await update in live.updates(resume: resume) {
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
                 await self.receive(update)
             }
         }
@@ -150,12 +160,23 @@ final class ConversationModel {
             drawPendingFrames()
             return
         }
-        guard loadedHistory, connection != .readOnly else { return await start() }
+        guard loadedHistory else { return await start() }
         resumeStarted = .now
-        liveTask?.cancel()
-        liveTask = nil
-        drawPendingFrames()
+        stop()
         await start()
+    }
+
+    func reconnect() async {
+        stop()
+        await start()
+    }
+
+    func keepFollowing() { shouldStopWhenIdle = false }
+
+    func stopWhenIdle() {
+        shouldStopWhenIdle = true
+        drawPendingFrames()
+        if !timeline.isActive { stop() }
     }
 
     private func endBackgroundTask() {
@@ -165,11 +186,14 @@ final class ConversationModel {
     }
 
     func stop() {
+        attempt = UUID()
+        starting?.cancel()
+        starting = nil
         KeepAlive.shared.release(keepAliveKey)
         liveTask?.cancel()
         liveTask = nil
         drawPendingFrames()
-        if connection != .readOnly { connection = .idle }
+        connection = .idle
     }
 
     func loadOlder() async {
@@ -200,6 +224,7 @@ final class ConversationModel {
         for frame in pendingFrames { next.apply(frame) }
         pendingFrames.removeAll()
         timeline = next
+        if shouldStopWhenIdle, !timeline.isActive, liveTask != nil { stop() }
     }
 
     private func receive(_ update: LiveUpdate) async {
@@ -244,6 +269,7 @@ final class ConversationModel {
                 guard let api = app.api else { return }
                 do {
                     let history = try await api.history(thread.id, sourceRef: thread.sourceRef)
+                    guard !Task.isCancelled else { return }
                     timeline.reset(history: history, frame: frame)
                     resets += 1
                 } catch {
@@ -275,10 +301,13 @@ final class ConversationModel {
     }
 
     private func fail(_ error: GlassError) {
-        guard error != .cancelled else { return }
+        guard !Task.isCancelled, error != .cancelled else { return }
         if error.isUnauthorized { app.handle(error) } else {
-            self.error = error.localizedDescription
-            if connection == .connecting { connection = .idle }
+            if connection == .connecting {
+                connection = .disconnected(error.localizedDescription)
+            } else {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

@@ -130,12 +130,12 @@ struct FileView: View {
                     }
                     .accessibilityLabel(name)
                 } else if let text = content.text {
-                    ScrollView([.vertical, .horizontal]) {
-                        Text(text)
-                            .font(.system(.footnote, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollView {
+                        if ["md", "markdown"].contains((name as NSString).pathExtension.lowercased()) {
+                            MarkdownView(text: text).padding(Design.padding)
+                        } else {
+                            CodeBlock(code: text, language: (name as NSString).pathExtension).padding(Design.padding)
+                        }
                     }
                 } else {
                     ContentUnavailableView("No preview", systemImage: "doc",
@@ -147,7 +147,7 @@ struct FileView: View {
                 ProgressView()
             }
         }
-        .navigationTitle(name)
+        .navigationTitle((name as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("file")
         .toolbar {

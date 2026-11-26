@@ -3,6 +3,7 @@ import GlassAPI
 import GlassModels
 import GlassTransport
 import Observation
+import UIKit
 
 /// The composer for one conversation: drafts, sending, control, interactions, uploads and commands.
 @MainActor @Observable
@@ -98,6 +99,7 @@ final class ComposerModel {
         do {
             try await api.send(active && mode == .steer ? .steer(text: message, requestID: id) : .prompt(text: message, requestID: id),
                                thread: thread.id, sourceRef: thread.sourceRef)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } catch {
             if text.isEmpty { text = saved }
             report(error)

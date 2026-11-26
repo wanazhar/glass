@@ -20,7 +20,7 @@ struct OverviewView: View {
                 } description: {
                     Text(message)
                 } actions: {
-                    Button("Try Again") { Task { await model.refresh() } }
+                    Button("Reconnect") { Task { await model.refresh() } }
                         .glassButtonStyle(prominent: true)
                 }
                 .accessibilityIdentifier("host.unreachable")
@@ -46,7 +46,7 @@ struct OverviewView: View {
 
     @ViewBuilder
     private func sections(_ status: GatewayStatus) -> some View {
-        if case .appUpdateRequired(let version) = status.compatibility {
+        if case .appUpdateRequired = status.compatibility {
             Section {
                 Label {
                     Text("This host is newer than this app. Update Glass to use every feature.")

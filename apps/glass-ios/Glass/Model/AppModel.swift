@@ -85,6 +85,15 @@ final class AppModel {
 
     var status: GatewayStatus? { if case .connected(let status) = phase { status } else { nil } }
 
+    static func demo() -> AppModel {
+        let defaults = UserDefaults(suiteName: "com.wanazhar.glass.demo")!
+        let endpoint = try! GlassEndpoint(origin: "https://studio-mac.example", mode: .remote)
+        let store = InMemoryCapabilityStore()
+        try? store.save(.ownerCapability(String(repeating: "d", count: 64)), for: endpoint)
+        defaults.set(try? JSONEncoder().encode(endpoint), forKey: Keys.endpoint)
+        return AppModel(defaults: defaults, store: store, transport: DemoTransport())
+    }
+
     func pair(with text: String) async {
         guard !isPairing else { return }
         pairingError = nil

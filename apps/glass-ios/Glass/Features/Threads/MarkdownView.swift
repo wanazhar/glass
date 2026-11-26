@@ -1,6 +1,10 @@
 import GlassModels
 import SwiftUI
 
+extension EnvironmentValues {
+    @Entry var openReferencedFile: ((String) -> Void)? = nil
+}
+
 /// Renders assistant Markdown natively: prose, headings, nested and task lists, quotes, tables,
 /// `<details>` sections, inline and display math, images, and fenced code.
 struct MarkdownView: View, Equatable {
@@ -25,6 +29,7 @@ struct MarkdownView: View, Equatable {
         case table(header: [String], alignments: [ColumnAlignment], rows: [[String]])
         case details(summary: String, body: String)
         case image(alt: String, url: String)
+        case file(label: String, path: String)
     }
 
     private final class ParsedBlocks {
@@ -67,6 +72,7 @@ struct MarkdownView: View, Equatable {
                 BlockView(block: block)
             }
         }
+        .lineSpacing(4)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -94,7 +100,14 @@ struct MarkdownView: View, Equatable {
 
     private static func markdown(_ value: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
-        return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+        var text = (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+        for run in text.runs {
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                text[run.range].backgroundColor = Design.accent.opacity(0.12)
+            }
+            if run.link != nil { text[run.range].underlineStyle = .single }
+        }
+        return text
     }
 
     private static let inlineImage = try! NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)"#)
@@ -109,6 +122,7 @@ struct MarkdownView: View, Equatable {
 
     private static let listPattern = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$"#)
     private static let imagePattern = try! NSRegularExpression(pattern: #"^!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)$"#)
+    private static let filePattern = #/^\[([^\]]+)\]\(((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][\w-]*)\)$/#
     private static let separatorPattern = try! NSRegularExpression(pattern: #"^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?$"#)
 
     static func blocks(_ text: String) -> [Block] {
@@ -255,6 +269,10 @@ struct MarkdownView: View, Equatable {
                       let alt = Range(match.range(at: 1), in: trimmed), let url = Range(match.range(at: 2), in: trimmed) {
                 flush()
                 blocks.append(.image(alt: String(trimmed[alt]), url: String(trimmed[url])))
+            } else if let file = trimmed.wholeMatch(of: filePattern),
+                      !file.2.split(separator: "/").contains("..") {
+                flush()
+                blocks.append(.file(label: String(file.1), path: String(file.2)))
             } else if let item = listItem(line) {
                 flush()
                 blocks.append(item)
@@ -345,6 +363,7 @@ struct MarkdownView: View, Equatable {
 
 private struct BlockView: View {
     var block: MarkdownView.Block
+    @Environment(\.openReferencedFile) private var openReferencedFile
 
     var body: some View {
         switch block {
@@ -397,6 +416,17 @@ private struct BlockView: View {
                 .accessibilityLabel(alt.isEmpty ? "Image" : alt)
             }
             // Local paths are images a tool already showed above; nothing more to draw.
+        case .file(let label, let path):
+            if let openReferencedFile {
+                Button { openReferencedFile(path) } label: {
+                    Label(label, systemImage: "doc.text")
+                        .font(.footnote.weight(.medium))
+                }
+                .glassButtonStyle()
+                .accessibilityIdentifier("markdown.file")
+            } else {
+                Label(label, systemImage: "doc.text")
+            }
         }
     }
 }
@@ -521,9 +551,9 @@ struct DataTable: View, Equatable {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
-            .clipShape(.rect(cornerRadius: 8))
+            .clipShape(.rect(cornerRadius: Design.corner))
             .overlay {
-                RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Color(.separator), lineWidth: 0.5)
                     .allowsHitTesting(false)
             }
         }
@@ -752,7 +782,7 @@ struct CodeBlock: View {
             .padding(.top, 10)
             .padding(.bottom, 4)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(code)
+                Text(highlighted)
                     .font(.system(.footnote, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: false)
                     .textSelection(.enabled)
@@ -762,7 +792,27 @@ struct CodeBlock: View {
             }
         }
         .background(Design.surface, in: .rect(cornerRadius: Design.corner))
+        .overlay { RoundedRectangle(cornerRadius: Design.corner).strokeBorder(.quaternary, lineWidth: 0.5) }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("timeline.code")
+    }
+
+    private var highlighted: AttributedString {
+        guard !language.isEmpty, code.utf8.count <= 32_768 else { return AttributedString(code) }
+        let tokens = code.ranges(of: /\/\/[^\n]*|"[^"\n]*"|\b(?:let|var|func|class|struct|enum|import|return|if|else|for|in|while|async|await|try|throw|true|false|nil|const|def|fn|match|pub)\b|\b\d+(?:\.\d+)?\b/)
+        var output = AttributedString()
+        var start = code.startIndex
+        for range in tokens {
+            output += AttributedString(code[start..<range.lowerBound])
+            let value = code[range]
+            var token = AttributedString(value)
+            token.foregroundColor = value.hasPrefix("//") ? .secondary
+                : value.hasPrefix("\"") ? .orange
+                : value.first?.isNumber == true ? .teal : Design.accent
+            output += token
+            start = range.upperBound
+        }
+        output += AttributedString(code[start...])
+        return output
     }
 }

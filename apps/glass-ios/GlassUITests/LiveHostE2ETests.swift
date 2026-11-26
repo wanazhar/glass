@@ -323,7 +323,7 @@ final class LiveHostE2ETests: XCTestCase {
         app.buttons["composer.takeControl"].tap()
         sleep(2)
         XCTAssertTrue(readOnly.exists, "control stays with the other client")
-        XCTAssertFalse(composerField(app).isEnabled)
+        XCTAssertFalse(composerField(app).exists)
         attach(app, "e2e-read-only")
 
         _ = try call("control/release?id=\(thread)", method: "POST")
@@ -736,16 +736,18 @@ final class LiveHostE2ETests: XCTestCase {
                       "while working, a typed message shows whether it steers or queues")
         attach(app, "e2e-working-bubble")
         let hide = app.buttons["conversation.hideKeyboard"]
-        XCTAssertTrue(hide.waitForExistence(timeout: 5), "an obvious control hides the keyboard")
-        hide.tap()
-        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "the keyboard goes away")
-        field.tap()
+        XCTAssertFalse(hide.exists, "the chat dismisses the keyboard without a floating control")
         XCTAssertTrue(waitUntil(5) { app.keyboards.count > 0 })
         // Drag the conversation down into the keyboard, as in Messages.
         let window = app.windows.firstMatch
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
             .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
         XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "scrolling the chat dismisses the keyboard")
+        field.tap()
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count > 0 }, "the keyboard can be reopened")
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "interactive dismissal also works the second time")
         XCTAssertTrue(text(app, containing: "Echo from the host").waitForExistence(timeout: 30))
         XCTAssertTrue(waitUntil(10) { !bubble.exists }, "the bubble goes once the reply arrives")
     }

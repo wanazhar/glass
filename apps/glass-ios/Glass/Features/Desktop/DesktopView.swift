@@ -43,8 +43,13 @@ struct DesktopView: View {
             if let status = model.status {
                 if status.isRunning { running(status) } else { idle(status) }
             } else if let error = model.error {
-                ContentUnavailableView("Can’t reach the desktop", systemImage: "exclamationmark.triangle",
-                                       description: Text(error))
+                ContentUnavailableView {
+                    Label("Can’t reach the desktop", systemImage: "display.trianglebadge.exclamationmark")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Reconnect") { Task { await model.refresh() } }.glassButtonStyle(prominent: true)
+                }
             } else {
                 ProgressView()
             }

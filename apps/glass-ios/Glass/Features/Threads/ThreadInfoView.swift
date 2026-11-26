@@ -6,6 +6,7 @@ struct ThreadInfoView: View {
     let conversation: ConversationModel
     let title: String
     var open: (Action) -> Void
+    @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @State private var usage: CommandOutput?
     @State private var context: CommandOutput?
@@ -15,6 +16,7 @@ struct ThreadInfoView: View {
             List {
                 Section {
                     LabeledContent("Model", value: conversation.composer.model ?? conversation.thread.model ?? "Host default")
+                    if let host = app.endpoint?.host { LabeledContent("Machine", value: host) }
                     if let workspace = conversation.thread.workspace {
                         LabeledContent("Directory", value: workspace)
                     }

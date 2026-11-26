@@ -53,7 +53,7 @@ struct SettingsView: View {
 
     var body: some View {
         List {
-            Section {
+            Section("Workspace") {
                 NavigationLink(value: SettingsRoute.host) {
                     LabeledContent {
                         Text(hostState)
@@ -69,13 +69,13 @@ struct SettingsView: View {
                 link(.defaults)
                 link(.diagnostics)
             }
-            Section {
+            Section("Preferences") {
                 link(.appearance)
                 link(.notifications)
                 link(.connection)
                 link(.voice)
             }
-            Section {
+            Section("Glass") {
                 link(.about)
             }
         }

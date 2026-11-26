@@ -12,11 +12,14 @@ using namespace metal;
     if (phase <= 0.0) return layer.sample(position);
     float amplitude = sin(phase * 31.0) * exp(-phase * 7.0);
     amplitude *= smoothstep(0.0, 0.045, phase) * (1.0 - smoothstep(0.85, 1.3, time));
-    float2 warped = position - direction * amplitude * 9.0;
-    half4 color = layer.sample(warped);
-    half4 red = layer.sample(warped + direction * amplitude * 1.2);
-    half4 blue = layer.sample(warped - direction * amplitude * 1.2);
-    color.r = min(color.a, mix(color.r, red.r, half(0.35)));
-    color.b = min(color.a, mix(color.b, blue.b, half(0.35)));
-    return color;
+    float2 warped = position - direction * amplitude * 7.0;
+    float2 dispersion = direction * abs(amplitude) * 5.0;
+    half4 ink = layer.sample(warped);
+    half red = layer.sample(warped - dispersion).a;
+    half blue = layer.sample(warped + dispersion).a;
+    half redEdge = max(half(0.0), red - max(ink.a, blue));
+    half blueEdge = max(half(0.0), blue - max(ink.a, red));
+    half4 fringe = half4(half3(1.0, 0.20, 0.36) * redEdge +
+                         half3(0.20, 0.51, 1.0) * blueEdge, redEdge + blueEdge) * half(0.68);
+    return ink + fringe * (half(1.0) - ink.a);
 }

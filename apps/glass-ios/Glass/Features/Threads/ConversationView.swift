@@ -8,7 +8,6 @@ struct ConversationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var following = true
     @State private var atBottom = true
-    @State private var historyScroll = ScrollPosition(idType: String.self)
     @State private var showingInfo = false
     @State private var activityDetail: ActivityDetail?
     @State private var interactionHeight: CGFloat = 0
@@ -19,78 +18,82 @@ struct ConversationView: View {
     @State private var actionError: String?
     @State private var pendingEdit: TimelineEntry?
     @State private var previewPage: PreviewPage?
-    @State private var keyboardShown = false
-    @State private var dragging = false
-    @State private var dragStartOffset: CGFloat?
+    @State private var referencedFile: ReferencedFile?
     @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
     @Environment(AppModel.self) private var app
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Design.padding) {
-                    if conversation.hasEarlier {
-                        Button {
-                            Task { await conversation.loadOlder() }
-                        } label: {
-                            if conversation.loadingOlder { ProgressView() }
-                            else { Label("Earlier messages", systemImage: "arrow.up") }
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Design.padding) {
+                        if conversation.hasEarlier {
+                            Button {
+                                Task { await conversation.loadOlder() }
+                            } label: {
+                                if conversation.loadingOlder { ProgressView() }
+                                else { Label("Earlier messages", systemImage: "arrow.up") }
+                            }
+                            .glassButtonStyle()
+                            .frame(maxWidth: .infinity)
+                            .accessibilityIdentifier("conversation.older")
                         }
-                        .glassButtonStyle()
-                        .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("conversation.older")
-                    }
-                    if conversation.loadedHistory, conversation.timeline.isEmpty {
-                        emptyState
-                    }
-                    ForEach(rows) { row in
-                        switch row {
-                        case .message(let entry): TimelineRow(entry: entry)
-                        case .work(let group):
-                            WorkRow(group: group) { detail in
-                                activityDetail = detail
+                        if conversation.loadedHistory, conversation.timeline.isEmpty {
+                            emptyState
+                        }
+                        ForEach(rows) { row in
+                            switch row {
+                            case .message(let entry): TimelineRow(entry: entry)
+                            case .work(let group):
+                                WorkRow(group: group, durations: conversation.timeline.toolDurations, open: { detail in
+                                    activityDetail = detail
+                                }, resume: conversation.canWrite && !conversation.timeline.isActive ? {
+                                    Task { await conversation.composer.continueFromFailure(canWrite: conversation.canWrite) }
+                                } : nil)
                             }
                         }
+                        Color.clear.frame(height: 1)
+                            .id(Self.bottom)
                     }
-                    Color.clear.frame(height: 1)
-                        .id(Self.bottom)
-                        .onScrollVisibilityChange(threshold: 0.01) { bottom in
-                            atBottom = bottom
-                            if bottom { following = true }
-                        }
+                    .padding(.horizontal, Design.padding)
+                    .padding(.vertical, Design.gap)
+                    .frame(maxWidth: Design.readingWidth)
+                    .frame(maxWidth: .infinity)
                 }
-                .scrollTargetLayout()
-                .padding(.horizontal, Design.padding)
-                .padding(.vertical, Design.gap)
-                .frame(maxWidth: Design.readingWidth)
-                .frame(maxWidth: .infinity)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(conversation.timeline.isEmpty ? .center : .bottom, for: .alignment)
+                .softTopScrollEdge()
+                .scrollDismissesKeyboard(.interactively)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.visibleRect.maxY >= geometry.contentSize.height - Design.gap
+                } action: { _, bottom in
+                    atBottom = bottom
+                }
+                .onScrollGeometryChange(for: CGSize.self) { geometry in
+                    CGSize(width: geometry.contentSize.height, height: geometry.containerSize.height - geometry.contentInsets.bottom)
+                } action: { _, _ in
+                    guard following else { return }
+                    Task { @MainActor in
+                        if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                    }
+                }
+                .onScrollPhaseChange { old, phase in
+                    if phase == .interacting { following = false }
+                    if phase == .idle, old != .animating { following = atBottom }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                    if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                }
+                .onChange(of: conversation.timeline.interaction?.id) { _, id in
+                    if id != nil { resume(proxy) }
+                }
+                .onChange(of: rows.last?.id) { _, _ in
+                    if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                }
+                .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
+                .floatingBar(edge: .top) { header }
+                bottomBar(onFieldFocus: { resume(proxy) })
             }
-            .scrollPosition($historyScroll)
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
-            .softTopScrollEdge()
-            .scrollDismissesKeyboard(.interactively)
-            .onScrollPhaseChange { _, phase in
-                dragging = phase == .interacting
-                if !dragging { dragStartOffset = nil }
-                if phase == .interacting { following = false }
-                if phase == .idle, atBottom { following = true }
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
-                guard dragging, keyboardShown else { return }
-                let start = dragStartOffset ?? offset
-                dragStartOffset = start
-                if start - offset > 16 { hideKeyboard() }
-            }
-            .onChange(of: conversation.timeline.interaction?.id) { _, id in
-                if id != nil { resume(proxy) }
-            }
-            .onChange(of: rows.last?.id) { _, _ in
-                if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            }
-            .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
-            .floatingBar(edge: .top) { header }
-            .floatingBar { bottomBar(proxy) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation")
@@ -99,16 +102,27 @@ struct ConversationView: View {
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
         .sheet(isPresented: $showingInfo) { threadInfo }
         .sheet(item: $activityDetail) { detail in
-            if let offset = conversation.timeline.savedOutputs[detail.id] {
+            if detail.command == nil, !detail.isDiff, let offset = conversation.timeline.savedOutputs[detail.id] {
                 SavedActivityView(conversation: conversation, record: offset, title: detail.title)
             } else {
-                ActivityDetailView(detail: detail)
+                ActivityDetailView(detail: detail, savedOutput: conversation.timeline.savedOutputs[detail.id].map { offset in
+                    SavedActivityView(conversation: conversation, record: offset, title: detail.title)
+                })
             }
         }
         .sheet(isPresented: $showingDetails) { DetailsView(conversation: conversation) }
         .sheet(item: $savedRecord) { SavedActivityView(conversation: conversation, record: $0.id) }
         .environment(\.openSavedActivity) { savedRecord = SavedRecord(id: $0) }
         .environment(\.messageAction) { entry, action in Task { await perform(action, on: entry) } }
+        .environment(\.openReferencedFile) { referencedFile = ReferencedFile(id: $0) }
+        .sheet(item: $referencedFile) { file in
+            NavigationStack {
+                FileView(conversation: conversation, name: file.id)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { referencedFile = nil } }
+                    }
+            }
+        }
         .environment(\.previewHTML) { previewPage = PreviewPage(html: $0) }
         .environment(\.composeText) { text in
             let current = conversation.composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -145,8 +159,6 @@ struct ConversationView: View {
         }
         .environment(\.attachmentLoader) { [composer = conversation.composer] id in await composer.attachment(id) }
         .task { await conversation.start() }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardShown = true }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardShown = false }
         .onChange(of: scenePhase) { _, phase in
             // iOS suspends sockets in the background. The cached chat stays on screen and a fresh
             // stream resumes from the last event id the moment Glass is active again.
@@ -174,15 +186,15 @@ struct ConversationView: View {
     private static let bottom = "timeline.bottom"
 
     private var emptyState: some View {
-        NewChatView { suggestion in
+        NewChatView(workspace: conversation.thread.workspace) { suggestion in
             conversation.composer.text = suggestion
         }
         .accessibilityIdentifier("conversation.empty")
     }
 
     @ViewBuilder
-    private func bottomBar(_ proxy: ScrollViewProxy) -> some View {
-        VStack(spacing: 8) {
+    private func bottomBar(onFieldFocus: @escaping () -> Void) -> some View {
+        VStack(spacing: Design.gap) {
             if let interaction = conversation.timeline.interaction {
                 // The decision is docked above the composer so it stays in view,
                 // scrolling on its own when it is taller than the space allows.
@@ -193,7 +205,7 @@ struct ConversationView: View {
                         .onGeometryChange(for: CGFloat.self, of: \.size.height) { interactionHeight = $1 }
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                .frame(height: min(max(interactionHeight, 44), 340))
+                .frame(height: min(max(interactionHeight, Design.control), 340))
             }
             if let notice = conversation.timeline.notice
                 ?? (conversation.error ?? conversation.composer.error).map({ Timeline.Notice(text: $0, isError: true) })
@@ -209,7 +221,9 @@ struct ConversationView: View {
                         conversation.composer.confirmation = nil
                     }
                     .labelStyle(.iconOnly)
-                    .font(.footnote)
+                    .font(Design.footnote)
+                    .frame(minWidth: Design.control, minHeight: Design.control)
+                    .contentShape(Rectangle())
                 }
                 .padding(12)
                 .glassPanel(cornerRadius: 18)
@@ -218,26 +232,31 @@ struct ConversationView: View {
             }
             if conversation.timeline.isActive {
                 HStack {
-                    Text("Working…").font(.footnote).foregroundStyle(.secondary)
+                    StatusLabel(title: conversation.timeline.activity ?? "Working…", color: Design.accent)
+                        .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
-                    Button("Stop", systemImage: "stop.fill") { Task { await conversation.composer.stop() } }
+                    Button("Stop", systemImage: "stop.fill") {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task { await conversation.composer.stop() }
+                    }
                         .font(.footnote)
                         .keyCommand(.stop)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
                         .disabled(!conversation.canWrite)
                         .accessibilityIdentifier("composer.stop")
                 }
                 .padding(.horizontal, Design.gap)
             }
-            ComposerView(conversation: conversation) { picker = .model }
+            ComposerView(conversation: conversation, onFieldFocus: onFieldFocus) { picker = .model }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Design.padding)
         .padding(.bottom, 6)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: Design.readingWidth)
     }
 
     /// Floats on its own over the chat, just above the composer, with no panel behind it.
     private func floatingControls(_ proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Design.gap) {
             if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
                 Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
                     .font(.caption)
@@ -250,15 +269,9 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.latest")
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
-            if keyboardShown {
-                Button("Hide Keyboard", systemImage: "keyboard.chevron.compact.down") { hideKeyboard() }
-                    .labelStyle(.iconOnly)
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.hideKeyboard")
-            }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .padding(.horizontal, Design.padding)
+        .padding(.bottom, Design.gap)
         .animation(.easeOut(duration: 0.2), value: following || atBottom)
     }
 
@@ -273,30 +286,34 @@ struct ConversationView: View {
         return nil
     }
 
-    private func hideKeyboard() {
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-    }
-
     private var header: some View {
         GlassGroup {
             HStack(spacing: Design.gap) {
-                Button("Conversations", systemImage: "sidebar.left", action: goBack)
-                    .labelStyle(.iconOnly)
+                Button(action: goBack) {
+                    Label("Conversations", systemImage: "sidebar.left")
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
+                        .contentShape(Rectangle())
+                }
                     .glassButtonStyle()
                     .accessibilityIdentifier("conversation.back")
                 Button { showingInfo = true } label: {
                     Text(threads.thread(conversation.thread.id)?.displayTitle ?? conversation.title)
-                        .font(.headline)
+                        .font(Design.headline)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: Design.control)
                 }
                 .buttonStyle(.plain)
-                .floatingGlass()
                 .accessibilityIdentifier("conversation.connection")
-                Button("New Chat", systemImage: "square.and.pencil") {
+                .accessibilityValue(connectionStatus)
+                Button {
                     Task { await threads.newThread() }
+                } label: {
+                    Label("New Chat", systemImage: "square.and.pencil")
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
+                        .contentShape(Rectangle())
                 }
-                .labelStyle(.iconOnly)
                 .glassButtonStyle()
                 .accessibilityIdentifier("conversation.new")
             }
@@ -324,6 +341,17 @@ struct ConversationView: View {
     private var rows: [ChatRow] {
         ChatRow.make(from: conversation.timeline)
     }
+
+    private var connectionStatus: String {
+        switch conversation.connection {
+        case .live: "Live"
+        case .idle, .connecting: "Connecting"
+        case .reconnecting: "Reconnecting"
+        case .disconnected: "Disconnected"
+        }
+    }
+
+    private struct ReferencedFile: Identifiable { let id: String }
 }
 
 extension ConversationView {
@@ -347,7 +375,7 @@ extension ConversationView {
                 await threads.reload()
                 threads.selection = opened
                 if action == .editInBranch, case .user(_, let text) = entry {
-                    Drafts.shared.write(opened, text)
+                    app.drafts.write(opened, text)
                 }
             } else if action == .quote {
                 conversation.composer.confirmation = "Quoted. It goes with your next messages."

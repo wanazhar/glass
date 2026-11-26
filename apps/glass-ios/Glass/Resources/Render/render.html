@@ -4,15 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src data:">
-<link rel="stylesheet" href="katex.min.css">
 <style>
 :root { color-scheme: light dark; }
 html, body { margin: 0; padding: 0; background: transparent; font: -apple-system-body; }
 #out { padding: 8px 2px; overflow-x: auto; }
 #out svg { max-width: none; height: auto; }
-.katex-display { margin: 0; }
 </style>
-<script src="katex.min.js"></script>
 <script src="mermaid.min.js"></script>
 </head>
 <body>
@@ -22,17 +19,13 @@ function report() {
   const out = document.getElementById("out");
   window.webkit.messageHandlers.glass.postMessage({ height: out.scrollHeight });
 }
-async function render(kind, source, dark) {
+async function render(source, dark) {
   const out = document.getElementById("out");
   try {
-    if (kind === "math") {
-      out.innerHTML = katex.renderToString(source, { displayMode: true, throwOnError: true, trust: false, strict: "ignore", maxExpand: 1000, maxSize: 20, output: "htmlAndMathml" });
-    } else {
-      if (source.length > 65536) throw new Error("Diagram is too large to preview.");
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default", maxTextSize: 65536, htmlLabels: false, flowchart: { htmlLabels: false } });
-      const { svg } = await mermaid.render("d" + Date.now(), source);
-      out.innerHTML = svg;
-    }
+    if (source.length > 65536) throw new Error("Diagram is too large to preview.");
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default", maxTextSize: 65536, htmlLabels: false, flowchart: { htmlLabels: false } });
+    const { svg } = await mermaid.render("d" + Date.now(), source);
+    out.innerHTML = svg;
     requestAnimationFrame(report);
   } catch (error) {
     window.webkit.messageHandlers.glass.postMessage({ error: String(error && error.message || error) });

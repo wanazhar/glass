@@ -53,7 +53,7 @@ struct SettingsView: View {
 
     var body: some View {
         List {
-            Section {
+            Section("Workspace") {
                 NavigationLink(value: SettingsRoute.host) {
                     LabeledContent {
                         Text(hostState)
@@ -69,13 +69,13 @@ struct SettingsView: View {
                 link(.defaults)
                 link(.diagnostics)
             }
-            Section {
+            Section("Preferences") {
                 link(.appearance)
                 link(.notifications)
                 link(.connection)
                 link(.voice)
             }
-            Section {
+            Section("Glass") {
                 link(.about)
             }
         }
@@ -280,7 +280,7 @@ struct AboutView: View {
                 LabeledContent("Client protocol", value: "v\(GlassClientKitVersion.supportedProtocolVersion)")
             }
             Section {
-                Text("Math is drawn with KaTeX and diagrams with Mermaid, both bundled with the app and used offline under the MIT license.")
+                Text("Math is typeset with SwiftMath and diagrams are drawn with Mermaid. Both work offline and use the MIT license.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {

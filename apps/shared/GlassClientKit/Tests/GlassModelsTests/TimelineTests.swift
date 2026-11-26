@@ -1,6 +1,15 @@
 import Foundation
 import GlassModels
 import Testing
+@Test func toolDurationUsesMatchingLiveEvents() {
+    var timeline = Timeline()
+    let started = ContinuousClock.now
+    timeline.apply(.tool(callID: "build", name: "bash", command: "swift test"), now: started)
+    timeline.apply(.toolEnd(callID: "build", output: "[exit 0]", summary: "OK", truncated: false),
+                   now: started.advanced(by: .milliseconds(450)))
+    #expect(timeline.toolDurations["build"] == .milliseconds(450))
+}
+
 
 private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     try JSONDecoder().decode(T.self, from: Data(json.utf8))
@@ -56,6 +65,18 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
 }
 
 @Suite struct TimelineTests {
+    @Test func incompleteSnapshotDoesNotReportAnInputOwner() throws {
+        var timeline = Timeline()
+        timeline.applySnapshot(try decode(EventFrame.self, #"{"reset":true,"control":{"session":"sample"}}"#))
+        #expect(!timeline.controlKnown)
+        #expect(!timeline.canWrite)
+        timeline.apply(.control(canWrite: false))
+        #expect(timeline.controlKnown)
+        #expect(!timeline.canWrite)
+        timeline.apply(.control(canWrite: true))
+        #expect(timeline.canWrite)
+    }
+
     static func page(_ records: [(Int, String)], before: Int) throws -> HistoryPage {
         let items = records.map { #"{"index":\#($0.0),"record":\#($0.1)}"# }.joined(separator: ",")
         return try decode(HistoryPage.self, #"{"records":[\#(items)],"before":\#(before),"totalBytes":999}"#)

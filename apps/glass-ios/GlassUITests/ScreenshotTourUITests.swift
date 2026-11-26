@@ -323,14 +323,14 @@ extension XCUIApplication {
         row.tap()
     }
 
-    /// The conversation list finished loading: either its count header or the empty state is shown.
+    /// Opens the compact drawer if needed and waits for its loaded content.
     @MainActor
     func waitForThreadList(timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
-            if staticTexts["threads.count"].exists || descendants(matching: .any)["threads.empty"].exists { return true }
-            Thread.sleep(forTimeInterval: 0.25)
-        } while Date() < deadline
-        return false
+        let drawer = buttons["conversation.back"].firstMatch
+        if !buttons["threads.new"].exists, drawer.waitForExistence(timeout: timeout) { drawer.tap() }
+        let settled = descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier IN %@", ["threads.ready", "threads.empty"]))
+            .firstMatch
+        return settled.waitForExistence(timeout: timeout)
     }
 }

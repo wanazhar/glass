@@ -82,6 +82,91 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         #expect(relaunched.phase == .connecting)
     }
 
+    @Test func demoOpenFailureKeepsHistoryAndOffersReconnection() async throws {
+        let model = AppModel.demo()
+        await model.refresh()
+        let threads = ThreadsModel(app: model)
+        await threads.reload()
+        #expect(threads.threads.count == 336)
+        let summary = try #require(threads.thread("harbor-1"))
+        let conversation = threads.conversation(for: summary)
+        await conversation.start()
+        #expect(conversation.loadedHistory)
+        #expect(!conversation.timeline.isEmpty)
+        #expect(!conversation.canWrite)
+        #expect(!conversation.needsControl)
+        #expect(conversation.connectionMessage == "The studio Mac is offline.")
+    }
+
+    @Test func demoDraftsDoNotCarryOverBetweenLaunches() {
+        let thread = ThreadSummary(session: "harbor-0")
+        let first = AppModel.demo()
+        let composer = ComposerModel(app: first, thread: thread)
+        composer.text = "A demo draft"
+        #expect(ComposerModel(app: first, thread: thread).text == "A demo draft")
+        #expect(ComposerModel(app: AppModel.demo(), thread: thread).text.isEmpty)
+    }
+
+    @Test func suggestionsPreferTheCurrentWorkspace() {
+        #expect(NewChatView.directory("/Users/robin/Projects/Maps", hostDefault: "/Users/robin/Projects/Harbor")
+                == "/Users/robin/Projects/Maps")
+        #expect(NewChatView.directory("", hostDefault: "/Users/robin/Projects/Harbor")
+                == "/Users/robin/Projects/Harbor")
+    }
+
+    @Test func leavingIdleConversationKeepsItsStreamAndTimeline() async throws {
+        let model = AppModel.demo()
+        await model.refresh()
+        let threads = ThreadsModel(app: model)
+        await threads.reload()
+        let summary = try #require(threads.thread("harbor-0"))
+        threads.selection = summary.id
+        let conversation = threads.conversation(for: summary)
+        await conversation.start()
+        defer { conversation.stop() }
+        for _ in 0..<100 where !conversation.canWrite { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(conversation.canWrite)
+        threads.selection = "harbor-1"
+        #expect(conversation.connection == .live)
+        #expect(conversation.canWrite)
+        #expect(!conversation.timeline.isEmpty)
+    }
+
+    @Test func continuingAfterFailureDoesNotReplaceTheDraft() async throws {
+        let transport = happyTransport()
+        let model = AppModel(defaults: defaults, store: store, transport: transport)
+        await model.pair(with: Self.link)
+        let drafts = Drafts(url: URL.temporaryDirectory.appending(path: "\(UUID()).json"))
+        defer { drafts.removeAll() }
+        let composer = ComposerModel(app: model, thread: ThreadSummary(session: "retry"), drafts: drafts)
+        composer.text = "A different question"
+        transport.set { request in
+            let body = request.httpBody.flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+            #expect(request.url?.path == "/api/send")
+            #expect(body?["message"]?["text"]?.stringValue == "Continue from the failed step.")
+            return (200, "{}")
+        }
+        await composer.continueFromFailure(canWrite: true)
+        #expect(composer.error == nil)
+        #expect(composer.text == "A different question")
+        #expect(drafts.read("retry") == "A different question")
+    }
+
+    @Test func demoModelPickerReceivesChoicesFromTheLiveStream() async throws {
+        let model = AppModel.demo()
+        await model.refresh()
+        let threads = ThreadsModel(app: model)
+        await threads.reload()
+        let summary = try #require(threads.thread("harbor-0"))
+        let conversation = threads.conversation(for: summary)
+        await conversation.start()
+        defer { conversation.stop() }
+        for _ in 0..<100 where !conversation.canWrite { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(conversation.canWrite)
+        let choices = try await conversation.composer.choices(for: .model)
+        #expect(choices.map(\.label).contains("Claude Opus 4.7"))
+    }
+
     @Test func revokedCapabilityReturnsToPairingWithReason() async throws {
         let transport = happyTransport()
         let model = AppModel(defaults: defaults, store: store, transport: transport)

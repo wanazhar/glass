@@ -1,10 +1,18 @@
 import GlassModels
 import SwiftUI
 
+extension EnvironmentValues {
+    @Entry var openReferencedFile: ((String) -> Void)? = nil
+    @Entry var completeMarkdownFencesOnly = false
+}
+
 /// Renders assistant Markdown natively: prose, headings, nested and task lists, quotes, tables,
 /// `<details>` sections, inline and display math, images, and fenced code.
 struct MarkdownView: View, Equatable {
+    @Environment(\.completeMarkdownFencesOnly) private var completeFencesOnly
     var text: String
+    var streaming = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     enum ListMarker: Hashable {
         case bullet
@@ -25,6 +33,7 @@ struct MarkdownView: View, Equatable {
         case table(header: [String], alignments: [ColumnAlignment], rows: [[String]])
         case details(summary: String, body: String)
         case image(alt: String, url: String)
+        case file(label: String, path: String)
     }
 
     private final class ParsedBlocks {
@@ -51,50 +60,77 @@ struct MarkdownView: View, Equatable {
         return cache
     }()
 
-    nonisolated static func == (left: Self, right: Self) -> Bool { left.text == right.text }
+    nonisolated static func == (left: Self, right: Self) -> Bool {
+        left.text == right.text && left.streaming == right.streaming
+    }
 
     private var parsedBlocks: [Block] {
-        let key = text as NSString
+        let key = (completeFencesOnly ? "1" + text : "0" + text) as NSString
         if let cached = Self.blockCache.object(forKey: key) { return cached.blocks }
-        let blocks = Self.blocks(text)
+        let blocks = Self.blocks(text, completeFencesOnly: completeFencesOnly)
         Self.blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
         return blocks
     }
 
     var body: some View {
+        let blocks = parsedBlocks
         VStack(alignment: .leading, spacing: Design.gap) {
-            ForEach(Array(parsedBlocks.enumerated()), id: \.offset) { _, block in
-                BlockView(block: block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                if streaming, !reduceMotion, index == blocks.count - 1 {
+                    BlockView(block: block)
+                        .contentTransition(.opacity)
+                        .animation(.easeOut(duration: 0.16), value: block)
+                } else {
+                    BlockView(block: block)
+                }
             }
         }
+        .lineSpacing(4)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Inline
 
-    /// Inline Markdown with `$…$` and `\(…\)` math drawn as Unicode, and inline images removed
-    /// (generated images are shown by the tool that made them).
-    static func inline(_ value: String) -> AttributedString {
-        let key = value as NSString
-        if let cached = inlineCache.object(forKey: key) { return cached.value }
-        var result = AttributedString()
-        for segment in InlineMath.split(stripImages(value)) {
+    static func inline(_ value: String, mathSize: CGFloat, colorScheme: ColorScheme) -> Text {
+        let segments = InlineMath.split(stripImages(value))
+        var accessibleText = Text("")
+        var hasMath = false
+        let typeset = segments.reduce(Text("")) { text, segment in
+            let next: Text
+            let accessible: Text
             switch segment {
-            case .text(let text):
-                result += markdown(text)
+            case .text(let prose):
+                next = Text(markdown(prose))
+                accessible = next
             case .math(let source):
-                var math = AttributedString(InlineMath.render(source))
-                math.inlinePresentationIntent = .emphasized
-                result += math
+                hasMath = true
+                if let image = NativeMath.image(source, size: mathSize, display: false, colorScheme: colorScheme) {
+                    accessible = Text(InlineMath.render(source))
+                    next = Text(NativeMath.artwork(image))
+                } else {
+                    accessible = Text(verbatim: source)
+                    next = accessible.monospaced()
+                }
             }
+            accessibleText = Text("\(accessibleText)\(accessible)")
+            return Text("\(text)\(next)")
         }
-        inlineCache.setObject(InlineText(result), forKey: key, cost: value.utf8.count * 3)
-        return result
+        return hasMath ? typeset.accessibilityLabel(accessibleText) : typeset
     }
 
     private static func markdown(_ value: String) -> AttributedString {
+        let key = value as NSString
+        if let cached = inlineCache.object(forKey: key) { return cached.value }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
-        return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+        var text = (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+        for run in text.runs {
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                text[run.range].backgroundColor = Design.accent.opacity(0.12)
+            }
+            if run.link != nil { text[run.range].underlineStyle = .single }
+        }
+        inlineCache.setObject(InlineText(text), forKey: key, cost: value.utf8.count * 3)
+        return text
     }
 
     private static let inlineImage = try! NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)"#)
@@ -109,12 +145,13 @@ struct MarkdownView: View, Equatable {
 
     private static let listPattern = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$"#)
     private static let imagePattern = try! NSRegularExpression(pattern: #"^!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)$"#)
+    private static let filePattern = #/^\[([^\]]+)\]\(((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][\w-]*)\)$/#
     private static let separatorPattern = try! NSRegularExpression(pattern: #"^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?$"#)
 
-    static func blocks(_ text: String) -> [Block] {
+    static func blocks(_ text: String, completeFencesOnly: Bool = false) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
-        let lines = text.components(separatedBy: "\n")
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var index = 0
 
         func flush() {
@@ -130,14 +167,19 @@ struct MarkdownView: View, Equatable {
             // Fenced code (also glass-ui, mermaid and math fences).
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 flush()
-                let fence = String(trimmed.prefix(3))
-                let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                let marker: Character = trimmed.first == "~" ? "~" : "`"
+                let fenceLength = trimmed.prefix { $0 == marker }.count
+                let language = String(trimmed.dropFirst(fenceLength)).trimmingCharacters(in: .whitespaces)
                 var code: [String] = []
                 index += 1
-                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
+                while index < lines.count {
+                    let candidate = lines[index].trimmingCharacters(in: .whitespaces)
+                    let closingLength = candidate.prefix { $0 == marker }.count
+                    if closingLength >= fenceLength, candidate.count == closingLength { break }
                     code.append(lines[index])
                     index += 1
                 }
+                if completeFencesOnly, index == lines.count { break }
                 blocks.append(.code(code.joined(separator: "\n"), language: language))
                 index += 1
                 continue
@@ -255,6 +297,10 @@ struct MarkdownView: View, Equatable {
                       let alt = Range(match.range(at: 1), in: trimmed), let url = Range(match.range(at: 2), in: trimmed) {
                 flush()
                 blocks.append(.image(alt: String(trimmed[alt]), url: String(trimmed[url])))
+            } else if let file = trimmed.wholeMatch(of: filePattern),
+                      !file.2.split(separator: "/").contains("..") {
+                flush()
+                blocks.append(.file(label: String(file.1), path: String(file.2)))
             } else if let item = listItem(line) {
                 flush()
                 blocks.append(item)
@@ -345,14 +391,17 @@ struct MarkdownView: View, Equatable {
 
 private struct BlockView: View {
     var block: MarkdownView.Block
+    @Environment(\.openReferencedFile) private var openReferencedFile
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         switch block {
         case .prose(let value):
-            Text(MarkdownView.inline(value)).textSelection(.enabled)
+            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme).font(Design.body).textSelection(.enabled)
         case .heading(let value, let level):
-            Text(MarkdownView.inline(value))
-                .font(level == 1 ? .title2.bold() : level == 2 ? .title3.bold() : .headline)
+            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme)
+                .font(level == 1 ? Design.title : level == 2 ? .title3.weight(.semibold) : Design.headline)
                 .padding(.top, level <= 2 ? 4 : 0)
                 .accessibilityAddTraits(.isHeader)
         case .item(let value, let marker, let depth):
@@ -360,12 +409,12 @@ private struct BlockView: View {
         case .code(let code, let language):
             switch language.lowercased() {
             case ReplyComponent.fence: ComponentBlock(source: code)
-            case "mermaid": RichBlockView(kind: .mermaid, source: code)
-            case "math", "latex", "tex", "katex": RichBlockView(kind: .math, source: code)
+            case "mermaid": RichBlockView(source: code)
+            case "math", "latex", "tex", "katex": DisplayMath(source: code)
             default: CodeBlock(code: code, language: language)
             }
         case .math(let source):
-            RichBlockView(kind: .math, source: source)
+            DisplayMath(source: source)
         case .rule:
             Divider().padding(.vertical, 4)
         case .quote(let inner):
@@ -378,25 +427,27 @@ private struct BlockView: View {
             .accessibilityLabel("Quote")
             .accessibilityIdentifier("markdown.quote")
         case .table(let header, let alignments, let rows):
-            DataTable(header: header.map { MarkdownView.inline($0) }, alignments: alignments,
-                      rows: rows.map { $0.map { MarkdownView.inline($0) } })
+            DataTable(header: header, alignments: alignments, rows: rows)
                 .equatable()
                 .accessibilityIdentifier("markdown.table")
         case .details(let summary, let body):
             DetailsBlock(summary: summary, content: body)
         case .image(let alt, let url):
             if let url = URL(string: url), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    case .failure: EmptyView()
-                    default: Color(.secondarySystemFill).frame(height: 160)
-                    }
-                }
-                .clipShape(.rect(cornerRadius: 12, style: .continuous))
-                .accessibilityLabel(alt.isEmpty ? "Image" : alt)
+                RemoteMarkdownImage(url: url, alt: alt).id(url)
             }
             // Local paths are images a tool already showed above; nothing more to draw.
+        case .file(let label, let path):
+            if let openReferencedFile {
+                Button { openReferencedFile(path) } label: {
+                    Label(label, systemImage: "doc.text")
+                        .font(.footnote.weight(.medium))
+                }
+                .glassButtonStyle()
+                .accessibilityIdentifier("markdown.file")
+            } else {
+                Label(label, systemImage: "doc.text")
+            }
         }
     }
 }
@@ -405,7 +456,9 @@ private struct ListItemView: View {
     var text: String
     var marker: MarkdownView.ListMarker
     var depth: Int
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var indent: CGFloat = 18
+    @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -420,7 +473,7 @@ private struct ListItemView: View {
                     .foregroundStyle(done ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     .accessibilityHidden(true)
             }
-            Text(MarkdownView.inline(text))
+            MarkdownView.inline(text, mathSize: mathSize, colorScheme: colorScheme)
                 .foregroundStyle(marker == .task(done: true) ? .secondary : .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -437,16 +490,45 @@ private struct ListItemView: View {
     }
 }
 
+struct RemoteMarkdownImage: View {
+    let url: URL
+    let alt: String
+    @State private var requested = false
+
+    var body: some View {
+        if requested {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image): image.resizable().scaledToFit()
+                case .failure: Label("Couldn’t load image", systemImage: "photo")
+                default: ProgressView()
+                }
+            }
+            .clipShape(.rect(cornerRadius: Design.corner))
+            .accessibilityLabel(alt.isEmpty ? "Image" : alt)
+        } else {
+            Button { requested = true } label: {
+                Label(alt.isEmpty ? "Load remote image" : "Load image: \(alt)", systemImage: "photo")
+            }
+            .glassButtonStyle()
+            .accessibilityIdentifier("markdown.loadRemoteImage")
+        }
+    }
+}
+
 private struct DetailsBlock: View {
     var summary: String
     var content: String
+    @Environment(\.colorScheme) private var colorScheme
     @State private var expanded = false
+    @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             MarkdownView(text: content).padding(.top, 8)
         } label: {
-            Text(MarkdownView.inline(summary)).font(.body.weight(.medium)).foregroundStyle(.primary)
+            MarkdownView.inline(summary, mathSize: mathSize, colorScheme: colorScheme)
+                .font(.body.weight(.medium)).foregroundStyle(.primary)
         }
         .tint(.secondary)
         .accessibilityIdentifier("markdown.details")
@@ -454,15 +536,18 @@ private struct DetailsBlock: View {
 }
 
 struct DataTable: View, Equatable {
-    var header: [AttributedString]
+    var header: [String]
     var alignments: [MarkdownView.ColumnAlignment] = []
-    var rows: [[AttributedString]]
-    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 148.0
+    var rows: [[String]]
+    var markdown = true
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .subheadline) private var mathSize = 15.0
+    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 112.0
     @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
     @State private var viewportWidth = 0.0
 
     nonisolated static func == (left: Self, right: Self) -> Bool {
-        left.header == right.header && left.alignments == right.alignments && left.rows == right.rows
+        left.header == right.header && left.alignments == right.alignments && left.rows == right.rows && left.markdown == right.markdown
     }
 
     private var columnWidth: CGFloat {
@@ -477,14 +562,14 @@ struct DataTable: View, Equatable {
         }
     }
 
-    private func cell(_ text: AttributedString, column: Int, isHeader: Bool = false) -> some View {
+    private func cell(_ text: String, column: Int, isHeader: Bool = false) -> some View {
         let alignment = alignment(column)
-        return Text(text)
+        return (markdown ? MarkdownView.inline(text, mathSize: mathSize, colorScheme: colorScheme) : Text(verbatim: text))
             .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
             .multilineTextAlignment(alignment)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: alignment == .center ? .center : alignment == .trailing ? .trailing : .leading)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Design.gap)
             .padding(.vertical, 8)
             .frame(width: columnWidth)
             .textSelection(.enabled)
@@ -521,18 +606,20 @@ struct DataTable: View, Equatable {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
-            .clipShape(.rect(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5)
-                    .allowsHitTesting(false)
-            }
+            .frame(minWidth: viewportWidth, alignment: .leading)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .defaultScrollAnchor(.leading)
+        .clipShape(.rect(cornerRadius: Design.corner))
+        .overlay {
+            RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Color(.separator), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
         .onGeometryChange(for: CGFloat.self, of: \.size.width) { viewportWidth = $0 }
     }
 }
 
-/// Inline LaTeX shown as Unicode text, so short formulas sit in the sentence without a web view.
+/// Locates inline LaTeX and supplies a readable fallback when typesetting fails.
 enum InlineMath {
     enum Segment: Equatable {
         case text(String)
@@ -752,7 +839,7 @@ struct CodeBlock: View {
             .padding(.top, 10)
             .padding(.bottom, 4)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(code)
+                Text(highlighted)
                     .font(.system(.footnote, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: false)
                     .textSelection(.enabled)
@@ -762,7 +849,27 @@ struct CodeBlock: View {
             }
         }
         .background(Design.surface, in: .rect(cornerRadius: Design.corner))
+        .overlay { RoundedRectangle(cornerRadius: Design.corner).strokeBorder(.quaternary, lineWidth: 0.5) }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("timeline.code")
+    }
+
+    private var highlighted: AttributedString {
+        guard !language.isEmpty, code.utf8.count <= 32_768 else { return AttributedString(code) }
+        let tokens = code.ranges(of: /\/\/[^\n]*|"[^"\n]*"|\b(?:let|var|func|class|struct|enum|import|return|if|else|for|in|while|async|await|try|throw|true|false|nil|const|def|fn|match|pub)\b|\b\d+(?:\.\d+)?\b/)
+        var output = AttributedString()
+        var start = code.startIndex
+        for range in tokens {
+            output += AttributedString(code[start..<range.lowerBound])
+            let value = code[range]
+            var token = AttributedString(value)
+            token.foregroundColor = value.hasPrefix("//") ? .secondary
+                : value.hasPrefix("\"") ? .orange
+                : value.first?.isNumber == true ? .teal : Design.accent
+            output += token
+            start = range.upperBound
+        }
+        output += AttributedString(code[start...])
+        return output
     }
 }

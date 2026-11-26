@@ -50,6 +50,7 @@ final class AppModel {
     }
 
     let info: AppInfo
+    let drafts: Drafts
     private let defaults: UserDefaults
     private let store: any CapabilityStore
     private let transport: any GlassHTTPTransport
@@ -64,12 +65,14 @@ final class AppModel {
         info: AppInfo = .current,
         defaults: UserDefaults = .standard,
         store: any CapabilityStore = KeychainCapabilityStore(service: AppModel.keychainService),
-        transport: any GlassHTTPTransport = URLSessionTransport()
+        transport: any GlassHTTPTransport = URLSessionTransport(),
+        drafts: Drafts = .shared
     ) {
         self.info = info
         self.defaults = defaults
         self.store = store
         self.transport = transport
+        self.drafts = drafts
         self.allowLANHTTP = defaults.bool(forKey: Keys.allowLANHTTP)
         if let data = defaults.data(forKey: Keys.endpoint),
            let saved = try? JSONDecoder().decode(GlassEndpoint.self, from: data),
@@ -84,6 +87,15 @@ final class AppModel {
     var api: GlassClient? { client }
 
     var status: GatewayStatus? { if case .connected(let status) = phase { status } else { nil } }
+
+    static func demo(threadCount: Int = 336) -> AppModel {
+        let defaults = UserDefaults(suiteName: "com.wanazhar.glass.demo")!
+        let endpoint = try! GlassEndpoint(origin: "https://studio-mac.example", mode: .remote)
+        let store = InMemoryCapabilityStore()
+        try? store.save(.ownerCapability(String(repeating: "d", count: 64)), for: endpoint)
+        defaults.set(try? JSONEncoder().encode(endpoint), forKey: Keys.endpoint)
+        return AppModel(defaults: defaults, store: store, transport: DemoTransport(threadCount: threadCount), drafts: Drafts(url: nil))
+    }
 
     func pair(with text: String) async {
         guard !isPairing else { return }
@@ -181,7 +193,7 @@ final class AppModel {
     func resetForTesting() {
         forget()
         allowLANHTTP = false
-        Drafts.shared.removeAll()
+        drafts.removeAll()
         for key in [Attention.key, Attention.notifiedKey, KeepAlive.key] {
             UserDefaults.standard.removeObject(forKey: key)
         }

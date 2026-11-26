@@ -11,9 +11,14 @@ struct PairingView: View {
         @Bindable var model = model
         NavigationStack {
             Form {
-                GlassLogo(launchRipple: true)
-                    .padding(.leading, -Design.padding)
-                    .listRowBackground(Color.clear)
+                VStack(alignment: .leading, spacing: Design.gap) {
+                    Image(.appGlyph).resizable().scaledToFit().frame(width: 48, height: 48)
+                        .accessibilityHidden(true)
+                    Text("Connect to your workspace").font(.title2.weight(.semibold))
+                    Text("Keep working with the conversations and files already on your host.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .listRowBackground(Color.clear)
                 if let reason = model.repairReason {
                     Section {
                         Label {

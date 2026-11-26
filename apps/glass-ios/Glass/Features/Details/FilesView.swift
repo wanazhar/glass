@@ -105,7 +105,7 @@ struct FolderView: View {
 /// A file preview: text, image, PDF, or isolated HTML.
 struct FileView: View {
     let conversation: ConversationModel
-    let folder: String
+    var folder: String? = nil
     let name: String
     @Environment(AppModel.self) private var app
     @State private var content: FileContent?
@@ -113,7 +113,14 @@ struct FileView: View {
     @State private var editing = false
     @State private var previewingHTML = false
 
-    private var fullPath: String { BrowsePage(path: folder, entries: []).child(.init(name: name, kind: "file")) }
+    private var fullPath: String {
+        guard let folder else {
+            if name.hasPrefix("/") { return name }
+            guard let workspace = conversation.thread.workspace, !workspace.isEmpty else { return name }
+            return BrowsePage(path: workspace, entries: []).child(.init(name: name, kind: "file"))
+        }
+        return BrowsePage(path: folder, entries: []).child(.init(name: name, kind: "file"))
+    }
     private var inWorkspace: Bool {
         guard let workspace = conversation.thread.workspace, !workspace.isEmpty else { return false }
         return fullPath.hasPrefix(workspace.hasSuffix("/") ? workspace : workspace + "/")
@@ -130,12 +137,12 @@ struct FileView: View {
                     }
                     .accessibilityLabel(name)
                 } else if let text = content.text {
-                    ScrollView([.vertical, .horizontal]) {
-                        Text(text)
-                            .font(.system(.footnote, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollView {
+                        if ["md", "markdown"].contains((name as NSString).pathExtension.lowercased()) {
+                            MarkdownView(text: text).padding(Design.padding)
+                        } else {
+                            CodeBlock(code: text, language: (name as NSString).pathExtension).padding(Design.padding)
+                        }
                     }
                 } else {
                     ContentUnavailableView("No preview", systemImage: "doc",
@@ -147,7 +154,7 @@ struct FileView: View {
                 ProgressView()
             }
         }
-        .navigationTitle(name)
+        .navigationTitle((name as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("file")
         .toolbar {
@@ -176,7 +183,11 @@ struct FileView: View {
     private func load() async {
         guard let api = app.api else { return }
         do {
-            content = try await api.file(name, workspace: folder)
+            if let folder {
+                content = try await api.file(name, workspace: folder)
+            } else {
+                content = try await api.file(name, thread: conversation.thread.id, sourceRef: conversation.thread.sourceRef)
+            }
             error = nil
         } catch {
             self.error = error.localizedDescription

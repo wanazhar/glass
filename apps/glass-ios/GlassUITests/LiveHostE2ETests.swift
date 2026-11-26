@@ -314,8 +314,10 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(app.buttons["composer.send"].waitForExistence(timeout: 10))
         XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists }, "the opening client holds control")
 
-        app.buttons["conversation.menu"].tap()
-        app.buttons["conversation.releaseControl"].tap()
+        app.buttons["conversation.connection"].tap()
+        let release = app.buttons["conversation.releaseControl"].firstMatch
+        XCTAssertTrue(release.waitForExistence(timeout: 5))
+        release.tap()
         let readOnly = app.descendants(matching: .any)["composer.readOnly"]
         XCTAssertTrue(readOnly.waitForExistence(timeout: 15), "releasing control makes the composer read-only")
         XCTAssertTrue(try call("control/claim?id=\(thread)", method: "POST").contains("true"), "another client takes control")
@@ -323,7 +325,7 @@ final class LiveHostE2ETests: XCTestCase {
         app.buttons["composer.takeControl"].tap()
         sleep(2)
         XCTAssertTrue(readOnly.exists, "control stays with the other client")
-        XCTAssertFalse(composerField(app).isEnabled)
+        XCTAssertFalse(composerField(app).exists)
         attach(app, "e2e-read-only")
 
         _ = try call("control/release?id=\(thread)", method: "POST")
@@ -724,7 +726,7 @@ final class LiveHostE2ETests: XCTestCase {
         let app = try pairedApp()
         open(app, thread: thread)
         XCTAssertTrue(waitForConnection(app, "Live"))
-        typeAndSend(app, "pause 6 then reply")
+        typeAndSend(app, "pause 20 then reply")
         let bubble = app.descendants(matching: .any)["conversation.activity"].firstMatch
         XCTAssertTrue(bubble.waitForExistence(timeout: 10), "a working bubble sits where the reply will appear")
         XCTAssertEqual(bubble.label, "Glass is working")
@@ -736,16 +738,18 @@ final class LiveHostE2ETests: XCTestCase {
                       "while working, a typed message shows whether it steers or queues")
         attach(app, "e2e-working-bubble")
         let hide = app.buttons["conversation.hideKeyboard"]
-        XCTAssertTrue(hide.waitForExistence(timeout: 5), "an obvious control hides the keyboard")
-        hide.tap()
-        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "the keyboard goes away")
-        field.tap()
+        XCTAssertFalse(hide.exists, "the chat dismisses the keyboard without a floating control")
         XCTAssertTrue(waitUntil(5) { app.keyboards.count > 0 })
         // Drag the conversation down into the keyboard, as in Messages.
         let window = app.windows.firstMatch
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
             .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
         XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "scrolling the chat dismisses the keyboard")
+        field.tap()
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count > 0 }, "the keyboard can be reopened")
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(waitUntil(5) { app.keyboards.count == 0 }, "interactive dismissal also works the second time")
         XCTAssertTrue(text(app, containing: "Echo from the host").waitForExistence(timeout: 30))
         XCTAssertTrue(waitUntil(10) { !bubble.exists }, "the bubble goes once the reply arrives")
     }
@@ -857,8 +861,7 @@ final class LiveHostE2ETests: XCTestCase {
     @MainActor
     func testStreamingReplyIsFollowedUntilYouScrollThenResumes() throws {
         let thread = try call("thread/new?title=Follow", method: "POST")
-        // UI queries over a fast stream are slow, so give the test room to measure while paused.
-        let app = try pairedApp(arguments: ["-GlassFollowResumeSeconds", "6"])
+        let app = try pairedApp()
         open(app, thread: thread)
         XCTAssertTrue(waitForConnection(app, "Live"))
         _ = try call("thread/send?id=\(thread)&text=lines%20400", method: "POST")
@@ -900,16 +903,11 @@ final class LiveHostE2ETests: XCTestCase {
         attach(app, "e2e-follow-paused")
         XCTAssertEqual(before, after, accuracy: 1, "your position holds while the reply keeps streaming")
 
-        // Left alone for a few seconds, the chat picks the stream up again.
-        XCTAssertTrue(waitUntil(12) { !latest.exists }, "following resumes after a few idle seconds")
-        let resumed = newestLine()
-        XCTAssertTrue(waitUntil(5) { newestLine() > resumed }, "and moves with the stream again")
-
-        // Latest resumes at once.
-        readBack(screen)
-        XCTAssertTrue(latest.waitForExistence(timeout: 3))
+        // Stay on the older text until the reader chooses to jump back.
         latest.tap()
         XCTAssertTrue(waitUntil(2) { !latest.exists }, "Latest picks the stream up right away")
+        let resumed = newestLine()
+        XCTAssertGreaterThan(resumed, followed)
         attach(app, "e2e-follow-latest")
     }
 

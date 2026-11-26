@@ -15,6 +15,9 @@ extension EnvironmentValues {
 struct TimelineRow: View {
     var entry: TimelineEntry
     @Environment(\.messageAction) private var messageAction
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showingFullAnswer = false
+    @State private var userAppeared = false
 
     @ViewBuilder
     private func actions(for kinds: [MessageAction]) -> some View {
@@ -31,6 +34,7 @@ struct TimelineRow: View {
     var body: some View {
         switch entry {
         case .user(_, let text):
+            let show = reduceMotion || entry.recordOffset != nil || userAppeared
             HStack {
                 Spacer(minLength: 48)
                 Text(text)
@@ -45,9 +49,34 @@ struct TimelineRow: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("timeline.user")
-        case .assistant(_, let text, _):
-            MarkdownView(text: text)
-                .equatable()
+            .opacity(show ? 1 : 0)
+            .offset(y: show ? 0 : 6)
+            .animation(.spring(duration: 0.23, bounce: 0.04), value: userAppeared)
+            .onAppear { userAppeared = true }
+        case .assistant(_, let text, let streaming):
+            VStack(alignment: .leading, spacing: Design.gap) {
+                MarkdownView(text: !streaming && text.count > 5_000 ? answerPreview(text) : text,
+                             streaming: streaming)
+                    .equatable()
+                    .environment(\.completeMarkdownFencesOnly, !streaming && text.count > 5_000)
+                if !streaming, text.count > 5_000 {
+                    Button("Show more", systemImage: "arrow.up.right.square") { showingFullAnswer = true }
+                        .glassButtonStyle()
+                }
+            }
+                .accessibilityIdentifier("timeline.streaming", isEnabled: streaming)
+                .sheet(isPresented: $showingFullAnswer) {
+                    NavigationStack {
+                        ScrollView { MarkdownView(text: text).padding(Design.padding) }
+                            .navigationTitle("Full reply")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done") { showingFullAnswer = false }
+                                }
+                            }
+                    }
+                }
                 .contextMenu {
                     CopyButton(text: text)
                     actions(for: [.quote, .branch])
@@ -70,6 +99,12 @@ struct TimelineRow: View {
         default:
             EmptyView()
         }
+    }
+
+    private func answerPreview(_ text: String) -> String {
+        let preview = String(text.prefix(2_400))
+        guard let boundary = preview.range(of: "\n\n", options: .backwards) else { return preview + "…" }
+        return String(preview[..<boundary.lowerBound])
     }
 }
 

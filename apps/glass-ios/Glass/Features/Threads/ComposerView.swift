@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// Message entry, control handoff, attachments and stop, pinned under the conversation.
 struct ComposerView: View {
     @Bindable var conversation: ConversationModel
+    var onFieldFocus: () -> Void
     var chooseModel: () -> Void
     @State private var dictation = Dictation()
     @State private var photos: [PhotosPickerItem] = []
@@ -33,14 +34,43 @@ struct ComposerView: View {
                 RecordingBar(dictation: dictation)
             }
             // One glass container, so the message box and its buttons float and blend as one bar.
-            GlassGroup {
-                HStack(alignment: .bottom, spacing: Design.gap) {
-                    attachMenu
-                    field
-                    trailingButton
+            if canWrite {
+                Button(action: chooseModel) {
+                    Label(composer.model ?? conversation.thread.model ?? "Model", systemImage: "chevron.up.chevron.down")
+                        .font(.footnote.weight(.medium))
+                        .frame(minHeight: Design.control)
+                        .contentShape(Rectangle())
                 }
-                .padding(Design.small)
-                .glassPanel(interactive: true)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, Design.padding)
+                .accessibilityIdentifier("composer.model")
+                GlassGroup {
+                    HStack(alignment: .bottom, spacing: Design.small) {
+                        attachMenu
+                        field
+                        trailingButton
+                    }
+                    .padding(Design.small)
+                    .glassPanel(cornerRadius: 26, interactive: true)
+                }
+            } else if let message = conversation.connectionMessage {
+                HStack(spacing: Design.gap) {
+                    Text(message).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Reconnect") { Task { await conversation.reconnect() } }
+                        .glassButtonStyle(prominent: true)
+                }
+                .padding(Design.padding)
+                .glassPanel()
+                .accessibilityIdentifier("composer.disconnected")
+            } else if !showsControlPrompt {
+                HStack {
+                    ProgressView()
+                    Text("Connecting to your host…").font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(Design.padding)
             }
             if case .unavailable(let message) = dictation.state {
                 Text(message).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -92,11 +122,11 @@ struct ComposerView: View {
 
     private var controlPrompt: some View {
         HStack(spacing: 10) {
-            Text("Another client may be typing. Take control to send messages from this iPhone.")
+            Text("To send from this device, take control here. If another client is active, release control there first.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Take Control") { Task { await composer.claimControl() } }
+            Button("Take over here") { Task { await composer.claimControl() } }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("composer.takeControl")
         }
@@ -129,15 +159,16 @@ struct ComposerView: View {
     }
 
     private var field: some View {
-        ComposerTextField(placeholder: canWrite ? (active ? (composer.mode == .steer ? "Steer this reply" : "Queue a message") : "Message") : "Read-only",
+        ComposerTextField(placeholder: active ? (composer.mode == .steer ? "Steer this reply" : "Queue a follow-up") : "Message Glass",
                           text: Bindable(composer).text, isEnabled: canWrite,
                           height: fieldHeight, onHeight: { fieldHeight = $0 },
+                          onFocus: onFieldFocus,
                           dismissFor: conversation.timeline.interaction?.id,
                           onCommands: { composer.showingCommands = true }) {
             Task { await composer.send(active: active, canWrite: canWrite) }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, Design.small)
+        .padding(.vertical, 11)
     }
 
     private var trailingButton: some View {
@@ -148,6 +179,7 @@ struct ComposerView: View {
                     Task { await dictation.toggle { composer.text = base + $0 } }
                 }
                 .labelStyle(.iconOnly)
+                .controlSize(.large)
                 .glassButtonStyle()
                 .disabled(!canWrite)
                 .accessibilityIdentifier("composer.dictate")
@@ -157,6 +189,7 @@ struct ComposerView: View {
                 Task { await composer.send(active: active, canWrite: canWrite) }
             }
             .labelStyle(.iconOnly)
+            .controlSize(.large)
             .glassButtonStyle(prominent: true)
             .disabled(!canWrite || composer.trimmed.isEmpty || composer.sending)
             .accessibilityIdentifier("composer.send")
@@ -172,15 +205,16 @@ struct ComposerView: View {
             Button("Camera", systemImage: "camera") { takingPhoto = true }
                 .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
             Divider()
-            Button("Model", systemImage: "cpu", action: chooseModel)
             Button("Expand Editor", systemImage: "arrow.up.left.and.arrow.down.right") { composer.showingEditor = true }
                 .accessibilityIdentifier("composer.expand")
         } label: {
-            Label("Attach", systemImage: "plus")
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 22, minHeight: 22)
+            Image(systemName: "plus")
+                .font(.body.weight(.semibold))
+                .frame(width: Design.control, height: Design.control)
+                .contentShape(Rectangle())
         }
-        .glassButtonStyle()
+        .buttonStyle(.plain)
+        .accessibilityLabel("Attach")
         .disabled(!canWrite)
         .accessibilityIdentifier("composer.attach")
     }
@@ -193,7 +227,13 @@ struct ComposerView: View {
                         Text(upload.name).font(.footnote).lineLimit(1)
                         if upload.failure != nil {
                             Spacer()
-                            Button("Dismiss", systemImage: "xmark") { composer.dismissUpload(upload) }.labelStyle(.iconOnly).font(.footnote)
+                            Button { composer.dismissUpload(upload) } label: {
+                                Image(systemName: "xmark")
+                                    .font(Design.footnote)
+                                    .frame(width: Design.control, height: Design.control)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityLabel("Dismiss upload")
                         } else {
                             ProgressView(value: upload.fraction).frame(maxWidth: .infinity)
                         }
@@ -225,13 +265,17 @@ struct ComposerView: View {
                     HStack(spacing: 4) {
                         Image(systemName: attachment.isImage ? "photo" : "doc.text").accessibilityHidden(true)
                         Text(attachment.label).lineLimit(1)
-                        Button("Remove \(attachment.label)", systemImage: "xmark") { Task { await composer.remove(attachment) } }
-                            .labelStyle(.iconOnly)
-                            .disabled(!canWrite)
+                        Button { Task { await composer.remove(attachment) } } label: {
+                            Image(systemName: "xmark")
+                                .frame(width: Design.control, height: Design.control)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Remove \(attachment.label)")
+                        .disabled(!canWrite)
                     }
                     .font(.caption)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, Design.small)
                     .floatingGlass()
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("composer.context")

@@ -11,6 +11,7 @@ struct ComposerTextField: UIViewRepresentable {
     /// The height the text needs, up to `maxLines`; reported by the text view as it lays out.
     var height: CGFloat = 0
     var onHeight: (CGFloat) -> Void = { _ in }
+    var onFocus: () -> Void = {}
     /// A new pending decision puts the keyboard away so the request is visible.
     var dismissFor: String?
     /// ⌘K and ⌘/ while typing open the command palette.
@@ -28,6 +29,7 @@ struct ComposerTextField: UIViewRepresentable {
 
     func updateUIView(_ view: ComposerTextView, context: Context) {
         context.coordinator.text = $text
+        context.coordinator.onFocus = onFocus
         if view.text != text {
             view.text = text
             // A restored draft or dictation result continues at its end.
@@ -55,8 +57,11 @@ struct ComposerTextField: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var text: Binding<String>
+        var onFocus: () -> Void = {}
         var dismissedFor: String?
         init(text: Binding<String>) { self.text = text }
+
+        func textViewDidBeginEditing(_ textView: UITextView) { onFocus() }
 
         func textViewDidChange(_ textView: UITextView) {
             if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
@@ -76,6 +81,7 @@ final class ComposerTextView: UITextView {
         didSet {
             placeholderLabel.text = placeholder
             accessibilityLabel = placeholder
+            accessibilityHint = "Enter your message"
         }
     }
     override var text: String! {
@@ -150,7 +156,19 @@ final class ComposerTextView: UITextView {
         reportHeight()
     }
 
-    func refreshPlaceholder() { placeholderLabel.isHidden = !(text ?? "").isEmpty }
+    func refreshPlaceholder() { placeholderLabel.isHidden = isFirstResponder || !(text ?? "").isEmpty }
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        refreshPlaceholder()
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        refreshPlaceholder()
+        return result
+    }
 
     private func isReturn(_ presses: Set<UIPress>) -> UIKey? {
         presses.compactMap(\.key).first { $0.keyCode == .keyboardReturnOrEnter }

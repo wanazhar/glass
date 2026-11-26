@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		6C1A55000000000000000101 /* GlassModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000100 /* GlassModels */; };
+		6C1A55000000000000000109 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000108 /* SwiftMath */; };
 		6C1A55000000000000000103 /* GlassTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000102 /* GlassTransport */; };
 		6C1A55000000000000000105 /* GlassAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000104 /* GlassAuth */; };
 		6C1A55000000000000000107 /* GlassAPI in Frameworks */ = {isa = PBXBuildFile; productRef = 6C1A55000000000000000106 /* GlassAPI */; };
@@ -74,6 +75,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				6C1A55000000000000000101 /* GlassModels in Frameworks */,
+				6C1A55000000000000000109 /* SwiftMath in Frameworks */,
 				6C1A55000000000000000103 /* GlassTransport in Frameworks */,
 				6C1A55000000000000000105 /* GlassAuth in Frameworks */,
 				6C1A55000000000000000107 /* GlassAPI in Frameworks */,
@@ -152,6 +154,7 @@
 			name = Glass;
 			packageProductDependencies = (
 				6C1A55000000000000000100 /* GlassModels */,
+				6C1A55000000000000000108 /* SwiftMath */,
 				6C1A55000000000000000102 /* GlassTransport */,
 				6C1A55000000000000000104 /* GlassAuth */,
 				6C1A55000000000000000106 /* GlassAPI */,
@@ -266,6 +269,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				6C1A5500000000000000000B /* XCLocalSwiftPackageReference "../shared/GlassClientKit" */,
+				6C1A5500000000000000010A /* XCRemoteSwiftPackageReference "SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6C1A5500000000000000000A /* Products */;
@@ -606,7 +610,23 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		6C1A5500000000000000010A /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.7.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		6C1A55000000000000000108 /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6C1A5500000000000000010A /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
+		};
 		6C1A55000000000000000100 /* GlassModels */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GlassModels;

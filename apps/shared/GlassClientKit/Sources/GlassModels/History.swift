@@ -65,8 +65,12 @@ public enum TimelineEntry: Sendable, Hashable, Identifiable {
         case "bash":
             let cmd = r["cmd"]?.stringValue ?? ""
             let code = r["code"]?.doubleValue
+            let body = r["out"]?.stringValue ?? ""
+            let output = code.flatMap(Int.init(exactly:)).map { code in
+                body.hasPrefix("[exit ") ? body : "[exit \(code)]\n" + body
+            } ?? body
             return .tool(id: r["id"]?.stringValue ?? key, name: "bash", summary: cmd,
-                         output: "$ \(cmd)\n\(r["out"]?.stringValue ?? "")", failed: code.map { $0 != 0 })
+                         output: output, failed: code.map { $0 != 0 })
         case "tool":
             let failed = r["err"]?.boolValue ?? (text.range(of: #"^(?:error:|\[exit [1-9]\d*\]|\[(?:killed|timed out|cancelled))"#,
                                     options: [.regularExpression, .caseInsensitive]) != nil)

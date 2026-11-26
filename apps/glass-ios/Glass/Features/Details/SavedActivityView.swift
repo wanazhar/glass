@@ -33,7 +33,7 @@ struct SavedActivityView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = page?.text }
+                    Button("Copy page") { UIPasteboard.general.string = page?.text }
                         .disabled(page == nil)
                 }
                 ToolbarItemGroup(placement: .bottomBar) {

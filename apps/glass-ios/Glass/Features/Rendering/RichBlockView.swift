@@ -1,12 +1,9 @@
 import SwiftUI
 import WebKit
 
-/// Math (KaTeX) and diagrams (Mermaid), rendered offline from bundled scripts.
+/// Mermaid diagrams rendered offline from the bundled script.
 /// Falls back to the source as a code block when rendering fails.
 struct RichBlockView: View {
-    enum Kind: String { case math, mermaid }
-
-    var kind: Kind
     var source: String
     @Environment(\.colorScheme) private var colorScheme
     @State private var height: CGFloat = 44
@@ -15,22 +12,21 @@ struct RichBlockView: View {
     var body: some View {
         if let failure {
             VStack(alignment: .leading, spacing: 4) {
-                CodeBlock(code: source, language: kind == .math ? "math" : "mermaid")
+                CodeBlock(code: source, language: "mermaid")
                 Text(failure).font(.caption).foregroundStyle(.secondary)
             }
         } else {
-            RenderWebView(kind: kind, source: source, dark: colorScheme == .dark, height: $height, failure: $failure)
+            RenderWebView(source: source, dark: colorScheme == .dark, height: $height, failure: $failure)
                 .frame(height: min(height, 640))
                 .accessibilityElement()
-                .accessibilityLabel(kind == .math ? "Equation" : "Diagram")
+                .accessibilityLabel("Diagram")
                 .accessibilityValue(source)
-                .accessibilityIdentifier("timeline.rich.\(kind.rawValue)")
+                .accessibilityIdentifier("timeline.rich.mermaid")
         }
     }
 }
 
 private struct RenderWebView: UIViewRepresentable {
-    var kind: RichBlockView.Kind
     var source: String
     var dark: Bool
     @Binding var height: CGFloat
@@ -74,11 +70,11 @@ private struct RenderWebView: UIViewRepresentable {
         init(_ parent: RenderWebView) { self.parent = parent }
 
         func renderIfNeeded(_ view: WKWebView) {
-            let key = "\(parent.kind.rawValue)|\(parent.dark)|\(parent.source)"
+            let key = "\(parent.dark)|\(parent.source)"
             guard loaded, rendered != key else { return }
             rendered = key
-            view.callAsyncJavaScript("render(kind, source, dark)",
-                                     arguments: ["kind": parent.kind.rawValue, "source": parent.source, "dark": parent.dark],
+            view.callAsyncJavaScript("render(source, dark)",
+                                     arguments: ["source": parent.source, "dark": parent.dark],
                                      in: nil, in: .page, completionHandler: nil)
         }
 

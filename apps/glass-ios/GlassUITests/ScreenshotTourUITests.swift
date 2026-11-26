@@ -4,6 +4,180 @@ import XCTest
 /// GLASS_SHOTS (output directory) and GLASS_E2E_CONTROL (live harness); skipped otherwise.
 final class ScreenshotTourUITests: XCTestCase {
     @MainActor
+    func testChatRenderingInLightAndDark() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-GlassResetState", "-glass.theme", appearance]
+            app.launch()
+            XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+            let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+            field.tap()
+            field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+            app.buttons["pair.connect"].tap()
+            XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+            func capture(_ name: String) {
+                let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                attachment.name = "\(appearance)-\(name)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+
+            app.descendants(matching: .any)["thread.reasoning"].firstMatch.tap()
+            let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+            XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "I’ll compare the two build paths")).firstMatch
+                .waitForExistence(timeout: 10))
+            let reasoning = app.descendants(matching: .any)["timeline.reasoning"].firstMatch
+            XCTAssertTrue(reasoning.exists)
+            XCTAssertEqual(conversation.value as? String, "4 entries")
+            capture("reasoning-collapsed")
+
+            reasoning.tap()
+            let completeReasoning = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "without opening a second screen")).firstMatch
+            XCTAssertTrue(completeReasoning.waitForExistence(timeout: 12))
+            XCTAssertEqual(conversation.value as? String, "4 entries")
+            capture("reasoning-expanded")
+
+            app.buttons["conversation.back"].tap()
+            XCTAssertTrue(app.waitForThreadList(timeout: 10))
+            app.descendants(matching: .any)["thread.table"].firstMatch.tap()
+            let table = app.descendants(matching: .any)["markdown.table"].firstMatch
+            XCTAssertTrue(table.waitForExistence(timeout: 10))
+            let header = app.descendants(matching: .any)["conversation.connection"].firstMatch
+            XCTAssertTrue(header.label.contains("Swift workspace"))
+            XCTAssertTrue(app.buttons["conversation.commands"].isHittable)
+            XCTAssertTrue(app.buttons["conversation.menu"].isHittable)
+            capture("wide-table")
+            table.swipeLeft()
+            XCTAssertTrue(app.staticTexts["Platform"].firstMatch.isHittable)
+            capture("wide-table-scrolled")
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testExpandingLongReasoningKeepsItsBeginningVisible() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+        app.buttons["pair.connect"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+        app.descendants(matching: .any)["thread.long-reasoning"].firstMatch.tap()
+        let reasoning = app.descendants(matching: .any)["timeline.reasoning"].firstMatch
+        XCTAssertTrue(reasoning.waitForExistence(timeout: 10))
+        reasoning.tap()
+        let fullText = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Beginning of the long reasoning")).firstMatch
+        XCTAssertTrue(fullText.waitForExistence(timeout: 10))
+        let header = app.buttons["conversation.back"]
+        XCTAssertGreaterThanOrEqual(fullText.frame.minY, header.frame.maxY)
+        XCTAssertLessThan(fullText.frame.minY, app.frame.midY)
+    }
+
+    @MainActor
+    func testExpandingLatestReasoningAfterLongHistory() throws {
+        try checkReasoningAfterLongHistory(scrolledUp: false)
+    }
+
+    @MainActor
+    func testExpandingScrolledUpReasoningAfterLongHistory() throws {
+        try checkReasoningAfterLongHistory(scrolledUp: true)
+    }
+
+    @MainActor
+    private func checkReasoningAfterLongHistory(scrolledUp: Bool) throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+        app.buttons["pair.connect"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+        let thread = scrolledUp ? "thread.scrolled-reasoning" : "thread.deep-reasoning"
+        app.descendants(matching: .any)[thread].firstMatch.tap()
+        let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        let header = app.buttons["conversation.back"]
+        let reasoning = app.buttons.matching(identifier: "timeline.reasoning")
+        XCTAssertTrue(reasoning.firstMatch.waitForExistence(timeout: 10))
+        let separator = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Separate the two reasoning segments.")).firstMatch
+        if scrolledUp {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.48))
+            for _ in 0..<5 {
+                start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
+                if reasoning.allElementsBoundByIndex.contains(where: { $0.isHittable && $0.frame.maxY <= separator.frame.minY }) { break }
+            }
+        }
+        let buttons = reasoning.allElementsBoundByIndex.filter {
+            $0.isHittable && $0.frame.minY >= header.frame.maxY && (!scrolledUp || $0.frame.maxY <= separator.frame.minY)
+        }
+        let block = try XCTUnwrap(scrolledUp ? buttons.first : buttons.last)
+        block.tap()
+        let opening = scrolledUp ? "Beginning of the earlier block." : "Beginning of the latest block."
+        let text = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", opening)).firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(text.frame.minY, header.frame.maxY)
+        XCTAssertLessThan(text.frame.minY, app.frame.midY)
+        if scrolledUp {
+            let initialTop = text.frame.minY
+            app.swipeUp()
+            XCTAssertLessThan(text.frame.minY, initialTop - 50)
+        }
+    }
+
+    @MainActor
+    func testEarlierHistoryPreservesTheExpandedReasoningPosition() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+        app.buttons["pair.connect"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+        app.descendants(matching: .any)["thread.paged-reasoning"].firstMatch.tap()
+        let reasoning = app.descendants(matching: .any)["timeline.reasoning"].firstMatch
+        XCTAssertTrue(reasoning.waitForExistence(timeout: 10))
+        reasoning.tap()
+        let before = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Already visible reasoning")).firstMatch
+        XCTAssertTrue(before.waitForExistence(timeout: 10))
+        let earlier = app.buttons["conversation.older"]
+        if !earlier.isHittable { app.swipeDown() }
+        XCTAssertTrue(earlier.isHittable)
+        let previousBottom = before.frame.maxY
+        earlier.tap()
+
+        let after = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Earlier reasoning")).firstMatch
+        XCTAssertTrue(after.waitForExistence(timeout: 10))
+        XCTAssertTrue(after.label.contains("Already visible reasoning"))
+        XCTAssertEqual(after.frame.maxY, previousBottom, accuracy: 24)
+    }
+
+    @MainActor
     func testCaptureScreens() throws {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["GLASS_SHOTS"] else { throw XCTSkip("Screenshot tour runs via scripts/screenshots.sh") }

@@ -25,7 +25,7 @@ public struct Timeline: Sendable, Hashable {
     private var seenRecords: Set<Int> = []
     private var liveSerial = 0
     private var streamID: String?
-    private var reasoningID: String?
+    public private(set) var liveReasoningID: String?
 
     public init() {}
 
@@ -43,7 +43,7 @@ public struct Timeline: Sendable, Hashable {
         entries = []
         seenRecords = []
         streamID = nil
-        reasoningID = nil
+        liveReasoningID = nil
         entries = Self.entries(from: page, skipping: &seenRecords)
         olderBefore = page.before
         largeRecordOmitted = page.omittedLargeRecord ?? false
@@ -51,7 +51,13 @@ public struct Timeline: Sendable, Hashable {
 
     /// Prepends an older window; records already shown (same byte offset) are skipped.
     public mutating func prependOlder(_ page: HistoryPage) {
-        entries.insert(contentsOf: Self.entries(from: page, skipping: &seenRecords), at: 0)
+        var older = Self.entries(from: page, skipping: &seenRecords)
+        if case .reasoning(_, let prefix) = older.last,
+           case .reasoning(let id, let suffix) = entries.first, id.hasPrefix("rec-") {
+            older.removeLast()
+            entries[0] = .reasoning(id: id, text: prefix + suffix)
+        }
+        entries.insert(contentsOf: older, at: 0)
         olderBefore = page.before
     }
 
@@ -69,7 +75,28 @@ public struct Timeline: Sendable, Hashable {
         disconnected = false
         notice = nil
         interaction = frame.interaction.flatMap(Interaction.init)
-        for event in frame.live { apply(event) }
+        var live = frame.live[...]
+        if frame.active,
+           case .reasoning(let id, let saved) = entries.last,
+           id.hasPrefix("rec-") {
+            // The host appends reasoning to the log before publishing the live delta.
+            // A reset can include some of the same text in both history and its live prefix.
+            var prefix = ""
+            var remaining = live
+            while case .reasoning(let delta)? = remaining.first {
+                prefix += delta
+                remaining.removeFirst()
+            }
+            if prefix.hasPrefix(saved) || (frame.liveClipped && !prefix.isEmpty && saved.hasSuffix(prefix)) {
+                liveReasoningID = id
+                activity = "Reasoning"
+                if prefix.hasPrefix(saved) {
+                    apply(.reasoning(delta: String(prefix.dropFirst(saved.count))))
+                }
+                live = remaining
+            }
+        }
+        for event in live { apply(event) }
         activity = frame.active ? (activity ?? "Working") : nil
     }
 
@@ -87,8 +114,9 @@ public struct Timeline: Sendable, Hashable {
             if let text, !text.isEmpty, !alreadyRecorded { entries.append(.user(id: nextID("user"), text: text)) }
             activity = "Working"
         case .text(let delta):
+            guard !delta.isEmpty else { break }
             notice = nil
-            reasoningID = nil
+            liveReasoningID = nil
             if let streamID, let index = entries.lastIndex(where: { $0.id == streamID }),
                case .assistant(let id, let text, _) = entries[index] {
                 entries[index] = .assistant(id: id, text: text + delta, streaming: true)
@@ -99,18 +127,18 @@ public struct Timeline: Sendable, Hashable {
             }
             activity = "Writing"
         case .reasoning(let delta):
-            if let reasoningID, let index = entries.lastIndex(where: { $0.id == reasoningID }),
-               case .reasoning(let id, let text) = entries[index] {
-                entries[index] = .reasoning(id: id, text: text + delta)
-            } else if !delta.isEmpty {
+            guard !delta.isEmpty else { break }
+            finishStream(clearReasoning: false)
+            if case .reasoning(let id, let text) = entries.last, id == liveReasoningID {
+                entries[entries.count - 1] = .reasoning(id: id, text: text + delta)
+            } else {
                 let id = nextID("reasoning")
-                reasoningID = id
+                liveReasoningID = id
                 entries.append(.reasoning(id: id, text: delta))
             }
             activity = "Reasoning"
         case .tool(let callID, let name, let command):
             finishStream()
-            reasoningID = nil
             let id = callID ?? nextID("tool")
             if !entries.contains(where: { $0.id == id }) {
                 entries.append(.tool(id: id, name: name, summary: command, output: "", failed: nil))
@@ -123,11 +151,11 @@ public struct Timeline: Sendable, Hashable {
                case .tool(let id, let name, let command, _, _) = entries[index] {
                 entries[index] = .tool(id: id, name: name, summary: command, output: body, failed: failed)
             } else {
+                finishStream()
                 entries.append(.tool(id: callID ?? nextID("tool"), name: "tool", summary: "", output: body, failed: failed))
             }
         case .done:
             finishStream()
-            reasoningID = nil
             isActive = false
             notice = nil
             activity = nil
@@ -161,6 +189,7 @@ public struct Timeline: Sendable, Hashable {
             activity = nil
         case .meta(let value):
             if let text = value["t"]?.stringValue, text.range(of: "error:|failed:|stopped:", options: .regularExpression) != nil {
+                finishStream()
                 entries.append(.notice(id: nextID("meta"), text: text, isError: true))
             }
         case .interaction(let value):
@@ -174,7 +203,8 @@ public struct Timeline: Sendable, Hashable {
         }
     }
 
-    private mutating func finishStream() {
+    private mutating func finishStream(clearReasoning: Bool = true) {
+        if clearReasoning { liveReasoningID = nil }
         guard let streamID, let index = entries.lastIndex(where: { $0.id == streamID }),
               case .assistant(let id, let text, _) = entries[index] else {
             self.streamID = nil
@@ -207,7 +237,12 @@ public struct Timeline: Sendable, Hashable {
                 }
                 continue
             }
-            result.append(entry)
+            if case .reasoning(let id, let prefix) = result.last,
+               case .reasoning(_, let suffix) = entry {
+                result[result.count - 1] = .reasoning(id: id, text: prefix + suffix)
+            } else {
+                result.append(entry)
+            }
         }
         return result
     }

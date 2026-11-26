@@ -19,6 +19,27 @@ import Testing
         ])
     }
 
+    @Test func wideTableStaysBetweenTheSurroundingParagraphs() {
+        let blocks = MarkdownView.blocks("""
+            Before the table.
+
+            | Capability | Status | Notes | Owner |
+            | --- | :--- | :---: | ---: |
+            | Compile SwiftiOS from source | Includes a long description that needs to wrap. | A \\| B | Glass |
+            | Sign the build | Pending |
+
+            After the table.
+            """)
+        #expect(blocks == [
+            .prose("Before the table."),
+            .table(header: ["Capability", "Status", "Notes", "Owner"],
+                   alignments: [.leading, .leading, .center, .trailing],
+                   rows: [["Compile SwiftiOS from source", "Includes a long description that needs to wrap.", "A | B", "Glass"],
+                          ["Sign the build", "Pending", "", ""]]),
+            .prose("After the table."),
+        ])
+    }
+
     @Test func quotesNestAndDetailsCollapse() {
         #expect(MarkdownView.blocks("> One\n> > Two") == [.quote("One\n> Two")])
         #expect(MarkdownView.blocks("> One\n> > Two").count == 1)

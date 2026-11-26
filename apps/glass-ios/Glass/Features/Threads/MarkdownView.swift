@@ -415,13 +415,19 @@ private struct DetailsBlock: View {
     }
 }
 
-/// A table with hairline row separators that scrolls sideways when it is wider than the reply.
 struct DataTable: View {
     var header: [AttributedString]
     var alignments: [MarkdownView.ColumnAlignment] = []
     var rows: [[AttributedString]]
+    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 148.0
+    @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
+    @State private var viewportWidth = 0.0
 
-    private func alignment(_ column: Int) -> HorizontalAlignment {
+    private var columnWidth: CGFloat {
+        min(maximumColumnWidth, max(minimumColumnWidth, viewportWidth / CGFloat(max(1, header.count))))
+    }
+
+    private func alignment(_ column: Int) -> TextAlignment {
         switch column < alignments.count ? alignments[column] : .leading {
         case .center: .center
         case .trailing: .trailing
@@ -429,27 +435,34 @@ struct DataTable: View {
         }
     }
 
+    private func cell(_ text: AttributedString, column: Int, isHeader: Bool = false) -> some View {
+        let alignment = alignment(column)
+        return Text(text)
+            .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
+            .multilineTextAlignment(alignment)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: alignment == .center ? .center : alignment == .trailing ? .trailing : .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(width: columnWidth)
+            .textSelection(.enabled)
+            .accessibilityAddTraits(isHeader ? .isHeader : [])
+    }
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 0) {
+        ScrollView(.horizontal) {
+            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
                 GridRow {
                     ForEach(header.indices, id: \.self) { column in
-                        Text(header[column])
-                            .font(.subheadline.weight(.semibold))
-                            .gridColumnAlignment(alignment(column))
-                            .padding(.vertical, 8)
+                        cell(header[column], column: column, isHeader: true)
                     }
                 }
+                .background(Color(.tertiarySystemFill))
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(rows.indices, id: \.self) { row in
                     GridRow {
                         ForEach(header.indices, id: \.self) { column in
-                            Text(column < rows[row].count ? rows[row][column] : "")
-                                .font(.subheadline)
-                                .frame(maxWidth: 260, alignment: .init(horizontal: alignment(column), vertical: .center))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .padding(.vertical, 8)
-                                .textSelection(.enabled)
+                            cell(column < rows[row].count ? rows[row][column] : "", column: column)
                         }
                     }
                     if row < rows.count - 1 {
@@ -457,9 +470,23 @@ struct DataTable: View {
                     }
                 }
             }
-            .padding(.horizontal, 2)
+            .overlay(alignment: .topLeading) {
+                HStack(spacing: 0) {
+                    ForEach(header.indices.dropLast(), id: \.self) { _ in
+                        Divider().frame(width: columnWidth, alignment: .trailing)
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            .clipShape(.rect(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .onGeometryChange(for: CGFloat.self, of: \.size.width) { viewportWidth = $0 }
     }
 }
 

@@ -21,17 +21,21 @@ struct ThreadsView: View {
 private struct ThreadSplitView: View {
     @Environment(AppModel.self) private var app
     @Bindable var threads: ThreadsModel
+    @State private var compactColumn: NavigationSplitViewColumn = .sidebar
 
     /// The conversation on screen: open, and on the Conversations tab.
     private var onScreen: String? { app.selectedTab == .threads ? threads.selection : nil }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
             ThreadListView(threads: threads)
         } detail: {
             if let id = threads.selection, let thread = threads.thread(id) {
-                ConversationView(conversation: threads.conversation(for: thread), threads: threads)
-                    .id(id)
+                ConversationView(conversation: threads.conversation(for: thread), threads: threads) {
+                    threads.selection = nil
+                    compactColumn = .sidebar
+                }
+                .id(id)
             } else {
                 WelcomeView(newThread: { Task { await threads.newThread() } })
             }

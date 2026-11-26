@@ -43,15 +43,19 @@ struct ComposerView: View {
                     .accessibilityIdentifier("composer.dictation.message")
             }
         }
-        .photosPicker(isPresented: $choosingPhotos, selection: $photos, maxSelectionCount: UploadPolicy.filesPerBatch, matching: .images)
+        .photosPicker(isPresented: $choosingPhotos, selection: $photos, maxSelectionCount: UploadPolicy.filesPerBatch,
+                      matching: .images, preferredItemEncoding: .current)
         .onChange(of: photos) { _, items in
             guard !items.isEmpty else { return }
             photos = []
             Task { await attachPhotos(items) }
         }
-        .fileImporter(isPresented: $importingFiles, allowedContentTypes: [.image, .plainText, .utf8PlainText, .sourceCode, .json, .text, .data],
+        .fileImporter(isPresented: $importingFiles, allowedContentTypes: AttachmentInput.fileTypes,
                       allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { attachFiles(urls) }
+            switch result {
+                case .success(let urls): attachFiles(urls)
+                case .failure(let error): composer.error = error.localizedDescription
+            }
         }
         .sheet(isPresented: Bindable(composer).showingEditor) {
             DraftEditor(text: Bindable(composer).text) {
@@ -178,14 +182,21 @@ struct ComposerView: View {
     private var uploadList: some View {
         VStack(spacing: 6) {
             ForEach(composer.uploads) { upload in
-                HStack(spacing: 8) {
-                    Text(upload.name).font(.footnote).lineLimit(1)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(upload.name).font(.footnote).lineLimit(1)
+                        if upload.failure != nil {
+                            Spacer()
+                            Button("Dismiss", systemImage: "xmark") { composer.dismissUpload(upload) }.labelStyle(.iconOnly).font(.footnote)
+                        } else {
+                            ProgressView(value: upload.fraction).frame(maxWidth: .infinity)
+                        }
+                    }
                     if let failure = upload.failure {
-                        Text(failure).font(.caption).foregroundStyle(.red).lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Button("Dismiss", systemImage: "xmark") { composer.dismissUpload(upload) }.labelStyle(.iconOnly).font(.footnote)
-                    } else {
-                        ProgressView(value: upload.fraction).frame(maxWidth: .infinity)
+                        Text(verbatim: failure)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -228,20 +239,20 @@ struct ComposerView: View {
     }
 
     private func attachPhotos(_ items: [PhotosPickerItem]) async {
-        var files: [(name: String, data: Data)] = []
+        var files: [AttachmentInput] = []
         for (index, item) in items.enumerated() {
-            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            let data = try? await item.loadTransferable(type: Data.self)
             let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-            files.append(("Photo \(index + 1).\(ext)", data))
+            files.append(AttachmentInput(name: "Photo \(index + 1).\(ext)", data: data, isPhoto: true))
         }
         composer.attach(files, canWrite: canWrite)
     }
 
     private func attachFiles(_ urls: [URL]) {
-        let files: [(name: String, data: Data)] = urls.prefix(UploadPolicy.filesPerBatch + 1).compactMap { url in
+        let files = urls.prefix(UploadPolicy.filesPerBatch + 1).map { url in
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            return (try? Data(contentsOf: url, options: .mappedIfSafe)).map { (url.lastPathComponent, $0) }
+            return AttachmentInput(name: url.lastPathComponent, data: try? Data(contentsOf: url, options: .mappedIfSafe))
         }
         composer.attach(files, canWrite: canWrite)
     }

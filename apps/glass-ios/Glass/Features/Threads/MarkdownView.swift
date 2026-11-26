@@ -466,7 +466,7 @@ private struct ListItemView: View {
     }
 }
 
-private struct RemoteMarkdownImage: View {
+struct RemoteMarkdownImage: View {
     let url: URL
     let alt: String
     @State private var requested = false

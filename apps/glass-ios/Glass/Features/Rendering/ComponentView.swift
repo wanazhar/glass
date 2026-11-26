@@ -584,15 +584,7 @@ private struct RemoteImage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let url = url.flatMap(URL.init(string:)), url.scheme == "https" {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    case .failure: Label(alt ?? "Image unavailable", systemImage: "photo").foregroundStyle(.secondary)
-                    default: ProgressView().frame(maxWidth: .infinity, minHeight: 120)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .accessibilityLabel(alt ?? "Image")
+                RemoteMarkdownImage(url: url, alt: alt ?? "").id(url)
             } else {
                 Label(alt ?? "Image unavailable", systemImage: "photo").foregroundStyle(.secondary)
             }

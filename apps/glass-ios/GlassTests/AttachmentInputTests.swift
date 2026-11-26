@@ -7,11 +7,21 @@ import UniformTypeIdentifiers
 
 @Suite struct AttachmentInputTests {
     @Test func filesPickerAllowsSupportedImagesHEIFAndTextButNotArbitraryData() {
-        for type in [UTType.jpeg, .png, .gif, .webP, .heic, .heif, .plainText, .utf8PlainText, .sourceCode, .json] {
+        for type in [UTType.jpeg, .png, .gif, .webP, .heic, .heif, .plainText, .utf8PlainText, .sourceCode, .json, .html, .xml, .rtf] {
             #expect(AttachmentInput.fileTypes.contains { type.conforms(to: $0) })
         }
-        for type in [UTType.image, .pdf, .rtf, .movie, .data] {
+        for type in [UTType.image, .pdf, .movie, .data] {
             #expect(!AttachmentInput.fileTypes.contains { type.conforms(to: $0) })
+        }
+    }
+
+    @Test func preparesValidUTF8MarkupWithoutChangingItsBytes() throws {
+        for (name, markup) in [("page.html", "<h1>Café</h1>"), ("data.xml", "<message>Café</message>")] {
+            let data = Data(markup.utf8)
+            let prepared = try AttachmentInput(name: name, data: data).prepared()
+            #expect(prepared.name == name)
+            #expect(prepared.data == data)
+            #expect(try UploadPolicy.check(prepared.data, name: name) == .text)
         }
     }
 

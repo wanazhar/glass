@@ -4,7 +4,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 struct AttachmentInput: Sendable {
-    static let fileTypes: [UTType] = [.jpeg, .png, .gif, .webP, .heic, .heif, .plainText, .sourceCode, .json]
+    static let fileTypes: [UTType] = [.jpeg, .png, .gif, .webP, .heic, .heif, .text]
 
     var name: String
     var data: Data?

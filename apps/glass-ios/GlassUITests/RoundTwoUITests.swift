@@ -31,12 +31,17 @@ final class RoundTwoUITests: XCTestCase {
         thread.tap()
 
         let work = app.buttons.matching(identifier: "timeline.work")
-        let collapsed = work.allElementsBoundByIndex.last(where: \.isHittable) ?? work.firstMatch
-        XCTAssertTrue(collapsed.waitForExistence(timeout: 10))
+        XCTAssertTrue(work.firstMatch.waitForExistence(timeout: 10))
+        let center = app.frame.midY
+        let visibleRows = work.allElementsBoundByIndex.filter {
+            $0.isHittable && abs($0.frame.midY - center) < app.frame.height / 3
+        }
+        let collapsed = try XCTUnwrap(visibleRows.min { abs($0.frame.midY - center) < abs($1.frame.midY - center) })
         XCTAssertTrue(collapsed.label.contains("command"))
         XCTAssertFalse(app.buttons["timeline.tool"].exists)
         collapsed.tap()
         let command = app.buttons.matching(identifier: "timeline.tool").firstMatch
+        XCTAssertTrue(command.waitForExistence(timeout: 5))
         for _ in 0..<3 where !command.isHittable { app.swipeUp(velocity: .slow) }
         XCTAssertTrue(command.isHittable)
         command.tap()

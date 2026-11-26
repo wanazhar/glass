@@ -124,7 +124,7 @@ struct WorkRow: View {
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("timeline.work")
                 if expanded {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         ForEach(group.steps) { entry in
                             WorkStep(entry: entry, open: open)
                         }

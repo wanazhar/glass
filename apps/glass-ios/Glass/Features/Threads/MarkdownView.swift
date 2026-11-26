@@ -92,21 +92,29 @@ struct MarkdownView: View, Equatable {
     // MARK: Inline
 
     static func inline(_ value: String, mathSize: CGFloat) -> Text {
-        InlineMath.split(stripImages(value)).reduce(Text("")) { text, segment in
+        let segments = InlineMath.split(stripImages(value))
+        var accessibleText = Text("")
+        var hasMath = false
+        let typeset = segments.reduce(Text("")) { text, segment in
             let next: Text
+            let accessible: Text
             switch segment {
             case .text(let prose):
                 next = Text(markdown(prose))
+                accessible = next
             case .math(let source):
+                hasMath = true
+                accessible = Text(InlineMath.render(source))
                 if let image = NativeMath.image(source, size: mathSize, display: false) {
                     next = Text(Image(uiImage: image).renderingMode(.template))
-                        .accessibilityLabel(Text(InlineMath.render(source)))
                 } else {
-                    next = Text(InlineMath.render(source)).italic()
+                    next = accessible.italic()
                 }
             }
+            accessibleText = Text("\(accessibleText)\(accessible)")
             return Text("\(text)\(next)")
         }
+        return hasMath ? typeset.accessibilityLabel(accessibleText) : typeset
     }
 
     private static func markdown(_ value: String) -> AttributedString {

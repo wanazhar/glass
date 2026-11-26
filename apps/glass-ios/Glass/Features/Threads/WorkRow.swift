@@ -382,7 +382,7 @@ struct ActivityDetailView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(detail.copyTitle(hasSavedOutput: savedOutput != nil), systemImage: "doc.on.doc") {
+                    Button(detail.copyTitle(hasSavedOutput: savedOutput != nil)) {
                         UIPasteboard.general.string = detail.text
                     }
                 }

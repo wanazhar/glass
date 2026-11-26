@@ -15,7 +15,9 @@ extension EnvironmentValues {
 struct TimelineRow: View {
     var entry: TimelineEntry
     @Environment(\.messageAction) private var messageAction
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingFullAnswer = false
+    @State private var userAppeared = false
 
     @ViewBuilder
     private func actions(for kinds: [MessageAction]) -> some View {
@@ -32,6 +34,7 @@ struct TimelineRow: View {
     var body: some View {
         switch entry {
         case .user(_, let text):
+            let show = reduceMotion || entry.recordOffset != nil || userAppeared
             HStack {
                 Spacer(minLength: 48)
                 Text(text)
@@ -46,9 +49,14 @@ struct TimelineRow: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("timeline.user")
+            .opacity(show ? 1 : 0)
+            .offset(y: show ? 0 : 6)
+            .animation(.spring(duration: 0.23, bounce: 0.04), value: userAppeared)
+            .onAppear { userAppeared = true }
         case .assistant(_, let text, let streaming):
             VStack(alignment: .leading, spacing: Design.gap) {
-                MarkdownView(text: !streaming && text.count > 5_000 ? answerPreview(text) : text)
+                MarkdownView(text: !streaming && text.count > 5_000 ? answerPreview(text) : text,
+                             streaming: streaming)
                     .equatable()
                     .environment(\.completeMarkdownFencesOnly, !streaming && text.count > 5_000)
                 if !streaming, text.count > 5_000 {

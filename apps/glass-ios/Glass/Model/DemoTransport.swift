@@ -60,7 +60,12 @@ actor DemoTransport: GlassHTTPTransport {
             if id == "harbor-1" { return try response(url, ["error": "The studio Mac is offline."], status: 503) }
             return try response(url, ["session": id, "originLabel": "Created in Glass"])
         case "/api/history":
-            let records = id == "harbor-0" ? Self.history : id == "harbor-1" ? [["k": "user", "t": "Check why staging stops responding after deployment."]] : []
+            let records: [[String: any Sendable]] = switch id {
+            case "harbor-0": Self.history
+            case "harbor-1": [["k": "user", "t": "Check why staging stops responding after deployment."]]
+            case "harbor-2": [["k": "assistant", "t": "[Deployment notes](docs/deployment.md)"]]
+            default: []
+            }
             return try response(url, ["before": 0, "records": records.enumerated().map { ["index": $0.offset + 1, "record": $0.element] }])
         case "/api/thread-preferences":
             if let index = threads.firstIndex(where: { $0.id == id }) {
@@ -75,7 +80,22 @@ actor DemoTransport: GlassHTTPTransport {
         case "/api/context":
             return try response(url, ["attachments": []])
         case "/api/file":
-            return (Data("struct Checkpoint {\n    let cursor: String\n}".utf8),
+            var text = "struct Checkpoint {\n    let cursor: String\n}"
+            if param("path") == "docs/deployment.md" {
+                guard id == "harbor-2", param("workspace") == nil else {
+                    return try response(url, ["error": "Open this file from its conversation."], status: 403)
+                }
+                text = """
+                # Deployment notes
+
+                ![Deployment diagram](https://example.invalid/deployment.png)
+
+                ```glass-ui
+                {"type":"image","data":{"url":"https://example.invalid/runbook.png","alt":"Runbook diagram"}}
+                ```
+                """
+            }
+            return (Data(text.utf8),
                     HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/plain"])!)
         case "/api/commands":
             return try response(url, ["commands": []])
@@ -163,7 +183,7 @@ actor DemoTransport: GlassHTTPTransport {
         ["k": "call", "id": "read-sync", "name": "read", "args": #"{"path":"Sources/Sync/Coordinator.swift"}"#],
         ["k": "tool", "id": "read-sync", "name": "read", "t": "Coordinator.swift · lines 74–146"],
         ["k": "bash", "id": "retry-failed", "cmd": "swift test --filter SyncCoordinatorTests", "code": 1,
-         "out": "SyncCoordinatorTests.swift:91: error: cursor should survive reconnect\nExpected: page-004\nReceived: nil\nExecuted 8 tests, with 1 failure."],
+         "duration_ms": 1360, "out": "Executed 8 tests, with 1 failure.\nstderr:\nSyncCoordinatorTests.swift:91: error: cursor should survive reconnect\nExpected: page-004\nReceived: nil"],
         ["k": "meta", "t": "stopped: The sync regression test did not pass."],
         ["k": "custom", "c": "display/turn-seconds", "d": "66"],
         ["k": "user", "t": "Fix the persistence boundary and add a regression test."],
@@ -179,8 +199,8 @@ actor DemoTransport: GlassHTTPTransport {
         +    try await cache.commit(cursor: page.cursor)
         +    cursor = page.cursor
         """],
-        ["k": "bash", "id": "sync-pass", "cmd": "swift test --filter SyncCoordinatorTests", "code": 0, "out": "8 tests passed in 0.48 seconds."],
-        ["k": "bash", "id": "format-pass", "cmd": "swift test --filter CacheTests", "code": 0, "out": "16 tests passed in 0.91 seconds."],
+        ["k": "bash", "id": "sync-pass", "cmd": "swift test --filter SyncCoordinatorTests", "code": 0, "duration_ms": 480, "out": "8 tests passed in 0.48 seconds."],
+        ["k": "bash", "id": "format-pass", "cmd": "swift test --filter CacheTests", "code": 0, "duration_ms": 910, "out": "16 tests passed in 0.91 seconds."],
         ["k": "custom", "c": "display/turn-seconds", "d": "134"],
         ["k": "assistant", "t": """
         ## Sync now resumes from the last committed page

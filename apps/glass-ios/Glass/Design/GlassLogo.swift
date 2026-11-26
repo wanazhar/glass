@@ -61,52 +61,74 @@ struct GlassLogo: View {
 
 struct LaunchView: View {
     var sample: Float?
+    var handingOff: Bool
     var skip: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: Design.spacious) {
-            GlassLogo(launchRipple: true, font: .system(size: 64, weight: .semibold, design: .rounded), sample: sample)
+        ZStack(alignment: .bottom) {
+            GlassLogo(launchRipple: true, font: .system(size: 66, weight: .medium, design: .rounded), sample: sample)
                 .padding(.horizontal, Design.spacious)
-                .padding(.vertical, Design.padding)
-                .background {
-                    Color.clear
-                        .glassEffect(.regular.tint(Design.accent.opacity(0.18)), in: .rect(cornerRadius: 40))
-                }
+                .padding(.vertical, Design.gap)
+                .glassEffect(.regular.tint(Design.accent.opacity(0.23)), in: Capsule())
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .scaleEffect(handingOff && !reduceMotion ? 1.12 : 1)
+                .opacity(handingOff ? (sample == nil ? 0 : 0.28) : 1)
             Button("Skip", action: skip)
-                .font(.footnote.weight(.medium))
+                .font(Design.footnote.weight(.medium))
                 .glassButtonStyle()
+                .padding(.bottom, Design.spacious)
+                .opacity(handingOff ? (sample == nil ? 0 : 0.5) : 1)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
-            Design.background
-                .overlay { Design.accent.opacity(0.07) }
-                .ignoresSafeArea()
+            ZStack {
+                LinearGradient(colors: [Design.background, Design.accent.opacity(colorScheme == .dark ? 0.24 : 0.12), Design.background],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                Canvas { context, size in
+                    let radius = min(size.width, size.height)
+                    let center = CGPoint(x: size.width * 0.47, y: size.height * 0.48)
+                    for index in 0..<8 {
+                        let width = radius * (0.54 + Double(index) * 0.18)
+                        let height = width * 0.73
+                        let bounds = CGRect(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height)
+                        context.stroke(Path(ellipseIn: bounds),
+                                       with: .linearGradient(Gradient(colors: [.white.opacity(0.5), Design.accent.opacity(0.18), .clear]),
+                                                             startPoint: bounds.origin, endPoint: CGPoint(x: bounds.maxX, y: bounds.maxY)),
+                                       lineWidth: 1)
+                    }
+                }
+                .accessibilityHidden(true)
+            }
+            .background(Design.background)
+            .ignoresSafeArea()
         }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: skip)
         .accessibilityIdentifier("launch.splash")
     }
 }
 
 struct NewChatView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var choose: (String) -> Void
-    private let suggestions = [
-        ("Map the project", "Summarize the project and show me where to start.", "map"),
-        ("Review recent changes", "Review the latest changes and flag anything worth a closer look.", "arrow.triangle.branch"),
-        ("Plan a change", "Help me outline and test my next change.", "list.bullet.rectangle"),
-    ]
+    private var project: String { app.status?.workspaceName ?? "this workspace" }
+    private var machine: String { app.endpoint?.host ?? "the connected machine" }
+    private var suggestions: [(String, String, String, String)] {
+        [
+            ("Map the project", "Find the main modules and a starting point.", "Summarize \(project) and show me where to start.", "map"),
+            ("Review recent changes", "See what changed and where to look closer.", "Review the latest changes in \(project) and flag anything worth a closer look.", "arrow.triangle.branch"),
+            ("Check the workspace", "Find the commands for a local test run.", "Find the build and test commands for \(project) on \(machine).", "checklist")
+        ]
+    }
 
     var body: some View {
         VStack(spacing: Design.spacious) {
             VStack(spacing: Design.gap) {
-                Image(.appGlyph)
-                    .resizable().scaledToFit()
-                    .frame(width: 50, height: 50)
-                    .clipShape(.rect(cornerRadius: Design.corner))
-                    .padding(Design.padding)
-                    .glassEffect(.regular.tint(Design.accent.opacity(0.13)).interactive(), in: .circle)
-                    .accessibilityHidden(true)
+                mark
                 Text("What are we working on?")
-                    .font(.largeTitle.weight(.semibold))
+                    .font(Design.display)
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 if let project = app.status?.workspaceName, let host = app.endpoint?.host {
@@ -116,13 +138,24 @@ struct NewChatView: View {
             }
             VStack(spacing: Design.gap) {
                 ForEach(suggestions.indices, id: \.self) { index in
-                    let (title, prompt, icon) = suggestions[index]
+                    let (title, detail, prompt, icon) = suggestions[index]
                     Button { choose(prompt) } label: {
-                        Label(title, systemImage: icon)
-                            .font(.subheadline.weight(.medium))
-                            .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
-                            .padding(.horizontal, Design.padding)
-                            .background(Design.surface, in: .rect(cornerRadius: Design.corner))
+                        HStack(alignment: .top, spacing: Design.padding) {
+                            Image(systemName: icon)
+                                .font(Design.headline).foregroundStyle(Design.accent)
+                                .frame(width: Design.spacious)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: Design.small) {
+                                Text(title).font(Design.headline)
+                                Text(detail).font(Design.footnote).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .multilineTextAlignment(.leading)
+                        .padding(Design.padding)
+                        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+                        .background(Design.surface, in: .rect(cornerRadius: Design.corner))
+                        .contentShape(.rect(cornerRadius: Design.corner))
                     }
                     .buttonStyle(.plain)
                 }
@@ -131,5 +164,26 @@ struct NewChatView: View {
         .frame(maxWidth: 460)
         .frame(maxWidth: .infinity)
         .padding(.vertical, Design.spacious)
+    }
+
+    private var mark: some View {
+        Image(.appGlyph)
+            .resizable().scaledToFit()
+            .frame(width: 56, height: 56)
+            .overlay {
+                if !reduceMotion {
+                    TimelineView(.animation(minimumInterval: 1.0 / 24)) { frame in
+                        let phase = min(1, frame.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 1.6)
+                        LinearGradient(colors: [.clear, .white.opacity(0.30), .clear], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: 26, height: 86)
+                            .rotationEffect(.degrees(25))
+                            .offset(x: (phase - 0.5) * 120)
+                    }
+                }
+            }
+            .clipShape(.rect(cornerRadius: Design.corner))
+            .padding(Design.padding)
+            .glassEffect(.regular.tint(Design.accent.opacity(0.14)), in: .circle)
+            .accessibilityHidden(true)
     }
 }

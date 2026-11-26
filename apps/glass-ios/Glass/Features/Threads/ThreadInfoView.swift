@@ -21,6 +21,15 @@ struct ThreadInfoView: View {
                         LabeledContent("Directory", value: workspace)
                     }
                 }
+                if conversation.canWrite {
+                    Section {
+                        Button("Release typing control", systemImage: "keyboard.badge.ellipsis") {
+                            dismiss()
+                            Task { await conversation.composer.releaseControl() }
+                        }
+                        .accessibilityIdentifier("conversation.releaseControl")
+                    }
+                }
                 if let usage {
                     Section("Usage") {
                         ForEach(["reported_prompt_total", "reported_output", "known_cost_subtotal_usd"], id: \.self) { key in

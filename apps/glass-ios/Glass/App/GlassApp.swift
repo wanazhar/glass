@@ -28,6 +28,7 @@ struct RootView: View {
     @AppStorage(ThemePreference.key) private var theme: ThemePreference = .system
     @State private var showsSplash = !ProcessInfo.processInfo.arguments.contains("-GlassResetState")
         && !ProcessInfo.processInfo.arguments.contains("-GlassSkipSplash")
+    @State private var handingOff = false
     private var demoLaunchFrame: String? {
         guard ProcessInfo.processInfo.arguments.contains("-GlassDemo") else { return nil }
         return UserDefaults.standard.string(forKey: "GlassLaunchFrame")
@@ -44,10 +45,9 @@ struct RootView: View {
         .preferredColorScheme(theme.colorScheme)
         .overlay {
             if showsSplash {
-                LaunchView(sample: demoLaunchFrame == "ripple" ? 0.22 : demoLaunchFrame == nil ? nil : 0) { finishLaunch() }
-                    .scaleEffect(demoLaunchFrame == "handoff" ? 1.05 : 1)
-                    .opacity(demoLaunchFrame == "handoff" ? 0.48 : 1)
-                    .transition(reduceMotion ? .opacity : .scale(scale: 1.08).combined(with: .opacity))
+                LaunchView(sample: demoLaunchFrame == "ripple" ? 0.34 : demoLaunchFrame == nil ? nil : 0,
+                           handingOff: handingOff || demoLaunchFrame == "handoff", skip: finishLaunch)
+                    .transition(.opacity)
                     .zIndex(1)
             }
         }
@@ -57,14 +57,19 @@ struct RootView: View {
         }
         .task {
             guard showsSplash, demoLaunchFrame == nil else { return }
-            try? await Task.sleep(for: .milliseconds(1_450))
+            try? await Task.sleep(for: .milliseconds(1_180))
             if !Task.isCancelled { finishLaunch() }
         }
     }
 
     private func finishLaunch() {
-        withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(duration: 0.36, bounce: 0)) {
-            showsSplash = false
+        guard !handingOff else { return }
+        withAnimation(.easeOut(duration: 0.2)) { handingOff = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(duration: 0.28, bounce: 0)) {
+                showsSplash = false
+            }
         }
     }
 }

@@ -90,6 +90,7 @@ struct WorkGroup {
 
 struct WorkRow: View {
     let group: WorkGroup
+    let durations: [String: Duration]
     var open: (ActivityDetail) -> Void
     var resume: (() -> Void)?
     @AppStorage(ToolDensity.key) private var density: ToolDensity = .compact
@@ -128,7 +129,7 @@ struct WorkRow: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(group.steps) { entry in
-                        WorkStep(entry: entry, open: open)
+                        WorkStep(entry: entry, duration: durations[entry.id], open: open)
                     }
                 }
                 .padding(.leading, Design.gap)
@@ -157,6 +158,7 @@ struct WorkRow: View {
 private struct WorkStep: View {
     enum Kind { case command, read, edit, other }
     var entry: TimelineEntry
+    var duration: Duration?
     var open: (ActivityDetail) -> Void
     @Environment(\.openSavedActivity) private var openSavedActivity
     @State private var showsReasoning = false
@@ -192,9 +194,13 @@ private struct WorkStep: View {
             let title = subject.isEmpty ? action.1 : "\(action.1) \(subject)"
             let files = Self.kind(entry) == .edit ? DiffSummary.files(in: output) : []
             if files.isEmpty {
-                step(action.0, Self.kind(entry) == .command ? summary : title, id: "timeline.tool",
-                     failed: failed == true, running: failed == nil, monospaced: Self.kind(entry) == .command) {
-                    open(ActivityDetail(id: id, title: title, text: output.isEmpty ? summary : output, monospaced: true))
+                let isCommand = Self.kind(entry) == .command
+                step(action.0, isCommand ? summary : title, id: "timeline.tool",
+                     failed: failed == true, running: failed == nil, monospaced: isCommand) {
+                    open(ActivityDetail(id: id, title: isCommand ? "Command output" : title,
+                                        text: output.isEmpty ? summary : output, monospaced: true,
+                                        command: isCommand ? CommandActivity(command: summary, output: output,
+                                                                             duration: duration, failed: failed == true) : nil))
                 }
             } else {
                 ForEach(files) { file in
@@ -204,7 +210,7 @@ private struct WorkStep: View {
                 }
             }
         case .largeRecord(_, let offset, _):
-            step("doc.text.magnifyingglass", "Large activity", id: "timeline.largeRecord") { openSavedActivity(offset) }
+            step("doc.text.magnifyingglass", "Show more activity", id: "timeline.largeRecord") { openSavedActivity(offset) }
         case .notice(let id, let text, let failed):
             step("info.circle", text, id: "timeline.notice", failed: failed) {
                 open(ActivityDetail(id: id, title: "Notice", text: text, monospaced: false))
@@ -271,17 +277,59 @@ struct ActivityDetail: Identifiable {
     let text: String
     let monospaced: Bool
     var isDiff = false
+    var command: CommandActivity?
+}
+
+struct CommandActivity {
+    let command: String
+    let stdout: String
+    let stderr: String?
+    let exitCode: Int?
+    let duration: Duration?
+    let failed: Bool
+
+    init(command: String, output: String, duration: Duration?, failed: Bool) {
+        self.command = command
+        self.duration = duration
+        var body = output[...]
+        if body.hasPrefix("$ "), let end = body.firstIndex(of: "\n") {
+            body = body[body.index(after: end)...]
+        }
+        let firstLine = body.prefix { !$0.isNewline }
+        let code = firstLine.hasPrefix("[exit ") && firstLine.hasSuffix("]")
+            ? Int(firstLine.dropFirst(6).dropLast()) : nil
+        exitCode = code
+        if code != nil {
+            body = body.dropFirst(firstLine.count)
+            if body.first?.isNewline == true { body = body.dropFirst() }
+        }
+        if body.hasPrefix("stderr:\n") {
+            stdout = ""
+            stderr = String(body.dropFirst("stderr:\n".count))
+        } else if let marker = body.range(of: "\nstderr:\n") {
+            stdout = String(body[..<marker.lowerBound])
+            stderr = String(body[marker.upperBound...])
+        } else {
+            stdout = String(body)
+            stderr = nil
+        }
+        self.failed = code.map { $0 != 0 } ?? failed
+    }
 }
 
 struct ActivityDetailView: View {
     let detail: ActivityDetail
+    var savedOutput: SavedActivityView?
     @Environment(\.dismiss) private var dismiss
+    @State private var showingFullOutput = false
 
     var body: some View {
         NavigationStack {
-            ScrollView(detail.monospaced ? [.vertical, .horizontal] : .vertical) {
+            ScrollView(detail.isDiff ? [.vertical, .horizontal] : .vertical) {
                 Group {
-                    if detail.isDiff {
+                    if let command = detail.command {
+                        commandOutput(command, preview: true)
+                    } else if detail.isDiff {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(detail.text.components(separatedBy: "\n").enumerated()), id: \.offset) { index, line in
                                 HStack(alignment: .firstTextBaseline, spacing: Design.gap) {
@@ -306,11 +354,73 @@ struct ActivityDetailView: View {
             }
             .navigationTitle(detail.title)
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showingFullOutput) {
+                if let savedOutput {
+                    savedOutput
+                } else if let command = detail.command {
+                    NavigationStack {
+                        ScrollView { commandOutput(command, preview: false).padding(Design.padding) }
+                            .navigationTitle("Full command output")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done") { showingFullOutput = false }
+                                }
+                            }
+                    }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = detail.text }
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+
+    private func commandOutput(_ command: CommandActivity, preview: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Design.padding) {
+            Text(command.command)
+                .font(Design.mono.weight(.semibold))
+                .textSelection(.enabled)
+                .padding(Design.padding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Design.surface, in: .rect(cornerRadius: Design.corner))
+
+            HStack(spacing: Design.padding) {
+                if let code = command.exitCode {
+                    Label("Exit code \(code)", systemImage: command.failed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(command.failed ? Design.failure : .secondary)
+                }
+                if let duration = command.duration {
+                    Label(duration.formatted(.units(allowed: [.seconds, .milliseconds], width: .abbreviated,
+                                                    maximumUnitCount: 1)), systemImage: "clock")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(Design.footnote)
+            if !command.stdout.isEmpty {
+                outputSection("Output", command.stdout, tint: .primary, preview: preview)
+            }
+            if let stderr = command.stderr, !stderr.isEmpty {
+                outputSection("Standard error", stderr, tint: Design.failure, preview: preview)
+            }
+            if preview, savedOutput != nil || command.stdout.count > 2_000 || (command.stderr?.count ?? 0) > 2_000 {
+                Button("Show more", systemImage: "arrow.up.right.square") { showingFullOutput = true }
+                .glassButtonStyle()
+            }
+        }
+    }
+
+    private func outputSection(_ title: String, _ output: String, tint: Color, preview: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Design.gap) {
+            Text(title).font(Design.headline)
+            ScrollView(.horizontal) {
+                Text(preview && output.count > 2_000 ? String(output.prefix(2_000)) + "…" : output)
+                    .font(Design.mono)
+                    .foregroundStyle(tint)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
     }

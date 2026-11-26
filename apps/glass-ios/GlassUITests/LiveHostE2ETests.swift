@@ -314,8 +314,10 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(app.buttons["composer.send"].waitForExistence(timeout: 10))
         XCTAssertTrue(waitUntil(15) { !app.descendants(matching: .any)["composer.readOnly"].exists }, "the opening client holds control")
 
-        app.buttons["conversation.menu"].tap()
-        app.buttons["conversation.releaseControl"].tap()
+        app.buttons["conversation.connection"].tap()
+        let release = app.buttons["conversation.releaseControl"].firstMatch
+        XCTAssertTrue(release.waitForExistence(timeout: 5))
+        release.tap()
         let readOnly = app.descendants(matching: .any)["composer.readOnly"]
         XCTAssertTrue(readOnly.waitForExistence(timeout: 15), "releasing control makes the composer read-only")
         XCTAssertTrue(try call("control/claim?id=\(thread)", method: "POST").contains("true"), "another client takes control")
@@ -859,8 +861,7 @@ final class LiveHostE2ETests: XCTestCase {
     @MainActor
     func testStreamingReplyIsFollowedUntilYouScrollThenResumes() throws {
         let thread = try call("thread/new?title=Follow", method: "POST")
-        // UI queries over a fast stream are slow, so give the test room to measure while paused.
-        let app = try pairedApp(arguments: ["-GlassFollowResumeSeconds", "6"])
+        let app = try pairedApp()
         open(app, thread: thread)
         XCTAssertTrue(waitForConnection(app, "Live"))
         _ = try call("thread/send?id=\(thread)&text=lines%20400", method: "POST")
@@ -902,16 +903,11 @@ final class LiveHostE2ETests: XCTestCase {
         attach(app, "e2e-follow-paused")
         XCTAssertEqual(before, after, accuracy: 1, "your position holds while the reply keeps streaming")
 
-        // Left alone for a few seconds, the chat picks the stream up again.
-        XCTAssertTrue(waitUntil(12) { !latest.exists }, "following resumes after a few idle seconds")
-        let resumed = newestLine()
-        XCTAssertTrue(waitUntil(5) { newestLine() > resumed }, "and moves with the stream again")
-
-        // Latest resumes at once.
-        readBack(screen)
-        XCTAssertTrue(latest.waitForExistence(timeout: 3))
+        // Stay on the older text until the reader chooses to jump back.
         latest.tap()
         XCTAssertTrue(waitUntil(2) { !latest.exists }, "Latest picks the stream up right away")
+        let resumed = newestLine()
+        XCTAssertGreaterThan(resumed, followed)
         attach(app, "e2e-follow-latest")
     }
 

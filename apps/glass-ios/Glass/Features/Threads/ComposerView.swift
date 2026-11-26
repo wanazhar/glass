@@ -38,6 +38,8 @@ struct ComposerView: View {
                 Button(action: chooseModel) {
                     Label(composer.model ?? conversation.thread.model ?? "Model", systemImage: "chevron.up.chevron.down")
                         .font(.footnote.weight(.medium))
+                        .frame(minHeight: Design.control)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -157,7 +159,7 @@ struct ComposerView: View {
     }
 
     private var field: some View {
-        ComposerTextField(placeholder: active ? "Follow up…" : "Message Glass",
+        ComposerTextField(placeholder: active ? (composer.mode == .steer ? "Steer this reply" : "Queue a follow-up") : "Message Glass",
                           text: Bindable(composer).text, isEnabled: canWrite,
                           height: fieldHeight, onHeight: { fieldHeight = $0 },
                           onFocus: onFieldFocus,
@@ -177,6 +179,7 @@ struct ComposerView: View {
                     Task { await dictation.toggle { composer.text = base + $0 } }
                 }
                 .labelStyle(.iconOnly)
+                .controlSize(.large)
                 .glassButtonStyle()
                 .disabled(!canWrite)
                 .accessibilityIdentifier("composer.dictate")
@@ -186,6 +189,7 @@ struct ComposerView: View {
                 Task { await composer.send(active: active, canWrite: canWrite) }
             }
             .labelStyle(.iconOnly)
+            .controlSize(.large)
             .glassButtonStyle(prominent: true)
             .disabled(!canWrite || composer.trimmed.isEmpty || composer.sending)
             .accessibilityIdentifier("composer.send")

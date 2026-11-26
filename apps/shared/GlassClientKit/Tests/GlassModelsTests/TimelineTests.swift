@@ -1,6 +1,15 @@
 import Foundation
 import GlassModels
 import Testing
+@Test func toolDurationUsesMatchingLiveEvents() {
+    var timeline = Timeline()
+    let started = ContinuousClock.now
+    timeline.apply(.tool(callID: "build", name: "bash", command: "swift test"), now: started)
+    timeline.apply(.toolEnd(callID: "build", output: "[exit 0]", summary: "OK", truncated: false),
+                   now: started.advanced(by: .milliseconds(450)))
+    #expect(timeline.toolDurations["build"] == .milliseconds(450))
+}
+
 
 private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     try JSONDecoder().decode(T.self, from: Data(json.utf8))

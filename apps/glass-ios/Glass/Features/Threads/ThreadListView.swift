@@ -172,16 +172,25 @@ struct ThreadListView: View {
     @State private var delete: ThreadSummary?
 
     var body: some View {
+        let groups = sections
         List {
+            if threads.loaded, threads.threads.isEmpty, threads.error == nil {
+                ContentUnavailableView(threads.query.isEmpty ? "No conversations yet" : "No matching conversations",
+                                       systemImage: threads.query.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
+                    .accessibilityIdentifier("threads.empty")
+            }
             if let error = threads.error {
                 Text(error)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("threads.error")
             }
-            ForEach(sections, id: \.label) { section in
-                Section(section.label) {
+            ForEach(groups, id: \.label) { section in
+                Section {
                     ForEach(section.threads) { thread in row(thread) }
+                } header: {
+                    Text(section.label)
+                        .accessibilityIdentifier(section.label == groups.first?.label ? "threads.ready" : "threads.section")
                 }
             }
             if threads.nextOffset != nil {

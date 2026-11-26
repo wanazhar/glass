@@ -11,6 +11,8 @@ extension EnvironmentValues {
 struct MarkdownView: View, Equatable {
     @Environment(\.completeMarkdownFencesOnly) private var completeFencesOnly
     var text: String
+    var streaming = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     enum ListMarker: Hashable {
         case bullet
@@ -58,7 +60,9 @@ struct MarkdownView: View, Equatable {
         return cache
     }()
 
-    nonisolated static func == (left: Self, right: Self) -> Bool { left.text == right.text }
+    nonisolated static func == (left: Self, right: Self) -> Bool {
+        left.text == right.text && left.streaming == right.streaming
+    }
 
     private var parsedBlocks: [Block] {
         let key = (completeFencesOnly ? "1" + text : "0" + text) as NSString
@@ -69,9 +73,16 @@ struct MarkdownView: View, Equatable {
     }
 
     var body: some View {
+        let blocks = parsedBlocks
         VStack(alignment: .leading, spacing: Design.gap) {
-            ForEach(Array(parsedBlocks.enumerated()), id: \.offset) { _, block in
-                BlockView(block: block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                if streaming, !reduceMotion, index == blocks.count - 1 {
+                    BlockView(block: block)
+                        .contentTransition(.opacity)
+                        .animation(.easeOut(duration: 0.16), value: block)
+                } else {
+                    BlockView(block: block)
+                }
             }
         }
         .lineSpacing(4)
@@ -375,10 +386,10 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .prose(let value):
-            Text(MarkdownView.inline(value)).textSelection(.enabled)
+            Text(MarkdownView.inline(value)).font(Design.body).textSelection(.enabled)
         case .heading(let value, let level):
             Text(MarkdownView.inline(value))
-                .font(level == 1 ? .title2.bold() : level == 2 ? .title3.bold() : .headline)
+                .font(level == 1 ? Design.title : level == 2 ? .title3.weight(.semibold) : Design.headline)
                 .padding(.top, level <= 2 ? 4 : 0)
                 .accessibilityAddTraits(.isHeader)
         case .item(let value, let marker, let depth):
@@ -512,7 +523,7 @@ struct DataTable: View, Equatable {
     var header: [AttributedString]
     var alignments: [MarkdownView.ColumnAlignment] = []
     var rows: [[AttributedString]]
-    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 148.0
+    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 112.0
     @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
     @State private var viewportWidth = 0.0
 
@@ -539,7 +550,7 @@ struct DataTable: View, Equatable {
             .multilineTextAlignment(alignment)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: alignment == .center ? .center : alignment == .trailing ? .trailing : .leading)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Design.gap)
             .padding(.vertical, 8)
             .frame(width: columnWidth)
             .textSelection(.enabled)
@@ -576,13 +587,15 @@ struct DataTable: View, Equatable {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
-            .clipShape(.rect(cornerRadius: Design.corner))
-            .overlay {
-                RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Color(.separator), lineWidth: 0.5)
-                    .allowsHitTesting(false)
-            }
+            .frame(minWidth: viewportWidth, alignment: .leading)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .defaultScrollAnchor(.leading)
+        .clipShape(.rect(cornerRadius: Design.corner))
+        .overlay {
+            RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Color(.separator), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
         .onGeometryChange(for: CGFloat.self, of: \.size.width) { viewportWidth = $0 }
     }
 }

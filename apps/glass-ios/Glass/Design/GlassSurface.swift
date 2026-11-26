@@ -13,6 +13,12 @@ enum Design {
     static let background = Color(uiColor: .systemBackground)
     static let accent = Color.accentColor
     static let failure = Color.red
+    static let display = Font.largeTitle.weight(.semibold)
+    static let title = Font.title2.weight(.semibold)
+    static let headline = Font.headline
+    static let body = Font.body
+    static let footnote = Font.footnote
+    static let mono = Font.footnote.monospaced()
 }
 
 extension View {

@@ -20,12 +20,14 @@ public struct Timeline: Sendable, Hashable {
     public private(set) var disconnected = false
     public private(set) var largeRecordOmitted = false
     public private(set) var savedOutputs: [String: Int] = [:]
+    public private(set) var toolDurations: [String: Duration] = [:]
     /// The decision the turn is paused on, if any.
     public private(set) var interaction: Interaction?
 
     private var seenRecords: Set<Int> = []
     private var liveSerial = 0
     private var streamID: String?
+    private var toolStarted: [String: ContinuousClock.Instant] = [:]
     public private(set) var liveReasoningID: String?
 
     public init() {}
@@ -47,7 +49,11 @@ public struct Timeline: Sendable, Hashable {
         streamID = nil
         liveReasoningID = nil
         savedOutputs = [:]
+        toolStarted = [:]
         entries = Self.entries(from: page, skipping: &seenRecords, outputs: &savedOutputs)
+        rememberToolDurations(page)
+        let present = Set(entries.map(\.id))
+        toolDurations = toolDurations.filter { present.contains($0.key) }
         olderBefore = page.before
         largeRecordOmitted = page.omittedLargeRecord ?? false
     }
@@ -55,6 +61,7 @@ public struct Timeline: Sendable, Hashable {
     /// Prepends an older window; records already shown (same byte offset) are skipped.
     public mutating func prependOlder(_ page: HistoryPage) {
         var older = Self.entries(from: page, skipping: &seenRecords, outputs: &savedOutputs)
+        rememberToolDurations(page)
         // A backward page can reveal the call for an already loaded result.
         let newerTools = Dictionary(entries.compactMap { entry -> (String, TimelineEntry)? in
             if case .tool = entry { return (entry.id, entry) }
@@ -116,13 +123,13 @@ public struct Timeline: Sendable, Hashable {
         activity = frame.active ? (activity ?? "Working") : nil
     }
 
-    public mutating func apply(_ frame: EventFrame) {
-        for event in frame.events { apply(event) }
+    public mutating func apply(_ frame: EventFrame, now: ContinuousClock.Instant = .now) {
+        for event in frame.events { apply(event, now: now) }
     }
 
     public mutating func dismissNotice() { notice = nil }
 
-    public mutating func apply(_ event: GlassEvent) {
+    public mutating func apply(_ event: GlassEvent, now: ContinuousClock.Instant = .now) {
         switch event {
         case .turnStart(_, let text, let alreadyRecorded):
             finishStream()
@@ -158,9 +165,13 @@ public struct Timeline: Sendable, Hashable {
             let id = callID ?? nextID("tool")
             if !entries.contains(where: { $0.id == id }) {
                 entries.append(.tool(id: id, name: name, summary: command, output: "", failed: nil))
+                if callID != nil { toolStarted[id] = now }
             }
             activity = name == "bash" ? (command.isEmpty ? "Running a command…" : "Running `\(command)`…") : "Using \(name)…"
         case .toolEnd(let callID, let output, let summary, let truncated):
+            if let callID, let started = toolStarted.removeValue(forKey: callID), started < now {
+                toolDurations[callID] = started.duration(to: now)
+            }
             let body = (output.isEmpty ? summary : output) + (truncated ? "\nPreview capped · full output remains on the host." : "")
             let failed = summary.range(of: "failed|error:|exit [1-9]", options: [.regularExpression, .caseInsensitive]) != nil
             if let callID, let index = entries.lastIndex(where: { $0.id == callID }),
@@ -171,6 +182,7 @@ public struct Timeline: Sendable, Hashable {
                 entries.append(.tool(id: callID ?? nextID("tool"), name: "tool", summary: "", output: body, failed: failed))
             }
         case .done:
+            toolStarted.removeAll(keepingCapacity: true)
             finishStream()
             isActive = false
             notice = nil
@@ -219,6 +231,15 @@ public struct Timeline: Sendable, Hashable {
             if activity == "Waiting for your decision" { activity = isActive ? "Working" : nil }
         case .commandResult, .commandCatalogue, .commandQueued, .unknown:
             break
+        }
+    }
+
+    private mutating func rememberToolDurations(_ page: HistoryPage) {
+        for item in page.records {
+            guard let raw = item.record["duration_ms"]?.doubleValue,
+                  let milliseconds = Int64(exactly: raw), milliseconds >= 0,
+                  case .tool(let id, _, _, _, _)? = item.entry else { continue }
+            toolDurations[id] = .milliseconds(milliseconds)
         }
     }
 

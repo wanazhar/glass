@@ -18,6 +18,22 @@ final class RoundThreeUITests: XCTestCase {
     }
 
     @MainActor
+    func testReferencedMarkdownLoadsInThreadAndWaitsForImageConsent() {
+        let app = launch("light")
+        if UIDevice.current.userInterfaceIdiom == .phone { app.buttons["conversation.back"].tap() }
+        let thread = app.descendants(matching: .any)["thread.harbor-2"].firstMatch
+        XCTAssertTrue(thread.waitForExistence(timeout: 8))
+        thread.tap()
+        let chip = app.buttons["markdown.file"].firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 8))
+        chip.tap()
+        XCTAssertTrue(app.staticTexts["Deployment notes"].waitForExistence(timeout: 8))
+        let loadButtons = app.buttons.matching(identifier: "markdown.loadRemoteImage")
+        XCTAssertTrue(loadButtons["Load image: Deployment diagram"].exists)
+        XCTAssertTrue(loadButtons["Load image: Runbook diagram"].exists)
+    }
+
+    @MainActor
     func testLightTour() throws { try tour("light") }
 
     @MainActor

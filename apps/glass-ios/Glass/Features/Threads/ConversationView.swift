@@ -45,7 +45,7 @@ struct ConversationView: View {
                             switch row {
                             case .message(let entry): TimelineRow(entry: entry)
                             case .work(let group):
-                                WorkRow(group: group, open: { detail in
+                                WorkRow(group: group, durations: conversation.timeline.toolDurations, open: { detail in
                                     activityDetail = detail
                                 }, resume: conversation.canWrite && !conversation.timeline.isActive ? {
                                     Task { await conversation.composer.continueFromFailure(canWrite: conversation.canWrite) }
@@ -102,10 +102,12 @@ struct ConversationView: View {
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
         .sheet(isPresented: $showingInfo) { threadInfo }
         .sheet(item: $activityDetail) { detail in
-            if !detail.isDiff, let offset = conversation.timeline.savedOutputs[detail.id] {
+            if detail.command == nil, !detail.isDiff, let offset = conversation.timeline.savedOutputs[detail.id] {
                 SavedActivityView(conversation: conversation, record: offset, title: detail.title)
             } else {
-                ActivityDetailView(detail: detail)
+                ActivityDetailView(detail: detail, savedOutput: conversation.timeline.savedOutputs[detail.id].map { offset in
+                    SavedActivityView(conversation: conversation, record: offset, title: detail.title)
+                })
             }
         }
         .sheet(isPresented: $showingDetails) { DetailsView(conversation: conversation) }
@@ -237,6 +239,7 @@ struct ConversationView: View {
                     }
                         .font(.footnote)
                         .keyCommand(.stop)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
                         .disabled(!conversation.canWrite)
                         .accessibilityIdentifier("composer.stop")
                 }
@@ -290,7 +293,7 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.back")
                 Button { showingInfo = true } label: {
                     Text(threads.thread(conversation.thread.id)?.displayTitle ?? conversation.title)
-                        .font(.headline)
+                        .font(Design.headline)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: Design.control)
                 }

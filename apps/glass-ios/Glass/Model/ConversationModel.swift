@@ -45,7 +45,7 @@ final class ConversationModel {
     private var attempt = UUID()
     /// Incremental frames waiting to be drawn. A fast stream sends far more frames than the timeline can
     /// re-render, so they are applied together at most every `frameInterval`.
-    private var pendingFrames: [EventFrame] = []
+    private var pendingFrames: [(frame: EventFrame, receivedAt: ContinuousClock.Instant)] = []
     private var drawTask: Task<Void, Never>?
     private static let frameInterval = Duration.milliseconds(100)
 
@@ -212,7 +212,7 @@ final class ConversationModel {
         drawTask = nil
         guard !pendingFrames.isEmpty else { return }
         var next = timeline
-        for frame in pendingFrames { next.apply(frame) }
+        for (frame, receivedAt) in pendingFrames { next.apply(frame, now: receivedAt) }
         pendingFrames.removeAll()
         timeline = next
     }
@@ -234,7 +234,7 @@ final class ConversationModel {
             catchingUp = false
             if let id { cursor = id }
             if !frame.reset {
-                pendingFrames.append(frame)
+                pendingFrames.append((frame, .now))
                 if drawTask == nil {
                     drawTask = Task { [weak self] in
                         try? await Task.sleep(for: Self.frameInterval)

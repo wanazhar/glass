@@ -81,6 +81,7 @@ final class ComposerTextView: UITextView {
         didSet {
             placeholderLabel.text = placeholder
             accessibilityLabel = placeholder
+            accessibilityHint = "Enter your message"
         }
     }
     override var text: String! {
@@ -155,7 +156,19 @@ final class ComposerTextView: UITextView {
         reportHeight()
     }
 
-    func refreshPlaceholder() { placeholderLabel.isHidden = !(text ?? "").isEmpty }
+    func refreshPlaceholder() { placeholderLabel.isHidden = isFirstResponder || !(text ?? "").isEmpty }
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        refreshPlaceholder()
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        refreshPlaceholder()
+        return result
+    }
 
     private func isReturn(_ presses: Set<UIPress>) -> UIKey? {
         presses.compactMap(\.key).first { $0.keyCode == .keyboardReturnOrEnter }

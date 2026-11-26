@@ -1,6 +1,17 @@
 import Testing
 @testable import Glass
 
+@Test func commandOutputSeparatesFailureAndStderr() {
+    let failed = CommandActivity(command: "swift test",
+                                 output: "[exit 1]\nExecuted 8 tests\nstderr:\nExpected: page-004",
+                                 duration: .milliseconds(1360), failed: false)
+    #expect(failed.exitCode == 1)
+    #expect(failed.failed)
+    #expect(failed.duration == .milliseconds(1360))
+    #expect(failed.stdout == "Executed 8 tests")
+    #expect(failed.stderr == "Expected: page-004")
+}
+
 @MainActor @Suite struct MarkdownTests {
     @Test func truncatedPreviewsDoNotRenderIncompleteCode() {
         for (fence, content) in [("```", "let first = 1"), ("~~~", "let first = 1"), ("````", "```\n````suffix")] {

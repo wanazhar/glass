@@ -459,24 +459,6 @@ private struct ListItemView: View {
     }
 }
 
-private struct DetailsBlock: View {
-    var summary: String
-    var content: String
-    @State private var expanded = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            MarkdownView(text: content).padding(.top, 8)
-        } label: {
-            Text(MarkdownView.inline(summary)).font(.body.weight(.medium)).foregroundStyle(.primary)
-        }
-        .tint(.secondary)
-        .accessibilityIdentifier("markdown.details")
-    }
-}
-
-struct DataTable: View, Equatable {
-    var header: [AttributedString]
 private struct RemoteMarkdownImage: View {
     let url: URL
     let alt: String
@@ -503,6 +485,24 @@ private struct RemoteMarkdownImage: View {
     }
 }
 
+private struct DetailsBlock: View {
+    var summary: String
+    var content: String
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            MarkdownView(text: content).padding(.top, 8)
+        } label: {
+            Text(MarkdownView.inline(summary)).font(.body.weight(.medium)).foregroundStyle(.primary)
+        }
+        .tint(.secondary)
+        .accessibilityIdentifier("markdown.details")
+    }
+}
+
+struct DataTable: View, Equatable {
+    var header: [AttributedString]
     var alignments: [MarkdownView.ColumnAlignment] = []
     var rows: [[AttributedString]]
     @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 148.0

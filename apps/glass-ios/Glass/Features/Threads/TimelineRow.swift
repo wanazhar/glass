@@ -15,6 +15,7 @@ extension EnvironmentValues {
 struct TimelineRow: View {
     var entry: TimelineEntry
     var liveReasoning = false
+    var reasoningExpansion: (Bool) -> Void = { _ in }
     @Environment(\.openSavedActivity) private var openSavedActivity
     @Environment(\.messageAction) private var messageAction
     @State private var reasoningExpanded = false
@@ -62,7 +63,10 @@ struct TimelineRow: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("timeline.assistant")
         case .reasoning(_, let text):
-            DisclosureGroup(isExpanded: $reasoningExpanded) {
+            DisclosureGroup(isExpanded: Binding(get: { reasoningExpanded }, set: { expanded in
+                reasoningExpansion(expanded)
+                reasoningExpanded = expanded
+            })) {
                 Text(text)
                     .font(.footnote)
                     .foregroundStyle(.secondary)

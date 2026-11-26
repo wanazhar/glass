@@ -13,6 +13,7 @@ struct ConversationView: View {
     @State private var touching = false
     @State private var lastTouch = ContinuousClock.now
     @State private var resumeFollowing: Task<Void, Never>?
+    @State private var inspectingReasoning: String?
     @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
@@ -50,7 +51,19 @@ struct ConversationView: View {
                         emptyState
                     }
                     ForEach(conversation.timeline.entries) { entry in
-                        TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID).id(entry.id)
+                        TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID) { expanded in
+                            if expanded {
+                                resumeFollowing?.cancel()
+                                inspectingReasoning = entry.id
+                                following = false
+                                proxy.scrollTo(entry.id, anchor: .top)
+                            } else if inspectingReasoning == entry.id {
+                                inspectingReasoning = nil
+                                lastTouch = .now
+                                if atBottom { following = true } else { scheduleResume(proxy) }
+                            }
+                        }
+                        .id(entry.id)
                     }
                     if let working = workingLabel {
                         WorkingBubble(label: working).id("timeline.working")
@@ -81,7 +94,12 @@ struct ConversationView: View {
                 case .idle where touching:
                     touching = false
                     lastTouch = .now
-                    if atBottom { following = true } else { scheduleResume(proxy) }
+                    if atBottom {
+                        inspectingReasoning = nil
+                        following = true
+                    } else {
+                        scheduleResume(proxy)
+                    }
                 default: break
                 }
             }
@@ -94,6 +112,7 @@ struct ConversationView: View {
             }
             .onChange(of: conversation.timeline.interaction?.id) { _, id in
                 guard id != nil else { return }
+                inspectingReasoning = nil
                 following = true
                 Task {
                     try? await Task.sleep(for: .milliseconds(400))
@@ -105,7 +124,8 @@ struct ConversationView: View {
                     // Text growing in place stays pinned by the bottom size-change anchor; jumping on
                     // every delta would fight a finger that is just landing on the chat.
                     if new.count != old.count { pinToBottom(proxy) } else if !touching, !atBottom { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-                } else if !touching, conversation.timeline.isActive, ContinuousClock.now - lastTouch >= Self.resumeAfter {
+                } else if inspectingReasoning == nil, !touching, conversation.timeline.isActive,
+                          ContinuousClock.now - lastTouch >= Self.resumeAfter {
                     resume(proxy)
                 }
             }
@@ -280,7 +300,7 @@ struct ConversationView: View {
         resumeFollowing?.cancel()
         resumeFollowing = Task {
             try? await Task.sleep(for: Self.resumeAfter)
-            guard !Task.isCancelled, !touching, conversation.timeline.isActive else { return }
+            guard !Task.isCancelled, inspectingReasoning == nil, !touching, conversation.timeline.isActive else { return }
             resume(proxy)
         }
     }
@@ -302,12 +322,13 @@ struct ConversationView: View {
     private func reachedBottom(_ bottom: Bool) {
         atBottom = bottom
         if bottom {
-            if !touching { following = true }
+            if inspectingReasoning == nil, !touching { following = true }
         }
     }
 
     private func resume(_ proxy: ScrollViewProxy) {
         resumeFollowing?.cancel()
+        inspectingReasoning = nil
         following = true
         withAnimation(.smooth(duration: 0.35)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
     }

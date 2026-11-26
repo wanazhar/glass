@@ -33,6 +33,7 @@ The table scrolls sideways to show Verification and Platform."""
 THREADS = [
     {"session": "reasoning", "title": "Review the Swift build", "model": "Swift workspace"},
     {"session": "table", "title": "Build capabilities", "model": "Swift workspace"},
+    {"session": "long-reasoning", "title": "Long reasoning", "model": "Swift workspace"},
 ]
 
 
@@ -55,6 +56,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/history":
             if thread == "table":
                 records = [{"k": "user", "t": "What can we verify in the build?"}, {"k": "assistant", "t": TABLE}]
+            elif thread == "long-reasoning":
+                records = [{"k": "reasoning", "t": "Beginning of the long reasoning.\n\n" + (REASONING + "\n\n") * 6}]
             else:
                 records = [
                     {"k": "user", "t": "Review the build and package the app."},
@@ -96,7 +99,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             active = thread == "reasoning"
             live = [{"t": "reasoning", "delta": REASONING[:39]}] if active else []
-            send(1, {"reset": True, "cursor": 1, "active": active, "control": {"can_write": True}, "live": live})
+            send(1, {"reset": True, "cursor": 1, "active": active or thread == "long-reasoning",
+                     "control": {"can_write": True}, "live": live})
             if active:
                 for i, start in enumerate(range(39, len(REASONING), 13), start=2):
                     event = {"t": "reasoning", "delta": REASONING[start:start + 13]}

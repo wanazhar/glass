@@ -136,6 +136,23 @@ import Testing
         }
     }
 
+    @Test func nativeMathAdaptsExplicitBlackAndWhiteInk() throws {
+        let black = #"\color{#000000}{x+1}"#
+        for display in [false, true] {
+            let light = try #require(NativeMath.image(black, size: 21, display: display)?.pngData())
+            let dark = try #require(NativeMath.image(black, size: 21, display: display, colorScheme: .dark)?.pngData())
+            #expect(light != dark)
+            for source in [#"\color{black}{x+1}"#, #"\color{white}{x+1}"#, #"\color{#ffffff}{x+1}"#] {
+                #expect(NativeMath.image(source, size: 21, display: display)?.pngData() == light)
+                #expect(NativeMath.image(source, size: 21, display: display, colorScheme: .dark)?.pngData() == dark)
+            }
+            let red = #"\color{#FF0000}{x+1}"#
+            let redLight = try #require(NativeMath.image(red, size: 21, display: display)?.pngData())
+            #expect(NativeMath.image(red, size: 21, display: display, colorScheme: .dark)?.pngData() == redLight)
+            #expect(redLight != light && redLight != dark)
+        }
+    }
+
     @Test func pieSelectionUsesCumulativeValues() {
         let points = [
             ChartView.Point(id: 1, series: "", x: "A", xValue: nil, y: 1.25),

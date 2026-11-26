@@ -16,9 +16,10 @@ enum NativeMath {
         guard !commands.contains("textcolor") else { return nil }
         let usesColor = commands.contains("color") || commands.contains("colorbox")
         let lightInk = usesColor && colorScheme == .dark
-        let key = "\(size)|\(display)|\(lightInk)|\(latex)" as NSString
+        let equation = commands.contains("color") ? adaptiveColor(in: latex, lightInk: lightInk) : latex
+        let key = "\(size)|\(display)|\(lightInk)|\(equation)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        var math = MathImage(latex: latex, fontSize: size, textColor: lightInk ? .white : .black,
+        var math = MathImage(latex: equation, fontSize: size, textColor: lightInk ? .white : .black,
                              labelMode: display ? .display : .text)
         let (error, output, layout) = math.asImage()
         guard error == nil, let output, let layout, let pixels = output.cgImage else { return nil }
@@ -30,6 +31,13 @@ enum NativeMath {
 
     static func artwork(_ image: UIImage) -> Image {
         Image(uiImage: image).renderingMode(image.renderingMode == .alwaysOriginal ? .original : .template)
+    }
+
+    private static func adaptiveColor(in latex: String, lightInk: Bool) -> String {
+        let ink = lightInk ? "#FFFFFF" : "#000000"
+        return latex.replacing(/\\color\s*\{\s*((?i:black|white|#000000|#ffffff))\s*\}|\\(?:\p{L}+|[^\p{L}])/) { match in
+            match.1 == nil ? String(match.0) : #"\color{"# + ink + "}"
+        }
     }
 
     static func normalizedLaTeX(_ source: String) -> String? {

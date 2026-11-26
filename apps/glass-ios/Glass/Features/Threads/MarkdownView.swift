@@ -3,11 +3,13 @@ import SwiftUI
 
 extension EnvironmentValues {
     @Entry var openReferencedFile: ((String) -> Void)? = nil
+    @Entry var completeMarkdownFencesOnly = false
 }
 
 /// Renders assistant Markdown natively: prose, headings, nested and task lists, quotes, tables,
 /// `<details>` sections, inline and display math, images, and fenced code.
 struct MarkdownView: View, Equatable {
+    @Environment(\.completeMarkdownFencesOnly) private var completeFencesOnly
     var text: String
 
     enum ListMarker: Hashable {
@@ -59,9 +61,9 @@ struct MarkdownView: View, Equatable {
     nonisolated static func == (left: Self, right: Self) -> Bool { left.text == right.text }
 
     private var parsedBlocks: [Block] {
-        let key = text as NSString
+        let key = (completeFencesOnly ? "1" + text : "0" + text) as NSString
         if let cached = Self.blockCache.object(forKey: key) { return cached.blocks }
-        let blocks = Self.blocks(text)
+        let blocks = Self.blocks(text, completeFencesOnly: completeFencesOnly)
         Self.blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
         return blocks
     }
@@ -125,7 +127,7 @@ struct MarkdownView: View, Equatable {
     private static let filePattern = #/^\[([^\]]+)\]\(((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][\w-]*)\)$/#
     private static let separatorPattern = try! NSRegularExpression(pattern: #"^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?$"#)
 
-    static func blocks(_ text: String) -> [Block] {
+    static func blocks(_ text: String, completeFencesOnly: Bool = false) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
         let lines = text.components(separatedBy: "\n")
@@ -144,14 +146,19 @@ struct MarkdownView: View, Equatable {
             // Fenced code (also glass-ui, mermaid and math fences).
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 flush()
-                let fence = String(trimmed.prefix(3))
-                let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                let marker: Character = trimmed.first == "~" ? "~" : "`"
+                let fenceLength = trimmed.prefix { $0 == marker }.count
+                let language = String(trimmed.dropFirst(fenceLength)).trimmingCharacters(in: .whitespaces)
                 var code: [String] = []
                 index += 1
-                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
+                while index < lines.count {
+                    let candidate = lines[index].trimmingCharacters(in: .whitespaces)
+                    let closingLength = candidate.prefix { $0 == marker }.count
+                    if closingLength >= fenceLength, candidate.count == closingLength { break }
                     code.append(lines[index])
                     index += 1
                 }
+                if completeFencesOnly, index == lines.count { break }
                 blocks.append(.code(code.joined(separator: "\n"), language: language))
                 index += 1
                 continue

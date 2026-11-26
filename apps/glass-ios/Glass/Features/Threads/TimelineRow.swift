@@ -50,6 +50,7 @@ struct TimelineRow: View {
             VStack(alignment: .leading, spacing: Design.gap) {
                 MarkdownView(text: !streaming && text.count > 5_000 ? answerPreview(text) : text)
                     .equatable()
+                    .environment(\.completeMarkdownFencesOnly, !streaming && text.count > 5_000)
                 if !streaming, text.count > 5_000 {
                     Button("Show more", systemImage: "arrow.up.right.square") { showingFullAnswer = true }
                         .glassButtonStyle()

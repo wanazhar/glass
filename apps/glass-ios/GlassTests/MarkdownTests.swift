@@ -2,6 +2,15 @@ import Testing
 @testable import Glass
 
 @MainActor @Suite struct MarkdownTests {
+    @Test func truncatedPreviewsDoNotRenderIncompleteCode() {
+        for (fence, content) in [("```", "let first = 1"), ("~~~", "let first = 1"), ("````", "```\n````suffix")] {
+            let partial = "Summary.\n\n\(fence)swift\n\(content)\n\nlet second"
+            #expect(MarkdownView.blocks(partial, completeFencesOnly: true) == [.prose("Summary.")])
+            #expect(MarkdownView.blocks(partial + " = 2\n\(fence)", completeFencesOnly: true) == [
+                .prose("Summary."), .code("\(content)\n\nlet second = 2", language: "swift")
+            ])
+        }
+    }
     @Test func tablesBecomeTablesWithAlignment() {
         let blocks = MarkdownView.blocks("| Name | Role | Status |\n|------|:----:|-------:|\n| Alice | Admin | Active |\n| Bob | `a|b` | Off |")
         #expect(blocks == [.table(header: ["Name", "Role", "Status"], alignments: [.leading, .center, .trailing],

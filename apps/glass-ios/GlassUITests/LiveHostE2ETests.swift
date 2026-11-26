@@ -726,7 +726,7 @@ final class LiveHostE2ETests: XCTestCase {
         let app = try pairedApp()
         open(app, thread: thread)
         XCTAssertTrue(waitForConnection(app, "Live"))
-        typeAndSend(app, "pause 6 then reply")
+        typeAndSend(app, "pause 20 then reply")
         let bubble = app.descendants(matching: .any)["conversation.activity"].firstMatch
         XCTAssertTrue(bubble.waitForExistence(timeout: 10), "a working bubble sits where the reply will appear")
         XCTAssertEqual(bubble.label, "Glass is working")

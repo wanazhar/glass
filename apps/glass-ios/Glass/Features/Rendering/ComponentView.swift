@@ -555,9 +555,18 @@ struct ChartView: View {
         .accessibilityIdentifier("component.chart.plot")
         VStack(alignment: .leading, spacing: Design.small) {
             Group {
-                if kind == "pie" { chart.chartAngleSelection(value: $angle) }
-                else if numeric { chart.chartXSelection(value: $numericX) }
-                else { chart.chartXSelection(value: $categoryX) }
+                if kind == "pie" {
+                    chart.chartAngleSelection(value: retaining($angle))
+                        .chartGesture { proxy in
+                            DragGesture(minimumDistance: 0).onChanged {
+                                proxy.selectAngleValue(at: proxy.angle(at: $0.location))
+                            }
+                        }
+                } else if numeric {
+                    chart.chartXSelection(value: retaining($numericX))
+                } else {
+                    chart.chartXSelection(value: retaining($categoryX))
+                }
             }
             .frame(height: kind == "pie" ? 220 : 200)
             ForEach(selected) { point in
@@ -575,6 +584,12 @@ struct ChartView: View {
             numericX = nil
             categoryX = nil
         }
+    }
+
+    private func retaining<Value>(_ binding: Binding<Value?>) -> Binding<Value?> {
+        Binding(get: { binding.wrappedValue }, set: { value in
+            if let value { binding.wrappedValue = value }
+        })
     }
 
     static func slice(at angle: Double, in points: [Point]) -> Point? {

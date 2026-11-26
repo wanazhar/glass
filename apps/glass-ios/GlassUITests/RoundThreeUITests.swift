@@ -148,7 +148,8 @@ final class RoundThreeUITests: XCTestCase {
             XCTAssertTrue(equation.waitForExistence(timeout: 8))
             let chart = app.descendants(matching: .any)["component.chart.plot"].firstMatch
             XCTAssertTrue(chart.waitForExistence(timeout: 8))
-            chart.coordinate(withNormalizedOffset: CGVector(dx: 0.64, dy: 0.42)).tap()
+            chart.coordinate(withNormalizedOffset: CGVector(dx: 0.64, dy: 0.42))
+                .press(forDuration: 0.1, thenDragTo: chart.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.15)))
             let selected = app.descendants(matching: .any)["component.chart.value"].firstMatch
             XCTAssertTrue(selected.waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts["12.75"].exists || app.staticTexts["7.25"].exists)

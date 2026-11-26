@@ -110,6 +110,19 @@ import Testing
         #expect(NativeMath.image(source, size: 21, display: true) == nil)
     }
 
+    @Test func nativeMathPreservesUnicodeRelationsAndPrimes() throws {
+        for (source, latex) in [
+            ("x ≤ 1", #"x \le  1"#),
+            ("x ≥ 1 ≠ y", #"x \ge  1 \ne  y"#),
+            ("f'(x)", #"f^{\prime}(x)"#),
+            ("f″(x)", #"f^{\prime\prime}(x)"#)
+        ] {
+            #expect(NativeMath.normalizedLaTeX(source) == latex)
+            _ = try #require(NativeMath.image(source, size: 17, display: false))
+        }
+        #expect(NativeMath.image("x 🜁 1", size: 17, display: false) == nil)
+    }
+
     @Test func pieSelectionUsesCumulativeValues() {
         let points = [
             ChartView.Point(id: 1, series: "", x: "A", xValue: nil, y: 1.25),

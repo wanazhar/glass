@@ -187,7 +187,7 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertEqual(conversation.value as? String, "82 entries", "paging with before loads every record exactly once")
         attach(app, "e2e-older-history")
 
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["conversation.back"].tap()
         XCTAssertTrue(app.buttons["threads.new"].waitForExistence(timeout: 10))
         app.buttons["threads.new"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 20))
@@ -355,7 +355,7 @@ final class LiveHostE2ETests: XCTestCase {
             XCTAssertTrue(waitForConnection(app, "Live"))
             XCTAssertTrue(text(app, containing: "Seeded answer 1").exists)
             if attempt == 0 { attach(app, "e2e-short-chat") }
-            app.navigationBars.buttons.element(boundBy: 0).tap()
+            app.buttons["conversation.back"].tap()
             XCTAssertTrue(app.waitForThreadList(timeout: 10))
         }
     }
@@ -469,7 +469,7 @@ final class LiveHostE2ETests: XCTestCase {
 
     @MainActor
     private func back(_ app: XCUIApplication) {
-        app.navigationBars.buttons["Commands"].firstMatch.tap()
+        app.buttons["conversation.commands"].firstMatch.tap()
     }
 
     @MainActor
@@ -818,7 +818,7 @@ final class LiveHostE2ETests: XCTestCase {
         app.tabBars.buttons["Conversations"].tap()
         open(app, thread: away)
         XCTAssertTrue(waitForConnection(app, "Live"))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["conversation.back"].tap()
         open(app, thread: here)
         XCTAssertTrue(waitForConnection(app, "Live"))
         let banner = { (title: String) in

@@ -4,6 +4,7 @@ import SwiftUI
 struct ConversationView: View {
     @Bindable var conversation: ConversationModel
     var threads: ThreadsModel
+    var goBack: () -> Void
     @Environment(\.scenePhase) private var scenePhase
     /// The chat moves with a streaming reply until you touch it, and picks it up again after you've
     /// left it alone for a few seconds or tap Latest.
@@ -49,7 +50,7 @@ struct ConversationView: View {
                         emptyState
                     }
                     ForEach(conversation.timeline.entries) { entry in
-                        TimelineRow(entry: entry).id(entry.id)
+                        TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID).id(entry.id)
                     }
                     if let working = workingLabel {
                         WorkingBubble(label: working).id("timeline.working")
@@ -67,6 +68,7 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
+            .softTopScrollEdge()
             .scrollDismissesKeyboard(.interactively)
             .onScrollPhaseChange { _, phase in
                 dragging = phase == .interacting
@@ -108,6 +110,7 @@ struct ConversationView: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
+            .floatingBar(edge: .top) { header }
             .floatingBar {
                 bottomBar(proxy)
                     .onGeometryChange(for: CGFloat.self, of: \.size.height) { _, _ in
@@ -119,44 +122,7 @@ struct ConversationView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation")
         .accessibilityValue("\(conversation.timeline.entries.count) entries\(conversation.hasEarlier ? ", earlier available" : "")")
-        .navigationTitle(conversation.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) { titleView }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Commands", systemImage: "command") { conversation.composer.showingCommands = true }
-                    .accessibilityIdentifier("conversation.commands")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    if let workspace = conversation.thread.workspace, !workspace.isEmpty {
-                        Section(workspace) {}
-                    }
-                    Button("Details", systemImage: "info.circle") { showingDetails = true }
-                        .accessibilityIdentifier("conversation.details")
-                    Button("Model…", systemImage: "cpu") { picker = .model }
-                        .disabled(!conversation.canWrite)
-                        .accessibilityIdentifier("conversation.model")
-                    Button("Permissions…", systemImage: "slider.horizontal.3") { picker = .profiles }
-                        .disabled(!conversation.canWrite)
-                        .accessibilityIdentifier("conversation.profile")
-                    if !conversation.composer.checklist.isEmpty {
-                        Button("Checklist", systemImage: "checklist") { showingChecklist = true }
-                    }
-                    if conversation.canWrite {
-                        Button("Release control", systemImage: "hand.raised") { Task { await conversation.composer.releaseControl() } }
-                            .accessibilityIdentifier("conversation.releaseControl")
-                    }
-                    Button("Close conversation", systemImage: "xmark.circle") {
-                        Task { await threads.close(conversation.thread.id) }
-                    }
-                    .accessibilityIdentifier("conversation.close")
-                } label: {
-                    Label("More", systemImage: "ellipsis")
-                }
-                .accessibilityIdentifier("conversation.menu")
-            }
-        }
+        .toolbarVisibility(.hidden, for: .navigationBar)
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
         .sheet(isPresented: $showingDetails) { DetailsView(conversation: conversation) }
         .sheet(item: $savedRecord) { SavedActivityView(conversation: conversation, record: $0.id) }
@@ -221,7 +187,7 @@ struct ConversationView: View {
         case .editor: conversation.composer.showingEditor = true
         case .animation, .theme: app.show(.appearance)
         case .settings: app.show(nil)
-        case .conversations, .search: threads.selection = nil
+        case .conversations, .search: goBack()
         }
     }
     private static let bottom = "timeline.bottom"
@@ -356,7 +322,78 @@ struct ConversationView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
-    /// The chat title with the connection state beside it, where the eye already is.
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button(action: goBack) {
+                headerIcon("chevron.backward")
+            }
+            .accessibilityLabel("Back to conversations")
+            .accessibilityIdentifier("conversation.back")
+            .floatingGlass()
+
+            titleView
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .floatingGlass()
+                .layoutPriority(1)
+
+            HStack(spacing: 0) {
+                Button {
+                    conversation.composer.showingCommands = true
+                } label: {
+                    headerIcon("command")
+                }
+                .accessibilityLabel("Commands")
+                .accessibilityIdentifier("conversation.commands")
+                headerMenu
+            }
+            .floatingGlass()
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func headerIcon(_ icon: String) -> some View {
+        Image(systemName: icon)
+            .font(.body.weight(.semibold))
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+
+    private var headerMenu: some View {
+        Menu {
+            if let workspace = conversation.thread.workspace, !workspace.isEmpty {
+                Section(workspace) {}
+            }
+            Button("Details", systemImage: "info.circle") { showingDetails = true }
+                .accessibilityIdentifier("conversation.details")
+            Button("Model…", systemImage: "cpu") { picker = .model }
+                .disabled(!conversation.canWrite)
+                .accessibilityIdentifier("conversation.model")
+            Button("Permissions…", systemImage: "slider.horizontal.3") { picker = .profiles }
+                .disabled(!conversation.canWrite)
+                .accessibilityIdentifier("conversation.profile")
+            if !conversation.composer.checklist.isEmpty {
+                Button("Checklist", systemImage: "checklist") { showingChecklist = true }
+            }
+            if conversation.canWrite {
+                Button("Release control", systemImage: "hand.raised") { Task { await conversation.composer.releaseControl() } }
+                    .accessibilityIdentifier("conversation.releaseControl")
+            }
+            Button("Close conversation", systemImage: "xmark.circle") {
+                Task { await threads.close(conversation.thread.id) }
+            }
+            .accessibilityIdentifier("conversation.close")
+        } label: {
+            headerIcon("ellipsis")
+        }
+        .accessibilityLabel("More")
+        .accessibilityIdentifier("conversation.menu")
+    }
+
     private var titleView: some View {
         let (title, tint): (String, Color) = switch conversation.connection {
         case .live: ("Live", .green)
@@ -364,18 +401,22 @@ struct ConversationView: View {
         case .reconnecting: ("Reconnecting", .orange)
         case .readOnly: ("Read-only", .secondary)
         }
+        let subtitle = conversation.connection == .live
+            ? conversation.composer.model ?? app.endpoint?.host
+            : title
         return VStack(spacing: 1) {
             HStack(spacing: 6) {
                 Circle().fill(tint).frame(width: 7, height: 7)
                     .accessibilityHidden(true)
                 Text(conversation.title).font(.headline).lineLimit(1)
             }
-            if conversation.connection != .live {
-                Text(title).font(.caption2).foregroundStyle(.secondary)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        .padding(.vertical, 4)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(conversation.title)
+        .accessibilityLabel([conversation.title, conversation.connection == .live ? subtitle : nil].compactMap { $0 }.joined(separator: ", "))
         .accessibilityValue("\(title), \(conversation.resets) resets\(conversation.lastReconnect.map { ", reconnect \($0) ms" } ?? "")")
         .accessibilityIdentifier("conversation.connection")
     }

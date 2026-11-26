@@ -116,6 +116,64 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(timeline.notice == nil && timeline.canWrite && timeline.isActive)
     }
 
+    @Test func liveReasoningKeepsItsIDAndSplitsAtTextToolsAndTurns() {
+        var timeline = Timeline()
+        timeline.apply(.turnStart(requestID: "r", text: "go", alreadyRecorded: false))
+        timeline.apply(.text(delta: "Before "))
+        timeline.apply(.reasoning(delta: "Check"))
+        let firstID = timeline.liveReasoningID
+        timeline.apply(.text(delta: ""))
+        timeline.apply(.reasoning(delta: " this."))
+        #expect(timeline.liveReasoningID == firstID)
+        timeline.apply(.tool(callID: "c", name: "read", command: "file"))
+        #expect(timeline.liveReasoningID == nil)
+        timeline.apply(.reasoning(delta: "Review"))
+        timeline.apply(.text(delta: "After"))
+        #expect(timeline.liveReasoningID == nil)
+        timeline.apply(.reasoning(delta: "Another thought"))
+        timeline.apply(.turnStart(requestID: "s", text: nil, alreadyRecorded: true))
+        timeline.apply(.reasoning(delta: "New turn"))
+        timeline.apply(.done)
+        #expect(timeline.liveReasoningID == nil)
+        #expect(timeline.entries == [
+            .user(id: "live-user-1", text: "go"),
+            .assistant(id: "live-assistant-2", text: "Before ", streaming: false),
+            .reasoning(id: "live-reasoning-3", text: "Check this."),
+            .tool(id: "c", name: "read", summary: "file", output: "", failed: nil),
+            .reasoning(id: "live-reasoning-4", text: "Review"),
+            .assistant(id: "live-assistant-5", text: "After", streaming: false),
+            .reasoning(id: "live-reasoning-6", text: "Another thought"),
+            .reasoning(id: "live-reasoning-7", text: "New turn"),
+        ])
+    }
+
+    @Test func historyCoalescesReasoningWithinAndAcrossPages() throws {
+        var timeline = Timeline()
+        timeline.replaceHistory(try Self.page([
+            (200, #"{"k":"reasoning","t":"the"}"#),
+            (220, #"{"k":"reasoning","t":" page."}"#),
+            (250, #"{"k":"call","id":"c","name":"read"}"#),
+            (270, #"{"k":"reasoning","t":"Review"}"#),
+            (290, #"{"k":"reasoning","t":" it."}"#),
+            (310, #"{"k":"assistant","t":"Done"}"#),
+            (330, #"{"k":"reasoning","t":"Later"}"#),
+        ], before: 200))
+        timeline.prependOlder(try Self.page([
+            (0, #"{"k":"user","t":"go"}"#),
+            (150, #"{"k":"reasoning","t":"Inspect "}"#),
+            (200, #"{"k":"reasoning","t":"the"}"#),
+        ], before: 0))
+        #expect(timeline.entries == [
+            .user(id: "rec-0", text: "go"),
+            .reasoning(id: "rec-200", text: "Inspect the page."),
+            .tool(id: "c", name: "read", summary: "", output: "", failed: nil),
+            .reasoning(id: "rec-270", text: "Review it."),
+            .assistant(id: "rec-310", text: "Done", streaming: false),
+            .reasoning(id: "rec-330", text: "Later"),
+        ])
+        #expect(timeline.liveReasoningID == nil)
+    }
+
     @Test func controlIsUnknownUntilTheHostSaysSo() throws {
         var timeline = Timeline()
         #expect(!timeline.controlKnown && !timeline.canWrite)
@@ -126,6 +184,22 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         var live = Timeline()
         live.apply(.control(canWrite: true))
         #expect(live.controlKnown && live.canWrite)
+    }
+
+    @Test func activeSnapshotReusesTheSavedReasoningPrefix() throws {
+        var timeline = Timeline()
+        let history = try Self.page([
+            (100, #"{"k":"user","t":"go"}"#),
+            (200, #"{"k":"reasoning","t":"Check the"}"#),
+        ], before: 0)
+        let frame = try decode(EventFrame.self, #"{"reset":true,"active":true,"live":[{"t":"reasoning","delta":"Check "},{"t":"reasoning","delta":"the file"}]}"#)
+        timeline.reset(history: history, frame: frame)
+        timeline.apply(.reasoning(delta: "."))
+        #expect(timeline.liveReasoningID == "rec-200")
+        #expect(timeline.entries == [
+            .user(id: "rec-100", text: "go"),
+            .reasoning(id: "rec-200", text: "Check the file."),
+        ])
     }
 
     @Test func olderWindowsWithNothingVisibleAreNotEarlierMessages() throws {

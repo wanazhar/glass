@@ -28,14 +28,23 @@ extension View {
 }
 
 extension View {
-    /// Floats glass controls along the bottom edge with no backing of their own. On iOS 26 this is a
+    /// Floats glass controls along a vertical edge with no backing of their own. On iOS 26 this is a
     /// safe-area bar, so content runs edge to edge beneath it and gets the system scroll-edge effect.
     @ViewBuilder
-    func floatingBar(@ViewBuilder _ bar: () -> some View) -> some View {
+    func floatingBar(edge: VerticalEdge = .bottom, @ViewBuilder _ bar: () -> some View) -> some View {
         if #available(iOS 26.0, *) {
-            safeAreaBar(edge: .bottom, content: bar)
+            safeAreaBar(edge: edge, spacing: edge == .top ? 0 : nil, content: bar)
         } else {
-            safeAreaInset(edge: .bottom, content: bar)
+            safeAreaInset(edge: edge, spacing: edge == .top ? 0 : nil, content: bar)
+        }
+    }
+
+    @ViewBuilder
+    func softTopScrollEdge() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            self
         }
     }
 }

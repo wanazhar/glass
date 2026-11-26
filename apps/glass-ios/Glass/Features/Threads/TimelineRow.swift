@@ -14,9 +14,10 @@ extension EnvironmentValues {
 
 struct TimelineRow: View {
     var entry: TimelineEntry
+    var liveReasoning = false
     @Environment(\.openSavedActivity) private var openSavedActivity
     @Environment(\.messageAction) private var messageAction
-    @State private var readingReasoning = false
+    @State private var reasoningExpanded = false
 
     @ViewBuilder
     private func actions(for kinds: [MessageAction]) -> some View {
@@ -61,26 +62,29 @@ struct TimelineRow: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("timeline.assistant")
         case .reasoning(_, let text):
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(text)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(12)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if text.count > 600 {
-                        Button("Read all") { readingReasoning = true }
-                            .font(.footnote)
-                            .accessibilityIdentifier("timeline.reasoning.readAll")
+            DisclosureGroup(isExpanded: $reasoningExpanded) {
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("timeline.reasoning.full")
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Reasoning", systemImage: "text.alignleft")
+                        .font(.footnote.weight(.medium))
+                    if liveReasoning && !reasoningExpanded {
+                        let preview = text.prefix(160)
+                        Text(verbatim: String(preview) + (preview.endIndex == text.endIndex ? "" : "…"))
+                            .font(.caption)
+                            .lineLimit(2)
+                            .accessibilityIdentifier("timeline.reasoning.preview")
                     }
                 }
-                .sheet(isPresented: $readingReasoning) { ReasoningReader(text: text) }
-            } label: {
-                Label("Reasoning", systemImage: "text.alignleft")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
+                .foregroundStyle(Color(.secondaryLabel))
             }
+            .tint(Color(.secondaryLabel))
             .accessibilityIdentifier("timeline.reasoning")
         case .tool(_, let name, let summary, let output, let failed):
             if failed != true, let shared = SharedImage(name: name, output: output) {
@@ -240,29 +244,6 @@ private struct SharedImageView: View {
         .task(id: image.attachmentID) {
             guard let id = image.attachmentID else { failed = true; return }
             if let data = await load(id), let decoded = UIImage(data: data) { loaded = decoded } else { failed = true }
-        }
-    }
-}
-
-/// Full-screen reader for a long reasoning block.
-struct ReasoningReader: View {
-    let text: String
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                MarkdownView(text: ReasoningText.readable(text))
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .navigationTitle("Reasoning")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) { CopyButton(text: text) }
-            }
-            .accessibilityIdentifier("reasoning.reader")
         }
     }
 }

@@ -4,6 +4,63 @@ import XCTest
 /// GLASS_SHOTS (output directory) and GLASS_E2E_CONTROL (live harness); skipped otherwise.
 final class ScreenshotTourUITests: XCTestCase {
     @MainActor
+    func testChatRenderingInLightAndDark() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-GlassResetState", "-glass.theme", appearance]
+            app.launch()
+            XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+            let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+            field.tap()
+            field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+            app.buttons["pair.connect"].tap()
+            XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+            func capture(_ name: String) {
+                let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                attachment.name = "\(appearance)-\(name)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+
+            app.descendants(matching: .any)["thread.reasoning"].firstMatch.tap()
+            let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+            XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "I’ll compare the two build paths")).firstMatch
+                .waitForExistence(timeout: 10))
+            let reasoning = app.descendants(matching: .any)["timeline.reasoning"].firstMatch
+            XCTAssertTrue(reasoning.exists)
+            XCTAssertEqual(conversation.value as? String, "4 entries")
+            capture("reasoning-collapsed")
+
+            reasoning.tap()
+            let completeReasoning = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "without opening a second screen")).firstMatch
+            XCTAssertTrue(completeReasoning.waitForExistence(timeout: 12))
+            XCTAssertEqual(conversation.value as? String, "4 entries")
+            capture("reasoning-expanded")
+
+            app.buttons["conversation.back"].tap()
+            XCTAssertTrue(app.waitForThreadList(timeout: 10))
+            app.descendants(matching: .any)["thread.table"].firstMatch.tap()
+            let table = app.descendants(matching: .any)["markdown.table"].firstMatch
+            XCTAssertTrue(table.waitForExistence(timeout: 10))
+            let header = app.descendants(matching: .any)["conversation.connection"].firstMatch
+            XCTAssertTrue(header.label.contains("Swift workspace"))
+            XCTAssertTrue(app.buttons["conversation.commands"].isHittable)
+            XCTAssertTrue(app.buttons["conversation.menu"].isHittable)
+            capture("wide-table")
+            table.swipeLeft()
+            XCTAssertTrue(app.staticTexts["Platform"].firstMatch.isHittable)
+            capture("wide-table-scrolled")
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testCaptureScreens() throws {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["GLASS_SHOTS"] else { throw XCTSkip("Screenshot tour runs via scripts/screenshots.sh") }

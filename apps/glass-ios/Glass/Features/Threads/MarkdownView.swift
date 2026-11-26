@@ -104,11 +104,12 @@ struct MarkdownView: View, Equatable {
                 accessible = next
             case .math(let source):
                 hasMath = true
-                accessible = Text(InlineMath.render(source))
                 if let image = NativeMath.image(source, size: mathSize, display: false) {
+                    accessible = Text(InlineMath.render(source))
                     next = Text(Image(uiImage: image).renderingMode(.template))
                 } else {
-                    next = accessible.italic()
+                    accessible = Text(verbatim: source)
+                    next = accessible.monospaced()
                 }
             }
             accessibleText = Text("\(accessibleText)\(accessible)")

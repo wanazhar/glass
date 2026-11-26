@@ -104,6 +104,12 @@ import Testing
         #expect(NativeMath.image(#"\unsupportedglassequation{x}"#, size: 17, display: false) == nil)
     }
 
+    @Test func nativeMathRejectsUnsafeTextColor() {
+        let source = #"a + \textcolor{red}{\frac{1}{2}}"#
+        #expect(NativeMath.image(source, size: 17, display: false) == nil)
+        #expect(NativeMath.image(source, size: 21, display: true) == nil)
+    }
+
     @Test func pieSelectionUsesCumulativeValues() {
         let points = [
             ChartView.Point(id: 1, series: "", x: "A", xValue: nil, y: 1.25),

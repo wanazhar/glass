@@ -11,6 +11,7 @@ enum NativeMath {
 
     static func image(_ source: String, size: CGFloat, display: Bool) -> UIImage? {
         guard !source.isEmpty, source.utf8.count <= 2_048 else { return nil }
+        guard !source.matches(of: /\\(\p{L}+|[^\p{L}])/).contains(where: { $0.1 == "textcolor" }) else { return nil }
         let key = "\(size)|\(display)|\(source)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
         var math = MathImage(latex: source, fontSize: size, textColor: .black,

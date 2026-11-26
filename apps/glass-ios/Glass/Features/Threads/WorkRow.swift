@@ -292,6 +292,9 @@ struct CommandActivity {
     let duration: Duration?
     let failed: Bool
     let truncated: Bool
+    var durationLabel: String {
+        duration?.formatted(.units(allowed: [.seconds, .milliseconds], width: .abbreviated, maximumUnitCount: 1)) ?? "—"
+    }
 
     init(command: String, output: String, duration: Duration?, failed: Bool) {
         self.command = command
@@ -402,11 +405,10 @@ struct ActivityDetailView: View {
                     Label("Exit code \(code)", systemImage: command.failed ? "xmark.circle.fill" : "checkmark.circle.fill")
                         .foregroundStyle(command.failed ? Design.failure : .secondary)
                 }
-                if let duration = command.duration {
-                    Label(duration.formatted(.units(allowed: [.seconds, .milliseconds], width: .abbreviated,
-                                                    maximumUnitCount: 1)), systemImage: "clock")
-                        .foregroundStyle(.secondary)
-                }
+                Label(command.durationLabel, systemImage: "clock")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(command.duration == nil ? "Duration unavailable" : "Duration: \(command.durationLabel)")
+                    .accessibilityIdentifier("command.duration")
             }
             .font(Design.footnote)
             if preview, savedOutput != nil {

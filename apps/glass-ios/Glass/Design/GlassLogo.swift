@@ -18,12 +18,18 @@ struct GlassLogo: View {
             Group {
                 if shouldAnimate {
                     ZStack {
-                        wordmark.opacity(0.24)
-                        wordmark.drawingGroup().visualEffect { view, _ in
-                            view.layerEffect(
-                                ShaderLibrary.liquidRipple(.float2(touch), .float(time)),
-                                maxSampleOffset: CGSize(width: 12, height: 12)
-                            )
+                        wordmark.hidden().overlay {
+                            Canvas { context, size in
+                                var context = context
+                                context.addFilter(.layerShader(
+                                    ShaderLibrary.liquidRipple(.float2(touch), .float(time)),
+                                    maxSampleOffset: CGSize(width: 12, height: 12)
+                                ))
+                                context.drawLayer { layer in
+                                    layer.draw(logoText, at: CGPoint(x: size.width / 2, y: size.height / 2))
+                                }
+                            }
+                            .accessibilityLabel("Glass")
                         }
                     }
                 } else {
@@ -42,6 +48,9 @@ struct GlassLogo: View {
                     }
                 }
         }
+        .background {
+            if active, sample == nil, !reduceMotion { RippleRefreshPreference() }
+        }
         .task(id: started) {
             guard active else { return }
             try? await Task.sleep(for: .milliseconds(1_300))
@@ -51,14 +60,50 @@ struct GlassLogo: View {
     }
 
     private var wordmark: some View {
-        Text("Glass").font(font).foregroundStyle(.primary).padding(Design.padding)
+        logoText.padding(Design.padding)
     }
+
+    private var logoText: Text { Text("Glass").font(font).foregroundStyle(.primary) }
 
     private func ripple(at point: CGPoint) {
         guard !reduceMotion else { return }
         touch = point
         started = .now
         active = true
+    }
+}
+
+private struct RippleRefreshPreference: UIViewRepresentable {
+    func makeCoordinator() -> Refresh { Refresh() }
+
+    func makeUIView(context: Context) -> UIView {
+        context.coordinator.start()
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Refresh) { coordinator.stop() }
+
+    @MainActor
+    final class Refresh: NSObject {
+        private var link: CADisplayLink?
+
+        func start() {
+            let link = CADisplayLink(target: self, selector: #selector(frame))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+            link.add(to: .main, forMode: .common)
+            self.link = link
+        }
+
+        func stop() {
+            link?.invalidate()
+            link = nil
+        }
+
+        @objc private func frame() {}
     }
 }
 

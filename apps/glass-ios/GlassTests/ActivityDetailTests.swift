@@ -10,3 +10,10 @@ import Testing
                                      duration: nil, failed: false)
     #expect(detail.copyTitle(hasSavedOutput: false) == "Copy preview")
 }
+
+@Test func commandDurationUsesADashOnlyWhenUnavailable() {
+    let unavailable = CommandActivity(command: "swift test", output: "", duration: nil, failed: false)
+    let measured = CommandActivity(command: "swift test", output: "", duration: .milliseconds(480), failed: false)
+    #expect(unavailable.durationLabel == "—")
+    #expect(measured.durationLabel != "—")
+}

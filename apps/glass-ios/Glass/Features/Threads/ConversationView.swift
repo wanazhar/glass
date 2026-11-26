@@ -48,8 +48,7 @@ struct ConversationView: View {
                                 WorkRow(group: group, open: { detail in
                                     activityDetail = detail
                                 }, resume: conversation.canWrite && !conversation.timeline.isActive ? {
-                                    conversation.composer.text = "Continue from the failed step."
-                                    Task { await conversation.composer.send(active: false, canWrite: conversation.canWrite) }
+                                    Task { await conversation.composer.continueFromFailure(canWrite: conversation.canWrite) }
                                 } : nil)
                             }
                         }

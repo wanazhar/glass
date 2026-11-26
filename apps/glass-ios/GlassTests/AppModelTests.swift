@@ -116,6 +116,26 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         #expect(!conversation.timeline.isEmpty)
     }
 
+    @Test func continuingAfterFailureDoesNotReplaceTheDraft() async throws {
+        let transport = happyTransport()
+        let model = AppModel(defaults: defaults, store: store, transport: transport)
+        await model.pair(with: Self.link)
+        let drafts = Drafts(url: URL.temporaryDirectory.appending(path: "\(UUID()).json"))
+        defer { drafts.removeAll() }
+        let composer = ComposerModel(app: model, thread: ThreadSummary(session: "retry"), drafts: drafts)
+        composer.text = "A different question"
+        transport.set { request in
+            let body = request.httpBody.flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+            #expect(request.url?.path == "/api/send")
+            #expect(body?["message"]?["text"]?.stringValue == "Continue from the failed step.")
+            return (200, "{}")
+        }
+        await composer.continueFromFailure(canWrite: true)
+        #expect(composer.error == nil)
+        #expect(composer.text == "A different question")
+        #expect(drafts.read("retry") == "A different question")
+    }
+
     @Test func demoModelPickerReceivesChoicesFromTheLiveStream() async throws {
         let model = AppModel.demo()
         await model.refresh()

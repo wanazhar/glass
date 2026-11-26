@@ -87,21 +87,28 @@ final class ComposerModel {
 
     /// Sends the draft: a prompt when idle, otherwise a steer or a queued prompt per `mode`.
     func send(active: Bool, canWrite: Bool) async {
-        let message = trimmed
+        await sendMessage(trimmed, steering: active && mode == .steer, canWrite: canWrite, usesDraft: true)
+    }
+
+    func continueFromFailure(canWrite: Bool) async {
+        await sendMessage("Continue from the failed step.", steering: false, canWrite: canWrite, usesDraft: false)
+    }
+
+    private func sendMessage(_ message: String, steering: Bool, canWrite: Bool, usesDraft: Bool) async {
         guard !message.isEmpty, !sending else { return }
         guard canWrite else { error = "Take control before sending a message."; return }
         guard let api = app.api else { return }
         let id = SendMessage.newRequestID()
-        let saved = text
-        text = ""
+        let saved = usesDraft ? text : nil
+        if usesDraft { text = "" }
         sending = true
         defer { sending = false }
         do {
-            try await api.send(active && mode == .steer ? .steer(text: message, requestID: id) : .prompt(text: message, requestID: id),
+            try await api.send(steering ? .steer(text: message, requestID: id) : .prompt(text: message, requestID: id),
                                thread: thread.id, sourceRef: thread.sourceRef)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } catch {
-            if text.isEmpty { text = saved }
+            if text.isEmpty, let saved { text = saved }
             report(error)
         }
     }

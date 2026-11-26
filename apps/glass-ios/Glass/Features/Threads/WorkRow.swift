@@ -278,6 +278,10 @@ struct ActivityDetail: Identifiable {
     let monospaced: Bool
     var isDiff = false
     var command: CommandActivity?
+
+    func copyTitle(hasSavedOutput: Bool) -> String {
+        hasSavedOutput || command?.truncated == true ? "Copy preview" : "Copy"
+    }
 }
 
 struct CommandActivity {
@@ -287,10 +291,12 @@ struct CommandActivity {
     let exitCode: Int?
     let duration: Duration?
     let failed: Bool
+    let truncated: Bool
 
     init(command: String, output: String, duration: Duration?, failed: Bool) {
         self.command = command
         self.duration = duration
+        truncated = output.hasSuffix("\nPreview capped · full output remains on the host.")
         var body = output[...]
         if body.hasPrefix("$ "), let end = body.firstIndex(of: "\n") {
             body = body[body.index(after: end)...]
@@ -373,7 +379,9 @@ struct ActivityDetailView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = detail.text }
+                    Button(detail.copyTitle(hasSavedOutput: savedOutput != nil), systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = detail.text
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
@@ -401,6 +409,11 @@ struct ActivityDetailView: View {
                 }
             }
             .font(Design.footnote)
+            if preview, savedOutput != nil {
+                Label("Output preview. Open the saved record to read the rest.", systemImage: "info.circle")
+                    .font(Design.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if !command.stdout.isEmpty {
                 outputSection("Output", command.stdout, tint: .primary, preview: preview)
             }

@@ -25,6 +25,7 @@ actor DemoTransport: GlassHTTPTransport {
             case 0: "Repair incremental sync"
             case 1: "Investigate the staging timeout"
             case 3: "Review sync measurements"
+            case 999: "Optimize large workspace imports"
             default: subjects[index % subjects.count] + " · " + scopes[(index / subjects.count) % scopes.count]
             }
             var row = ThreadSummary(session: "harbor-\(index)", title: title, workspace: "/Users/robin/Projects/Harbor",

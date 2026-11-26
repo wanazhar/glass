@@ -570,9 +570,13 @@ struct ChartView: View {
             }
             .frame(height: kind == "pie" ? 220 : 200)
             ForEach(selected) { point in
-                LabeledContent(point.series.isEmpty ? point.x : "\(point.x) · \(point.series)",
-                               value: point.y.formatted(.number.precision(.fractionLength(0...340))))
+                let label = point.series.isEmpty ? point.x : "\(point.x) · \(point.series)"
+                let value = point.y.formatted(.number.precision(.fractionLength(0...340)))
+                LabeledContent(label, value: value)
                     .font(.caption.monospacedDigit())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(label)
+                    .accessibilityValue(value)
                     .accessibilityIdentifier("component.chart.value")
             }
             if let caption = joined(data["x_label"]?.text, data["y_label"]?.text) {

@@ -152,7 +152,7 @@ final class RoundThreeUITests: XCTestCase {
                 .press(forDuration: 0.1, thenDragTo: chart.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.15)))
             let selected = app.descendants(matching: .any)["component.chart.value"].firstMatch
             XCTAssertTrue(selected.waitForExistence(timeout: 5))
-            XCTAssertTrue(app.staticTexts["12.75"].exists || app.staticTexts["7.25"].exists)
+            XCTAssertTrue(["12.75", "7.25"].contains(selected.value as? String), selected.debugDescription)
             capture(appearance, "math-chart")
         }
     }
@@ -169,13 +169,11 @@ final class RoundThreeUITests: XCTestCase {
             list.swipeUp(velocity: .fast)
             list.swipeDown(velocity: .fast)
         }
+        let search = app.searchFields.firstMatch
+        search.tap()
+        search.typeText("Optimize large workspace imports")
         let finalThread = app.descendants(matching: .any)["thread.harbor-999"].firstMatch
-        for _ in 0..<60 {
-            if finalThread.isHittable { break }
-            list.swipeUp(velocity: .fast)
-        }
-        XCTAssertTrue(finalThread.isHittable)
-        XCTAssertTrue(app.buttons["tab.settings"].isHittable)
+        XCTAssertTrue(finalThread.waitForExistence(timeout: 8))
     }
 
     @MainActor

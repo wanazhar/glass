@@ -87,6 +87,39 @@ final class ScreenshotTourUITests: XCTestCase {
     }
 
     @MainActor
+    func testEarlierHistoryPreservesTheExpandedReasoningPosition() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+        app.buttons["pair.connect"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+        app.descendants(matching: .any)["thread.paged-reasoning"].firstMatch.tap()
+        let reasoning = app.descendants(matching: .any)["timeline.reasoning"].firstMatch
+        XCTAssertTrue(reasoning.waitForExistence(timeout: 10))
+        reasoning.tap()
+        let before = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Already visible reasoning")).firstMatch
+        XCTAssertTrue(before.waitForExistence(timeout: 10))
+        let earlier = app.buttons["conversation.older"]
+        if !earlier.isHittable { app.swipeDown() }
+        XCTAssertTrue(earlier.isHittable)
+        let previousBottom = before.frame.maxY
+        earlier.tap()
+
+        let after = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Earlier reasoning")).firstMatch
+        XCTAssertTrue(after.waitForExistence(timeout: 10))
+        XCTAssertTrue(after.label.contains("Already visible reasoning"))
+        XCTAssertEqual(after.frame.maxY, previousBottom, accuracy: 24)
+    }
+
+    @MainActor
     func testCaptureScreens() throws {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["GLASS_SHOTS"] else { throw XCTSkip("Screenshot tour runs via scripts/screenshots.sh") }

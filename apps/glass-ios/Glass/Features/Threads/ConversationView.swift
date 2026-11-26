@@ -14,6 +14,11 @@ struct ConversationView: View {
     @State private var lastTouch = ContinuousClock.now
     @State private var resumeFollowing: Task<Void, Never>?
     @State private var inspectingReasoning: String?
+    @State private var expandedReasoning: Set<String> = []
+    @State private var firstReasoningBounds: HistoryBounds?
+    @State private var restoreHistoryBounds: HistoryBounds?
+    @State private var historyScroll = ScrollPosition()
+    @State private var historyTopInset: CGFloat = 0
     @State private var interactionHeight: CGFloat = 0
     @State private var picker: ComposerModel.Picker?
     @State private var showingChecklist = false
@@ -35,10 +40,25 @@ struct ConversationView: View {
                     if conversation.hasEarlier {
                         Button {
                             Task {
-                                // Older messages go in above; keep the one you were reading in place.
-                                let first = conversation.timeline.entries.first?.id
+                                let first = conversation.timeline.entries.first
+                                let previous = firstReasoningBounds.flatMap { bounds in
+                                    bounds.entry == first && expandedReasoning.contains(bounds.entry.id) ? bounds : nil
+                                }
+                                restoreHistoryBounds = previous
                                 await conversation.loadOlder()
-                                if let first { proxy.scrollTo(first, anchor: .top) }
+                                guard let first else { return }
+                                let extended = previous != nil
+                                    && conversation.timeline.entries.contains { $0.id == first.id && $0 != first }
+                                if !extended {
+                                    restoreHistoryBounds = nil
+                                    proxy.scrollTo(first.id, anchor: .top)
+                                } else if restoreHistoryBounds != nil {
+                                    if let bounds = firstReasoningBounds, bounds.entry.id == first.id, bounds.entry != first {
+                                        restoreReasoningPosition(bounds)
+                                    } else {
+                                        proxy.scrollTo(first.id, anchor: .top)
+                                    }
+                                }
                             }
                         } label: {
                             if conversation.loadingOlder { ProgressView() } else { Label("Earlier messages", systemImage: "arrow.up.circle") }
@@ -52,6 +72,7 @@ struct ConversationView: View {
                     }
                     ForEach(conversation.timeline.entries) { entry in
                         TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID) { expanded in
+                            if expanded { expandedReasoning.insert(entry.id) } else { expandedReasoning.remove(entry.id) }
                             if expanded {
                                 resumeFollowing?.cancel()
                                 inspectingReasoning = entry.id
@@ -61,6 +82,18 @@ struct ConversationView: View {
                                 inspectingReasoning = nil
                                 lastTouch = .now
                                 if atBottom { following = true } else { scheduleResume(proxy) }
+                            }
+                        }
+                        .background {
+                            if case .reasoning = entry, entry.id == conversation.timeline.entries.first?.id
+                                || entry.id == restoreHistoryBounds?.entry.id {
+                                Color.clear.onGeometryChange(for: HistoryBounds.self) { geometry in
+                                    HistoryBounds(entry: entry, viewportBottom: geometry.frame(in: .scrollView(axis: .vertical)).maxY,
+                                                  contentBottom: geometry.frame(in: .named(Self.historyContent)).maxY)
+                                } action: { bounds in
+                                    firstReasoningBounds = bounds
+                                    restoreReasoningPosition(bounds)
+                                }
                             }
                         }
                         .id(entry.id)
@@ -78,7 +111,10 @@ struct ConversationView: View {
                 .padding(.vertical, 12)
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
+                .coordinateSpace(name: Self.historyContent)
             }
+            .scrollPosition($historyScroll)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, inset in historyTopInset = inset }
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             .softTopScrollEdge()
@@ -294,6 +330,22 @@ struct ConversationView: View {
     private static var resumeAfter: Duration {
         let seconds = UserDefaults.standard.double(forKey: "GlassFollowResumeSeconds")
         return .seconds(seconds > 0 ? seconds : 3)
+    }
+
+    private static let historyContent = "conversation.historyContent"
+
+    private struct HistoryBounds: Equatable {
+        let entry: TimelineEntry
+        let viewportBottom: CGFloat
+        let contentBottom: CGFloat
+    }
+
+    private func restoreReasoningPosition(_ bounds: HistoryBounds) {
+        guard let previous = restoreHistoryBounds, previous.entry.id == bounds.entry.id,
+              previous.entry != bounds.entry else { return }
+        restoreHistoryBounds = nil
+        // A page can add text inside this row, so pin its unchanged trailing edge rather than its top.
+        historyScroll.scrollTo(y: bounds.contentBottom - previous.viewportBottom + historyTopInset)
     }
 
     private func scheduleResume(_ proxy: ScrollViewProxy) {

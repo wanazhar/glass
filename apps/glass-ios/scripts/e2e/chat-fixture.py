@@ -34,6 +34,7 @@ THREADS = [
     {"session": "reasoning", "title": "Review the Swift build", "model": "Swift workspace"},
     {"session": "table", "title": "Build capabilities", "model": "Swift workspace"},
     {"session": "long-reasoning", "title": "Long reasoning", "model": "Swift workspace"},
+    {"session": "paged-reasoning", "title": "Paged reasoning", "model": "Swift workspace"},
 ]
 
 
@@ -54,6 +55,18 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/threads":
             self.reply({"threads": THREADS, "offset": 0, "total_threads": len(THREADS)})
         elif url.path == "/api/history":
+            if thread == "paged-reasoning":
+                if parse_qs(url.query).get("before") == ["1000"]:
+                    self.reply({"records": [
+                        {"index": 1, "record": {"k": "user", "t": "Read the whole reasoning."}},
+                        {"index": 2, "record": {"k": "reasoning", "t": ("Earlier reasoning. " + REASONING + "\n\n") * 2}},
+                    ], "before": 0})
+                else:
+                    self.reply({"records": [
+                        {"index": 1000, "record": {"k": "reasoning", "t": "Already visible reasoning.\n\n" + REASONING}},
+                        {"index": 2000, "record": {"k": "assistant", "t": "End of this conversation."}},
+                    ], "before": 1000})
+                return
             if thread == "table":
                 records = [{"k": "user", "t": "What can we verify in the build?"}, {"k": "assistant", "t": TABLE}]
             elif thread == "long-reasoning":

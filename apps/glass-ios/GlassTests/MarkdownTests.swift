@@ -87,4 +87,24 @@ import Testing
         #expect(InlineMath.render("\\alpha \\leq \\sqrt{x}") == "α ≤ √x")
         #expect(InlineMath.render("\\mathbb{R}^n") == "ℝⁿ")
     }
+
+    @Test func nativeMathTypesetsFractionsAndRejectsInvalidCommands() throws {
+        let fraction = #"\frac{1}{1+\sqrt{x^2}}"#
+        let inline = try #require(NativeMath.image(fraction, size: 17, display: false))
+        let display = try #require(NativeMath.image(fraction, size: 21, display: true))
+        #expect((inline.baselineOffsetFromBottom ?? 0) > 0)
+        #expect(display.size.height > inline.size.height)
+        #expect(NativeMath.image(#"\unsupportedglassequation{x}"#, size: 17, display: false) == nil)
+    }
+
+    @Test func pieSelectionUsesCumulativeValues() {
+        let points = [
+            ChartView.Point(id: 1, series: "", x: "A", xValue: nil, y: 1.25),
+            ChartView.Point(id: 2, series: "", x: "B", xValue: nil, y: 2.75)
+        ]
+        #expect(ChartView.slice(at: 0, in: points)?.y == 1.25)
+        #expect(ChartView.slice(at: 1.25, in: points)?.y == 2.75)
+        #expect(ChartView.slice(at: 4, in: points)?.id == 2)
+        #expect(ChartView.slice(at: 4.01, in: points) == nil)
+    }
 }

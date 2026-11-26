@@ -91,27 +91,26 @@ struct MarkdownView: View, Equatable {
 
     // MARK: Inline
 
-    /// Inline Markdown with `$…$` and `\(…\)` math drawn as Unicode, and inline images removed
-    /// (generated images are shown by the tool that made them).
-    static func inline(_ value: String) -> AttributedString {
-        let key = value as NSString
-        if let cached = inlineCache.object(forKey: key) { return cached.value }
-        var result = AttributedString()
-        for segment in InlineMath.split(stripImages(value)) {
+    static func inline(_ value: String, mathSize: CGFloat) -> Text {
+        InlineMath.split(stripImages(value)).reduce(Text("")) { text, segment in
+            let next: Text
             switch segment {
-            case .text(let text):
-                result += markdown(text)
+            case .text(let prose):
+                next = Text(markdown(prose))
             case .math(let source):
-                var math = AttributedString(InlineMath.render(source))
-                math.inlinePresentationIntent = .emphasized
-                result += math
+                if let image = NativeMath.image(source, size: mathSize, display: false) {
+                    next = Text(Image(uiImage: image).renderingMode(.template))
+                } else {
+                    next = Text(InlineMath.render(source)).italic()
+                }
             }
+            return Text("\(text)\(next)")
         }
-        inlineCache.setObject(InlineText(result), forKey: key, cost: value.utf8.count * 3)
-        return result
     }
 
     private static func markdown(_ value: String) -> AttributedString {
+        let key = value as NSString
+        if let cached = inlineCache.object(forKey: key) { return cached.value }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
         var text = (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
         for run in text.runs {
@@ -120,6 +119,7 @@ struct MarkdownView: View, Equatable {
             }
             if run.link != nil { text[run.range].underlineStyle = .single }
         }
+        inlineCache.setObject(InlineText(text), forKey: key, cost: value.utf8.count * 3)
         return text
     }
 
@@ -382,13 +382,14 @@ struct MarkdownView: View, Equatable {
 private struct BlockView: View {
     var block: MarkdownView.Block
     @Environment(\.openReferencedFile) private var openReferencedFile
+    @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         switch block {
         case .prose(let value):
-            Text(MarkdownView.inline(value)).font(Design.body).textSelection(.enabled)
+            MarkdownView.inline(value, mathSize: mathSize).font(Design.body).textSelection(.enabled)
         case .heading(let value, let level):
-            Text(MarkdownView.inline(value))
+            MarkdownView.inline(value, mathSize: mathSize)
                 .font(level == 1 ? Design.title : level == 2 ? .title3.weight(.semibold) : Design.headline)
                 .padding(.top, level <= 2 ? 4 : 0)
                 .accessibilityAddTraits(.isHeader)
@@ -397,12 +398,12 @@ private struct BlockView: View {
         case .code(let code, let language):
             switch language.lowercased() {
             case ReplyComponent.fence: ComponentBlock(source: code)
-            case "mermaid": RichBlockView(kind: .mermaid, source: code)
-            case "math", "latex", "tex", "katex": RichBlockView(kind: .math, source: code)
+            case "mermaid": RichBlockView(source: code)
+            case "math", "latex", "tex", "katex": DisplayMath(source: code)
             default: CodeBlock(code: code, language: language)
             }
         case .math(let source):
-            RichBlockView(kind: .math, source: source)
+            DisplayMath(source: source)
         case .rule:
             Divider().padding(.vertical, 4)
         case .quote(let inner):
@@ -415,8 +416,7 @@ private struct BlockView: View {
             .accessibilityLabel("Quote")
             .accessibilityIdentifier("markdown.quote")
         case .table(let header, let alignments, let rows):
-            DataTable(header: header.map { MarkdownView.inline($0) }, alignments: alignments,
-                      rows: rows.map { $0.map { MarkdownView.inline($0) } })
+            DataTable(header: header, alignments: alignments, rows: rows)
                 .equatable()
                 .accessibilityIdentifier("markdown.table")
         case .details(let summary, let body):
@@ -446,6 +446,7 @@ private struct ListItemView: View {
     var marker: MarkdownView.ListMarker
     var depth: Int
     @ScaledMetric(relativeTo: .body) private var indent: CGFloat = 18
+    @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -460,7 +461,7 @@ private struct ListItemView: View {
                     .foregroundStyle(done ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     .accessibilityHidden(true)
             }
-            Text(MarkdownView.inline(text))
+            MarkdownView.inline(text, mathSize: mathSize)
                 .foregroundStyle(marker == .task(done: true) ? .secondary : .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -507,12 +508,13 @@ private struct DetailsBlock: View {
     var summary: String
     var content: String
     @State private var expanded = false
+    @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             MarkdownView(text: content).padding(.top, 8)
         } label: {
-            Text(MarkdownView.inline(summary)).font(.body.weight(.medium)).foregroundStyle(.primary)
+            MarkdownView.inline(summary, mathSize: mathSize).font(.body.weight(.medium)).foregroundStyle(.primary)
         }
         .tint(.secondary)
         .accessibilityIdentifier("markdown.details")
@@ -520,15 +522,17 @@ private struct DetailsBlock: View {
 }
 
 struct DataTable: View, Equatable {
-    var header: [AttributedString]
+    var header: [String]
     var alignments: [MarkdownView.ColumnAlignment] = []
-    var rows: [[AttributedString]]
+    var rows: [[String]]
+    var markdown = true
+    @ScaledMetric(relativeTo: .subheadline) private var mathSize = 15.0
     @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 112.0
     @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
     @State private var viewportWidth = 0.0
 
     nonisolated static func == (left: Self, right: Self) -> Bool {
-        left.header == right.header && left.alignments == right.alignments && left.rows == right.rows
+        left.header == right.header && left.alignments == right.alignments && left.rows == right.rows && left.markdown == right.markdown
     }
 
     private var columnWidth: CGFloat {
@@ -543,9 +547,9 @@ struct DataTable: View, Equatable {
         }
     }
 
-    private func cell(_ text: AttributedString, column: Int, isHeader: Bool = false) -> some View {
+    private func cell(_ text: String, column: Int, isHeader: Bool = false) -> some View {
         let alignment = alignment(column)
-        return Text(text)
+        return (markdown ? MarkdownView.inline(text, mathSize: mathSize) : Text(verbatim: text))
             .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
             .multilineTextAlignment(alignment)
             .fixedSize(horizontal: false, vertical: true)
@@ -600,7 +604,7 @@ struct DataTable: View, Equatable {
     }
 }
 
-/// Inline LaTeX shown as Unicode text, so short formulas sit in the sentence without a web view.
+/// Locates inline LaTeX and supplies a readable fallback when typesetting fails.
 enum InlineMath {
     enum Segment: Equatable {
         case text(String)

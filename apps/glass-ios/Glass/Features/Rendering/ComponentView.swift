@@ -491,15 +491,17 @@ private struct TableView: View {
                 }
                 .pickerStyle(.menu)
             }
-            DataTable(header: columns.map { AttributedString($0.label) },
-                      rows: shown.map { row in columns.map { AttributedString(row[$0.key]?.text ?? "") } })
+            DataTable(header: columns.map(\.label),
+                      rows: shown.map { row in columns.map { row[$0.key]?.text ?? "" } }, markdown: false)
         }
     }
 }
 
-private struct ChartView: View {
+struct ChartView: View {
     var data: JSONValue
-    @State private var selected: [Point] = []
+    @State private var angle: Double?
+    @State private var numericX: Double?
+    @State private var categoryX: String?
 
     struct Point: Identifiable {
         var id: Int
@@ -514,18 +516,25 @@ private struct ChartView: View {
         var index = 0
         let points: [Point] = data.list("series").flatMap { series in
             series.list("points").compactMap { point -> Point? in
-                guard let y = point["y"]?.number else { return nil }
+                guard let y = point["y"]?.number, y.isFinite, kind != "pie" || y > 0 else { return nil }
                 index += 1
                 return Point(id: index, series: series["name"]?.text ?? "", x: point["x"]?.text ?? "", xValue: point["x"]?.number, y: y)
             }
         }
         let numeric = !points.isEmpty && points.allSatisfy { $0.xValue != nil } && kind != "bar"
-        VStack(alignment: .leading, spacing: 4) {
-            Chart(points) { point in
+        let selected: [Point] = switch kind {
+        case "pie": angle.flatMap { Self.slice(at: $0, in: points) }.map { [$0] } ?? []
+        case _ where numeric: numericX.flatMap { value in
+            points.min { abs(($0.xValue ?? 0) - value) < abs(($1.xValue ?? 0) - value) }
+        }.map { closest in points.filter { $0.xValue == closest.xValue } } ?? []
+        default: points.filter { $0.x == categoryX }
+        }
+        let chart = Chart(points) { point in
                 switch kind {
                 case "pie":
                     SectorMark(angle: .value("Value", point.y), innerRadius: .ratio(0.5), angularInset: 1)
                         .foregroundStyle(by: .value("Label", point.x))
+                        .opacity(selected.isEmpty || selected.first?.id == point.id ? 1 : 0.38)
                 case "bar":
                     BarMark(x: .value(data["x_label"]?.text ?? "X", point.x), y: .value(data["y_label"]?.text ?? "Y", point.y))
                         .foregroundStyle(by: .value("Series", point.series))
@@ -540,39 +549,42 @@ private struct ChartView: View {
                     if numeric { LineMark(x: .value("X", point.xValue ?? 0), y: .value("Y", point.y)).foregroundStyle(by: .value("Series", point.series)) }
                     else { LineMark(x: .value("X", point.x), y: .value("Y", point.y)).foregroundStyle(by: .value("Series", point.series)) }
                 }
-            }
-            .chartLegend(Set(points.map(\.series)).count > 1 || kind == "pie" ? .visible : .hidden)
-            .chartOverlay { proxy in
-                if kind != "pie" {
-                    GeometryReader { geometry in
-                        Rectangle().fill(.clear).contentShape(Rectangle())
-                            .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
-                                guard let plot = proxy.plotFrame else { return }
-                                let x = drag.location.x - geometry[plot].minX
-                                if numeric, let value = proxy.value(atX: x, as: Double.self),
-                                   let closest = points.min(by: {
-                                       abs(($0.xValue ?? 0) - value) < abs(($1.xValue ?? 0) - value)
-                                   }) {
-                                    selected = points.filter { $0.xValue == closest.xValue }
-                                } else if let label = proxy.value(atX: x, as: String.self) {
-                                    selected = points.filter { $0.x == label }
-                                }
-                            })
-                    }
-                }
+        }
+        .chartLegend(Set(points.map(\.series)).count > 1 || kind == "pie" ? .visible : .hidden)
+        .accessibilityLabel(data["title"]?.text ?? "Chart")
+        .accessibilityIdentifier("component.chart")
+        VStack(alignment: .leading, spacing: Design.small) {
+            Group {
+                if kind == "pie" { chart.chartAngleSelection(value: $angle) }
+                else if numeric { chart.chartXSelection(value: $numericX) }
+                else { chart.chartXSelection(value: $categoryX) }
             }
             .frame(height: kind == "pie" ? 220 : 200)
             ForEach(selected) { point in
                 LabeledContent(point.series.isEmpty ? point.x : "\(point.x) · \(point.series)",
-                               value: point.y.formatted())
+                               value: point.y.formatted(.number.precision(.fractionLength(0...340))))
                     .font(.caption.monospacedDigit())
+                    .accessibilityIdentifier("component.chart.value")
             }
             if let caption = joined(data["x_label"]?.text, data["y_label"]?.text) {
                 Text(caption).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .accessibilityLabel(data["title"]?.text ?? "Chart")
-        .onChange(of: data) { _, _ in selected = [] }
+        .onChange(of: data) { _, _ in
+            angle = nil
+            numericX = nil
+            categoryX = nil
+        }
+    }
+
+    static func slice(at angle: Double, in points: [Point]) -> Point? {
+        guard angle.isFinite, angle >= 0 else { return nil }
+        var upper = 0.0
+        for point in points {
+            upper += point.y
+            if angle < upper { return point }
+        }
+        return angle == upper ? points.last : nil
     }
 }
 

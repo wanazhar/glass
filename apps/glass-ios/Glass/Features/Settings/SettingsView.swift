@@ -280,7 +280,7 @@ struct AboutView: View {
                 LabeledContent("Client protocol", value: "v\(GlassClientKitVersion.supportedProtocolVersion)")
             }
             Section {
-                Text("Math is drawn with KaTeX and diagrams with Mermaid, both bundled with the app and used offline under the MIT license.")
+                Text("Math is typeset with SwiftMath and diagrams are drawn with Mermaid. Both work offline and use the MIT license.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {

@@ -365,7 +365,7 @@ extension ConversationView {
                 await threads.reload()
                 threads.selection = opened
                 if action == .editInBranch, case .user(_, let text) = entry {
-                    Drafts.shared.write(opened, text)
+                    app.drafts.write(opened, text)
                 }
             } else if action == .quote {
                 conversation.composer.confirmation = "Quoted. It goes with your next messages."

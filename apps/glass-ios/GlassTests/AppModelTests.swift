@@ -98,6 +98,15 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         #expect(conversation.connectionMessage == "The studio Mac is offline.")
     }
 
+    @Test func demoDraftsDoNotCarryOverBetweenLaunches() {
+        let thread = ThreadSummary(session: "harbor-0")
+        let first = AppModel.demo()
+        let composer = ComposerModel(app: first, thread: thread)
+        composer.text = "A demo draft"
+        #expect(ComposerModel(app: first, thread: thread).text == "A demo draft")
+        #expect(ComposerModel(app: AppModel.demo(), thread: thread).text.isEmpty)
+    }
+
     @Test func leavingIdleConversationKeepsItsStreamAndTimeline() async throws {
         let model = AppModel.demo()
         await model.refresh()

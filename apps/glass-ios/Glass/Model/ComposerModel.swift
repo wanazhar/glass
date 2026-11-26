@@ -73,12 +73,12 @@ final class ComposerModel {
     private var uploadTask: Task<Void, Never>?
     private var stateToolRunning = false
 
-    init(app: AppModel, thread: ThreadSummary, drafts: Drafts = .shared) {
+    init(app: AppModel, thread: ThreadSummary, drafts: Drafts? = nil) {
         self.app = app
         self.thread = thread
-        self.drafts = drafts
+        self.drafts = drafts ?? app.drafts
         model = thread.model
-        text = drafts.read(thread.id)
+        text = self.drafts.read(thread.id)
     }
 
     var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }

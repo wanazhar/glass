@@ -7,12 +7,12 @@ final class Drafts {
     static let shared = Drafts()
 
     private var store: DraftStore
-    private let url: URL
+    private let url: URL?
     private var pending: Task<Void, Never>?
 
-    init(url: URL = Drafts.defaultURL) {
+    init(url: URL? = Drafts.defaultURL) {
         self.url = url
-        store = DraftStore.load(from: url)
+        store = url.map { DraftStore.load(from: $0) } ?? DraftStore()
     }
 
     static var defaultURL: URL {
@@ -23,6 +23,7 @@ final class Drafts {
 
     func write(_ thread: String, _ text: String) {
         store.write(thread, text)
+        guard url != nil else { return }
         pending?.cancel()
         pending = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
@@ -34,11 +35,11 @@ final class Drafts {
     func flush() {
         pending?.cancel()
         pending = nil
-        try? store.save(to: url)
+        if let url { try? store.save(to: url) }
     }
 
     func removeAll() {
         store = DraftStore()
-        try? FileManager.default.removeItem(at: url)
+        if let url { try? FileManager.default.removeItem(at: url) }
     }
 }

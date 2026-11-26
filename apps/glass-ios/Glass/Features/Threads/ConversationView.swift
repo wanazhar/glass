@@ -119,7 +119,7 @@ struct ConversationView: View {
         .environment(\.openReferencedFile) { referencedFile = ReferencedFile(id: $0) }
         .sheet(item: $referencedFile) { file in
             NavigationStack {
-                FileView(conversation: conversation, folder: conversation.thread.workspace ?? "", name: file.id)
+                FileView(conversation: conversation, name: file.id)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) { Button("Done") { referencedFile = nil } }
                     }

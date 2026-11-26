@@ -124,13 +124,23 @@ private struct ConversationShell: View {
             .defaultScrollAnchor(.center, for: .alignment)
             .floatingBar(edge: .top) {
                 HStack {
-                    Button("Conversations", systemImage: "sidebar.left", action: toggleSidebar)
-                        .labelStyle(.iconOnly).glassButtonStyle()
-                        .accessibilityIdentifier("conversation.back")
+                    Button(action: toggleSidebar) {
+                        Label("Conversations", systemImage: "sidebar.left")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: Design.control, minHeight: Design.control)
+                            .contentShape(Rectangle())
+                    }
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.back")
                     Spacer()
-                    Button("New Chat", systemImage: "square.and.pencil", action: newChat)
-                        .labelStyle(.iconOnly).glassButtonStyle()
-                        .accessibilityIdentifier("conversation.new")
+                    Button(action: newChat) {
+                        Label("New Chat", systemImage: "square.and.pencil")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: Design.control, minHeight: Design.control)
+                            .contentShape(Rectangle())
+                    }
+                    .glassButtonStyle()
+                    .accessibilityIdentifier("conversation.new")
                 }
                 .padding(.horizontal, Design.padding)
             }

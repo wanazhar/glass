@@ -382,8 +382,15 @@ struct ActivityDetailView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(detail.copyTitle(hasSavedOutput: savedOutput != nil)) {
+                    let title = detail.copyTitle(hasSavedOutput: savedOutput != nil)
+                    Button {
                         UIPasteboard.general.string = detail.text
+                    } label: {
+                        if title == "Copy" {
+                            Label(title, systemImage: "doc.on.doc")
+                        } else {
+                            Text(title)
+                        }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }

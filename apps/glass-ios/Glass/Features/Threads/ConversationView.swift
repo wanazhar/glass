@@ -289,8 +289,12 @@ struct ConversationView: View {
     private var header: some View {
         GlassGroup {
             HStack(spacing: Design.gap) {
-                Button("Conversations", systemImage: "sidebar.left", action: goBack)
-                    .labelStyle(.iconOnly)
+                Button(action: goBack) {
+                    Label("Conversations", systemImage: "sidebar.left")
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
+                        .contentShape(Rectangle())
+                }
                     .glassButtonStyle()
                     .accessibilityIdentifier("conversation.back")
                 Button { showingInfo = true } label: {
@@ -302,10 +306,14 @@ struct ConversationView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("conversation.connection")
                 .accessibilityValue(connectionStatus)
-                Button("New Chat", systemImage: "square.and.pencil") {
+                Button {
                     Task { await threads.newThread() }
+                } label: {
+                    Label("New Chat", systemImage: "square.and.pencil")
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
+                        .contentShape(Rectangle())
                 }
-                .labelStyle(.iconOnly)
                 .glassButtonStyle()
                 .accessibilityIdentifier("conversation.new")
             }

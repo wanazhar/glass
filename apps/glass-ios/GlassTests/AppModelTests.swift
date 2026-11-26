@@ -107,6 +107,13 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         #expect(ComposerModel(app: AppModel.demo(), thread: thread).text.isEmpty)
     }
 
+    @Test func suggestionsPreferTheCurrentWorkspace() {
+        #expect(NewChatView.directory("/Users/robin/Projects/Maps", hostDefault: "/Users/robin/Projects/Harbor")
+                == "/Users/robin/Projects/Maps")
+        #expect(NewChatView.directory("", hostDefault: "/Users/robin/Projects/Harbor")
+                == "/Users/robin/Projects/Harbor")
+    }
+
     @Test func leavingIdleConversationKeepsItsStreamAndTimeline() async throws {
         let model = AppModel.demo()
         await model.refresh()

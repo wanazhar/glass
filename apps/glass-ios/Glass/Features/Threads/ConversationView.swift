@@ -186,7 +186,7 @@ struct ConversationView: View {
     private static let bottom = "timeline.bottom"
 
     private var emptyState: some View {
-        NewChatView { suggestion in
+        NewChatView(workspace: conversation.thread.workspace) { suggestion in
             conversation.composer.text = suggestion
         }
         .accessibilityIdentifier("conversation.empty")

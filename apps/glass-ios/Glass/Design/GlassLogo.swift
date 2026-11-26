@@ -115,11 +115,19 @@ struct LaunchView: View {
 struct NewChatView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var workspace: String? = nil
     var choose: (String) -> Void
-    private var project: String { app.status?.workspaceName ?? "this workspace" }
+    private var directory: String? { Self.directory(workspace, hostDefault: app.status?.workspace) }
+    private var project: String? { directory?.split(separator: "/").last.map(String.init) ?? directory }
     private var machine: String { app.endpoint?.host ?? "the connected machine" }
+
+    static func directory(_ workspace: String?, hostDefault: String?) -> String? {
+        if let workspace, !workspace.isEmpty { return workspace }
+        return hostDefault
+    }
     private var suggestions: [(String, String, String, String)] {
-        [
+        let project = directory ?? "this workspace"
+        return [
             ("Map the project", "Find the main modules and a starting point.", "Summarize \(project) and show me where to start.", "map"),
             ("Review recent changes", "See what changed and where to look closer.", "Review the latest changes in \(project) and flag anything worth a closer look.", "arrow.triangle.branch"),
             ("Check the workspace", "Find the commands for a local test run.", "Find the build and test commands for \(project) on \(machine).", "checklist")
@@ -134,7 +142,7 @@ struct NewChatView: View {
                     .font(Design.display)
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
-                if let project = app.status?.workspaceName, let host = app.endpoint?.host {
+                if let project, let host = app.endpoint?.host {
                     Label("\(project) on \(host)", systemImage: "desktopcomputer")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }

@@ -108,7 +108,7 @@ private struct ConversationShell: View {
                 .id(id)
         } else {
             ScrollView {
-                NewChatView { suggestion in
+                NewChatView(workspace: threads.project) { suggestion in
                     Task {
                         guard !starting else { return }
                         starting = true

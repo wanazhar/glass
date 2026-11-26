@@ -43,7 +43,6 @@ final class ConversationModel {
     private var liveTask: Task<Void, Never>?
     private var starting: Task<Void, Never>?
     private var attempt = UUID()
-    private var shouldStopWhenIdle = false
     /// Incremental frames waiting to be drawn. A fast stream sends far more frames than the timeline can
     /// re-render, so they are applied together at most every `frameInterval`.
     private var pendingFrames: [EventFrame] = []
@@ -171,14 +170,6 @@ final class ConversationModel {
         await start()
     }
 
-    func keepFollowing() { shouldStopWhenIdle = false }
-
-    func stopWhenIdle() {
-        shouldStopWhenIdle = true
-        drawPendingFrames()
-        if !timeline.isActive { stop() }
-    }
-
     private func endBackgroundTask() {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
@@ -224,7 +215,6 @@ final class ConversationModel {
         for frame in pendingFrames { next.apply(frame) }
         pendingFrames.removeAll()
         timeline = next
-        if shouldStopWhenIdle, !timeline.isActive, liveTask != nil { stop() }
     }
 
     private func receive(_ update: LiveUpdate) async {

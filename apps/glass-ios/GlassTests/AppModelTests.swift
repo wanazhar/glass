@@ -98,7 +98,7 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         #expect(conversation.connectionMessage == "The studio Mac is offline.")
     }
 
-    @Test func leavingIdleConversationClosesItsStreamButKeepsItsTimeline() async throws {
+    @Test func leavingIdleConversationKeepsItsStreamAndTimeline() async throws {
         let model = AppModel.demo()
         await model.refresh()
         let threads = ThreadsModel(app: model)
@@ -107,10 +107,12 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         threads.selection = summary.id
         let conversation = threads.conversation(for: summary)
         await conversation.start()
+        defer { conversation.stop() }
         for _ in 0..<100 where !conversation.canWrite { try await Task.sleep(for: .milliseconds(20)) }
         #expect(conversation.canWrite)
         threads.selection = "harbor-1"
-        #expect(conversation.connection == .idle)
+        #expect(conversation.connection == .live)
+        #expect(conversation.canWrite)
         #expect(!conversation.timeline.isEmpty)
     }
 

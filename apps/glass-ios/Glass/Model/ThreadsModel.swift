@@ -17,13 +17,7 @@ final class ThreadsModel {
     var query = ""
     var project = ""
     var archived = false
-    var selection: ThreadSummary.ID? {
-        didSet {
-            guard selection != oldValue else { return }
-            if let oldValue { conversations[oldValue]?.stopWhenIdle() }
-            if let selection { conversations[selection]?.keepFollowing() }
-        }
-    }
+    var selection: ThreadSummary.ID?
 
     private let app: AppModel
     private var conversations: [String: ConversationModel] = [:]

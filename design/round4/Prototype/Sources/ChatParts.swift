@@ -114,7 +114,7 @@ struct ChatToolbar: View {
 struct TranscriptSurface<Content: View>: View {
     let title: String
     var mode: ComposerMode
-    var managesSidebar = false
+    var nativeNavigation = false
     var anchor: UnitPoint = .top
     var connectionBanner: Bool?
     var connectionAction: () -> Void = {}
@@ -137,6 +137,7 @@ struct TranscriptSurface<Content: View>: View {
         }
         .scrollPosition($position)
         .defaultScrollAnchor(anchor, for: .initialOffset)
+        .defaultScrollAnchor(nativeNavigation ? .bottom : .top, for: .alignment)
         .onScrollGeometryChange(for: Bool.self) { geometry in
             let unobscuredBottom = geometry.contentOffset.y + geometry.contentInsets.top
                 + geometry.containerSize.height
@@ -145,10 +146,11 @@ struct TranscriptSurface<Content: View>: View {
             awayFromLatest = away
         }
         .safeAreaBar(edge: .top, spacing: 6) {
-            ChatToolbar(title: title, leadingAction: !managesSidebar, trailingAction: !managesSidebar,
-                        menu: menu, newChat: newChat, info: { showingInfo = true })
-                .frame(maxWidth: 640)
-                .padding(.horizontal, 23)
+            if !nativeNavigation {
+                ChatToolbar(title: title, menu: menu, newChat: newChat, info: { showingInfo = true })
+                    .frame(maxWidth: 640)
+                    .padding(.horizontal, 23)
+            }
         }
         .safeAreaBar(edge: .bottom, spacing: 8) {
             VStack(spacing: 8) {
@@ -168,6 +170,16 @@ struct TranscriptSurface<Content: View>: View {
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
+        .toolbar {
+            if nativeNavigation {
+                ToolbarItem(placement: .principal) {
+                    Button(title) { showingInfo = true }
+                        .font(.headline)
+                        .foregroundStyle(p.ink)
+                        .accessibilityHint("Opens thread info")
+                }
+            }
+        }
         .sheet(isPresented: $showingInfo) {
             ThreadInfoPanel(title: title == "Glass" ? "Fix the nil crash in TitleView" : title)
                 .padding(20)
@@ -230,7 +242,7 @@ struct AssistantLabel: View {
     var body: some View {
         HStack(spacing: 8) {
             LensMark(compact: true).frame(width: 16, height: 16)
-            Eyebrow("GLASS")
+            Text("Glass").font(.subheadline.weight(.semibold)).foregroundStyle(p.muted)
         }
     }
 }
@@ -249,34 +261,32 @@ struct CodeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(titleSample ? "Swift" : "SWIFT / CachePolicy.swift")
-                    .font(.caption2.monospaced().weight(.semibold))
+                Text(titleSample ? "Swift" : "CachePolicy.swift")
+                    .font(.caption.weight(.semibold))
                 Spacer()
                 Image(systemName: "document.on.document").accessibilityLabel("Copy")
             }
             .foregroundStyle(colors[4])
             .padding(.horizontal, 16).padding(.vertical, 11)
             Divider().overlay(p.line.opacity(0.65))
-            ScrollView(.horizontal) {
-                VStack(alignment: .leading, spacing: 8) {
-                    let keyword = Text("let").foregroundStyle(colors[0])
-                    if titleSample {
-                        let literal = Text("\"Untitled\"").foregroundStyle(colors[2])
-                        let operation = Text("??").foregroundStyle(colors[3])
-                        Text("\(keyword) title = item.title \(operation) \(literal)").foregroundStyle(colors[1])
-                    } else {
-                        Text("// Keep disk reads off the hot path").foregroundStyle(colors[4])
-                        let literal = Text("120").foregroundStyle(colors[2])
-                        let symbol = Text(".store").foregroundStyle(colors[3])
-                        Text("\(keyword) ttl = \(literal)").foregroundStyle(colors[1])
-                        Text("cache\(symbol)(result, ttl: ttl)").foregroundStyle(colors[1])
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                let keyword = Text("let").foregroundStyle(colors[0])
+                if titleSample {
+                    let literal = Text("\"Untitled\"").foregroundStyle(colors[2])
+                    let operation = Text("??").foregroundStyle(colors[3])
+                    Text("\(keyword) title = item.title \(operation) \(literal)").foregroundStyle(colors[1])
+                } else {
+                    Text("// Keep disk reads off the hot path").foregroundStyle(colors[4])
+                    let literal = Text("120").foregroundStyle(colors[2])
+                    let symbol = Text(".store").foregroundStyle(colors[3])
+                    Text("\(keyword) ttl = \(literal)").foregroundStyle(colors[1])
+                    Text("cache\(symbol)(result, ttl: ttl)").foregroundStyle(colors[1])
                 }
-                .font((titleSample ? Font.subheadline : Font.callout).monospaced())
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.horizontal, 16).padding(.vertical, 14)
             }
-            .defaultScrollAnchor(.leading)
+            .font((titleSample ? Font.subheadline : Font.callout).monospaced())
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.vertical, 14)
         }
         .background(p.terminal, in: .rect(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(p.line))
@@ -317,7 +327,7 @@ struct BenchmarkTable: View {
     private var benchmarkGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Eyebrow("REQUEST LATENCY")
+                Text("Request latency").font(.subheadline.weight(.semibold))
                 Spacer()
                 Image(systemName: "arrow.left.and.right").font(.caption).foregroundStyle(p.muted)
                     .accessibilityLabel("Scroll horizontally for all columns")
@@ -356,7 +366,7 @@ struct BenchmarkChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow("P95 / WARM CACHE")
+            Text("Warm cache · p95").font(.subheadline.weight(.semibold))
             bar("Before", "126 ms", portion: 1, color: p.muted)
             bar("After", "84 ms", portion: 0.667, color: p.accent)
         }
@@ -391,19 +401,32 @@ struct MathSample: View {
                 .font(.body)
             HStack(spacing: 8) {
                 Text("Δ =")
-                VStack(spacing: 4) {
-                    Text("t₁ − t₀")
+                VStack(spacing: mathSize * 0.24) {
+                    HStack(alignment: .firstTextBaseline, spacing: mathSize * 0.26) {
+                        term("1")
+                        Text("−")
+                        term("0")
+                    }
                     Rectangle().frame(height: 1)
-                    Text("t₀")
+                    term("0")
                 }
                 .fixedSize()
                 Text("× 100")
             }
             .font(.system(size: mathSize, design: .serif))
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("Delta equals t one minus t zero, divided by t zero, times one hundred.")
             .frame(maxWidth: .infinity)
             .padding(14).panel()
         }
+    }
+
+    private func term(_ index: String) -> Text {
+        let variable = Text("t").italic()
+        let subscriptDigit = Text(index)
+            .font(.system(size: mathSize * 0.67, design: .serif))
+            .baselineOffset(-mathSize * 0.20)
+        return Text("\(variable)\(subscriptDigit)")
     }
 }
 

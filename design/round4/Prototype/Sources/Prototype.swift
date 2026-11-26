@@ -40,7 +40,6 @@ struct PrototypeRoot: View {
                     .ignoresSafeArea()
             } else if plate == "splash-end" {
                 VStack(alignment: .leading, spacing: 20) {
-                    Eyebrow("GLASS / LENS")
                     Spacer()
                     LensMark(optical: true).frame(width: 82, height: 82)
                     Text("Glass").font(.system(.largeTitle, design: .rounded, weight: .semibold))
@@ -123,14 +122,14 @@ struct PrototypeRoot: View {
 }
 
 struct PlateTitle: View {
-    let number: String
+    var number: String? = nil
     let title: String
     let summary: String
     @Environment(\.palette) private var p
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Eyebrow(number)
+            if let number { Eyebrow(number) }
             Text(title).font(.system(.largeTitle, design: .rounded, weight: .semibold))
                 .tracking(-0.9)
             Text(summary).font(.subheadline).foregroundStyle(p.muted)
@@ -290,7 +289,7 @@ struct ComponentPlate: View {
         VStack(alignment: .leading, spacing: plate == "composer" ? 10 : 16) {
             switch plate {
             case "text":
-                PlateTitle(number: "COMPONENTS / 01", title: "Transcript", summary: "The reply is a reading surface, not a card grid.")
+                PlateTitle(title: "Transcript", summary: "The reply is a reading surface, not a card grid.")
                 ChatToolbar(title: "Gateway latency baseline")
                 UserBubble()
                 AssistantLabel()
@@ -315,7 +314,7 @@ struct ComponentPlate: View {
                 }
                 FileChip(name: "benchmark.csv", detail: "8 KB")
             case "rich", "rich-xl":
-                PlateTitle(number: "COMPONENTS / 02", title: "Rich output",
+                PlateTitle(title: "Rich output",
                            summary: plate == "rich-xl" ? "Dynamic Type XL · fixed-size columns scroll." : "Readable code, data and notation.")
                 Group {
                     BenchmarkTable()
@@ -325,42 +324,44 @@ struct ComponentPlate: View {
                 }
                 .environment(\.dynamicTypeSize, plate == "rich-xl" ? .xLarge : .large)
             case "work":
-                PlateTitle(number: "COMPONENTS / 03", title: "Work log", summary: "Execution trace, folded until it matters.")
-                Eyebrow("LIVE / COLLAPSED")
+                PlateTitle(title: "Work log", summary: "Execution trace, folded until it matters.")
+                stateLabel("Live · collapsed")
                 WorkLog(running: true)
-                Eyebrow("LIVE / EXPANDED")
+                stateLabel("Live · expanded")
                 WorkLog(running: true, expanded: true)
-                Eyebrow("DONE / COLLAPSED")
+                stateLabel("Done · collapsed")
                 WorkLog(running: false)
-                Eyebrow("DONE / EXPANDED")
+                stateLabel("Done · expanded")
                 WorkLog(running: false, expanded: true)
             case "failure":
-                PlateTitle(number: "COMPONENTS / 04", title: "Run recovery", summary: "Explain what stopped before asking to retry.")
+                PlateTitle(title: "Run recovery", summary: "Explain what stopped before asking to retry.")
                 FailureCard()
                 OutputDetail()
             case "diff":
-                PlateTitle(number: "COMPONENTS / 05", title: "Changes", summary: "Two file gutters. Count edits, not patch rows.")
+                PlateTitle(title: "Changes", summary: "Separate old and new line numbers.")
                 DiffDetail()
-                Text("Patch transport headers are not displayed as edits.")
-                    .font(.footnote).foregroundStyle(p.muted)
             case "composer":
-                PlateTitle(number: "COMPONENTS / 06", title: "Composer", summary: "One control surface, not a stack of banners.")
-                Eyebrow("IDLE")
+                PlateTitle(title: "Composer", summary: "One control surface, not a stack of banners.")
+                stateLabel("Idle")
                 Composer(mode: .idle)
-                Eyebrow("TYPING")
+                stateLabel("Typing")
                 Composer(mode: .typing)
-                HStack { Eyebrow("WORKING / AWAY FROM LATEST"); Spacer() }
+                stateLabel("Working · away from latest")
                 JumpControl(visible: true)
                 Composer(mode: .working)
-                Eyebrow("ATTACHMENTS")
+                stateLabel("Attachments")
                 Composer(mode: .attachments)
             case "panels":
-                PlateTitle(number: "COMPONENTS / 07", title: "Control panels", summary: "Solid reading surfaces over a live conversation.")
+                PlateTitle(title: "Control panels", summary: "Solid reading surfaces over a live conversation.")
                 ModelPanel()
                 ThreadInfoPanel()
             default:
                 ContentUnavailableView("Unknown plate", systemImage: "rectangle.slash")
             }
         }
+    }
+
+    private func stateLabel(_ title: String) -> some View {
+        Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(p.muted)
     }
 }

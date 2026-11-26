@@ -1,6 +1,6 @@
 # Glass iOS · round 4
 
-**Design proposal, not shipped behavior.** Direction in progress pending the owner's visual references.
+**Design proposal, not shipped behavior.** Round 4b refines the approved Lens direction before implementation.
 
 **Choose Lens v1:** a circular orb on a bent horizon, with a teal rim. It keeps its silhouette at 16 pt and is the same mark on the icon, splash and empty chat. **Lens v5** is the alternate: its asymmetric shape is distinctive at icon scale but less legible when small. Earlier cut, prism and fold studies were explored and set aside because they do not read as lenses.
 
@@ -15,11 +15,11 @@ Each reference cell names what to take → what to leave out. The owner's light 
 | Screen | ChatGPT | Amp | T3 Code | OpenCode | Owner direction and self-critique |
 |---|---|---|---|---|---|
 | Empty | Composer-first entry → promotional prompts | Quiet branded arrival → replaying motion in chat | Immediate task entry → project setup at entry | Low visual noise → terminal prompt | Keep the orb, one short prompt and two suggestions. The lens has room to read; suggestion wrapping needs another look at accessibility sizes. |
-| Active | Gray user bubble and unbubbled answer → per-reply chrome | Folded work summary → trace as the first thing you read | Syntax and copy action → editor-sized code pane | Clean, scannable rows → terminal grid | Keep the single toolbar, clean table and one teal Send. The answer leads on phone; longer examples need horizontal room. On iPad the sidebar owns New Chat, leaving the long title to the detail toolbar; the wide transcript deliberately caps line length. |
+| Active | Gray user bubble and unbubbled answer → per-reply chrome | Folded work summary → trace as the first thing you read | Syntax and copy action → editor-sized code pane | Clean, scannable rows → terminal grid | The answer leads on phone; code wraps instead of hiding the fallback or the end of a comment. iPad uses a native split view, with New Chat in the sidebar and a longer, bottom-aligned transcript that reaches the composer. The wider sidebar costs some detail width, so wrapping is still useful on iPad. |
 | Working | Replace Send with Stop → separate progress banner | Live step and connected trace → expose every event | Name the current file/action → separate log pane | Distinct queued/done markers → dense event stream | Follow the light reference in both appearances: one vertical trace with a live spinner and one Stop. The live step is the focal point; the trace is a short sample, not an exhaustive log. |
 | Failure | A clear next action → generic error toast | Resume in the thread → collapse the cause | Failed command and exit code → terminal-first recovery | Stderr on demand → raw output as the headline | Extend the active sheet rather than invent a new color system. Continue leads; the stderr sheet keeps the transcript quiet but costs a tap. |
-| Drawer | Search and recency → undifferentiated history | Active-thread status → badges on every row | Quick thread switching → project suffixes | Jump by group → flat terminal list | Follow the dark panel in both appearances, with grouped sections, a jump index and 336 threads. Settings stays anchored; search or the index matters once month groups fill up. |
-| Settings | Familiar grouped preferences → profile as the hero | Surface host health → diagnostics by default | Make defaults findable → expose every project flag | Keep device state explicit → config-file terminology | Carry the drawer's grouping and glass navigation into settings. The connected host leads; diagnostics stay one level deeper. |
+| Drawer | Search and recency → undifferentiated history | Active-thread status → badges on every row | Quick thread switching → project suffixes | Jump by group → flat terminal list | Each section is one card on both devices. The iPad’s wider sidebar fits the sample titles on one line; a flat selection highlight replaces the disclosure chevron. With 336 threads, search and the jump index still matter. |
+| Settings | Familiar grouped preferences → profile as the hero | Surface host health → diagnostics by default | Make defaults findable → expose every project flag | Keep device state explicit → config-file terminology | Carry the drawer's grouping and glass navigation into settings. Sentence-case headings keep the connected host in focus; diagnostics stay one level deeper. |
 
 ## Round 3 defects → round 4 design
 
@@ -35,14 +35,12 @@ Each reference cell names what to take → what to leave out. The owner's light 
 | 8 | State the cause and a single count (“1 command failed”); include the full command, exit status, red stderr detail and a distinct Continue action. |
 | 9 | Independent old/new file-line gutters; neutral hunk metadata; no raw patch headers in the review. Show +N −M and size the sheet to its content. |
 | 10 | Tinted trace rail, live spinner, expandable reasoning summary and file delta chips. Use “2m 14s”. |
-| 11 | Code scrolls with 16 pt padding on both sides; distinguish comments, literals, symbols and keywords on a fixed solid terminal surface. |
-| 12 | Three heading levels, serif inline math with a full-size fraction, and benchmark bars in teal and neutral with explicit labels. |
+| 11 | Code wraps with 16 pt padding on both sides; comments, literals, symbols and keywords stay distinct on a solid terminal surface. Diff continuations stay aligned with their source line. |
+| 12 | Three heading levels, serif inline math, a fraction with separate, lowered subscripts, and benchmark bars in teal and neutral with explicit labels. |
 | 13 | Group models by provider, mark the selection and hide the custom ID field under a disclosure. |
 | 14 | Keep full history behind a persistent, solid connection/ownership banner; use “Reconnect” or “Take over here” and explain what happens. |
 | 15 | Search the thread collection, show status independently of titles and group by Today, Yesterday, Previous 7 Days, Previous 30 Days, then month. Pin one glass Settings bar. |
-| 16 | In the iPad split view, one owner for sidebar toggle and one for New Chat. A wide detail title wraps instead of truncating. |
-| 17 | Put context and estimated cost above the first scroll at the medium detent; call the control “Let another device type”. |
+| 16 | Use the native iPad split view and its sidebar toggle, with New Chat on the sidebar and the thread title in the detail toolbar. |
+| 17 | Put context and estimated cost above the first scroll at the medium detent; label the action “Switch typing to another device”. |
 | 18 | Scale body, headings, code and math from native text styles; keep table cells whole and let the grid scroll at XL. |
-| 19 | Capture one distinct state per file using native simulator resolution, appearance and fixed status-bar settings. Keep phone exports at the same 3× scale; iPad keeps its native 2× scale. |
-
-Per-screen reference choices and visual self-critique will accompany the final captures after reference review.
+| 19 | Capture one distinct state per PNG on iOS 26.5, with the same hardware mask and fixed status bar. Keep phone exports at the native 3× scale; iPad keeps its native 2× scale. |

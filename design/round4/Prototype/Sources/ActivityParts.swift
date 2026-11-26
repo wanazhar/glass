@@ -131,7 +131,7 @@ struct FailureCard: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(p.failure)
-                Eyebrow("RUN STOPPED / 1 COMMAND FAILED")
+                Text("1 command failed").font(.subheadline.weight(.semibold)).foregroundStyle(p.failure)
             }
             Text("Title fixture not found")
                 .font(.title2.weight(.semibold))
@@ -156,11 +156,12 @@ struct OutputDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow("COMMAND / EXIT 1")
+            Text("Command · exit 1").font(.subheadline.weight(.semibold)).foregroundStyle(p.muted)
             Text("swift test --filter TitleViewTests").font(.headline.monospaced())
+                .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 9) {
-                Label("STDERR", systemImage: "exclamationmark.circle")
-                    .font(.caption.monospaced().weight(.bold))
+                Label("Standard error", systemImage: "exclamationmark.circle")
+                    .font(.subheadline.weight(.semibold))
                 Text("error: blank-title.json: No such file or directory")
                     .font(.callout.monospaced())
                     .fixedSize(horizontal: false, vertical: true)
@@ -170,7 +171,7 @@ struct OutputDetail: View {
             .padding(14)
             .background(Color(hex: 0x3A2522), in: .rect(cornerRadius: 12))
             HStack {
-                Eyebrow("STDOUT")
+                Text("Standard output").font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("No output").font(.caption).foregroundStyle(p.muted)
             }
@@ -186,7 +187,6 @@ struct DiffDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow("CHANGES / 1 FILE")
             HStack {
                 Text(titleSample ? "TitleView.swift" : "cache.swift").font(.headline.monospaced())
                 Spacer()
@@ -195,28 +195,25 @@ struct DiffDetail: View {
             }
             .font(.subheadline.monospacedDigit().weight(.medium))
             HStack(spacing: 8) {
-                Text("OLD").frame(width: 30, alignment: .trailing)
-                Text("NEW").frame(width: 30, alignment: .trailing)
+                Text("Old").frame(width: 30, alignment: .trailing)
+                Text("New").frame(width: 30, alignment: .trailing)
                 Text(titleSample ? "@@ −24,2 +24,2 @@" : "@@ −38,3 +38,5 @@").foregroundStyle(p.muted)
             }
-            .font(.caption2.monospaced())
+            .font(.caption)
             .padding(.horizontal, 8)
-            ScrollView(.horizontal) {
-                VStack(alignment: .leading, spacing: 1) {
-                    if titleSample {
-                        row("24", "", "− let title = item.title!", change: -1)
-                        row("", "24", "+ let title = item.title ?? \"Untitled\"", change: 1)
-                        row("25", "25", "  Text(title)", change: 0)
-                    } else {
-                        row("38", "38", "  func resolve() {", change: 0)
-                        row("39", "", "−   let ttl = 30", change: -1)
-                        row("", "39", "+   let ttl = 120", change: 1)
-                        row("", "40", "+   let key = cacheKey()", change: 1)
-                        row("", "41", "+   cache.store(key, ttl: ttl)", change: 1)
-                        row("40", "42", "  }", change: 0)
-                    }
+            VStack(alignment: .leading, spacing: 1) {
+                if titleSample {
+                    row("24", "", "− let title = item.title!", change: -1)
+                    row("", "24", "+ let title = item.title ?? \"Untitled\"", change: 1)
+                    row("25", "25", "  Text(title)", change: 0)
+                } else {
+                    row("38", "38", "  func resolve() {", change: 0)
+                    row("39", "", "−   let ttl = 30", change: -1)
+                    row("", "39", "+   let ttl = 120", change: 1)
+                    row("", "40", "+   let key = cacheKey()", change: 1)
+                    row("", "41", "+   cache.store(key, ttl: ttl)", change: 1)
+                    row("40", "42", "  }", change: 0)
                 }
-                .fixedSize(horizontal: true, vertical: false)
             }
         }
         .padding(14)
@@ -225,11 +222,12 @@ struct DiffDetail: View {
 
     private func row(_ before: String, _ after: String, _ code: String, change: Int) -> some View {
         let ink = change == 0 ? p.ink : change == 1 ? p.success : p.failure
-        return HStack(spacing: 8) {
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(before).frame(width: 30, alignment: .trailing).foregroundStyle(p.muted)
             Text(after).frame(width: 30, alignment: .trailing).foregroundStyle(p.muted)
             Text(code).foregroundStyle(ink)
-            Spacer(minLength: 8)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(.caption.monospaced())
         .padding(.vertical, 5).padding(.horizontal, 8)
@@ -267,8 +265,8 @@ struct ModelPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Choose model").font(.title2.weight(.semibold))
-            group("ANTHROPIC", models: [("Opus 4.7", "Deep reasoning"), ("Sonnet 4.6", "Balanced")])
-            group("OPENAI", models: [("GPT-5.4", "General purpose")])
+            group("Anthropic", models: [("Opus 4.7", "Deep reasoning"), ("Sonnet 4.6", "Balanced")])
+            group("OpenAI", models: [("GPT-5.4", "General purpose")])
             Divider()
             DisclosureGroup("Custom model ID") {
                 TextField("provider/model", text: $customID)
@@ -282,7 +280,7 @@ struct ModelPanel: View {
 
     private func group(_ provider: String, models: [(String, String)]) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Eyebrow(provider)
+            Text(provider).font(.subheadline.weight(.semibold)).foregroundStyle(p.muted)
             ForEach(models, id: \.0) { name, detail in
                 Button {
                     selected = name
@@ -314,16 +312,15 @@ struct ThreadInfoPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Eyebrow("THREAD INFO")
             Text(title).font(.title2.weight(.semibold))
             HStack(alignment: .top, spacing: 22) {
-                metric("CONTEXT USED", "38K / 200K")
-                metric("EST. COST", "$0.18")
+                metric("Context used", "38K / 200K")
+                metric("Estimated cost", "$0.18")
             }
             Divider()
             LabeledContent("Machine", value: "Studio Mac").font(.subheadline)
             LabeledContent("Model", value: "Opus 4.7").font(.subheadline)
-            Button("Let another device type", systemImage: "keyboard") {}
+            Button("Switch typing to another device", systemImage: "keyboard") {}
                 .font(.subheadline.weight(.semibold)).tint(p.accent)
         }
         .padding(17).panel()
@@ -331,7 +328,7 @@ struct ThreadInfoPanel: View {
 
     private func metric(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Eyebrow(label)
+            Text(label).font(.subheadline).foregroundStyle(p.muted)
             Text(value).font(.title3.weight(.semibold)).monospacedDigit()
         }
     }

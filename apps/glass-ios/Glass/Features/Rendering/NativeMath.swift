@@ -49,7 +49,7 @@ enum NativeMath {
             latex += "^{" + String(repeating: #"\prime"#, count: primes) + "}"
             primes = 0
         }
-        for character in source {
+        for character in source.precomposedStringWithCanonicalMapping {
             switch character {
             case "'" where !hasText: primes += 1; continue
             case "′": primes += 1; continue

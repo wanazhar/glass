@@ -123,6 +123,15 @@ import Testing
         #expect(NativeMath.image("x 🜁 1", size: 17, display: false) == nil)
     }
 
+    @Test func nativeMathAcceptsDecomposedAccents() throws {
+        let decomposed = "e\u{0301} + 1"
+        let composed = "\u{00E9} + 1"
+        let normalized = try #require(NativeMath.normalizedLaTeX(decomposed))
+        #expect(Array(normalized.utf8) == Array(composed.utf8))
+        let expected = try #require(NativeMath.image(composed, size: 17, display: false)?.pngData())
+        #expect(NativeMath.image(decomposed, size: 17, display: false)?.pngData() == expected)
+    }
+
     @Test func nativeMathPreservesOpaqueColorBoxes() throws {
         let source = #"a + \colorbox{#3F8066}{x^2}"#
         for display in [false, true] {

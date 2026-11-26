@@ -405,15 +405,7 @@ private struct BlockView: View {
             DetailsBlock(summary: summary, content: body)
         case .image(let alt, let url):
             if let url = URL(string: url), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    case .failure: EmptyView()
-                    default: Color(.secondarySystemFill).frame(height: 160)
-                    }
-                }
-                .clipShape(.rect(cornerRadius: 12, style: .continuous))
-                .accessibilityLabel(alt.isEmpty ? "Image" : alt)
+                RemoteMarkdownImage(url: url, alt: alt).id(url)
             }
             // Local paths are images a tool already showed above; nothing more to draw.
         case .file(let label, let path):
@@ -485,6 +477,32 @@ private struct DetailsBlock: View {
 
 struct DataTable: View, Equatable {
     var header: [AttributedString]
+private struct RemoteMarkdownImage: View {
+    let url: URL
+    let alt: String
+    @State private var requested = false
+
+    var body: some View {
+        if requested {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image): image.resizable().scaledToFit()
+                case .failure: Label("Couldn’t load image", systemImage: "photo")
+                default: ProgressView()
+                }
+            }
+            .clipShape(.rect(cornerRadius: Design.corner))
+            .accessibilityLabel(alt.isEmpty ? "Image" : alt)
+        } else {
+            Button { requested = true } label: {
+                Label(alt.isEmpty ? "Load remote image" : "Load image: \(alt)", systemImage: "photo")
+            }
+            .glassButtonStyle()
+            .accessibilityIdentifier("markdown.loadRemoteImage")
+        }
+    }
+}
+
     var alignments: [MarkdownView.ColumnAlignment] = []
     var rows: [[AttributedString]]
     @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 148.0

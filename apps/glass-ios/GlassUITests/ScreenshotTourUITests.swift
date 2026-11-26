@@ -79,7 +79,7 @@ final class ScreenshotTourUITests: XCTestCase {
         let reasoning = app.descendants(matching: .any)["timeline.reasoning"].firstMatch
         XCTAssertTrue(reasoning.waitForExistence(timeout: 10))
         reasoning.tap()
-        let fullText = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Beginning of the long reasoning")).firstMatch
+        let fullText = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Beginning of the long reasoning")).firstMatch
         XCTAssertTrue(fullText.waitForExistence(timeout: 10))
         let header = app.buttons["conversation.back"]
         XCTAssertGreaterThanOrEqual(fullText.frame.minY, header.frame.maxY)

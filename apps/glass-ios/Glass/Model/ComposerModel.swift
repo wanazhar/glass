@@ -243,9 +243,15 @@ final class ComposerModel {
     }
 
     func cancelUploads() {
-        uploadTask?.cancel()
+        guard let batch = uploadTask else { return }
+        batch.cancel()
         uploadTask = nil
         uploads.removeAll()
+        Task {
+            await refreshContext()
+            await batch.value
+            await refreshContext()
+        }
     }
 
     func dismissUpload(_ upload: Upload) { uploads.removeAll { $0.id == upload.id } }

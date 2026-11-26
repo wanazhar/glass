@@ -16,6 +16,42 @@ private final class ScriptedTransport: GlassHTTPTransport, @unchecked Sendable {
     }
 }
 
+private actor AttachmentBatchTransport: GlassHTTPTransport {
+    let owner: String
+    let pauseSecondUpload: Bool
+    private(set) var commandIDs: [String] = []
+    private(set) var secondUploadStarted = false
+
+    init(owner: String, pauseSecondUpload: Bool) {
+        self.owner = owner
+        self.pauseSecondUpload = pauseSecondUpload
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let url = try #require(request.url)
+        let body: String
+        switch url.path {
+            case "/api/local": body = #"{"ownerCapability":"\#(owner)"}"#
+            case "/api/upload":
+                if url.query?.contains("name=second.txt") == true {
+                    secondUploadStarted = true
+                    if pauseSecondUpload { try await Task.sleep(for: .seconds(60)) }
+                }
+                body = #"{"name":"first.txt","bytes":5,"token":"upload-token","kind":"text"}"#
+            case "/api/send":
+                let message = try JSONDecoder().decode(JSONValue.self, from: #require(request.httpBody))["message"]
+                #expect(message?["name"]?.stringValue == "attach")
+                commandIDs.append(try #require(message?["request_id"]?.stringValue))
+                body = "{}"
+            case "/api/context":
+                try Task.checkCancellation()
+                body = #"{"attachments":[{"path":"/uploads/first.txt","source":"Uploaded first.txt · snapshot"}]}"#
+            default: body = AppModelTests.status
+        }
+        return (Data(body.utf8), try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+    }
+}
+
 @MainActor @Suite struct AppModelTests {
     let defaults: UserDefaults = {
         let name = "glass.tests.\(UUID().uuidString)"
@@ -55,6 +91,38 @@ private final class ScriptedTransport: GlassHTTPTransport, @unchecked Sendable {
         #expect(model.phase == .unpaired)
         #expect(model.repairReason == "Open the private Connect owner link")
         #expect(try store.credential(for: model.endpoint!) == .none)
+    }
+
+    @Test(arguments: [true, false])
+    func cancellingRemainderOfAttachmentBatchRefreshesCompletedAttachments(pauseSecondUpload: Bool) async throws {
+        let transport = AttachmentBatchTransport(owner: owner, pauseSecondUpload: pauseSecondUpload)
+        let model = AppModel(defaults: defaults, store: store, transport: transport)
+        await model.pair(with: Self.link)
+        try #require(model.api != nil)
+        let composer = ComposerModel(app: model, thread: ThreadSummary(session: "cancelled-attachment-batch"))
+        composer.attach([AttachmentInput(name: "first.txt", data: Data("first".utf8)),
+                         AttachmentInput(name: "second.txt", data: Data("second".utf8)),
+                         AttachmentInput(name: "third.txt", data: Data("third".utf8))], canWrite: true)
+
+        for _ in 0..<100 where await transport.commandIDs.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        let firstCommandID = await transport.commandIDs.first
+        let id = try #require(firstCommandID)
+        composer.observe(.commandResult(requestID: id, result: .null, error: nil))
+        for _ in 0..<100 where await !transport.secondUploadStarted { try await Task.sleep(for: .milliseconds(20)) }
+        let secondUploadStarted = await transport.secondUploadStarted
+        try #require(secondUploadStarted)
+        var pendingCommandID: String?
+        if !pauseSecondUpload {
+            for _ in 0..<100 where await transport.commandIDs.count < 2 { try await Task.sleep(for: .milliseconds(20)) }
+            let ids = await transport.commandIDs
+            pendingCommandID = try #require(ids.dropFirst().first)
+        }
+
+        composer.cancelUploads()
+        #expect(composer.uploads.isEmpty)
+        for _ in 0..<100 where composer.context.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(composer.context.map(\.label) == ["first.txt"])
+        if let pendingCommandID { composer.observe(.commandResult(requestID: pendingCommandID, result: nil, error: "Not attached")) }
     }
 
     @Test func desktopDisconnectReleasesHeldButtonsAndBlocksInput() async throws {

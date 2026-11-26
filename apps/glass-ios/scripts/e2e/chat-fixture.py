@@ -34,6 +34,8 @@ THREADS = [
     {"session": "reasoning", "title": "Review the Swift build", "model": "Swift workspace"},
     {"session": "table", "title": "Build capabilities", "model": "Swift workspace"},
     {"session": "long-reasoning", "title": "Long reasoning", "model": "Swift workspace"},
+    {"session": "deep-reasoning", "title": "Reasoning after long history", "model": "Swift workspace"},
+    {"session": "scrolled-reasoning", "title": "Earlier reasoning after long history", "model": "Swift workspace"},
     {"session": "paged-reasoning", "title": "Paged reasoning", "model": "Swift workspace"},
 ]
 
@@ -71,6 +73,18 @@ class Handler(BaseHTTPRequestHandler):
                 records = [{"k": "user", "t": "What can we verify in the build?"}, {"k": "assistant", "t": TABLE}]
             elif thread == "long-reasoning":
                 records = [{"k": "reasoning", "t": "Beginning of the long reasoning.\n\n" + (REASONING + "\n\n") * 6}]
+            elif thread in {"deep-reasoning", "scrolled-reasoning"}:
+                records = [
+                    {"k": "user" if i % 2 == 0 else "assistant",
+                     "t": f"History message {i}. " + (REASONING + "\n\n") * (i % 7)}
+                    for i in range(60)
+                ]
+                records += [
+                    {"k": "reasoning", "t": "Beginning of the earlier block.\n\n" + (REASONING + "\n\n") * 6},
+                    {"k": "assistant", "t": "Separate the two reasoning segments.\n\n"
+                     + (REASONING + "\n\n") * (4 if thread == "deep-reasoning" else 1)},
+                    {"k": "reasoning", "t": "Beginning of the latest block.\n\n" + (REASONING + "\n\n") * 6},
+                ]
             else:
                 records = [
                     {"k": "user", "t": "Review the build and package the app."},
@@ -112,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             active = thread == "reasoning"
             live = [{"t": "reasoning", "delta": REASONING[:39]}] if active else []
-            send(1, {"reset": True, "cursor": 1, "active": active or thread == "long-reasoning",
+            send(1, {"reset": True, "cursor": 1, "active": active or thread in {"long-reasoning", "deep-reasoning"},
                      "control": {"can_write": True}, "live": live})
             if active:
                 for i, start in enumerate(range(39, len(REASONING), 13), start=2):

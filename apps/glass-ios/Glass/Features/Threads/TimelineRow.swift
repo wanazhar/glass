@@ -15,11 +15,10 @@ extension EnvironmentValues {
 struct TimelineRow: View {
     var entry: TimelineEntry
     var liveReasoning = false
-    var reasoningExpansion: (Bool, CGFloat) -> Void = { _, _ in }
+    var reasoningExpansion: (Bool) -> Void = { _ in }
     @Environment(\.openSavedActivity) private var openSavedActivity
     @Environment(\.messageAction) private var messageAction
     @State private var reasoningExpanded = false
-    @State private var reasoningTop: CGFloat = 0
 
     @ViewBuilder
     private func actions(for kinds: [MessageAction]) -> some View {
@@ -65,7 +64,7 @@ struct TimelineRow: View {
             .accessibilityIdentifier("timeline.assistant")
         case .reasoning(_, let text):
             DisclosureGroup(isExpanded: Binding(get: { reasoningExpanded }, set: { expanded in
-                reasoningExpansion(expanded, reasoningTop)
+                reasoningExpansion(expanded)
                 reasoningExpanded = expanded
             })) {
                 Text(text)
@@ -90,9 +89,6 @@ struct TimelineRow: View {
                 .foregroundStyle(Color(.secondaryLabel))
             }
             .tint(Color(.secondaryLabel))
-            .onGeometryChange(for: CGFloat.self) {
-                $0.frame(in: .named(ConversationView.historyContent)).minY
-            } action: { reasoningTop = $0 }
             .accessibilityIdentifier("timeline.reasoning")
         case .tool(_, let name, let summary, let output, let failed):
             if failed != true, let shared = SharedImage(name: name, output: output) {

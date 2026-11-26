@@ -14,7 +14,7 @@ struct ConversationView: View {
     @State private var lastTouch = ContinuousClock.now
     @State private var resumeFollowing: Task<Void, Never>?
     @State private var inspectingReasoning: String?
-    @State private var reasoningTopToReveal: CGFloat?
+    @State private var revealingReasoning: String?
     @State private var expandedReasoning: Set<String> = []
     @State private var firstReasoningBounds: HistoryBounds?
     @State private var restoreHistoryBounds: HistoryBounds?
@@ -40,6 +40,7 @@ struct ConversationView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     if conversation.hasEarlier {
                         Button {
+                            revealingReasoning = nil
                             Task {
                                 let first = conversation.timeline.entries.first
                                 let previous = firstReasoningBounds.flatMap { bounds in
@@ -72,22 +73,33 @@ struct ConversationView: View {
                         emptyState
                     }
                     ForEach(conversation.timeline.entries) { entry in
-                        TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID) { expanded, top in
+                        TimelineRow(entry: entry, liveReasoning: entry.id == conversation.timeline.liveReasoningID) { expanded in
                             if expanded { expandedReasoning.insert(entry.id) } else { expandedReasoning.remove(entry.id) }
                             if expanded {
                                 resumeFollowing?.cancel()
                                 inspectingReasoning = entry.id
                                 following = false
-                                reasoningTopToReveal = top
-                                historyScroll.scrollTo(y: top)
+                                revealingReasoning = entry.id
                             } else if inspectingReasoning == entry.id {
                                 inspectingReasoning = nil
-                                reasoningTopToReveal = nil
+                                revealingReasoning = nil
                                 lastTouch = .now
                                 if atBottom { following = true } else { scheduleResume(proxy) }
                             }
                         }
                         .background {
+                            if revealingReasoning == entry.id {
+                                Color.clear.onGeometryChange(for: ReasoningPosition.self) {
+                                    ReasoningPosition(
+                                        contentTop: $0.frame(in: .named(Self.historyContent)).minY,
+                                        viewportTop: $0.frame(in: .scrollView(axis: .vertical)).minY
+                                    )
+                                } action: { position in
+                                    guard revealingReasoning == entry.id,
+                                          abs(position.viewportTop - historyTopInset) > 2 else { return }
+                                    historyScroll.scrollTo(y: position.contentTop)
+                                }
+                            }
                             if case .reasoning = entry, entry.id == conversation.timeline.entries.first?.id
                                 || entry.id == restoreHistoryBounds?.entry.id {
                                 Color.clear.onGeometryChange(for: HistoryBounds.self) { geometry in
@@ -118,11 +130,6 @@ struct ConversationView: View {
             }
             .scrollPosition($historyScroll)
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, inset in historyTopInset = inset }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, _ in
-                guard let top = reasoningTopToReveal else { return }
-                reasoningTopToReveal = nil
-                historyScroll.scrollTo(y: top)
-            }
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             .softTopScrollEdge()
@@ -134,7 +141,7 @@ struct ConversationView: View {
                 case .tracking, .interacting:
                     touching = true
                     following = false
-                    reasoningTopToReveal = nil
+                    revealingReasoning = nil
                     resumeFollowing?.cancel()
                 case .idle where touching:
                     touching = false
@@ -158,7 +165,7 @@ struct ConversationView: View {
             .onChange(of: conversation.timeline.interaction?.id) { _, id in
                 guard id != nil else { return }
                 inspectingReasoning = nil
-                reasoningTopToReveal = nil
+                revealingReasoning = nil
                 following = true
                 Task {
                     try? await Task.sleep(for: .milliseconds(400))
@@ -342,7 +349,12 @@ struct ConversationView: View {
         return .seconds(seconds > 0 ? seconds : 3)
     }
 
-    static let historyContent = "conversation.historyContent"
+    private static let historyContent = "conversation.historyContent"
+
+    private struct ReasoningPosition: Equatable {
+        let contentTop: CGFloat
+        let viewportTop: CGFloat
+    }
 
     private struct HistoryBounds: Equatable {
         let entry: TimelineEntry
@@ -391,7 +403,7 @@ struct ConversationView: View {
     private func resume(_ proxy: ScrollViewProxy) {
         resumeFollowing?.cancel()
         inspectingReasoning = nil
-        reasoningTopToReveal = nil
+        revealingReasoning = nil
         following = true
         withAnimation(.smooth(duration: 0.35)) { proxy.scrollTo(Self.bottom, anchor: .bottom) }
     }

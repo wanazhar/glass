@@ -87,6 +87,64 @@ final class ScreenshotTourUITests: XCTestCase {
     }
 
     @MainActor
+    func testExpandingLatestReasoningAfterLongHistory() throws {
+        try checkReasoningAfterLongHistory(scrolledUp: false)
+    }
+
+    @MainActor
+    func testExpandingScrolledUpReasoningAfterLongHistory() throws {
+        try checkReasoningAfterLongHistory(scrolledUp: true)
+    }
+
+    @MainActor
+    private func checkReasoningAfterLongHistory(scrolledUp: Bool) throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+        app.buttons["pair.connect"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+
+        let thread = scrolledUp ? "thread.scrolled-reasoning" : "thread.deep-reasoning"
+        app.descendants(matching: .any)[thread].firstMatch.tap()
+        let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        let header = app.buttons["conversation.back"]
+        let reasoning = app.buttons.matching(identifier: "timeline.reasoning")
+        XCTAssertTrue(reasoning.firstMatch.waitForExistence(timeout: 10))
+        let separator = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Separate the two reasoning segments.")).firstMatch
+        if scrolledUp {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.48))
+            for _ in 0..<5 {
+                start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
+                if reasoning.allElementsBoundByIndex.contains(where: { $0.isHittable && $0.frame.maxY <= separator.frame.minY }) { break }
+            }
+        }
+        let buttons = reasoning.allElementsBoundByIndex.filter {
+            $0.isHittable && $0.frame.minY >= header.frame.maxY && (!scrolledUp || $0.frame.maxY <= separator.frame.minY)
+        }
+        let block = try XCTUnwrap(scrolledUp ? buttons.first : buttons.last)
+        block.tap()
+        let opening = scrolledUp ? "Beginning of the earlier block." : "Beginning of the latest block."
+        let text = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", opening)).firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(text.frame.minY, header.frame.maxY)
+        XCTAssertLessThan(text.frame.minY, app.frame.midY)
+        if scrolledUp {
+            let initialTop = text.frame.minY
+            app.swipeUp()
+            XCTAssertLessThan(text.frame.minY, initialTop - 50)
+        }
+    }
+
+    @MainActor
     func testEarlierHistoryPreservesTheExpandedReasoningPosition() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
                           "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")

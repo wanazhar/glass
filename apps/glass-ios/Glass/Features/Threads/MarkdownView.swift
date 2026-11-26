@@ -91,7 +91,7 @@ struct MarkdownView: View, Equatable {
 
     // MARK: Inline
 
-    static func inline(_ value: String, mathSize: CGFloat) -> Text {
+    static func inline(_ value: String, mathSize: CGFloat, colorScheme: ColorScheme) -> Text {
         let segments = InlineMath.split(stripImages(value))
         var accessibleText = Text("")
         var hasMath = false
@@ -104,9 +104,9 @@ struct MarkdownView: View, Equatable {
                 accessible = next
             case .math(let source):
                 hasMath = true
-                if let image = NativeMath.image(source, size: mathSize, display: false) {
+                if let image = NativeMath.image(source, size: mathSize, display: false, colorScheme: colorScheme) {
                     accessible = Text(InlineMath.render(source))
-                    next = Text(Image(uiImage: image).renderingMode(.template))
+                    next = Text(NativeMath.artwork(image))
                 } else {
                     accessible = Text(verbatim: source)
                     next = accessible.monospaced()
@@ -392,14 +392,15 @@ struct MarkdownView: View, Equatable {
 private struct BlockView: View {
     var block: MarkdownView.Block
     @Environment(\.openReferencedFile) private var openReferencedFile
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
     var body: some View {
         switch block {
         case .prose(let value):
-            MarkdownView.inline(value, mathSize: mathSize).font(Design.body).textSelection(.enabled)
+            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme).font(Design.body).textSelection(.enabled)
         case .heading(let value, let level):
-            MarkdownView.inline(value, mathSize: mathSize)
+            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme)
                 .font(level == 1 ? Design.title : level == 2 ? .title3.weight(.semibold) : Design.headline)
                 .padding(.top, level <= 2 ? 4 : 0)
                 .accessibilityAddTraits(.isHeader)
@@ -455,6 +456,7 @@ private struct ListItemView: View {
     var text: String
     var marker: MarkdownView.ListMarker
     var depth: Int
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var indent: CGFloat = 18
     @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
@@ -471,7 +473,7 @@ private struct ListItemView: View {
                     .foregroundStyle(done ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     .accessibilityHidden(true)
             }
-            MarkdownView.inline(text, mathSize: mathSize)
+            MarkdownView.inline(text, mathSize: mathSize, colorScheme: colorScheme)
                 .foregroundStyle(marker == .task(done: true) ? .secondary : .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -517,6 +519,7 @@ struct RemoteMarkdownImage: View {
 private struct DetailsBlock: View {
     var summary: String
     var content: String
+    @Environment(\.colorScheme) private var colorScheme
     @State private var expanded = false
     @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
 
@@ -524,7 +527,8 @@ private struct DetailsBlock: View {
         DisclosureGroup(isExpanded: $expanded) {
             MarkdownView(text: content).padding(.top, 8)
         } label: {
-            MarkdownView.inline(summary, mathSize: mathSize).font(.body.weight(.medium)).foregroundStyle(.primary)
+            MarkdownView.inline(summary, mathSize: mathSize, colorScheme: colorScheme)
+                .font(.body.weight(.medium)).foregroundStyle(.primary)
         }
         .tint(.secondary)
         .accessibilityIdentifier("markdown.details")
@@ -536,6 +540,7 @@ struct DataTable: View, Equatable {
     var alignments: [MarkdownView.ColumnAlignment] = []
     var rows: [[String]]
     var markdown = true
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .subheadline) private var mathSize = 15.0
     @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 112.0
     @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
@@ -559,7 +564,7 @@ struct DataTable: View, Equatable {
 
     private func cell(_ text: String, column: Int, isHeader: Bool = false) -> some View {
         let alignment = alignment(column)
-        return (markdown ? MarkdownView.inline(text, mathSize: mathSize) : Text(verbatim: text))
+        return (markdown ? MarkdownView.inline(text, mathSize: mathSize, colorScheme: colorScheme) : Text(verbatim: text))
             .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
             .multilineTextAlignment(alignment)
             .fixedSize(horizontal: false, vertical: true)

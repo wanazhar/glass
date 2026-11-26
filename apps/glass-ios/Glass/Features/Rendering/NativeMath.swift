@@ -9,19 +9,27 @@ enum NativeMath {
         return cache
     }()
 
-    static func image(_ source: String, size: CGFloat, display: Bool) -> UIImage? {
+    static func image(_ source: String, size: CGFloat, display: Bool, colorScheme: ColorScheme = .light) -> UIImage? {
         guard !source.isEmpty, source.utf8.count <= 2_048,
               let latex = normalizedLaTeX(source) else { return nil }
-        guard !latex.matches(of: /\\(\p{L}+|[^\p{L}])/).contains(where: { $0.1 == "textcolor" }) else { return nil }
-        let key = "\(size)|\(display)|\(latex)" as NSString
+        let commands = latex.matches(of: /\\(\p{L}+|[^\p{L}])/).map(\.1)
+        guard !commands.contains("textcolor") else { return nil }
+        let usesColor = commands.contains("color") || commands.contains("colorbox")
+        let lightInk = usesColor && colorScheme == .dark
+        let key = "\(size)|\(display)|\(lightInk)|\(latex)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        var math = MathImage(latex: latex, fontSize: size, textColor: .black,
+        var math = MathImage(latex: latex, fontSize: size, textColor: lightInk ? .white : .black,
                              labelMode: display ? .display : .text)
         let (error, output, layout) = math.asImage()
         guard error == nil, let output, let layout, let pixels = output.cgImage else { return nil }
         let image = output.withBaselineOffset(fromBottom: layout.descent)
+            .withRenderingMode(usesColor ? .alwaysOriginal : .alwaysTemplate)
         cache.setObject(image, forKey: key, cost: pixels.bytesPerRow * pixels.height)
         return image
+    }
+
+    static func artwork(_ image: UIImage) -> Image {
+        Image(uiImage: image).renderingMode(image.renderingMode == .alwaysOriginal ? .original : .template)
     }
 
     static func normalizedLaTeX(_ source: String) -> String? {
@@ -61,12 +69,13 @@ enum NativeMath {
 
 struct DisplayMath: View {
     var source: String
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .title3) private var size = 21.0
 
     var body: some View {
-        if let image = NativeMath.image(source, size: size, display: true) {
+        if let image = NativeMath.image(source, size: size, display: true, colorScheme: colorScheme) {
             ScrollView(.horizontal) {
-                Image(uiImage: image).renderingMode(.template)
+                NativeMath.artwork(image)
                     .padding(Design.gap)
                     .containerRelativeFrame(.horizontal) { width, _ in max(width, image.size.width + 2 * Design.gap) }
             }

@@ -123,6 +123,19 @@ import Testing
         #expect(NativeMath.image("x 🜁 1", size: 17, display: false) == nil)
     }
 
+    @Test func nativeMathPreservesOpaqueColorBoxes() throws {
+        let source = #"a + \colorbox{#3F8066}{x^2}"#
+        for display in [false, true] {
+            let light = try #require(NativeMath.image(source, size: 21, display: display))
+            let dark = try #require(NativeMath.image(source, size: 21, display: display, colorScheme: .dark))
+            #expect(light.renderingMode == .alwaysOriginal)
+            #expect(dark.renderingMode == .alwaysOriginal)
+            #expect(light.pngData() != dark.pngData())
+            #expect(NativeMath.image(#"\color{#FF0000}{x}"#, size: 21, display: display)?.renderingMode == .alwaysOriginal)
+            #expect(NativeMath.image("x^2", size: 21, display: display)?.renderingMode == .alwaysTemplate)
+        }
+    }
+
     @Test func pieSelectionUsesCumulativeValues() {
         let points = [
             ChartView.Point(id: 1, series: "", x: "A", xValue: nil, y: 1.25),

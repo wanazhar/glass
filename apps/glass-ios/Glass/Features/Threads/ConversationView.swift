@@ -82,9 +82,6 @@ struct ConversationView: View {
                     if phase == .interacting { following = false }
                     if phase == .idle, old != .animating { following = atBottom }
                 }
-                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-                    following = true
-                }
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
                     if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
                 }
@@ -96,7 +93,7 @@ struct ConversationView: View {
                 }
                 .overlay(alignment: .bottomTrailing) { floatingControls(proxy) }
                 .floatingBar(edge: .top) { header }
-                bottomBar
+                bottomBar(onFieldFocus: { resume(proxy) })
             }
         }
         .accessibilityElement(children: .contain)
@@ -195,7 +192,7 @@ struct ConversationView: View {
     }
 
     @ViewBuilder
-    private var bottomBar: some View {
+    private func bottomBar(onFieldFocus: @escaping () -> Void) -> some View {
         VStack(spacing: 8) {
             if let interaction = conversation.timeline.interaction {
                 // The decision is docked above the composer so it stays in view,
@@ -246,7 +243,7 @@ struct ConversationView: View {
                 }
                 .padding(.horizontal, Design.gap)
             }
-            ComposerView(conversation: conversation) { picker = .model }
+            ComposerView(conversation: conversation, onFieldFocus: onFieldFocus) { picker = .model }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 6)

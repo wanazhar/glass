@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// Message entry, control handoff, attachments and stop, pinned under the conversation.
 struct ComposerView: View {
     @Bindable var conversation: ConversationModel
+    var onFieldFocus: () -> Void
     var chooseModel: () -> Void
     @State private var dictation = Dictation()
     @State private var photos: [PhotosPickerItem] = []
@@ -161,6 +162,7 @@ struct ComposerView: View {
                           height: fieldHeight, onHeight: { fieldHeight = $0 },
                           dismissFor: conversation.timeline.interaction?.id,
                           onCommands: { composer.showingCommands = true }) {
+                          onFocus: onFieldFocus,
             Task { await composer.send(active: active, canWrite: canWrite) }
         }
         .padding(.horizontal, Design.small)

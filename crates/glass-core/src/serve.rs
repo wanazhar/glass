@@ -273,7 +273,9 @@ fn entries_between(records: &[Record], start: usize, end: usize) -> Vec<Value> {
         .iter()
         .filter_map(|record| match record {
             Record::User(text) => Some(json!({"role": "user", "text": text})),
-            Record::Assistant(text) => Some(json!({"role": "assistant", "text": text})),
+            Record::Assistant(text) | Record::AssistantTail { text, .. } => {
+                Some(json!({"role": "assistant", "text": text}))
+            }
             Record::Bash {
                 command, output, ..
             } => Some(json!({"role": "tool", "text": format!("$ {command}\n{output}")})),
@@ -1351,6 +1353,7 @@ pub fn serve(
                 let live = std::rc::Rc::new(std::cell::RefCell::new(VecDeque::<Value>::new()));
                 let progress_live = live.clone();
                 let live_bytes = std::rc::Rc::new(std::cell::Cell::new(0usize));
+                let started = std::time::Instant::now();
                 let outcome = {
                     let mut agent = Agent::new(
                         provider.as_ref(),
@@ -1489,6 +1492,12 @@ pub fn serve(
                     pending.push_front(correction);
                 }
                 pending.extend(queued);
+                let turn_seconds = started.elapsed().as_secs();
+                session.append(Record::Custom {
+                    kind: "display/turn-seconds".into(),
+                    data: Some(turn_seconds.to_string()),
+                });
+                broadcast(&clients, json!({"t": "meta", "turn_seconds": turn_seconds}));
                 if matches!(&outcome, Ok((_, Stop::Cancelled))) {
                     crate::team::cancel_root(&session.id);
                 }
@@ -1733,7 +1742,7 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
         .rev()
         .filter_map(|record| match record {
             Record::User(text) => Some(format!("❯ {text}")),
-            Record::Assistant(text) => Some(text.clone()),
+            Record::Assistant(text) | Record::AssistantTail { text, .. } => Some(text.clone()),
             Record::Bash {
                 command, exit_code, ..
             } => Some(format!(

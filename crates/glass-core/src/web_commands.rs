@@ -420,7 +420,11 @@ pub fn execute(
         let index = usize::try_from(index).map_err(|_| "Invalid source record")?;
         let records = s.history_records();
         let source = match records.get(index) {
-            Some(crate::session::Record::User(t) | crate::session::Record::Assistant(t)) => t,
+            Some(
+                crate::session::Record::User(t)
+                | crate::session::Record::Assistant(t)
+                | crate::session::Record::AssistantTail { text: t, .. },
+            ) => t,
             Some(
                 crate::session::Record::ToolResult { body: t, .. }
                 | crate::session::Record::Bash { output: t, .. },
@@ -1047,7 +1051,8 @@ pub fn execute(
                             .enumerate()
                             .filter_map(|(index, r)| match r {
                                 crate::session::Record::User(t)
-                                | crate::session::Record::Assistant(t) => Some(
+                                | crate::session::Record::Assistant(t)
+                                | crate::session::Record::AssistantTail { text: t, .. } => Some(
                                     json!({"record":index,"excerpt":glass_tui::text::clip(t,500)})
                                 ),
                                 crate::session::Record::ToolResult { body: t, .. }
@@ -1070,7 +1075,8 @@ pub fn execute(
             let record = records.get(index).ok_or("Unknown record index")?;
             let (role, source) = match record {
                 crate::session::Record::User(t) => ("You", t),
-                crate::session::Record::Assistant(t) => ("Response", t),
+                crate::session::Record::Assistant(t)
+                | crate::session::Record::AssistantTail { text: t, .. } => ("Response", t),
                 crate::session::Record::ToolResult { body, .. } => ("Tool", body),
                 crate::session::Record::Bash { output, .. } => ("Command output", output),
                 _ => return Err("Choose a message or tool output record".into()),

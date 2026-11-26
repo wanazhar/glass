@@ -205,7 +205,7 @@ pub fn prewalk_gate(session: &Session, target_model: &str) -> serde_json::Value 
     for record in session.records.iter().rev() {
         match record {
             Record::User(_) => break, // Gate reads the final turn only.
-            Record::Assistant(text)
+            Record::Assistant(text) | Record::AssistantTail { text, .. }
                 if text.contains("todo")
                     || text.contains("plan:")
                     || text.contains("next steps") =>

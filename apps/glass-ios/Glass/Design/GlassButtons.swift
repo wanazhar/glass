@@ -1,14 +1,9 @@
 import SwiftUI
 
 extension View {
-    /// `.glassProminent` / `.glass` on iOS 26; bordered styles on iOS 18–25.
     @ViewBuilder
     func glassButtonStyle(prominent: Bool = false) -> some View {
-        if #available(iOS 26.0, *) {
-            if prominent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
-        } else {
-            if prominent { buttonStyle(.borderedProminent) } else { buttonStyle(.bordered) }
-        }
+        if prominent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
     }
 }
 

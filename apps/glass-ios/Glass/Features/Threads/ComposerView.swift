@@ -6,10 +6,12 @@ import UniformTypeIdentifiers
 /// Message entry, control handoff, attachments and stop, pinned under the conversation.
 struct ComposerView: View {
     @Bindable var conversation: ConversationModel
+    var chooseModel: () -> Void
     @State private var dictation = Dictation()
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
     @State private var importingFiles = false
+    @State private var takingPhoto = false
     @State private var showsControlPrompt = false
     @State private var fieldHeight: CGFloat = 0
 
@@ -31,12 +33,14 @@ struct ComposerView: View {
                 RecordingBar(dictation: dictation)
             }
             // One glass container, so the message box and its buttons float and blend as one bar.
-            GlassGroup(spacing: 8) {
-                HStack(alignment: .bottom, spacing: 8) {
+            GlassGroup {
+                HStack(alignment: .bottom, spacing: Design.gap) {
                     attachMenu
                     field
                     trailingButton
                 }
+                .padding(Design.small)
+                .glassPanel(interactive: true)
             }
             if case .unavailable(let message) = dictation.state {
                 Text(message).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -62,6 +66,15 @@ struct ComposerView: View {
                 composer.showingEditor = false
                 Task { await composer.send(active: active, canWrite: canWrite) }
             }
+        }
+        .fullScreenCover(isPresented: $takingPhoto) {
+            ComposerCamera { image in
+                takingPhoto = false
+                if let image {
+                    composer.attach([AttachmentInput(name: "Camera.jpg", data: image.jpegData(compressionQuality: 0.9), isPhoto: true)], canWrite: canWrite)
+                }
+            }
+            .ignoresSafeArea()
         }
         .sensoryFeedback(trigger: dictation.isListening) { _, listening in listening ? .start : .stop }
         .onChange(of: dictation.isListening) { _, listening in
@@ -125,7 +138,6 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .glassPanel(cornerRadius: 20, interactive: true)
     }
 
     private var trailingButton: some View {
@@ -140,23 +152,14 @@ struct ComposerView: View {
                 .disabled(!canWrite)
                 .accessibilityIdentifier("composer.dictate")
             }
-            if active, composer.trimmed.isEmpty {
-                Button("Stop", systemImage: "stop.fill") { Task { await composer.stop() } }
-                    .keyCommand(.stop)
-                    .labelStyle(.iconOnly)
-                    .glassButtonStyle(prominent: true)
-                    .disabled(!canWrite)
-                    .accessibilityIdentifier("composer.stop")
-            } else {
-                Button("Send", systemImage: "arrow.up") {
-                    dictation.stop()
-                    Task { await composer.send(active: active, canWrite: canWrite) }
-                }
-                .labelStyle(.iconOnly)
-                .glassButtonStyle(prominent: true)
-                .disabled(!canWrite || composer.trimmed.isEmpty || composer.sending)
-                .accessibilityIdentifier("composer.send")
+            Button("Send", systemImage: "arrow.up") {
+                dictation.stop()
+                Task { await composer.send(active: active, canWrite: canWrite) }
             }
+            .labelStyle(.iconOnly)
+            .glassButtonStyle(prominent: true)
+            .disabled(!canWrite || composer.trimmed.isEmpty || composer.sending)
+            .accessibilityIdentifier("composer.send")
         }
     }
 
@@ -166,7 +169,10 @@ struct ComposerView: View {
                 .accessibilityIdentifier("composer.attach.photos")
             Button("Files", systemImage: "folder") { importingFiles = true }
                 .accessibilityIdentifier("composer.attach.files")
+            Button("Camera", systemImage: "camera") { takingPhoto = true }
+                .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
             Divider()
+            Button("Model", systemImage: "cpu", action: chooseModel)
             Button("Expand Editor", systemImage: "arrow.up.left.and.arrow.down.right") { composer.showingEditor = true }
                 .accessibilityIdentifier("composer.expand")
         } label: {
@@ -255,6 +261,33 @@ struct ComposerView: View {
             return AttachmentInput(name: url.lastPathComponent, data: try? Data(contentsOf: url, options: .mappedIfSafe))
         }
         composer.attach(files, canWrite: canWrite)
+    }
+}
+
+private struct ComposerCamera: UIViewControllerRepresentable {
+    let complete: (UIImage?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(complete: complete) }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let camera = UIImagePickerController()
+        camera.sourceType = .camera
+        camera.delegate = context.coordinator
+        return camera
+    }
+
+    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let complete: (UIImage?) -> Void
+
+        init(complete: @escaping (UIImage?) -> Void) { self.complete = complete }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            complete(info[.originalImage] as? UIImage)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { complete(nil) }
     }
 }
 

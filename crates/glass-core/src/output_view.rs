@@ -12,7 +12,7 @@ pub enum Filter {
 }
 fn matches(record: &Record, filter: Filter) -> bool {
     match record {
-        Record::Assistant(_) => !matches!(filter, Filter::Tools),
+        Record::Assistant(_) | Record::AssistantTail { .. } => !matches!(filter, Filter::Tools),
         Record::Bash { .. } => !matches!(filter, Filter::Replies),
         Record::ToolResult { .. } => !matches!(filter, Filter::Replies),
         _ => false,
@@ -20,7 +20,7 @@ fn matches(record: &Record, filter: Filter) -> bool {
 }
 fn body(record: &Record) -> &str {
     match record {
-        Record::Assistant(t) => t,
+        Record::Assistant(t) | Record::AssistantTail { text: t, .. } => t,
         Record::Bash { output, .. } => output,
         Record::ToolResult { body, .. } => body,
         _ => "",
@@ -28,7 +28,7 @@ fn body(record: &Record) -> &str {
 }
 fn label(record: &Record) -> String {
     match record {
-        Record::Assistant(t) => format!(
+        Record::Assistant(t) | Record::AssistantTail { text: t, .. } => format!(
             "Reply · {}",
             glass_tui::text::clip(t, 70).replace(['\n', '\r'], " ")
         ),

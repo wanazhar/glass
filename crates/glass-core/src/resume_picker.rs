@@ -138,7 +138,8 @@ pub(crate) struct Thread {
     pub workspace: PathBuf,
     pub path: PathBuf,
     pub origin: Option<crate::polish::SessionOrigin>,
-    stamp: Option<std::time::SystemTime>,
+    pub stamp: Option<std::time::SystemTime>,
+    pub preferences: crate::navigation::ThreadPreferences,
 }
 pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
     let local = workspace.join(".glass").join("agent-sessions");
@@ -199,6 +200,10 @@ fn index_roots(dirs: &[PathBuf], workspace: Option<&Path>, unassigned: bool) -> 
             let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
+            let preferences = crate::navigation::thread_preferences(&path);
+            if preferences.deleted {
+                continue;
+            }
             let meta_path = path.with_extension("meta.json");
             let meta = regular_file(&meta_path).and_then(read_meta).or_else(|| {
                 (!meta_path.exists()
@@ -233,7 +238,9 @@ fn index_roots(dirs: &[PathBuf], workspace: Option<&Path>, unassigned: bool) -> 
             if meta.origin.is_none() {
                 meta.origin = inferred_origin;
             }
-            let title = if meta.title.trim().is_empty() {
+            let title = if let Some(title) = &preferences.title {
+                title.clone()
+            } else if meta.title.trim().is_empty() {
                 regular_file(&path)
                     .and_then(|f| {
                         BufReader::new(f.take(64 * 1024))
@@ -261,6 +268,7 @@ fn index_roots(dirs: &[PathBuf], workspace: Option<&Path>, unassigned: bool) -> 
                 workspace: meta.workspace,
                 path: canonical_path,
                 origin: meta.origin,
+                preferences,
             });
         }
     }

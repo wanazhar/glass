@@ -15,7 +15,9 @@ pub fn snapshot(session: &Session) -> Result<Value, String> {
         .map(|record| {
             let (kind, bytes) = match record {
                 Record::User(text) => ("user", text.len()),
-                Record::Assistant(text) => ("answer", text.len()),
+                Record::Assistant(text) | Record::AssistantTail { text, .. } => {
+                    ("answer", text.len())
+                }
                 Record::Reasoning(text) => ("reasoning", text.len()),
                 Record::Bash { output, .. } => ("shell_result", output.len()),
                 Record::ToolCall { arguments, .. } => ("tool_call", arguments.len()),

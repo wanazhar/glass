@@ -43,7 +43,9 @@ pub fn branch_summary(dropped: &[Record]) -> Option<String> {
     let mut last_action = None;
     for r in dropped {
         match r {
-            Record::Assistant(text) if !text.trim().is_empty() => {
+            Record::Assistant(text) | Record::AssistantTail { text, .. }
+                if !text.trim().is_empty() =>
+            {
                 last_action = Some(text.lines().next().unwrap_or(text).to_string());
             }
             Record::ToolCall {
@@ -183,7 +185,7 @@ pub fn rebuild(records: &[Record], state: &State) -> Vec<Record> {
         if let Some(a) = records[..tail_start]
             .iter()
             .rev()
-            .find(|r| matches!(r, Record::Assistant(_)))
+            .find(|r| matches!(r, Record::Assistant(_) | Record::AssistantTail { .. }))
         {
             out.push(a.clone());
         }
@@ -706,7 +708,7 @@ pub(crate) fn project_filtered_for_model(
             ..
         } = &m
         {
-            let assistant = matches!(records.get(index+1),Some(Record::Assistant(t)) if assistant_hash.as_deref()==Some(crate::workspace::hash(t.as_bytes()).as_str()));
+            let assistant = matches!(records.get(index+1),Some(Record::Assistant(t) | Record::AssistantTail { text: t, .. }) if assistant_hash.as_deref()==Some(crate::workspace::hash(t.as_bytes()).as_str()));
             let tool = tool_call_ids
                 .iter()
                 .any(|id| calls.contains(id.as_str()) && results.contains(id.as_str()));

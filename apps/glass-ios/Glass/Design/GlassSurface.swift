@@ -1,69 +1,48 @@
 import SwiftUI
 
+enum Design {
+    static let small: CGFloat = 4
+    static let gap: CGFloat = 8
+    static let padding: CGFloat = 16
+    static let spacious: CGFloat = 24
+    static let control: CGFloat = 44
+    static let corner: CGFloat = 14
+    static let panel: CGFloat = 22
+    static let readingWidth: CGFloat = 760
+    static let surface = Color(uiColor: .secondarySystemBackground)
+    static let background = Color(uiColor: .systemBackground)
+    static let accent = Color.accentColor
+    static let failure = Color.red
+}
+
 extension View {
-    /// Liquid Glass for small floating controls over content (iOS 26); the system's regular
-    /// material on iOS 18–25. Never use it on content: cards, rows, banners or forms.
-    @ViewBuilder
     func floatingGlass() -> some View {
-        if #available(iOS 26.0, *) {
-            glassEffect(.regular, in: Capsule())
-        } else {
-            background(.regularMaterial, in: Capsule())
-        }
+        glassEffect(.regular.interactive(), in: Capsule())
     }
-}
 
-extension View {
-    /// A floating Liquid Glass panel over content, for controls that sit in a bar: the message box,
-    /// a docked decision, a notice above it, the desktop's controls. iOS 18–25 keep the plain grouped
-    /// fill they had, with no imitation of glass.
-    @ViewBuilder
-    func glassPanel(cornerRadius: CGFloat = 22, interactive: Bool = false) -> some View {
-        if #available(iOS 26.0, *) {
-            glassEffect(interactive ? .regular.interactive() : .regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
-        } else {
-            background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: cornerRadius, style: .continuous))
-        }
+    func glassPanel(cornerRadius: CGFloat = Design.panel, interactive: Bool = false) -> some View {
+        glassEffect(interactive ? .regular.interactive() : .regular, in: .rect(cornerRadius: cornerRadius))
     }
-}
 
-extension View {
-    /// Floats glass controls along a vertical edge with no backing of their own. On iOS 26 this is a
-    /// safe-area bar, so content runs edge to edge beneath it and gets the system scroll-edge effect.
-    @ViewBuilder
     func floatingBar(edge: VerticalEdge = .bottom, @ViewBuilder _ bar: () -> some View) -> some View {
-        if #available(iOS 26.0, *) {
-            safeAreaBar(edge: edge, spacing: edge == .top ? 0 : nil, content: bar)
-        } else {
-            safeAreaInset(edge: edge, spacing: edge == .top ? 0 : nil, content: bar)
-        }
+        safeAreaBar(edge: edge, spacing: edge == .top ? 0 : nil, content: bar)
     }
 
-    @ViewBuilder
     func softTopScrollEdge() -> some View {
-        if #available(iOS 26.0, *) {
-            scrollEdgeEffectStyle(.soft, for: .top)
-        } else {
-            self
-        }
+        scrollEdgeEffectStyle(.soft, for: .top)
     }
 }
 
-/// Groups adjacent floating glass controls so they blend and morph together on iOS 26.
 struct GlassGroup<Content: View>: View {
     var spacing: CGFloat
     @ViewBuilder var content: Content
 
-    init(spacing: CGFloat = 12, @ViewBuilder content: () -> Content) {
+    init(spacing: CGFloat = Design.gap, @ViewBuilder content: () -> Content) {
         self.spacing = spacing
         self.content = content()
     }
 
     var body: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) { content }
-        } else {
-            content
-        }
+        GlassEffectContainer(spacing: spacing) { content }
     }
 }

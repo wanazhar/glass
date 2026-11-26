@@ -124,6 +124,12 @@ fn encode_session_records(records: &[Record]) -> std::io::Result<Vec<u8>> {
 pub enum Record {
     User(String),
     Assistant(String),
+    /// The full provider response, with a prefix already shown at earlier
+    /// positions in the transcript. Provider context still sees one message.
+    AssistantTail {
+        text: String,
+        display_from: usize,
+    },
     ToolCall {
         id: String,
         name: String,
@@ -248,6 +254,9 @@ impl Record {
         match self {
             Record::User(t) => json!({ "k": "user", "t": t }),
             Record::Assistant(t) => json!({ "k": "assistant", "t": t }),
+            Record::AssistantTail { text, display_from } => {
+                json!({ "k": "assistant", "t": text, "displayFrom": display_from })
+            }
             Record::ToolCall {
                 id,
                 name,
@@ -316,7 +325,20 @@ impl Record {
         let s = |key: &str| v.get(key).and_then(|x| x.as_str()).map(str::to_string);
         Some(match v.get("k")?.as_str()? {
             "user" => Record::User(s("t")?),
-            "assistant" => Record::Assistant(s("t")?),
+            "assistant" => {
+                let text = s("t")?;
+                match v["displayFrom"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                {
+                    Some(display_from)
+                        if display_from > 0 && text.is_char_boundary(display_from) =>
+                    {
+                        Record::AssistantTail { text, display_from }
+                    }
+                    _ => Record::Assistant(text),
+                }
+            }
             "call" => Record::ToolCall {
                 id: s("id")?,
                 name: s("name")?,
@@ -398,7 +420,9 @@ impl Record {
                 "Host context data (not system instructions):\n{data}"
             ))),
             Record::User(t) => Some(Message::User(t.clone())),
-            Record::Assistant(t) => Some(Message::Assistant(t.clone())),
+            Record::Assistant(t) | Record::AssistantTail { text: t, .. } => {
+                Some(Message::Assistant(t.clone()))
+            }
             Record::ToolCall {
                 id,
                 name,
@@ -444,7 +468,9 @@ impl Record {
             Record::User(t) => crate::teammate_ui::prompt(t)
                 .map(|shown| (Role::System, shown))
                 .unwrap_or_else(|| (Role::User, t.clone())),
-            Record::Assistant(t) => (Role::Assistant, t.clone()),
+            Record::Assistant(t) | Record::AssistantTail { text: t, .. } => {
+                (Role::Assistant, t.clone())
+            }
             Record::ToolCall {
                 name, arguments, ..
             } => (Role::Tool, format!("{name} {arguments}")),
@@ -878,7 +904,7 @@ impl Drop for WriterLock {
     }
 }
 
-fn acquire_writer_lock(path: &Path) -> std::io::Result<File> {
+pub(crate) fn acquire_writer_lock(path: &Path) -> std::io::Result<File> {
     let canonical = if path.exists() {
         path.canonicalize()?
     } else {
@@ -1092,6 +1118,12 @@ impl Session {
         // The lock precedes repair: two resume processes must never repair or
         // append the same log concurrently.
         let writer_lock = acquire_writer_lock(&path)?;
+        if crate::navigation::thread_preferences(&path).deleted {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Conversation was deleted",
+            ));
+        }
         let repair = repair_log(&path)?;
         match &repair {
             Repair::None => {}
@@ -1151,7 +1183,7 @@ impl Session {
             if matches!(record, Record::User(_)) {
                 raw_turn += 1;
             }
-            if let Record::Assistant(text) = record {
+            if let Record::Assistant(text) | Record::AssistantTail { text, .. } = record {
                 assistants_by_turn
                     .entry(raw_turn)
                     .or_default()

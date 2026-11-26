@@ -769,7 +769,8 @@ mod tests {
             let (mut parent, child) = std::os::unix::net::UnixStream::pair().unwrap();
             let fd = child.as_raw_fd();
             let spawn = std::thread::spawn(move || {
-                let mut command = std::process::Command::new("/bin/true");
+                let mut command = std::process::Command::new("/bin/sh");
+                command.args(["-c", ":"]);
                 // SAFETY: only async-signal-safe read/write calls run before exec.
                 unsafe {
                     command.pre_exec(move || {

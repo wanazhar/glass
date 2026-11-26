@@ -61,7 +61,7 @@ fn associations(source: &[Record]) -> std::collections::HashMap<usize, usize> {
         }
         match record {
             Record::User(_) => active = None,
-            Record::Assistant(text) => {
+            Record::Assistant(text) | Record::AssistantTail { text, .. } => {
                 if let Some((marker, p, _)) = &active
                     && *marker + 1 == index
                     && p.assistant_hash.as_deref()

@@ -70,12 +70,7 @@ final class ConversationModel {
     /// Ask to take control only once the host has said another client holds it, never while that is still unknown.
     var needsControl: Bool { connection == .live && timeline.controlKnown && !timeline.canWrite }
 
-    /// The older window that will be shown next, fetched ahead so "Earlier messages" only appears when it adds something.
-    private var earlier: (before: Int, page: HistoryPage?)?
-    var hasEarlier: Bool {
-        guard let before = timeline.olderBefore, before > 0 else { return false }
-        return earlier?.before == before
-    }
+    var hasEarlier: Bool { timeline.hasOlder }
 
     /// Loads history, attaches the host connection, and follows live events until stopped.
     func start() async {
@@ -92,9 +87,9 @@ final class ConversationModel {
         connection = .connecting
         if !loadedHistory {
             do {
-                timeline.replaceHistory(try await api.history(thread.id, sourceRef: thread.sourceRef))
+                let page = try await api.history(thread.id, sourceRef: thread.sourceRef)
+                timeline = await Self.initialTimeline(page)
                 loadedHistory = true
-                await probeEarlier()
             } catch {
                 return fail(error)
             }
@@ -103,7 +98,7 @@ final class ConversationModel {
             let opened = try await api.open(thread.id, sourceRef: thread.sourceRef)
             originLabel = opened.originLabel ?? originLabel
         } catch {
-            if error.isUnauthorized { return fail(error) }
+            if error.isUnauthorized || error == .cancelled { return fail(error) }
             // Archived or foreign threads still show their history.
             connection = .readOnly
             self.error = error.localizedDescription
@@ -182,36 +177,17 @@ final class ConversationModel {
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            let page: HistoryPage
-            if earlier?.before == before, let ready = earlier?.page { page = ready } else {
-                page = try await api.history(thread.id, sourceRef: thread.sourceRef, before: before)
-            }
-            earlier = nil
+            let page = try await api.history(thread.id, sourceRef: thread.sourceRef, before: before)
             timeline.prependOlder(page)
         } catch {
             fail(error)
         }
-        await probeEarlier()
     }
 
-    /// Skips older windows that hold nothing visible (session headers, private records) so a short chat
-    /// shows no "Earlier messages" button. Gives up after a few windows and offers the button anyway.
-    private func probeEarlier() async {
-        earlier = nil
-        guard let api = app.api else { return }
-        for _ in 0..<4 {
-            guard let before = timeline.olderBefore, before > 0 else { return }
-            guard let page = try? await api.history(thread.id, sourceRef: thread.sourceRef, before: before) else {
-                earlier = (before, nil)
-                return
-            }
-            if timeline.hasVisibleEntries(page) {
-                earlier = (before, page)
-                return
-            }
-            timeline.prependOlder(page)
-        }
-        if let before = timeline.olderBefore, before > 0 { earlier = (before, nil) }
+    private nonisolated static func initialTimeline(_ page: HistoryPage) async -> Timeline {
+        var timeline = Timeline()
+        timeline.replaceHistory(page)
+        return timeline
     }
 
     func dismissNotice() { timeline.dismissNotice() }
@@ -270,7 +246,6 @@ final class ConversationModel {
                     let history = try await api.history(thread.id, sourceRef: thread.sourceRef)
                     timeline.reset(history: history, frame: frame)
                     resets += 1
-                    await probeEarlier()
                 } catch {
                     fail(error)
                 }
@@ -300,6 +275,7 @@ final class ConversationModel {
     }
 
     private func fail(_ error: GlassError) {
+        guard error != .cancelled else { return }
         if error.isUnauthorized { app.handle(error) } else {
             self.error = error.localizedDescription
             if connection == .connecting { connection = .idle }

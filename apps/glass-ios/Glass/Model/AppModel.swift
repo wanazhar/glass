@@ -27,7 +27,10 @@ final class AppModel {
     private(set) var repairReason: String?
     private(set) var secretEntryUnlocked = false
 
-    enum Tab: Hashable { case threads, desktop, settings }
+    enum Tab: Hashable, Identifiable {
+        case threads, desktop, settings
+        var id: Self { self }
+    }
     /// The selected root tab, so commands can move between them.
     var selectedTab: Tab = .threads
     /// Submenus open under Settings, so commands can land on Diagnostics or Appearance.

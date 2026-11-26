@@ -18,6 +18,10 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     public var branch: String?
     public var lastStatus: String?
     public var currentWorkspace: Bool?
+    public var pinned: Bool?
+    public var archived: Bool?
+    public var snippet: String?
+    public var running: Bool?
 
     public var id: String { session }
     public var displayTitle: String {
@@ -40,6 +44,9 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case session, title, workspace, sourceRef, origin, originLabel, writerActive, modified, model, branch
+        case pinned, archived, snippet
+        case modifiedEpoch = "modified_epoch"
+        case running = "running_process_verified"
         case lastStatus = "last_status"
         case currentWorkspace = "current_workspace"
     }
@@ -53,11 +60,36 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
         origin = try? c.decodeIfPresent(String.self, forKey: .origin)
         originLabel = try? c.decodeIfPresent(String.self, forKey: .originLabel)
         writerActive = try? c.decodeIfPresent(Bool.self, forKey: .writerActive)
-        modified = try? c.decodeIfPresent(Double.self, forKey: .modified)
+        modified = (try? c.decodeIfPresent(Double.self, forKey: .modifiedEpoch))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: .modified))
         model = try? c.decodeIfPresent(String.self, forKey: .model)
         branch = try? c.decodeIfPresent(String.self, forKey: .branch)
         lastStatus = (try? c.decodeIfPresent(String.self, forKey: .lastStatus)) ?? nil
         currentWorkspace = try? c.decodeIfPresent(Bool.self, forKey: .currentWorkspace)
+        pinned = try? c.decodeIfPresent(Bool.self, forKey: .pinned)
+        archived = try? c.decodeIfPresent(Bool.self, forKey: .archived)
+        snippet = try? c.decodeIfPresent(String.self, forKey: .snippet)
+        running = try? c.decodeIfPresent(Bool.self, forKey: .running)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(session, forKey: .session)
+        try c.encodeIfPresent(title, forKey: .title)
+        try c.encodeIfPresent(workspace, forKey: .workspace)
+        try c.encodeIfPresent(sourceRef, forKey: .sourceRef)
+        try c.encodeIfPresent(origin, forKey: .origin)
+        try c.encodeIfPresent(originLabel, forKey: .originLabel)
+        try c.encodeIfPresent(writerActive, forKey: .writerActive)
+        try c.encodeIfPresent(modified, forKey: .modified)
+        try c.encodeIfPresent(model, forKey: .model)
+        try c.encodeIfPresent(branch, forKey: .branch)
+        try c.encodeIfPresent(lastStatus, forKey: .lastStatus)
+        try c.encodeIfPresent(currentWorkspace, forKey: .currentWorkspace)
+        try c.encodeIfPresent(pinned, forKey: .pinned)
+        try c.encodeIfPresent(archived, forKey: .archived)
+        try c.encodeIfPresent(snippet, forKey: .snippet)
+        try c.encodeIfPresent(running, forKey: .running)
     }
 }
 

@@ -304,7 +304,10 @@ final class ComposerModel {
     func flushDraft() { drafts.flush() }
 
     private func report(_ error: any Error) {
-        if let error = error as? GlassError, error.isUnauthorized { app.handle(error); return }
+        if let error = error as? GlassError {
+            if error == .cancelled { return }
+            if error.isUnauthorized { app.handle(error); return }
+        }
         self.error = error.localizedDescription
     }
 }

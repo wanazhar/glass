@@ -16,11 +16,14 @@ final class ThreadsModel {
     var error: String?
     var query = ""
     var project = ""
+    var archived = false
     var selection: ThreadSummary.ID?
 
     private let app: AppModel
     private var conversations: [String: ConversationModel] = [:]
-    private var pinned: [String: ThreadSummary] = [:]
+    private var knownThreads: [String: ThreadSummary] = [:]
+    private var request = 0
+    private var clearError: Task<Void, Never>?
 
     init(app: AppModel) { self.app = app }
 
@@ -29,36 +32,43 @@ final class ThreadsModel {
         return count == 1 ? "1 conversation" : "\(count) conversations"
     }
 
-    func thread(_ id: String) -> ThreadSummary? { threads.first { $0.id == id } ?? pinned[id] }
+    func thread(_ id: String) -> ThreadSummary? { knownThreads[id] }
 
     func reload() async {
         guard let api = app.api else { return }
+        request += 1
+        let revision = request
         isLoading = true
-        defer { isLoading = false }
+        defer { if request == revision { isLoading = false } }
         do {
-            let page = try await api.threads(offset: 0, query: query, project: project)
+            let page = try await api.threads(offset: 0, query: query, project: project, archived: archived)
+            guard request == revision, !Task.isCancelled else { return }
             threads = page.threads
+            for thread in threads { knownThreads[thread.id] = thread }
             if query.isEmpty, project.isEmpty || projects.isEmpty { projects = page.projects ?? projects }
             total = page.totalThreads
             nextOffset = page.nextOffset
             error = nil
             loaded = true
         } catch {
-            fail(error)
+            if request == revision { fail(error) }
         }
     }
 
     func loadMore() async {
         guard let api = app.api, let offset = nextOffset, !isLoading else { return }
+        let revision = request
         isLoading = true
-        defer { isLoading = false }
+        defer { if request == revision { isLoading = false } }
         do {
-            let page = try await api.threads(offset: offset, query: query, project: project)
+            let page = try await api.threads(offset: offset, query: query, project: project, archived: archived)
+            guard request == revision, !Task.isCancelled else { return }
             let known = Set(threads.map(\.id))
             threads += page.threads.filter { !known.contains($0.id) }
+            for thread in page.threads { knownThreads[thread.id] = thread }
             nextOffset = page.nextOffset
         } catch {
-            fail(error)
+            if request == revision { fail(error) }
         }
     }
 
@@ -69,17 +79,34 @@ final class ThreadsModel {
             let created = try await api.newThread(workspace: project)
             let summary = ThreadSummary(session: created.id, title: nil, workspace: project.isEmpty ? app.status?.workspace : project,
                                         modified: Date.now.timeIntervalSince1970)
-            pinned[created.id] = summary
-            threads.insert(summary, at: 0)
-            total = total.map { $0 + 1 }
+            knownThreads[created.id] = summary
+            if !archived, query.isEmpty {
+                threads.insert(summary, at: 0)
+                total = total.map { $0 + 1 }
+            }
             selection = created.id
         } catch {
             fail(error)
         }
     }
 
+    func update(_ thread: ThreadSummary, _ change: GlassClient.ThreadChange) async {
+        guard let api = app.api else { return }
+        do {
+            if case .delete = change, conversations[thread.id] != nil || thread.writerActive == true {
+                await close(thread.id, reportErrors: false)
+            }
+            try await api.updateThread(thread, change)
+            if case .delete = change { knownThreads.removeValue(forKey: thread.id) }
+            if case .rename(let title) = change { knownThreads[thread.id]?.title = title }
+            await reload()
+        } catch {
+            fail(error)
+        }
+    }
+
     /// `POST /api/close`: releases the host-side connection; the thread stays in history.
-    func close(_ id: String) async {
+    func close(_ id: String, reportErrors: Bool = true) async {
         guard let api = app.api, let thread = thread(id) else { return }
         conversations[id]?.stop()
         conversations[id] = nil
@@ -87,7 +114,7 @@ final class ThreadsModel {
             _ = try await api.close(id, sourceRef: thread.sourceRef)
             if selection == id { selection = nil }
         } catch {
-            fail(error)
+            if reportErrors { fail(error) }
         }
     }
 
@@ -100,6 +127,16 @@ final class ThreadsModel {
     }
 
     private func fail(_ error: GlassError) {
-        if error.isUnauthorized { app.handle(error) } else { self.error = error.localizedDescription }
+        guard error != .cancelled else { return }
+        if error.isUnauthorized {
+            app.handle(error)
+            return
+        }
+        self.error = error.localizedDescription
+        clearError?.cancel()
+        clearError = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { self.error = nil }
+        }
     }
 }

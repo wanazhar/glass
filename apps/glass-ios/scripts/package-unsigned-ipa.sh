@@ -20,7 +20,7 @@ fail() { echo "packaging gate failed: $*" >&2; exit 1; }
 check() { [[ "$(/usr/libexec/PlistBuddy -c "Print $1" "$plist")" == "$2" ]] || fail "$1 != $2"; }
 check CFBundleIdentifier com.wanazhar.glass
 check CFBundleDisplayName Glass
-check MinimumOSVersion 18.0
+check MinimumOSVersion 26.0
 /usr/libexec/PlistBuddy -c "Print NSCameraUsageDescription" "$plist" >/dev/null || fail "NSCameraUsageDescription missing"
 /usr/libexec/PlistBuddy -c "Print NSLocationWhenInUseUsageDescription" "$plist" >/dev/null || fail "NSLocationWhenInUseUsageDescription missing"
 check NSSupportsLiveActivities true

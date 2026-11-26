@@ -31,7 +31,7 @@ struct RootView: View {
             if model.endpoint == nil || model.phase == .unpaired {
                 PairingView()
             } else {
-                HostTabView()
+                ThreadsView()
             }
         }
         .preferredColorScheme(theme.colorScheme)

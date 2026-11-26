@@ -600,7 +600,10 @@ mod tests {
     fn files_reject_escapes_symlinks_and_unknown_fields() {
         let (home, workspace) = (scratch("home-bad"), scratch("workspace-bad"));
         std::fs::create_dir_all(home.join("Downloads")).unwrap();
-        std::os::unix::fs::symlink("/etc/hostname", home.join("Downloads/link")).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = home.join("outside.txt");
+        std::fs::write(&outside, "outside workspace").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("Downloads/link")).unwrap();
         let error = |value: Value| {
             transfer(&home, &workspace, &value)
                 .err()
@@ -609,7 +612,10 @@ mod tests {
         assert!(error(json!({"action":"export","name":"../secret"})).contains("without slashes"));
         assert!(error(json!({"action":"export","name":"link"})).contains("not a regular file"));
         assert!(error(json!({"action":"export","name":"missing"})).contains("action list"));
-        assert!(error(json!({"action":"import","path":"../../etc/hostname"})).contains("escapes"));
+        let escape = Path::new("..")
+            .join(home.file_name().unwrap())
+            .join("outside.txt");
+        assert!(error(json!({"action":"import","path":escape})).contains("escapes"));
         assert!(error(json!({"action":"import"})).contains("workspace-relative"));
         assert!(error(json!({"action":"list","dest":"x"})).contains("only action"));
         assert!(error(json!({"action":"move"})).contains("`export`"));

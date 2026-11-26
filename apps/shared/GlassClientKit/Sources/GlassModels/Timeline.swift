@@ -19,6 +19,7 @@ public struct Timeline: Sendable, Hashable {
     public private(set) var isActive = false
     public private(set) var disconnected = false
     public private(set) var largeRecordOmitted = false
+    public private(set) var savedOutputs: [String: Int] = [:]
     /// The decision the turn is paused on, if any.
     public private(set) var interaction: Interaction?
 
@@ -35,7 +36,8 @@ public struct Timeline: Sendable, Hashable {
     /// Whether an older window would add anything visible. Session headers and private records produce no entries.
     public func hasVisibleEntries(_ page: HistoryPage) -> Bool {
         var seen = seenRecords
-        return !Self.entries(from: page, skipping: &seen).isEmpty
+        var outputs: [String: Int] = [:]
+        return !Self.entries(from: page, skipping: &seen, outputs: &outputs).isEmpty
     }
 
     /// Replaces everything with the newest history window (initial load and reset snapshots).
@@ -44,14 +46,28 @@ public struct Timeline: Sendable, Hashable {
         seenRecords = []
         streamID = nil
         liveReasoningID = nil
-        entries = Self.entries(from: page, skipping: &seenRecords)
+        savedOutputs = [:]
+        entries = Self.entries(from: page, skipping: &seenRecords, outputs: &savedOutputs)
         olderBefore = page.before
         largeRecordOmitted = page.omittedLargeRecord ?? false
     }
 
     /// Prepends an older window; records already shown (same byte offset) are skipped.
     public mutating func prependOlder(_ page: HistoryPage) {
-        var older = Self.entries(from: page, skipping: &seenRecords)
+        var older = Self.entries(from: page, skipping: &seenRecords, outputs: &savedOutputs)
+        // A backward page can reveal the call for an already loaded result.
+        let newerTools = Dictionary(entries.compactMap { entry -> (String, TimelineEntry)? in
+            if case .tool = entry { return (entry.id, entry) }
+            return nil
+        }, uniquingKeysWith: { first, _ in first })
+        var mergedTools: Set<String> = []
+        for index in older.indices {
+            guard case .tool(let id, let name, let summary, _, _) = older[index],
+                  case .tool(_, _, _, let output, let failed)? = newerTools[id] else { continue }
+            older[index] = .tool(id: id, name: name, summary: summary, output: output, failed: failed)
+            mergedTools.insert(id)
+        }
+        entries.removeAll { mergedTools.contains($0.id) }
         if case .reasoning(_, let prefix) = older.last,
            case .reasoning(let id, let suffix) = entries.first, id.hasPrefix("rec-") {
             older.removeLast()
@@ -143,7 +159,7 @@ public struct Timeline: Sendable, Hashable {
             if !entries.contains(where: { $0.id == id }) {
                 entries.append(.tool(id: id, name: name, summary: command, output: "", failed: nil))
             }
-            activity = name == "bash" ? "Running command" : "Using \(name)"
+            activity = name == "bash" ? (command.isEmpty ? "Running a command…" : "Running `\(command)`…") : "Using \(name)…"
         case .toolEnd(let callID, let output, let summary, let truncated):
             let body = (output.isEmpty ? summary : output) + (truncated ? "\nPreview capped · full output remains on the host." : "")
             let failed = summary.range(of: "failed|error:|exit [1-9]", options: [.regularExpression, .caseInsensitive]) != nil
@@ -188,6 +204,9 @@ public struct Timeline: Sendable, Hashable {
         case .commandDone:
             activity = nil
         case .meta(let value):
+            if let elapsed = value["turn_seconds"]?.doubleValue, elapsed >= 0, elapsed < Double(Int.max) {
+                entries.append(.turnTiming(id: nextID("timing"), seconds: Int(elapsed)))
+            }
             if let text = value["t"]?.stringValue, text.range(of: "error:|failed:|stopped:", options: .regularExpression) != nil {
                 finishStream()
                 entries.append(.notice(id: nextID("meta"), text: text, isError: true))
@@ -219,17 +238,24 @@ public struct Timeline: Sendable, Hashable {
         return "live-\(kind)-\(liveSerial)"
     }
 
-    private static func entries(from page: HistoryPage, skipping seen: inout Set<Int>) -> [TimelineEntry] {
+    private static func entries(from page: HistoryPage, skipping seen: inout Set<Int>,
+                                outputs: inout [String: Int]) -> [TimelineEntry] {
         var ordered: [(Int, TimelineEntry)] = []
         for omitted in page.omitted ?? [] where seen.insert(omitted.recordOffset).inserted {
             ordered.append((omitted.recordOffset, .largeRecord(id: "rec-\(omitted.recordOffset)", offset: omitted.recordOffset, bytes: omitted.bytes)))
         }
         for item in page.records where seen.insert(item.index).inserted {
-            if let entry = TimelineEntry.from(record: item.record, key: "rec-\(item.index)") { ordered.append((item.index, entry)) }
+            if let entry = item.entry {
+                ordered.append((item.index, entry))
+                if case .tool = entry, item.previewTruncated == true {
+                    outputs[entry.id] = item.index
+                }
+            }
         }
         var result: [TimelineEntry] = []
+        var tools: [String: Int] = [:]
         for (_, entry) in ordered.sorted(by: { $0.0 < $1.0 }) {
-            if let index = result.lastIndex(where: { $0.id == entry.id }) {
+            if case .tool = entry, let index = tools[entry.id] {
                 // A tool result record completes the matching call record.
                 if case .tool(let id, _, _, let output, let failed) = entry, failed != nil,
                    case .tool(_, let name, let summary, _, _) = result[index] {
@@ -241,6 +267,7 @@ public struct Timeline: Sendable, Hashable {
                case .reasoning(_, let suffix) = entry {
                 result[result.count - 1] = .reasoning(id: id, text: prefix + suffix)
             } else {
+                if case .tool = entry { tools[entry.id] = result.count }
                 result.append(entry)
             }
         }

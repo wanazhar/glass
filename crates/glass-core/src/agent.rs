@@ -107,6 +107,7 @@ pub struct TurnOutput {
     pub warnings: Vec<String>,
     chat_reasoning: Option<String>,
     chat_response: bool,
+    displayed_text_bytes: usize,
 }
 
 /// Why the loop stopped.
@@ -445,6 +446,44 @@ impl<'a> Agent<'a> {
         self.publish_stream_text(out, &safe);
     }
 
+    fn publish_stream_reasoning(&mut self, out: &mut TurnOutput, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if out.displayed_text_bytes < out.text.len() {
+            let prefix = &out.text[out.displayed_text_bytes..];
+            self.session.append(Record::Custom {
+                kind: "display/assistant".into(),
+                data: Some(crate::components::normalize(prefix).into_owned()),
+            });
+            out.displayed_text_bytes = out.text.len();
+        }
+        self.session.append(Record::Reasoning(text.into()));
+        self.emit(Progress::Reasoning(text));
+    }
+
+    fn save_stream_response(&mut self, out: &TurnOutput, calls: &[ToolCall]) {
+        let prefix = crate::components::normalize(&out.text[..out.displayed_text_bytes]);
+        let tail = crate::components::normalize(&out.text[out.displayed_text_bytes..]);
+        let mut text = prefix.into_owned();
+        let display_from = text.len();
+        text.push_str(&tail);
+        if out.chat_response {
+            self.session.append(crate::reasoning::record(
+                out.chat_reasoning.as_deref(),
+                &text,
+                calls,
+            ));
+        }
+        if !text.is_empty() {
+            self.session.append(if display_from == 0 {
+                Record::Assistant(text)
+            } else {
+                Record::AssistantTail { text, display_from }
+            });
+        }
+    }
+
     fn finish_stream_reasoning(
         &mut self,
         out: &mut TurnOutput,
@@ -452,10 +491,7 @@ impl<'a> Agent<'a> {
         chat_reasoning: &mut crate::secrets::SecretTextStream,
     ) {
         let safe = reasoning.finish(&self.session.secrets);
-        if !safe.is_empty() {
-            self.session.append(Record::Reasoning(safe.clone()));
-            self.emit(Progress::Reasoning(&safe));
-        }
+        self.publish_stream_reasoning(out, &safe);
         let safe = chat_reasoning.finish(&self.session.secrets);
         if !safe.is_empty() {
             out.chat_reasoning
@@ -1329,11 +1365,13 @@ impl<'a> Agent<'a> {
             warnings: Vec::new(),
             chat_reasoning: None,
             chat_response: false,
+            displayed_text_bytes: 0,
         };
         let mut text_stream = crate::secrets::SecretTextStream::default();
         let mut reasoning_stream = crate::secrets::SecretTextStream::default();
         let mut chat_reasoning_stream = crate::secrets::SecretTextStream::default();
         let mut chat_reasoning_bytes = 0_usize;
+        let mut in_reasoning = false;
 
         loop {
             let ev = if let Some(rx) = &receiver {
@@ -1413,16 +1451,7 @@ impl<'a> Agent<'a> {
                     &mut chat_reasoning_stream,
                 );
                 if !out.text.is_empty() {
-                    if out.chat_response {
-                        self.session.append(crate::reasoning::record(
-                            out.chat_reasoning.as_deref(),
-                            &out.text,
-                            &[],
-                        ));
-                    }
-                    self.session.append(Record::Assistant(
-                        crate::components::normalize(&out.text).into_owned(),
-                    ));
+                    self.save_stream_response(&out, &[]);
                 }
                 self.session.append(Record::Meta("Response cancelled; streamed output was preserved and pending tools were not executed.".into()));
                 return Ok(out);
@@ -1437,6 +1466,11 @@ impl<'a> Agent<'a> {
                     }
                 }
                 Event::Text(t) => {
+                    if in_reasoning {
+                        let safe = reasoning_stream.finish(&self.session.secrets);
+                        self.publish_stream_reasoning(&mut out, &safe);
+                        in_reasoning = false;
+                    }
                     // A secret can be split across provider text events.
                     // Hold its possible prefix until a later event resolves it.
                     let text = text_stream.push(&self.session.secrets, &t);
@@ -1465,11 +1499,12 @@ impl<'a> Agent<'a> {
                     content.push_str(&safe);
                 }
                 Event::Reasoning(t) => {
-                    let safe = reasoning_stream.push(&self.session.secrets, &t);
-                    if !safe.is_empty() {
-                        self.session.append(Record::Reasoning(safe.clone()));
-                        self.emit(Progress::Reasoning(&safe));
+                    if !in_reasoning {
+                        self.finish_stream_text(&mut out, &mut text_stream);
+                        in_reasoning = true;
                     }
+                    let safe = reasoning_stream.push(&self.session.secrets, &t);
+                    self.publish_stream_reasoning(&mut out, &safe);
                 }
                 Event::ToolCall {
                     id,
@@ -1509,16 +1544,7 @@ impl<'a> Agent<'a> {
                         }
                     }
                     if !out.text.is_empty() {
-                        if out.chat_response {
-                            self.session.append(crate::reasoning::record(
-                                out.chat_reasoning.as_deref(),
-                                &out.text,
-                                &[],
-                            ));
-                        }
-                        self.session.append(Record::Assistant(
-                            crate::components::normalize(&out.text).into_owned(),
-                        ));
+                        self.save_stream_response(&out, &[]);
                     }
                     if !out.text.trim().is_empty() || !out.tool_calls.is_empty() {
                         // A Meta record is only honest when something survived;
@@ -1696,6 +1722,7 @@ impl<'a> Agent<'a> {
             warnings: Vec::new(),
             chat_reasoning: None,
             chat_response: false,
+            displayed_text_bytes: 0,
         };
 
         if let Some(live) = self.live.as_mut() {
@@ -1810,18 +1837,7 @@ impl<'a> Agent<'a> {
                 self.session
                     .append(Record::System(format!("provider: {w}")));
             }
-            if out.chat_response {
-                self.session.append(crate::reasoning::record(
-                    out.chat_reasoning.as_deref(),
-                    &out.text,
-                    &out.tool_calls,
-                ));
-            }
-            if !out.text.trim().is_empty() {
-                self.session.append(Record::Assistant(
-                    crate::components::normalize(&out.text).into_owned(),
-                ));
-            }
+            self.save_stream_response(&out, &out.tool_calls);
 
             // Give mods a look at the finished turn.
             let model = self.provider.model().to_string();
@@ -4945,6 +4961,88 @@ mod warm_integration {
         drop(mixed);
 
         drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn history_preserves_interleaved_stream_segments_and_tool_order() {
+        struct InterleavedProvider(std::cell::Cell<bool>);
+        impl Provider for InterleavedProvider {
+            fn id(&self) -> &str {
+                "interleaved"
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+            fn stream(
+                &self,
+                _: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, provider::Error> {
+                let events = if self.0.replace(true) {
+                    vec![Event::Text("Final answer".into()), Event::Done]
+                } else {
+                    vec![
+                        Event::Reasoning("Check first".into()),
+                        Event::Text("I'll run a check. ".into()),
+                        Event::Reasoning("Use a small command".into()),
+                        Event::ToolCall {
+                            id: "check".into(),
+                            name: "bash".into(),
+                            arguments: r#"{"command":"printf checked"}"#.into(),
+                        },
+                        Event::Done,
+                    ]
+                };
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "gc-interleaved-{}",
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("Check".into()));
+        let mut state = State::new();
+        let provider = InterleavedProvider(std::cell::Cell::new(false));
+        let mut extensions = ext::Registry::empty();
+        {
+            let mut agent = Agent::new(
+                &provider,
+                &mut session,
+                &mut state,
+                &[],
+                &mut extensions,
+                &dir,
+            );
+            let (_, stop) = agent.run_turn(no_pump).unwrap();
+            assert!(matches!(stop, Stop::Finished));
+        }
+        let page = crate::connect::chat_history(&session.path, usize::MAX).unwrap();
+        let transcript: Vec<_> = page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| {
+                let record = &item["record"];
+                match record["k"].as_str()? {
+                    "assistant" | "reasoning" => record["t"].as_str(),
+                    "call" => record["name"].as_str(),
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            [
+                "Check first",
+                "I'll run a check. ",
+                "Use a small command",
+                "bash",
+                "Final answer"
+            ]
+        );
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();
     }

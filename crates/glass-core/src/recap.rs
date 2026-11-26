@@ -37,13 +37,15 @@ pub fn build(records: &[Record]) -> Option<String> {
     };
     let tail = &records[index + 1..];
     let answer = tail.iter().rev().find_map(|r| match r {
-        Record::Assistant(t) if !t.trim().is_empty() => Some(t.as_str()),
+        Record::Assistant(t) | Record::AssistantTail { text: t, .. } if !t.trim().is_empty() => {
+            Some(t.as_str())
+        }
         _ => None,
     });
     let failure = tail
         .iter()
         .rev()
-        .take_while(|r| !matches!(r, Record::Assistant(t) if !t.trim().is_empty()))
+        .take_while(|r| !matches!(r, Record::Assistant(t) | Record::AssistantTail { text: t, .. } if !t.trim().is_empty()))
         .find_map(|r| match r {
             Record::Meta(t) if t.starts_with("error:") => Some(t.as_str()),
             _ => None,

@@ -162,7 +162,7 @@ impl Host {
                     .len();
                 let start = if before <= records.len() { before } else { 0 };
                 if !records[start..].iter().any(
-                    |record| matches!(record,Record::Assistant(answer) if answer.contains(text)),
+                    |record| matches!(record,Record::Assistant(answer) | Record::AssistantTail { text: answer, .. } if answer.contains(text)),
                 ) {
                     ops.push(Op::Entry {
                         conversation: live.conversation.clone(),
@@ -1001,7 +1001,7 @@ impl Context {
             }
             if owned
                 .iter()
-                .any(|record| matches!(record, Record::Assistant(_)))
+                .any(|record| matches!(record, Record::Assistant(_) | Record::AssistantTail { .. }))
             {
                 partial.borrow_mut().text.clear();
             }

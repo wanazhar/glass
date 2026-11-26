@@ -473,7 +473,9 @@ pub fn quote_picker(keys: &KeyReader, s: &Session) -> Result<(), String> {
         .enumerate()
         .filter_map(|(index, r)| match r {
             Record::User(t) => Some((index, "You", t)),
-            Record::Assistant(t) => Some((index, "Response", t)),
+            Record::Assistant(t) | Record::AssistantTail { text: t, .. } => {
+                Some((index, "Response", t))
+            }
             Record::ToolResult { name, body, .. } if name != "bash" => Some((index, "Tool", body)),
             Record::Bash { output, .. } => Some((index, "Command output", output)),
             _ => None,
@@ -1006,7 +1008,7 @@ pub fn review_report(s: &Session, checkpoint: Option<&Checkpoint>) -> String {
         .iter()
         .rev()
         .find_map(|r| {
-            if let Record::Assistant(t) = r {
+            if let Record::Assistant(t) | Record::AssistantTail { text: t, .. } = r {
                 Some(t.as_str())
             } else {
                 None

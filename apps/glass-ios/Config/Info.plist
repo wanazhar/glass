@@ -30,7 +30,9 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Glass uses the camera to scan the pairing QR code shown by gc connect qr.</string>
+	<string>Glass uses the camera to scan pairing codes and take photos to attach to conversations.</string>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Only used to keep Glass connected to your host in the background when you turn on Keep connection alive. Glass never stores or sends your location.</string>
 	<key>NSLocalNetworkUsageDescription</key>

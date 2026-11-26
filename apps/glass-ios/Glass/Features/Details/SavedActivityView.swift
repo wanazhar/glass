@@ -5,6 +5,7 @@ import SwiftUI
 struct SavedActivityView: View {
     let conversation: ConversationModel
     let record: Int
+    var title = "Saved activity"
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @State private var page: ActivityTextPage?
@@ -27,10 +28,14 @@ struct SavedActivityView: View {
                 }
             }
             .overlay { if loading && page == nil { ProgressView() } }
-            .navigationTitle("Saved activity")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = page?.text }
+                        .disabled(page == nil)
+                }
                 ToolbarItemGroup(placement: .bottomBar) {
                     Button("Previous", systemImage: "chevron.left") {
                         if let offset = previous.popLast() { Task { await load(offset, back: true) } }

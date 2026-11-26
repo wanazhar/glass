@@ -141,7 +141,7 @@ struct AppearanceSettingsView: View {
                     ForEach(ActivityAnimation.allCases) { Text($0.title).tag($0) }
                 }
                 .accessibilityIdentifier("settings.animation")
-                Picker("Tool cards", selection: $density) {
+                Picker("Work details", selection: $density) {
                     ForEach(ToolDensity.allCases) { Text($0.title).tag($0) }
                 }
                 .accessibilityIdentifier("settings.tools")

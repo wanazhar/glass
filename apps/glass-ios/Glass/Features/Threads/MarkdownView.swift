@@ -141,7 +141,7 @@ struct MarkdownView: View, Equatable {
     static func blocks(_ text: String, completeFencesOnly: Bool = false) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
-        let lines = text.components(separatedBy: "\n")
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var index = 0
 
         func flush() {

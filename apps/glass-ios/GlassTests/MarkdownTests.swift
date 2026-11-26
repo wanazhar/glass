@@ -74,6 +74,13 @@ import Testing
         #expect(MarkdownView.blocks("\\[\na+b\n\\]") == [.math("a+b")])
     }
 
+    @Test func fencesCloseInCRLFDocuments() {
+        let text = "```swift\r\nlet x = 1\r\n```\r\n\r\nAfter the fence."
+        let expected: [MarkdownView.Block] = [.code("let x = 1", language: "swift"), .prose("After the fence.")]
+        #expect(MarkdownView.blocks(text) == expected)
+        #expect(MarkdownView.blocks(text, completeFencesOnly: true) == expected)
+    }
+
     @Test func inlineMathIsFoundButMoneyIsNot() {
         #expect(InlineMath.split("costs $5 and $10 today") == [.text("costs $5 and $10 today")])
         #expect(InlineMath.split("so $x^2$ grows") == [.text("so "), .math("x^2"), .text(" grows")])

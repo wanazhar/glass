@@ -352,6 +352,7 @@ struct ActivityDetailView: View {
                 .padding(Design.padding)
                 .accessibilityIdentifier("timeline.step.text")
             }
+            .defaultScrollAnchor(.topLeading, for: .alignment)
             .navigationTitle(detail.title)
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingFullOutput) {

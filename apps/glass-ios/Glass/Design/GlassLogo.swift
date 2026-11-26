@@ -17,11 +17,14 @@ struct GlassLogo: View {
             let time = sample ?? Float(frame.date.timeIntervalSince(started))
             Group {
                 if shouldAnimate {
-                    wordmark.visualEffect { view, _ in
-                        view.layerEffect(
-                            ShaderLibrary.liquidRipple(.float2(touch), .float(time)),
-                            maxSampleOffset: CGSize(width: 12, height: 12)
-                        )
+                    ZStack {
+                        wordmark.opacity(0.24)
+                        wordmark.drawingGroup().visualEffect { view, _ in
+                            view.layerEffect(
+                                ShaderLibrary.liquidRipple(.float2(touch), .float(time)),
+                                maxSampleOffset: CGSize(width: 12, height: 12)
+                            )
+                        }
                     }
                 } else {
                     wordmark

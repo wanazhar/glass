@@ -144,8 +144,9 @@ actor DemoTransport: GlassHTTPTransport {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { return }
                 try? await self?.emit([["t": "reasoning", "delta": "I’ll check the cursor boundary before changing the retry path."]], to: id)
-                for chunk in ["The sync loop now", " keeps its last committed cursor.", " On retry, it replays only the unfinished page", " and leaves completed records alone."] {
-                    try? await Task.sleep(for: .seconds(1.25))
+                let chunks = ["The sync loop now", " keeps its last committed cursor.", " On retry, it replays only the unfinished page", " and leaves completed records alone."]
+                for (index, chunk) in chunks.enumerated() {
+                    try? await Task.sleep(for: index == 0 ? .seconds(1.25) : .seconds(3))
                     guard !Task.isCancelled else { return }
                     try? await self?.emit([["t": "text", "delta": chunk]], to: id)
                 }

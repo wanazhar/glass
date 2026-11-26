@@ -117,6 +117,9 @@ final class RoundThreeUITests: XCTestCase {
             XCTAssertTrue(field.waitForExistence(timeout: 8))
             field.tap()
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            if let draft = field.value as? String, !draft.isEmpty, draft != "Message Glass" {
+                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.utf16.count))
+            }
             capture(appearance, "keyboard")
             field.typeText("Verify sync after a restart.")
             capture(appearance, "composer-typing")
@@ -185,11 +188,15 @@ final class RoundThreeUITests: XCTestCase {
         capture(appearance, "thread-info")
         chat.buttons["Done"].tap()
 
+        let heading = chat.staticTexts["Sync now resumes from the last committed page"].firstMatch
+        XCTAssertTrue(revealInTranscript(heading, in: chat))
         capture(appearance, "long-markdown")
+        let code = chat.staticTexts["swift"].firstMatch
+        XCTAssertTrue(revealInTranscript(code, in: chat))
+        capture(appearance, "code")
         let table = chat.descendants(matching: .any)["markdown.table"].firstMatch
-        if reveal(table, in: chat) { capture(appearance, "table") }
-        let code = chat.descendants(matching: .any)["timeline.code"].firstMatch
-        if reveal(code, in: chat) { capture(appearance, "code") }
+        XCTAssertTrue(revealInTranscript(table, in: chat))
+        capture(appearance, "table")
         let work = chat.buttons.matching(identifier: "timeline.work")
         let latest = work.containing(NSPredicate(format: "label CONTAINS %@", "2 min")).firstMatch
         if reveal(latest, in: chat) {
@@ -236,6 +243,24 @@ final class RoundThreeUITests: XCTestCase {
             start.press(forDuration: 0.04, thenDragTo: end)
         }
         return target.isHittable
+    }
+
+    @MainActor
+    private func revealInTranscript(_ target: XCUIElement, in app: XCUIApplication) -> Bool {
+        let frame = app.frame
+        for _ in 0..<7 {
+            let targetFrame = target.exists ? target.frame : .zero
+            if targetFrame.minY > frame.minY + 108,
+               targetFrame.maxY < frame.maxY - 115 { return true }
+            if !targetFrame.isEmpty, targetFrame.maxY > frame.maxY - 115 {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.68))
+                    .press(forDuration: 0.08, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.45)))
+            } else {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.28))
+                    .press(forDuration: 0.08, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.51)))
+            }
+        }
+        return false
     }
 
     @MainActor

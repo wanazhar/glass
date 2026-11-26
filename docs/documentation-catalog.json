@@ -1944,6 +1944,39 @@
       ]
     },
     {
+      "path": "design/round4/README.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "design/round4/README.md#glass-ios-round-4",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass iOS · round 4",
+          "anchor": "glass-ios-round-4"
+        },
+        {
+          "level": "2",
+          "title": "Screen decisions",
+          "anchor": "screen-decisions"
+        },
+        {
+          "level": "2",
+          "title": "Round 3 defects → round 4 design",
+          "anchor": "round-3-defects-round-4-design"
+        }
+      ]
+    },
+    {
       "path": "docs/BROWSER-CU-AUDIT.md",
       "class": "current",
       "topic": "workspace",
@@ -2284,6 +2317,7 @@
         "crates/glass-mod-api/README.md",
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
+        "design/round4/README.md",
         "docs/BROWSER-CU-AUDIT.md",
         "docs/GLASS-IOS-FULL-PLAN.md",
         "docs/action-contract.md",

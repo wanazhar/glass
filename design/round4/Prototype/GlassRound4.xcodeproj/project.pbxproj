@@ -1,0 +1,314 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		220C1206A5EB784D819D24A6 /* Design.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945F4FF3FEB691DFB1B07E71 /* Design.swift */; };
+		35447C9B2826B9016619E83A /* Screens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C6BCA19D5BF92F2ECC3ABF9 /* Screens.swift */; };
+		7E6676DE1A7547178079FAE7 /* Refraction.metal in Sources */ = {isa = PBXBuildFile; fileRef = EC14E59EF235AF1CA7901434 /* Refraction.metal */; };
+		8901F6E712E5DAB90D871D2B /* Prototype.swift in Sources */ = {isa = PBXBuildFile; fileRef = 066BD54F0DBD5D7DF0C5B312 /* Prototype.swift */; };
+		B8D2D4E1F7CB39BDA304FFB7 /* ChatParts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB05DC4D605AFCC278FA715D /* ChatParts.swift */; };
+		C7973E531D8F896DB16BDCE7 /* ActivityParts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8015569012CB484F1E88CC /* ActivityParts.swift */; };
+		CEFD5D62D81D5692B5941F95 /* Splash.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D466D70AEB4B56B299C29E7 /* Splash.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		066BD54F0DBD5D7DF0C5B312 /* Prototype.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prototype.swift; sourceTree = "<group>"; };
+		4D466D70AEB4B56B299C29E7 /* Splash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Splash.swift; sourceTree = "<group>"; };
+		5A8015569012CB484F1E88CC /* ActivityParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityParts.swift; sourceTree = "<group>"; };
+		7C6BCA19D5BF92F2ECC3ABF9 /* Screens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Screens.swift; sourceTree = "<group>"; };
+		945F4FF3FEB691DFB1B07E71 /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
+		C8409721586728E0EE868C00 /* GlassRound4.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GlassRound4.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC14E59EF235AF1CA7901434 /* Refraction.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Refraction.metal; sourceTree = "<group>"; };
+		FB05DC4D605AFCC278FA715D /* ChatParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatParts.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		5DAC02C5A245AAECD48F2007 = {
+			isa = PBXGroup;
+			children = (
+				9FD273CDB109FDBA57B0DEB9 /* Sources */,
+				A89F1C6D1A0AFC976F19F75A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9FD273CDB109FDBA57B0DEB9 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				5A8015569012CB484F1E88CC /* ActivityParts.swift */,
+				FB05DC4D605AFCC278FA715D /* ChatParts.swift */,
+				945F4FF3FEB691DFB1B07E71 /* Design.swift */,
+				066BD54F0DBD5D7DF0C5B312 /* Prototype.swift */,
+				EC14E59EF235AF1CA7901434 /* Refraction.metal */,
+				7C6BCA19D5BF92F2ECC3ABF9 /* Screens.swift */,
+				4D466D70AEB4B56B299C29E7 /* Splash.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		A89F1C6D1A0AFC976F19F75A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C8409721586728E0EE868C00 /* GlassRound4.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2B17BD095774DB5146E81B53 /* GlassRound4 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 62E55CBFD7550967940A13BB /* Build configuration list for PBXNativeTarget "GlassRound4" */;
+			buildPhases = (
+				A0D5026C99B14511F89ADE11 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = GlassRound4;
+			packageProductDependencies = (
+			);
+			productName = GlassRound4;
+			productReference = C8409721586728E0EE868C00 /* GlassRound4.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0137C56887E3F047F954EA11 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 4484AD36FA8BCC469465995B /* Build configuration list for PBXProject "GlassRound4" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 5DAC02C5A245AAECD48F2007;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A89F1C6D1A0AFC976F19F75A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2B17BD095774DB5146E81B53 /* GlassRound4 */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A0D5026C99B14511F89ADE11 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C7973E531D8F896DB16BDCE7 /* ActivityParts.swift in Sources */,
+				B8D2D4E1F7CB39BDA304FFB7 /* ChatParts.swift in Sources */,
+				220C1206A5EB784D819D24A6 /* Design.swift in Sources */,
+				8901F6E712E5DAB90D871D2B /* Prototype.swift in Sources */,
+				7E6676DE1A7547178079FAE7 /* Refraction.metal in Sources */,
+				35447C9B2826B9016619E83A /* Screens.swift in Sources */,
+				CEFD5D62D81D5692B5941F95 /* Splash.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1614BF048BEADEE69BED8E37 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Glass;
+				INFOPLIST_KEY_UIDesignRequiresCompatibility = NO;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = studio.glass.round4;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		76AAF79553F43566189EA68A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8DB0BF31E7CA18B02BA62C63 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Glass;
+				INFOPLIST_KEY_UIDesignRequiresCompatibility = NO;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = studio.glass.round4;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D64769EA4997CA75F98FBAA6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4484AD36FA8BCC469465995B /* Build configuration list for PBXProject "GlassRound4" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				76AAF79553F43566189EA68A /* Debug */,
+				D64769EA4997CA75F98FBAA6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		62E55CBFD7550967940A13BB /* Build configuration list for PBXNativeTarget "GlassRound4" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8DB0BF31E7CA18B02BA62C63 /* Debug */,
+				1614BF048BEADEE69BED8E37 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0137C56887E3F047F954EA11 /* Project object */;
+}

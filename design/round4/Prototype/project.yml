@@ -1,0 +1,19 @@
+name: GlassRound4
+options:
+  deploymentTarget:
+    iOS: "26.0"
+targets:
+  GlassRound4:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: studio.glass.round4
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIDesignRequiresCompatibility: NO
+        INFOPLIST_KEY_CFBundleDisplayName: Glass
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"

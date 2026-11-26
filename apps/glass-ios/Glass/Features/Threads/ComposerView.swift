@@ -160,9 +160,9 @@ struct ComposerView: View {
         ComposerTextField(placeholder: active ? "Follow up…" : "Message Glass",
                           text: Bindable(composer).text, isEnabled: canWrite,
                           height: fieldHeight, onHeight: { fieldHeight = $0 },
+                          onFocus: onFieldFocus,
                           dismissFor: conversation.timeline.interaction?.id,
                           onCommands: { composer.showingCommands = true }) {
-                          onFocus: onFieldFocus,
             Task { await composer.send(active: active, canWrite: canWrite) }
         }
         .padding(.horizontal, Design.small)

@@ -98,7 +98,7 @@ private struct ConversationShell: View {
                     .background(Design.background.opacity(reduceTransparency ? 1 : 0.9),
                                 in: .rect(cornerRadius: 30))
                     .glassEffect(reduceTransparency ? .identity : .regular, in: .rect(cornerRadius: 30))
-                    .transition(.move(edge: .leading))
+                    .transition(.opacity)
                     .overlay(alignment: .trailing) {
                         Color.clear.frame(width: 18)
                             .contentShape(Rectangle())
@@ -283,10 +283,16 @@ struct ThreadListView: View {
             .background(reduceTransparency ? Design.surface : .clear, in: .capsule)
             .glassEffect(reduceTransparency ? .identity : .regular.interactive(), in: .capsule)
             .accessibilityIdentifier("tab.settings")
-            Button("Desktop", systemImage: "display") { app.selectedTab = .desktop }
-                .labelStyle(.iconOnly)
-                .glassButtonStyle()
-                .accessibilityIdentifier("tab.desktop")
+            Button { app.selectedTab = .desktop } label: {
+                Label("Desktop", systemImage: "display")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: Design.control, minHeight: Design.control)
+                    .contentShape(.capsule)
+            }
+            .buttonStyle(.plain)
+            .background(reduceTransparency ? Design.surface : .clear, in: .capsule)
+            .glassEffect(reduceTransparency ? .identity : .regular.interactive(), in: .capsule)
+            .accessibilityIdentifier("tab.desktop")
         }
         .padding(.horizontal, Design.padding)
         .padding(.vertical, Design.gap)

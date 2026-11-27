@@ -68,7 +68,12 @@ struct ComposerView: View {
             }
         }
         .onChange(of: active, initial: true) { _, active in
-            if active { writingSince = .now }
+            guard active else { return }
+            #if DEBUG
+            writingSince = LensPreview.current == .working ? Date.now.addingTimeInterval(-72) : .now
+            #else
+            writingSince = .now
+            #endif
         }
         .onChange(of: canWrite, initial: true) { _, writable in
             guard writable, let action = composer.initialAction else { return }

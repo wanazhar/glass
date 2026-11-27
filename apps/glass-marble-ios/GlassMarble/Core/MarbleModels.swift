@@ -818,6 +818,7 @@ struct MarbleMemorySuggestion: Decodable, Identifiable, Equatable {
     var text: String
     var kind: String
     var reason: String
+    var conversationId: String? = nil
 }
 
 struct MarbleMemory: Decodable, Equatable {

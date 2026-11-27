@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Marble</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
@@ -42,7 +42,7 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Marble turns your voice into a message using on-device speech recognition. Audio never leaves the phone.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Glass Marble connects to the collaborator you self-host over your private Tailscale network.</string>
+	<string>Marble connects to the host on your private Tailscale network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>If you turn on background connection, Marble uses low-accuracy location updates to keep the connection open. Marble does not save or send your location.</string>
 	<key>NSSupportsLiveActivities</key>

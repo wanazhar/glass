@@ -5,28 +5,19 @@ struct MarbleAvatar: View {
     var glyph: String
     var hue: Int
     var size: CGFloat = 22
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size * 0.62, weight: .semibold))
-            .foregroundStyle(.white)
+        let shape = MarbleSilhouette(glyph: glyph)
+        shape
+            .fill(MarbleTheme.hues[MarbleTheme.paletteIndex(for: hue)].fill)
+            .overlay {
+                if colorScheme == .light {
+                    shape.stroke(MarbleTheme.adaptive(0x8F736F, 0x8F736F), lineWidth: 1)
+                }
+            }
             .frame(width: size, height: size)
-            .background(
-                MarbleTheme.marble(hue: hue),
-                in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-            )
             .accessibilityHidden(true)
-    }
-
-    private var symbol: String {
-        switch glyph {
-        case "hex": "hexagon.fill"
-        case "shield": "shield.fill"
-        case "drop": "drop.fill"
-        case "star": "star.fill"
-        case "square": "square.fill"
-        default: "circle.fill"
-        }
     }
 }
 
@@ -107,12 +98,11 @@ struct HandoffLine: View {
 }
 
 /// The shared chat: one timeline where the person talks to every marble at
-/// once. The header bar shows who's in the room; tapping one opens its info.
+/// once. The speaker label identifies whose reply you’re reading.
 struct EveryoneView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
-    @State private var showsActivity = false
     private let target = MarbleSendTarget.everyone()
 
     var body: some View {
@@ -178,7 +168,7 @@ struct EveryoneView: View {
         }
         .marbleComposerInset { composer }
         .task { await store.openEveryoneHistory() }
-        .toolbarVisibility(.hidden, for: .tabBar)
+        .background(MarbleTheme.paper)
         .navigationTitle("Everyone")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -189,79 +179,29 @@ struct EveryoneView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 MarbleThreadInboxLink(conversationId: everyoneConversationId)
             }
-        }
-        .sheet(isPresented: $showsActivity) {
-            NavigationStack {
-                ActivityView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showsActivity = false }
-                        }
-                    }
-            }
-        }
-    }
-
-    /// Who's in the room and whether a request needs a decision.
-    private var header: some View {
-        VStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
-                    ForEach(store.prism.marbles) { marble in
-                        Button {
-                            navigation.openMarbleInfo(marble.id, fromEveryone: true)
-                        } label: {
-                            VStack(spacing: 3) {
-                                MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 28)
-                                    .overlay(alignment: .bottomTrailing) {
-                                        if store.isAgentWorking(marble) {
-                                            Circle()
-                                                .fill(Color.accentColor)
-                                                .frame(width: 9, height: 9)
-                                                .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 1.5))
-                                                .offset(x: 3, y: 3)
-                                        }
-                                    }
-                                Text(marble.name)
-                                    .font(.caption2)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                            }
-                            .frame(minWidth: 44)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(marble.name) info")
-                    }
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink(value: ChatRoute.find(everyoneConversationId)) {
+                    Label("Find", systemImage: "magnifyingglass")
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-            }
-            let waiting = store.state.approvals.count
-            if waiting > 0 {
-                Button { showsActivity = true } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "hand.raised.fill")
-                        Text(waiting == 1 ? "1 request needs you" : "\(waiting) requests need you")
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
-                    }
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
             }
         }
-        .marbleFloating()
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
     }
 
     /// The composer with @Name completion from the roster.
     private var composer: some View {
         VStack(spacing: 0) {
+            if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let ids = MarbleMentions.responders(in: draft, roster: store.prism.marbles)
+                let names = ids.compactMap { id in store.prism.marbles.first { $0.id == id }?.name }
+                if !names.isEmpty {
+                    Text("To: \(names.formatted(.list(type: .and)))")
+                        .font(.caption)
+                        .foregroundStyle(MarbleTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
+            }
             let suggestions = MarbleMentions.completions(
                 in: draft,
                 names: store.prism.marbles.map(\.name)
@@ -306,46 +246,70 @@ struct EveryoneView: View {
 /// it's doing — plus the built-in Marble whose chat is the chats list.
 struct MarblesView: View {
     @EnvironmentObject private var store: MarbleStore
-    @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var showsNew = false
+    var selection: ChatRoute?
+    var onSelect: ((ChatRoute) -> Void)?
 
     var body: some View {
         List {
+            if store.connectionPaused || store.connection == .offline || store.connection == .connecting || store.needsToken {
+                MarbleConnectionNotice()
+                    .listRowBackground(MarbleTheme.card)
+            }
+            Section {
+                Text("Pick a Marble to talk one to one, or meet in Everyone.")
+                    .font(.subheadline)
+                    .foregroundStyle(MarbleTheme.muted)
+                    .listRowBackground(Color.clear)
+            }
             ForEach(store.prism.marbles) { marble in
-                NavigationLink(value: marble.isDefault
-                    ? ChatRoute.marbleChats
-                    : ChatRoute.marbleChat(marble.id)) {
-                    HStack(spacing: 12) {
-                        MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 34)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(marble.name).font(.callout)
-                            if !marble.tagline.isEmpty {
-                                Text(marble.tagline)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Text(store.agentState(for: marble))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                let route = marble.isDefault ? ChatRoute.marbleChats : .marbleChat(marble.id)
+                Group {
+                    if let onSelect {
+                        Button { onSelect(route) } label: { person(marble) }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(selection == route ? .isSelected : [])
+                    } else {
+                        NavigationLink(value: route) { person(marble) }
                     }
-                    .padding(.vertical, 2)
                 }
+                .listRowBackground(selection == route ? MarbleTheme.wash : MarbleTheme.card)
             }
-        }
-        .navigationTitle("Marbles")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            Section {
                 Button { showsNew = true } label: {
-                    Image(systemName: "plus")
+                    Label("New Marble", systemImage: "plus.circle")
+                        .font(.headline)
+                        .frame(minHeight: 44, alignment: .leading)
                 }
-                .accessibilityLabel("New Marble")
+                .listRowBackground(MarbleTheme.card)
             }
         }
+        .navigationTitle("Who’s on your mind?")
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
         .sheet(isPresented: $showsNew) {
             NavigationStack { NewMarbleView() }
         }
+    }
+
+    private func person(_ marble: MarblePrismMarble) -> some View {
+        HStack(spacing: 14) {
+            MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 50)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
+                if !marble.tagline.isEmpty {
+                    Text(marble.tagline).font(.subheadline).foregroundStyle(MarbleTheme.muted)
+                }
+                if store.isAgentWorking(marble) {
+                    Label("Working", systemImage: "circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(MarbleTheme.waiting)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 }
 
@@ -357,7 +321,9 @@ struct NewMarbleView: View {
     @State private var name = ""
     @State private var persona = ""
     @State private var glyph = MarbleMentions.glyphs[0]
-    @State private var hue: Double = 40
+    @State private var hue = 42
+    @State private var creating = false
+    @State private var creationError: String?
 
     private let starters = [
         "Warm and encouraging; celebrates progress and explains things simply.",
@@ -368,7 +334,7 @@ struct NewMarbleView: View {
     var body: some View {
         Form {
             Section(header: Text("Name")) {
-                TextField("Ada", text: $name)
+                TextField("Name your Marble", text: $name)
                     .textInputAutocapitalization(.words)
             }
             Section {
@@ -384,63 +350,79 @@ struct NewMarbleView: View {
             } footer: {
                 Text("How it talks and what it's good at. It can be changed later.")
             }
-            Section(header: Text("Look")) {
-                HStack(spacing: 14) {
-                    ForEach(MarbleMentions.glyphs, id: \.self) { shape in
-                        Button {
-                            glyph = shape
-                        } label: {
-                            MarbleAvatar(glyph: shape, hue: Int(hue), size: 34)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .strokeBorder(
-                                            glyph == shape ? MarbleTheme.tint : Color.clear,
-                                            lineWidth: 2
-                                        )
-                                        .frame(width: 40, height: 40)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(shape) shape")
-                    }
-                }
-                HStack {
-                    MarbleAvatar(glyph: glyph, hue: Int(hue), size: 28)
-                    Slider(value: $hue, in: 0...359, step: 1)
-                }
+            Section("Look") {
+                MarbleLookPicker(glyph: $glyph, hue: $hue)
+            }
+            if let creationError {
+                Text(creationError).foregroundStyle(MarbleTheme.problem)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
         .navigationTitle("New Marble")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Create") { create() }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button(creating ? "Creating…" : "Create") { create() }
+                    .disabled(creating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .onAppear {
-            hue = Double(MarbleMentions.nextHue(used: store.prism.marbles.map(\.hue)))
+            let used = Set(store.prism.marbles.map { MarbleTheme.paletteIndex(for: $0.hue) })
+            if let index = MarbleTheme.hues.indices.first(where: { !used.contains($0) }) {
+                hue = MarbleTheme.hues[index].degrees
+            }
         }
     }
 
     private func create() {
-        let marbleName = name.trimmingCharacters(in: .whitespaces)
+        let marbleName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        creating = true
+        creationError = nil
         Task {
-            await store.addMarble(
+            let id = await store.addMarble(
                 name: marbleName,
                 glyph: glyph,
-                hue: Int(hue),
+                hue: hue,
                 persona: persona.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-            dismiss()
-            if let created = store.prism.marbles.first(where: {
-                $0.name.caseInsensitiveCompare(marbleName) == .orderedSame && !$0.isDefault
-            }) {
-                navigation.openMarble(created.id)
+            creating = false
+            if let id {
+                dismiss()
+                navigation.openMarble(id)
+            } else {
+                creationError = store.errorMessage ?? "Couldn’t create this Marble. Try again."
             }
         }
+    }
+}
+
+private struct MarbleLookPicker: View {
+    @Binding var glyph: String
+    @Binding var hue: Int
+
+    var body: some View {
+        MarbleAvatar(glyph: glyph, hue: hue, size: 58)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        Picker("Shape", selection: $glyph) {
+            ForEach(MarbleMentions.glyphs, id: \.self) { shape in
+                Text(shape == "hex" ? "Hexagon" : shape.capitalized).tag(shape)
+            }
+        }
+        Picker("Hue", selection: Binding(
+            get: { MarbleTheme.hues[MarbleTheme.paletteIndex(for: hue)].degrees },
+            set: { hue = $0 }
+        )) {
+            ForEach(MarbleTheme.hues.indices, id: \.self) { index in
+                let choice = MarbleTheme.hues[index]
+                Text(choice.name).tag(choice.degrees)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: hue)
+        .sensoryFeedback(.selection, trigger: glyph)
     }
 }
 
@@ -477,13 +459,18 @@ struct MarbleChatScreen: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.marbleInfo(marbleId)) {
-                    Image(systemName: "info.circle")
+                    if let marble {
+                        MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 24)
+                            .accessibilityHidden(false)
+                    } else {
+                        Image(systemName: "person.crop.circle")
+                    }
                 }
                 .accessibilityLabel("About this Marble")
             }
             if let conversationId = marble?.conversationId, !conversationId.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
-                    MarbleThreadInboxLink(conversationId: conversationId)
+                    MarbleChatTools(conversationId: conversationId)
                 }
             }
         }
@@ -515,7 +502,9 @@ struct MarbleChatScreen: View {
                     }
                     let transcript = MarbleReasoningAssociation(entries)
                     ForEach(transcript.standalone, id: \.rowID) { entry in
-                        MarbleEntryView(entry: entry, replyHue: marble.hue, reasoning: transcript.attached[entry.id])
+                        MarbleEntryView(entry: entry, speaker: entry.kind == "assistant" || entry.kind == "pending"
+                                        ? MarbleSpeakerStyle(name: marble.name, hue: marble.hue, glyph: marble.glyph)
+                                        : nil, replyHue: marble.hue, reasoning: transcript.attached[entry.id])
                     }
                     let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
                     if working && !reasoning.isEmpty
@@ -536,6 +525,7 @@ struct MarbleChatScreen: View {
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
+        .background(MarbleTheme.paper)
         .scrollDismissesKeyboard(.interactively)
         .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
             await store.loadOlderHistory(marble.conversationId, beforePrepend: beforePrepend)
@@ -549,7 +539,15 @@ struct MarbleChatScreen: View {
                 placeholder: "Message \(marble.name)",
                 canSteer: false,
                 onSend: { store.send($0, to: target, entries: durable) },
-                onStop: { Task { await store.stop(marble) } }
+                onStop: {
+                    Task {
+                        if let active, store.isTaskWorking(active) {
+                            await store.cancel(active)
+                        } else {
+                            await store.stop(marble)
+                        }
+                    }
+                }
             )
         }
     }
@@ -565,7 +563,7 @@ struct MarbleInfoView: View {
     @State private var persona = ""
     @State private var personaLoaded = false
     @State private var glyph = "circle"
-    @State private var hue: Double = 0
+    @State private var hue = 0
     @State private var confirmRemove = false
 
     private var marble: MarblePrismMarble? {
@@ -579,13 +577,25 @@ struct MarbleInfoView: View {
                     HStack {
                         Spacer()
                         VStack(spacing: 6) {
-                            MarbleAvatar(glyph: glyph, hue: Int(hue), size: 54)
-                            Text(marble.name).font(.headline)
+                            MarbleAvatar(glyph: glyph, hue: hue, size: 88)
+                            Text(marble.name).font(.largeTitle.weight(.semibold))
+                            if !marble.tagline.isEmpty {
+                                Text(marble.tagline).foregroundStyle(MarbleTheme.muted)
+                            }
                         }
                         Spacer()
                     }
                     .listRowBackground(Color.clear)
                 }
+
+                Section {
+                    NavigationLink {
+                        MemoryView(marbleId: marble.id)
+                    } label: {
+                        Label("Memory", systemImage: "bookmark")
+                    }
+                }
+                .listRowBackground(MarbleTheme.card)
 
                 Section {
                     TextField("Who is this Marble?", text: $persona, axis: .vertical)
@@ -600,58 +610,18 @@ struct MarbleInfoView: View {
                     Text("A new personality starts a fresh conversation for \(marble.name); the old chat stays readable.")
                 }
 
-                Section(header: Text("Look")) {
-                    HStack(spacing: 14) {
-                        ForEach(MarbleMentions.glyphs, id: \.self) { shape in
-                            Button { glyph = shape } label: {
-                                MarbleAvatar(glyph: shape, hue: Int(hue), size: 30)
-                                    .opacity(glyph == shape ? 1 : 0.4)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    Slider(value: $hue, in: 0...359, step: 1)
+                Section("Look") {
+                    MarbleLookPicker(glyph: $glyph, hue: $hue)
                         .onChange(of: glyph) { _, _ in saveLook(marble) }
                         .onChange(of: hue) { _, _ in saveLook(marble) }
                 }
-
                 Section {
-                    let facts = store.memories(for: marble.id).filter { $0.owner == marble.id }
-                    if facts.isEmpty && !marble.isDefault {
-                        Text("Nothing of its own yet. Shared memories apply to every Marble.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(facts) { fact in
-                        Text(fact.text).font(.callout)
-                    }
-                    if marble.isDefault {
-                        Text("Marble's own memories appear here; shared memories apply to every Marble.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("Memory")
-                } footer: {
-                    if !marble.isDefault {
-                        Text("Shared memories apply to every Marble.")
+                    DisclosureGroup("Workspace and abilities") {
+                        LabeledContent("Workspace", value: marble.workspace.isEmpty ? "Host workspace" : marble.workspace)
+                        LabeledContent("Model", value: store.model.isEmpty ? "Host default" : store.model)
+                        NavigationLink("Tools") { WhatMarbleCanUseView() }
                     }
                 }
-
-                Section(header: Text("Workspace")) {
-                    Text(marble.workspace.isEmpty ? "the host workspace" : marble.workspace)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section(header: Text("What \(marble.name) can do")) {
-                    LabeledContent("Model", value: store.model.isEmpty ? "host default" : store.model)
-                        .foregroundStyle(.secondary)
-                    NavigationLink("Tools") { WhatMarbleCanUseView() }
-                    Text("Its own model, skills, and schedules owned by a Marble are coming.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
                 if !marble.isDefault {
                     Section {
                         Button("Remove \(marble.name)", role: .destructive) {
@@ -661,17 +631,19 @@ struct MarbleInfoView: View {
                 }
             }
         }
-        .navigationTitle(marble?.name ?? "Marble")
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             guard !personaLoaded, let marble else { return }
             personaLoaded = true
             persona = marble.persona
             glyph = marble.glyph
-            hue = Double(marble.hue)
+            hue = marble.hue
         }
         .confirmationDialog(
-            "Remove \(marble?.name ?? "this Marble") and her chat?",
+            "Remove \(marble?.name ?? "this Marble") and their chat?",
             isPresented: $confirmRemove,
             titleVisibility: .visible
         ) {
@@ -691,7 +663,7 @@ struct MarbleInfoView: View {
     private func saveLook(_ marble: MarblePrismMarble) {
         guard personaLoaded else { return }
         let chosen = glyph
-        let chosenHue = Int(hue)
+        let chosenHue = hue
         guard chosen != marble.glyph || chosenHue != marble.hue else { return }
         Task {
             await store.updateMarble(marble.id, update: .init(glyph: chosen, hue: chosenHue))

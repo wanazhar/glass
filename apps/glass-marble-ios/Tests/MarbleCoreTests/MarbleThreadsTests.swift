@@ -63,7 +63,7 @@ final class MarbleThreadsTests: XCTestCase {
         var navigation = MarbleNavigation()
         navigation.notificationTapped("everyone")
         navigation.openThread("t")
-        XCTAssertEqual(navigation.everyonePath, [.everyoneChat, .thread("t")])
+        XCTAssertEqual(navigation.everyonePath, [.thread("t")])
         navigation.openMarble("ada")
         navigation.openThread("u")
         XCTAssertEqual(navigation.chatPath, [.marbleChat("ada"), .thread("u")])

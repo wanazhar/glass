@@ -441,6 +441,8 @@ current user instructions.
 - [Marble iOS round 1 design proposal](../design/marble-round1/README.md) —
   companion identity, home alternatives and native design evidence; not
   shipped behavior.
+- [Marble iOS round 2 pull request record](../design/marble-round1/PR-round2.md) —
+  implementation summary, local verification and simulator evidence.
 - [Lifecycle invariant audit pull request record](plan/analysis/state-machine-invariants-issue-draft.md) —
   historical record of reproduced failure paths, fixes, and verification limits.
 - [Delivery plan archive](plan/README.md) — distinguishes active plans from

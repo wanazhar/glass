@@ -35,7 +35,7 @@ struct TranscriptView: View {
                         ContentUnavailableView(
                             "No messages yet",
                             systemImage: "text.bubble",
-                            description: Text("Ask Marble to read, change, or explain something in this workspace.")
+                            description: Text("Say hello, ask a question, or share what’s on your mind.")
                         )
                     }
                     let transcript = MarbleReasoningAssociation(entries)
@@ -72,6 +72,7 @@ struct TranscriptView: View {
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
+        .background(MarbleTheme.paper)
         .scrollDismissesKeyboard(.interactively)
         .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
             if let conversationId { await store.loadOlderHistory(conversationId, beforePrepend: beforePrepend) }
@@ -246,13 +247,14 @@ struct MarbleEntryView: View {
         if isUser {
             Text(entry.text)
                 .font(.body)
-                .foregroundStyle(.white)
+                .foregroundStyle(MarbleTheme.ink)
                 .textSelection(.enabled)
                 .padding(.horizontal, 13)
                 .padding(.vertical, 8)
                 .background(
-                    Color.accentColor,
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    MarbleTheme.wash,
+                    in: UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 20,
+                                               bottomTrailingRadius: 6, topTrailingRadius: 20)
                 )
                 .padding(.leading, 48)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -312,7 +314,7 @@ struct MarbleEntryView: View {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            MarbleTheme.marble(hue: hue).opacity(colorScheme == .dark ? 0.17 : 0.09),
+            MarbleTheme.card,
             in: RoundedRectangle(cornerRadius: 14)
         )
     }
@@ -456,17 +458,9 @@ struct ComposerBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if store.connectionPaused {
-                HStack {
-                    Text("Not connected")
-                        .foregroundStyle(.secondary)
-                    Button("Connect") { store.reconnect(force: true) }
-                        .buttonStyle(.borderless)
-                }
-                .font(.footnote)
+            MarbleConnectionNotice()
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
-            } else if action == .stopOnly {
+            if action == .stopOnly {
                 Text(MarbleSteer.unsupportedNote)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -515,11 +509,11 @@ struct ComposerBar: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 32))
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, trimmed.isEmpty ? Color(.systemGray3) : Color.accentColor)
+                        .foregroundStyle(MarbleTheme.card, trimmed.isEmpty ? MarbleTheme.muted : MarbleTheme.tint)
                         .frame(width: 38, height: 38)
                         .contentShape(Rectangle())
                 }
-                .disabled(trimmed.isEmpty || submitting || store.connectionPaused)
+                .disabled(trimmed.isEmpty || submitting || store.connectionPaused || store.needsToken)
                 .accessibilityLabel(action == .steer ? "Steer" : "Send")
             }
             if isWorking {

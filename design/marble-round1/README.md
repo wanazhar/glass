@@ -81,21 +81,7 @@ The [transcript sheet](sheets/components-light.png) covers avatars, a user bubbl
 
 The [baseline](before/) is the unmodified Marble app from main (`ca3e30c4`), on an iPhone 17 Pro with a seeded local Marble host and the repository's fake Core fixture. The copied prompts and raw operational line are fixture output, not sample copy for the proposal. Compare it with the proposal on the same iOS 26.5 device and status bar. The older PR #131 assets are reference only; the baseline was captured before rendering the proposal.
 
-The prototype uses deterministic SwiftUI fixtures, not production host traffic. Some controls change their local state to show the intended feedback; this is not a feature-parity implementation or an integration test.
-
-```sh
-cd design/marble-round1/Prototype
-work="$HOME/marble-round1-work"
-mkdir -p "$work"
-xcodegen generate --spec project.yml --project "$work" --project-root "$PWD"
-xcodebuild -project "$work/MarbleRound1.xcodeproj" -scheme MarbleRound1 \
-  -sdk iphonesimulator -configuration Debug -derivedDataPath "$work/proposal" \
-  CODE_SIGNING_ALLOWED=NO build
-app="$work/proposal/Build/Products/Debug-iphonesimulator/MarbleRound1.app"
-bash capture.sh <iphone-17-pro-udid> "$app" iphone
-bash capture.sh <ipad-udid> "$app" ipad
-bash capture.sh <iphone-17-pro-udid> "$app" xl
-```
+The prototype used deterministic SwiftUI fixtures, not production host traffic. It was removed when the design moved into the [Marble app](../../apps/glass-marble-ios/). The images here record the original proposal, including the Everyone-first variant that was not selected.
 
 Use the iOS 26+ runtime. Launch with no state argument or with `splash` to see the greeting. The XL captures cover [picker](iphone/picker-xl.png), [chat](iphone/chat-xl.png), [memory](iphone/memory-xl.png) and [creation](iphone/new-marble-xl.png). Layouts scroll instead of shrinking content as text grows. Further checks should include the larger accessibility categories, VoiceOver focus order, Increase Contrast and a real keyboard.
 

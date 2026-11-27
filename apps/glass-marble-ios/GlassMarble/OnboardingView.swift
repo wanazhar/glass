@@ -4,52 +4,95 @@ import SwiftUI
 /// token is rejected). There is no default host: Marble stays out of the
 /// product UI until a real host answers and validates.
 struct MarbleOnboardingView: View {
+    private enum Field { case host, token }
+
     @EnvironmentObject private var store: MarbleStore
+    @FocusState private var focusedField: Field?
     @State private var address = ""
     @State private var token = ""
-    @State private var checking = false
+    @State private var checkTask: Task<Void, Never>?
     @State private var verdict: MarbleOnboarding?
+    @State private var showsForm = false
     /// Set when the saved token was rejected so the form highlights the field.
     var expiredToken = false
+    var onConnected: () -> Void = {}
 
     var body: some View {
         NavigationStack {
+            if !showsForm && !expiredToken {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        PocketPair().frame(width: 86, height: 86)
+                        Text("Not connected").font(.largeTitle.weight(.semibold))
+                        Text("Connect to your Marble host to see your conversations and memories.")
+                            .foregroundStyle(MarbleTheme.muted)
+                        Button("Connect to host") { showsForm = true }
+                            .buttonStyle(.glassProminent)
+                    }
+                    .multilineTextAlignment(.center)
+                    .padding(28)
+                    .frame(maxWidth: 500)
+                    .frame(maxWidth: .infinity)
+                }
+                .background(MarbleTheme.paper)
+                .navigationTitle("Marble")
+                .navigationBarTitleDisplayMode(.inline)
+            } else {
             Form {
+                if expiredToken {
+                    Section {
+                        Label("Access token expired", systemImage: "key.slash")
+                            .foregroundStyle(MarbleTheme.problem)
+                        Text("Your host is still saved. Enter a new token to reconnect.")
+                    }
+                    .listRowBackground(MarbleTheme.card)
+                }
                 Section(header: Text("Host")) {
-                    TextField("http://100.x.y.z:4783", text: $address)
+                    TextField("Host URL", text: $address, prompt: Text(verbatim: "http://100.x.y.z:4783"))
+                        .focused($focusedField, equals: .host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                 }
+                .listRowBackground(MarbleTheme.card)
 
                 Section {
                     SecureField(
-                        expiredToken ? "Access token (the last one was rejected)" : "Access token",
+                        "Access token",
                         text: $token
                     )
+                    .focused($focusedField, equals: .token)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 } footer: {
-                    Text("The address of the machine running glass-marble — its Tailscale address like http://100.x.y.z:4783, or https://<name>.ts.net:4783 when the host has a certificate. The token lives in the token file on the host.")
+                    Text("Use your host’s Tailscale URL and the access token from that host.")
                 }
+                .listRowBackground(MarbleTheme.card)
 
                 Section {
-                    Button {
-                        Task { await connect() }
-                    } label: {
-                        HStack {
-                            Text(checking ? "Checking…" : "Connect")
-                            if checking { ProgressView() }
+                    if checkTask != nil {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ProgressView("Connecting to your host…")
+                            Text("Checking the address and access token.")
+                                .foregroundStyle(MarbleTheme.muted)
+                            Button("Cancel") {
+                                checkTask?.cancel()
+                                checkTask = nil
+                            }
                         }
+                    } else {
+                        Button("Connect") {
+                            focusedField = nil
+                            verdict = nil
+                            checkTask = Task { await connect() }
+                        }
+                        .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || MarbleToken.normalize(token).isEmpty)
                     }
-                    .disabled(
-                        checking
-                            || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
-                    if let verdict, !verdict.isReady {
+                    if let verdict, !verdict.isReady, checkTask == nil {
                         Text(verdict.message)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(MarbleTheme.problem)
                             .fixedSize(horizontal: false, vertical: true)
                         if let httpURL = verdict.httpHint {
                             Button("Use \(httpURL)") {
@@ -58,10 +101,15 @@ struct MarbleOnboardingView: View {
                         }
                     }
                 }
+                .listRowBackground(MarbleTheme.card)
             }
-            .navigationTitle("Connect to Marble")
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
+            .navigationTitle(expiredToken ? "Replace access token" : "Pair your host")
             .navigationBarTitleDisplayMode(.inline)
+            }
         }
+        .onDisappear { checkTask?.cancel() }
         .onAppear {
             // The host is prefilled; the token never is. A saved token that
             // was already rejected must not sit in the field and corrupt the
@@ -76,12 +124,13 @@ struct MarbleOnboardingView: View {
     private func connect() async {
         let rawAddress = address
         let rawToken = MarbleToken.normalize(token)
-        checking = true
-        defer { checking = false }
         let (verdict, endpoint) = await MarbleProbe.check(host: rawAddress, token: rawToken)
+        guard !Task.isCancelled else { return }
+        checkTask = nil
         self.verdict = verdict
         if verdict.isReady, let endpoint {
             store.apply(endpoint)
+            onConnected()
         }
     }
 }

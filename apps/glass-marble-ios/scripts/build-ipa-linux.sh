@@ -12,7 +12,7 @@ IOS_SDK="${IOS_SDK:-/srv/elektra/local/iPhoneOS.sdk}"
 TOOLCHAIN_LIB="${TOOLCHAIN_LIB:-/srv/elektra/local/materials/toolchain-lib}"
 OUT_DIR="${OUT_DIR:-$HOME/work/ipa}"
 PRERELEASE="${PRERELEASE:-alpha1}"
-MIN_IOS="18.0"
+MIN_IOS="26.0"
 LLVM_OBJDUMP="${LLVM_OBJDUMP:-/usr/local/swift-6.4.2-RELEASE-ubuntu24.04-aarch64/usr/bin/llvm-objdump}"
 
 cd "$APP_DIR"

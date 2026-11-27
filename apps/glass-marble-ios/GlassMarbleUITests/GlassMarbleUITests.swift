@@ -21,13 +21,12 @@ final class GlassMarbleUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["-MarbleUITestFixture", "-marble.introduced", "YES"]
+        app.launchArguments = ["-MarbleUITestFixture"]
         app.launch()
     }
 
     func testColdOpenShowsLatestEveryoneAndThreadHistoryWithoutScrolling() {
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons["chat.everyone"].tap()
         assertHittable("Everyone history row 59")
         for count in [60, 2] {
             app.buttons["Threads"].tap()
@@ -43,7 +42,6 @@ final class GlassMarbleUITests: XCTestCase {
         app.launchArguments.append("-MarbleUITestDelayedEveryone")
         app.launch()
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons["chat.everyone"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["Loading messages"].firstMatch.waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["No one has spoken yet"].exists)
         // Allow an accessibility poll after the fixture's five-second delay.
@@ -52,7 +50,6 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testEveryoneSavedMessageCanBeCopied() {
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons["chat.everyone"].tap()
         let text = "Everyone history row 59"
         assertHittable(text)
 
@@ -74,7 +71,6 @@ final class GlassMarbleUITests: XCTestCase {
         app.launchArguments.append("-MarbleUITestEveryoneSend")
         app.launch()
         app.tabBars.buttons["Everyone"].tap()
-        app.buttons["chat.everyone"].tap()
         assertHittable("Everyone history row 59")
 
         let message = "@everyone whats the system time?"
@@ -133,7 +129,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testEveryTabIsReachable() {
-        for tab in ["Marbles", "Settings"] {
+        for tab in ["Marbles", "Everyone", "Activity", "Settings"] {
             app.tabBars.buttons[tab].tap()
             XCTAssertTrue(app.tabBars.buttons[tab].isSelected, "\(tab) tab did not select")
             shot("02-tab-" + tab.lowercased())
@@ -179,33 +175,27 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testComposeOpensASavedChatThatCanBeReopened() {
-        app.tabBars.buttons["Everyone"].tap()
+        openDefaultChats()
         app.buttons["chat.compose"].tap()
         XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
         assertHittable("No messages yet")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["chat.compose"].isHittable)
-
-        openDefaultChats()
         app.staticTexts["New Chat"].tap()
         XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
         assertHittable("No messages yet")
     }
 
-    func testEveryonePushSupportsNativeBackSwipe() {
+    func testPickerOpensNewMarbleAndEveryoneIsOneTapAway() {
+        XCTAssertTrue(app.tabBars.buttons["Marbles"].isSelected)
+        let newMarble = app.buttons["New Marble"]
+        XCTAssertTrue(newMarble.isHittable)
+        newMarble.tap()
+        XCTAssertTrue(app.textFields["Name your Marble"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
         app.tabBars.buttons["Everyone"].tap()
-        let everyone = app.buttons["chat.everyone"]
-        everyone.tap()
         assertHittable("Everyone history row 59")
         XCTAssertTrue(app.buttons["Threads"].isHittable)
-        XCTAssertFalse(app.tabBars.buttons["Everyone"].isHittable)
-
-        let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.002, dy: 0.5))
-        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
-        edge.press(forDuration: 0.05, thenDragTo: end)
-        XCTAssertTrue(everyone.waitForExistence(timeout: 5))
-        XCTAssertTrue(everyone.isHittable)
-        XCTAssertTrue(app.tabBars.buttons["Everyone"].isHittable)
     }
 
     func testConversationListSearchOpensMatchingChat() {

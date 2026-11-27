@@ -107,6 +107,8 @@ struct SettingsView: View {
                 Text("Cancels every running turn on the host.")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
         .navigationTitle("Settings")
         .navigationDestination(for: MarbleSettingsRoute.self) { $0.destination }
         .confirmationDialog("Stop everything?", isPresented: $confirmStop, titleVisibility: .visible) {

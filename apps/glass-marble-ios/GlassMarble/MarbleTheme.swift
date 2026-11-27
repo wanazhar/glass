@@ -1,9 +1,43 @@
 import SwiftUI
 
 enum MarbleTheme {
-    /// The one accent: the standard iOS system blue (the asset catalog's
-    /// AccentColor carries the same values), used for interactive tint only.
-    static let tint = Color.accentColor
+    static let paper = Color("MarblePaper")
+    static let tint = adaptive(0x653E52, 0xE3B7CA)
+    static let card = adaptive(0xFFFBF6, 0x2D2523)
+    static let wash = adaptive(0xEEE3E0, 0x3C2C32)
+    static let ink = adaptive(0x282022, 0xFFF4E9)
+    static let muted = adaptive(0x695B59, 0xCBB9AD)
+    static let line = adaptive(0xE2D6CB, 0x51443F)
+    static let ready = adaptive(0x425A38, 0xBBD6A7)
+    static let waiting = adaptive(0x76511F, 0xE9C284)
+    static let problem = adaptive(0x913B42, 0xF5ABAF)
+    static let clay = adaptive(0xEAB5A5, 0xDEA28F)
+    static let moss = adaptive(0xC4D0A3, 0xB3C48C)
+
+    static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: Double(hex >> 16) / 255, green: Double(hex >> 8 & 255) / 255,
+                           blue: Double(hex & 255) / 255, alpha: 1)
+        })
+    }
+
+    static let hues: [(degrees: Int, name: String, fill: Color)] = [
+        (15, "Clay", clay), (85, "Moss", moss), (280, "Plum", adaptive(0xD8BFDE, 0xC9A8D1)),
+        (42, "Honey", adaptive(0xECC988, 0xDDB570)), (230, "Iris", adaptive(0xC5C9E9, 0xADB4DD)),
+        (329, "Rose", adaptive(0xE9BDD0, 0xDDA9C3))
+    ]
+
+    static func paletteIndex(for hue: Int) -> Int {
+        let normalized = (hue % 360 + 360) % 360
+        return hues.indices.min { lhs, rhs in
+            func distance(_ index: Int) -> Int {
+                let delta = abs(hues[index].degrees - normalized)
+                return min(delta, 360 - delta)
+            }
+            return distance(lhs) < distance(rhs)
+        } ?? 0
+    }
 
     /// The shared hue for a marble's avatar, name and reply.
     static func marble(hue: Int, brightness: Double = 0.72) -> Color {
@@ -15,43 +49,27 @@ enum MarbleTheme {
 
     static func status(_ name: String) -> Color {
         switch name {
-        case "completed", "done", "live", "ok": return .green
-        case "failed", "error", "offline", "blocked", "denied": return .red
-        case "running", "cancelled", "interrupted": return .orange
-        default: return .secondary
+        case "completed", "done", "live", "ok": return ready
+        case "failed", "error", "offline", "blocked", "denied": return problem
+        case "running", "cancelled", "interrupted": return waiting
+        default: return muted
         }
     }
 }
 
 extension View {
     /// Background for controls that float above the transcript.
-    /// Real glass on iOS 26, the system bar material below it, and an opaque
-    /// fill when transparency is reduced.
-    @ViewBuilder
+    /// Liquid Glass with an opaque fill when transparency is reduced.
     func marbleFloating(in shape: some Shape = Capsule()) -> some View {
-        if #available(iOS 26.0, *) {
-            modifier(MarbleFloatingGlass(shape: shape))
-        } else {
-            modifier(MarbleFloatingBar(shape: shape))
-        }
+        modifier(MarbleFloatingMaterial(shape: shape))
     }
 
-    @ViewBuilder
     func marbleChatBar<Bar: View>(edge: VerticalEdge, @ViewBuilder content: () -> Bar) -> some View {
-        if #available(iOS 26.0, *) {
-            safeAreaBar(edge: edge, spacing: 0, content: content)
-        } else {
-            safeAreaInset(edge: edge, spacing: 0, content: content)
-        }
+        safeAreaBar(edge: edge, spacing: 0, content: content)
     }
 
-    @ViewBuilder
     func marbleChatScrollEdges() -> some View {
-        if #available(iOS 26.0, *) {
-            scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-        } else {
-            self
-        }
+        scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
     }
 
     func marbleToolbarTitle() -> some View {
@@ -61,29 +79,15 @@ extension View {
     }
 }
 
-@available(iOS 26.0, *)
-private struct MarbleFloatingGlass<S: Shape>: ViewModifier {
+private struct MarbleFloatingMaterial<S: Shape>: ViewModifier {
     var shape: S
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     func body(content: Content) -> some View {
         if reduceTransparency {
-            content.background(Color(.secondarySystemBackground), in: shape)
+            content.background(MarbleTheme.card, in: shape)
         } else {
             content.glassEffect(.regular, in: shape)
-        }
-    }
-}
-
-private struct MarbleFloatingBar<S: Shape>: ViewModifier {
-    var shape: S
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    func body(content: Content) -> some View {
-        if reduceTransparency {
-            content.background(Color(.secondarySystemBackground), in: shape)
-        } else {
-            content.background(.bar, in: shape)
         }
     }
 }
@@ -95,6 +99,7 @@ struct MarbleTitleView: View {
     @EnvironmentObject private var store: MarbleStore
 
     private var connectionText: String? {
+        if store.needsToken { return "Access token expired" }
         if store.connectionPaused { return "Not connected" }
         switch store.connection {
         case .idle: return "Not connected"
@@ -113,7 +118,7 @@ struct MarbleTitleView: View {
                     .lineLimit(1)
                 if connectionText == nil {
                     Circle()
-                        .fill(.green)
+                        .fill(MarbleTheme.ready)
                         .frame(width: 6, height: 6)
                 }
             }
@@ -143,6 +148,40 @@ struct MarbleStatusText: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct MarbleConnectionNotice: View {
+    @EnvironmentObject private var store: MarbleStore
+    @State private var replacesToken = false
+
+    var body: some View {
+        if store.needsToken || store.connectionPaused || store.connection == .offline || store.connection == .connecting {
+            VStack(alignment: .leading, spacing: 6) {
+                if store.needsToken {
+                    Label("Access token expired", systemImage: "key.slash")
+                    Button("Replace token") { replacesToken = true }
+                } else if store.connectionPaused {
+                    Label("Disconnected", systemImage: "network.slash")
+                    Button("Connect") { store.reconnect(force: true) }
+                } else if store.connection == .offline {
+                    Label("Marble is offline", systemImage: "wifi.slash")
+                    Text("Check that your host is running and reachable.")
+                        .foregroundStyle(MarbleTheme.muted)
+                    Button("Retry connection") { store.reconnect(force: true) }
+                } else {
+                    ProgressView("Connecting to your host…")
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(MarbleTheme.ink)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(MarbleTheme.card, in: RoundedRectangle(cornerRadius: 14))
+            .sheet(isPresented: $replacesToken) {
+                MarbleOnboardingView(expiredToken: true) { replacesToken = false }
+            }
+        }
     }
 }
 

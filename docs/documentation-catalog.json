@@ -1944,6 +1944,44 @@
       ]
     },
     {
+      "path": "design/marble-round1/PR-round2.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "design/marble-round1/PR-round2.md#marble-ios-round-2",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Marble iOS — round 2",
+          "anchor": "marble-ios-round-2"
+        },
+        {
+          "level": "2",
+          "title": "What changed",
+          "anchor": "what-changed"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
+        },
+        {
+          "level": "2",
+          "title": "Simulator evidence",
+          "anchor": "simulator-evidence"
+        }
+      ]
+    },
+    {
       "path": "design/marble-round1/PR.md",
       "class": "historical",
       "topic": "history",
@@ -2414,6 +2452,7 @@
         "crates/glass-mod-api/README.md",
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
+        "design/marble-round1/PR-round2.md",
         "design/marble-round1/README.md",
         "design/round4/README.md",
         "docs/BROWSER-CU-AUDIT.md",

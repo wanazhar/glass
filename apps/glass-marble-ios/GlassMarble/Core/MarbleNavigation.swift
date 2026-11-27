@@ -5,11 +5,12 @@ import Foundation
 /// "refresh never navigates", "launch lands on the list", "deleting pops
 /// back" — is testable on Linux and impossible for a state refresh to violate.
 public enum MarbleTab: String, Sendable, CaseIterable {
-    /// The shared chat where every marble can answer; launch lands here.
+    /// The shared chat where every Marble can answer.
     case everyone
     /// The roster: every marble, its chat, and its info.
     case marbles
-    /// Connection, Marbles and models, Activity, Scheduled, and the rest.
+    case activity
+    /// Connection, preferences, and data.
     case settings
 }
 
@@ -17,10 +18,9 @@ public enum MarbleTab: String, Sendable, CaseIterable {
 /// holds marble screens and the default assistant's chats; the Everyone
 /// stack only needs a marble's info card when an avatar is tapped.
 public enum ChatRoute: Hashable, Sendable {
-    /// The shared chat, pushed from the Everyone inbox.
-    case everyoneChat
     case threadInbox(String)
     case thread(String)
+    case find(String)
     case searchHit(conversationId: String, threadId: String?, entryId: String?)
     /// A not-yet-created conversation. It gains a real id on the first send.
     case draft
@@ -34,7 +34,7 @@ public enum ChatRoute: Hashable, Sendable {
 }
 
 public struct MarbleNavigation: Sendable, Equatable {
-    public private(set) var tab: MarbleTab = .everyone
+    public private(set) var tab: MarbleTab = .marbles
     /// The Marbles stack's path; empty means the roster is on top.
     public internal(set) var chatPath: [ChatRoute] = []
     /// The Everyone stack's path; only avatar taps push onto it.
@@ -51,7 +51,7 @@ public struct MarbleNavigation: Sendable, Equatable {
     /// their paths even while another screen is on top.
     func visibleChat(namedConversation: (String) -> String?) -> String? {
         switch activeChatRoute {
-        case .everyoneChat: return everyoneConversationId
+        case nil where tab == .everyone && everyonePath.isEmpty: return everyoneConversationId
         case .marbleChat(let id): return namedConversation(id)
         case .conversation(let id), .searchHit(let id, nil, _): return id
         default: return nil
@@ -69,16 +69,16 @@ public struct MarbleNavigation: Sendable, Equatable {
         switch tab {
         case .everyone: return everyonePath.last
         case .marbles: return chatPath.last
-        case .settings: return nil
+        case .activity, .settings: return nil
         }
     }
     /// Set by the scene when a notification launch arrives before the view
     /// exists; the Chats tab drains it on first appearance.
     public private(set) var pendingOpen: String?
 
-    /// Cold start always lands on Everyone.
+    /// Cold start lands on the picker.
     public mutating func launch() {
-        tab = .everyone
+        tab = .marbles
         chatPath = []
         everyonePath = []
     }
@@ -119,7 +119,7 @@ public struct MarbleNavigation: Sendable, Equatable {
             if everyonePath.last != route { everyonePath.append(route) }
         case .marbles:
             if chatPath.last != route { chatPath.append(route) }
-        case .settings:
+        case .activity, .settings:
             break
         }
     }
@@ -134,6 +134,7 @@ public struct MarbleNavigation: Sendable, Equatable {
     /// A marble's info screen, from the roster or an Everyone avatar.
     public mutating func openMarbleInfo(_ id: String, fromEveryone: Bool = false) {
         if fromEveryone {
+            tab = .everyone
             everyonePath.append(.marbleInfo(id))
         } else {
             tab = .marbles
@@ -160,7 +161,7 @@ public struct MarbleNavigation: Sendable, Equatable {
     public mutating func deleted(_ id: String) {
         func belongsToConversation(_ route: ChatRoute) -> Bool {
             switch route {
-            case .conversation(let existing), .threadInbox(let existing), .searchHit(let existing, _, _):
+            case .conversation(let existing), .threadInbox(let existing), .find(let existing), .searchHit(let existing, _, _):
                 return existing == id
             default:
                 return false
@@ -179,7 +180,7 @@ public struct MarbleNavigation: Sendable, Equatable {
     public mutating func notificationTapped(_ id: String) {
         if id == everyoneConversationId {
             tab = .everyone
-            everyonePath = [.everyoneChat]
+            everyonePath = []
             return
         }
         tab = .marbles
@@ -201,7 +202,7 @@ public struct MarbleNavigation: Sendable, Equatable {
     public mutating func refreshed() {}
 
     public mutating func signOut() {
-        tab = .everyone
+        tab = .marbles
         chatPath = []
         everyonePath = []
         pendingOpen = nil

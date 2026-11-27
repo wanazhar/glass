@@ -31,51 +31,47 @@ final class MarbleNavigationModel: ObservableObject {
 struct MarbleRootView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @State private var showsIntroduction = false
-    @AppStorage("marble.introduced") private var introduced = false
-    @SceneStorage("marble.tab") private var storedTab = MarbleTab.everyone.rawValue
+    @State var showsSplash: Bool
 
     var body: some View {
-        Group {
-            if store.onboarded && !store.needsToken {
-                // Three tabs, icons only; each keeps its spoken name for
-                // VoiceOver and UI tests. Activity and Scheduled live in Settings.
-                TabView(selection: tabBinding) {
-                    Tab(value: MarbleTab.everyone) {
-                        EveryoneTabView()
-                    } label: {
-                        MarbleTabIcon(title: "Everyone", systemImage: "bubble.left.and.text.bubble.right.fill")
-                    }
-                    .accessibilityIdentifier("tab.everyone")
-                    Tab(value: MarbleTab.marbles) {
+        ZStack {
+            MarbleTheme.paper.ignoresSafeArea()
+            if store.onboarded {
+                TabView(selection: Binding(
+                    get: { navigation.state.tab }, set: { navigation.selectTab($0) }
+                )) {
+                    Tab("Marbles", systemImage: "hexagon", value: MarbleTab.marbles) {
                         MarblesTabView()
-                    } label: {
-                        MarbleTabIcon(title: "Marbles", systemImage: "person.2.fill")
                     }
                     .accessibilityIdentifier("tab.marbles")
-                    Tab(value: MarbleTab.settings) {
+                    Tab("Everyone", systemImage: "bubble.left.and.bubble.right", value: MarbleTab.everyone) {
+                        EveryoneTabView()
+                    }
+                    .accessibilityIdentifier("tab.everyone")
+                    Tab("Activity", systemImage: "waveform.path", value: MarbleTab.activity) {
+                        NavigationStack { ActivityView() }
+                    }
+                    .accessibilityIdentifier("tab.activity")
+                    .badge(store.state.approvals.count + store.memory.suggestions.count)
+                    Tab("Settings", systemImage: "gearshape", value: MarbleTab.settings) {
                         NavigationStack { SettingsView() }
-                    } label: {
-                        MarbleTabIcon(title: "Settings", systemImage: "gearshape.fill")
                     }
                     .accessibilityIdentifier("tab.settings")
-                    .badge(store.state.approvals.count + store.memory.suggestions.count)
                 }
+                .allowsHitTesting(!showsSplash)
+                .accessibilityHidden(showsSplash)
             } else {
-                // No usable host yet: onboarding is the whole screen, never an
-                // empty product UI pretending it is connected.
                 MarbleOnboardingView(expiredToken: store.needsToken)
+                    .allowsHitTesting(!showsSplash)
+                    .accessibilityHidden(showsSplash)
+            }
+            if showsSplash {
+                MarbleSplash { showsSplash = false }
+                    .zIndex(1)
             }
         }
+        .tint(MarbleTheme.tint)
         .task { store.start() }
-        .onAppear {
-            if let restored = MarbleTab(rawValue: storedTab) {
-                navigation.selectTab(restored)
-            }
-            guard !introduced else { return }
-            introduced = true
-            showsIntroduction = true
-        }
         .onReceive(NotificationCenter.default.publisher(for: .marbleOpenConversation)) { note in
             guard let id = note.object as? String, !store.isDeletedConversation(id) else { return }
             navigation.notificationTapped(id)
@@ -83,113 +79,77 @@ struct MarbleRootView: View {
         .onChange(of: store.onboarded) { _, onboarded in
             if !onboarded { navigation.signOut() }
         }
-        .sheet(isPresented: $showsIntroduction) {
-            ConnectIntroductionView { showsIntroduction = false }
-                .ignoresSafeArea()
-        }
-    }
-
-    private var tabBinding: Binding<MarbleTab> {
-        Binding(
-            get: { navigation.state.tab },
-            set: { newTab in
-                navigation.selectTab(newTab)
-                storedTab = newTab.rawValue
-            }
-        )
     }
 }
 
-private struct MarbleTabIcon: View {
-    var title: String
-    var systemImage: String
-
-    var body: some View {
-        Image(systemName: systemImage)
-            .accessibilityLabel(Text(title))
-    }
-}
-
-/// The Everyone tab: the shared chat; avatar taps push a marble's info.
 struct EveryoneTabView: View {
-    @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @State private var query = ""
 
     var body: some View {
-        NavigationStack(path: everyonePath) {
-            List {
-                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    MarbleSearchSection(query: query) { hit in
-                        NavigationLink(value: ChatRoute.searchHit(
-                            conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
-                        )) { MarbleSearchRow(hit: hit) }
-                    }
-                } else {
-                    everyoneLink
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationTitle("Chats")
-            .searchable(text: $query, prompt: "Search all chats")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
-            }
-            .navigationDestination(for: ChatRoute.self) { route in
-                switch route {
-                case .marbleInfo(let id):
-                    MarbleInfoView(marbleId: id)
-                        .toolbarVisibility(.hidden, for: .tabBar)
-                case .everyoneChat:
-                    EveryoneView()
-                case .conversation, .draft:
-                    MarbleChatView(route: route)
-                default:
-                    MarbleThreadDestination(route: route)
-                }
-            }
-        }
-    }
-
-    private var everyoneLink: some View {
-        NavigationLink(value: ChatRoute.everyoneChat) {
-            Label {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Everyone")
-                    if let last = store.everyoneEntries.last(where: {
-                        ["assistant", "user"].contains($0.kind) && !MarbleTurnFailure.isLegacyProviderError($0)
-                    }) {
-                        Text(last.text)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+        NavigationStack(path: Binding(
+            get: { navigation.state.everyonePath }, set: { navigation.setEveryonePath($0) }
+        )) {
+            EveryoneView()
+                .navigationDestination(for: ChatRoute.self) { route in
+                    switch route {
+                    case .marbleInfo(let id):
+                        MarbleInfoView(marbleId: id)
+                            .toolbarVisibility(.hidden, for: .tabBar)
+                    case .conversation, .draft:
+                        MarbleChatView(route: route)
+                    default:
+                        MarbleThreadDestination(route: route)
                     }
                 }
-            } icon: {
-                Image(systemName: "bubble.left.and.text.bubble.right")
-                    .foregroundStyle(.tint)
-            }
         }
-        .accessibilityIdentifier("chat.everyone")
-    }
-
-    private var everyonePath: Binding<[ChatRoute]> {
-        Binding(
-            get: { navigation.state.everyonePath },
-            set: { navigation.setEveryonePath($0) }
-        )
     }
 }
 
-/// The Marbles tab: the roster on top; rows push a marble's chat — or, for
-/// the default Marble, the chats list that every conversation lives in.
 struct MarblesTabView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        NavigationStack(path: chatPath) {
-            MarblesView()
+        Group {
+            if sizeClass == .regular {
+                NavigationSplitView {
+                    MarblesView(
+                        selection: navigation.state.chatPath.first,
+                        onSelect: { navigation.setChatPath([$0]) }
+                    )
+                    .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 380)
+                } detail: {
+                    stack(root: {
+                        VStack(spacing: 12) {
+                            PocketPair().frame(width: 80, height: 80)
+                            Text("Who’s on your mind?").font(.largeTitle.weight(.semibold))
+                            Text("Choose a Marble to start a conversation.")
+                                .foregroundStyle(MarbleTheme.muted)
+                        }
+                        .multilineTextAlignment(.center)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(MarbleTheme.paper)
+                    })
+                }
+                .navigationSplitViewStyle(.balanced)
+            } else {
+                stack(root: { MarblesView() })
+            }
+        }
+        .onAppear {
+            if let id = navigation.drainPendingOpen(), !store.isDeletedConversation(id) {
+                navigation.notificationTapped(id)
+            }
+        }
+    }
+
+    private func stack<Root: View>(@ViewBuilder root: () -> Root) -> some View {
+        NavigationStack(path: Binding(
+            get: { navigation.state.chatPath }, set: { navigation.setChatPath($0) }
+        )) {
+            root()
                 .navigationDestination(for: ChatRoute.self) { route in
                     switch route {
                     case .marbleChats:
@@ -205,20 +165,6 @@ struct MarblesTabView: View {
                     }
                 }
         }
-        .onAppear {
-            // A notification that launched the app arrived before this stack
-            // existed; honour it now that the path can hold it.
-            if let id = navigation.drainPendingOpen(), !store.isDeletedConversation(id) {
-                navigation.notificationTapped(id)
-            }
-        }
-    }
-
-    private var chatPath: Binding<[ChatRoute]> {
-        Binding(
-            get: { navigation.state.chatPath },
-            set: { navigation.setChatPath($0) }
-        )
     }
 }
 struct MarbleChatView: View {
@@ -294,6 +240,11 @@ struct MarbleChatView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     MarbleThreadInboxLink(conversationId: conversationId)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: ChatRoute.find(conversationId)) {
+                        Label("Find", systemImage: "magnifyingglass")
+                    }
+                }
             }
         }
         .alert("Rename chat", isPresented: $renaming) {
@@ -340,15 +291,7 @@ struct MarbleChatView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(store.memory.suggestions) { suggestion in
-                        SuggestionCard(suggestion: suggestion) { keep in
-                            Task {
-                                if keep {
-                                    await store.accept(suggestion)
-                                } else {
-                                    await store.dismiss(suggestion)
-                                }
-                            }
-                        }
+                        SuggestionCard(suggestion: suggestion)
                         .frame(width: 300)
                     }
                     ForEach(store.state.approvals) { approval in

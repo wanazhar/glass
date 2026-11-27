@@ -1349,8 +1349,12 @@ final class MarbleStore: ObservableObject {
     func addMarble(
         name: String, role: String = "", glyph: String, hue: Int,
         workspace: String = "", persona: String = ""
-    ) async {
-        guard let client else { return }
+    ) async -> String? {
+        guard let client else {
+            errorMessage = "Reconnect to your host to create a Marble."
+            return nil
+        }
+        let existing = Set(prism.marbles.map(\.id))
         do {
             let draft = MarbleClient.MarbleDraft(
                 name: name,
@@ -1360,14 +1364,16 @@ final class MarbleStore: ObservableObject {
                 workspace: workspace,
                 persona: persona
             )
-            _ = try await client.addMarble(draft)
+            let updated = try await client.addMarble(draft)
             errorMessage = nil
             prismNotice = "\(draft.name) is here."
+            await refresh()
+            return updated.marbles.first { !existing.contains($0.id) && $0.name == draft.name }?.id
         } catch {
             prismNotice = nil
             errorMessage = error.localizedDescription
         }
-        await refresh()
+        return nil
     }
 
     /// Edit one marble: name, look, or its personality.

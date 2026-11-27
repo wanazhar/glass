@@ -42,7 +42,7 @@ struct ConversationView: View {
                         emptyState
                     }
                     let rows = rows
-                    let turnEnds = Self.turnEnds(rows)
+                    let turnEnds = Self.turnEnds(rows, active: conversation.timeline.isActive)
                     ForEach(rows) { row in
                         switch row {
                         case .message(let entry): TimelineRow(entry: entry, endsTurn: turnEnds.contains(row.id))
@@ -368,13 +368,13 @@ struct ConversationView: View {
         ChatRow.make(from: conversation.timeline)
     }
 
-    /// Replies followed by the next request, or by nothing: the last word of each turn.
-    static func turnEnds(_ rows: [ChatRow]) -> Set<String> {
+    /// Replies followed by the next request, or ending a finished conversation: the last word of each turn.
+    static func turnEnds(_ rows: [ChatRow], active: Bool) -> Set<String> {
         var ends: Set<String> = []
         for (index, row) in rows.enumerated() {
             guard case .message(let entry) = row, case .assistant = entry else { continue }
             let next = rows.indices.contains(index + 1) ? rows[index + 1] : nil
-            if next == nil { ends.insert(row.id) }
+            if next == nil { if !active { ends.insert(row.id) } }
             else if case .message(let following)? = next, case .user = following { ends.insert(row.id) }
         }
         return ends

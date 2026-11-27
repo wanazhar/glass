@@ -2294,6 +2294,18 @@ final class MarbleStore: ObservableObject {
             workingLines.removeValue(forKey: taskId)
         }
         if event.kind == "reasoning" { recordReasoning(event.data.text ?? "", taskId: event.taskId) }
+        if event.kind == "entry_removed", let id = event.data.entryId {
+            liveEntries[event.conversationId]?.removeAll { $0.id == id }
+            workingLines.removeValue(forKey: taskId)
+            if let threadId = event.data.threadId {
+                threadPages[threadId]?.entries.removeAll { $0.id == id }
+                threadEventSequences[threadId] = event.sequence
+            }
+            saveCache()
+            saveCursor()
+            scheduleEventRefresh()
+            return
+        }
         if event.kind == "entry" {
             if let entry = event.entryUpdate, entry.kind == "pending" || entry.kind == "system",
                liveAfter.map({ event.sequence > $0 }) == true {

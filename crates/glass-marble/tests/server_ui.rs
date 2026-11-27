@@ -2807,6 +2807,59 @@ fn everyone_threads_run_sequential_handoffs_in_the_group_round_engine() {
 }
 
 #[test]
+fn everyone_pass_retracts_the_announced_pending_reply() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_args("everyone-pass", vec!["--group-rounds".into()]);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.prism.install_template();
+        state
+            .prism
+            .find_mut("reviewer")
+            .unwrap()
+            .card
+            .as_mut()
+            .unwrap()
+            .in_everyone = true;
+    }
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Review"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    let prompt = "@reviewer Nothing to add";
+    assert_eq!(
+        fixture
+            .post("/api/everyone", json!({"threadId":thread,"text":prompt}))
+            .0,
+        202
+    );
+    let task = fixture.completed(prompt);
+    assert!(
+        !everyone_entries(&fixture.state)
+            .iter()
+            .any(|entry| entry.kind == "pending" && entry.task_id == task.id)
+    );
+    let events = fixture.events.since(0);
+    let pending = events
+        .iter()
+        .find(|event| {
+            event.kind == "entry" && event.task_id == task.id && event.data["kind"] == "pending"
+        })
+        .expect("working row was announced");
+    assert!(
+        events.iter().any(|event| event.sequence > pending.sequence
+            && event.kind == "entry_removed"
+            && event.data["id"] == pending.data["id"]
+            && event.data["thread_id"] == thread),
+        "working row removal was not announced"
+    );
+}
+
+#[test]
 fn group_threads_keep_lead_and_stay_out_of_everyone() {
     let mut state = ProductState::default();
     state.prism.install_template();

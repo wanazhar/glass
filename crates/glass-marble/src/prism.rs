@@ -2279,7 +2279,7 @@ impl PrismPool {
                         let _ = waiter.send(Ok(reply.text.clone()));
                     }
                 }
-                let snapshot = {
+                let (snapshot, removed) = {
                     let mut state = self.lock_state();
                     if group.is_some() && cancel.load(Ordering::Relaxed) {
                         reply.cancelled = true;
@@ -2313,6 +2313,7 @@ impl PrismPool {
                         });
                     }
                     state.prism.note_settled(&marble.id, status, "");
+                    let mut removed = Vec::new();
                     if group
                         .as_ref()
                         .is_some_and(|group| group.everyone_entry.is_some())
@@ -2320,11 +2321,22 @@ impl PrismPool {
                     {
                         crate::everyone::settle_mirror(&mut state, &reply.task_id);
                         state.transcript.retain(|entry| {
-                            entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION
-                                || entry.kind != "pending"
-                                || entry.task_id != reply.task_id
+                            if entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                                && entry.kind == "pending"
+                                && entry.task_id == reply.task_id
+                            {
+                                removed.push((entry.id.clone(), entry.thread_id.clone()));
+                                false
+                            } else {
+                                true
+                            }
                         });
                         state.flush_everyone();
+                        if !removed.is_empty()
+                            && let Some(thread) = &thread_id
+                        {
+                            state.refresh_thread(thread);
+                        }
                     } else {
                         crate::everyone::mirror_settlement(
                             &mut state,
@@ -2335,9 +2347,17 @@ impl PrismPool {
                     }
                     state.settle_knowledge(&reply, &marble.id, text);
                     state.bump();
-                    state.clone()
+                    (state.clone(), removed)
                 };
                 self.persist(&snapshot);
+                for (id, thread) in removed {
+                    self.events.publish(
+                        crate::everyone::EVERYONE_CONVERSATION,
+                        &reply.task_id,
+                        "entry_removed",
+                        json!({"id": id, "thread_id": thread}),
+                    );
+                }
                 self.events.publish(
                     &reply.conversation_id,
                     &reply.task_id,

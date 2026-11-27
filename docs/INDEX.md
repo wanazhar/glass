@@ -438,6 +438,9 @@ current user instructions.
 
 - [Glass iOS round 4 design proposal](../design/round4/README.md) — Lens identity, SF Pro typography,
   component prototypes, and visual acceptance criteria; not shipped behavior.
+- [Marble iOS round 1 design proposal](../design/marble-round1/README.md) —
+  companion identity, home alternatives and native design evidence; not
+  shipped behavior.
 - [Lifecycle invariant audit pull request record](plan/analysis/state-machine-invariants-issue-draft.md) —
   historical record of reproduced failure paths, fixes, and verification limits.
 - [Delivery plan archive](plan/README.md) — distinguishes active plans from

@@ -506,38 +506,23 @@ fn take_commentary(text: &mut String, reasoning: &mut String) -> String {
 fn split_plan_preamble(text: &str) -> Option<(&str, &str)> {
     let text = text.trim_start();
     let lowered = text.to_ascii_lowercase();
-    if !["the user is asking ", "the user asks ", "the user wants "]
-        .iter()
-        .any(|prefix| lowered.starts_with(prefix))
-    {
+    if !lowered.starts_with("the user is asking ") {
         return None;
     }
-    let end = [
-        "i'll output only the final answer.",
-        "i’ll output only the final answer.",
-        "i will output only the final answer.",
-        "final answer:",
-    ]
-    .iter()
-    .filter_map(|marker| lowered.find(marker).map(|at| at + marker.len()))
-    .min()
-    .or_else(|| {
-        (lowered.contains(". i need to ") && lowered.contains(". i should ")).then_some(text.len())
-    })?;
+    let marker = "i'll output only the final answer.";
+    let at = lowered.find(marker)?;
+    let preamble = &lowered[..at];
+    let need = preamble.find(". i need to ")?;
+    let should = preamble.find(". i should ")?;
+    if need >= should {
+        return None;
+    }
+    let end = at + marker.len();
     Some((text[..end].trim_end(), text[end..].trim_start()))
 }
 
 fn separate_legacy_reply(text: &str) -> Option<(String, String)> {
-    let mut splitter = ThinkSplitter::default();
-    let (mut visible, mut thought) = splitter.feed(text);
-    let (tail, thought_tail) = splitter.flush();
-    visible.push_str(&tail);
-    thought.push_str(&thought_tail);
-    if let Some((plan, answer)) = split_plan_preamble(&visible) {
-        append_reasoning(&mut thought, &mut true, plan);
-        visible = answer.to_string();
-    }
-    (visible != text).then(|| (visible.trim().into(), thought.trim().into()))
+    split_plan_preamble(text).map(|(plan, answer)| (answer.into(), plan.into()))
 }
 
 pub(crate) fn separate_stored_reasoning(state: &mut crate::ProductState) {
@@ -582,6 +567,21 @@ pub(crate) fn separate_stored_reasoning(state: &mut crate::ProductState) {
 #[cfg(test)]
 mod tests {
     use super::ThinkSplitter;
+
+    #[test]
+    fn plan_detection_preserves_plain_and_quoted_answers() {
+        for text in [
+            "The user wants a budget. Final answer: 42.",
+            "The user is asking about an idiom. I'll output only the final answer.",
+            "An XML example: <think>an idea</think>",
+        ] {
+            assert!(super::split_plan_preamble(text).is_none(), "{text}");
+            assert!(super::separate_legacy_reply(text).is_none(), "{text}");
+        }
+        let plan = "The user is asking about a leak. I need to respond. I should apologize. I'll output only the final answer.";
+        let text = format!("{plan}My bad.");
+        assert_eq!(super::split_plan_preamble(&text), Some((plan, "My bad.")));
+    }
 
     #[test]
     fn tool_boundaries_separate_commentary() {

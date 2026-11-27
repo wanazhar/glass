@@ -291,6 +291,8 @@ final class MarbleEvidenceTests: XCTestCase {
         check(app.staticTexts["Ada couldn’t finish this reply."], timeout: 15)
         XCTAssertEqual(app.staticTexts.matching(identifier: "Ada couldn’t finish this reply.").count, 1)
         check(button("Retry"))
+        let continueButton = button("Continue")
+        if continueButton.exists { continueButton.tap() }
         shot("p1-named-failure")
     }
 

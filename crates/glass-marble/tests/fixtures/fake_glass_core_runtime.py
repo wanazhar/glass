@@ -160,7 +160,9 @@ def run_turn(identifier, task, text, conversation, request):
         if "failure" in text:
             event(turn, "text", {"text": "[Generation failed] Reason: fixture provider unavailable"})
         else:
-            event(turn, "text", {"text": "The report is ready to review."})
+            for delta in ["The report ", "is ready ", "to review."]:
+                event(turn, "text", {"text": delta})
+                time.sleep(0.6)
         event(turn, "settled", {"reason": "completed"})
         reply(identifier, {"settled": True})
         return

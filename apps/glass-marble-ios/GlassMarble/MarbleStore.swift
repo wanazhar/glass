@@ -2465,10 +2465,12 @@ extension MarbleStore {
         }
         // A second chat carries a short transcript so row-navigation tests
         // can assert its own messages appear, not conversation 0's.
+        let fixtureDay = Calendar.current.startOfDay(for: Date())
         for index in 0..<3 {
             state.transcript.append(MarbleEntry(
                 conversationId: "fixture-2", kind: index == 0 ? "user" : "assistant",
-                text: "Fixture message \(index)", taskId: "task-2", at: now - 100 + UInt64(index)
+                text: "Fixture message \(index)", taskId: "task-2",
+                at: UInt64(fixtureDay.addingTimeInterval(39_600 + Double(index * 420)).timeIntervalSince1970 * 1_000)
             ))
         }
         state.transcript.insert(

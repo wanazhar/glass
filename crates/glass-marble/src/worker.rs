@@ -1022,7 +1022,9 @@ fn run_command(
     let agent = {
         let guard = lock(state);
         let agent = guard.prism.default_marble();
-        conversation.set_model(agent.model(&guard.model));
+        conversation
+            .set_model((!guard.model.trim().is_empty()).then(|| guard.model.trim().to_owned()));
+        conversation.set_card_model(agent.model(""));
         agent
     };
     conversation.set_agent_tools(agent.card.as_ref().map(|card| card.tools.clone()));

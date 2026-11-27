@@ -98,6 +98,8 @@ pub struct ConversationRecord {
     pub lane: u8,
     #[serde(default)]
     pub engine_conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_model: Option<String>,
     /// Explicitly created chats acquire their engine session on first send.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub needs_engine_session: bool,
@@ -408,6 +410,7 @@ impl ProductState {
         }
         self.conversations.push(ConversationRecord {
             id: id.to_string(),
+            chat_model: Some(self.model.trim().to_owned()),
             ..ConversationRecord::default()
         });
         self.conversations

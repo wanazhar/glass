@@ -448,6 +448,7 @@ pub struct Conversation {
     tool_limit: usize,
     events: EventBus,
     model: Option<String>,
+    card_model: Option<String>,
     approval_timeout: Duration,
     active_conversation: String,
     active_task: String,
@@ -560,6 +561,7 @@ impl Conversation {
             tool_limit: crate::turn::DEFAULT_TOOL_LIMIT,
             events,
             model: None,
+            card_model: None,
             approval_timeout: Duration::from_secs(300),
             active_conversation: String::new(),
             active_task: String::new(),
@@ -701,6 +703,7 @@ impl Conversation {
         scoped.product = self.product.clone();
         scoped.store = self.store.clone();
         scoped.model = self.model.clone();
+        scoped.card_model.clone_from(&self.card_model);
         scoped.speaker.clone_from(&self.speaker);
         scoped.tool_limit = self.tool_limit;
         scoped.agent_tools.clone_from(&self.agent_tools);
@@ -876,6 +879,10 @@ impl Conversation {
         self.model = model;
     }
 
+    pub(crate) fn set_card_model(&mut self, model: Option<String>) {
+        self.card_model = model;
+    }
+
     /// Fix the instructions this session's conversations open with — a named
     /// marble's identity instead of the default product posture.
     pub fn with_instructions(mut self, instructions: String) -> Self {
@@ -910,6 +917,10 @@ impl Conversation {
 
     /// Create a durable conversation and return its id.
     pub fn create(&mut self) -> Result<String, MarbleError> {
+        self.create_using_model(self.model.clone())
+    }
+
+    fn create_using_model(&mut self, model: Option<String>) -> Result<String, MarbleError> {
         let mut options = self.tool_options(false);
         options.instructions = Some(
             self.instructions_fn
@@ -918,7 +929,7 @@ impl Conversation {
                 .or_else(|| self.instructions.clone())
                 .unwrap_or_else(|| default_assistant_instructions("", &self.cwd)),
         );
-        options.model = self.model.clone();
+        options.model = model;
         let created = self.client.durable_create(&options);
         let create_id = self.issue(created)?;
         let result = self.pump(&create_id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
@@ -936,7 +947,14 @@ impl Conversation {
     }
 
     pub(crate) fn create_for_turn(&mut self) -> Result<String, MarbleError> {
-        self.create().or_else(|error| {
+        self.create_for_turn_using_model(self.model.clone())
+    }
+
+    fn create_for_turn_using_model(
+        &mut self,
+        model: Option<String>,
+    ) -> Result<String, MarbleError> {
+        self.create_using_model(model.clone()).or_else(|error| {
             if !crate::failure::transient(&error.to_string()) {
                 return Err(error);
             }
@@ -945,8 +963,22 @@ impl Conversation {
                 value!({"attempt":1,"phase":"admission","reason":"transient_failure"}),
             );
             self.ensure_runtime()?;
-            self.create()
+            self.create_using_model(model)
         })
+    }
+
+    fn inspect_conversation(&mut self, engine_id: &str) -> Result<Value, MarbleError> {
+        let inspect = self.client.request(
+            "durable/inspect",
+            value!({"conversationId":engine_id,"limit":1}),
+        );
+        let inspect_id = self.issue(inspect)?;
+        self.pump(
+            &inspect_id,
+            Instant::now() + TURN_TIMEOUT,
+            None,
+            &mut |_| {},
+        )
     }
 
     /// Admit one durable request and return its task id.
@@ -974,9 +1006,16 @@ impl Conversation {
                 .find(|c| c.id == conversation_id)
                 .cloned()
         });
+        let mut chat_model = match record
+            .as_ref()
+            .and_then(|record| record.chat_model.as_deref())
+        {
+            Some(model) => (!model.is_empty()).then(|| model.to_owned()),
+            None => self.model.clone(),
+        };
         let mut engine_id = match &record {
             Some(record) if record.needs_engine_session => {
-                let engine_id = self.create_for_turn()?;
+                let engine_id = self.create_for_turn_using_model(chat_model.clone())?;
                 if let Some(product) = &self.product {
                     let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
                     let record = state.conversation_mut(conversation_id);
@@ -1041,9 +1080,6 @@ impl Conversation {
                         MarbleError::Protocol("durable/fork returned no conversation id".into())
                     })?
                     .to_string();
-        if self.can_scope_runtime() && crate::everyone::is_group_session(conversation_id) {
-            agent["cwd"] = value!(self.cwd);
-        }
             } else {
                 input.text = input.text.replacen("[Marble host context]\n", "[Marble host context]\nThis is a retry of an earlier failed message; later turns remain in the conversation history.\n", 1);
             }
@@ -1051,9 +1087,27 @@ impl Conversation {
         self.suppress_tools = suppress_tools;
         let options = self.tool_options(suppress_tools);
         let mut agent = value!({"toolMode":options.tool_mode, "tools":options.tools});
-        if self.agent_tools.is_some()
-            && let Some(model) = &self.model
-        {
+        if self.can_scope_runtime() && crate::everyone::is_group_session(conversation_id) {
+            agent["cwd"] = value!(self.cwd);
+        }
+        if chat_model.is_none() && self.product.is_some() {
+            let snapshot = self.inspect_conversation(&engine_id)?;
+            chat_model = snapshot["items"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["type"] == "conversation"))
+                .and_then(|item| item["value"]["agent"]["model"].as_str())
+                .map(str::to_owned);
+        }
+        if let (Some(product), Some(model)) = (&self.product, chat_model.as_ref()) {
+            let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+            let record = state.conversation_mut(conversation_id);
+            if record.chat_model.as_ref() != Some(model) {
+                record.chat_model = Some(model.clone());
+                state.bump();
+                crate::store::persist_optional(self.store.as_ref(), &state);
+            }
+        }
+        if let Some(model) = self.card_model.as_ref().or(chat_model.as_ref()) {
             agent["model"] = value!(model);
         }
         let configure = self.client.request(
@@ -1067,17 +1121,7 @@ impl Conversation {
             None,
             &mut |_| {},
         )?;
-        let inspect = self.client.request(
-            "durable/inspect",
-            value!({"conversationId":engine_id,"limit":1}),
-        );
-        let inspect_id = self.issue(inspect)?;
-        let snapshot = self.pump(
-            &inspect_id,
-            Instant::now() + TURN_TIMEOUT,
-            None,
-            &mut |_| {},
-        )?;
+        let snapshot = self.inspect_conversation(&engine_id)?;
         let checkpoint = snapshot["sequence"]
             .as_u64()
             .ok_or_else(|| MarbleError::Protocol("durable/inspect returned no sequence".into()))?;

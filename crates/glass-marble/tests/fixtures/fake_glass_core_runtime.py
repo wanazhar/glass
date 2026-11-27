@@ -433,20 +433,26 @@ def main():
                 conversation_id = ID_PREFIX + "durable-fixture-" + str(CONVERSATION_SEQ)
                 KNOWN_CONVERSATIONS.add(conversation_id)
                 HISTORY["conversations"].setdefault(conversation_id, [])
+                HISTORY.setdefault("agents", {})[conversation_id] = {"model": params.get("model") or "fixture-default-model"}
                 save_history()
                 reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
         elif method == "durable/configure":
+            HISTORY.setdefault("agents", {}).setdefault(params["conversationId"], {}).update(params["agent"])
+            save_history()
             if STORAGE_DIR:
                 with open(os.path.join(STORAGE_DIR, "fixture-tool-policy.json"), "w", encoding="utf-8") as handle:
                     json.dump(params["agent"], handle)
             reply(identifier, {"sequence": HISTORY["sequence"]})
         elif method == "durable/inspect":
-            reply(identifier, {"sequence": HISTORY["sequence"], "items": [], "hasMore": False})
+            agent = HISTORY.get("agents", {}).get(params.get("conversationId"))
+            items = [{"type": "conversation", "value": {"agent": agent}}] if agent else []
+            reply(identifier, {"sequence": HISTORY["sequence"], "items": items, "hasMore": False})
         elif method == "durable/fork":
             HISTORY["sequence"] += 1
             conversation_id = ID_PREFIX + "fork-" + str(HISTORY["sequence"])
             KNOWN_CONVERSATIONS.add(conversation_id)
             HISTORY["conversations"][conversation_id] = [entry for entry in HISTORY["conversations"].get(params["conversationId"], []) if entry["sequence"] <= params["asOf"]]
+            HISTORY.setdefault("agents", {})[conversation_id] = dict(HISTORY["agents"].get(params["conversationId"], {}))
             save_history()
             reply(identifier, {"conversationId": conversation_id})
         elif method == "durable/submit":

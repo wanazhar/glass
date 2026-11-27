@@ -6888,6 +6888,94 @@ fn named_engines_use_the_host_model_and_keep_tool_rows_after_reload() {
 }
 
 #[test]
+fn clearing_a_named_model_restores_the_chat_default() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("cleared-model");
+    fixture.state.lock().unwrap().prism.install_template();
+    let set_model = |model: &str| {
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .prism
+            .find_mut(&fixture.marble_id)
+            .unwrap()
+            .card
+            .as_mut()
+            .unwrap()
+            .model = model.into();
+    };
+    let configured_model = |prompt: &str| {
+        assert_eq!(
+            fixture
+                .post(
+                    "/api/turns",
+                    json!({"text":prompt,"marbleId":fixture.marble_id})
+                )
+                .0,
+            202
+        );
+        fixture.completed(prompt);
+        let path = fixture
+            .root
+            .join("prism-sessions")
+            .join(&fixture.marble_id)
+            .join("fixture-tool-policy.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["model"].clone()
+    };
+    set_model("agent-choice");
+    assert_eq!(configured_model("Before clearing"), "agent-choice");
+    set_model("");
+    assert_eq!(configured_model("After clearing"), "fixture-default-model");
+}
+
+#[test]
+fn changing_new_chat_model_keeps_the_existing_default_chat_model() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::new("pinned-default-model");
+    fixture.state.lock().unwrap().prism.install_template();
+    fixture.state.lock().unwrap().model = "original-model".into();
+    fixture.install_default_worker();
+    let (status, response) = fixture.post("/api/conversations", json!({}));
+    assert_eq!(status, 201);
+    let original = response["conversation"]["id"].as_str().unwrap();
+    fixture.state.lock().unwrap().model = "new-chat-model".into();
+    let model_for = |id: &str, prompt: &str| {
+        assert!(
+            fixture
+                .post("/api/turns", json!({"text":prompt,"conversationId":id}))
+                .0
+                < 300
+        );
+        fixture.completed(prompt);
+        let path = fixture
+            .root
+            .join("default-sessions/fixture-tool-policy.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["model"].clone()
+    };
+    assert_eq!(
+        model_for(original, "First send on saved chat"),
+        "original-model"
+    );
+    let (_, fresh) = fixture.post("/api/conversations", json!({}));
+    assert_eq!(
+        model_for(
+            fresh["conversation"]["id"].as_str().unwrap(),
+            "New saved chat"
+        ),
+        "new-chat-model"
+    );
+    assert_eq!(
+        model_for(original, "Back to original chat"),
+        "original-model"
+    );
+}
+
+#[test]
 fn budget_stops_private_tools_and_everyone_time_with_an_agent_reply() {
     if !python3_available() {
         return;
@@ -7129,7 +7217,7 @@ fn private_small_talk_disables_tools_without_changing_the_conversation() {
     let greeting = turn("Hello!");
     assert_eq!(
         fixture_json("fixture-tool-policy.json"),
-        json!({"toolMode":"host","tools":[]})
+        json!({"toolMode":"host","tools":[],"model":"fixture-default-model"})
     );
     assert_eq!(
         fixture_json("fixture-tool-outcome.json"),

@@ -1870,7 +1870,9 @@ impl PrismPool {
         let (tool_limit, turn_timeout) = marble.turn_budget();
         conversation.set_tool_limit(tool_limit);
         conversation.set_agent_tools(marble.card.as_ref().map(|card| card.tools.clone()));
-        conversation.set_model(marble.model(&self.lock_state().model));
+        let host_model = self.lock_state().model.trim().to_owned();
+        conversation.set_model((!host_model.is_empty()).then_some(host_model));
+        conversation.set_card_model(marble.model(""));
         let conversation_id = self.turn_conversation(marble, thread_id.as_deref());
         let mut accepted: Option<(String, String)> = None;
         let request_id = crate::next_request_id();

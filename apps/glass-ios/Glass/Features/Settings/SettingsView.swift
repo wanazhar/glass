@@ -268,7 +268,7 @@ struct ConnectionSettingsView: View {
     }
 
     private var status: (title: String, reason: String?, opensSettings: Bool) {
-        switch keeper.blocker {
+        switch keeper.blocker(on: keepAlive) {
         case .off:
             return ("Not running", "Keep connection alive is off, so iPhone pauses Glass soon after you leave it.", false)
         case .location:

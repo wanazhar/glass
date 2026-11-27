@@ -310,10 +310,16 @@ extension XCUIApplication {
     @MainActor
     func openSettings(_ route: String?) {
         let tab = tabBars.buttons["Settings"]
-        _ = tab.waitForExistence(timeout: 10)
-        tab.tap()
-        // A second tap pops the Settings stack back to its root.
-        if !buttons["settings.host"].waitForExistence(timeout: 2) { tab.tap() }
+        if tab.waitForExistence(timeout: 2) {
+            tab.tap()
+            // A second tap pops the Settings stack back to its root.
+            if !buttons["settings.host"].waitForExistence(timeout: 2) { tab.tap() }
+        } else if !buttons["settings.host"].exists {
+            // Settings opens from the Threads panel's footer.
+            _ = waitForThreadList(timeout: 10)
+            buttons["tab.settings"].firstMatch.tap()
+            _ = buttons["settings.host"].waitForExistence(timeout: 5)
+        }
         let back = navigationBars.buttons["Settings"].firstMatch
         while back.exists { back.tap() }
         guard let route else { return }
@@ -321,6 +327,15 @@ extension XCUIApplication {
         _ = row.waitForExistence(timeout: 10)
         for _ in 0..<4 where !row.isHittable { swipeUp() }
         row.tap()
+    }
+
+    /// Leaves Settings, whether it is a tab or the sheet the Threads panel opens.
+    @MainActor
+    func closeSettings() {
+        let back = navigationBars.buttons["Settings"].firstMatch
+        while back.exists { back.tap() }
+        let done = buttons["Done"].firstMatch
+        if done.waitForExistence(timeout: 2) { done.tap() } else { tabBars.buttons["Conversations"].tap() }
     }
 
     /// Opens the compact drawer if needed and waits for its loaded content.

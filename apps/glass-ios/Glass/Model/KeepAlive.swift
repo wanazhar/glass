@@ -130,6 +130,7 @@ final class KeepAlive: NSObject {
     }
 
     private func update() {
+        isOn = UserDefaults.standard.bool(forKey: Self.key)
         let wanted = isOn && !holds.isEmpty && authorized
         if wanted, !running {
             manager.allowsBackgroundLocationUpdates = true
@@ -259,9 +260,9 @@ final class KeepAlive: NSObject {
     }
 
     /// Why the background connection isn't running right now, in plain words; nil when it is, or is ready to.
-    var blocker: Blocker? {
+    func blocker(on: Bool) -> Blocker? {
         if location == .denied || location == .restricted { return .location }
-        if !isOn { return .off }
+        if !on { return .off }
         if !activitiesEnabled { return .liveActivities }
         if let activityError, activity == nil { return .request(activityError) }
         return nil

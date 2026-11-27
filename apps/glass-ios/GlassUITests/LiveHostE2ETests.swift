@@ -1133,6 +1133,130 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitUntil(10) { !reconnect.exists })
     }
 
+    /// The shipping keep-alive path (no preview hooks): on, location allowed, a chat open, then Home and the Lock
+    /// Screen, capturing each Live Activity presentation.
+    @MainActor
+    func testKeepAliveLiveActivityStates() throws {
+        let thread = try call("thread/new?title=Release%20Live%20Activity", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = name
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        let reason = app.descendants(matching: .any)["settings.keepAlive.reason"].firstMatch
+        XCTAssertTrue(reason.waitForExistence(timeout: 5) && reason.label.contains("off"), "explains it is off: \(reason.label)")
+        capture("la-settings-off")
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 5) {
+            let allow = permission.buttons["Allow While Using App"]
+            (allow.exists ? allow : permission.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(waitUntil(10) { (keep.value as? String) == "1" }, "keep-alive turns on")
+        capture("la-settings-ready")
+        app.closeSettings()
+        _ = app.waitForThreadList(timeout: 10)
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        XCUIDevice.shared.press(.home)
+        let activity = liveActivity(springboard)
+        XCTAssertTrue(activity.waitForExistence(timeout: 10), "the Live Activity starts on the keep-alive path")
+        sleep(2)
+        capture("la-compact")
+        let disconnect = springboard.buttons["Disconnect"].firstMatch
+        for _ in 0..<3 where !disconnect.exists {
+            activity.press(forDuration: 1.2)
+            _ = disconnect.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(disconnect.exists, "the expanded island offers Disconnect")
+        capture("la-expanded")
+        XCUIDevice.shared.press(.home)
+        sleep(1)
+
+        // Lock, then wake to the Lock Screen.
+        let lock = NSSelectorFromString("pressLockButton")
+        if XCUIDevice.shared.responds(to: lock) {
+            XCUIDevice.shared.perform(lock)
+            sleep(2)
+            XCUIDevice.shared.perform(lock)
+            sleep(3)
+            capture("la-lock-screen")
+        }
+        // Swipe up to leave the Lock Screen.
+        let bottom = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.995))
+        bottom.press(forDuration: 0.05, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)))
+        sleep(2)
+        capture("la-after-lock")
+        // A second app's activity shares the island, so one of them shows its minimal form. The runner installs
+        // a copy of Glass under another bundle ID for this, when it can.
+        let helper = XCUIApplication(bundleIdentifier: "com.wanazhar.glasshelper")
+        if ProcessInfo.processInfo.environment["GLASS_E2E_HELPER"] != nil {
+            helper.launchArguments = ["-GlassDemo", "-GlassSkipSplash", "-GlassLiveActivityPreview"]
+            helper.launch()
+            sleep(3)
+            XCUIDevice.shared.press(.home)
+            sleep(3)
+            capture("la-minimal")
+            // Relaunched without the preview, the copy ends its own activity.
+            helper.launchArguments = ["-GlassDemo", "-GlassSkipSplash"]
+            helper.launch()
+            sleep(2)
+            helper.terminate()
+            XCUIDevice.shared.press(.home)
+            sleep(2)
+            capture("la-after-helper")
+        }
+
+        app.activate()
+        app.openSettings("connection")
+        XCTAssertTrue(app.descendants(matching: .any)["settings.keepAlive.status"].firstMatch.waitForExistence(timeout: 10))
+        capture("la-settings-running")
+    }
+
+    /// Run after a round 5 build left its activity up: installing this build over it must not leave a
+    /// broken or duplicate activity, and opening Glass ends the old one and starts the new one.
+    @MainActor
+    func testUpgradeFromRound5EndsTheOldActivity() throws {
+        guard ProcessInfo.processInfo.environment["GLASS_E2E_UPGRADE"] != nil else {
+            throw XCTSkip("Needs a round 5 install with its Live Activity up.")
+        }
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = name
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        XCUIDevice.shared.press(.home)
+        sleep(3)
+        capture("upgrade-2-installed-over")
+        let thread = try call("thread/new?title=Round%207%20upgrade", method: "POST")
+        let app = XCUIApplication()
+        app.launch()
+        sleep(4)
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitUntil(15) { !liveActivity(springboard).exists }, "launching Glass ends the round 5 activity")
+        capture("upgrade-3-old-ended")
+        app.activate()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(liveActivity(springboard).waitForExistence(timeout: 15), "the new activity comes up")
+        sleep(3)
+        let activities = springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS 'element-identifier:activity:'"))
+        capture("upgrade-4-home")
+        XCTAssertEqual(Set(activities.allElementsBoundByIndex.map(\.identifier)).count, 1, "only one activity remains")
+    }
+
     @MainActor
     func testClosingGlassEndsItsLiveActivity() throws {
         let thread = try call("thread/new?title=Closing%20Glass", method: "POST")

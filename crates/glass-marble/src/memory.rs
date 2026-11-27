@@ -2,10 +2,12 @@
 //!
 //! Memories and skills are durable, scoped to their owner and editable.
 
+use regex_syntax::hir::{Class, ClassUnicode, HirKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +41,43 @@ fn normalize(text: &str) -> String {
 fn skill_words(text: &str) -> impl Iterator<Item = &str> {
     text.split(|ch: char| !ch.is_alphanumeric())
         .filter(|word| !word.is_empty())
+}
+
+fn is_space_delimited_letter(ch: char) -> bool {
+    static SCRIPTS: LazyLock<ClassUnicode> = LazyLock::new(|| {
+        let class = regex_syntax::parse(concat!(
+            r"[\p{Latin}\p{Cyrillic}\p{Greek}\p{Armenian}\p{Georgian}",
+            r"\p{Hebrew}\p{Arabic}\p{Devanagari}\p{Bengali}\p{Gurmukhi}",
+            r"\p{Gujarati}\p{Oriya}\p{Tamil}\p{Telugu}\p{Kannada}\p{Malayalam}\p{Sinhala}]"
+        ))
+        .expect("valid Unicode script class");
+        let HirKind::Class(Class::Unicode(scripts)) = class.into_kind() else {
+            unreachable!("expected Unicode character class");
+        };
+        scripts
+    });
+    let ranges = SCRIPTS.ranges();
+    let index = ranges.partition_point(|range| range.end() < ch);
+    ch.is_alphabetic() && ranges.get(index).is_some_and(|range| range.start() <= ch)
+}
+
+fn private_fact_matches(lesson: &str, fact: &str) -> bool {
+    let fact = normalize(fact);
+    let require_boundaries =
+        fact.starts_with(is_space_delimited_letter) && fact.ends_with(is_space_delimited_letter);
+    let fact = fact.to_lowercase();
+    let Some(first) = fact.chars().next() else {
+        return false;
+    };
+    if !require_boundaries {
+        return lesson.contains(&fact);
+    }
+    lesson.match_indices(first).any(|(start, _)| {
+        !lesson[..start].ends_with(char::is_alphanumeric)
+            && lesson[start..]
+                .strip_prefix(&fact)
+                .is_some_and(|rest| !rest.starts_with(char::is_alphanumeric))
+    })
 }
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -608,20 +647,7 @@ impl MemoryState {
         ))
         .to_lowercase();
         self.facts.iter().any(|fact| {
-            if fact.owner != skill.owner || fact.shared {
-                return false;
-            }
-            let text = normalize(&fact.text).to_lowercase();
-            let Some(first) = text.chars().next() else {
-                return false;
-            };
-            let ends_with_word = text.ends_with(char::is_alphanumeric);
-            lesson.match_indices(first).any(|(start, _)| {
-                lesson[start..].strip_prefix(&text).is_some_and(|rest| {
-                    (!first.is_alphanumeric() || !lesson[..start].ends_with(char::is_alphanumeric))
-                        && (!ends_with_word || !rest.starts_with(char::is_alphanumeric))
-                })
-            })
+            fact.owner == skill.owner && !fact.shared && private_fact_matches(&lesson, &fact.text)
         })
     }
 
@@ -1379,6 +1405,47 @@ mod tests {
             ),
             Err(SKILL_CONTAINS_PRIVATE_MEMORY)
         );
+    }
+
+    #[test]
+    fn shared_skill_recall_blocks_private_facts_in_unspaced_text() {
+        for (fact, name) in [
+            ("田中", "田中さんの旅行計画"),
+            ("สมชาย", "แผนเที่ยวของสมชายวันนี้"),
+            ("Ann田中", "XANN田中さんの旅行計画"),
+            ("田中Ann", "田中ANNさんの旅行計画"),
+        ] {
+            let mut memory = MemoryState::default();
+            memory.remember(fact, "fact", "chat", true, "ada").unwrap();
+            memory.facts[0].shared = true;
+            memory
+                .save_skill(Skill {
+                    id: String::new(),
+                    owner: "ada".into(),
+                    name: name.into(),
+                    when_to_use: "Before leaving town".into(),
+                    steps: vec!["Check the itinerary".into()],
+                    created_at: 1,
+                    conversation_id: "chat".into(),
+                    thread_id: None,
+                    source_entry_id: None,
+                    shared_with: vec!["dietrich".into()],
+                    learned_from: None,
+                })
+                .unwrap();
+            assert!(
+                memory
+                    .turn_instructions("dietrich", None, false, "")
+                    .contains(name)
+            );
+            memory.facts[0].shared = false;
+            assert!(
+                !memory
+                    .turn_instructions("dietrich", None, false, "")
+                    .contains(name),
+                "skill still visible after making {fact:?} private"
+            );
+        }
     }
 
     #[test]

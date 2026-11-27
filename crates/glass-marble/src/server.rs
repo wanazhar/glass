@@ -3754,8 +3754,17 @@ impl MarbleServer {
         }
         let retrying = task.id.clone();
         let retry_conversation = task.conversation_id.clone();
-        {
+        let thread = {
             let mut state = self.lock_state();
+            let thread = state.task_threads.get(&retrying).cloned();
+            if thread.as_ref().is_some_and(|id| {
+                state
+                    .threads
+                    .iter()
+                    .any(|thread| &thread.id == id && thread.archived)
+            }) {
+                return Response::error(409, "thread_archived");
+            }
             state.conversation_mut(&task.conversation_id).retry_task_id = task.id.clone();
             if let Some(speaker) = state
                 .transcript
@@ -3772,14 +3781,14 @@ impl MarbleServer {
                     .everyone_pending
                     .insert(format!("marble:{speaker}"), speaker);
             }
-        }
+            thread
+        };
         self.save_state();
         // A turn recovered from a lost queue lives in a placeholder chat the
         // engine never created, so repeating it starts a fresh conversation.
         let conversation =
             (!task.conversation_id.starts_with("recovered-")).then_some(task.conversation_id);
         let marble_id = (!task.marble_id.is_empty()).then_some(task.marble_id);
-        let thread = self.lock_state().task_threads.get(&retrying).cloned();
         let mut response =
             self.submit_text_for_thread(conversation, task.prompt, marble_id, thread, None);
         if response.status >= 400 {

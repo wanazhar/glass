@@ -2378,6 +2378,40 @@ fn retry_repeats_the_last_turn_that_did_not_finish() {
 }
 
 #[test]
+fn retry_rejects_archived_everyone_thread_before_mutating_state() {
+    let mut state = ProductState::default();
+    state.conversation_mut("chat");
+    state.upsert_task(TaskRecord {
+        id: "failed".into(),
+        conversation_id: "chat".into(),
+        status: "failed".into(),
+        prompt: "Retry this task".into(),
+        ..Default::default()
+    });
+    let server = free_server(state);
+    let (_, body) = server.handle(
+        "POST",
+        "/api/threads",
+        r#"{"conversation_id":"everyone","title":"Archived"}"#,
+    );
+    let document: Value = serde_json::from_str(&body).unwrap();
+    let id = document["thread"]["id"].as_str().unwrap();
+    assert_eq!(
+        server
+            .handle("POST", &format!("/api/threads/{id}/archive"), "{}")
+            .0,
+        200
+    );
+    let mut state = server.state();
+    state.task_threads.insert("failed".into(), id.into());
+    let server = free_server(state);
+    let (status, body) = server.handle("POST", "/api/turns/retry", r#"{"taskId":"failed"}"#);
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("thread_archived"), "{body}");
+    assert!(server.state().conversations[0].retry_task_id.is_empty());
+}
+
+#[test]
 fn routines_can_hold_a_quiet_window() {
     let server = free_server(ProductState::default());
     let (status, body) = server.handle(

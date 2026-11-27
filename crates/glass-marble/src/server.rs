@@ -1511,12 +1511,20 @@ impl MarbleServer {
             serde_json::from_str(&response.body).unwrap_or_else(|_| json!({}));
         document["client_message_id"] = json!(id);
         document["entry_id"] = json!(client.entry_id);
+        let held_round = path == "/api/everyone"
+            && self.prism.is_some()
+            && document["queued"] == true
+            && parsed
+                .get("thread_id")
+                .or_else(|| parsed.get("threadId"))
+                .is_some_and(Value::is_string);
         let entry = {
             let mut state = self.lock_state();
-            if !state
-                .transcript
-                .iter()
-                .any(|entry| entry.id == client.entry_id)
+            if !held_round
+                && !state
+                    .transcript
+                    .iter()
+                    .any(|entry| entry.id == client.entry_id)
             {
                 state.push_transcript(crate::state::TranscriptEntry {
                     id: client.entry_id.clone(),
@@ -1548,13 +1556,16 @@ impl MarbleServer {
                 .transcript
                 .iter()
                 .find(|entry| entry.id == client.entry_id)
-                .unwrap()
-                .clone();
-            if !entry.conversation_id.is_empty() {
-                document["conversationId"] = json!(entry.conversation_id);
-            }
-            if !entry.task_id.is_empty() && document["taskId"].as_str().is_none_or(str::is_empty) {
-                document["taskId"] = json!(entry.task_id);
+                .cloned();
+            if let Some(entry) = &entry {
+                if !entry.conversation_id.is_empty() {
+                    document["conversationId"] = json!(entry.conversation_id);
+                }
+                if !entry.task_id.is_empty()
+                    && document["taskId"].as_str().is_none_or(str::is_empty)
+                {
+                    document["taskId"] = json!(entry.task_id);
+                }
             }
             let receipt = state
                 .client_sends
@@ -1572,7 +1583,10 @@ impl MarbleServer {
             entry
         };
         response.body = document.to_string();
-        if path == "/api/everyone" {
+        if path == "/api/everyone"
+            && !held_round
+            && let Some(entry) = entry
+        {
             self.events.publish(
                 "everyone",
                 &entry.task_id,
@@ -1638,12 +1652,6 @@ impl MarbleServer {
                 device_time_zone.map(str::to_owned),
             ) {
                 Ok(held) => {
-                    self.events.publish(
-                        crate::everyone::EVERYONE_CONVERSATION,
-                        "",
-                        "everyone",
-                        json!({"kind":"user","thread_id":thread}),
-                    );
                     let mut response = json!({
                             "ok":true,"accepted":true,"answering":answering,"busy":[],
                             "conversationId":crate::everyone::EVERYONE_CONVERSATION,
@@ -1660,6 +1668,13 @@ impl MarbleServer {
                         response["position"] = json!(position);
                         response["paused"] = json!(true);
                         response["answering"] = json!([]);
+                    } else {
+                        self.events.publish(
+                            crate::everyone::EVERYONE_CONVERSATION,
+                            "",
+                            "everyone",
+                            json!({"kind":"user","thread_id":thread}),
+                        );
                     }
                     Response::json(202, response)
                 }

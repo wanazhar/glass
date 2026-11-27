@@ -170,7 +170,9 @@ def run_turn(identifier, task, text, conversation, request):
         if "pause this round" in text.lower():
             PARKED_RUN["id"] = identifier
             return
-        if "close the task" in text.lower():
+        if "--report-round-history" in sys.argv:
+            answer = context.split("Recent thread messages (quoted): ", 1)[-1].split("\n", 1)[0]
+        elif "close the task" in text.lower():
             answer = "[[CLOSE]]\nThe launch checklist is ready for review."
         elif agent == "Lead":
             answer = "[[SUGGEST: researcher]]\nI’ll coordinate the launch checklist. @engineer, please start."

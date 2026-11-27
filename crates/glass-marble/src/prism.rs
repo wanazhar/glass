@@ -1128,7 +1128,7 @@ impl PrismPool {
             .clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let round_id = format!("group-round-{}", crate::next_request_id());
-        let mut entry_id = client.as_ref().map_or_else(
+        let entry_id = client.as_ref().map_or_else(
             || match source {
                 RoundSource::Held(id) => id.to_owned(),
                 _ => format!("entry-{}", crate::next_request_id()),
@@ -1154,11 +1154,6 @@ impl PrismPool {
                 entry.thread_id = Some(scope.thread().into());
                 entry.client_message = client.clone();
                 entry.device_time_zone = zone.clone();
-                if client.is_none() {
-                    entry_id.clone_from(&queued.id);
-                }
-                crate::everyone::ensure_conversation(&mut state);
-                Self::record_round_message(&mut state, &scope, entry_id, &text, client);
                 state.bump();
                 let snapshot = state.clone();
                 drop(state);
@@ -1196,15 +1191,24 @@ impl PrismPool {
                 previous.store(true, Ordering::Relaxed);
             }
             self.cancels.register(&round_id, cancel.clone());
-            if !matches!(source, RoundSource::Held(_))
-                || !state.transcript.iter().any(|entry| entry.id == entry_id)
-            {
-                Self::record_round_message(&mut state, &scope, entry_id.clone(), &text, client);
-            }
+            Self::record_round_message(&mut state, &scope, entry_id.clone(), &text, client);
             state.bump();
             state.clone()
         };
         self.persist(&snapshot);
+        if matches!(source, RoundSource::Held(_))
+            && let Some(entry) = snapshot
+                .transcript
+                .iter()
+                .find(|entry| entry.id == entry_id)
+        {
+            self.events.publish(
+                scope.conversation(),
+                "",
+                "entry",
+                serde_json::to_value(entry).unwrap(),
+            );
+        }
         drop(latest);
         let retry = match source {
             RoundSource::Retry(task) => Some(task),

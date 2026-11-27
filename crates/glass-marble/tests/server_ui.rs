@@ -2864,8 +2864,11 @@ fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
     if !python3_available() {
         return;
     }
-    let fixture =
-        NamedTurnFixture::with_persistence("everyone-paused", vec!["--group-rounds".into()], true);
+    let fixture = NamedTurnFixture::with_persistence(
+        "everyone-paused",
+        vec!["--group-rounds".into(), "--report-round-history".into()],
+        true,
+    );
     let (status, body) = fixture.post(
         "/api/threads",
         json!({"conversation_id":"everyone","title":"Held rounds"}),
@@ -2874,13 +2877,17 @@ fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
     let thread = body["thread"]["id"].as_str().unwrap();
     assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
     let prompts = ["@marble First held round", "@marble Second held round"];
-    for (text, client) in prompts.into_iter().zip(["held-first", "held-second"]) {
-        let (status, body) = fixture.post(
-            "/api/everyone",
-            json!({"threadId":thread,"text":text,"client_message_id":client}),
-        );
+    for (text, client) in prompts.into_iter().zip([Some("held-first"), None]) {
+        let mut request = json!({"threadId":thread,"text":text});
+        if let Some(client) = client {
+            request["client_message_id"] = json!(client);
+        }
+        let (status, body) = fixture.post("/api/everyone", request.clone());
         assert_eq!(status, 202, "{body}");
         assert_eq!(body["queued"], true, "{body}");
+        if client.is_some() {
+            assert_eq!(fixture.post("/api/everyone", request), (status, body));
+        }
     }
     let store = fixture.store.as_ref().unwrap();
     let paused = store.load().unwrap();
@@ -2891,7 +2898,7 @@ fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
     let second = fixture.completed(prompts[1]);
     let state = fixture.state.lock().unwrap();
     assert!(state.control.queue.is_empty());
-    let order: Vec<_> = state
+    let replies: Vec<_> = state
         .transcript
         .iter()
         .filter(|entry| {
@@ -2899,9 +2906,30 @@ fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
                 && entry.thread_id.as_deref() == Some(thread)
                 && entry.kind == "assistant"
         })
-        .map(|entry| entry.task_id.as_str())
         .collect();
-    assert_eq!(order, [&first.id, &second.id]);
+    assert_eq!(
+        replies
+            .iter()
+            .map(|entry| &entry.task_id)
+            .collect::<Vec<_>>(),
+        [&first.id, &second.id]
+    );
+    assert!(
+        !replies[0].text.contains(prompts[1]),
+        "{:?}",
+        replies[0].text
+    );
+    assert!(
+        replies[1].text.contains(prompts[0]),
+        "{:?}",
+        replies[1].text
+    );
+    assert!(
+        paused
+            .transcript
+            .iter()
+            .all(|entry| !prompts.contains(&entry.text.as_str()))
+    );
     assert_eq!(
         state
             .transcript

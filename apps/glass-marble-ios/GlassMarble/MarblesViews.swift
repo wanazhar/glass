@@ -136,6 +136,8 @@ struct EveryoneHistoryView: View {
                         entry: entry,
                         speaker: store.speakerStyle(for: entry),
                         reasoning: transcript.attached[entry.id],
+                        toolRows: transcript.tools[entry.id] ?? [],
+                        timestamp: transcript.timestamps[entry.id],
                         usesThreadActionsDialog: true
                     )
                 }
@@ -244,16 +246,13 @@ struct EveryoneHistoryView: View {
 struct MarblesView: View {
     @EnvironmentObject private var store: MarbleStore
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsNew = false
     var selection: ChatRoute?
     var onSelect: ((ChatRoute) -> Void)?
 
     var body: some View {
         List {
-            if store.connectionPaused || store.connection == .offline || store.connection == .connecting || store.needsToken {
-                MarbleConnectionNotice()
-                    .listRowBackground(MarbleTheme.card)
-            }
             Section {
                 Text("Pick a Marble to talk one to one, or meet in Everyone.")
                     .font(.subheadline)
@@ -273,6 +272,9 @@ struct MarblesView: View {
                 }
                 .listRowBackground(selection == route ? MarbleTheme.wash : MarbleTheme.card)
             }
+            if !store.loaded && store.prism.marbles.isEmpty {
+                MarbleListSkeleton()
+            }
             Section {
                 Button { showsNew = true } label: {
                     Label("New Marble", systemImage: "plus.circle")
@@ -283,6 +285,8 @@ struct MarblesView: View {
             }
         }
         .navigationTitle("Who’s on your mind?")
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { MarbleNavConnection() } }
+        .animation(reduceMotion ? nil : .default, value: store.prism.marbles)
         .contentMargins(.bottom, sizeClass == .compact ? 32 : 0, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
@@ -309,6 +313,33 @@ struct MarblesView: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+    }
+}
+
+struct MarbleNavConnection: View {
+    @EnvironmentObject private var store: MarbleStore
+
+    var body: some View {
+        Image(systemName: store.connection == .live ? "circle.fill" : "circle.dotted")
+            .font(.footnote)
+            .foregroundStyle(store.connection == .live ? .green : .secondary)
+            .accessibilityLabel(store.statusLabel)
+    }
+}
+
+struct MarbleListSkeleton: View {
+    var body: some View {
+        ForEach(0..<3) { _ in
+            HStack(spacing: 14) {
+                Circle().fill(.quaternary).frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Conversation").font(.headline)
+                    Text("Your latest messages").font(.subheadline)
+                }
+            }
+            .redacted(reason: .placeholder)
+            .accessibilityHidden(true)
+        }
     }
 }
 
@@ -503,17 +534,20 @@ struct MarbleChatScreen: View {
                     ForEach(transcript.standalone, id: \.rowID) { entry in
                         MarbleEntryView(entry: entry, speaker: entry.kind == "assistant" || entry.kind == "pending"
                                         ? MarbleSpeakerStyle(name: marble.name, hue: marble.hue, glyph: marble.glyph)
-                                        : nil, replyHue: marble.hue, reasoning: transcript.attached[entry.id])
+                                        : nil, replyHue: marble.hue, reasoning: transcript.attached[entry.id],
+                                        toolRows: transcript.tools[entry.id] ?? [], timestamp: transcript.timestamps[entry.id])
                     }
                     let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
                     if working && !reasoning.isEmpty
                         && !entries.contains(where: {
                             $0.taskId == active?.id && ["reasoning", "assistant"].contains($0.kind)
                         }) {
-                        MarbleReasoningRow(text: reasoning)
+                        MarbleReasoningRow(text: reasoning, speaker: marble.name)
                     }
                     MarbleTurnTail(task: active, entries: entries, showsLiveTools: true)
-                    if thinking && !entries.contains(where: { $0.kind == "assistant" && $0.taskId == active?.id }) {
+                    if thinking && !entries.contains(where: {
+                        ["pending", "assistant"].contains($0.kind) && $0.taskId == active?.id
+                    }) {
                         MarbleThinkingBubble(name: marble.name)
                     }
                     MarbleTranscriptEnd(bottomPadding: 12)

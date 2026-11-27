@@ -55,6 +55,7 @@ fn session_instructions(cwd: &Path) -> String {
     instructions.push_str(CONVERSATIONAL_GUIDANCE);
     instructions.push('\n');
     instructions.push_str(REPLY_PRIVACY_GUIDANCE);
+    instructions.push_str("\nBefore a tool starts a new step, you may emit a separate line like <working>Reading the report…</working>. Use your own words, at most six, end with …, and only describe the step about to start. Never put a working line in the final reply.");
     if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
         instructions.push('\n');
         instructions.push_str(&briefing);
@@ -132,6 +133,7 @@ fn strip_self_mention<'a>(text: &'a str, name: &str) -> &'a str {
 #[derive(Default)]
 struct ToolRows {
     rows: Vec<(String, String, String)>,
+    details: HashMap<String, (Instant, crate::state::ToolDetails)>,
 }
 
 impl ToolRows {
@@ -162,6 +164,30 @@ impl ToolRows {
         let id = data["callId"].as_str().unwrap_or_default();
         if id.is_empty() {
             return false;
+        }
+        if event.kind == "tool_start" {
+            self.details.entry(id.to_string()).or_insert_with(|| {
+                let command = data["arguments"]["command"]
+                    .as_str()
+                    .or_else(|| data["title"].as_str())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        data["arguments"]
+                            .as_object()
+                            .map(|args| value!(args).to_string())
+                    })
+                    .unwrap_or_default();
+                (
+                    Instant::now(),
+                    crate::state::ToolDetails {
+                        command,
+                        ..Default::default()
+                    },
+                )
+            });
+        } else if let Some((start, detail)) = self.details.get_mut(id) {
+            detail.elapsed_ms = Some(start.elapsed().as_millis() as u64);
+            detail.output = data["text"].as_str().unwrap_or_default().into();
         }
         let existing = self.rows.iter().position(|row| row.0 == id);
         let status = if event.kind == "tool_start" {
@@ -1380,6 +1406,7 @@ impl Conversation {
             .transcript
             .retain(|entry| !existing.iter().any(|previous| previous.id == entry.id));
         for (call, text, _) in &tools.rows {
+            let tool_details = tools.details.get(call).map(|(_, detail)| detail.clone());
             let id = format!("entry-tool-{}-{call}", self.active_task);
             let previous = existing
                 .iter()
@@ -1392,6 +1419,7 @@ impl Conversation {
                 task_id: self.active_task.clone(),
                 kind: "tool".into(),
                 text: text.clone(),
+                tool_details: tool_details.clone(),
                 at: if previous.at == 0 {
                     crate::worker::now_millis()
                 } else {
@@ -1417,6 +1445,7 @@ impl Conversation {
                     task_id: self.active_task.clone(),
                     kind: "tool".into(),
                     text: text.clone(),
+                    tool_details,
                     at: if previous.at == 0 {
                         crate::worker::now_millis()
                     } else {

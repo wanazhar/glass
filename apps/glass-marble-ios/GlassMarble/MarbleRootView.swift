@@ -31,7 +31,6 @@ final class MarbleNavigationModel: ObservableObject {
 struct MarbleRootView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @State var showsSplash: Bool
 
     var body: some View {
         ZStack {
@@ -58,16 +57,8 @@ struct MarbleRootView: View {
                     }
                     .accessibilityIdentifier("tab.settings")
                 }
-                .allowsHitTesting(!showsSplash)
-                .accessibilityHidden(showsSplash)
             } else {
                 MarbleOnboardingView(expiredToken: store.needsToken)
-                    .allowsHitTesting(!showsSplash)
-                    .accessibilityHidden(showsSplash)
-            }
-            if showsSplash {
-                MarbleSplash { showsSplash = false }
-                    .zIndex(1)
             }
         }
         .tint(MarbleTheme.tint)

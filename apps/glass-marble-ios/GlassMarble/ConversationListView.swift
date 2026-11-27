@@ -3,6 +3,7 @@ import SwiftUI
 struct ConversationListView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchText = ""
     @State private var renaming: MarbleConversation?
     @State private var renameDraft = ""
@@ -45,25 +46,10 @@ struct ConversationListView: View {
             Text("Its transcript is removed from the host. A conversation with a running turn cannot be deleted.")
         }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { MarbleNavConnection() }
             ToolbarItem(placement: .topBarTrailing) { MarbleNewChatButton() }
         }
-        // The navigation title already says which app this is; the strip below
-        // only has to say which host is answering and what it is doing.
-        .safeAreaInset(edge: .top) {
-            HStack(spacing: 8) {
-                Text(store.endpoint?.displayHost ?? "not connected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                MarbleStatusText(
-                    label: store.statusLabel,
-                    tone: store.connection == .live ? .green : .secondary
-                )
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-        }
+        .animation(reduceMotion ? nil : .default, value: filteredConversations)
     }
 
     private var renameBinding: Binding<Bool> {
@@ -96,7 +82,9 @@ struct ConversationListView: View {
             ForEach(filteredConversations) { conversation in
                 conversationRow(conversation)
             }
-            if filteredConversations.isEmpty {
+            if !store.loaded && store.state.conversations.isEmpty {
+                MarbleListSkeleton()
+            } else if filteredConversations.isEmpty {
                 VStack(spacing: 8) {
                     Text("No chats yet")
                         .font(.callout)

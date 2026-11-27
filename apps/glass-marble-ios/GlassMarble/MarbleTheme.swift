@@ -212,8 +212,9 @@ struct MarbleWorkingDots: View {
 struct MarbleThinkingBubble: View {
     var name: String = "Marble"
     var retrying = false
+    var status: String? = nil
 
-    private var title: String { retrying ? "\(name) is retrying" : "\(name) is working" }
+    private var title: String { retrying ? "\(name) is retrying…" : status ?? "\(name) is working…" }
 
     var body: some View {
         HStack(spacing: 10) {

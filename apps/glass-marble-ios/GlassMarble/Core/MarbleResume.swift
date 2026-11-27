@@ -25,6 +25,8 @@ struct MarbleChatCache: Codable, Equatable {
     var transcripts: [String: [MarbleEntry]]
     var before: [String: String]? = nil
     var threads: [String: MarbleThreadPage]? = nil
+    var roster: MarblePrism? = nil
+    var conversations: [MarbleConversation]? = nil
 
     static let empty = MarbleChatCache(everyone: [], transcripts: [:])
 

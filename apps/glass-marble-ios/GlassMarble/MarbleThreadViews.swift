@@ -524,7 +524,9 @@ private struct MarbleJumpTimeline: View {
                     ForEach(transcript.standalone, id: \.rowID) { entry in
                         VStack(alignment: .leading, spacing: 10) {
                             MarbleEntryView(entry: entry, speaker: store.speakerStyle(for: entry),
-                                            reasoning: transcript.attached[entry.id], allowsThreads: parentId == nil)
+                                            reasoning: transcript.attached[entry.id], toolRows: transcript.tools[entry.id] ?? [],
+                                            timestamp: transcript.timestamps[entry.id],
+                                            allowsThreads: parentId == nil)
                             if entry.id == parentId && entries.count > 1 { Divider() }
                         }
                         .padding(.vertical, 3)

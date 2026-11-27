@@ -475,6 +475,8 @@ final class MarbleStore: ObservableObject {
         guard let url = Self.cacheURL(for: endpoint),
               let data = try? Data(contentsOf: url),
               let cache = MarbleChatCache.decoded(data) else { return }
+        state.prism = cache.roster
+        state.conversations = cache.conversations ?? []
         historyBefore = cache.before ?? [:]
         everyoneTimeline = cachedEntries(cache.everyone, for: everyoneConversationId)
         marbleTranscripts = Dictionary(uniqueKeysWithValues: cache.transcripts.map { id, entries in
@@ -486,6 +488,8 @@ final class MarbleStore: ObservableObject {
     private func saveCache(discardOnFailure: Bool = false) {
         guard let endpoint, let url = Self.cacheURL(for: endpoint) else { return }
         var cache = MarbleChatCache(everyone: [], transcripts: [:], before: [:])
+        cache.roster = state.prism
+        cache.conversations = state.conversations
         for (id, entries) in marbleTranscripts {
             let (rows, before) = MarbleHistoryWindow.cached(entries, before: historyBefore[id])
             cache.transcripts[id] = rows
@@ -659,6 +663,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func resetChatActivity() {
+        workingLines.removeAll()
         everyoneTaskIds = []
         toolsByTurn = [:]
         settledToolTasks = []
@@ -1163,6 +1168,7 @@ final class MarbleStore: ObservableObject {
             // Keep the durable label; a persisted start row can lag the SSE end.
             if live.status != .running { tool.status = live.status }
             tool.sender = live.sender
+            if tool.details?.elapsedMs == nil { tool.details = live.details ?? tool.details }
         }
         if tool.status == .running && (settledToolTasks.contains(entry.taskId)
             || state.tasks.contains(where: { $0.id == entry.taskId && !$0.isRunning && $0.status != "queued" })) {
@@ -1227,7 +1233,8 @@ final class MarbleStore: ObservableObject {
     }
 
     func agentName(for taskId: String) -> String? {
-        prism.marbles.first { activeTaskIds(for: $0).contains(taskId) }?.name
+        let owner = state.tasks.first { $0.id == taskId }?.marbleId
+        return prism.marbles.first { $0.id == owner || activeTaskIds(for: $0).contains(taskId) }?.name
     }
 
     func latestTurn(in conversationID: String?) -> MarbleTask? {
@@ -2066,6 +2073,8 @@ final class MarbleStore: ObservableObject {
     @Published private var privateReplySizing: [String: [String]] = [:]
     private var pendingEventRefresh: Task<Void, Never>?
 
+    @Published private(set) var workingLines: [String: String] = [:]
+
     func pendingReplyText(for taskId: String) -> String? {
         groupReplyPreviews[taskId]?.text
     }
@@ -2222,8 +2231,14 @@ final class MarbleStore: ObservableObject {
         }
         let taskId = event.data.taskId ?? event.taskId
         if event.kind == "task_retry" {
+            workingLines.removeValue(forKey: taskId)
             if !taskId.isEmpty { automaticRetries.insert(taskId) }
             return
+        }
+        if event.kind == "working", let text = event.data.text, !taskId.isEmpty {
+            workingLines[taskId] = text
+        } else if ["settled", "reply", "error"].contains(event.kind) {
+            workingLines.removeValue(forKey: taskId)
         }
         if event.kind == "reasoning" { recordReasoning(event.data.text ?? "", taskId: event.taskId) }
         if let text = MarbleStreamingText.updating(groupReplyPreviews[taskId]?.text ?? "", for: taskId, from: event),

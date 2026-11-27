@@ -52,7 +52,7 @@ enum MarbleJSON: Decodable, Hashable {
     }
 }
 
-struct MarbleConversation: Decodable, Identifiable, Equatable {
+struct MarbleConversation: Codable, Identifiable, Equatable {
     var id: String
     var title: String
     var taskIds: [String]
@@ -69,6 +69,7 @@ struct MarbleTask: Decodable, Identifiable, Equatable {
     var owner: String
     var prompt: String
     var at: UInt64
+    var marbleId: String? = nil
 
     var isRunning: Bool { status == "running" }
 }
@@ -86,6 +87,12 @@ struct MarbleApproval: Decodable, Identifiable, Equatable {
     var argumentsSummary: String { arguments.summary }
 }
 
+struct MarbleToolDetails: Codable, Equatable {
+    var command: String
+    var output: String
+    var elapsedMs: UInt64?
+}
+
 struct MarbleEntry: Codable, Identifiable, Equatable {
     var serverID: String? = nil
     var clientMessageID: String? = nil
@@ -95,6 +102,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
     var thread: MarbleThreadSummary? = nil
     var failure: MarbleFailureInfo? = nil
     var cancelled: Bool? = nil
+    var toolDetails: MarbleToolDetails? = nil
     var conversationId: String
     var kind: String
     var text: String
@@ -111,7 +119,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
         case serverID = "id"
         case clientMessageID = "client_message_id"
-        case threadId, thread, failure, cancelled
+        case threadId, thread, failure, cancelled, toolDetails
     }
 
     init(from decoder: Decoder) throws {
@@ -125,6 +133,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         thread = try container.decodeIfPresent(MarbleThreadSummary.self, forKey: .thread)
         failure = try container.decodeIfPresent(MarbleFailureInfo.self, forKey: .failure)
         cancelled = try container.decodeIfPresent(Bool.self, forKey: .cancelled)
+        toolDetails = try container.decodeIfPresent(MarbleToolDetails.self, forKey: .toolDetails)
         conversationId = try container.decode(String.self, forKey: .conversationId)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decode(String.self, forKey: .text)
@@ -306,7 +315,7 @@ struct MarbleControl: Decodable, Equatable {
 ///
 /// Identity is a shape, a hue, and a name; state lives on the same object so a
 /// roster can be read at a glance instead of by reading every name.
-struct MarblePrismMarble: Decodable, Identifiable, Equatable {
+struct MarblePrismMarble: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var role: String
@@ -328,7 +337,9 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, role, glyph, hue, workspace, state, conversationId
-        case taskId, lastAt, runs, lastError, persona, isDefault, isWorking, activeTaskIds
+        case taskId, lastAt, runs, lastError, persona, isDefault
+        case reportedWorking = "isWorking"
+        case reportedActiveTaskIds = "activeTaskIds"
     }
 
     init(from decoder: Decoder) throws {
@@ -347,8 +358,8 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError) ?? ""
         persona = try container.decodeIfPresent(String.self, forKey: .persona) ?? ""
         isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
-        reportedWorking = try container.decodeIfPresent(Bool.self, forKey: .isWorking)
-        reportedActiveTaskIds = try container.decodeIfPresent([String].self, forKey: .activeTaskIds)
+        reportedWorking = try container.decodeIfPresent(Bool.self, forKey: .reportedWorking)
+        reportedActiveTaskIds = try container.decodeIfPresent([String].self, forKey: .reportedActiveTaskIds)
     }
 
     init(
@@ -401,7 +412,7 @@ struct MarblePrismMarble: Decodable, Identifiable, Equatable {
 }
 
 /// The Prism roster as the host serves it.
-struct MarblePrism: Decodable, Equatable {
+struct MarblePrism: Codable, Equatable {
     var marbles: [MarblePrismMarble]
     var limit: Int?
     var swarms: UInt64?
@@ -559,6 +570,7 @@ struct MarbleEventData: Decodable, Equatable {
     var text: String?
     var tool: String?
     var name: String? = nil
+    var title: String? = nil
     var callId: String? = nil
     var arguments: MarbleJSON? = nil
     var isError: Bool?
@@ -577,7 +589,7 @@ struct MarbleEventData: Decodable, Equatable {
     var deleted: String? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case thread, text, tool, name, callId, arguments, isError, message, status, revision
+        case thread, text, tool, name, title, callId, arguments, isError, message, status, revision
         case taskId, reason, cancelled, requestId, approved, cleared, deleted, sender, failure
         case threadId = "thread_id"
         case entryId = "id"

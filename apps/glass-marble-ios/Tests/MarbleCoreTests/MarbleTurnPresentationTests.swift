@@ -165,6 +165,41 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertNil(calls.first?.query)
     }
 
+    func testToolDetailsStayWithTheReplyAndTheLabelDoesNotChange() throws {
+        var calls: [MarbleToolActivity] = []
+        let start = try toolEvent("tool_start", data: #"{"callId":"shell","name":"bash","title":"printf hello"}"#)
+        MarbleToolActivity.apply(start, to: &calls)
+        let label = calls.first?.title
+        let end = try toolEvent("tool_end", data: #"{"callId":"shell","text":"hello","isError":true}"#)
+        MarbleToolActivity.apply(end, to: &calls)
+        let tool = try XCTUnwrap(calls.first)
+        XCTAssertEqual(label, "Ran a command")
+        XCTAssertEqual(tool.title, label)
+        XCTAssertEqual(tool.details?.command, "printf hello")
+        XCTAssertEqual(tool.details?.output, "hello")
+        XCTAssertEqual(tool.status, .failed)
+        var row = MarbleEntry(conversationId: "chat", kind: "tool", text: tool.transcriptText, taskId: "turn", at: 1)
+        row.toolDetails = tool.details
+        let reply = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Reply", taskId: "turn", at: 2)
+        let later = MarbleEntry(conversationId: "chat", kind: "user", text: "Next", taskId: "next", at: 3)
+        let timeline = MarbleReasoningAssociation([reply, later, row])
+        XCTAssertEqual(timeline.standalone, [reply, later])
+        XCTAssertEqual(timeline.tools[reply.id], [row])
+    }
+
+    func testTimeLabelsSeparateDaysAndGapsOverFiveMinutes() {
+        let base = UInt64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000)
+        let rows = [1_000, 301_000, 602_000, 172_800_000].map { offset in
+            MarbleEntry(conversationId: "chat", kind: "user", text: String(offset),
+                        taskId: String(offset), at: base + UInt64(offset))
+        }
+        let labels = MarbleReasoningAssociation(rows).timestamps
+        XCTAssertNotNil(labels[rows[0].id])
+        XCTAssertNil(labels[rows[1].id])
+        XCTAssertNotNil(labels[rows[2].id])
+        XCTAssertNotNil(labels[rows[3].id])
+    }
+
     func testNamelessEndUpdatesMatchingCallAndKeepsEveryoneAttribution() throws {
         var calls: [MarbleToolActivity] = []
         let start = try toolEvent("tool_start", data: #"{"callId":"call-7","tool":"bash","sender":"Ada","entry_id":"tool-7"}"#)

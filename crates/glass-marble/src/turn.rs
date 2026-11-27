@@ -324,6 +324,7 @@ fn run_attempt(
     let mut reasoning = String::new();
     let mut reasoning_boundary = false;
     let mut splitter = ThinkSplitter::default();
+    let mut working_line = None;
     let mut usage: Option<Value> = None;
     let events = conversation.events().clone();
     let text_block_boundaries = conversation.streams_text_blocks();
@@ -392,6 +393,17 @@ fn run_attempt(
                     }
                     let (visible, thought) = splitter.flush();
                     text.push_str(&visible);
+                    text = remove_working_lines(&text, &mut working_line);
+                    if event.kind == "tool_start"
+                        && let Some(line) = working_line.take()
+                    {
+                        events.publish(
+                            &conversation_id,
+                            &task_id,
+                            "working",
+                            serde_json::json!({"text": line}),
+                        );
+                    }
                     publish_reasoning(&append_reasoning(
                         &mut reasoning,
                         &mut reasoning_boundary,
@@ -428,6 +440,7 @@ fn run_attempt(
         &thought,
     ));
     text.push_str(&visible);
+    text = remove_working_lines(&text, &mut working_line);
     if let Some((plan, answer)) = split_plan_preamble(&text) {
         publish_reasoning(&append_reasoning(&mut reasoning, &mut true, plan));
         text = answer.to_string();
@@ -473,6 +486,28 @@ fn run_attempt(
         }),
     );
     Ok(reply)
+}
+
+fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| {
+            let trimmed = line.trim();
+            let Some(tag) = trimmed.strip_prefix("<working>") else {
+                return true;
+            };
+            if let Some(line) = tag.strip_suffix("</working>") {
+                let line = line.trim();
+                if line.ends_with('…')
+                    && (1..=6).contains(&line.split_whitespace().count())
+                    && line.chars().count() <= 100
+                    && !line.contains(['<', '>'])
+                {
+                    *status = Some(line.to_owned());
+                }
+            }
+            false
+        })
+        .collect()
 }
 
 fn append_reasoning(reasoning: &mut String, boundary: &mut bool, delta: &str) -> String {
@@ -581,6 +616,26 @@ mod tests {
         let plan = "The user is asking about a leak. I need to respond. I should apologize. I'll output only the final answer.";
         let text = format!("{plan}My bad.");
         assert_eq!(super::split_plan_preamble(&text), Some((plan, "My bad.")));
+    }
+
+    #[test]
+    fn working_lines_are_metadata_not_reply_text() {
+        let mut status = None;
+        let answer = super::remove_working_lines(
+            "<working>Reading the report…</working>\nPublic answer.",
+            &mut status,
+        );
+        assert_eq!(answer, "Public answer.");
+        assert_eq!(status.as_deref(), Some("Reading the report…"));
+        status = None;
+        assert_eq!(
+            super::remove_working_lines(
+                "<working>One two three four five six seven…</working>\n",
+                &mut status,
+            ),
+            ""
+        );
+        assert_eq!(status, None);
     }
 
     #[test]

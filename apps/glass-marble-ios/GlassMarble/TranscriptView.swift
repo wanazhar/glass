@@ -40,7 +40,8 @@ struct TranscriptView: View {
                     }
                     let transcript = MarbleReasoningAssociation(entries)
                     ForEach(transcript.standalone, id: \.rowID) { entry in
-                        MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id])
+                        MarbleEntryView(entry: entry, reasoning: transcript.attached[entry.id],
+                                        toolRows: transcript.tools[entry.id] ?? [], timestamp: transcript.timestamps[entry.id])
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                     if !store.liveReasoning.isEmpty && !entries.contains(where: {
@@ -48,13 +49,11 @@ struct TranscriptView: View {
                     }) {
                         MarbleEntryView(entry: .preview(kind: "reasoning", text: store.liveReasoning))
                     }
-                    ForEach(store.liveTools) { tool in
-                        MarbleToolRow(tool: tool)
-                    }
                     let working = store.isWorking && !entries.contains {
                         $0.kind == "assistant" && $0.taskId == store.activeTaskId
                     }
-                    if store.liveText.isEmpty && (!presentation.responders.isEmpty || working
+                    let hasReservedReply = entries.contains { $0.kind == "pending" }
+                    if !hasReservedReply && store.liveText.isEmpty && (!presentation.responders.isEmpty || working
                         || store.isAwaitingReply(in: conversationId, entries: entries)) {
                         MarbleThinkingBubble()
                     }
@@ -114,6 +113,7 @@ struct MarbleEntryView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.marbleMeasuresHistory) private var measuresHistory
     @State private var creatingThread = false
     @State private var threadError = false
@@ -124,10 +124,17 @@ struct MarbleEntryView: View {
     var speaker: MarbleSpeakerStyle? = nil
     var replyHue: Int = MarbleSpeakerStyle.defaultHue
     var reasoning: String? = nil
+    var toolRows: [MarbleEntry] = []
+    var timestamp: String? = nil
     var allowsThreads = true
     var usesThreadActionsDialog = false
 
     private var isUser: Bool { entry.kind == "user" }
+    private var exactTime: String {
+        guard entry.at > 0 else { return "" }
+        let date = Date(timeIntervalSince1970: Double(entry.at) / 1_000)
+        return date.formatted(date: .abbreviated, time: .standard)
+    }
     private var task: MarbleTask? {
         guard !entry.taskId.isEmpty else { return nil }
         return store.state.tasks.first { $0.id == entry.taskId }
@@ -136,18 +143,29 @@ struct MarbleEntryView: View {
     var body: some View {
         let failure = MarbleTurnFailure.representsFailure(entry, status: task?.status)
         VStack(alignment: .leading, spacing: 6) {
+            if let timestamp {
+                Text(timestamp)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+            }
             if entry.kind == "assistant" || entry.kind == "pending" || failure {
                 // Persisted reasoning replaces the live disclosure for this task.
                 let thought = reasoning ?? store.reasoning(for: entry.taskId)
-                if !thought.isEmpty { MarbleReasoningRow(text: thought, speaker: speaker?.name) }
-                if entry.kind != "pending", entry.threadId == nil,
-                   !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId) {
-                    ForEach(store.tools(for: entry.taskId)) { MarbleToolRow(tool: $0) }
+                let author = speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble"
+                if !thought.isEmpty { MarbleReasoningRow(text: thought, speaker: author) }
+                let tools = toolRows.compactMap(store.toolActivity(for:))
+                if !tools.isEmpty {
+                    MarbleToolTimeline(tools: tools)
+                } else if entry.kind != "pending", entry.threadId == nil,
+                          !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId),
+                          !store.tools(for: entry.taskId).isEmpty {
+                    MarbleToolTimeline(tools: store.tools(for: entry.taskId))
                 }
             }
             entryContent(isFailure: failure)
             if !failure && MarbleTurnFailure.isStoppedPartialReply(entry, taskStatus: task?.status) {
-                MarbleFailedTurnRow(task: task, entry: entry)
+                MarbleFailedTurnRow(task: task, entry: entry, sender: speaker?.name)
             }
         }
         .background {
@@ -191,12 +209,15 @@ struct MarbleEntryView: View {
                                     UIPasteboard.general.string = entry.text
                                 }
                             }
-                        }
+                        } message: { Text(exactTime) }
                         .accessibilityAction(named: Text("Reply in thread")) {
                             Task { await openThread() }
                         }
                 } else {
-                    message.contextMenu { replyInThread }
+                    message.contextMenu {
+                        Text(exactTime)
+                        replyInThread
+                    }
                 }
                 if let thread = store.threadSummary(for: entry) {
                     NavigationLink(value: ChatRoute.thread(thread.id)) {
@@ -211,6 +232,8 @@ struct MarbleEntryView: View {
             } message: {
                 Text("Try again in a moment.")
             }
+        } else if entry.at > 0 && (isUser || entry.kind == "assistant") {
+            message.contextMenu { Text(exactTime) }
         } else {
             message
         }
@@ -260,16 +283,21 @@ struct MarbleEntryView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if entry.kind == "pending" {
             let retrying = store.automaticRetries.contains(entry.taskId)
-            if let text = store.pendingReplyText(for: entry.taskId), !retrying {
-                replyBubble(text)
-            } else {
-                MarbleThinkingBubble(name: speaker?.name ?? "Marble", retrying: retrying)
+            let preview = store.pendingReplyText(for: entry.taskId)
+            Group {
+                if let preview, !retrying {
+                    replyBubble(preview).transition(.opacity)
+                } else {
+                    MarbleThinkingBubble(name: speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble",
+                                         retrying: retrying, status: store.workingLines[entry.taskId])
+                }
             }
+            .animation(reduceMotion ? nil : .easeIn(duration: 0.18), value: preview == nil)
         } else if entry.kind == "handoff", let handoff = entry.handoff {
             HandoffLine(handoff: handoff)
         } else if entry.kind == "reasoning" {
             // Thinking stays tucked away — never inline with the reply.
-            MarbleReasoningRow(text: entry.text)
+            MarbleReasoningRow(text: entry.text, speaker: speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble")
         } else if let tool = store.toolActivity(for: entry) {
             MarbleToolRow(tool: tool, sender: speaker?.name ?? tool.sender)
         } else if entry.kind == "system" || entry.kind == "tool" {
@@ -323,18 +351,78 @@ struct MarbleEntryView: View {
 struct MarbleToolRow: View {
     var tool: MarbleToolActivity
     var sender: String? = nil
+    @State private var showsDetails = false
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: tool.isWebSearch ? "magnifyingglass" : "wrench.and.screwdriver")
-            Text([sender, tool.title, tool.query].compactMap { $0 }.joined(separator: " · "))
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Text(tool.status.rawValue)
+        Button {
+            showsDetails = true
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: tool.isWebSearch ? "magnifyingglass" : "wrench.and.screwdriver")
+                Text([sender, tool.title].compactMap { $0 }.joined(separator: " · "))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let elapsed = tool.details?.elapsedMs { Text(MarbleToolTimeline.duration(elapsed)) }
+                if tool.status == .failed {
+                    Label("Failed", systemImage: "xmark.circle.fill").foregroundStyle(.red)
+                } else {
+                    Text(tool.status.rawValue)
+                }
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .font(.caption)
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
+        .sheet(isPresented: $showsDetails) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        detail("Command", tool.details?.command ?? tool.query ?? "")
+                        detail("Output", tool.details?.output ?? "")
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .navigationTitle(tool.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { Button("Done") { showsDetails = false } }
+            }
+        }
+    }
+
+    private func detail(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            Text(text.isEmpty ? "Not recorded" : text)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+        }
+    }
+}
+
+struct MarbleToolTimeline: View {
+    let tools: [MarbleToolActivity]
+
+    static func duration(_ milliseconds: UInt64) -> String {
+        milliseconds < 1000 ? "<1 s" : "\(milliseconds / 1000) s"
+    }
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(spacing: 0) {
+                ForEach(tools) { MarbleToolRow(tool: $0) }
+            }
+        } label: {
+            let elapsed = tools.compactMap { $0.details?.elapsedMs }
+            let summary = "Used \(tools.count) \(tools.count == 1 ? "tool" : "tools")"
+            Text(elapsed.isEmpty ? summary : "\(summary) · \(Self.duration(elapsed.reduce(0, +)))")
+                .frame(minHeight: 44)
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -385,7 +473,8 @@ struct MarbleTurnTail: View {
             let hasAnswer = rows.contains { $0.kind == "assistant" }
             if !hasFailure && !hasAnswer && !rows.contains(where: { $0.kind == "tool" })
                 && (showsLiveTools || !task.isRunning) {
-                ForEach(store.tools(for: task.id)) { MarbleToolRow(tool: $0) }
+                let tools = store.tools(for: task.id)
+                if !tools.isEmpty { MarbleToolTimeline(tools: tools) }
             }
             if !hasFailure && !hasAnswer && !rows.contains(where: { $0.kind == "pending" })
                 && MarbleTurnFailure.message(for: task.status) != nil {
@@ -403,11 +492,12 @@ private struct MarbleFailedTurnRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let sender { Text(sender).fontWeight(.semibold) }
             Label(message, systemImage: "exclamationmark.circle")
                 .foregroundStyle(.secondary)
             if let taskId = MarbleTurnFailure.retryID(entry: entry, task: task) {
                 Button("Retry") { Task { await store.retry(taskId: taskId) } }
+                    .buttonStyle(.glass)
+                    .frame(minHeight: 44)
                     .disabled(store.retryingTurns.contains(taskId))
                 if store.retryFailures.contains(taskId) {
                     Text("Couldn’t retry. Try again in a moment.")
@@ -426,9 +516,9 @@ private struct MarbleFailedTurnRow: View {
     }
 
     private var message: String {
-        if let entry, entry.kind == "failure", !entry.text.isEmpty { return entry.text }
+        let name = sender ?? store.agentName(for: entry?.taskId ?? task?.id ?? "") ?? "Marble"
         let status = entry?.cancelled == true ? "cancelled" : task?.status
-        return status.flatMap(MarbleTurnFailure.message(for:)) ?? "Marble couldn’t finish this reply."
+        return status == "cancelled" ? "\(name) stopped before finishing" : "\(name) couldn’t finish this reply."
     }
 }
 
@@ -474,21 +564,12 @@ struct ComposerBar: View {
 
     private var field: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if focused {
-                Button { focused = false } label: {
-                    Image(systemName: "keyboard.chevron.compact.down")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, height: 38)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Hide keyboard")
-            } else if let onDictate {
+            if let onDictate {
                 Button(action: onDictate) {
                     Image(systemName: isDictating ? "waveform" : "mic")
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(isDictating ? .red : .secondary)
-                        .frame(width: 36, height: 38)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
@@ -511,7 +592,7 @@ struct ComposerBar: View {
                         .font(.system(size: 32))
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(MarbleTheme.card, trimmed.isEmpty ? MarbleTheme.muted : MarbleTheme.tint)
-                        .frame(width: 38, height: 38)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .disabled(trimmed.isEmpty || submitting || store.connectionPaused || store.needsToken
@@ -523,7 +604,7 @@ struct ComposerBar: View {
                     Image(systemName: "stop.circle.fill")
                         .font(.system(size: 32))
                         .foregroundStyle(.red)
-                        .frame(width: 38, height: 38)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Stop")
@@ -532,7 +613,7 @@ struct ComposerBar: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 5)
         .marbleFloating()
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
     }
 
@@ -612,6 +693,7 @@ private struct MarbleFollowLatest: ViewModifier {
     @State private var position: ScrollPosition
     @State private var follow = MarbleScrollFollow()
     @State private var phase: ScrollPhase = .idle
+    @State private var beyondViewport = false
     @State private var positionedHistory = false
     @State private var measurement = PrependMeasurement()
 
@@ -696,6 +778,7 @@ private struct MarbleFollowLatest: ViewModifier {
                 measurement.offset = new.offset + new.topInset
                 let resized = old.viewport != new.viewport || old.bottom != new.bottom || old.topInset != new.topInset
                 let distance = new.distanceFromBottom
+                beyondViewport = distance > new.viewport && new.viewport > 0
                 updateFollow(
                     distance: distance,
                     userMoved: phase.isUserScrolling && old.offset != new.offset && !resized
@@ -740,14 +823,14 @@ private struct MarbleFollowLatest: ViewModifier {
                 measurement.followCorrection = nil
             }
             .overlay(alignment: .bottomTrailing) {
-                if follow.showJumpButton {
+                if follow.showJumpButton && beyondViewport {
                     Button {
                         jumpToLatest()
                     } label: {
                         Label("Jump to latest", systemImage: "arrow.down")
                             .labelStyle(.iconOnly)
-                            .padding(10)
-                            .marbleFloating()
+                            .frame(width: 44, height: 44)
+                            .marbleFloating(in: Circle())
                     }
                     .accessibilityLabel("Jump to latest")
                     .padding(.trailing, 16)

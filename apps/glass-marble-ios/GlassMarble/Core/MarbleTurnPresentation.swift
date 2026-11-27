@@ -78,12 +78,20 @@ struct MarbleToolActivity: Identifiable, Equatable {
     var entryIDs: [String: String] = [:]
     var threadId: String? = nil
     var sequence: UInt64 = 0
+    var details: MarbleToolDetails? = nil
+    var started: Date? = nil
 
     var isWebSearch: Bool { ["web_search", "web.search", "glass.web.search", "glass.browser.search"].contains(name) }
 
     var title: String {
-        if isWebSearch {
-            return status == .completed ? "Searched the web" : "Search the web"
+        if isWebSearch { return "Searched the web" }
+        if ["bash", "shell", "exec"].contains(name) { return "Ran a command" }
+        if ["read", "glass.workspace.read"].contains(name), let query {
+            return "Read \((query as NSString).lastPathComponent)"
+        }
+        if ["web_fetch", "web.fetch", "glass.web.fetch"].contains(name),
+           let query, let host = URL(string: query)?.host {
+            return "Opened \(host)"
         }
         return MarbleDecisionWords.action(tool: name)
     }
@@ -105,11 +113,11 @@ struct MarbleToolActivity: Identifiable, Equatable {
         }
         let label = entry.text[..<statusSeparator.lowerBound]
         guard let summarySeparator = label.range(of: " · ") else {
-            return Self(id: entry.id, name: String(label), query: nil, status: status)
+            return Self(id: entry.id, name: String(label), query: nil, status: status, details: entry.toolDetails)
         }
         return Self(
             id: entry.id, name: String(label[..<summarySeparator.lowerBound]),
-            query: String(label[summarySeparator.upperBound...]), status: status
+            query: String(label[summarySeparator.upperBound...]), status: status, details: entry.toolDetails
         )
     }
 
@@ -139,15 +147,23 @@ struct MarbleToolActivity: Identifiable, Equatable {
         if let threadId = event.data.threadId { calls[row].threadId = threadId }
         switch event.kind {
         case "tool_start":
+            if calls[row].started == nil { calls[row].started = Date() }
             if case let .object(arguments) = event.data.arguments,
                let value = ["query", "q", "url", "path", "command"].compactMap({ key -> String? in
                    if case let .string(value) = arguments[key] { return value }
                    return nil
                }).first {
                 calls[row].query = String(value.prefix(160))
+                calls[row].details = MarbleToolDetails(command: value, output: "", elapsedMs: nil)
+            }
+            if let title = event.data.title {
+                calls[row].details = MarbleToolDetails(command: title, output: "", elapsedMs: nil)
             }
         case "tool_end":
             calls[row].status = event.data.approved == false ? .denied : event.data.isError == true ? .failed : .completed
+            let elapsed = calls[row].started.map { UInt64(max(0, Date().timeIntervalSince($0) * 1000)) }
+            calls[row].details = MarbleToolDetails(command: calls[row].details?.command ?? "",
+                                                  output: event.data.text ?? "", elapsedMs: elapsed)
         default:
             break
         }
@@ -187,6 +203,7 @@ struct MarbleToolActivity: Identifiable, Equatable {
                                         taskId: taskId, at: 0, speakerName: call.sender ?? "")
                 entry.serverID = id
                 entry.threadId = threadId
+                entry.toolDetails = call.details
                 return (call.sequence, entry)
             }
         }.sorted { $0.0 < $1.0 }
@@ -248,7 +265,9 @@ enum MarbleTurnFailure {
 /// Each view supplies only its own chat or thread's entries.
 struct MarbleReasoningAssociation {
     let attached: [String: String]
+    let tools: [String: [MarbleEntry]]
     let standalone: [MarbleEntry]
+    let timestamps: [String: String]
 
     init(_ entries: [MarbleEntry], keepVisible entryId: String? = nil) {
         let outcomes = Dictionary(entries.compactMap { entry -> (String, String)? in
@@ -256,7 +275,12 @@ struct MarbleReasoningAssociation {
             return (entry.taskId, entry.id)
         }, uniquingKeysWith: { first, _ in first })
         var attached: [String: String] = [:]
+        var tools: [String: [MarbleEntry]] = [:]
         standalone = entries.filter { entry in
+            if entry.kind == "tool", entry.id != entryId, let outcome = outcomes[entry.taskId] {
+                tools[outcome, default: []].append(entry)
+                return false
+            }
             guard entry.kind == "reasoning", entry.id != entryId,
                   let outcome = outcomes[entry.taskId] else { return true }
             if !entry.text.isEmpty {
@@ -265,5 +289,18 @@ struct MarbleReasoningAssociation {
             return false
         }
         self.attached = attached
+        self.tools = tools
+        var timestamps: [String: String] = [:]
+        var previous: Date?
+        for entry in standalone where entry.at > 0 && ["user", "assistant", "failure"].contains(entry.kind) {
+            let date = Date(timeIntervalSince1970: Double(entry.at) / 1_000)
+            if previous.map({ !Calendar.current.isDate($0, inSameDayAs: date) }) ?? true {
+                timestamps[entry.id] = date.formatted(date: .abbreviated, time: .omitted)
+            } else if let previous, date.timeIntervalSince(previous) > 300 {
+                timestamps[entry.id] = date.formatted(date: .omitted, time: .shortened)
+            }
+            previous = date
+        }
+        self.timestamps = timestamps
     }
 }

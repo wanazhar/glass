@@ -59,11 +59,12 @@ struct ChatToolbar<Title: View>: View {
 /// scrolls away before it reaches the title instead of running underneath it.
 private struct HeaderFade: View {
     var body: some View {
-        LinearGradient(stops: [.init(color: Design.background, location: 0),
-                               .init(color: Design.background, location: 0.62),
-                               .init(color: Design.background.opacity(0), location: 1)],
-                       startPoint: .top, endPoint: .bottom)
-            .padding(.bottom, -Design.spacious)
+        VStack(spacing: 0) {
+            Design.background
+            LinearGradient(colors: [Design.background, Design.background.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .frame(height: Design.spacious + Design.gap)
+        }
+            .padding(.bottom, -(Design.spacious + Design.gap))
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
             .accessibilityHidden(true)

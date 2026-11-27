@@ -1139,6 +1139,44 @@
       ]
     },
     {
+      "path": "apps/glass-ios/PR-round8.md",
+      "class": "record",
+      "topic": "history",
+      "audience": "historical-or-release-evidence",
+      "status": "dated-or-release-record",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Preserve dated release, changelog, and evidence records as an auditable source history.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "apps/glass-ios/PR-round8.md#glass-ios-round-8-agents-in-the-conversation",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass iOS round 8: agents in the conversation",
+          "anchor": "glass-ios-round-8-agents-in-the-conversation"
+        },
+        {
+          "level": "2",
+          "title": "Summary",
+          "anchor": "summary"
+        },
+        {
+          "level": "2",
+          "title": "Simulator evidence",
+          "anchor": "simulator-evidence"
+        },
+        {
+          "level": "2",
+          "title": "Unsigned build",
+          "anchor": "unsigned-build"
+        }
+      ]
+    },
+    {
       "path": "benchmarks/README.md",
       "class": "current",
       "topic": "reference",
@@ -2559,6 +2597,7 @@
         "SECURITY.md",
         "apps/glass-ios/PR-round6.md",
         "apps/glass-ios/PR-round7.md",
+        "apps/glass-ios/PR-round8.md",
         "benchmarks/README.md",
         "crates/glass-browser-core/README.md",
         "crates/glass-browser/README.md",

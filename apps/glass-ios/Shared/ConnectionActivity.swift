@@ -10,6 +10,8 @@ struct LensConnectionAttributes: ActivityAttributes {
         var status: String
         /// Flips on every update, so the Lens can pulse gently.
         var pulse: Bool
+        var workingAgents: Int? = nil
+        var longestAgentStart: Date? = nil
     }
 
     var host: String

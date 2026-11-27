@@ -169,6 +169,8 @@ pub struct Info {
     #[serde(default)]
     pub pending_activation: bool,
     pub name: String,
+    #[serde(default)]
+    pub task: String,
     pub model: String,
     pub session: String,
     pub status: String,
@@ -203,6 +205,8 @@ pub struct Info {
     pub usage_known: bool,
     pub turns: u64,
     pub updated: u64,
+    #[serde(default)]
+    pub started_at: u64,
     pub result: String,
     #[serde(default)]
     pub cost_usd: Option<f64>,
@@ -776,6 +780,7 @@ impl Hub {
                     auto_wakes: 0,
                     pending_activation: false,
                     name: name.into(),
+                    task: task.clone(),
                     model: req["model"]
                         .as_str()
                         .unwrap_or_else(|| {
@@ -806,6 +811,7 @@ impl Hub {
                     estimated_tokens: 0,
                     turns: 0,
                     updated: crate::loops::now(),
+                    started_at: crate::loops::now(),
                     result: String::new(),
                     cost_usd: None,
                     cost_complete: true,
@@ -907,12 +913,12 @@ impl Hub {
                 );
             }
             "transcript" => {
-                return window(
+                return transcript(
                     &self
                         .dir
                         .join("sessions")
                         .join(format!("{}.jsonl", worker.info.session)),
-                    req["before"].as_u64(),
+                    req,
                 );
             }
             "interrupt" => {
@@ -992,6 +998,7 @@ impl Hub {
                 info.pending_messages.push((from.into(), text.clone()));
                 if launch {
                     info.status = "working".into();
+                    info.started_at = crate::loops::now();
                 }
                 self.persist(&info)?;
                 worker.info = info.clone();
@@ -1617,6 +1624,21 @@ fn message(req: &Value) -> Result<String, String> {
     }
     Ok(t.into())
 }
+fn transcript(path: &Path, req: &Value) -> Result<Value, String> {
+    let before = req["before"].as_u64();
+    if req["view"] == "chat" {
+        crate::connect::chat_history_page(
+            path,
+            before
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(usize::MAX),
+            20,
+        )
+    } else {
+        window(path, before)
+    }
+}
+
 fn window(path: &Path, before: Option<u64>) -> Result<Value, String> {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -2047,9 +2069,9 @@ fn offline(owner: &str, req: &Value) -> Result<Value, String> {
         .or_else(|| infos.iter().find(|i| i.name == id))
         .ok_or("unknown agent")?;
     if req["action"] == "transcript" {
-        window(
+        transcript(
             &dir.join("sessions").join(format!("{}.jsonl", info.session)),
-            req["before"].as_u64(),
+            req,
         )
     } else {
         Ok(

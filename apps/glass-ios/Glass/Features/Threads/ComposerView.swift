@@ -34,7 +34,7 @@ struct ComposerView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .accessibilityIdentifier("composer.dictation.message")
                         }
-                        rail
+                        if active || composer.model != nil || conversation.thread.model != nil { rail }
                         HStack(alignment: .bottom, spacing: Design.gap) {
                             attachMenu
                             field
@@ -237,6 +237,10 @@ struct ComposerView: View {
             Button("Camera", systemImage: "camera") { takingPhoto = true }
                 .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
             Divider()
+            if !active, composer.model == nil, conversation.thread.model == nil {
+                Button("Choose Model", systemImage: "cpu", action: chooseModel)
+                    .accessibilityIdentifier("composer.model")
+            }
             Button("Expand Editor", systemImage: "arrow.up.left.and.arrow.down.right") { composer.showingEditor = true }
                 .accessibilityIdentifier("composer.expand")
         } label: {

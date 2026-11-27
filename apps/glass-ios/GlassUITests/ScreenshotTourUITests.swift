@@ -4,6 +4,157 @@ import XCTest
 /// GLASS_SHOTS (output directory) and GLASS_E2E_CONTROL (live harness); skipped otherwise.
 final class ScreenshotTourUITests: XCTestCase {
     @MainActor
+    func testAgentCardsAndSeededChild() throws {
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(environment["GLASS_CHAT_FIXTURE"] == "1", "Start scripts/e2e/chat-fixture.py")
+        continueAfterFailure = false
+        let tablet = UIDevice.current.userInterfaceIdiom == .pad
+        for appearance in ["light", "dark"] {
+            let app = pairFixture(appearance)
+
+            app.buttons["thread.delegation"].tap()
+            let group = app.buttons["agents.group"].firstMatch
+            XCTAssertTrue(group.waitForExistence(timeout: 10))
+            XCTAssertTrue(group.label.contains("3 agents"))
+            try captureRound8(appearance, "agents-collapsed")
+            group.tap()
+            let delivery = app.buttons["agents.child.delivery"]
+            XCTAssertTrue(delivery.waitForExistence(timeout: 5))
+            XCTAssertTrue(delivery.label.contains("Editing alert_router.py"))
+            XCTAssertFalse(delivery.label.contains("**"))
+            XCTAssertTrue(app.buttons["agents.child.tests"].label.contains("All 18 delivery tests pass"))
+            XCTAssertTrue(app.buttons["agents.child.replay"].label.contains("The replay fixture is missing"))
+            try captureRound8(appearance, "agents-expanded")
+            delivery.tap()
+            let seededReply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "The retry timer can enqueue")).firstMatch
+            XCTAssertTrue(seededReply.exists, "The child timeline already contains the prefetched reply")
+            XCTAssertFalse(app.staticTexts["Loading messages…"].exists)
+            XCTAssertFalse(app.staticTexts["Syncing messages…"].exists)
+            let back = app.buttons["agent.parent"]
+            let stop = app.buttons["agent.stop"]
+            XCTAssertTrue(back.exists && stop.isEnabled)
+            if tablet {
+                XCTAssertTrue(group.exists, "The parent timeline stays visible next to the child")
+                app.buttons["threads.agents.delegation"].tap()
+                XCTAssertTrue(app.buttons["threads.agent.delivery"].waitForExistence(timeout: 5))
+            } else {
+                XCTAssertFalse(app.textViews["composer.field"].exists)
+            }
+            try captureRound8(appearance, tablet ? "agent-inspector" : "agent-thread")
+            back.tap()
+            XCTAssertTrue(group.waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["agent.parent"].exists)
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testRoundEightStreamingAndHeader() throws {
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(environment["GLASS_CHAT_FIXTURE"] == "1", "Start scripts/e2e/chat-fixture.py")
+        continueAfterFailure = false
+        let appearances = environment["GLASS_ROUND8_APPEARANCE"].map { [$0] } ?? ["light", "dark"]
+        for appearance in appearances {
+            let app = pairFixture(appearance)
+            app.buttons["thread.stream-review"].tap()
+            let partial = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "The device build and the simulator build")).firstMatch
+            XCTAssertTrue(partial.waitForExistence(timeout: 8))
+            let finished = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Verify the build number from the bundle")).firstMatch
+            XCTAssertTrue(finished.waitForExistence(timeout: 20))
+            XCTAssertTrue(app.buttons["composer.stop"].waitForNonExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["composer.model"].exists, "No empty model rail is shown")
+            try captureRound8(appearance, "composer")
+            let scroll = app.scrollViews.firstMatch
+            let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            let to = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.66))
+            from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.2)
+            XCTAssertTrue(app.buttons["conversation.latest"].waitForExistence(timeout: 5))
+            try captureRound8(appearance, "header-fade")
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testRoundEightLiveActivityAgentCount() throws {
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(environment["GLASS_CHAT_FIXTURE"] == "1", "Start scripts/e2e/chat-fixture.py")
+        continueAfterFailure = false
+        let appearance = environment["GLASS_ROUND8_APPEARANCE"] ?? "light"
+        let app = pairFixture(appearance)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let allow = springboard.buttons["Allow While Using App"]
+        if allow.waitForExistence(timeout: 3) { allow.tap() }
+        XCTAssertEqual(keep.value as? String, "1")
+        app.closeSettings()
+        XCTAssertTrue(app.waitForThreadList(timeout: 10))
+        app.buttons["thread.delegation"].tap()
+        let group = app.buttons["agents.group"].firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 10) && group.label.contains("1 working"))
+        XCUIDevice.shared.press(.home)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            let activity = springboard.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier CONTAINS 'element-identifier:activity:'")).firstMatch
+            XCTAssertTrue(activity.waitForExistence(timeout: 10))
+            try captureRound8(appearance, "island")
+            activity.press(forDuration: 1.2)
+            XCTAssertTrue(springboard.buttons["Disconnect"].firstMatch.waitForExistence(timeout: 5))
+            try captureRound8(appearance, "island-expanded")
+            XCUIDevice.shared.press(.home)
+        }
+        let lock = NSSelectorFromString("pressLockButton")
+        XCTAssertTrue(XCUIDevice.shared.responds(to: lock))
+        XCUIDevice.shared.perform(lock)
+        sleep(2)
+        XCUIDevice.shared.perform(lock)
+        sleep(3)
+        for label in ["Allow", "Always Allow"] {
+            let permission = springboard.buttons[label].firstMatch
+            if permission.exists {
+                permission.tap()
+                XCTAssertTrue(permission.waitForNonExistence(timeout: 5))
+                break
+            }
+        }
+        try captureRound8(appearance, "lock-screen")
+        let homeIndicator = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.992))
+        let center = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+        homeIndicator.press(forDuration: 0.05, thenDragTo: center)
+        app.terminate()
+    }
+
+    @MainActor
+    private func pairFixture(_ appearance: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-GlassResetState", "-glass.theme", appearance]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pair.title"].waitForExistence(timeout: 10))
+        let field = app.textFields["pair.link"].exists ? app.textFields["pair.link"] : app.textViews["pair.link"]
+        field.tap()
+        field.typeText("http://127.0.0.1:51998/#" + String(repeating: "a", count: 64))
+        app.buttons["pair.connect"].tap()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        return app
+    }
+
+    @MainActor
+    private func captureRound8(_ appearance: String, _ name: String) throws {
+        let device = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+        let filename = "\(device)-\(appearance)-\(name)"
+        let shot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.name = filename
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["GLASS_SHOTS"] {
+            try shot.pngRepresentation.write(to: URL(filePath: directory).appending(path: filename + ".png"))
+        }
+    }
+
+    @MainActor
     func testChatRenderingInLightAndDark() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
                           "Start scripts/e2e/chat-fixture.py to run the chat rendering tour")

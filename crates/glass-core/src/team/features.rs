@@ -107,10 +107,13 @@ impl Hub {
     pub(crate) fn extension_runner(self: &Arc<Self>, parent: &str) -> crate::ext::host::SubagentFn {
         let hub = Arc::clone(self);
         let parent = parent.to_string();
-        Box::new(move |tasks| {
+        Box::new(move |tasks, scope| {
             crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |task| {
                 let name = format!("child-{}", crate::subagent::new_task_id());
                 let mut request = json!({"action":"create","from":parent,"name":name,"text":task.task,"write":!task.read_only,"worktree":task.worktree,"notify_parent":false});
+                if !scope.lineage.origin().is_empty() {
+                    request["parent_call_id"] = json!(scope.lineage.origin());
+                }
                 if let Some(model) = &task.model {
                     request["model"] = json!(model);
                 }

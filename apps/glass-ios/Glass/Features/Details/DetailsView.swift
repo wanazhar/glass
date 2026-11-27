@@ -4,6 +4,7 @@ import SwiftUI
 /// The conversation's work: teammates, Git changes, files, attached files, export and restart.
 struct DetailsView: View {
     let conversation: ConversationModel
+    let openAgent: (Teammate) -> Void
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @State private var exported: URL?
@@ -16,7 +17,7 @@ struct DetailsView: View {
         NavigationStack {
             List {
                 Section {
-                    NavigationLink { TeammatesView(conversation: conversation) } label: {
+                    NavigationLink { TeammatesView(conversation: conversation, open: openAgent) } label: {
                         Label("Teammates", systemImage: "person.2")
                     }
                     .accessibilityIdentifier("details.teammates")

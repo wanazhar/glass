@@ -42,7 +42,7 @@ pub type HostInputFn<'a> = dyn FnMut(&str, &serde_json::Value) -> serde_json::Va
 /// fan-out cannot come from overlapping tool calls. A batch arrives as a
 /// single request, the host runs the tasks concurrently, and the reports
 /// come back in request order.
-pub type SubagentFn = Box<dyn FnMut(&[SubagentTask]) -> Vec<String> + Send + Sync>;
+pub type SubagentFn = Box<dyn FnMut(&[SubagentTask], &CallScope) -> Vec<String> + Send + Sync>;
 
 /// Runtime-aware variant of the delegated-task runner. The call ID is the
 /// extension request ID that owns this batch, allowing observers to bind
@@ -814,7 +814,7 @@ impl Extension {
                 let outputs = if let Some(runner) = self.subagent_events.as_mut() {
                     runner(&tasks, &call_id)
                 } else if let Some(runner) = self.subagent.as_mut() {
-                    runner(&tasks)
+                    runner(&tasks, scope)
                 } else {
                     self.reply_or_fail(protocol::subagents_result_json(
                         &call_id,

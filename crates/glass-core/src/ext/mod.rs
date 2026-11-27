@@ -963,7 +963,7 @@ for line in sys.stdin:
             "test-model",
         );
         reg.set_subagent(|| {
-            Box::new(|tasks: &[crate::ext::protocol::SubagentTask]| {
+            Box::new(|tasks: &[crate::ext::protocol::SubagentTask], _| {
                 tasks.iter().map(|t| format!("done:{}", t.task)).collect()
             })
         });
@@ -1039,7 +1039,7 @@ for line in sys.stdin:
             std::path::Path::new("/tmp"),
             "test-model",
         );
-        reg.set_subagent(|| Box::new(|_: &[crate::ext::protocol::SubagentTask]| Vec::new()));
+        reg.set_subagent(|| Box::new(|_, _| Vec::new()));
         let mut nohost = |_n: &str, _a: &str| String::new();
         let out = reg.run_tool("bad", "{}", &mut nohost).unwrap_or_default();
         assert!(

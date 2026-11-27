@@ -31,12 +31,37 @@ TABLE = """The build has four capabilities to review:
 The table scrolls sideways to show Verification and Platform."""
 
 THREADS = [
+    {"session": "stream-review", "title": "Summarize the build"},
     {"session": "reasoning", "title": "Review the Swift build", "model": "Swift workspace"},
     {"session": "table", "title": "Build capabilities", "model": "Swift workspace"},
     {"session": "long-reasoning", "title": "Long reasoning", "model": "Swift workspace"},
     {"session": "deep-reasoning", "title": "Reasoning after long history", "model": "Swift workspace"},
     {"session": "scrolled-reasoning", "title": "Earlier reasoning after long history", "model": "Swift workspace"},
     {"session": "paged-reasoning", "title": "Paged reasoning", "model": "Swift workspace"},
+    {"session": "delegation", "title": "Review alert delivery", "model": "gpt-5.4", "running_process_verified": True},
+]
+
+AGENTS = [
+    {"id": "delivery", "name": "Delivery", "status": "working", "activity": "**Editing alert_router.py**",
+     "task": "Trace why urgent alerts sometimes arrive twice."},
+    {"id": "tests", "name": "Tests", "status": "idle", "terminal_events": 1,
+     "task": "Review delivery coverage.", "result": "All 18 delivery tests pass."},
+    {"id": "replay", "name": "Replay", "status": "blocked", "terminal_events": 1,
+     "task": "Reproduce the retry path offline.", "result": "The replay fixture is missing."},
+]
+AGENT_START = time.time() - 121
+STREAM_REPLY = (
+    "The device build and the simulator build both use the same Swift sources, but they target different platforms. "
+    "Keep their outputs separate so an unsigned device archive never picks up a simulator binary.\n\n"
+    "The Release bundle contains the app, its launch screen and the widget extension. The simulator runs provide "
+    "a separate check that the layout and message rendering match in both appearances.\n\n"
+    "For the final review, inspect the archive itself for a signing directory and a provisioning profile. "
+    "Neither belongs in an unsigned package. Verify the build number from the bundle rather than from its filename."
+)
+
+DELEGATION = [
+    {"k": "user", "t": "Review alert delivery in parallel. Have one agent trace the router, one check test coverage, and one replay the retry path."},
+    {"k": "call", "id": "launch-review", "name": "run_subagents", "args": "{}"},
 ]
 
 
@@ -57,6 +82,27 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/threads":
             self.reply({"threads": THREADS, "offset": 0, "total_threads": len(THREADS)})
         elif url.path == "/api/history":
+            if thread == "delegation":
+                self.history(DELEGATION)
+                return
+            if thread == "stream-review":
+                self.history([
+                    {"k": "user", "t": "What should we capture before sharing the release?"},
+                    {"k": "assistant", "t": "Capture the conversation and sidebar in light and dark. Keep each "
+                     "simulator at its native size and check that message text stays legible when it scrolls "
+                     "under the toolbar. Take an additional screenshot with the composer visible."},
+                    {"k": "user", "t": "How should we label the captures?"},
+                    {"k": "assistant", "t": "Name each capture by device, appearance, and the state it shows. "
+                     "Record the build number alongside the images so they can be matched to the release archive."},
+                    {"k": "user", "t": "Which builds are ready for release review?"},
+                    {"k": "assistant", "t": REASONING + "\n\n" + TABLE + "\n\n"
+                     "For a clean comparison, use the same source revision on both targets. Install the simulator "
+                     "app on iPhone and iPad, and confirm light and dark appearance before collecting screenshots. "
+                     "Review the app bundle from the device build separately, then record its version, build "
+                     "number, and archive checksum so the release notes point to the exact artifact."},
+                    {"k": "user", "t": "Summarize your verification plan."},
+                ])
+                return
             if thread == "paged-reasoning":
                 if parse_qs(url.query).get("before") == ["1000"]:
                     self.reply({"records": [
@@ -105,6 +151,22 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({"records": [{"index": i, "record": record} for i, record in enumerate(records)], "before": 0})
         elif url.path == "/api/events":
             self.events(thread)
+        elif url.path == "/api/agents":
+            self.reply([{"parent_call_id": "launch-review", "session": agent["id"], "model": "gpt-5.4",
+                         "started_at": AGENT_START, "updated": AGENT_START + 101, **agent}
+                        for agent in AGENTS] if thread == "delegation" else [])
+        elif url.path == "/api/agent":
+            id = parse_qs(url.query).get("agent", [""])[0]
+            agent = next((agent for agent in AGENTS if agent["id"] == id), None)
+            if agent is None:
+                self.history([])
+                return
+            self.history([
+                {"k": "user", "t": agent["task"]},
+                {"k": "assistant", "t": agent.get("result", "The retry timer can enqueue the same alert twice. I found the two paths that can both claim the same delivery key.")},
+            ])
+        elif url.path == "/api/agent-events":
+            self.agent_events()
         elif url.path == "/api/context":
             self.reply({"attachments": []})
         else:
@@ -112,7 +174,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if urlsplit(self.path).path in {"/api/agent/stop", "/api/agent/send"}:
+            agent = next((agent for agent in AGENTS if agent["id"] == data.get("agent")), None)
+            if agent:
+                agent.update(status="parked" if self.path.endswith("/stop") else "working",
+                             activity="Paused" if self.path.endswith("/stop") else "Retrying assignment")
         self.reply({"session": data.get("id", "")})
+
+    def history(self, records):
+        self.reply({"before": 0, "records": [{"index": i, "record": record} for i, record in enumerate(records)]})
+
+    def agent_events(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        try:
+            self.wfile.write(b'data: {"revision":1}\n\n')
+            while True:
+                self.wfile.flush()
+                time.sleep(2)
+                self.wfile.write(b": heartbeat\n\n")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def events(self, thread):
         self.send_response(200)
@@ -126,13 +209,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             active = thread == "reasoning"
             live = [{"t": "reasoning", "delta": REASONING[:39]}] if active else []
-            send(1, {"reset": True, "cursor": 1, "active": active or thread in {"long-reasoning", "deep-reasoning"},
+            send(1, {"reset": True, "cursor": 1, "active": active or thread in {"long-reasoning", "deep-reasoning", "stream-review"},
                      "control": {"can_write": True}, "live": live})
             if active:
                 for i, start in enumerate(range(39, len(REASONING), 13), start=2):
                     event = {"t": "reasoning", "delta": REASONING[start:start + 13]}
                     send(i, {"cursor": i, "events": [event]})
                     time.sleep(0.08)
+            if thread == "stream-review":
+                for i, start in enumerate(range(0, len(STREAM_REPLY), 19), start=2):
+                    send(i, {"cursor": i, "events": [{"t": "text", "delta": STREAM_REPLY[start:start + 19]}]})
+                    time.sleep(0.20 if i % 5 else 0.65)
+                send(i + 1, {"cursor": i + 1, "events": [{"t": "done"}]})
             while True:
                 self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()

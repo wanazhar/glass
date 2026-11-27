@@ -24,24 +24,23 @@ private struct ConversationShell: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var scheme
     @Bindable var threads: ThreadsModel
-    @State private var sidebar = NavigationSplitViewVisibility.all
+    @State private var sidebar = true
     @State private var drawer = false
+    @State private var child: ConversationModel?
+    @State private var openingChild: Task<Void, Never>?
 
     var body: some View {
         Group {
             if sizeClass == .compact {
                 compact
             } else {
-                NavigationSplitView(columnVisibility: $sidebar) {
-                    ThreadListView(threads: threads, choose: open, new: newChat, close: nil)
-                        .navigationSplitViewColumnWidth(min: 330, ideal: 355, max: 395)
-                } detail: {
-                    detail
-                }
-                .navigationSplitViewStyle(.balanced)
+                regular
             }
         }
-        .onChange(of: threads.selection, initial: true) { _, id in Attention.visibleThread = id }
+        .onChange(of: threads.selection, initial: true) { _, id in
+            Attention.visibleThread = id
+            if child?.parent?.thread.id != id { child = nil }
+        }
         #if DEBUG
         .task {
             guard let preview = LensPreview.current else { return }
@@ -81,11 +80,56 @@ private struct ConversationShell: View {
         }
     }
 
+    private var regular: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                if sidebar {
+                    sidebarPanel(ThreadListView(threads: threads, choose: open, new: newChat, close: nil,
+                                                openAgent: openAgent))
+                        .frame(width: min(355, geometry.size.width * (child == nil ? 0.32 : 0.29)))
+                        .padding(.leading, Design.gap)
+                        .padding(.vertical, Design.gap)
+                }
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let child {
+                    Divider()
+                    childView(child)
+                        .frame(width: min(420, geometry.size.width * 0.32))
+                }
+            }
+        }
+        .background(Design.background.ignoresSafeArea())
+    }
+
+    private func sidebarPanel(_ list: ThreadListView) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Design.drawerCorner, style: .continuous)
+        return list
+            .clipShape(shape)
+            .background(Design.surface.opacity(reduceTransparency ? 1 : 0), in: shape)
+            .glassEffect(reduceTransparency ? .identity : .regular.tint(.white.opacity(scheme == .dark ? 0 : 0.4)), in: shape)
+    }
+
     private var compact: some View {
         GeometryReader { geometry in
             let width = min(360, geometry.size.width * 0.88)
             ZStack(alignment: .leading) {
-                detail
+                NavigationStack {
+                    detail
+                        .navigationDestination(isPresented: Binding(get: { child != nil }, set: { if !$0 { child = nil } })) {
+                            if let child {
+                                childView(child)
+                                    .overlay(alignment: .leading) {
+                                        Color.clear.frame(width: 20)
+                                            .contentShape(Rectangle())
+                                            .gesture(DragGesture(minimumDistance: 24).onEnded { value in
+                                                if value.translation.width > 55 { self.child = nil }
+                                            })
+                                            .accessibilityHidden(true)
+                                    }
+                            }
+                        }
+                }
                     .environment(\.sidebarOpen, drawer)
                     .blur(radius: drawer && !reduceTransparency ? 12 : 0)
                     .accessibilityHidden(drawer)
@@ -94,15 +138,8 @@ private struct ConversationShell: View {
                         .ignoresSafeArea()
                         .onTapGesture { setDrawer(false) }
                         .accessibilityHidden(true)
-                    ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) })
+                    sidebarPanel(ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) }))
                     .frame(width: width)
-                    // One floating glass panel: header, search, list and footer all sit on this surface.
-                    .clipShape(.rect(cornerRadius: Design.drawerCorner, style: .continuous))
-                    .background(reduceTransparency ? Design.surface : .clear,
-                                in: .rect(cornerRadius: Design.drawerCorner, style: .continuous))
-                    // A white tint keeps light mode bright and clean rather than grey.
-                    .glassEffect(reduceTransparency ? .identity : .regular.tint(.white.opacity(scheme == .dark ? 0 : 0.4)),
-                                 in: .rect(cornerRadius: Design.drawerCorner, style: .continuous))
                     .padding(.leading, Design.gap)
                     .padding(.vertical, Design.gap)
                     .transition(.opacity)
@@ -114,7 +151,7 @@ private struct ConversationShell: View {
                             })
                             .accessibilityHidden(true)
                     }
-                } else {
+                } else if child == nil {
                     Color.clear
                         .frame(width: 18)
                         .contentShape(Rectangle())
@@ -130,10 +167,29 @@ private struct ConversationShell: View {
     @ViewBuilder
     private var detail: some View {
         if let id = threads.selection, let thread = threads.thread(id) {
-            ConversationView(conversation: threads.conversation(for: thread), threads: threads, goBack: toggleSidebar)
+            let conversation = threads.conversation(for: thread)
+            ConversationView(conversation: conversation, threads: threads, goBack: toggleSidebar) { agent in
+                openAgent(conversation, agent)
+            }
                 .id(id)
         } else {
             StartConversationView(threads: threads, menu: toggleSidebar, newChat: newChat)
+        }
+    }
+
+    private func childView(_ child: ConversationModel) -> some View {
+        ConversationView(conversation: child, threads: threads, goBack: { self.child = nil })
+            .id(child.thread.id)
+    }
+
+    private func openAgent(_ parent: ConversationModel, _ agent: Teammate) {
+        openingChild?.cancel()
+        let selected = threads.selection
+        openingChild = Task {
+            await parent.prefetchAgent(agent)
+            guard !Task.isCancelled, threads.selection == selected else { return }
+            threads.selection = parent.thread.id
+            child = parent.child(agent)
         }
     }
 
@@ -149,7 +205,7 @@ private struct ConversationShell: View {
 
     private func toggleSidebar() {
         if sizeClass == .compact { setDrawer(!drawer) }
-        else { sidebar = sidebar == .detailOnly ? .all : .detailOnly }
+        else { sidebar.toggle() }
     }
 
     private func setDrawer(_ open: Bool) {
@@ -165,6 +221,8 @@ struct ThreadListView: View {
     var choose: (String) -> Void
     var new: () -> Void
     var close: (() -> Void)?
+    var openAgent: ((ConversationModel, Teammate) -> Void)? = nil
+    @State private var expandedParents: Set<String> = []
     @State private var rename: ThreadSummary?
     @State private var name = ""
     @State private var delete: ThreadSummary?
@@ -178,7 +236,7 @@ struct ThreadListView: View {
             // Header, list and footer each get their own zone, so nothing floats over the rows.
             VStack(spacing: 0) {
                 header(groups, proxy: proxy)
-                    .padding(.top, close == nil ? Design.small : Design.padding)
+                    .padding(.top, Design.padding)
                     .padding(.bottom, Design.small)
                 list(groups, titles: titles)
                     .contentMargins(.top, Design.padding, for: .scrollContent)
@@ -234,6 +292,28 @@ struct ThreadListView: View {
                 Section {
                     ForEach(section.threads) { thread in
                         row(thread, title: titles[thread.id] ?? thread.lensTitle, section: section.label)
+                        if let openAgent, expandedParents.contains(thread.id) {
+                            let conversation = threads.conversation(for: thread)
+                            ForEach(conversation.agents.filter(\.isWorking)) { agent in
+                                Button {
+                                    openAgent(conversation, agent)
+                                } label: {
+                                    Label(agent.title, systemImage: "arrow.turn.down.right")
+                                        .font(.subheadline)
+                                        .foregroundStyle(Design.accent)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
+                                        .padding(.horizontal, Design.padding * 2)
+                                        .contentShape(.capsule)
+                                }
+                                .buttonStyle(.plain)
+                                .listRowInsets(EdgeInsets())
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .accessibilityIdentifier("threads.agent.\(agent.id)")
+                                .task { await conversation.prefetchAgent(agent) }
+                            }
+                        }
                     }
                 } header: {
                     Text(section.label).font(.subheadline.weight(.semibold))
@@ -368,17 +448,38 @@ struct ThreadListView: View {
     }
 
     private func row(_ thread: ThreadSummary, title: String, section: String) -> some View {
-        Button { choose(thread.id) } label: {
-            ThreadRow(thread: thread, title: title, section: section, selected: threads.selection == thread.id)
-                .contentShape(.capsule)
-                .contentShape(.contextMenuPreview, .capsule)
+        let conversation = openAgent == nil ? nil : threads.conversation(for: thread)
+        let working = conversation?.agents.count(where: \.isWorking) ?? 0
+        return HStack(spacing: 0) {
+            Button { choose(thread.id) } label: {
+                ThreadRow(thread: thread, title: title, section: section, selected: threads.selection == thread.id)
+                    .contentShape(.capsule)
+                    .contentShape(.contextMenuPreview, .capsule)
+            }
+            .accessibilityAddTraits(threads.selection == thread.id ? .isSelected : [])
+            .accessibilityIdentifier("thread.\(thread.id)")
+            if working > 0 {
+                Button {
+                    if !expandedParents.insert(thread.id).inserted { expandedParents.remove(thread.id) }
+                } label: {
+                    Label("\(working) working", systemImage: expandedParents.contains(thread.id) ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Design.accent)
+                        .padding(.horizontal, Design.gap)
+                        .frame(minHeight: Design.control)
+                        .contentShape(.capsule)
+                }
+                .accessibilityIdentifier("threads.agents.\(thread.id)")
+            }
         }
         .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
-        .accessibilityAddTraits(threads.selection == thread.id ? .isSelected : [])
-        .accessibilityIdentifier("thread.\(thread.id)")
+        .task(id: thread.running) {
+            guard thread.running == true, thread.id != threads.selection else { return }
+            await conversation?.watchAgents()
+        }
         .swipeActions(edge: .leading, allowsFullSwipe: false) { pin(thread) }
         .swipeActions(allowsFullSwipe: false) { remove(thread); archive(thread) }
         .contextMenu {

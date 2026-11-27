@@ -493,16 +493,23 @@ fn run_attempt(
 
 fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
     let mut result = String::new();
-    let mut fence = None;
+    let mut fence: Option<(u8, usize, usize)> = None;
     let mut inline_end = 0;
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
         let start = offset;
         offset += line.len();
         let trimmed = line.trim();
-        if let Some((marker, width, trailing)) = working_fence(line) {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if fence.is_some_and(|(_, _, list_indent)| indent < list_indent && !trimmed.is_empty()) {
+            fence = None;
+        }
+        let list_indent = fence.map_or(0, |(_, _, indent)| indent);
+        if let Some((marker, width, trailing, container)) =
+            working_fence(line, list_indent, fence.is_none())
+        {
             match fence {
-                Some((open, minimum))
+                Some((open, minimum, _))
                     if marker == open && width >= minimum && trailing.is_empty() =>
                 {
                     fence = None;
@@ -510,7 +517,7 @@ fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
                     continue;
                 }
                 None if marker != b'`' || !trailing.contains('`') => {
-                    fence = Some((marker, width));
+                    fence = Some((marker, width, container));
                     inline_end = 0;
                 }
                 _ => {}
@@ -556,14 +563,48 @@ fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
     result
 }
 
-fn working_fence(line: &str) -> Option<(u8, usize, &str)> {
-    let content = line.trim_start_matches(' ');
+fn working_fence(
+    line: &str,
+    mut container: usize,
+    allow_list: bool,
+) -> Option<(u8, usize, &str, usize)> {
+    let mut content = line.get(container..)?;
+    loop {
+        let unindented = content.trim_start_matches(' ');
+        let indent = content.len() - unindented.len();
+        if indent > 3 {
+            return None;
+        }
+        content = unindented;
+        if !allow_list {
+            break;
+        }
+        let bytes = content.as_bytes();
+        let digits = bytes
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        let marker = match (digits, bytes.get(digits)) {
+            (0, Some(b'-' | b'+' | b'*')) => 1,
+            (1..=9, Some(b'.' | b')')) => digits + 1,
+            _ => break,
+        };
+        let padding = bytes[marker..]
+            .iter()
+            .take_while(|&&byte| byte == b' ')
+            .count();
+        if !(1..=4).contains(&padding) {
+            break;
+        }
+        container += indent + marker + padding;
+        content = &content[marker + padding..];
+    }
     let marker = *content.as_bytes().first()?;
-    if line.len() - content.len() > 3 || !matches!(marker, b'`' | b'~') {
+    if !matches!(marker, b'`' | b'~') {
         return None;
     }
     let width = content.bytes().take_while(|&byte| byte == marker).count();
-    (width >= 3).then(|| (marker, width, content[width..].trim()))
+    (width >= 3).then(|| (marker, width, content[width..].trim(), container))
 }
 
 fn backtick_run(bytes: &[u8]) -> usize {
@@ -573,7 +614,7 @@ fn backtick_run(bytes: &[u8]) -> usize {
 fn closing_backticks(text: &str, start: usize, width: usize) -> Option<usize> {
     let mut offset = start;
     for (index, line) in text[start..].split_inclusive('\n').enumerate() {
-        if index != 0 && (line.trim().is_empty() || working_fence(line).is_some()) {
+        if index != 0 && (line.trim().is_empty() || working_fence(line, 0, true).is_some()) {
             break;
         }
         let mut cursor = 0;
@@ -738,6 +779,23 @@ mod tests {
         );
         assert_eq!(answer, format!("{literal}Public answer."));
         assert_eq!(status.as_deref(), Some("Checking the report…"));
+    }
+
+    #[test]
+    fn working_lines_after_list_fences_are_metadata() {
+        for literal in [
+            "- ```xml\n  <working>Bullet example…</working>\n  ```\n",
+            "1. ```xml\n   <working>Numbered example…</working>\n   ```\n",
+            "  12) ~~~xml\n      <working>Indented example…</working>\n      ~~~\n",
+        ] {
+            let mut status = None;
+            let answer = super::remove_working_lines(
+                &format!("{literal}<working>Checking the report…</working>\nPublic answer."),
+                &mut status,
+            );
+            assert_eq!(answer, format!("{literal}Public answer."));
+            assert_eq!(status.as_deref(), Some("Checking the report…"));
+        }
     }
 
     #[test]

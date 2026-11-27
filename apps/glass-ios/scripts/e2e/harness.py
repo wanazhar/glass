@@ -13,7 +13,7 @@ Then serves a control API the UI tests call:
   POST /desktop/fake?on=1&kbps=N&rtt=MS | /desktop/mark, GET /desktop/report (a stand-in desktop host, below).
 A scripted OpenAI-compatible provider answers every turn so threads stream real events.
 """
-import http.client, http.server, json, os, re, select, signal, socket, ssl, subprocess, sys, threading, time, uuid
+import http.client, http.server, json, os, random, re, select, signal, socket, ssl, subprocess, sys, threading, time, uuid
 import urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -339,6 +339,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             time.sleep(int(pause.group(1)))
         slow = re.search(r"slow (\d+)", last)
         lines = re.search(r"lines (\d+)", last)
+        burst = re.search(r"burst (\d+)", last)
         call = None
         if tool_result is None and "ask question" in last:
             call = ("ask_user_question", {"questions": [{"question": "Which color?", "multiSelect": False, "options": [
@@ -355,6 +356,17 @@ class Provider(http.server.BaseHTTPRequestHandler):
             deltas, pause = ["x"] * int(flood.group(1)), 0.001
         elif slow:
             deltas, pause = ["tick "] * int(slow.group(1)), 0.5
+        elif burst:
+            # Uneven network: runs of words land together, then nothing for a while.
+            rng = random.Random(7)
+            words = [f"word{i + 1} " + ("\n\n" if i % 40 == 39 else "") for i in range(int(burst.group(1)))]
+            words[len(words) // 2] += "\n\n```swift\nlet steady = true\nprint(steady)\n```\n\n"
+            deltas, i = [], 0
+            while i < len(words):
+                n = rng.randint(1, 40)
+                deltas.append("".join(words[i:i + n]))
+                i += n
+            pause = [rng.choice([0.03, 0.08, 0.2, 0.5, 0.9]) for _ in deltas]
         elif lines:
             words = [f"Line {i + 1} of a long streamed reply keeps going with enough words to wrap. " for i in range(int(lines.group(1)))]
             deltas, pause = [w + ("\n\n" if i % 2 else "") for i, w in enumerate(words)], 0.15
@@ -381,9 +393,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
             self.wfile.flush()
 
-        for delta in deltas:
+        for i, delta in enumerate(deltas):
             chunk({"choices": [{"index": 0, "delta": {"content": delta}}]})
-            time.sleep(pause)
+            time.sleep(pause[i] if isinstance(pause, list) else pause)
         chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
         chunk({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": len(deltas)}})
         self.wfile.write(b"data: [DONE]\n\n")

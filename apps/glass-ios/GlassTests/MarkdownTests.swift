@@ -173,3 +173,13 @@ import Testing
         #expect(ChartView.slice(at: 4.01, in: points) == nil)
     }
 }
+
+@MainActor @Test func streamingParsesOnlyTheTailAndMatchesTheWholeParse() throws {
+    let text = "Intro paragraph.\n\n```swift\nlet a = 1\n\nlet b = 2\n```\n\n- one\n- two\n\nTail is still grow"
+    let split = try #require(MarkdownView.settledBreak(in: text))
+    #expect(MarkdownView.blocks(String(text[..<split])) + MarkdownView.blocks(String(text[split...]))
+            == MarkdownView.blocks(text))
+    #expect(MarkdownView.settledBreak(in: "Intro.\n\n```swift\nlet a = 1\n\nlet b") == nil)
+    #expect(MarkdownView.settledBreak(in: "Intro.\n\n````md\n```swift\n\nlet a") == nil)
+    #expect(MarkdownView.settledBreak(in: "Intro.\n\n```\n~~~\n\nlet a") == nil)
+}

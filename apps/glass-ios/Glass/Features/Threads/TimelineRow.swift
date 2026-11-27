@@ -14,9 +14,10 @@ extension EnvironmentValues {
 
 struct TimelineRow: View {
     var entry: TimelineEntry
+    /// The reply ends its turn, so it carries the copy and share row once it finishes.
+    var endsTurn = false
     @Environment(\.messageAction) private var messageAction
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showingFullAnswer = false
     @State private var userAppeared = false
 
     @ViewBuilder
@@ -55,28 +56,13 @@ struct TimelineRow: View {
             .onAppear { userAppeared = true }
         case .assistant(_, let text, let streaming):
             VStack(alignment: .leading, spacing: Design.gap) {
-                MarkdownView(text: !streaming && text.count > 5_000 ? answerPreview(text) : text,
-                             streaming: streaming)
-                    .equatable()
-                    .environment(\.completeMarkdownFencesOnly, !streaming && text.count > 5_000)
-                if !streaming, text.count > 5_000 {
-                    Button("Show more", systemImage: "arrow.up.right.square") { showingFullAnswer = true }
-                        .glassButtonStyle()
+                RevealingReply(text: text, streaming: streaming)
+                if endsTurn, !streaming {
+                    ReplyActions(text: text)
+                        .transition(.opacity.animation(reduceMotion ? .linear(duration: 0.08) : .easeOut(duration: 0.3)))
                 }
             }
                 .accessibilityIdentifier("timeline.streaming", isEnabled: streaming)
-                .sheet(isPresented: $showingFullAnswer) {
-                    NavigationStack {
-                        ScrollView { MarkdownView(text: text).padding(Design.padding) }
-                            .navigationTitle("Full reply")
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button("Done") { showingFullAnswer = false }
-                                }
-                            }
-                    }
-                }
                 .contextMenu {
                     CopyButton(text: text)
                     actions(for: [.quote, .branch])
@@ -100,11 +86,29 @@ struct TimelineRow: View {
             EmptyView()
         }
     }
+}
 
-    private func answerPreview(_ text: String) -> String {
-        let preview = String(text.prefix(2_400))
-        guard let boundary = preview.range(of: "\n\n", options: .backwards) else { return preview + "…" }
-        return String(preview[..<boundary.lowerBound])
+private struct ReplyActions: View {
+    var text: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                UIPasteboard.general.string = text
+                copied = true
+                Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+            } label: { LensBarIcon(symbol: copied ? "checkmark" : "doc.on.doc") }
+                .accessibilityLabel(copied ? "Copied" : "Copy reply")
+                .accessibilityIdentifier("reply.copy")
+            ShareLink(item: text) { LensBarIcon(symbol: "square.and.arrow.up") }
+                .accessibilityLabel("Share reply")
+                .accessibilityIdentifier("reply.share")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Design.muted)
+        // The first glyph lines up with the reply's text edge.
+        .padding(.leading, -(Design.control - 18) / 2)
     }
 }
 

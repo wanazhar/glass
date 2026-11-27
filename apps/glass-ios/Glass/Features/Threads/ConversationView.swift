@@ -41,9 +41,11 @@ struct ConversationView: View {
                     if conversation.loadedHistory, conversation.timeline.isEmpty {
                         emptyState
                     }
+                    let rows = rows
+                    let turnEnds = Self.turnEnds(rows, active: conversation.timeline.isActive)
                     ForEach(rows) { row in
                         switch row {
-                        case .message(let entry): TimelineRow(entry: entry)
+                        case .message(let entry): TimelineRow(entry: entry, endsTurn: turnEnds.contains(row.id))
                         case .work(let group):
                             WorkRow(group: group, durations: conversation.timeline.toolDurations, open: { detail in
                                 activityDetail = detail
@@ -60,20 +62,20 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(conversation.timeline.isEmpty ? .center : .bottom, for: .alignment)
-            .softTopScrollEdge()
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.visibleRect.maxY >= geometry.contentSize.height - Design.gap
             } action: { _, bottom in
                 atBottom = bottom
             }
-            .onScrollGeometryChange(for: CGSize.self) { geometry in
-                CGSize(width: geometry.contentSize.height, height: geometry.containerSize.height - geometry.contentInsets.bottom)
+            // The bottom stays pinned while the reply grows, every frame, without an animated scroll that can
+            // land on a lazy row's estimated position and leave the transcript blank.
+            .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.containerSize.height - geometry.contentInsets.bottom
             } action: { _, _ in
-                guard following else { return }
-                Task { @MainActor in
-                    if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-                }
+                if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
             .onScrollPhaseChange { old, phase in
                 if phase == .interacting { following = false }
@@ -85,15 +87,26 @@ struct ConversationView: View {
             .onChange(of: rows.last?.id) { _, _ in
                 if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
+            .onChange(of: conversation.timeline.isActive) { _, _ in
+                // The finished reply replaces the streamed one; settle on its real height, not the estimate.
+                guard following else { return }
+                Task { @MainActor in proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            }
             .safeAreaBar(edge: .top, spacing: Design.gap) {
                 header
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: Design.gap) {
-                    floatingControls(proxy)
+                    checklistButton
                     bottomBar(onFieldFocus: { resume(proxy) })
+                        .overlay(alignment: .top) { jumpToLatest(proxy) }
                 }
                 .frame(maxWidth: .infinity)
+                .hiddenUnderSidebar()
+            }
+            .onChange(of: conversation.firstRequest) { _, request in
+                guard let request else { return }
+                Task { await threads.retitle(conversation.thread.id, from: request) }
             }
         }
         .background(Design.background.ignoresSafeArea())
@@ -277,31 +290,42 @@ struct ConversationView: View {
                          activity: nil, seconds: nil)
     }
 
-    private func floatingControls(_ proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: Design.gap) {
-            if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
-                Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
-                    .font(.caption)
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.checklist")
-            }
-            if !atBottom {
+    @ViewBuilder
+    private var checklistButton: some View {
+        let tasks = conversation.composer.checklist
+        if !tasks.isEmpty {
+            Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
+                .font(.caption)
+                .glassButtonStyle()
+                .accessibilityIdentifier("conversation.checklist")
+        }
+    }
+
+    /// Shown only once the reader has scrolled away from the newest message, floating clear of the composer
+    /// so it never changes the transcript's layout.
+    private func jumpToLatest(_ proxy: ScrollViewProxy) -> some View {
+        let shown = !following && !atBottom
+        return ZStack {
+            if shown {
                 Button { resume(proxy) } label: {
-                    Label("Jump to latest", systemImage: "arrow.down")
-                        .font(.subheadline.weight(.semibold))
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Design.ink)
-                        .padding(.horizontal, 15)
-                        .frame(minHeight: Design.control)
-                        .background(Design.surface, in: .capsule)
-                        .overlay(Capsule().strokeBorder(Design.line))
-                        .contentShape(.capsule)
+                        .frame(width: Design.control, height: Design.control)
+                        .contentShape(.circle)
+                        // Tinted with the page colour so the arrow reads over text and code in both modes.
+                        .lensGlass(Circle(), tint: Design.background.opacity(0.6), interactive: true)
+                        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Jump to latest")
                 .accessibilityIdentifier("conversation.latest")
                 .accessibilityHint("Returns to the newest message")
+                .transition(.opacity)
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: atBottom)
+        .alignmentGuide(.top) { $0[.bottom] + Design.padding }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: shown)
     }
 
     private func resume(_ proxy: ScrollViewProxy) {
@@ -321,7 +345,8 @@ struct ConversationView: View {
 
     private var titleButton: some View {
         Button { showingInfo = true } label: {
-            Text(threads.thread(conversation.thread.id)?.lensTitle ?? conversation.title)
+            Text(threads.title(for: conversation.thread.id)
+                 ?? conversation.thread.lensTitle(firstRequest: conversation.firstRequest))
                 .font(Design.headline)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: Design.control)
@@ -334,7 +359,7 @@ struct ConversationView: View {
     }
 
     private var threadInfo: some View {
-        ThreadInfoView(conversation: conversation, title: threads.thread(conversation.thread.id)?.lensTitle ?? conversation.title) { action in
+        ThreadInfoView(conversation: conversation, title: threads.title(for: conversation.thread.id) ?? conversation.title) { action in
             showingInfo = false
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))
@@ -349,6 +374,18 @@ struct ConversationView: View {
 
     private var rows: [ChatRow] {
         ChatRow.make(from: conversation.timeline)
+    }
+
+    /// Replies followed by the next request, or ending a finished conversation: the last word of each turn.
+    static func turnEnds(_ rows: [ChatRow], active: Bool) -> Set<String> {
+        var ends: Set<String> = []
+        for (index, row) in rows.enumerated() {
+            guard case .message(let entry) = row, case .assistant = entry else { continue }
+            let next = rows.indices.contains(index + 1) ? rows[index + 1] : nil
+            if next == nil { if !active { ends.insert(row.id) } }
+            else if case .message(let following)? = next, case .user = following { ends.insert(row.id) }
+        }
+        return ends
     }
 
     private var connectionStatus: String {

@@ -3,11 +3,13 @@ import AppIntents
 import Foundation
 
 /// The Live Activity Glass shows while it keeps a host connection open in the background.
-/// Updated on the device only; there is no push token.
-struct ConnectionActivityAttributes: ActivityAttributes {
+/// Updated on the device only; there is no push token. Its state is a new type rather than a change
+/// to the earlier `ConnectionActivityAttributes`, so a widget from an older install never has to decode it.
+struct LensConnectionAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var status: String
-        var pulse: Bool? = nil
+        /// Flips on every update, so the Lens can pulse gently.
+        var pulse: Bool
     }
 
     var host: String

@@ -29,6 +29,7 @@ struct StartConversationView: View {
                 .padding(.bottom, 6)
                 .frame(maxWidth: Design.readingWidth)
                 .frame(maxWidth: .infinity)
+                .hiddenUnderSidebar()
         }
         .toolbarVisibility(.hidden, for: .navigationBar)
         .background(Design.background.ignoresSafeArea())

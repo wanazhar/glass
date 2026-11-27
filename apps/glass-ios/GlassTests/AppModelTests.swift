@@ -5,17 +5,16 @@ import GlassTransport
 import Testing
 @testable import Glass
 
-@Test func liveActivityStateAcceptsThePreviousTimerPayload() throws {
-    let payload = Data(#"{"status":"Connected","connectedSince":800000000}"#.utf8)
-    let state = try JSONDecoder().decode(ConnectionActivityAttributes.ContentState.self, from: payload)
-    #expect(state.status == "Connected")
-    #expect(state.pulse == nil)
+@Test func legacyLiveActivityTypeDecodesEveryEarlierPayload() throws {
+    for json in [#"{"status":"Connected","connectedSince":800000000}"#, #"{"status":"Connected","pulse":true}"#, "{}"] {
+        _ = try JSONDecoder().decode(ConnectionActivityAttributes.ContentState.self, from: Data(json.utf8))
+    }
+}
 
-    let updated = ConnectionActivityAttributes.ContentState(status: state.status, pulse: true)
-    let encoded = try JSONEncoder().encode(updated)
+@Test func liveActivityStateHasNoTimer() throws {
+    let encoded = try JSONEncoder().encode(LensConnectionAttributes.ContentState(status: "Connected", pulse: true))
     let fields = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-    #expect(fields["pulse"] as? Bool == true)
-    #expect(fields["connectedSince"] == nil)
+    #expect(Set(fields.keys) == ["status", "pulse"])
 }
 
 @Test @MainActor func sidebarGroupsThreadsByCalendarDayAndMonth() throws {
@@ -367,4 +366,36 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
         #expect("schema_version".titleCased == "Schema Version")
         #expect(JSONValue.number(12_222_717_952).displayString == "12222717952")
     }
+}
+
+@Test func friendlyModelNamesHideProviderIDs() {
+    #expect(ModelName.friendly("deepseek/deepseek-v4.1-flash-1017-free") == "DeepSeek V4.1 Flash")
+    #expect(ModelName.friendly("anthropic/claude-3-5-sonnet-20241022") == "Claude 3.5 Sonnet")
+    #expect(ModelName.friendly("openai/gpt-4o-mini") == "GPT 4o Mini")
+    #expect(ModelName.friendly("qwen/qwen3-coder:free") == "Qwen3 Coder")
+    #expect(ModelName.friendly("  ") == nil)
+}
+
+@Test @MainActor func sidebarMetadataNeverRepeatsTheSectionOrTrailsASeparator() throws {
+    var thread = ThreadSummary(session: "a", title: "Plan")
+    #expect(ThreadListView.metadata(for: thread, section: "Today").isEmpty)
+    thread.model = "deepseek/deepseek-v4.1-flash-1017-free"
+    #expect(ThreadListView.metadata(for: thread, section: "Today") == "DeepSeek V4.1 Flash")
+    thread.modified = Date.now.addingTimeInterval(-86_400).timeIntervalSince1970
+    let line = ThreadListView.metadata(for: thread, section: "Yesterday")
+    #expect(!line.lowercased().contains("yesterday"))
+    #expect(line.hasSuffix(" · DeepSeek V4.1 Flash"))
+}
+
+@Test func generatedTitlesSkipGreetingsAndNeverSayOpeningGreeting() {
+    var thread = ThreadSummary(session: "a", title: "hi there")
+    #expect(thread.lensTitle == "New conversation")
+    #expect(thread.lensTitle(firstRequest: "hello\nFix the login redirect on Safari") == "Fix the login redirect on Safari")
+    thread.title = "Opening greeting"
+    #expect(!thread.hasMeaningfulTitle)
+    #expect(ThreadSummary.excerpt("hey glass!") == nil)
+    #expect(ThreadSummary.excerpt("Hello, can you review PR 12?") == "Hello, can you review PR 12?")
+    let long = ThreadSummary.excerpt("Check https://example.com/" + String(repeating: "a", count: 300) + " please")
+    #expect(long?.count == 60)
+    #expect(long?.hasSuffix("…") == true)
 }

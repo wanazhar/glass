@@ -65,23 +65,59 @@ struct MarkdownView: View, Equatable {
     }
 
     private var parsedBlocks: [Block] {
+        // While streaming, everything before the last settled paragraph break is parsed once and cached;
+        // only the growing tail is parsed again. The finished reply is parsed whole, once.
+        if streaming, let split = Self.settledBreak(in: text) {
+            return Self.cachedBlocks(String(text[..<split]), completeFencesOnly: completeFencesOnly)
+                + Self.blocks(String(text[split...]), completeFencesOnly: completeFencesOnly)
+        }
+        return Self.cachedBlocks(text, completeFencesOnly: completeFencesOnly)
+    }
+
+    private static func cachedBlocks(_ text: String, completeFencesOnly: Bool) -> [Block] {
         let key = (completeFencesOnly ? "1" + text : "0" + text) as NSString
-        if let cached = Self.blockCache.object(forKey: key) { return cached.blocks }
-        let blocks = Self.blocks(text, completeFencesOnly: completeFencesOnly)
-        Self.blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
+        if let cached = blockCache.object(forKey: key) { return cached.blocks }
+        let blocks = blocks(text, completeFencesOnly: completeFencesOnly)
+        blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
         return blocks
+    }
+
+    /// The last blank line outside a code fence or details block, where the text before it can no longer change.
+    static func settledBreak(in text: String) -> String.Index? {
+        guard let blank = text.range(of: "\n\n", options: .backwards) else { return nil }
+        let head = text[..<blank.lowerBound]
+        // A fence closes only on a bare run of its own character at least as long as the opener.
+        var fence: (mark: Character, length: Int)?
+        var details = 0
+        for line in head.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.drop { $0 == " " }
+            if let mark = trimmed.first, "`~$".contains(mark) {
+                let length = trimmed.prefix { $0 == mark }.count
+                if length >= (mark == "$" ? 2 : 3) {
+                    if let open = fence {
+                        if open.mark == mark, length >= open.length,
+                           trimmed.dropFirst(length).allSatisfy(\.isWhitespace) { fence = nil }
+                    } else {
+                        fence = (mark, length)
+                    }
+                }
+            }
+            if fence == nil, trimmed.hasPrefix("<details") { details += 1 }
+            if fence == nil, trimmed.hasPrefix("</details") { details -= 1 }
+        }
+        return fence == nil && details <= 0 ? blank.upperBound : nil
     }
 
     var body: some View {
         let blocks = parsedBlocks
         VStack(alignment: .leading, spacing: Design.gap) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                if streaming, !reduceMotion, index == blocks.count - 1 {
+                // The newest two blocks fade their new text in; the one before keeps its fade if a block starts.
+                if streaming, index >= blocks.count - 2 {
                     BlockView(block: block)
-                        .contentTransition(.opacity)
-                        .animation(.easeOut(duration: 0.16), value: block)
+                        .modifier(StreamFade(count: Self.fadeCount(block)))
                 } else {
-                    BlockView(block: block)
+                    BlockView(block: block).equatable()
                 }
             }
         }
@@ -116,6 +152,19 @@ struct MarkdownView: View, Equatable {
             return Text("\(text)\(next)")
         }
         return hasMath ? typeset.accessibilityLabel(accessibleText) : typeset
+    }
+
+    /// Characters a block draws, so a stream knows which glyphs just arrived. Zero means it is not faded.
+    static func fadeCount(_ block: Block) -> Int {
+        switch block {
+        case .prose(let value), .heading(let value, _), .item(let value, _, _):
+            InlineMath.split(stripImages(value)).reduce(0) { count, segment in
+                if case .text(let prose) = segment { return count + markdown(prose).characters.count }
+                return count + 1
+            }
+        case .code(let code, _): code.count
+        default: 0
+        }
     }
 
     private static func markdown(_ value: String) -> AttributedString {
@@ -389,8 +438,10 @@ struct MarkdownView: View, Equatable {
     }
 }
 
-private struct BlockView: View {
+private struct BlockView: View, Equatable {
     var block: MarkdownView.Block
+
+    nonisolated static func == (left: Self, right: Self) -> Bool { left.block == right.block }
     @Environment(\.openReferencedFile) private var openReferencedFile
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
@@ -398,7 +449,7 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .prose(let value):
-            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme).font(Design.body).textSelection(.enabled)
+            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme).font(Design.body).selectableUnlessStreaming()
         case .heading(let value, let level):
             MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme)
                 .font(level == 1 ? Design.title : level == 2 ? .title3.weight(.semibold) : Design.headline)
@@ -480,7 +531,7 @@ private struct ListItemView: View {
             }
             MarkdownView.inline(text, mathSize: mathSize, colorScheme: colorScheme)
                 .foregroundStyle(marker == .task(done: true) ? .secondary : .primary)
-                .textSelection(.enabled)
+                .selectableUnlessStreaming()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(depth) * indent)
@@ -577,7 +628,7 @@ struct DataTable: View, Equatable {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(width: columnWidth)
-            .textSelection(.enabled)
+            .selectableUnlessStreaming()
             .accessibilityAddTraits(isHeader ? .isHeader : [])
     }
 
@@ -848,7 +899,7 @@ struct CodeBlock: View {
             Text(highlighted)
                 .font(.system(.footnote, design: .monospaced))
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+                .selectableUnlessStreaming()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(Design.padding)
         }
@@ -876,5 +927,198 @@ struct CodeBlock: View {
         }
         output += AttributedString(code[start...])
         return output
+    }
+}
+
+/// Newly streamed text eases in from low opacity, its tail a little behind its head, so the newest words
+/// read as a soft gradient. Settled glyphs draw untouched; one renderer per block, no per-glyph views.
+extension EnvironmentValues {
+    @Entry var fadingStream = false
+}
+
+extension View {
+    /// Selectable text draws through a path that skips custom text renderers, so it waits for the reply to settle.
+    func selectableUnlessStreaming() -> some View { modifier(SelectableUnlessStreaming()) }
+}
+
+private struct SelectableUnlessStreaming: ViewModifier {
+    @Environment(\.fadingStream) private var fadingStream
+
+    func body(content: Content) -> some View {
+        if fadingStream { content } else { content.textSelection(.enabled) }
+    }
+}
+
+struct StreamFade: ViewModifier {
+    struct Chunk { var start: Int; var date: Date }
+
+    var count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var chunks: [Chunk] = []
+    @State private var known: Int?
+
+    private var duration: Double { reduceMotion ? 0.08 : 0.3 }
+    private var lag: Double { reduceMotion ? 0 : 0.08 }
+
+    func body(content: Content) -> some View {
+        // It lives only on the newest blocks of a reply that is still arriving, so its clock runs freely.
+        TimelineView(.animation) { timeline in
+            content.textRenderer(StreamFadeRenderer(chunks: chunks, known: known ?? 0, count: count,
+                                                    now: timeline.date, duration: duration, lag: lag))
+                .environment(\.fadingStream, true)
+        }
+        .onAppear { arrive(count) }
+        .onChange(of: count) { _, value in arrive(value) }
+    }
+
+    private func arrive(_ value: Int) {
+        let now = Date.now
+        chunks.removeAll { now.timeIntervalSince($0.date) > duration + lag || $0.start >= value }
+        if value > (known ?? 0) { chunks.append(Chunk(start: known ?? 0, date: now)) }
+        known = value
+    }
+}
+
+private struct StreamFadeRenderer: TextRenderer {
+    var chunks: [StreamFade.Chunk]
+    var known: Int
+    var count: Int
+    var now: Date
+    var duration: Double
+    var lag: Double
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        let settled = count == 0 ? Int.max : chunks.first?.start ?? known
+        var index = 0
+        for line in layout {
+            for run in line {
+                let end = index + run.count
+                if end <= settled {
+                    context.draw(run)
+                    index = end
+                    continue
+                }
+                for slice in run {
+                    let opacity = index < settled ? 1 : self.opacity(at: index)
+                    if opacity >= 0.999 {
+                        context.draw(slice)
+                    } else {
+                        var faded = context
+                        faded.opacity = opacity
+                        faded.draw(slice)
+                    }
+                    index += 1
+                }
+            }
+        }
+    }
+
+    private func opacity(at index: Int) -> Double {
+        let floor = 0.15
+        // Glyphs drawn before their arrival is recorded start at the floor instead of flashing in at full.
+        guard index < known, let at = chunks.lastIndex(where: { $0.start <= index }) else { return floor }
+        let chunk = chunks[at]
+        let length = (at + 1 < chunks.count ? chunks[at + 1].start : known) - chunk.start
+        let position = Double(index - chunk.start) / Double(max(length, 1))
+        let progress = min(max((now.timeIntervalSince(chunk.date) - lag * position) / duration, 0), 1)
+        return floor + (1 - floor) * (1 - pow(1 - progress, 3))
+    }
+}
+
+/// Releases a streamed reply at a steady pace, so bursty network chunks read as an even flow. The pace follows
+/// how fast text has been arriving and speeds up as the backlog grows, so it neither lags far behind nor stalls
+/// between chunks. Replies already on screen when it appears show whole.
+struct RevealingReply: View {
+    var text: String
+    var streaming: Bool
+    @State private var anchor = 0
+    @State private var anchorDate = Date.distantPast
+    @State private var rate = 400.0
+    @State private var lastArrival: Date?
+    // Assume a slow, uneven network until the stream shows otherwise, so the first words do not run dry.
+    @State private var gap = 0.9
+    @State private var caughtUp = true
+    @State private var started = false
+
+    var body: some View {
+        TimelineView(.animation(paused: caughtUp)) { timeline in
+            MarkdownView(text: visible(at: timeline.date), streaming: streaming || !caughtUp)
+                .equatable()
+        }
+        .onAppear {
+            guard !started else { return }
+            started = true
+            // A reply that is only just starting reveals its first words too; one already under way stays put.
+            if streaming, let shown = Self.progress[Self.key(text)] {
+                // The row was rebuilt mid-stream (a new id or a lazy reload): carry on from where it was.
+                anchor = min(shown, text.utf8.count)
+                anchorDate = .now
+                arrive(text.utf8.count)
+            } else if streaming, text.utf8.count < Self.freshStart {
+                anchor = 0
+                anchorDate = .now
+                arrive(text.utf8.count)
+            } else {
+                anchor = text.utf8.count
+            }
+        }
+        .onChange(of: text.utf8.count) { _, total in arrive(total) }
+        .onChange(of: streaming) { _, _ in arrive(text.utf8.count) }
+        .task(id: TaskKey(anchor: anchor, date: anchorDate, total: text.utf8.count)) {
+            let remaining = Double(text.utf8.count - anchor) / rate
+            guard remaining > 0 else { caughtUp = true; return }
+            // Keep streaming until the last words have finished fading in.
+            try? await Task.sleep(for: .seconds(remaining + 0.45))
+            if !Task.isCancelled { caughtUp = true }
+        }
+    }
+
+    private static let freshStart = 600
+    @MainActor private static var progress: [String: Int] = [:]
+    private static let keyLength = 80
+    private static func key(_ text: String) -> String { String(text.prefix(keyLength)) }
+
+    private struct TaskKey: Hashable { var anchor: Int; var date: Date; var total: Int }
+
+    private func revealed(at date: Date) -> Int {
+        min(text.utf8.count, anchor + Int(max(0, date.timeIntervalSince(anchorDate)) * rate))
+    }
+
+    private func arrive(_ total: Int) {
+        let now = Date.now
+        let shown = min(revealed(at: now), total)
+        if let lastArrival {
+            // Hold the longest recent pause and forget it slowly, so one quiet spell does not cause the next stall.
+            let latest = min(max(now.timeIntervalSince(lastArrival), 0.016), 2)
+            gap = max(latest, gap * 0.97)
+        }
+        lastArrival = now
+        let backlog = Double(total - shown)
+        // Aim to finish the backlog just as the next chunk is due; drain faster once the stream has ended.
+        let horizon = streaming ? min(max(gap * 1.2, 0.3), 1.5) : 0.35
+        rate = max(60, backlog / horizon)
+        anchor = shown
+        anchorDate = now
+        caughtUp = shown >= total
+        // Only a full-length key stays the same as the reply grows, so shorter openings are never cached.
+        let key = Self.key(text)
+        if !streaming { Self.progress[key] = nil } else if key.count == Self.keyLength { Self.progress[key] = shown }
+    }
+
+    /// The revealed prefix, ending on a word boundary so words arrive whole.
+    private func visible(at date: Date) -> String {
+        let utf8 = text.utf8
+        var count = revealed(at: date)
+        guard count < utf8.count else { return text }
+        var index = utf8.index(utf8.startIndex, offsetBy: count)
+        var scanned = 0
+        while index < utf8.endIndex, scanned < 24, utf8[index] != 0x20, utf8[index] != 0x0A {
+            index = utf8.index(after: index)
+            scanned += 1
+            count += 1
+        }
+        guard index < utf8.endIndex else { return text }
+        while index > utf8.startIndex, utf8[index] & 0xC0 == 0x80 { index = utf8.index(before: index) }
+        return String(text[..<index])
     }
 }

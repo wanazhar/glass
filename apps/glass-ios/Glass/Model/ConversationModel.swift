@@ -65,6 +65,15 @@ final class ConversationModel {
 
     var title: String { thread.displayTitle }
 
+    /// The first message that asks for something, skipping greetings and commands; nil until the start is loaded.
+    var firstRequest: String? {
+        if timeline.hasOlder { return nil }
+        for entry in timeline.entries {
+            if case .user(_, let text) = entry, ThreadSummary.excerpt(text) != nil { return text }
+        }
+        return nil
+    }
+
     /// This app holds the session control channel and may send input.
     var canWrite: Bool { timeline.canWrite && connection == .live }
 

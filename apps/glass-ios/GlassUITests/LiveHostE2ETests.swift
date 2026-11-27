@@ -195,7 +195,7 @@ final class LiveHostE2ETests: XCTestCase {
         attach(app, "e2e-new-thread")
         app.buttons["conversation.menu"].tap()
         app.buttons["conversation.close"].tap()
-        XCTAssertTrue(app.staticTexts["threads.count"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
     }
 
     @MainActor
@@ -858,6 +858,45 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 5), "launch doesn't alert for old replies")
     }
 
+    /// A long reply whose chunks arrive in uneven bursts still reveals steadily, then finishes. Record the
+    /// Simulator during this test to see the pacing.
+    @MainActor
+    func testBurstyLongReplyRevealsSteadily() throws {
+        let thread = try call("thread/new?title=Bursty%20reply", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        _ = try call("thread/send?id=\(thread)&text=burst%20900", method: "POST")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'word1 '")).firstMatch
+            .waitForExistence(timeout: 30), "the reply starts")
+        // The greeting's own actions scroll out of the lazy list, so look for the end of this reply instead.
+        let streaming = app.descendants(matching: .any)["timeline.streaming"]
+        XCTAssertTrue(waitUntil(120) {
+            !streaming.exists && app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'word900'")).firstMatch.exists
+                && app.buttons["reply.copy"].exists
+        }, "the reply finishes, all of it shows, and copy appears")
+        sleep(1)
+        attach(app, "e2e-bursty-finished")
+    }
+
+    /// A short reply streams in, then its copy and share row appears once it finishes.
+    @MainActor
+    func testFinishedReplyShowsCopyAndShare() throws {
+        let thread = try call("thread/new?title=Short%20reply", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let copies = app.buttons.matching(identifier: "reply.copy")
+        let before = copies.count
+        _ = try call("thread/send?id=\(thread)&text=lines%2024", method: "POST")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Line 1 of'")).firstMatch
+            .waitForExistence(timeout: 30), "the reply streams in")
+        XCTAssertTrue(waitUntil(30) { copies.count > before }, "copy appears once the reply finishes")
+        XCTAssertEqual(app.buttons.matching(identifier: "reply.share").count, copies.count, "share sits beside copy")
+        sleep(1)
+        attach(app, "e2e-reply-actions")
+    }
+
     @MainActor
     func testStreamingReplyIsFollowedUntilYouScrollThenResumes() throws {
         let thread = try call("thread/new?title=Follow", method: "POST")
@@ -1131,6 +1170,176 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitUntil(10) { keys.isEnabled }, "Keys comes back after Reconnect")
         XCTAssertTrue(waitUntil(15) { ((try? desktopStreams()) ?? 0) > 0 }, "Reconnect opens the picture again")
         XCTAssertTrue(waitUntil(10) { !reconnect.exists })
+    }
+
+    /// The shipping keep-alive path (no preview hooks): on, location allowed, a chat open, then Home and the Lock
+    /// Screen, capturing each Live Activity presentation.
+    @MainActor
+    func testKeepAliveLiveActivityStates() throws {
+        let thread = try call("thread/new?title=Release%20Live%20Activity", method: "POST")
+        let app = try pairedApp()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = name
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        app.openSettings("connection")
+        let keep = app.switches["settings.keepAlive"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        let reason = app.descendants(matching: .any)["settings.keepAlive.reason"].firstMatch
+        XCTAssertTrue(reason.waitForExistence(timeout: 5) && reason.label.contains("off"), "explains it is off: \(reason.label)")
+        capture("la-settings-off")
+        keep.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 5) {
+            let allow = permission.buttons["Allow While Using App"]
+            (allow.exists ? allow : permission.buttons.element(boundBy: 0)).tap()
+        }
+        XCTAssertTrue(waitUntil(10) { (keep.value as? String) == "1" }, "keep-alive turns on")
+        capture("la-settings-ready")
+        app.closeSettings()
+        _ = app.waitForThreadList(timeout: 10)
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+
+        XCUIDevice.shared.press(.home)
+        let activity = liveActivity(springboard)
+        XCTAssertTrue(activity.waitForExistence(timeout: 10), "the Live Activity starts on the keep-alive path")
+        sleep(2)
+        capture("la-compact")
+        let disconnect = springboard.buttons["Disconnect"].firstMatch
+        for _ in 0..<3 where !disconnect.exists {
+            activity.press(forDuration: 1.2)
+            _ = disconnect.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(disconnect.exists, "the expanded island offers Disconnect")
+        capture("la-expanded")
+        XCUIDevice.shared.press(.home)
+        sleep(1)
+
+        // Lock, then wake to the Lock Screen.
+        let lock = NSSelectorFromString("pressLockButton")
+        if XCUIDevice.shared.responds(to: lock) {
+            XCUIDevice.shared.perform(lock)
+            sleep(2)
+            XCUIDevice.shared.perform(lock)
+            sleep(3)
+            capture("la-lock-screen")
+        }
+        // Swipe up to leave the Lock Screen.
+        let bottom = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.995))
+        bottom.press(forDuration: 0.05, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)))
+        sleep(2)
+        capture("la-after-lock")
+        // A second app's activity shares the island, so one of them shows its minimal form. The runner installs
+        // a copy of Glass under another bundle ID for this, when it can.
+        let helper = XCUIApplication(bundleIdentifier: "com.wanazhar.glasshelper")
+        if ProcessInfo.processInfo.environment["GLASS_E2E_HELPER"] != nil {
+            helper.launchArguments = ["-GlassDemo", "-GlassSkipSplash", "-GlassLiveActivityPreview"]
+            helper.launch()
+            sleep(3)
+            XCUIDevice.shared.press(.home)
+            sleep(3)
+            capture("la-minimal")
+            // Relaunched without the preview, the copy ends its own activity.
+            helper.launchArguments = ["-GlassDemo", "-GlassSkipSplash"]
+            helper.launch()
+            sleep(2)
+            helper.terminate()
+            XCUIDevice.shared.press(.home)
+            sleep(2)
+            capture("la-after-helper")
+        }
+
+        app.activate()
+        app.openSettings("connection")
+        XCTAssertTrue(app.descendants(matching: .any)["settings.keepAlive.status"].firstMatch.waitForExistence(timeout: 10))
+        capture("la-settings-running")
+    }
+
+    /// Run after a round 5 build left its activity up: installing this build over it must not leave a
+    /// broken or duplicate activity, and opening Glass ends the old one and starts the new one.
+    @MainActor
+    func testUpgradeFromRound5EndsTheOldActivity() throws {
+        guard ProcessInfo.processInfo.environment["GLASS_E2E_UPGRADE"] != nil else {
+            throw XCTSkip("Needs a round 5 install with its Live Activity up.")
+        }
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = name
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        XCUIDevice.shared.press(.home)
+        sleep(3)
+        capture("upgrade-2-installed-over")
+        let thread = try call("thread/new?title=Round%207%20upgrade", method: "POST")
+        let app = XCUIApplication()
+        app.launch()
+        sleep(4)
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(waitUntil(15) { !liveActivity(springboard).exists }, "launching Glass ends the round 5 activity")
+        capture("upgrade-3-old-ended")
+        app.activate()
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(liveActivity(springboard).waitForExistence(timeout: 15), "the new activity comes up")
+        sleep(3)
+        let activities = springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS 'element-identifier:activity:'"))
+        capture("upgrade-4-home")
+        XCTAssertEqual(Set(activities.allElementsBoundByIndex.map(\.identifier)).count, 1, "only one activity remains")
+    }
+
+    /// The Threads panel over a busy chat, for design review. Set GLASS_SHOTS (output directory) and
+    /// GLASS_SHOT_PREFIX; the Simulator's appearance picks light or dark.
+    @MainActor
+    func testThreadsPanelOverBusyChatShots() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let out = env["GLASS_SHOTS"] else { throw XCTSkip("Set GLASS_SHOTS to capture the panel") }
+        let prefix = env["GLASS_SHOT_PREFIX"] ?? "shot"
+        for title in ["Fix the login redirect", "Plan the release notes", "Review the payments diff", "Draft onboarding copy"] {
+            _ = try call("thread/new?title=\(title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)", method: "POST")
+        }
+        let long = try call("thread/new?title=Long%20answer", method: "POST")
+        let busy = try call("thread/new?title=Markdown%20tour", method: "POST")
+        _ = try call("thread/markdown?id=\(busy)", method: "POST")
+        let app = try pairedApp()
+        func save(_ name: String) throws {
+            try XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(filePath: out).appending(path: "\(prefix)-\(name).png"))
+        }
+        open(app, thread: busy)
+        sleep(2)
+        try save("chat")
+        let back = app.buttons["conversation.back"].firstMatch
+        if back.exists, back.isHittable { back.tap() }
+        sleep(2)
+        try save("sidebar")
+
+        // Mid-reply: a long answer scrolled so its text sits under the title row.
+        if !app.descendants(matching: .any)["thread.\(long)"].firstMatch.exists, back.exists { back.tap() }
+        open(app, thread: long)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        _ = try call("thread/send?id=\(long)&text=lines%2060", method: "POST")
+        let streaming = app.descendants(matching: .any)["timeline.streaming"]
+        XCTAssertTrue(waitUntil(90) {
+            !streaming.exists && app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Line 60 of'")).firstMatch.exists
+        }, "the long reply finishes")
+        sleep(1)
+        try save("chat-end")
+        let screen = app.descendants(matching: .any)["conversation"].firstMatch
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).press(
+            forDuration: 0.01, thenDragTo: screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)),
+            withVelocity: .slow, thenHoldForDuration: 0.5)
+        sleep(1)
+        try save("chat-mid")
+        sleep(3)
+        try save("chat-mid-later")
     }
 
     @MainActor

@@ -3,7 +3,6 @@ import SwiftUI
 struct NewChatView: View {
     var workspace: String? = nil
     var choose: (String) -> Void
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     static func directory(_ workspace: String?, hostDefault: String?) -> String? {
         if let workspace, !workspace.isEmpty { return workspace }
@@ -55,7 +54,6 @@ struct NewChatView: View {
                 .contentShape(.capsule)
         }
         .buttonStyle(.plain)
-        .background(reduceTransparency ? Design.surface : .clear, in: .capsule)
-        .glassEffect(reduceTransparency ? .identity : .regular.interactive(), in: .capsule)
+        .lensGlass(Capsule(), interactive: true)
     }
 }

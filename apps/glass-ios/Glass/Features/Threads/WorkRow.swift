@@ -114,7 +114,8 @@ struct WorkRow: View {
         #if DEBUG
         if expansion == nil, LensPreview.current == .workLog || LensPreview.current == .ipad { return true }
         #endif
-        return expansion ?? (group.activity != nil || density == .expanded)
+        // The log opens and closes only when the reader asks, so a streaming reply never jumps.
+        return expansion ?? (density == .expanded)
     }
 
     var body: some View {
@@ -170,9 +171,10 @@ struct WorkRow: View {
                 }
             }
         }
-        .padding(expanded ? 13 : 0)
-        .background(expanded ? Design.surface : .clear, in: .rect(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(expanded ? Design.line : .clear))
+        .padding(.horizontal, 13)
+        .padding(.vertical, expanded ? 13 : 0)
+        .background(expanded ? Design.surface : .clear, in: .rect(cornerRadius: Design.panel))
+        .overlay(RoundedRectangle(cornerRadius: Design.panel).strokeBorder(expanded ? Design.line : .clear))
     }
 }
 
@@ -504,7 +506,9 @@ struct ActivityDetailView: View {
                 outputSection("Standard error", stderr, tint: Design.failure, preview: preview)
             }
             if preview, savedOutput != nil || command.stdout.count > 2_000 || (command.stderr?.count ?? 0) > 2_000 {
-                Button("Show more", systemImage: "arrow.up.right.square") { showingFullOutput = true }
+                let lines = (command.stdout + "\n" + (command.stderr ?? "")).split(separator: "\n").count
+                Button(savedOutput == nil ? "Show all \(lines) lines" : "Show full output",
+                       systemImage: "arrow.up.right.square") { showingFullOutput = true }
                 .glassButtonStyle()
             }
         }

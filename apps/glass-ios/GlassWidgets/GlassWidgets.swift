@@ -12,7 +12,7 @@ struct GlassWidgets: WidgetBundle {
 
 struct ConnectionLiveActivity: Widget {
     var body: some WidgetConfiguration {
-        ActivityConfiguration(for: ConnectionActivityAttributes.self) { context in
+        ActivityConfiguration(for: LensConnectionAttributes.self) { context in
             HStack(spacing: 8) {
                 mark(context, size: 36)
                 connection(context)
@@ -40,13 +40,13 @@ struct ConnectionLiveActivity: Widget {
         }
     }
 
-    private func mark(_ context: ActivityViewContext<ConnectionActivityAttributes>, size: CGFloat,
+    private func mark(_ context: ActivityViewContext<LensConnectionAttributes>, size: CGFloat,
                       onIsland: Bool = false) -> some View {
-        ActivityLensMark(stale: context.isStale, pulse: context.state.pulse ?? false, onIsland: onIsland)
+        ActivityLensMark(stale: context.isStale, pulse: context.state.pulse, onIsland: onIsland)
             .frame(width: size, height: size)
     }
 
-    private func connection(_ context: ActivityViewContext<ConnectionActivityAttributes>) -> some View {
+    private func connection(_ context: ActivityViewContext<LensConnectionAttributes>) -> some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(context.isStale ? "Closed" : "Connected").font(.headline)
@@ -76,10 +76,7 @@ private struct ActivityLensMark: View {
 
     var body: some View {
         let teal = Color(lensHex: onIsland || scheme == .dark ? LensPalette.darkTeal : LensPalette.lightTeal)
-        Image("ConnectionLens")
-            .resizable()
-            .scaledToFit()
-            .foregroundStyle(stale ? Color.secondary : teal)
+        LensGlyph(tint: stale ? .secondary : teal)
             .opacity(!stale && !reduceMotion && pulse ? 0.72 : 1)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: pulse)
             .accessibilityHidden(true)

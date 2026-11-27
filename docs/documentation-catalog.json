@@ -1101,6 +1101,44 @@
       ]
     },
     {
+      "path": "apps/glass-ios/PR-round7.md",
+      "class": "current",
+      "topic": "reference",
+      "audience": "repository-reference",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#glass-documentation",
+      "route": "apps/glass-ios/PR-round7.md#glass-ios-round-7-live-activity-fix-and-real-device-polish",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass iOS round 7: Live Activity fix and real-device polish",
+          "anchor": "glass-ios-round-7-live-activity-fix-and-real-device-polish"
+        },
+        {
+          "level": "2",
+          "title": "Summary",
+          "anchor": "summary"
+        },
+        {
+          "level": "2",
+          "title": "Simulator evidence",
+          "anchor": "simulator-evidence"
+        },
+        {
+          "level": "2",
+          "title": "Local verification",
+          "anchor": "local-verification"
+        }
+      ]
+    },
+    {
       "path": "benchmarks/README.md",
       "class": "current",
       "topic": "reference",
@@ -2520,6 +2558,7 @@
         "README.md",
         "SECURITY.md",
         "apps/glass-ios/PR-round6.md",
+        "apps/glass-ios/PR-round7.md",
         "benchmarks/README.md",
         "crates/glass-browser-core/README.md",
         "crates/glass-browser/README.md",

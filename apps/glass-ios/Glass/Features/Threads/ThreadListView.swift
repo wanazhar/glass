@@ -22,6 +22,7 @@ private struct ConversationShell: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
     @Bindable var threads: ThreadsModel
     @State private var sidebar = NavigationSplitViewVisibility.all
     @State private var drawer = false
@@ -82,22 +83,28 @@ private struct ConversationShell: View {
 
     private var compact: some View {
         GeometryReader { geometry in
-            let width = min(360, geometry.size.width * 0.9)
+            let width = min(360, geometry.size.width * 0.88)
             ZStack(alignment: .leading) {
                 detail
+                    .environment(\.sidebarOpen, drawer)
+                    .blur(radius: drawer && !reduceTransparency ? 12 : 0)
                     .accessibilityHidden(drawer)
                 if drawer {
-                    Color.primary.opacity(0.18)
+                    Color.black.opacity(scheme == .dark ? 0.32 : 0.06)
                         .ignoresSafeArea()
                         .onTapGesture { setDrawer(false) }
                         .accessibilityHidden(true)
-                    NavigationStack {
-                        ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) })
-                    }
+                    ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) })
                     .frame(width: width)
-                    .background(Design.background.opacity(reduceTransparency ? 1 : 0.9),
-                                in: .rect(cornerRadius: Design.largePanel))
-                    .glassEffect(reduceTransparency ? .identity : .regular, in: .rect(cornerRadius: Design.largePanel))
+                    // One floating glass panel: header, search, list and footer all sit on this surface.
+                    .clipShape(.rect(cornerRadius: Design.drawerCorner, style: .continuous))
+                    .background(reduceTransparency ? Design.surface : .clear,
+                                in: .rect(cornerRadius: Design.drawerCorner, style: .continuous))
+                    // A white tint keeps light mode bright and clean rather than grey.
+                    .glassEffect(reduceTransparency ? .identity : .regular.tint(.white.opacity(scheme == .dark ? 0 : 0.4)),
+                                 in: .rect(cornerRadius: Design.drawerCorner, style: .continuous))
+                    .padding(.leading, Design.gap)
+                    .padding(.vertical, Design.gap)
                     .transition(.opacity)
                     .overlay(alignment: .trailing) {
                         Color.clear.frame(width: 18)
@@ -146,6 +153,8 @@ private struct ConversationShell: View {
     }
 
     private func setDrawer(_ open: Bool) {
+        // The composer hides under the panel, so it must not keep the keyboard (or a hardware Return) either.
+        if open { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         withAnimation(reduceMotion ? nil : .spring(duration: 0.32, bounce: 0.06)) { drawer = open }
     }
 }
@@ -164,92 +173,21 @@ struct ThreadListView: View {
 
     var body: some View {
         let groups = sections
+        let titles = threads.titles()
         ScrollViewReader { proxy in
-        List {
-            if threads.loaded, threads.threads.isEmpty, threads.error == nil {
-                ContentUnavailableView(threads.query.isEmpty ? "No conversations yet" : "No matching conversations",
-                                       systemImage: threads.query.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
-                    .accessibilityIdentifier("threads.empty")
+            // Header, list and footer each get their own zone, so nothing floats over the rows.
+            VStack(spacing: 0) {
+                header(groups, proxy: proxy)
+                    .padding(.top, close == nil ? Design.small : Design.padding)
+                    .padding(.bottom, Design.small)
+                list(groups, titles: titles)
+                    .contentMargins(.top, Design.padding, for: .scrollContent)
+                    .contentMargins(.bottom, Self.footerFade, for: .scrollContent)
+                    .mask { edgeFade }
+                accountBar
+                    .padding(.top, Design.gap)
             }
-            if let error = threads.error {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("threads.error")
-            }
-            ForEach(groups, id: \.label) { section in
-                Section {
-                    ForEach(section.threads) { thread in row(thread) }
-                } header: {
-                    Text(section.label).font(.subheadline.weight(.semibold))
-                        .textCase(nil)
-                        .foregroundStyle(Design.ink)
-                        .id(section.label)
-                        .accessibilityIdentifier(section.label == groups.first?.label ? "threads.ready" : "threads.section")
-                }
-                .listSectionMargins(.horizontal, Design.padding)
-                .listSectionSeparator(.hidden)
-            }
-            if threads.nextOffset != nil {
-                Button("Load more") { Task { await threads.loadMore() } }
-                    .task(id: threads.nextOffset) { await threads.loadMore() }
-                    .disabled(threads.isLoading)
-                    .accessibilityIdentifier("threads.more")
-            }
-        }
-        .listStyle(.insetGrouped)
-        .listSectionSpacing(Design.padding)
-        .scrollContentBackground(.hidden)
-        .scrollEdgeEffectStyle(.hard, for: [.top, .bottom])
-        .safeAreaBar(edge: .top, spacing: Design.small) {
-          VStack(spacing: Design.gap) {
-            LensTitleBar(sideWidth: 2 * Design.control + 2 * Design.small) {
-                if let close {
-                    LensBarGroup {
-                        Button(action: close) { LensBarIcon(symbol: "xmark") }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Close threads")
-                    }
-                }
-            } title: {
-                Text("Threads").font(Design.headline).accessibilityAddTraits(.isHeader)
-            } trailing: {
-                LensBarGroup {
-                    filters
-                    Button(action: new) { LensBarIcon(symbol: "square.and.pencil") }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("New Chat")
-                        .accessibilityIdentifier("threads.new")
-                }
-            }
-            LensSearch(prompt: "Find a thread", query: $threads.query)
-                .accessibilityIdentifier("threads.search")
-                .frame(height: Design.control)
-                .padding(.horizontal, Design.padding)
-            HStack {
-                Text(threads.countLabel).foregroundStyle(Design.muted)
-                Spacer(minLength: 4)
-                Menu {
-                    ForEach(groups, id: \.label) { group in
-                        Button(group.label) {
-                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
-                                proxy.scrollTo(group.label, anchor: .top)
-                            }
-                        }
-                    }
-                } label: {
-                    Label("Jump to group", systemImage: "chevron.down")
-                        .fontWeight(.semibold)
-                        .frame(height: Design.control)
-                }
-                .tint(Design.accent)
-                .disabled(groups.isEmpty)
-            }
-            .font(.caption)
-            .padding(.horizontal, Design.padding)
-          }
-        }
-        .safeAreaBar(edge: .bottom, spacing: Design.small) { accountBar }
+            .environment(\.onGlassPanel, true)
         }
         .scrollDismissesKeyboard(.interactively)
         .task(id: Filter(query: threads.query, project: threads.project, archived: threads.archived)) {
@@ -276,6 +214,93 @@ struct ThreadListView: View {
             }
         } message: {
             Text(delete?.displayTitle ?? "")
+        }
+    }
+
+    private func list(_ groups: [(label: String, threads: [ThreadSummary])], titles: [String: String]) -> some View {
+        List {
+            if threads.loaded, threads.threads.isEmpty, threads.error == nil {
+                ContentUnavailableView(threads.query.isEmpty ? "No conversations yet" : "No matching conversations",
+                                       systemImage: threads.query.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
+                    .accessibilityIdentifier("threads.empty")
+            }
+            if let error = threads.error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("threads.error")
+            }
+            ForEach(groups, id: \.label) { section in
+                Section {
+                    ForEach(section.threads) { thread in
+                        row(thread, title: titles[thread.id] ?? thread.lensTitle, section: section.label)
+                    }
+                } header: {
+                    Text(section.label).font(.subheadline.weight(.semibold))
+                        .textCase(nil)
+                        .foregroundStyle(Design.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, Design.padding)
+                        .listRowInsets(EdgeInsets(top: Design.gap, leading: 0, bottom: Design.small, trailing: 0))
+                        .id(section.label)
+                        .accessibilityIdentifier(section.label == groups.first?.label ? "threads.ready" : "threads.section")
+                }
+                .listSectionMargins(.horizontal, Design.gap)
+                .listSectionSeparator(.hidden)
+            }
+            if threads.nextOffset != nil {
+                Button("Load more") { Task { await threads.loadMore() } }
+                    .task(id: threads.nextOffset) { await threads.loadMore() }
+                    .disabled(threads.isLoading)
+                    .accessibilityIdentifier("threads.more")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(Design.padding)
+        .scrollContentBackground(.hidden)
+        .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+    }
+
+    private func header(_ groups: [(label: String, threads: [ThreadSummary])], proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: Design.gap) {
+            LensTitleBar(sideWidth: 2 * Design.control + 2 * Design.small) {
+                if let close {
+                    LensBarGroup {
+                        Button(action: close) { LensBarIcon(symbol: "xmark") }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Close threads")
+                    }
+                }
+            } title: {
+                Text("Threads").font(Design.headline).accessibilityAddTraits(.isHeader)
+            } trailing: {
+                LensBarGroup {
+                    filters(groups, proxy: proxy)
+                    Button(action: new) { LensBarIcon(symbol: "square.and.pencil") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("New Chat")
+                        .accessibilityIdentifier("threads.new")
+                }
+            }
+            LensSearch(prompt: "Find a thread", query: $threads.query)
+                .accessibilityIdentifier("threads.search")
+                .frame(height: Design.control)
+                .lensGlass(Capsule())
+                .padding(.horizontal, Design.padding)
+          }
+    }
+
+    /// The list fades out where it meets the header and footer instead of ending on a hard line.
+    private static let footerFade = Design.control
+
+    private var edgeFade: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: Design.padding)
+            Color.black
+            // Long and eased, so the last row dissolves instead of being cut through.
+            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black.opacity(0.55), location: 0.45),
+                                   .init(color: .black.opacity(0.15), location: 0.75), .init(color: .clear, location: 1)],
+                           startPoint: .top, endPoint: .bottom).frame(height: Self.footerFade)
         }
     }
 
@@ -306,12 +331,22 @@ struct ThreadListView: View {
         .font(.subheadline.weight(.semibold))
         .lineLimit(1)
         .padding(.horizontal, Design.padding)
-        .padding(.vertical, Design.gap)
-        .background(reduceTransparency ? AnyShapeStyle(Design.surface) : AnyShapeStyle(.regularMaterial))
+        .padding(.bottom, Design.padding)
     }
 
-    private var filters: some View {
+    private func filters(_ groups: [(label: String, threads: [ThreadSummary])], proxy: ScrollViewProxy) -> some View {
         Menu {
+            if groups.count > 1 {
+                Section("Jump to") {
+                    ForEach(groups, id: \.label) { group in
+                        Button(group.label) {
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
+                                proxy.scrollTo(group.label, anchor: .top)
+                            }
+                        }
+                    }
+                }
+            }
             Picker("Conversations", selection: $threads.archived) {
                 Text("Active").tag(false)
                 Text("Archived").tag(true)
@@ -332,14 +367,15 @@ struct ThreadListView: View {
         .accessibilityIdentifier("threads.filters")
     }
 
-    private func row(_ thread: ThreadSummary) -> some View {
+    private func row(_ thread: ThreadSummary, title: String, section: String) -> some View {
         Button { choose(thread.id) } label: {
-            ThreadRow(thread: thread, selected: threads.selection == thread.id)
-                .contentShape(.rect(cornerRadius: Design.corner))
+            ThreadRow(thread: thread, title: title, section: section, selected: threads.selection == thread.id)
+                .contentShape(.capsule)
+                .contentShape(.contextMenuPreview, .capsule)
         }
         .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: Design.small, leading: Design.small, bottom: Design.small, trailing: Design.small))
-        .listRowBackground(Design.surface)
+        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+        .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .accessibilityAddTraits(threads.selection == thread.id ? .isSelected : [])
         .accessibilityIdentifier("thread.\(thread.id)")
@@ -347,7 +383,7 @@ struct ThreadListView: View {
         .swipeActions(allowsFullSwipe: false) { remove(thread); archive(thread) }
         .contextMenu {
             Button("Rename", systemImage: "pencil") {
-                name = thread.lensTitle
+                name = title
                 rename = thread
             }
             pin(thread)
@@ -418,28 +454,52 @@ struct ThreadListView: View {
 }
 
 private struct ThreadRow: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var thread: ThreadSummary
+    var title: String
+    var section: String
     var selected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.small) {
-            Text(thread.lensTitle).font(.subheadline.weight(selected ? .semibold : .medium))
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.subheadline.weight(selected ? .semibold : .medium))
                 .foregroundStyle(Design.ink)
             HStack(spacing: Design.small) {
                 if thread.running == true { ActivityIndicator().tint(Design.accent).accessibilityLabel("Running now") }
-                Text(metadata).font(.caption).foregroundStyle(Design.muted)
+                Text(ThreadListView.metadata(for: thread, section: section)).font(.caption).foregroundStyle(Design.muted)
             }
         }
         .lineLimit(1)
         .accessibilityElement(children: .combine)
-        .padding(.horizontal, Design.gap)
-        .padding(.vertical, Design.small)
+        .padding(.horizontal, Design.padding)
+        .padding(.vertical, Design.gap)
         .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
-        .lensCard(selected ? Design.accent.opacity(0.13) : .clear, radius: Design.panel - Design.small)
+        .background {
+            if selected {
+                // A brighter pane of the same glass, raised slightly off the panel.
+                Capsule()
+                    .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
+                    .glassEffect(reduceTransparency ? .identity : .regular, in: .capsule)
+                    .shadow(color: .black.opacity(scheme == .dark ? 0.24 : 0.1), radius: 6, y: 2)
+            }
+        }
     }
+}
 
-    private var metadata: String {
-        let time = thread.modifiedDate.map { $0.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)) }
-        return [time, thread.model ?? thread.originNote ?? "Paired device"].compactMap { $0 }.joined(separator: " · ")
+extension ThreadListView {
+    /// "3:13 PM · DeepSeek V4.1 Flash": a time that adds to the section header, then the model or origin.
+    static func metadata(for thread: ThreadSummary, section: String, now: Date = .now) -> String {
+        var time: String?
+        if let date = thread.modifiedDate {
+            switch section {
+            case "Today", "Yesterday": time = date.formatted(date: .omitted, time: .shortened)
+            case "Previous 7 Days": time = date.formatted(.dateTime.weekday(.wide))
+            case "Pinned": time = date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+            default: time = date.formatted(.dateTime.month(.abbreviated).day())
+            }
+        }
+        let detail = thread.model.flatMap(ModelName.friendly) ?? thread.originNote
+        return [time, detail].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
     }
 }

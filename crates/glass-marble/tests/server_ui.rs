@@ -2871,6 +2871,73 @@ fn group_prompts_survive_startup_orphan_pruning() {
 }
 
 #[test]
+fn group_workspaces_are_shared_inside_one_thread_only() {
+    if !python3_available() {
+        return;
+    }
+    let fixture =
+        NamedTurnFixture::with_persistence("group-workspaces", vec!["--group-rounds".into()], true);
+    fixture.state.lock().unwrap().prism.install_template();
+    let group = |title: &str| {
+        let (status, body) = fixture.post(
+            "/api/threads",
+            json!({
+                "conversation_id":"group-chats","title":title,"group":{"members":["engineer"]}
+            }),
+        );
+        assert_eq!(status, 201, "{body}");
+        body["thread"]["id"].as_str().unwrap().to_owned()
+    };
+    let cwd = |speaker: &str, thread: &str| {
+        let path = fixture
+            .root
+            .join("conversation-sessions")
+            .join(format!("everyone-session-{thread}__{speaker}"))
+            .join("fixture-session-options.json");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(value) = std::fs::read(&path)
+                && let Ok(value) = serde_json::from_slice::<Value>(&value)
+            {
+                return std::path::PathBuf::from(value["cwd"].as_str().unwrap());
+            }
+            assert!(Instant::now() < deadline, "missing {}", path.display());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let first = group("First");
+    let second = group("Second");
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"threadId":first,"text":"Create handoff files"})
+            )
+            .0,
+        202
+    );
+    let lead = cwd("lead", &first);
+    std::fs::write(lead.join("handoff.txt"), "For the next agent").unwrap();
+    let engineer = cwd("engineer", &first);
+    assert_eq!(
+        std::fs::read_to_string(engineer.join("handoff.txt"))
+            .ok()
+            .as_deref(),
+        Some("For the next agent")
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"threadId":second,"text":"Separate workspace"})
+            )
+            .0,
+        202
+    );
+    assert!(!cwd("lead", &second).join("handoff.txt").exists());
+}
+
+#[test]
 fn prism_roster_is_served_and_editable_without_an_engine() {
     let server = server_with(
         ProductState::default(),

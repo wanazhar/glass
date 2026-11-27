@@ -74,8 +74,12 @@ pub(crate) fn is_session(id: &str) -> bool {
 }
 
 pub(crate) fn is_group_session(id: &str) -> bool {
-    id.strip_prefix(SESSION_PREFIX)
-        .is_some_and(|id| id.starts_with("group-thread-"))
+    group_session_thread(id).is_some()
+}
+
+pub(crate) fn group_session_thread(id: &str) -> Option<&str> {
+    let (thread, _) = id.strip_prefix(SESSION_PREFIX)?.split_once("__")?;
+    thread.starts_with("group-thread-").then_some(thread)
 }
 
 pub(crate) fn session_in_thread(id: &str, thread: &str) -> bool {

@@ -2433,6 +2433,15 @@ impl MarbleServer {
                         crate::live::LiveStore::for_store(store).remove_conversation(&record);
                     }
                 }
+                if state.threads[index].group.is_some()
+                    && let Some(root) = self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.conversation_root(id))
+                    && crate::store::remove_conversation_root(&root).is_err()
+                {
+                    return Response::error(500, "conversation_delete_failed");
+                }
                 state.threads.retain(|thread| thread.id != id);
                 state
                     .transcript

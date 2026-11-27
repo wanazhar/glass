@@ -674,10 +674,17 @@ impl Conversation {
         let root = store
             .conversation_root(id)
             .ok_or_else(|| MarbleError::Protocol("invalid conversation storage id".into()))?;
-        let cwd = root.join("workspace");
+        let group = crate::everyone::group_session_thread(id);
+        let cwd = match group {
+            Some(thread) => store
+                .conversation_root(thread)
+                .ok_or_else(|| MarbleError::Protocol("invalid group storage id".into()))?
+                .join("workspace"),
+            None => root.join("workspace"),
+        };
         std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
         let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
-        let storage = cwd.parent().expect("workspace has a parent");
+        std::fs::create_dir_all(&root).map_err(MarbleError::Io)?;
         let mut command = factory();
         if let Some(zone) = zone {
             command.env("TZ", zone);
@@ -685,7 +692,7 @@ impl Conversation {
         let mut scoped = Self::spawn_with_router(
             command,
             &cwd,
-            storage,
+            &root,
             self.host,
             self.approvals.clone(),
             self.router.in_workspace(&cwd)?,
@@ -1034,6 +1041,9 @@ impl Conversation {
                         MarbleError::Protocol("durable/fork returned no conversation id".into())
                     })?
                     .to_string();
+        if self.can_scope_runtime() && crate::everyone::is_group_session(conversation_id) {
+            agent["cwd"] = value!(self.cwd);
+        }
             } else {
                 input.text = input.text.replacen("[Marble host context]\n", "[Marble host context]\nThis is a retry of an earlier failed message; later turns remain in the conversation history.\n", 1);
             }

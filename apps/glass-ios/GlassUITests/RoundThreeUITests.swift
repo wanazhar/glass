@@ -92,7 +92,7 @@ final class RoundThreeUITests: XCTestCase {
         let field = app.textViews["composer.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 8))
         let older = app.buttons.matching(identifier: "timeline.work")
-            .containing(NSPredicate(format: "label CONTAINS %@", "1 min")).firstMatch
+            .containing(NSPredicate(format: "label CONTAINS %@", "1m 6s")).firstMatch
         XCTAssertTrue(reveal(older, in: app))
         let latest = app.buttons["conversation.latest"]
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
@@ -290,7 +290,7 @@ final class RoundThreeUITests: XCTestCase {
         XCTAssertTrue(revealInTranscript(table, in: chat))
         capture(appearance, "table")
         let work = chat.buttons.matching(identifier: "timeline.work")
-        let latest = work.containing(NSPredicate(format: "label CONTAINS %@", "2 min")).firstMatch
+        let latest = work.containing(NSPredicate(format: "label CONTAINS %@", "2m 14s")).firstMatch
         if reveal(latest, in: chat) {
             capture(appearance, "work-collapsed")
             latest.tap()

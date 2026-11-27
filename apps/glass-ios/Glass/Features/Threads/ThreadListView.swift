@@ -318,6 +318,7 @@ struct ThreadListView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 0, leading: Design.padding, bottom: 0, trailing: Design.padding))
         .listRowBackground(threads.selection == thread.id ? Design.accent.opacity(0.12) : Design.surface)
         .accessibilityAddTraits(threads.selection == thread.id ? .isSelected : [])
         .accessibilityIdentifier("thread.\(thread.id)")

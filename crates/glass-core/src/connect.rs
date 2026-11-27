@@ -1354,25 +1354,21 @@ fn agent_control(app: &App, path: &str, body: &[u8]) -> Result<Value, String> {
                 .ok_or("Invalid agent")?,
         ),
     };
+    let bridge = bridge_for_path(app, id, Some(&owner_path))?;
+    if bridge
+        .feed
+        .lock()
+        .map_err(|_| "Session state unavailable")?
+        .snapshot["can_write"]
+        != true
+    {
+        return Err("Take control before changing agent work".into());
+    }
     match (path, agent) {
         ("/api/agent/stop", Some(agent)) => {
             crate::team::client(id, &json!({"action":"interrupt","from":"human","id":agent}))
         }
         ("/api/agent/stop", None) => {
-            let bridge = if source_ref.is_empty() {
-                bridge(app, id)?
-            } else {
-                bridge_for_path(app, id, Some(&owner_path))?
-            };
-            if bridge
-                .feed
-                .lock()
-                .map_err(|_| "Session state unavailable")?
-                .snapshot["can_write"]
-                != true
-            {
-                return Err("Take control before stopping the conversation".into());
-            }
             bridge.send(&json!({"t":"cancel"}))?;
             Ok(json!({"sent":true}))
         }
@@ -4546,7 +4542,7 @@ mod tests {
     fn agent_child_routes_stop_one_worker_and_deliver_human_followup() {
         let mut local = settings();
         local.local = true;
-        let (app, _, path) = secret_test_app(local, true);
+        let (app, _reader, path) = secret_test_app(local, false);
         let owner = app
             .settings
             .workspace
@@ -4555,7 +4551,13 @@ mod tests {
             .to_str()
             .unwrap();
         let session = path.with_file_name(format!("{owner}.jsonl"));
-        std::fs::rename(path, &session).unwrap();
+        std::fs::rename(&path, &session).unwrap();
+        let bridge = {
+            let mut bridges = app.bridges.lock().unwrap();
+            let bridge = bridges.remove(path.to_str().unwrap()).unwrap();
+            bridges.insert(session.to_str().unwrap().into(), bridge.clone());
+            bridge
+        };
         let factory: crate::warmer::ProviderFactory =
             Arc::new(|| Err("fixture provider unavailable".into()));
         let models: crate::warmer::ProviderForModel = Arc::new(move |_| factory.clone());
@@ -4592,6 +4594,17 @@ mod tests {
         wait_until_blocked(&first);
         wait_until_blocked(&second);
         let body = json!({"id":owner,"sourceRef":session,"agent":first});
+        assert!(post_agent(app.clone(), "/api/agent/stop", body.clone()).contains("Take control"));
+        let mut followup = body.clone();
+        followup["text"] = json!("Try again with the same scope.");
+        assert!(
+            post_agent(app.clone(), "/api/agent/send", followup.clone()).contains("Take control")
+        );
+        assert_eq!(
+            crate::team::client(owner, &json!({"action":"inspect","id":first})).unwrap()["agent"]["status"],
+            "blocked"
+        );
+        bridge.feed.lock().unwrap().snapshot["can_write"] = json!(true);
         let response = post_agent(app.clone(), "/api/agent/stop", body.clone());
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response.contains(r#""status":"parked""#), "{response}");
@@ -4600,9 +4613,7 @@ mod tests {
                 ["status"],
             "blocked"
         );
-        let mut body = body;
-        body["text"] = json!("Try again with the same scope.");
-        let response = post_agent(app.clone(), "/api/agent/send", body);
+        let response = post_agent(app.clone(), "/api/agent/send", followup);
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(
             response.contains(r#"["human","Try again with the same scope."]"#),

@@ -24,11 +24,12 @@ extension ThreadSummary {
 
     var hasMeaningfulTitle: Bool { !Self.isGeneric(title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") }
 
-    /// Up to eight words of a request, or nil when it is only a greeting or a command.
+    /// Up to eight words (and 60 characters) of a request, or nil when it is only a greeting or a command.
     static func excerpt(_ text: String) -> String? {
         guard let line = text.split(whereSeparator: \.isNewline).lazy.map({ $0.trimmingCharacters(in: .whitespaces) })
             .first(where: { !isGeneric($0) }) else { return nil }
-        return line.split(whereSeparator: \.isWhitespace).prefix(8).joined(separator: " ")
+        let words = line.split(whereSeparator: \.isWhitespace).prefix(8).joined(separator: " ")
+        return words.count > 60 ? words.prefix(59).trimmingCharacters(in: .whitespaces) + "…" : words
     }
 
     private static let greetings: Set<String> = ["hi", "hey", "hello", "hiya", "yo", "howdy", "greetings", "sup",

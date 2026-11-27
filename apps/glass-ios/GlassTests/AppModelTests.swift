@@ -395,4 +395,7 @@ private actor AttachmentBatchTransport: GlassHTTPTransport {
     #expect(!thread.hasMeaningfulTitle)
     #expect(ThreadSummary.excerpt("hey glass!") == nil)
     #expect(ThreadSummary.excerpt("Hello, can you review PR 12?") == "Hello, can you review PR 12?")
+    let long = ThreadSummary.excerpt("Check https://example.com/" + String(repeating: "a", count: 300) + " please")
+    #expect(long?.count == 60)
+    #expect(long?.hasSuffix("…") == true)
 }

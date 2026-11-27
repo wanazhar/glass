@@ -58,13 +58,22 @@ struct ChatToolbar<Title: View>: View {
 /// The chat's own background behind the status bar and the controls row, fading out below them, so text
 /// scrolls away before it reaches the title instead of running underneath it.
 private struct HeaderFade: View {
+    static let fade = 2 * (Design.spacious + Design.gap)
+
     var body: some View {
         VStack(spacing: 0) {
             Design.background
-            LinearGradient(colors: [Design.background, Design.background.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .frame(height: Design.spacious + Design.gap)
+            // Blur first, then fade, so text passing under the title is softened rather than half-visible.
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                    .mask(LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom))
+                LinearGradient(stops: [.init(color: Design.background, location: 0), .init(color: Design.background, location: 0.25),
+                                       .init(color: Design.background.opacity(0), location: 0.7)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+            .frame(height: Self.fade)
         }
-            .padding(.bottom, -(Design.spacious + Design.gap))
+            .padding(.bottom, -Self.fade)
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
             .accessibilityHidden(true)

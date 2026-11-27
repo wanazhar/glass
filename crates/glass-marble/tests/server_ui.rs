@@ -2802,6 +2802,42 @@ fn template_installation_keeps_existing_agents_and_duplicate_copies_only_the_car
 }
 
 #[test]
+fn group_lead_is_installed_alongside_an_existing_namesake() {
+    for already_installed in [false, true] {
+        let mut state = ProductState::default();
+        let original = state
+            .prism
+            .add("Lead", "", "", 0, "", "My own Lead")
+            .unwrap()
+            .id
+            .clone();
+        let mut saved = serde_json::to_value(&state).unwrap();
+        saved["prism"]["templateInstalled"] = json!(already_installed);
+        let mut state: ProductState = serde_json::from_value(saved).unwrap();
+        state.prism.install_template();
+        let server = server_with(
+            state,
+            ApprovalInbox::default(),
+            EventBus::default(),
+            AccessPolicy::new(None),
+        );
+        let (status, body) = server.handle(
+            "POST",
+            "/api/threads",
+            r#"{"conversation_id":"group-chats","title":"Built-in Lead","group":{"members":[]}}"#,
+        );
+        assert_eq!(status, 201, "{body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["thread"]["group"]["members"],
+            json!(["lead"])
+        );
+        let state = server.state();
+        assert_eq!(state.prism.get(&original).unwrap().name, "Lead");
+        assert_ne!(state.prism.get("lead").unwrap().name, "Lead");
+    }
+}
+
+#[test]
 fn group_prompts_survive_startup_orphan_pruning() {
     let mut state = ProductState::default();
     state.prism.install_template();

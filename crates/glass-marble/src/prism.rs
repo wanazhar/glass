@@ -243,7 +243,7 @@ pub struct PrismState {
 
 impl PrismState {
     pub fn install_template(&mut self) -> bool {
-        if self.template_installed {
+        if self.template_installed && self.get("lead").is_some() {
             return false;
         }
         for agent in &mut self.marbles {
@@ -355,16 +355,26 @@ impl PrismState {
                 reads,
             ),
         ] {
-            if self.get(id).is_some()
-                || self
-                    .marbles
-                    .iter()
-                    .any(|agent| agent.name.eq_ignore_ascii_case(name))
-            {
+            if self.get(id).is_some() || (self.template_installed && id != "lead") {
                 continue;
             }
+            let taken = |name: &str| {
+                self.marbles
+                    .iter()
+                    .any(|agent| agent.name.eq_ignore_ascii_case(name))
+            };
+            let name = if !taken(name) {
+                name.to_string()
+            } else if id != "lead" {
+                continue;
+            } else {
+                std::iter::once("Lead (built-in)".to_string())
+                    .chain((2..).map(|number| format!("Lead (built-in {number})")))
+                    .find(|name| !taken(name))
+                    .expect("the roster is finite")
+            };
             if self
-                .add(name, role, glyph, hue, "", &role_prompt(name, focus))
+                .add(&name, role, glyph, hue, "", &role_prompt(&name, focus))
                 .is_ok()
             {
                 let agent = self.marbles.last_mut().expect("just added");

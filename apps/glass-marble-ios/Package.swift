@@ -28,7 +28,7 @@ if hostTests {
 } else {
     package = Package(
         name: "GlassMarble",
-        platforms: [.iOS("18.0")],
+        platforms: [.iOS("26.0")],
         products: [.executable(name: "GlassMarble", targets: ["GlassMarble"])],
         targets: [
             .executableTarget(

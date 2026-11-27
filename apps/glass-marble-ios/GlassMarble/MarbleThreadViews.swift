@@ -11,11 +11,26 @@ struct MarbleThreadInboxLink: View {
     }
 }
 
+struct MarbleChatTools: View {
+    let conversationId: String
+
+    var body: some View {
+        Menu("Chat options", systemImage: "ellipsis") {
+            MarbleThreadInboxLink(conversationId: conversationId)
+            NavigationLink(value: ChatRoute.find(conversationId)) {
+                Label("Find", systemImage: "magnifyingglass")
+            }
+        }
+    }
+}
+
 struct MarbleThreadDestination: View {
     let route: ChatRoute
 
     var body: some View {
         switch route {
+        case .find(let conversationId):
+            MarbleFindView(conversationId: conversationId)
         case .threadInbox(let conversationId):
             MarbleThreadInbox(conversationId: conversationId)
         case .thread(let id):
@@ -29,6 +44,33 @@ struct MarbleThreadDestination: View {
         default:
             EmptyView()
         }
+    }
+}
+
+private struct MarbleFindView: View {
+    let conversationId: String
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Search messages and threads in this chat.")
+                    .foregroundStyle(MarbleTheme.muted)
+                    .listRowBackground(MarbleTheme.card)
+            } else {
+                MarbleSearchSection(query: query, conversationId: conversationId) { hit in
+                    NavigationLink(value: ChatRoute.searchHit(
+                        conversationId: hit.conversationId, threadId: hit.threadId, entryId: hit.entryId
+                    )) { MarbleSearchRow(hit: hit) }
+                    .listRowBackground(MarbleTheme.card)
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle("Find")
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find in this chat")
+        .toolbarVisibility(.hidden, for: .tabBar)
     }
 }
 
@@ -72,6 +114,8 @@ private struct MarbleThreadInbox: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
         .navigationTitle("Threads")
         .toolbarVisibility(.hidden, for: .tabBar)
         .task(id: store.threadUpdates.filter { $0.value.conversationId == conversationId }) {
@@ -203,13 +247,16 @@ struct MarbleSearchSection<Row: View>: View {
     @EnvironmentObject private var store: MarbleStore
     let query: String
     var threadId: String?
+    var conversationId: String?
     @ViewBuilder var row: (MarbleSearchResult) -> Row
     @State private var hits: [MarbleSearchResult] = []
     @State private var loadedQuery: String?
     @State private var failed = false
 
     var body: some View {
-        let visibleHits = hits.filter { !store.isDeletedConversation($0.conversationId) }
+        let visibleHits = hits.filter {
+            !store.isDeletedConversation($0.conversationId) && (conversationId == nil || conversationId == $0.conversationId)
+        }
         Section("Message matches") {
             if loadedQuery != query {
                 ProgressView()

@@ -13,7 +13,7 @@ struct ConversationListView: View {
             searchSection
             conversationSection
         }
-        .navigationTitle("Glass Marble")
+        .navigationTitle("Conversations")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search conversations")
         .alert("Rename conversation", isPresented: renameBinding) {

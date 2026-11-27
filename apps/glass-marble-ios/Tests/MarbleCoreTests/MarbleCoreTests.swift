@@ -757,12 +757,12 @@ final class MarbleCryptoTests: XCTestCase {
 }
 
 final class MarbleNavigationTests: XCTestCase {
-    func testLaunchLandsOnChatsListWithEmptyPath() {
+    func testLaunchLandsOnPickerWithEmptyPath() {
         var nav = MarbleNavigation()
         nav.openConversation("a")
         nav.selectTab(.settings)
         nav.launch()
-        XCTAssertEqual(nav.tab, .everyone)
+        XCTAssertEqual(nav.tab, .marbles)
         XCTAssertTrue(nav.chatPath.isEmpty)
         XCTAssertNil(nav.viewingConversationId)
     }
@@ -1340,10 +1340,10 @@ final class EveryoneDecodingTests: XCTestCase {
 }
 
 final class MarbleVisionNavigationTests: XCTestCase {
-    func testLaunchLandsOnEveryone() {
+    func testLaunchLandsOnPicker() {
         var nav = MarbleNavigation()
         nav.launch()
-        XCTAssertEqual(nav.tab, .everyone)
+        XCTAssertEqual(nav.tab, .marbles)
     }
 
     func testRosterRowOpensTheRightDestination() {

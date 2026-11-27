@@ -1,180 +1,183 @@
 import SwiftUI
 
-/// What Marble remembers about you, and what it would like permission to keep.
 struct MemoryView: View {
     @EnvironmentObject private var store: MarbleStore
-    @Environment(\.dismiss) private var dismiss
+    var marbleId: String?
     @State private var draft = ""
     @State private var editing: MarbleMemoryFact?
-    @State private var editDraft = ""
+    @State private var forgetting: MarbleMemoryFact?
 
     var body: some View {
-            Form {
-                Section {
-                    TextField("Remember that…", text: $draft, axis: .vertical)
-                        .lineLimit(1...4)
-                    Button("Save") {
-                        let text = draft
-                        draft = ""
-                        Task { await store.remember(text) }
-                    }
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-
-                Section(header: Text("Shared with every Marble")) {
-                    if sharedFacts.isEmpty && ownedFacts.isEmpty {
-                        Text("Nothing remembered yet.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(sharedFacts) { fact in
-                        factRow(fact)
-                    }
-                }
-
-                if !ownedFacts.isEmpty {
-                    Section(header: Text("By Marble")) {
-                        ForEach(ownedGroups, id: \.owner) { group in
-                            Section(header: Text(group.name)) {
-                                ForEach(group.facts) { fact in
-                                    factRow(fact)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Section(header: Text("Suggested")) {
-                    if store.memory.suggestions.isEmpty {
-                        Text("No suggestions waiting.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(store.memory.suggestions) { suggestion in
-                        SuggestionCard(suggestion: suggestion) { keep in
-                            Task {
-                                if keep {
-                                    await store.accept(suggestion)
-                                } else {
-                                    await store.dismiss(suggestion)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    Button {
-                        Task { await store.toggleVoice() }
-                    } label: {
-                        Label(
-                            store.voice.enabled ? "Stop reading replies" : "Read replies aloud",
-                            systemImage: store.voice.enabled ? "speaker.slash" : "speaker.wave.2"
-                        )
-                    }
-                } header: {
-                    Text("Voice")
-                } footer: {
-                    Text("Speech stays on this device.")
+        List {
+            if let marbleId {
+                factSection(owner: marbleId, facts: store.memory.facts.filter { $0.owner == marbleId })
+            } else {
+                ForEach(store.prism.marbles.filter { marble in
+                    store.memory.facts.contains { $0.owner == marble.id }
+                }) { marble in
+                    factSection(owner: marble.id, facts: store.memory.facts.filter { $0.owner == marble.id })
                 }
             }
-            .navigationTitle("Memory")
-            .navigationBarTitleDisplayMode(.inline)
-            
-            .task { await store.refresh() }
-            .alert("Edit memory", isPresented: editingBinding) {
-                TextField("Memory", text: $editDraft, axis: .vertical)
-                Button("Cancel", role: .cancel) { editing = nil }
-                Button("Save") {
-                    guard let fact = editing else { return }
-                    let text = editDraft
-                    editing = nil
-                    Task { await store.update(fact, text: text) }
+            factSection(owner: "", facts: store.memory.facts.filter { $0.owner.isEmpty })
+            Section("Suggestions · Not saved") {
+                let suggestions = store.memory.suggestions.filter {
+                    marbleId == nil || store.owner(of: $0) == marbleId
+                }
+                if suggestions.isEmpty {
+                    Text("No suggestions waiting.").foregroundStyle(MarbleTheme.muted)
+                }
+                ForEach(suggestions) { suggestion in
+                    SuggestionCard(suggestion: suggestion)
                 }
             }
-    }
-
-    private var sharedFacts: [MarbleMemoryFact] {
-        store.memory.facts.filter { $0.owner.isEmpty }
-    }
-
-    private var ownedFacts: [MarbleMemoryFact] {
-        store.memory.facts.filter { !$0.owner.isEmpty }
-    }
-
-    /// Owner id → (name, facts), in roster order so groups read like the
-    /// Marbles tab.
-    private var ownedGroups: [(owner: String, name: String, facts: [MarbleMemoryFact])] {
-        var order: [String] = []
-        var grouped: [String: [MarbleMemoryFact]] = [:]
-        for fact in ownedFacts {
-            if grouped[fact.owner] == nil { order.append(fact.owner) }
-            grouped[fact.owner, default: []].append(fact)
+            .listRowBackground(MarbleTheme.card)
+            Section(marbleId.map { store.memoryScope($0) } ?? "Add a shared memory") {
+                TextField("What should Marble remember?", text: $draft, axis: .vertical)
+                Button("Save memory") {
+                    let text = draft
+                    draft = ""
+                    Task { await store.remember(text, owner: marbleId ?? "") }
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .listRowBackground(MarbleTheme.card)
         }
-        return order.map { owner in
-            let name = store.prism.marbles.first { $0.id == owner }?.name ?? owner
-            return (owner, name, grouped[owner] ?? [])
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle("Memory")
+        .task { await store.refresh() }
+        .sheet(item: $editing) { fact in
+            MemoryDecisionView(title: "Edit memory", scope: store.memoryScope(fact.owner), text: fact.text, editable: true) {
+                await store.update(fact, text: $0)
+            }
+        }
+        .confirmationDialog("Forget this memory?", isPresented: Binding(
+            get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }
+        ), titleVisibility: .visible, presenting: forgetting) { fact in
+            Button("Forget", role: .destructive) { Task { await store.forget(fact) } }
+        } message: { fact in
+            Text(store.memoryScope(fact.owner) + " · " + fact.text)
         }
     }
 
-    @ViewBuilder
-    private func factRow(_ fact: MarbleMemoryFact) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(fact.text)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text(fact.kind)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Edit") {
+    private func factSection(owner: String, facts: [MarbleMemoryFact]) -> some View {
+        Section(store.memoryScope(owner)) {
+            if facts.isEmpty {
+                Text("Nothing remembered yet.").foregroundStyle(MarbleTheme.muted)
+            }
+            ForEach(facts) { fact in
+                Button {
                     editing = fact
-                    editDraft = fact.text
+                } label: {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(fact.text).foregroundStyle(MarbleTheme.ink)
+                        Spacer()
+                        Image(systemName: "pencil").foregroundStyle(MarbleTheme.tint)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
-                Button("Forget", role: .destructive) {
-                    Task { await store.forget(fact) }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edit memory")
+                .swipeActions {
+                    Button("Forget", role: .destructive) { forgetting = fact }
                 }
-                .buttonStyle(.borderless)
             }
         }
-    }
-
-    private var editingBinding: Binding<Bool> {
-        Binding(
-            get: { editing != nil },
-            set: { presented in
-                if !presented { editing = nil }
-            }
-        )
+        .listRowBackground(MarbleTheme.card)
     }
 }
 
-/// One memory Marble noticed, waiting for a decision. Used in the Memory
-/// sheet and in the horizontal rail above the transcript.
-struct SuggestionCard: View {
-    var suggestion: MarbleMemorySuggestion
-    var onDecision: (Bool) -> Void
+private struct MemoryDecisionView: View {
+    @EnvironmentObject private var store: MarbleStore
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let scope: String
+    @State var text: String
+    var editable = false
+    var save: (String) async -> Void
+    @State private var saving = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Remember this?")
+        NavigationStack {
+            Form {
+                Section("Who can use this") { Text(scope) }
+                    .listRowBackground(MarbleTheme.card)
+                Section("Memory") {
+                    if editable {
+                        TextField("Memory", text: $text, axis: .vertical).lineLimit(3...9)
+                    } else {
+                        Text(text)
+                    }
+                }
+                .listRowBackground(MarbleTheme.card)
+                if let error = store.errorMessage {
+                    Text(error).foregroundStyle(MarbleTheme.problem)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saving = true
+                        Task {
+                            await save(text)
+                            saving = false
+                            if store.errorMessage == nil { dismiss() }
+                        }
+                    }
+                    .disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+struct SuggestionCard: View {
+    @EnvironmentObject private var store: MarbleStore
+    var suggestion: MarbleMemorySuggestion
+    @State private var review = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(store.memoryScope(store.owner(of: suggestion)))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MarbleTheme.muted)
             Text(suggestion.text)
-                .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                Button("Not now") { onDecision(false) }
-                    .buttonStyle(.bordered)
-                Spacer()
-                Button("Save") { onDecision(true) }
-                    .buttonStyle(.borderedProminent)
+            ViewThatFits {
+                HStack { actions }
+                VStack(alignment: .leading) { actions }
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color(.secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        .background(MarbleTheme.card, in: RoundedRectangle(cornerRadius: 14))
+        .sheet(isPresented: $review) {
+            MemoryDecisionView(title: "Review suggestion", scope: store.memoryScope(store.owner(of: suggestion)),
+                               text: suggestion.text) { _ in await store.accept(suggestion) }
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        Button("Not now") { Task { await store.dismiss(suggestion) } }
+            .buttonStyle(.glass)
+        Button("Review") { review = true }
+            .buttonStyle(.glassProminent)
+    }
+}
+
+extension MarbleStore {
+    func owner(of suggestion: MarbleMemorySuggestion) -> String {
+        guard let id = suggestion.conversationId, !id.isEmpty else { return "marble" }
+        return prism.marbles.first { $0.conversationId == id }?.id ?? "marble"
+    }
+
+    func memoryScope(_ owner: String) -> String {
+        if owner.isEmpty { return "Shared with everyone" }
+        return "Only " + (prism.marbles.first { $0.id == owner }?.name ?? owner)
     }
 }

@@ -41,25 +41,7 @@ struct ActivityView: View {
                     .padding(.vertical, 4)
                 }
                 ForEach(store.memory.suggestions) { suggestion in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Marble wants to remember")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(suggestion.text)
-                            .font(.callout)
-                        HStack(spacing: 12) {
-                            Button("Dismiss") {
-                                Task { await store.dismiss(suggestion) }
-                            }
-                            .buttonStyle(.bordered)
-                            Spacer()
-                            Button("Keep") {
-                                Task { await store.accept(suggestion) }
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-                    .padding(.vertical, 4)
+                    SuggestionCard(suggestion: suggestion)
                 }
             }
 
@@ -119,6 +101,8 @@ struct ActivityView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
         .navigationTitle("Activity")
         .confirmationDialog(
             "Stop everything?",

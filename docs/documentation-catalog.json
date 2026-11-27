@@ -1944,6 +1944,103 @@
       ]
     },
     {
+      "path": "design/marble-round1/PR.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "design/marble-round1/README.md"
+      ],
+      "dependencies": [
+        "design/marble-round1/README.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "design/marble-round1/PR.md#design-propose-marble-ios-identity-and-home-direction",
+      "sections": [
+        {
+          "level": "1",
+          "title": "design: propose Marble iOS identity and home direction",
+          "anchor": "design-propose-marble-ios-identity-and-home-direction"
+        },
+        {
+          "level": "2",
+          "title": "Summary",
+          "anchor": "summary"
+        },
+        {
+          "level": "2",
+          "title": "Review decision",
+          "anchor": "review-decision"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
+        }
+      ]
+    },
+    {
+      "path": "design/marble-round1/README.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "design/marble-round1/PR.md",
+        "docs/INDEX.md"
+      ],
+      "dependencies": [
+        "design/marble-round1/PR.md",
+        "docs/marble.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "design/marble-round1/README.md#marble-ios-round-1",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Marble iOS · round 1",
+          "anchor": "marble-ios-round-1"
+        },
+        {
+          "level": "2",
+          "title": "Recommendation",
+          "anchor": "recommendation"
+        },
+        {
+          "level": "2",
+          "title": "Identity and launch",
+          "anchor": "identity-and-launch"
+        },
+        {
+          "level": "2",
+          "title": "Visual system",
+          "anchor": "visual-system"
+        },
+        {
+          "level": "2",
+          "title": "Screens and component rationale",
+          "anchor": "screens-and-component-rationale"
+        },
+        {
+          "level": "2",
+          "title": "Local review and reproduction",
+          "anchor": "local-review-and-reproduction"
+        },
+        {
+          "level": "2",
+          "title": "Self-critique",
+          "anchor": "self-critique"
+        }
+      ]
+    },
+    {
       "path": "design/round4/README.md",
       "class": "historical",
       "topic": "history",
@@ -2317,6 +2414,7 @@
         "crates/glass-mod-api/README.md",
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
+        "design/marble-round1/README.md",
         "design/round4/README.md",
         "docs/BROWSER-CU-AUDIT.md",
         "docs/GLASS-IOS-FULL-PLAN.md",
@@ -6072,6 +6170,7 @@
       "canonicalSuccessor": null,
       "consumers": [
         "crates/glass-marble/README.md",
+        "design/marble-round1/README.md",
         "docs/INDEX.md"
       ],
       "dependencies": [

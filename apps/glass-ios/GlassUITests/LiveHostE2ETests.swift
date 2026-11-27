@@ -1336,6 +1336,8 @@ final class LiveHostE2ETests: XCTestCase {
             withVelocity: .slow, thenHoldForDuration: 0.5)
         sleep(1)
         try save("chat-mid")
+        sleep(3)
+        try save("chat-mid-later")
     }
 
     @MainActor

@@ -865,11 +865,13 @@ final class LiveHostE2ETests: XCTestCase {
         let app = try pairedApp()
         open(app, thread: thread)
         XCTAssertTrue(waitForConnection(app, "Live"))
-        let copy = app.buttons["reply.copy"]
-        XCTAssertFalse(copy.exists, "no reply actions before there is a reply")
+        let copies = app.buttons.matching(identifier: "reply.copy")
+        let before = copies.count
         _ = try call("thread/send?id=\(thread)&text=lines%2024", method: "POST")
-        XCTAssertTrue(copy.waitForExistence(timeout: 30), "copy appears once the reply finishes")
-        XCTAssertTrue(app.buttons["reply.share"].exists, "share sits beside copy")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Line 1 of'")).firstMatch
+            .waitForExistence(timeout: 30), "the reply streams in")
+        XCTAssertTrue(waitUntil(30) { copies.count > before }, "copy appears once the reply finishes")
+        XCTAssertEqual(app.buttons.matching(identifier: "reply.share").count, copies.count, "share sits beside copy")
         sleep(1)
         attach(app, "e2e-reply-actions")
     }

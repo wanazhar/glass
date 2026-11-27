@@ -1075,7 +1075,8 @@ struct RevealingReply: View {
 
     private static let freshStart = 600
     @MainActor private static var progress: [String: Int] = [:]
-    private static func key(_ text: String) -> String { String(text.prefix(80)) }
+    private static let keyLength = 80
+    private static func key(_ text: String) -> String { String(text.prefix(keyLength)) }
 
     private struct TaskKey: Hashable { var anchor: Int; var date: Date; var total: Int }
 
@@ -1099,7 +1100,9 @@ struct RevealingReply: View {
         anchor = shown
         anchorDate = now
         caughtUp = shown >= total
-        if streaming { Self.progress[Self.key(text)] = shown } else { Self.progress[Self.key(text)] = nil }
+        // Only a full-length key stays the same as the reply grows, so shorter openings are never cached.
+        let key = Self.key(text)
+        if !streaming { Self.progress[key] = nil } else if key.count == Self.keyLength { Self.progress[key] = shown }
     }
 
     /// The revealed prefix, ending on a word boundary so words arrive whole.

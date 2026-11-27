@@ -6053,14 +6053,28 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
                 ],
             );
             fixture.install_default_worker_with_args(vec!["--generation-failure-once".into()]);
-            let prefix = if everyone && named { "@Ada " } else { "" };
+            let prefix = match (everyone, named) {
+                (true, true) => "@Ada ",
+                (true, false) => "@Marble ",
+                (false, _) => "",
+            };
             let root_prompt = format!("{prefix}root");
             let path = if everyone {
                 "/api/everyone"
             } else {
                 "/api/turns"
             };
-            assert_eq!(fixture.post(path, json!({"text":root_prompt,"marbleId":if named {Some(&fixture.marble_id)} else {None}})).0, 202);
+            let (status, body) = fixture.post(
+                path,
+                json!({"text":root_prompt,"marbleId":if named {Some(&fixture.marble_id)} else {None}}),
+            );
+            assert_eq!(status, 202);
+            if everyone {
+                assert_eq!(
+                    body["answering"],
+                    json!([if named { "Ada" } else { "Marble" }])
+                );
+            }
             let root_task = fixture.completed(&root_prompt);
             let cv = if everyone {
                 "everyone".into()

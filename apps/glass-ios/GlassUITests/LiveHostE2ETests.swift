@@ -1257,6 +1257,31 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertEqual(Set(activities.allElementsBoundByIndex.map(\.identifier)).count, 1, "only one activity remains")
     }
 
+    /// The Threads panel over a busy chat, for design review. Set GLASS_SHOTS (output directory) and
+    /// GLASS_SHOT_PREFIX; the Simulator's appearance picks light or dark.
+    @MainActor
+    func testThreadsPanelOverBusyChatShots() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let out = env["GLASS_SHOTS"] else { throw XCTSkip("Set GLASS_SHOTS to capture the panel") }
+        let prefix = env["GLASS_SHOT_PREFIX"] ?? "shot"
+        for title in ["Fix the login redirect", "Plan the release notes", "Review the payments diff", "Draft onboarding copy"] {
+            _ = try call("thread/new?title=\(title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)", method: "POST")
+        }
+        let busy = try call("thread/new?title=Markdown%20tour", method: "POST")
+        _ = try call("thread/markdown?id=\(busy)", method: "POST")
+        let app = try pairedApp()
+        func save(_ name: String) throws {
+            try XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(filePath: out).appending(path: "\(prefix)-\(name).png"))
+        }
+        open(app, thread: busy)
+        sleep(2)
+        try save("chat")
+        let back = app.buttons["conversation.back"].firstMatch
+        if back.exists, back.isHittable { back.tap() }
+        sleep(2)
+        try save("sidebar")
+    }
+
     @MainActor
     func testClosingGlassEndsItsLiveActivity() throws {
         let thread = try call("thread/new?title=Closing%20Glass", method: "POST")

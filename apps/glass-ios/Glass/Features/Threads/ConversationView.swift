@@ -297,21 +297,23 @@ struct ConversationView: View {
     /// so it never changes the transcript's layout.
     private func jumpToLatest(_ proxy: ScrollViewProxy) -> some View {
         let shown = !following && !atBottom
-        return Button { resume(proxy) } label: {
-            Label("Jump to latest", systemImage: "arrow.down")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Design.ink)
-                .padding(.horizontal, Design.padding)
-                .frame(height: Design.control)
-                .contentShape(.capsule)
-                .glassEffect(.regular.interactive(), in: .capsule)
+        return ZStack {
+            if shown {
+                Button { resume(proxy) } label: {
+                    Label("Jump to latest", systemImage: "arrow.down")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Design.ink)
+                        .padding(.horizontal, Design.padding)
+                        .frame(height: Design.control)
+                        .contentShape(.capsule)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("conversation.latest")
+                .accessibilityHint("Returns to the newest message")
+                .transition(.opacity)
+            }
         }
-        .buttonStyle(.plain)
-        .opacity(shown ? 1 : 0)
-        .allowsHitTesting(shown)
-        .accessibilityHidden(!shown)
-        .accessibilityIdentifier("conversation.latest")
-        .accessibilityHint("Returns to the newest message")
         .alignmentGuide(.top) { $0[.bottom] + Design.padding }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: shown)
     }

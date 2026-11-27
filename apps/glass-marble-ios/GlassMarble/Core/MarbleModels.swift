@@ -548,6 +548,10 @@ struct MarbleState: Decodable, Equatable {
         return conversations.first { $0.id == id }
     }
 
+    func reconcileDeletedConversations(_ local: inout Set<String>) {
+        local.subtract(conversations.map(\.id))
+    }
+
     func transcript(for id: String?) -> [MarbleEntry] {
         guard let id else { return transcript }
         return transcript.filter { $0.conversationId == id }
@@ -627,10 +631,11 @@ struct MarbleEventData: Decodable, Equatable {
     var cleared: Int? = nil
     /// Conversation ID on a successful deletion event.
     var deleted: String? = nil
+    var restored: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case thread, text, tool, name, title, callId, arguments, isError, message, status, revision
-        case taskId, reason, cancelled, requestId, approved, cleared, deleted, sender, failure
+        case taskId, reason, cancelled, requestId, approved, cleared, deleted, restored, sender, failure
         case threadId = "thread_id"
         case entryId = "id"
         case toolEntryId = "entry_id"

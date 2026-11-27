@@ -80,6 +80,7 @@ final class MarbleStore: ObservableObject {
     private var loadingOlder: [String: String] = [:]
     private var loadingOlderThreads: [String: String] = [:]
     private var deletedConversationIDs: Set<String> = []
+    private var deletionSequence: UInt64 = 0
     private var conversationDeletions: [String: UInt64] = [:]
     @Published private(set) var historyErrors: Set<String> = []
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
@@ -569,10 +570,14 @@ final class MarbleStore: ObservableObject {
     private func refreshPass() async {
         guard let client else { return }
         let generation = hostGeneration.current
+        let knownDeletions = deletionSequence
         do {
             async let healthFetch = client.health()
             var snapshot = try await client.state()
             guard hostGeneration.isCurrent(generation) else { return }
+            if knownDeletions == deletionSequence {
+                snapshot.reconcileDeletedConversations(&deletedConversationIDs)
+            }
             removeDeletedConversations(from: &snapshot)
             let previousChats = Set(state.conversations.map(\.id))
             if !previousChats.isSubset(of: Set(snapshot.conversations.map(\.id))) {
@@ -1734,7 +1739,6 @@ final class MarbleStore: ObservableObject {
     func restoreDeletedChat(_ id: String) async {
         do {
             try await withChatClient { try await $0.restoreDeletedChat(id: id) }
-            deletedConversationIDs.remove(id)
             errorMessage = nil
             await refresh()
         } catch is CancellationError {
@@ -1778,6 +1782,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func purgeConversation(_ id: String) {
+        deletionSequence &+= 1
         guard deletedConversationIDs.insert(id).inserted else { return }
         invalidateEveryoneHistory()
         let transcript = marbleTranscripts[id] ?? state.transcript(for: id)
@@ -2262,6 +2267,10 @@ final class MarbleStore: ObservableObject {
     private func handle(_ event: MarbleEvent, liveAfter: UInt64? = nil) {
         guard event.sequence > sequence else { return }
         sequence = event.sequence
+        if event.kind == "conversation", event.data.restored != nil {
+            scheduleEventRefresh()
+            return
+        }
         guard !deletedConversationIDs.contains(event.conversationId) else { return }
         if event.kind == "conversation", let id = event.data.deleted, !id.isEmpty {
             purgeConversation(id)

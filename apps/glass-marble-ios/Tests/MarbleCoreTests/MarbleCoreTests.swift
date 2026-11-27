@@ -1617,6 +1617,19 @@ final class MarbleResumeTests: XCTestCase {
         XCTAssertTrue(MarbleChatCache.fileName(for: "http://a:1").hasPrefix("marble-chats-"))
     }
 
+    func testHostRefreshUnhidesRestoredChatsOnAnotherDevice() {
+        var local: Set<String> = ["restored", "still-deleted"]
+        var snapshot = MarbleState.empty
+        snapshot.reconcileDeletedConversations(&local)
+        XCTAssertEqual(local, ["restored", "still-deleted"])
+
+        snapshot.conversations = [
+            MarbleConversation(id: "restored", title: "Restored elsewhere", taskIds: [], updatedAt: 1)
+        ]
+        snapshot.reconcileDeletedConversations(&local)
+        XCTAssertEqual(local, ["still-deleted"])
+    }
+
     func testDeletedConversationIsAbsentFromRewrittenDiskCache() throws {
         let deleted = MarbleEntry(conversationId: "deleted", kind: "user", text: "private draft", taskId: "", at: 1)
         let kept = MarbleEntry(conversationId: "kept", kind: "assistant", text: "keep this", taskId: "", at: 2)

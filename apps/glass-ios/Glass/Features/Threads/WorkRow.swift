@@ -46,7 +46,7 @@ enum ChatRow: Identifiable {
             case .tool(_, let name, _, _, false) where name == "display_image":
                 messages.append(entry)
             case .tool(let id, let name, _, _, _)
-                where name == "subagent" || name == "run_subagents" || (name == "teammate" && agentCallIDs.contains(id)):
+                where agentCallIDs.contains(id) && (name == "subagent" || name == "run_subagents" || name == "teammate"):
                 flush()
                 result.append(.agents(entry))
                 workPart += 1

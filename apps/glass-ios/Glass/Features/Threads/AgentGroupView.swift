@@ -40,7 +40,7 @@ struct AgentGroupView: View {
     }
 
     var body: some View {
-        if case .tool(_, _, _, let output, let failed) = entry {
+        if !agents.isEmpty {
             TimelineView(.periodic(from: .now, by: 1)) { time in
                 VStack(spacing: Design.gap) {
                     Button {
@@ -48,22 +48,18 @@ struct AgentGroupView: View {
                     } label: {
                         HStack(spacing: Design.gap) {
                             Image(systemName: "person.2").accessibilityHidden(true)
-                            if agents.isEmpty {
-                                Text(failed == true ? "Delegation failed" : "Agent delegation")
-                            } else {
-                                ViewThatFits(in: .horizontal) {
-                                    HStack(spacing: Design.gap) {
-                                        summary.fixedSize()
-                                        if let elapsed = longest(at: time.date) {
-                                            Text(workElapsed(elapsed))
-                                                .font(.caption).monospacedDigit().foregroundStyle(Design.muted)
-                                                .accessibilityLabel("Longest: \(workElapsed(elapsed))")
-                                                .fixedSize()
-                                        }
-                                    }
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: Design.gap) {
                                     summary.fixedSize()
-                                    summary.fixedSize(horizontal: false, vertical: true)
+                                    if let elapsed = longest(at: time.date) {
+                                        Text(workElapsed(elapsed))
+                                            .font(.caption).monospacedDigit().foregroundStyle(Design.muted)
+                                            .accessibilityLabel("Longest: \(workElapsed(elapsed))")
+                                            .fixedSize()
+                                    }
                                 }
+                                summary.fixedSize()
+                                summary.fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 0)
                             Image(systemName: expanded ? "chevron.up" : "chevron.down")
@@ -80,13 +76,6 @@ struct AgentGroupView: View {
                     .accessibilityHint(expanded ? "Collapses agents" : "Expands agents")
 
                     if expanded {
-                        if agents.isEmpty {
-                            Text(agentHeadline(output.isEmpty ? "No agents recorded for this launch yet." : output))
-                                .font(.footnote)
-                                .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
-                                .padding(.horizontal, Design.padding)
-                                .glassEffect(glass, in: Capsule())
-                        }
                         ForEach(agents) { agent in
                             row(agent, at: time.date)
                         }

@@ -443,18 +443,17 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
             lane_events.clone(),
         )?;
         let instructions_state = Arc::clone(&lane_state);
-        let instructions_cwd = lane_cwd.clone();
         Ok(conversation
             .with_model(lane_model.clone())
             .with_product(Arc::clone(&lane_state))
-            .with_instructions_fn(move || {
+            .with_instructions_fn(move |cwd| {
                 let persona = {
                     let guard = instructions_state
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     guard.prism.default_persona.clone()
                 };
-                glass_marble::default_assistant_instructions(&persona, &instructions_cwd)
+                glass_marble::default_assistant_instructions(&persona, cwd)
             })
             .with_respawn(move || {
                 let mut command = Command::new(&respawn_binary);

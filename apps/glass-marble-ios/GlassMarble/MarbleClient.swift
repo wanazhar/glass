@@ -247,10 +247,11 @@ final class MarbleClient: @unchecked Sendable {
         return try await fetch(try makeRequest(route: route))
     }
 
-    func createThread(conversationId: String, parentEntryId: String) async throws -> MarbleThread {
+    func createThread(conversationId: String, parentEntryId: String? = nil, title: String? = nil) async throws -> MarbleThread {
         struct Body: Encodable {
             var conversation_id: String
-            var parent_entry_id: String
+            var parent_entry_id: String?
+            var title: String?
         }
         struct Reply: Decodable {
             let thread: MarbleThread
@@ -261,9 +262,14 @@ final class MarbleClient: @unchecked Sendable {
         }
         let reply: Reply = try await postJSON(
             "/api/threads",
-            body: Body(conversation_id: conversationId, parent_entry_id: parentEntryId)
+            body: Body(conversation_id: conversationId, parent_entry_id: parentEntryId, title: title)
         )
         return reply.thread
+    }
+
+    func updateEveryoneThread(_ id: String, action: String) async throws {
+        struct Reply: Decodable { let ok: Bool }
+        let _: Reply = try await postJSON("/api/threads/\(encoded(id))/\(action)", body: nil)
     }
 
     /// `GET /api/export` — the whole document, or one conversation's slice.

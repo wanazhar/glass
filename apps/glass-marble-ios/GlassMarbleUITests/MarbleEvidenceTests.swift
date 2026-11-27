@@ -85,6 +85,7 @@ final class MarbleEvidenceTests: XCTestCase {
         back()
         back()
         app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "What should we plan first")).firstMatch)
         shot("everyone")
         button("Find").tap()
@@ -94,6 +95,50 @@ final class MarbleEvidenceTests: XCTestCase {
         search.typeText("plan")
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "What should we plan first")).firstMatch)
         shot("find")
+    }
+
+    func testEveryoneThreads() throws {
+        try start()
+        app.tabBars.buttons["Everyone"].tap()
+        let newThread = button("New Everyone thread")
+        check(newThread)
+        shot("p0-everyone-threads")
+        newThread.tap()
+        let title = app.alerts.textFields["Thread title"]
+        check(title)
+        shot("p0-new-thread")
+        title.tap()
+        title.typeText("Friday plans")
+        button("Create").tap()
+        let field = app.textFields["Reply in thread"]
+        check(field)
+        field.tap()
+        field.typeText("Hello everyone")
+        button("Send").tap()
+        for name in ["Marble", "Ada", "Dietrich"] {
+            check(app.staticTexts["\(name) says hello."])
+        }
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "The user is asking")).firstMatch.exists)
+        shot("p0-all-members-and-clean-dietrich-reply")
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", " · List")).firstMatch.exists)
+        shot("p0-greeting-without-tools")
+        button("Thread options").tap()
+        button("Archive").tap()
+        check(newThread)
+        app.staticTexts["Archived"].tap()
+        check(app.staticTexts["Friday plans"])
+        shot("p0-archived")
+        button("Restore").tap()
+        back()
+        check(app.staticTexts["Friday plans"])
+        shot("p0-restored")
+        app.staticTexts["Friday plans"].tap()
+        button("Thread options").tap()
+        button("Delete").tap()
+        button("Delete thread").tap()
+        check(newThread)
+        XCTAssertFalse(app.staticTexts["Friday plans"].exists)
+        shot("p0-deleted")
     }
 
     func testHostedActivityAndSettings() throws {

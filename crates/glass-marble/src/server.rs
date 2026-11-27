@@ -478,6 +478,7 @@ impl MarbleServer {
         {
             let mut state = parts.state.lock().unwrap_or_else(|e| e.into_inner());
             state.ensure_entry_ids();
+            crate::turn::separate_stored_reasoning(&mut state);
             state.prune_threads();
             parts.events.attach_replies(&mut state);
             for (task, thread) in &state.task_threads {
@@ -661,6 +662,12 @@ impl MarbleServer {
         }
         if path == "/api/threads" {
             return self.threads_route(head, body);
+        }
+        if head.method == "POST"
+            && let Some(rest) = path.strip_prefix("/api/threads/")
+            && let Some((id, action)) = rest.split_once('/')
+        {
+            return self.update_everyone_thread(&decode_path_segment(id), action, body);
         }
         if head.method == "GET"
             && let Some(id) = path.strip_prefix("/api/threads/")
@@ -1114,7 +1121,10 @@ impl MarbleServer {
                     // (a turn still running) is left readable rather than
                     // torn down mid-turn.
                     for candidate in conversations {
-                        if guard.delete_conversation(&candidate).is_ok() {
+                        if self
+                            .delete_conversation_record(&mut guard, &candidate)
+                            .is_ok()
+                        {
                             deleted.push(candidate);
                         } else {
                             tracing::info!(
@@ -1404,7 +1414,7 @@ impl MarbleServer {
     }
 
     /// `POST /api/everyone` — one line to the shared plane; the marbles it
-    /// names answer, or the default assistant when it names nobody.
+    /// names answer, or every member when it names nobody.
     fn post_everyone(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
@@ -1434,6 +1444,14 @@ impl MarbleServer {
                 .is_some_and(|id| !guard.threads.iter().any(|t| &t.id == id))
             {
                 return Response::error(404, "unknown_thread");
+            }
+            if thread.as_ref().is_some_and(|id| {
+                guard
+                    .threads
+                    .iter()
+                    .any(|thread| &thread.id == id && thread.archived)
+            }) {
+                return Response::error(409, "thread_archived");
             }
             crate::everyone::mirror(
                 &mut guard,
@@ -1469,43 +1487,14 @@ impl MarbleServer {
         );
         let plan = crate::everyone::plan(&self.lock_state(), &text);
         match plan {
-            crate::everyone::EveryoneTarget::Default => {
-                let mut request = TurnRequest::new(
-                    crate::everyone::default_conversation(&self.lock_state()),
-                    text.clone(),
-                );
-                request.thread_id = thread.clone();
-                let key = format!("queued-{}", request.request_id);
-                {
-                    let mut guard = self.lock_state();
-                    crate::everyone::reserve(
-                        &mut guard,
-                        &entry_id,
-                        &key,
-                        "marble",
-                        "Marble",
-                        thread.as_deref(),
-                    );
-                    guard.bump();
-                }
-                self.save_state();
-                let response = self.submit_request(request);
-                if response.status >= 400 {
-                    self.fail_everyone_dispatch("marble", &key, &text, "default admission failed");
-                }
-                response
-            }
             crate::everyone::EveryoneTarget::Named(ids) => {
                 self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
             }
             crate::everyone::EveryoneTarget::All => {
                 let ids: Vec<String> = {
                     let guard = self.lock_state();
-                    guard
-                        .prism
-                        .marbles
-                        .iter()
-                        .map(|marble| marble.id.clone())
+                    std::iter::once(crate::everyone::DEFAULT_SPEAKER.to_string())
+                        .chain(guard.prism.marbles.iter().map(|marble| marble.id.clone()))
                         .collect()
                 };
                 self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
@@ -1538,19 +1527,61 @@ impl MarbleServer {
             return Response::json(200, json!({"ok": true, "answering": [], "busy": []}));
         }
         let mut prepared = Vec::new();
+        let mut busy = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for id in &ids {
             if !seen.insert(id.clone()) {
                 continue;
             }
+            let conversation = crate::everyone::session_id(id, thread);
+            let follow_up = {
+                let mut state = self.lock_state();
+                if let Some(task) = state.tasks.iter().rev().find(|task| {
+                    task.status == "running"
+                        && !task.id.starts_with("queued-")
+                        && task.conversation_id == conversation
+                }) {
+                    let task_id = task.id.clone();
+                    let lane = state.conversation_mut(&conversation).lane;
+                    Some((task_id, lane))
+                } else {
+                    None
+                }
+            };
+            if let Some((task_id, lane)) = follow_up {
+                let request = SteerRequest {
+                    conversation_id: conversation.clone(),
+                    task_id,
+                    text: text.to_string(),
+                };
+                let steered = if id == crate::everyone::DEFAULT_SPEAKER {
+                    self.steer.send(lane, request)
+                } else {
+                    self.prism
+                        .as_ref()
+                        .is_some_and(|pool| pool.steer(id, request))
+                };
+                let name = {
+                    let state = self.lock_state();
+                    state
+                        .prism
+                        .get(id)
+                        .map(|marble| marble.name.clone())
+                        .unwrap_or_else(|| state.prism.default_marble().name)
+                };
+                if steered {
+                    prepared.push((id.clone(), name, String::new(), None));
+                } else {
+                    busy.push(name);
+                }
+                continue;
+            }
             if id == crate::everyone::DEFAULT_SPEAKER {
-                let mut request = TurnRequest::new(
-                    crate::everyone::default_conversation(&self.lock_state()),
-                    text.to_string(),
-                );
+                let mut request = TurnRequest::new(Some(conversation.clone()), text.to_string());
                 request.thread_id = thread.map(str::to_string);
                 let key = format!("queued-{}", request.request_id);
                 let mut state = self.lock_state();
+                crate::everyone::ensure_session(&mut state, &conversation);
                 crate::everyone::reserve(&mut state, entry_id, &key, id, "Marble", thread);
                 prepared.push((id.clone(), "Marble".to_string(), key, Some(request)));
             } else {
@@ -1558,11 +1589,11 @@ impl MarbleServer {
                 let Some(marble) = state.prism.get(id).cloned() else {
                     continue;
                 };
-                let queued = state.control.enqueue_marble(
-                    id.clone(),
-                    Some(marble.conversation_id.clone()),
-                    text.to_string(),
-                );
+                crate::everyone::ensure_session(&mut state, &conversation);
+                let queued =
+                    state
+                        .control
+                        .enqueue_marble(id.clone(), Some(conversation), text.to_string());
                 let key = match queued {
                     Ok(entry) => {
                         state
@@ -1586,8 +1617,11 @@ impl MarbleServer {
         self.lock_state().bump();
         self.save_state();
         let mut answering = Vec::new();
-        let mut busy = Vec::new();
         for (id, name, key, request) in prepared {
+            if key.is_empty() {
+                answering.push(name);
+                continue;
+            }
             if id == crate::everyone::DEFAULT_SPEAKER {
                 let response = self.submit_request(request.unwrap());
                 if response.status < 400 {
@@ -1626,17 +1660,13 @@ impl MarbleServer {
             return;
         }
         state.control.queue.retain(|entry| entry.id != source);
-        let conversation_id = state
-            .prism
-            .get(speaker)
-            .map(|m| m.conversation_id.clone())
-            .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| format!("recovered-{source}"));
         let thread = state
             .transcript
             .iter()
             .find(|e| e.kind == "pending" && e.task_id == source)
             .and_then(|e| e.thread_id.clone());
+        let conversation_id = crate::everyone::session_id(speaker, thread.as_deref());
+        crate::everyone::ensure_session(&mut state, &conversation_id);
         state.bind_thread(source, thread.as_deref());
         state
             .conversation_mut(&conversation_id)
@@ -1966,7 +1996,7 @@ impl MarbleServer {
     fn delete_conversation(&self, id: &str) -> Response {
         let outcome = {
             let mut guard = self.lock_state();
-            let outcome = guard.delete_conversation(id);
+            let outcome = self.delete_conversation_record(&mut guard, id);
             if outcome.is_ok() {
                 guard.bump();
             }
@@ -1993,11 +2023,39 @@ impl MarbleServer {
             Err(reason) if reason == "unknown conversation" => {
                 Response::json(404, json!({"error": "unknown_conversation", "id": id}))
             }
+            Err(reason) if reason.starts_with("could not remove conversation files") => {
+                Response::json(
+                    500,
+                    json!({"error":"conversation_delete_failed", "message":reason}),
+                )
+            }
             Err(reason) => Response::json(
                 409,
                 json!({"error": "conversation_busy", "message": reason}),
             ),
         }
+    }
+
+    fn delete_conversation_record(&self, state: &mut ProductState, id: &str) -> Result<(), String> {
+        state.check_conversation_deletion(id)?;
+        if let Some(root) = self
+            .store
+            .as_ref()
+            .filter(|_| {
+                state
+                    .conversations
+                    .iter()
+                    .any(|record| record.id == id && record.private_storage)
+            })
+            .and_then(|store| store.conversation_root(id))
+        {
+            match std::fs::remove_dir_all(root) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("could not remove conversation files: {error}")),
+            }
+        }
+        state.delete_conversation(id)
     }
 
     /// `GET /api/transcript?conversationId=…&after=…` — bounded history for one
@@ -2021,6 +2079,19 @@ impl MarbleServer {
         let Ok(value) = serde_json::from_str::<Value>(body) else {
             return Response::error(400, "invalid_json");
         };
+        if value["conversation_id"] == crate::everyone::EVERYONE_CONVERSATION
+            && value["parent_entry_id"].is_null()
+        {
+            let thread = {
+                let mut state = self.lock_state();
+                let thread =
+                    state.start_everyone_thread(value["title"].as_str().unwrap_or_default());
+                state.bump();
+                thread
+            };
+            self.save_state();
+            return Response::json(201, json!({"thread":thread}));
+        }
         let (Some(conversation), Some(parent)) = (
             value["conversation_id"].as_str(),
             value["parent_entry_id"].as_str(),
@@ -2042,6 +2113,77 @@ impl MarbleServer {
             }
             None => Response::error(404, "unknown_parent"),
         }
+    }
+
+    fn update_everyone_thread(&self, id: &str, action: &str, body: &str) -> Response {
+        let mut state = self.lock_state();
+        let Some(index) = state.threads.iter().position(|thread| {
+            thread.id == id && thread.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+        }) else {
+            return Response::error(404, "unknown_thread");
+        };
+        match action {
+            "archive" | "restore" => state.threads[index].archived = action == "archive",
+            "rename" => {
+                let title = serde_json::from_str::<Value>(body).ok().and_then(|value| {
+                    value["title"]
+                        .as_str()
+                        .map(|title| title.trim().chars().take(80).collect::<String>())
+                });
+                let Some(title) = title.filter(|title| !title.is_empty()) else {
+                    return Response::error(400, "missing_title");
+                };
+                state.threads[index].title = title;
+            }
+            "delete" => {
+                if state
+                    .transcript
+                    .iter()
+                    .any(|entry| entry.thread_id.as_deref() == Some(id) && entry.kind == "pending")
+                {
+                    return Response::error(409, "conversation_busy");
+                }
+                let records = state
+                    .conversations
+                    .iter()
+                    .filter(|record| crate::everyone::session_in_thread(&record.id, id))
+                    .map(|record| record.id.clone())
+                    .collect::<Vec<_>>();
+                if records
+                    .iter()
+                    .any(|record| state.check_conversation_deletion(record).is_err())
+                {
+                    return Response::error(409, "conversation_busy");
+                }
+                for record in records {
+                    if self
+                        .delete_conversation_record(&mut state, &record)
+                        .is_err()
+                    {
+                        return Response::error(500, "conversation_delete_failed");
+                    }
+                    if let Some(store) = &self.store {
+                        crate::live::LiveStore::for_store(store).remove_conversation(&record);
+                    }
+                }
+                state.threads.retain(|thread| thread.id != id);
+                state
+                    .transcript
+                    .retain(|entry| entry.thread_id.as_deref() != Some(id));
+                state.prune_threads();
+            }
+            _ => return Response::error(404, "unknown_thread_action"),
+        }
+        state.bump();
+        drop(state);
+        self.save_state();
+        self.events.publish(
+            crate::everyone::EVERYONE_CONVERSATION,
+            "",
+            "conversation",
+            json!({"thread_id":id, "action":action}),
+        );
+        Response::json(200, json!({"ok":true}))
     }
 
     fn requested_thread(

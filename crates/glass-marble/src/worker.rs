@@ -535,30 +535,24 @@ pub fn spawn_turn_pool(
         .name("glass-marble-turns".into())
         .spawn(move || {
             let mut next = 1;
-            let mut everyone_lane = None;
             while let Some(mut command) = inbox.recv() {
-                let everyone = lock(&wiring.state).everyone_pending.contains_key(
-                    &format!("queued-{}", command.request.request_id),
-                );
-                if everyone && command.request.conversation_id.is_none() {
-                    command.request.conversation_id = crate::everyone::default_conversation(&lock(&wiring.state));
-                }
-                let lane = if everyone {
-                    if command.request.conversation_id.is_some() {
-                        everyone_lane = Some(choose_lane(&wiring.state, command.request.conversation_id.as_deref(), &runtimes, &mut next));
+                {
+                    let mut state = lock(&wiring.state);
+                    if state.everyone_pending.contains_key(&format!("queued-{}", command.request.request_id)) {
+                        let id = crate::everyone::session_id(
+                            crate::everyone::DEFAULT_SPEAKER,
+                            command.request.thread_id.as_deref(),
+                        );
+                        crate::everyone::ensure_session(&mut state, &id);
+                        command.request.conversation_id = Some(id);
                     }
-                    *everyone_lane.get_or_insert_with(|| choose_lane(
-                        &wiring.state,
-                        command.request.conversation_id.as_deref(),
-                        &runtimes,
-                        &mut next,
-                    ))
-                } else { choose_lane(
+                }
+                let lane = choose_lane(
                     &wiring.state,
                     command.request.conversation_id.as_deref(),
                     &runtimes,
                     &mut next,
-                ) };
+                );
                 if runtimes[lane].is_none() {
                     // Starting an engine launches a subprocess and greets it,
                     // which can take seconds. Doing that here would hold up
@@ -1029,20 +1023,7 @@ fn run_command(
         guard.model.trim().to_string()
     };
     conversation.set_model((!model.is_empty()).then_some(model));
-    let conversation_id = request.conversation_id.clone().or_else(|| {
-        let state = lock(state);
-        state
-            .everyone_pending
-            .contains_key(&queued_id)
-            .then(|| crate::everyone::default_conversation(&state))
-            .flatten()
-            .filter(|id| {
-                state
-                    .conversations
-                    .iter()
-                    .any(|record| record.id == *id && record.lane == lane)
-            })
-    });
+    let conversation_id = request.conversation_id.clone();
     let mut turn = MarbleTurn {
         conversation_id: conversation_id.clone(),
         request_id: request.request_id.clone(),
@@ -1166,7 +1147,7 @@ fn run_command(
         conversation,
         TurnOptions {
             cancel: Some(request.cancel.as_ref()),
-            timeout,
+            timeout: timeout.min(crate::DEFAULT_TURN_TIMEOUT),
             on_accepted: Some(&mut on_accepted),
             live: live_turn.as_mut(),
         },

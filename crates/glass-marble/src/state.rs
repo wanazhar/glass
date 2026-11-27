@@ -101,6 +101,8 @@ pub struct ConversationRecord {
     /// Explicitly created chats acquire their engine session on first send.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub needs_engine_session: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private_storage: bool,
     #[serde(default)]
     pub checkpoints: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
@@ -441,6 +443,19 @@ impl ProductState {
     /// the record would orphan work that is still using it. Stop or settle that
     /// turn first.
     pub fn delete_conversation(&mut self, id: &str) -> Result<(), String> {
+        self.check_conversation_deletion(id)?;
+        self.conversations
+            .retain(|conversation| conversation.id != id);
+        for marble in &mut self.prism.marbles {
+            if marble.conversation_id == id {
+                marble.conversation_id.clear();
+            }
+        }
+        self.remove_conversation_history(id);
+        Ok(())
+    }
+
+    pub(crate) fn check_conversation_deletion(&self, id: &str) -> Result<(), String> {
         if !self
             .conversations
             .iter()
@@ -455,8 +470,10 @@ impl ProductState {
         {
             return Err("a turn is still running in this conversation".into());
         }
-        self.conversations
-            .retain(|conversation| conversation.id != id);
+        Ok(())
+    }
+
+    fn remove_conversation_history(&mut self, id: &str) {
         // Everyone entries quoting one of this conversation's turns — the
         // mirrored reply, any handoff lines, and the person's line that
         // triggered them (stamped with the task id once the turn starts) —
@@ -477,7 +494,6 @@ impl ProductState {
             .queue
             .retain(|entry| entry.conversation_id.as_deref() != Some(id));
         self.prune_threads();
-        Ok(())
     }
 
     /// Tasks recorded against a conversation that no longer exists. A deleted

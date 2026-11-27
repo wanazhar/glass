@@ -1,5 +1,147 @@
 import SwiftUI
 
+struct EveryoneView: View {
+    @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
+    @State private var threads: [MarbleThread] = []
+    @State private var naming = false
+    @State private var title = ""
+    @State private var deleting: MarbleThread?
+    @State private var failed = false
+    @State private var archived = false
+
+    var body: some View {
+        List {
+            let active = threads.filter { !$0.archived }
+            if active.isEmpty {
+                ContentUnavailableView("No threads yet", systemImage: "bubble.left.and.bubble.right",
+                                       description: Text("Start a thread to talk with Everyone."))
+            }
+            ForEach(active) { thread in
+                NavigationLink(value: ChatRoute.thread(thread.id)) {
+                    row(thread)
+                }
+                .swipeActions {
+                    Button("Delete", systemImage: "trash", role: .destructive) { deleting = thread }
+                    Button("Archive", systemImage: "archivebox") { update(thread, action: "archive") }
+                        .tint(MarbleTheme.tint)
+                }
+                .listRowBackground(MarbleTheme.card)
+            }
+            Section {
+                NavigationLink {
+                    EveryoneHistoryView()
+                } label: {
+                    Label("Earlier messages", systemImage: "clock")
+                        .frame(minHeight: 44)
+                }
+                Button {
+                    archived = true
+                } label: {
+                    Label("Archived", systemImage: "archivebox")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+            }
+            .listRowBackground(MarbleTheme.card)
+        }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle("Everyone")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    title = ""
+                    naming = true
+                } label: {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("New Everyone thread")
+            }
+        }
+        .alert("New Everyone thread", isPresented: $naming) {
+            TextField("Thread title", text: $title)
+            Button("Cancel", role: .cancel) {}
+            Button("Create") { create() }
+                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .confirmationDialog("Delete this thread?", isPresented: Binding(
+            get: { deleting != nil }, set: { if !$0 { deleting = nil } }
+        ), titleVisibility: .visible, presenting: deleting) { thread in
+            Button("Delete thread", role: .destructive) { update(thread, action: "delete") }
+        }
+        .alert("Couldn’t update threads", isPresented: $failed) {
+            Button("OK", role: .cancel) {}
+        }
+        .navigationDestination(isPresented: $archived) {
+            List(threads.filter(\.archived)) { thread in
+                HStack {
+                    row(thread)
+                    Button("Restore") { update(thread, action: "restore") }
+                        .buttonStyle(.borderless)
+                        .frame(minHeight: 44)
+                }
+                .listRowBackground(MarbleTheme.card)
+            }
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
+            .navigationTitle("Archived")
+        }
+        .task(id: store.threadUpdates) { await load() }
+        .refreshable { await load() }
+    }
+
+    private func row(_ thread: MarbleThread) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(thread.displayTitle).font(.headline)
+            Text(marbleMessageDate(thread.summary.lastActivityAt), style: .relative)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+
+    private func load() async {
+        do {
+            threads = try await store.threads(in: everyoneConversationId)
+                .sorted { $0.summary.lastActivityAt > $1.summary.lastActivityAt }
+        } catch is CancellationError {
+        } catch {
+            failed = true
+        }
+    }
+
+    private func create() {
+        Task {
+            do {
+                let thread = try await store.startEveryoneThread(title: title)
+                navigation.setEveryonePath([.thread(thread.id)])
+            } catch {
+                failed = true
+            }
+        }
+    }
+
+    private func update(_ thread: MarbleThread, action: String) {
+        Task {
+            do {
+                try await store.updateEveryoneThread(thread.id, action: action)
+                await load()
+            } catch {
+                failed = true
+            }
+        }
+    }
+}
+
+private extension MarbleThread {
+    var displayTitle: String {
+        if !title.isEmpty { return title }
+        return parentPreview.isEmpty ? "Thread" : parentPreview
+    }
+}
+
 struct MarbleThreadInboxLink: View {
     let conversationId: String
 
@@ -138,6 +280,7 @@ private struct MarbleThreadInbox: View {
 
 private struct MarbleThreadView: View {
     @EnvironmentObject private var store: MarbleStore
+    @Environment(\.dismiss) private var dismiss
     let id: String
     var initialEntryId: String?
     private var page: MarbleThreadPage? { store.threadPage(id) }
@@ -147,6 +290,8 @@ private struct MarbleThreadView: View {
     @State private var jump: MarbleMessageJump?
     @State private var appliedInitialJump = false
     @State private var loadFailed = false
+    @State private var changeFailed = false
+    @State private var confirmDelete = false
     @State private var loadGeneration = UUID()
 
     var body: some View {
@@ -178,20 +323,50 @@ private struct MarbleThreadView: View {
                 ProgressView()
             }
         }
-        .navigationTitle("Thread")
+        .navigationTitle(page?.thread.displayTitle ?? "Thread")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarVisibility(.hidden, for: .tabBar)
         .searchable(text: $query, isPresented: $searching, prompt: "Search this thread")
         .marbleComposerInset {
-            if page != nil && !searching {
+            if page != nil && page?.thread.archived == false && !searching {
                 ComposerBar(draft: $draft, isWorking: false, placeholder: "Reply in thread",
                             onSend: send, onStop: {})
             }
+        }
+        .toolbar {
+            if page?.thread.conversationId == everyoneConversationId {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Archive", systemImage: "archivebox") { update("archive") }
+                        Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                    } label: {
+                        Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Thread options")
+                }
+            }
+        }
+        .confirmationDialog("Delete this thread?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete thread", role: .destructive) { update("delete") }
+        }
+        .alert("Couldn’t update this thread", isPresented: $changeFailed) {
+            Button("OK", role: .cancel) {}
         }
         .task(id: [store.threadEventSequences[id], store.threadHostRevision]) {
             if !appliedInitialJump, let initialEntryId { jump = MarbleMessageJump(entryId: initialEntryId) }
             appliedInitialJump = true
             await load()
+        }
+    }
+
+    private func update(_ action: String) {
+        Task {
+            do {
+                try await store.updateEveryoneThread(id, action: action)
+                dismiss()
+            } catch {
+                changeFailed = true
+            }
         }
     }
 

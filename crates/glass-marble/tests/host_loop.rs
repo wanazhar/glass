@@ -90,7 +90,7 @@ fn run_one(
 }
 
 #[test]
-fn pre_tool_text_is_not_a_visible_delta_and_is_the_empty_answer_fallback() {
+fn pre_tool_text_is_never_a_visible_delta_or_an_empty_answer_fallback() {
     if !python3_available() {
         return;
     }
@@ -124,24 +124,21 @@ fn pre_tool_text_is_not_a_visible_delta_and_is_the_empty_answer_fallback() {
             &turn("research", None),
             &mut conversation,
             TurnOptions::default(),
-        )
-        .unwrap();
-        assert_eq!(reply.reasoning, "Research info.");
-        assert_eq!(
-            reply.text,
-            if answer.is_empty() {
-                "Research info."
-            } else {
-                answer
-            }
         );
+        if answer.is_empty() {
+            assert!(reply.unwrap_err().to_string().contains("empty reply"));
+        } else {
+            let reply = reply.unwrap();
+            assert_eq!(reply.reasoning, "Research info.");
+            assert_eq!(reply.text, answer);
+        }
         let frames = events.since(0);
         let visible: String = frames
             .iter()
             .filter(|e| e.kind == "text")
             .map(|e| e.data["text"].as_str().unwrap())
             .collect();
-        assert_eq!(visible, reply.text);
+        assert_eq!(visible, answer);
         conversation.shutdown().unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -568,7 +565,7 @@ fn everyone_waiting_for_its_first_conversation_stays_on_one_engine() {
 }
 
 #[test]
-fn everyone_rebinds_to_a_surviving_chats_engine_after_deletion() {
+fn everyone_does_not_rebind_to_a_surviving_private_chats_engine_after_deletion() {
     if !python3_available() {
         return;
     }
@@ -623,9 +620,9 @@ fn everyone_rebinds_to_a_surviving_chats_engine_after_deletion() {
         "Everyone resumes survivor",
         Some(survivor.conversation_id.clone()),
     );
-    assert_eq!(resumed.conversation_id, survivor.conversation_id);
+    assert_ne!(resumed.conversation_id, survivor.conversation_id);
     let followup = everyone("Everyone deferred followup", None);
-    assert_eq!(followup.conversation_id, survivor.conversation_id);
+    assert_eq!(followup.conversation_id, resumed.conversation_id);
     drop(pool);
 }
 

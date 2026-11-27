@@ -74,6 +74,8 @@ test('routes decode ids and preserve info navigation', () => {
   assert.deepEqual(L.route('#/m/ada%3A1/info'), { screen: 'info', id: 'ada:1' });
   assert.deepEqual(L.route('#/m/marble'), { screen: 'chat', id: 'marble' });
   assert.deepEqual(L.route('#/m/%zz'), { screen: 'missing' });
+  assert.deepEqual(L.route('#/everyone/thread-1'), { screen: 'everyone', id: 'thread-1' });
+  assert.deepEqual(L.route('#/everyone/%zz'), { screen: 'missing' });
   for (const screen of ['everyone', 'marbles', 'activity', 'settings', 'new']) assert.equal(L.route('#/' + screen).screen, screen);
   assert.equal(L.route('').screen, 'everyone');
 });

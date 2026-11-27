@@ -417,6 +417,12 @@ impl ToolRouter {
         &self.root
     }
 
+    pub(crate) fn in_workspace(&self, root: &Path) -> Result<Self, MarbleError> {
+        let mut router = Self::new(root)?;
+        router.ask = self.ask.clone();
+        Ok(router)
+    }
+
     /// Tool schemas registered with the runtime for a mixed session.
     pub fn catalog() -> Vec<ToolDefinition> {
         vec![

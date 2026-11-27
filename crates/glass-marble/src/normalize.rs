@@ -2,6 +2,35 @@
 
 use glass_runtime_client::TurnInput;
 
+pub(crate) fn is_small_talk(text: &str) -> bool {
+    let text = text
+        .rsplit_once("[/Marble host context]\n\n[User message]\n")
+        .map_or(text, |(_, message)| message);
+    let words = text
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '@' && c != '\''))
+        .filter(|word| !word.is_empty() && !word.starts_with('@'))
+        .collect::<Vec<_>>();
+    let greeting = words.join(" ").to_ascii_lowercase();
+    let phrase = greeting
+        .strip_suffix(" everyone")
+        .or_else(|| greeting.strip_suffix(" there"))
+        .unwrap_or(&greeting);
+    matches!(
+        phrase,
+        "hi" | "hello"
+            | "hey"
+            | "good morning"
+            | "good afternoon"
+            | "good evening"
+            | "thanks"
+            | "thank you"
+            | "how are you"
+            | "goodbye"
+            | "bye"
+    )
+}
+
 pub(crate) fn engine_input(
     state: &crate::ProductState,
     conversation_id: Option<&str>,
@@ -13,7 +42,11 @@ pub(crate) fn engine_input(
         crate::worker::now_millis(),
         state.routines.offset_minutes,
     )];
-    context.push(crate::everyone::addressing(state, text, owner));
+    let everyone = conversation_id.is_some_and(crate::everyone::is_session);
+    if everyone {
+        context.push(crate::everyone::addressing(state, text, owner));
+        context.push("Answer greetings and other small talk without tools.".into());
+    }
     context.push(crate::conversation::REPLY_PRIVACY_GUIDANCE.into());
     if let Some(previous) = conversation_id.filter(|id| !id.is_empty()).and_then(|id| {
         state.tasks.iter().rev().find(|task| {
@@ -29,7 +62,7 @@ pub(crate) fn engine_input(
     }) {
         context.push("Host note: the earlier unanswered request was withdrawn. Do not answer it; answer only the newest message.".into());
     }
-    if let Some(text) = state.memory.context_block_for(owner) {
+    if !everyone && let Some(text) = state.memory.context_block_for(owner) {
         context.push(text);
     }
     input.text = format!(

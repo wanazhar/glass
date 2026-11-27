@@ -8,7 +8,7 @@ use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
 };
 use serde_json::{Value, json as value};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
@@ -215,6 +215,61 @@ impl ToolRows {
 pub struct CancelToken<'a> {
     pub requested: &'a AtomicBool,
     pub task_id: &'a str,
+    pub deadline: Option<Instant>,
+}
+
+impl CancelToken<'_> {
+    pub(crate) fn interrupted(self) -> bool {
+        self.requested.load(Ordering::Relaxed)
+            || self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+}
+
+pub(crate) struct RunBudget {
+    limit: usize,
+    tools: HashSet<String>,
+    completed: Vec<String>,
+    stop: Option<(String, Instant)>,
+}
+
+impl RunBudget {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            tools: HashSet::new(),
+            completed: Vec::new(),
+            stop: None,
+        }
+    }
+
+    fn observe(&mut self, event: &RuntimeEvent) {
+        if let Some(id) = event.data["callId"].as_str() {
+            if event.kind == "tool_start" {
+                self.tools.insert(id.to_owned());
+            } else if event.kind == "tool_end"
+                && self.tools.contains(id)
+                && event.data["isError"].as_bool() != Some(true)
+                && let Some(label) = event.data["tool"].as_str()
+                && !self.completed.iter().any(|known| known == label)
+            {
+                self.completed.push(label.to_owned());
+            }
+        }
+    }
+
+    pub(crate) fn reply(&self) -> Option<String> {
+        let (reason, _) = self.stop.as_ref()?;
+        Some(if self.completed.is_empty() {
+            format!("Stopped at my {reason}. No tool calls completed successfully.")
+        } else {
+            format!(
+                "Stopped at my {reason}. Completed tools: {}.",
+                self.completed.join(", ")
+            )
+        })
+    }
 }
 
 /// One correction aimed at a running turn.
@@ -327,7 +382,7 @@ fn wait_for_approval(
 ) -> Option<Approval> {
     let deadline = Instant::now() + timeout;
     loop {
-        if cancel.is_some_and(|token| token.requested.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(CancelToken::interrupted) {
             return None;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -361,6 +416,8 @@ pub struct Conversation {
     host: HostPolicy,
     approvals: ApprovalInbox,
     router: ToolRouter,
+    suppress_tools: bool,
+    tool_limit: usize,
     events: EventBus,
     model: Option<String>,
     approval_timeout: Duration,
@@ -373,7 +430,7 @@ pub struct Conversation {
     steering: Option<mpsc::Receiver<SteerRequest>>,
     /// How to start a fresh engine after the transport dies. `None` means this
     /// conversation drives a runtime it cannot replace (one-shot runs, tests).
-    respawn: Option<Box<dyn Fn() -> Command + Send>>,
+    respawn: Option<Arc<dyn Fn() -> Command + Send + Sync>>,
     /// Where the engine keeps its durable session journal.
     storage_dir: PathBuf,
     /// Set when the engine stopped answering; the next turn restarts it first.
@@ -394,8 +451,10 @@ pub struct Conversation {
     instructions: Option<String>,
     /// Instructions computed per conversation, so an edited persona reaches
     /// the next conversation on a shared lane.
-    instructions_fn: Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>,
+    instructions_fn: Option<Instructions>,
 }
+
+type Instructions = Arc<dyn Fn(&Path) -> String + Send + Sync>;
 
 impl Drop for Conversation {
     fn drop(&mut self) {
@@ -467,6 +526,8 @@ impl Conversation {
             host,
             approvals,
             router,
+            suppress_tools: false,
+            tool_limit: crate::turn::DEFAULT_TOOL_LIMIT,
             events,
             model: None,
             approval_timeout: Duration::from_secs(300),
@@ -544,9 +605,76 @@ impl Conversation {
     /// only recovery is the service manager restarting the whole assistant,
     /// which also loses the loaded document; with one, the next turn gets a
     /// fresh engine and the product never stops serving.
-    pub fn with_respawn(mut self, factory: impl Fn() -> Command + Send + 'static) -> Self {
-        self.respawn = Some(Box::new(factory));
+    pub fn with_respawn(mut self, factory: impl Fn() -> Command + Send + Sync + 'static) -> Self {
+        self.respawn = Some(Arc::new(factory));
         self
+    }
+
+    pub(crate) fn scoped_runtime(&mut self, id: &str) -> Result<Option<Self>, MarbleError> {
+        let (Some(store), Some(factory), Some(product)) =
+            (&self.store, &self.respawn, &self.product)
+        else {
+            return Ok(None);
+        };
+        let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        let new = !state.conversations.iter().any(|record| record.id == id);
+        let record = state.conversation_mut(id);
+        let everyone = crate::everyone::is_session(id);
+        if !new && !record.private_storage && !record.needs_engine_session && !everyone {
+            return Ok(None);
+        }
+        if !record.private_storage {
+            record.private_storage = true;
+            record.needs_engine_session = true;
+            record.engine_conversation_id.clear();
+            record.checkpoints.clear();
+            record.retry_task_id.clear();
+        }
+        drop(state);
+        let root = store
+            .conversation_root(id)
+            .ok_or_else(|| MarbleError::Protocol("invalid conversation storage id".into()))?;
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
+        let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
+        let storage = cwd.parent().expect("workspace has a parent");
+        let mut scoped = Self::spawn_with_router(
+            factory(),
+            &cwd,
+            storage,
+            self.host,
+            self.approvals.clone(),
+            self.router.in_workspace(&cwd)?,
+            self.events.clone(),
+        )?;
+        scoped.product = self.product.clone();
+        scoped.store = self.store.clone();
+        scoped.model = self.model.clone();
+        scoped.speaker.clone_from(&self.speaker);
+        scoped.tool_limit = self.tool_limit;
+        scoped.steering = self.steering.take();
+        scoped.respawn = self.respawn.clone();
+        scoped.approval_timeout = self.approval_timeout;
+        scoped.instructions = self.instructions.clone();
+        scoped.instructions_fn = self.instructions_fn.clone();
+        Ok(Some(scoped))
+    }
+
+    pub(crate) fn can_scope_runtime(&self) -> bool {
+        self.store.is_some() && self.respawn.is_some() && self.product.is_some()
+    }
+
+    pub(crate) fn close_scoped_runtime(&mut self, mut scoped: Self) {
+        scoped.clear_runtime_failure();
+        self.steering = scoped.steering.take();
+    }
+
+    pub(crate) fn set_tool_limit(&mut self, limit: usize) {
+        self.tool_limit = limit;
+    }
+
+    pub(crate) fn tool_limit(&self) -> usize {
+        self.tool_limit
     }
 
     /// Whether the engine transport has failed since the last restart.
@@ -683,7 +811,7 @@ impl Conversation {
     /// edited persona reaches the next conversation without dropping the lane.
     pub fn with_instructions_fn(
         mut self,
-        instructions: impl Fn() -> String + Send + Sync + 'static,
+        instructions: impl Fn(&Path) -> String + Send + Sync + 'static,
     ) -> Self {
         self.instructions_fn = Some(std::sync::Arc::new(instructions));
         self
@@ -701,7 +829,7 @@ impl Conversation {
         options.instructions = Some(
             self.instructions_fn
                 .as_ref()
-                .map(|instructions| instructions())
+                .map(|instructions| instructions(&self.cwd))
                 .or_else(|| self.instructions.clone())
                 .unwrap_or_else(|| default_assistant_instructions("", &self.cwd)),
         );
@@ -722,12 +850,36 @@ impl Conversation {
         Ok(conversation_id)
     }
 
+    pub(crate) fn create_for_turn(&mut self) -> Result<String, MarbleError> {
+        self.create().or_else(|error| {
+            if !crate::failure::transient(&error.to_string()) {
+                return Err(error);
+            }
+            self.publish(
+                "task_retry",
+                value!({"attempt":1,"phase":"admission","reason":"transient_failure"}),
+            );
+            self.ensure_runtime()?;
+            self.create()
+        })
+    }
+
     /// Admit one durable request and return its task id.
     pub fn submit(
         &mut self,
         conversation_id: &str,
         request_id: &str,
         input: &TurnInput,
+    ) -> Result<String, MarbleError> {
+        self.submit_with_tool_policy(conversation_id, request_id, input, false)
+    }
+
+    pub(crate) fn submit_with_tool_policy(
+        &mut self,
+        conversation_id: &str,
+        request_id: &str,
+        input: &TurnInput,
+        suppress_tools: bool,
     ) -> Result<String, MarbleError> {
         let record = self.product.as_ref().and_then(|p| {
             p.lock()
@@ -739,7 +891,7 @@ impl Conversation {
         });
         let mut engine_id = match &record {
             Some(record) if record.needs_engine_session => {
-                let engine_id = self.create()?;
+                let engine_id = self.create_for_turn()?;
                 if let Some(product) = &self.product {
                     let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
                     let record = state.conversation_mut(conversation_id);
@@ -808,6 +960,23 @@ impl Conversation {
                 input.text = input.text.replacen("[Marble host context]\n", "[Marble host context]\nThis is a retry of an earlier failed message; later turns remain in the conversation history.\n", 1);
             }
         }
+        self.suppress_tools = suppress_tools;
+        let agent = if suppress_tools {
+            value!({"toolMode":"host", "tools":[]})
+        } else {
+            value!({"toolMode":"mixed", "tools":ToolRouter::catalog()})
+        };
+        let configure = self.client.request(
+            "durable/configure",
+            value!({"conversationId":engine_id, "agent":agent}),
+        );
+        let configure_id = self.issue(configure)?;
+        self.pump(
+            &configure_id,
+            Instant::now() + TURN_TIMEOUT,
+            None,
+            &mut |_| {},
+        )?;
         let inspect = self.client.request(
             "durable/inspect",
             value!({"conversationId":engine_id,"limit":1}),
@@ -988,10 +1157,54 @@ impl Conversation {
         cancel: Option<CancelToken<'_>>,
         sink: &mut dyn FnMut(&RuntimeEvent),
     ) -> Result<Value, MarbleError> {
+        self.pump_inner(expected, deadline, cancel, None, sink)
+    }
+
+    pub(crate) fn pump_run(
+        &mut self,
+        expected: &str,
+        deadline: Instant,
+        cancel: CancelToken<'_>,
+        budget: &mut RunBudget,
+        sink: &mut dyn FnMut(&RuntimeEvent),
+    ) -> Result<Value, MarbleError> {
+        self.pump_inner(expected, deadline, Some(cancel), Some(budget), sink)
+    }
+
+    fn pump_inner(
+        &mut self,
+        expected: &str,
+        deadline: Instant,
+        cancel: Option<CancelToken<'_>>,
+        mut budget: Option<&mut RunBudget>,
+        sink: &mut dyn FnMut(&RuntimeEvent),
+    ) -> Result<Value, MarbleError> {
         let mut auxiliary: Vec<String> = Vec::new();
         let mut cancelled = false;
         let mut tools = ToolRows::default();
         loop {
+            let now = Instant::now();
+            if let (Some(budget), Some(token)) = (budget.as_deref_mut(), cancel) {
+                if let Some((_, grace)) = budget.stop {
+                    if now >= grace {
+                        self.transport_failed = true;
+                        return Ok(Value::Null);
+                    }
+                } else if !cancelled
+                    && !token.requested.load(Ordering::Relaxed)
+                    && (now >= deadline || budget.tools.len() >= budget.limit)
+                {
+                    let reason = if now >= deadline {
+                        "time limit".into()
+                    } else {
+                        format!("limit of {} tools", budget.limit)
+                    };
+                    budget.stop = Some((reason, now + Duration::from_secs(2)));
+                    if let Ok(id) = self.abort(token.task_id) {
+                        auxiliary.push(id);
+                    }
+                }
+            }
             self.drain_steering(&mut auxiliary);
             if let Some(token) = cancel
                 && token.requested.load(Ordering::Relaxed)
@@ -1017,7 +1230,7 @@ impl Conversation {
                 Err(error) => return Err(self.transport_error(error)),
             };
             let Some(incoming) = incoming else {
-                if Instant::now() >= deadline {
+                if (budget.is_none() || cancelled) && Instant::now() >= deadline {
                     self.publish(
                         "error",
                         value!({"message": format!("timed out waiting for runtime response {expected}")}),
@@ -1058,6 +1271,14 @@ impl Conversation {
                     )));
                 }
                 Incoming::Event(mut event) => {
+                    if self.suppress_tools
+                        && matches!(
+                            event.kind.as_str(),
+                            "tool_start" | "tool_end" | "tool_status"
+                        )
+                    {
+                        continue;
+                    }
                     tools.normalize(&mut event);
                     if matches!(event.kind.as_str(), "tool_start" | "tool_end")
                         && ToolRouter::catalog()
@@ -1069,6 +1290,9 @@ impl Conversation {
                     if tools.observe(&event) {
                         self.record_tool_rows(&tools);
                     }
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.observe(&event);
+                    }
                     self.note_engine_tool(&event);
                     if !matches!(
                         event.kind.as_str(),
@@ -1079,6 +1303,22 @@ impl Conversation {
                     sink(&event);
                 }
                 Incoming::Tool { request_id, call } => {
+                    if self.suppress_tools
+                        || budget.as_ref().is_some_and(|budget| budget.stop.is_some())
+                    {
+                        self.client
+                            .tool_result(
+                                request_id,
+                                if self.suppress_tools {
+                                    "Continue without tools: this is a conversational turn."
+                                } else {
+                                    "This turn reached its limit."
+                                },
+                                true,
+                            )
+                            .map_err(MarbleError::Io)?;
+                        continue;
+                    }
                     let start = RuntimeEvent {
                         session_id: call.session_id.clone(),
                         turn_id: call.turn_id.clone(),
@@ -1086,6 +1326,9 @@ impl Conversation {
                         data: value!({"requestId":request_id.as_str().map(str::to_owned).unwrap_or_else(|| request_id.to_string()), "callId": call.call_id, "tool": call.name, "arguments": call.arguments}),
                     };
                     tools.observe(&start);
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.observe(&start);
+                    }
                     self.record_tool_rows(&tools);
                     self.publish(&start.kind, start.data.clone());
                     sink(&start);
@@ -1096,6 +1339,9 @@ impl Conversation {
                         ..start
                     };
                     tools.observe(&end);
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.observe(&end);
+                    }
                     self.record_tool_rows(&tools);
                     self.publish(&end.kind, end.data.clone());
                     sink(&end);
@@ -1691,6 +1937,7 @@ mod tests {
         let cancel = CancelToken {
             requested: &requested,
             task_id: "task-1",
+            deadline: None,
         };
         let started = Instant::now();
         let decision = std::thread::scope(|scope| {

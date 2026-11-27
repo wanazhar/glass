@@ -159,6 +159,7 @@ impl StateStore {
             Ok(encoded) => match serde_json::from_str::<ProductState>(&encoded) {
                 Ok(mut state) => {
                     state.ensure_entry_ids();
+                    crate::turn::separate_stored_reasoning(&mut state);
                     state.prune_threads();
                     Ok(state)
                 }
@@ -243,6 +244,7 @@ impl StateStore {
             ))
         })?;
         state.ensure_entry_ids();
+        crate::turn::separate_stored_reasoning(&mut state);
         state.prune_threads();
         Ok(state)
     }
@@ -313,6 +315,18 @@ impl StateStore {
     /// Directory the document and its backups live in.
     pub fn data_dir(&self) -> Option<&Path> {
         self.path.parent()
+    }
+
+    pub(crate) fn conversation_root(&self, id: &str) -> Option<PathBuf> {
+        (!id.is_empty()
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+        .then(|| {
+            self.data_dir()
+                .map(|dir| dir.join("conversation-sessions").join(id))
+        })
+        .flatten()
     }
 
     /// Whether a durable document exists at all.
@@ -535,6 +549,43 @@ mod tests {
         store.save(&state).unwrap();
         assert_eq!(store.load().unwrap(), state);
         assert_eq!(store.load().unwrap().revision, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_replies_are_loaded_with_their_planning_in_a_separate_row() {
+        let dir = data_dir("legacy-reasoning");
+        let store = StateStore::in_data_dir(&dir);
+        let mut state = ProductState::default();
+        let plan = "The user is asking why. I need to explain. I'll output only the final answer.";
+        let answer = "My bad — just the answer.";
+        for conversation in ["private", "everyone"] {
+            state.push_transcript(crate::state::TranscriptEntry {
+                conversation_id: conversation.into(),
+                task_id: "test-turn".into(),
+                kind: "assistant".into(),
+                speaker: "dietrich".into(),
+                speaker_name: "Dietrich".into(),
+                text: format!("{plan}{answer}"),
+                ..Default::default()
+            });
+        }
+        store.save(&state).unwrap();
+        let migrated = store.load().unwrap();
+        for conversation in ["private", "everyone"] {
+            let rows = migrated
+                .transcript
+                .iter()
+                .filter(|entry| entry.conversation_id == conversation)
+                .collect::<Vec<_>>();
+            assert_eq!(rows.len(), 2);
+            assert_eq!((&*rows[0].kind, &*rows[0].text), ("reasoning", plan));
+            assert_eq!((&*rows[1].kind, &*rows[1].text), ("assistant", answer));
+            assert_eq!(rows[0].task_id, rows[1].task_id);
+            assert_eq!(rows[0].speaker_name, "Dietrich");
+        }
+        store.save(&migrated).unwrap();
+        assert_eq!(store.load().unwrap(), migrated);
         let _ = fs::remove_dir_all(&dir);
     }
 

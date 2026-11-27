@@ -608,10 +608,20 @@ impl MemoryState {
         ))
         .to_lowercase();
         self.facts.iter().any(|fact| {
-            fact.owner == skill.owner
-                && !fact.shared
-                && !fact.text.is_empty()
-                && lesson.contains(&normalize(&fact.text).to_lowercase())
+            if fact.owner != skill.owner || fact.shared {
+                return false;
+            }
+            let text = normalize(&fact.text).to_lowercase();
+            let Some(first) = text.chars().next() else {
+                return false;
+            };
+            let ends_with_word = text.ends_with(char::is_alphanumeric);
+            lesson.match_indices(first).any(|(start, _)| {
+                lesson[start..].strip_prefix(&text).is_some_and(|rest| {
+                    (!first.is_alphanumeric() || !lesson[..start].ends_with(char::is_alphanumeric))
+                        && (!ends_with_word || !rest.starts_with(char::is_alphanumeric))
+                })
+            })
         })
     }
 
@@ -1333,6 +1343,42 @@ mod tests {
             Some(&current)
         );
         assert!(memory.recently_deleted.is_empty());
+    }
+
+    #[test]
+    fn shared_skill_privacy_matches_whole_words_case_insensitively() {
+        let mut memory = MemoryState::default();
+        memory.remember("Ann", "fact", "chat", true, "ada").unwrap();
+        memory
+            .save_skill(Skill {
+                id: String::new(),
+                name: "Trip planning".into(),
+                when_to_use: "Before leaving town".into(),
+                steps: vec!["Read the announcement".into()],
+                owner: "ada".into(),
+                shared_with: vec!["dietrich".into()],
+                created_at: 1,
+                conversation_id: "chat".into(),
+                thread_id: None,
+                source_entry_id: None,
+                learned_from: None,
+            })
+            .unwrap();
+        assert!(
+            memory
+                .turn_instructions("dietrich", None, false, "")
+                .contains("Trip planning")
+        );
+        let id = memory.skills[0].id.clone();
+        assert_eq!(
+            memory.update_skill(
+                &id,
+                "Trip planning".into(),
+                "Before leaving town".into(),
+                vec!["Ask (ANN) first".into()],
+            ),
+            Err(SKILL_CONTAINS_PRIVATE_MEMORY)
+        );
     }
 
     #[test]

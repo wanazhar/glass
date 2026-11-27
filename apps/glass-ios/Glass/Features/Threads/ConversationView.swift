@@ -69,17 +69,13 @@ struct ConversationView: View {
             } action: { _, bottom in
                 atBottom = bottom
             }
-            .onScrollGeometryChange(for: CGSize.self) { geometry in
-                CGSize(width: geometry.contentSize.height, height: geometry.containerSize.height - geometry.contentInsets.bottom)
+            // The bottom stays pinned while the reply grows, every frame, without an animated scroll that can
+            // land on a lazy row's estimated position and leave the transcript blank.
+            .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.containerSize.height - geometry.contentInsets.bottom
             } action: { _, _ in
-                guard following else { return }
-                Task { @MainActor in
-                    // Glide to each new line instead of snapping, so following a stream reads smoothly.
-                    guard following else { return }
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                        proxy.scrollTo(Self.bottom, anchor: .bottom)
-                    }
-                }
+                if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
             .onScrollPhaseChange { old, phase in
                 if phase == .interacting { following = false }
@@ -90,6 +86,11 @@ struct ConversationView: View {
             }
             .onChange(of: rows.last?.id) { _, _ in
                 if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            }
+            .onChange(of: conversation.timeline.isActive) { _, _ in
+                // The finished reply replaces the streamed one; settle on its real height, not the estimate.
+                guard following else { return }
+                Task { @MainActor in proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
             .safeAreaBar(edge: .top, spacing: Design.gap) {
                 header
@@ -312,7 +313,9 @@ struct ConversationView: View {
                         .foregroundStyle(Design.ink)
                         .frame(width: Design.control, height: Design.control)
                         .contentShape(.circle)
-                        .glassEffect(.regular.interactive(), in: .circle)
+                        // Tinted with the page colour so the arrow reads over text and code in both modes.
+                        .glassEffect(.regular.tint(Design.background.opacity(0.6)).interactive(), in: .circle)
+                        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Jump to latest")

@@ -65,11 +65,36 @@ struct MarkdownView: View, Equatable {
     }
 
     private var parsedBlocks: [Block] {
+        // While streaming, everything before the last settled paragraph break is parsed once and cached;
+        // only the growing tail is parsed again. The finished reply is parsed whole, once.
+        if streaming, let split = Self.settledBreak(in: text) {
+            return Self.cachedBlocks(String(text[..<split]), completeFencesOnly: completeFencesOnly)
+                + Self.blocks(String(text[split...]), completeFencesOnly: completeFencesOnly)
+        }
+        return Self.cachedBlocks(text, completeFencesOnly: completeFencesOnly)
+    }
+
+    private static func cachedBlocks(_ text: String, completeFencesOnly: Bool) -> [Block] {
         let key = (completeFencesOnly ? "1" + text : "0" + text) as NSString
-        if let cached = Self.blockCache.object(forKey: key) { return cached.blocks }
-        let blocks = Self.blocks(text, completeFencesOnly: completeFencesOnly)
-        Self.blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
+        if let cached = blockCache.object(forKey: key) { return cached.blocks }
+        let blocks = blocks(text, completeFencesOnly: completeFencesOnly)
+        blockCache.setObject(ParsedBlocks(blocks), forKey: key, cost: text.utf8.count * 3)
         return blocks
+    }
+
+    /// The last blank line outside a code fence or details block, where the text before it can no longer change.
+    static func settledBreak(in text: String) -> String.Index? {
+        guard let blank = text.range(of: "\n\n", options: .backwards) else { return nil }
+        let head = text[..<blank.lowerBound]
+        var fences = 0
+        var details = 0
+        for line in head.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.drop { $0 == " " }
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") || trimmed.hasPrefix("$$") { fences += 1 }
+            if trimmed.hasPrefix("<details") { details += 1 }
+            if trimmed.hasPrefix("</details") { details -= 1 }
+        }
+        return fences.isMultiple(of: 2) && details <= 0 ? blank.upperBound : nil
     }
 
     var body: some View {
@@ -81,7 +106,7 @@ struct MarkdownView: View, Equatable {
                     BlockView(block: block)
                         .modifier(StreamFade(count: Self.fadeCount(block)))
                 } else {
-                    BlockView(block: block)
+                    BlockView(block: block).equatable()
                 }
             }
         }
@@ -402,8 +427,10 @@ struct MarkdownView: View, Equatable {
     }
 }
 
-private struct BlockView: View {
+private struct BlockView: View, Equatable {
     var block: MarkdownView.Block
+
+    nonisolated static func == (left: Self, right: Self) -> Bool { left.block == right.block }
     @Environment(\.openReferencedFile) private var openReferencedFile
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var mathSize = 17.0
@@ -931,15 +958,19 @@ struct StreamFade: ViewModifier {
         }
         .onAppear { arrive(count) }
         .onChange(of: count) { _, value in arrive(value) }
-        .task(id: count) {
-            idle = false
-            try? await Task.sleep(for: .seconds(duration + lag + 0.05))
-            if !Task.isCancelled { idle = true }
+        .task {
+            // One cheap check a tenth of a second, rather than a task per token, pauses the clock once settled.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                let settled = chunks.last.map { Date.now.timeIntervalSince($0.date) > duration + lag } ?? true
+                if settled != idle { idle = settled }
+            }
         }
     }
 
     private func arrive(_ value: Int) {
         let now = Date.now
+        idle = false
         chunks.removeAll { now.timeIntervalSince($0.date) > duration + lag || $0.start >= value }
         if value > (known ?? 0) { chunks.append(Chunk(start: known ?? 0, date: now)) }
         known = value
@@ -989,5 +1020,76 @@ private struct StreamFadeRenderer: TextRenderer {
         let position = Double(index - chunk.start) / Double(max(length, 1))
         let progress = min(max((now.timeIntervalSince(chunk.date) - lag * position) / duration, 0), 1)
         return floor + (1 - floor) * (1 - pow(1 - progress, 3))
+    }
+}
+
+/// Releases a streamed reply at a steady pace, so bursty network chunks read as an even flow. The pace follows
+/// how fast text has been arriving and speeds up as the backlog grows, so it neither lags far behind nor stalls
+/// between chunks. Replies already on screen when it appears show whole.
+struct RevealingReply: View {
+    var text: String
+    var streaming: Bool
+    @State private var anchor = 0
+    @State private var anchorDate = Date.distantPast
+    @State private var rate = 400.0
+    @State private var lastArrival: Date?
+    @State private var gap = 0.25
+    @State private var caughtUp = true
+    @State private var started = false
+
+    var body: some View {
+        TimelineView(.animation(paused: caughtUp)) { timeline in
+            MarkdownView(text: visible(at: timeline.date), streaming: streaming || !caughtUp)
+                .equatable()
+        }
+        .onAppear {
+            guard !started else { return }
+            started = true
+            anchor = text.utf8.count
+        }
+        .onChange(of: text.utf8.count) { _, total in arrive(total) }
+        .onChange(of: streaming) { _, _ in arrive(text.utf8.count) }
+        .task(id: TaskKey(anchor: anchor, date: anchorDate, total: text.utf8.count)) {
+            let remaining = Double(text.utf8.count - anchor) / rate
+            guard remaining > 0 else { caughtUp = true; return }
+            try? await Task.sleep(for: .seconds(remaining + 0.02))
+            if !Task.isCancelled { caughtUp = true }
+        }
+    }
+
+    private struct TaskKey: Hashable { var anchor: Int; var date: Date; var total: Int }
+
+    private func revealed(at date: Date) -> Int {
+        min(text.utf8.count, anchor + Int(max(0, date.timeIntervalSince(anchorDate)) * rate))
+    }
+
+    private func arrive(_ total: Int) {
+        let now = Date.now
+        let shown = min(revealed(at: now), total)
+        if let lastArrival { gap = gap * 0.7 + min(max(now.timeIntervalSince(lastArrival), 0.016), 2) * 0.3 }
+        lastArrival = now
+        let backlog = Double(total - shown)
+        // Aim to finish the backlog just as the next chunk is due; drain faster once the stream has ended.
+        let horizon = streaming ? min(max(gap * 1.25, 0.2), 1.5) : 0.35
+        rate = max(60, backlog / horizon)
+        anchor = shown
+        anchorDate = now
+        caughtUp = shown >= total
+    }
+
+    /// The revealed prefix, ending on a word boundary so words arrive whole.
+    private func visible(at date: Date) -> String {
+        let utf8 = text.utf8
+        var count = revealed(at: date)
+        guard count < utf8.count else { return text }
+        var index = utf8.index(utf8.startIndex, offsetBy: count)
+        var scanned = 0
+        while index < utf8.endIndex, scanned < 24, utf8[index] != 0x20, utf8[index] != 0x0A {
+            index = utf8.index(after: index)
+            scanned += 1
+            count += 1
+        }
+        while index > utf8.startIndex, utf8[index] & 0xC0 == 0x80 { index = utf8.index(before: index) }
+        return String(text[..<index])
     }
 }

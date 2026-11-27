@@ -1085,6 +1085,7 @@ struct RevealingReply: View {
             scanned += 1
             count += 1
         }
+        guard index < utf8.endIndex else { return text }
         while index > utf8.startIndex, utf8[index] & 0xC0 == 0x80 { index = utf8.index(before: index) }
         return String(text[..<index])
     }

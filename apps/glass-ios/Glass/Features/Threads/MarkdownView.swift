@@ -1066,11 +1066,15 @@ struct RevealingReply: View {
     private func arrive(_ total: Int) {
         let now = Date.now
         let shown = min(revealed(at: now), total)
-        if let lastArrival { gap = gap * 0.7 + min(max(now.timeIntervalSince(lastArrival), 0.016), 2) * 0.3 }
+        if let lastArrival {
+            // Quick to learn a longer pause, slow to forget it, so one quiet spell does not cause the next stall.
+            let latest = min(max(now.timeIntervalSince(lastArrival), 0.016), 2)
+            gap = latest > gap ? gap * 0.5 + latest * 0.5 : gap * 0.9 + latest * 0.1
+        }
         lastArrival = now
         let backlog = Double(total - shown)
         // Aim to finish the backlog just as the next chunk is due; drain faster once the stream has ended.
-        let horizon = streaming ? min(max(gap * 1.25, 0.2), 1.5) : 0.35
+        let horizon = streaming ? min(max(gap * 1.3, 0.25), 1.5) : 0.35
         rate = max(60, backlog / horizon)
         anchor = shown
         anchorDate = now
